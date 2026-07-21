@@ -1,8 +1,8 @@
 {
   "accountAssociation": {
-    "header": "PASTE_GENERATED_HEADER_HERE",
-    "payload": "PASTE_GENERATED_PAYLOAD_HERE",
-    "signature": "PASTE_GENERATED_SIGNATURE_HERE"
+    "header": "eyJmaWQiOjM4NTE3OSwidHlwZSI6ImN1c3RvZHkiLCJrZXkiOiIweGM2RjIyMzE1MDIzZjQ3REFGMjFDNTgwRDc3ZDVGODYwQzllQzhEODYifQ",
+    "payload": "eyJkb21haW4iOiJtcGdyLWh1Yi16ZXRhLnZlcmNlbC5hcHAifQ",
+    "signature": "ImyjreVK9jmnIBHCkQC1g99GA+27UZv7RuS5SEHeiBZJZ7gSeaGqnANC6/vCs3zpj1+TXyDg2VOfPq8mQ5IsVRs="
   },
   "miniapp": {
     "version": "1",
