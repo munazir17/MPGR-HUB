@@ -11,10 +11,11 @@ import {
 } from "@rainbow-me/rainbowkit/wallets";
 import { farcasterMiniApp } from "@farcaster/miniapp-wagmi-connector";
 
-// Dedicated Smart Wallet entry — passkey-only, first in the list
+// Dedicated Smart Wallet entry — passkey-only, no extension interception.
+// This must be set before connectorsForWallets() is called.
 baseSmartWallet.preference = "smartWalletOnly";
 
-// Dedicated classic Coinbase Wallet entry — extension/app, EOA
+// Dedicated classic Coinbase Wallet entry — extension/app, EOA.
 coinbaseWallet.preference = "eoaOnly";
 
 const rainbowKitConnectors = connectorsForWallets(
@@ -37,8 +38,8 @@ const rainbowKitConnectors = connectorsForWallets(
 // Embedded Farcaster/Base App wallet connector.
 // Deliberately NOT passed into connectorsForWallets — it must never appear
 // as a selectable tile in the RainbowKit modal (avoids a duplicate entry
-// and avoids it being offered outside a Mini App host, where it can't work).
-// Exported so the auto-connect bootstrap can target it directly.
+// and avoids being offered outside a Mini App host, where it can't work).
+// Exported so MiniAppAutoConnect can target it directly.
 export const farcasterConnector = farcasterMiniApp();
 
 export const config = createConfig({
