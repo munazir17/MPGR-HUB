@@ -20,7 +20,7 @@
     "lucide-react": "^0.454.0",
     "clsx": "^2.1.1",
     "tailwind-merge": "^2.5.4",
-    "@farcaster/miniapp-sdk": "^0.3.0",
+    "@farcaster/miniapp-sdk": "^0.2.3",
     "@farcaster/miniapp-wagmi-connector": "^1.1.1"
   },
   "devDependencies": {
