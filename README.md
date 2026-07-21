@@ -1,4 +1,4 @@
-# MPGR HUB
+Test deploy# MPGR HUB
 
 The Home of MoneyPaiger Ecosystem — Next.js 15, TypeScript, Tailwind, wagmi, RainbowKit, Base Mainnet.
 
@@ -24,3 +24,4 @@ Project scaffold, wallet connect (RainbowKit + Base), dashboard shell with place
 - Phase 4: AI Hub
 - Phase 5: X402 Payments
 - Phase 6: Admin Panel
+- Test deploy
