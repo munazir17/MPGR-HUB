@@ -31,7 +31,7 @@ const rainbowKitConnectors = connectorsForWallets(
   ],
   {
     appName: "MPGR HUB",
-    projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "REPLACE_ME",
+    projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "2e1123b09e786a59f1af6b27668fda6",
   }
 );
 
