@@ -12,11 +12,16 @@ import {
 import { farcasterMiniApp } from "@farcaster/miniapp-wagmi-connector";
 
 // Dedicated Smart Wallet entry — passkey-only, no extension interception.
-// This must be set before connectorsForWallets() is called.
-baseSmartWallet.preference = "smartWalletOnly";
+// Cast against the property's own declared type rather than a bare string
+// literal: TypeScript widens the RHS of assignments onto these wallet
+// helpers' hybrid function+property types in some versions, so "smartWalletOnly"
+// as a plain literal gets flagged even though it's the correct runtime value.
+// `as typeof baseSmartWallet.preference` pulls the real type from the
+// library itself, so this can't silently accept an invalid value.
+baseSmartWallet.preference = "smartWalletOnly" as typeof baseSmartWallet.preference;
 
 // Dedicated classic Coinbase Wallet entry — extension/app, EOA.
-coinbaseWallet.preference = "eoaOnly";
+coinbaseWallet.preference = "eoaOnly" as typeof coinbaseWallet.preference;
 
 const rainbowKitConnectors = connectorsForWallets(
   [
@@ -31,7 +36,7 @@ const rainbowKitConnectors = connectorsForWallets(
   ],
   {
     appName: "MPGR HUB",
-    projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "2e1123b09e786a59f1af6b27668fda6",
+    projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "REPLACE_ME",
   }
 );
 
