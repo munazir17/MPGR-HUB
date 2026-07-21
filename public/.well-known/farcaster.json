@@ -7,13 +7,15 @@
   "miniapp": {
     "version": "1",
     "name": "MPGR HUB",
-    "iconUrl": "https://mpgr-hub-1v1x.vercel.app/icon.png",
-    "homeUrl": "https://mpgr-hub-1v1x.vercel.app",
-    "imageUrl": "https://mpgr-hub-1v1x.vercel.app/image.png",
+    "iconUrl": "https://mpgr-hub-zeta.vercel.app/icon.png",
+    "homeUrl": "https://mpgr-hub-zeta.vercel.app",
+    "imageUrl": "https://mpgr-hub-zeta.vercel.app/image.png",
     "buttonTitle": "Open MPGR HUB",
-    "splashImageUrl": "https://mpgr-hub-1v1x.vercel.app/splash.png",
+    "splashImageUrl": "https://mpgr-hub-zeta.vercel.app/splash.png",
     "splashBackgroundColor": "#0A0B0D",
-    "requiredChains": ["eip155:8453"],
+    "requiredChains": [
+      "eip155:8453"
+    ],
     "requiredCapabilities": [
       "actions.ready",
       "actions.signIn",
