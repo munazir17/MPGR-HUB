@@ -4,11 +4,14 @@
 
 html {
   scroll-behavior: smooth;
+  overflow-x: hidden;
 }
 
 body {
   background-color: #0a0b0d;
   color: #f3f4f6;
+  overflow-x: hidden;
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 ::-webkit-scrollbar {
@@ -17,4 +20,8 @@ body {
 ::-webkit-scrollbar-thumb {
   background: #1e2128;
   border-radius: 8px;
+}
+
+button {
+  min-height: 36px;
 }
