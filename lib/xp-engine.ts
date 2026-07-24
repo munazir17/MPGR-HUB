@@ -18,16 +18,18 @@ export const XP_ACTIONS: Record<XPAction, { label: string; xp: number }> = {
 export interface XPHistoryEntry {
   action: XPAction;
   xp: number;
-  timestamp: string; // ISO string
+  timestamp: string;
 }
 
 export interface UserXPRecord {
   address: string;
   xp: number;
   streak: number;
-  lastCheckIn: string | null; // YYYY-MM-DD
+  lastCheckIn: string | null;
   referralCount: number;
   oneTimeActionsAwarded: XPAction[];
+  claimedAchievements: string[];
+  lastKnownLevel: number;
   history: XPHistoryEntry[];
 }
 
@@ -46,15 +48,15 @@ function emptyRecord(address: string): UserXPRecord {
     lastCheckIn: null,
     referralCount: 0,
     oneTimeActionsAwarded: [],
+    claimedAchievements: [],
+    lastKnownLevel: 1,
     history: [],
   };
 }
 
 // --- Storage layer -------------------------------------------------
-// Everything below reads/writes localStorage. To move to a real backend
-// in Phase 2B, replace the body of getUserRecord/saveUserRecord with
-// fetch() calls to your API — every function above this comment stays
-// identical, since they only depend on this pair.
+// Phase 2B swap point: replace get/save bodies with fetch() calls to a
+// real API/database. Everything else in this file stays identical.
 
 export function getUserRecord(address: string): UserXPRecord {
   if (typeof window === "undefined") return emptyRecord(address);
@@ -81,9 +83,10 @@ function xpFloorForLevel(level: number): number {
 
 export interface LevelProgress {
   level: number;
+  nextLevel: number;
   xpIntoLevel: number;
   xpNeededForLevel: number;
-  progress: number; // 0-100
+  progress: number;
 }
 
 export function getLevelProgress(xp: number): LevelProgress {
@@ -96,16 +99,31 @@ export function getLevelProgress(xp: number): LevelProgress {
   const progress = xpNeededForLevel === 0
     ? 100
     : Math.min(100, Math.round((xpIntoLevel / xpNeededForLevel) * 100));
-  return { level, xpIntoLevel, xpNeededForLevel, progress };
+  return { level, nextLevel: level + 1, xpIntoLevel, xpNeededForLevel, progress };
 }
 
 // --- Actions -----------------------------------------------------------
 
-export function awardXP(address: string, action: XPAction): UserXPRecord {
+export interface AwardResult {
+  record: UserXPRecord;
+  xpGained: number;
+  leveledUp: boolean;
+  newLevel: number;
+}
+
+function finalizeAward(record: UserXPRecord, xpGained: number): AwardResult {
+  const newLevel = getLevelProgress(record.xp).level;
+  const leveledUp = newLevel > record.lastKnownLevel;
+  record.lastKnownLevel = newLevel;
+  saveUserRecord(record);
+  return { record, xpGained, leveledUp, newLevel };
+}
+
+export function awardXP(address: string, action: XPAction): AwardResult {
   const record = getUserRecord(address);
 
   if (ONE_TIME_ACTIONS.includes(action) && record.oneTimeActionsAwarded.includes(action)) {
-    return record; // already granted once, no duplicate award
+    return { record, xpGained: 0, leveledUp: false, newLevel: getLevelProgress(record.xp).level };
   }
 
   const xp = XP_ACTIONS[action].xp;
@@ -114,20 +132,15 @@ export function awardXP(address: string, action: XPAction): UserXPRecord {
   if (ONE_TIME_ACTIONS.includes(action)) {
     record.oneTimeActionsAwarded.push(action);
   }
-  saveUserRecord(record);
-  return record;
+  return finalizeAward(record, xp);
 }
 
-export function performDailyCheckIn(address: string): {
-  record: UserXPRecord;
-  xpAwarded: number;
-  alreadyCheckedIn: boolean;
-} {
+export function performDailyCheckIn(address: string): AwardResult & { alreadyCheckedIn: boolean } {
   const record = getUserRecord(address);
   const today = new Date().toISOString().slice(0, 10);
 
   if (record.lastCheckIn === today) {
-    return { record, xpAwarded: 0, alreadyCheckedIn: true };
+    return { record, xpGained: 0, leveledUp: false, newLevel: getLevelProgress(record.xp).level, alreadyCheckedIn: true };
   }
 
   const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
@@ -137,54 +150,150 @@ export function performDailyCheckIn(address: string): {
   const xp = XP_ACTIONS.DAILY_CHECK_IN.xp;
   record.xp += xp;
   record.history.push({ action: "DAILY_CHECK_IN", xp, timestamp: new Date().toISOString() });
-  saveUserRecord(record);
 
-  return { record, xpAwarded: xp, alreadyCheckedIn: false };
+  const result = finalizeAward(record, xp);
+  return { ...result, alreadyCheckedIn: false };
 }
 
-// Season points: real XP earned since the 1st of the current calendar month,
-// computed from actual timestamped history — not a separate fake counter.
+// Season points: real XP earned since the 1st of the current calendar month.
 export function getSeasonPoints(record: UserXPRecord): number {
-  const startOfMonth = new Date();
-  startOfMonth.setDate(1);
-  startOfMonth.setHours(0, 0, 0, 0);
+  const start = getSeasonStart();
   return record.history
-    .filter((entry) => new Date(entry.timestamp) >= startOfMonth)
+    .filter((entry) => new Date(entry.timestamp) >= start)
     .reduce((sum, entry) => sum + entry.xp, 0);
+}
+
+export function getSeasonStart(): Date {
+  const d = new Date();
+  d.setDate(1);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+export function getSeasonEnd(): Date {
+  const d = getSeasonStart();
+  d.setMonth(d.getMonth() + 1);
+  d.setMilliseconds(-1);
+  return d;
+}
+
+export function getSeasonNumber(): number {
+  const epoch = new Date(2026, 0, 1);
+  const now = new Date();
+  return (now.getFullYear() - epoch.getFullYear()) * 12 + (now.getMonth() - epoch.getMonth()) + 1;
 }
 
 export interface Achievement {
   id: string;
-  label: string;
+  title: string;
   description: string;
   unlocked: boolean;
+  claimed: boolean;
+  progress: number;
+  target: number;
+  comingSoon?: boolean;
 }
 
 export function getAchievements(record: UserXPRecord): Achievement[] {
-  return [
+  const level = getLevelProgress(record.xp).level;
+  const claimed = record.claimedAchievements;
+
+  const defs: Omit<Achievement, "claimed">[] = [
     {
-      id: "first-steps",
-      label: "First Steps",
-      description: "Connected your wallet",
-      unlocked: record.oneTimeActionsAwarded.includes("WALLET_CONNECTED"),
+      id: "first-checkin",
+      title: "First Check-in",
+      description: "Complete your first daily check-in",
+      unlocked: record.streak >= 1,
+      progress: Math.min(record.streak, 1),
+      target: 1,
     },
     {
-      id: "consistent",
-      label: "Consistent",
-      description: "7-day check-in streak",
+      id: "streak-7",
+      title: "7 Day Streak",
+      description: "Check in 7 days in a row",
       unlocked: record.streak >= 7,
+      progress: Math.min(record.streak, 7),
+      target: 7,
     },
     {
-      id: "grinder",
-      label: "Grinder",
-      description: "Earned 500+ XP",
-      unlocked: record.xp >= 500,
+      id: "streak-30",
+      title: "30 Day Streak",
+      description: "Check in 30 days in a row",
+      unlocked: record.streak >= 30,
+      progress: Math.min(record.streak, 30),
+      target: 30,
     },
     {
-      id: "networker",
-      label: "Networker",
-      description: "5+ successful referrals",
-      unlocked: record.referralCount >= 5,
+      id: "xp-100",
+      title: "100 XP",
+      description: "Earn 100 total XP",
+      unlocked: record.xp >= 100,
+      progress: Math.min(record.xp, 100),
+      target: 100,
+    },
+    {
+      id: "level-5",
+      title: "Level 5",
+      description: "Reach level 5",
+      unlocked: level >= 5,
+      progress: Math.min(level, 5),
+      target: 5,
+    },
+    {
+      id: "level-10",
+      title: "Level 10",
+      description: "Reach level 10",
+      unlocked: level >= 10,
+      progress: Math.min(level, 10),
+      target: 10,
+    },
+    {
+      id: "community-builder",
+      title: "Community Builder",
+      description: "Refer 10 friends to MPGR HUB",
+      unlocked: record.referralCount >= 10,
+      progress: Math.min(record.referralCount, 10),
+      target: 10,
+    },
+    {
+      id: "top-referrer",
+      title: "Top Referrer",
+      description: "Available once the global leaderboard launches",
+      unlocked: false,
+      progress: 0,
+      target: 1,
+      comingSoon: true,
+    },
+    {
+      id: "first-spin",
+      title: "First Spin",
+      description: "Coming soon — spin feature not yet live",
+      unlocked: false,
+      progress: 0,
+      target: 1,
+      comingSoon: true,
+    },
+    {
+      id: "og-member",
+      title: "OG Member",
+      description: "Manually awarded to early testers",
+      unlocked: false,
+      progress: 0,
+      target: 1,
+      comingSoon: true,
     },
   ];
+
+  return defs.map((d) => ({ ...d, claimed: claimed.includes(d.id) }));
+}
+
+export function claimAchievement(address: string, achievementId: string): UserXPRecord {
+  const record = getUserRecord(address);
+  const achievement = getAchievements(record).find((a) => a.id === achievementId);
+  if (!achievement || !achievement.unlocked || record.claimedAchievements.includes(achievementId)) {
+    return record;
+  }
+  record.claimedAchievements.push(achievementId);
+  saveUserRecord(record);
+  return record;
 }
