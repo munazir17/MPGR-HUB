@@ -135,7 +135,4 @@ export default function SeasonPage() {
       </main>
     </>
   );
-}      </main>
-    </>
-  );
 }
