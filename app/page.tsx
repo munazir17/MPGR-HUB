@@ -4,21 +4,22 @@ import { useEffect, useState, useCallback } from "react";
 import { useAccount, useBalance, useReadContract } from "wagmi";
 import { base } from "wagmi/chains";
 import { motion } from "framer-motion";
-import { Coins, Flame, Trophy, Users, Wallet, Award } from "lucide-react";
+import { Coins, Flame, Trophy, Users, Wallet, Award, CheckCircle2 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { StatCard } from "@/components/ui/StatCard";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { AchievementCard } from "@/components/ui/AchievementCard";
+import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
 import { FloatingXP } from "@/components/ui/FloatingXP";
 import { LevelUpModal } from "@/components/ui/LevelUpModal";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { AddressAvatar } from "@/components/AddressAvatar";
 import { useXP } from "@/hooks/useXP";
-import { getLevelProgress, getSeasonPoints, getAchievements } from "@/lib/xp-engine";
+import { getLevelProgress, getSeasonPoints, getAchievements, getSeasonNumber } from "@/lib/xp-engine";
 import { erc20Abi } from "@/lib/erc20-abi";
-import { formatAddress, formatCompactNumber, formatTokenAmount } from "@/lib/format";
+import { formatAddress, formatCompactNumber, formatTokenAmount, formatTokenBalance } from "@/lib/format";
 
 const MPGR_TOKEN_ADDRESS = process.env.NEXT_PUBLIC_MPGR_TOKEN_ADDRESS as
   | `0x${string}`
@@ -38,7 +39,7 @@ export default function DashboardPage() {
     query: { enabled: mounted && isConnected },
   });
 
-  const { data: mprBalance, isLoading: mprLoading } = useReadContract({
+  const { data: mprBalanceRaw, isLoading: mprLoading } = useReadContract({
     address: MPGR_TOKEN_ADDRESS,
     abi: erc20Abi,
     functionName: "balanceOf",
@@ -47,10 +48,20 @@ export default function DashboardPage() {
     query: { enabled: mounted && isConnected && Boolean(MPGR_TOKEN_ADDRESS) },
   });
 
+  const { data: mprDecimals } = useReadContract({
+    address: MPGR_TOKEN_ADDRESS,
+    abi: erc20Abi,
+    functionName: "decimals",
+    chainId: base.id,
+    query: { enabled: mounted && Boolean(MPGR_TOKEN_ADDRESS) },
+  });
+
   const loading = !mounted || (isConnected && !record);
   const levelInfo = record ? getLevelProgress(record.xp) : null;
   const seasonPoints = record ? getSeasonPoints(record) : 0;
   const achievements = record ? getAchievements(record) : [];
+  const today = new Date().toISOString().slice(0, 10);
+  const alreadyCheckedInToday = record?.lastCheckIn === today;
 
   const handleCheckIn = useCallback(() => {
     const result = checkIn();
@@ -82,23 +93,41 @@ export default function DashboardPage() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4 }}
-              className="flex flex-wrap items-center justify-between gap-4"
+              className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="flex min-w-0 items-center gap-4">
                 <AddressAvatar address={address ?? ""} size={56} />
                 <div className="min-w-0">
+                  <p className="text-xs text-muted">Welcome back</p>
                   <h1 className="truncate text-xl font-semibold text-white">
                     {formatAddress(address ?? "")}
                   </h1>
-                  <p className="text-sm text-muted">Welcome back to MPGR HUB</p>
+                  <p className="mt-0.5 text-xs text-muted">
+                    Level {levelInfo?.level ?? 1} · {formatCompactNumber(record?.xp ?? 0)} XP ·{" "}
+                    {record?.streak ?? 0}-day streak · Season {getSeasonNumber()}
+                  </p>
                 </div>
               </div>
-              <button
+
+              <motion.button
                 onClick={handleCheckIn}
-                className="shrink-0 rounded-xl bg-gradient-premium px-5 py-2.5 text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
+                disabled={alreadyCheckedInToday}
+                whileHover={!alreadyCheckedInToday ? { scale: 1.03 } : undefined}
+                whileTap={!alreadyCheckedInToday ? { scale: 0.97 } : undefined}
+                aria-label={alreadyCheckedInToday ? "Already checked in today" : "Daily check-in, earn XP"}
+                className="flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-white transition-colors disabled:cursor-not-allowed
+                  bg-gradient-premium shadow-glow-gold
+                  disabled:bg-none disabled:bg-surface disabled:text-muted disabled:shadow-none"
               >
-                Daily Check-In
-              </button>
+                {alreadyCheckedInToday ? (
+                  <>
+                    <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                    Checked In
+                  </>
+                ) : (
+                  "Daily Check-In"
+                )}
+              </motion.button>
             </motion.div>
 
             {checkInMessage && (
@@ -132,9 +161,7 @@ export default function DashboardPage() {
                 label="MPGR Balance"
                 value={
                   MPGR_TOKEN_ADDRESS
-                    ? mprBalance
-                      ? formatCompactNumber(Number(mprBalance))
-                      : "0"
+                    ? `${formatTokenBalance(mprBalanceRaw as bigint | undefined, mprDecimals as number | undefined)} MPGR`
                     : "Not launched"
                 }
                 icon={Coins}
@@ -165,6 +192,13 @@ export default function DashboardPage() {
                   />
                 ))}
               </div>
+            )}
+
+            <SectionHeader title="Recent Activity" />
+            {record && record.history.length > 0 ? (
+              <ActivityTimeline entries={record.history} limit={6} />
+            ) : (
+              <EmptyState icon={Trophy} title="No activity yet" description="Check in daily to start building your history." />
             )}
           </>
         )}
