@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import { MiniAppAutoConnect } from "@/components/MiniAppAutoConnect";
+import { BottomNav } from "@/components/BottomNav";
 
 export const metadata: Metadata = {
   title: "MPGR HUB — The Home of MoneyPaiger Ecosystem",
@@ -21,10 +22,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className="min-h-screen bg-background antialiased">
+      <body className="min-h-screen bg-background pb-20 antialiased sm:pb-0">
         <Providers>
           <MiniAppAutoConnect />
           {children}
+          <BottomNav />
         </Providers>
       </body>
     </html>
