@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useAccount, useBalance, useReadContract } from "wagmi";
 import { base } from "wagmi/chains";
 import { motion } from "framer-motion";
@@ -9,15 +9,16 @@ import { Navbar } from "@/components/Navbar";
 import { StatCard } from "@/components/ui/StatCard";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { ProgressBar } from "@/components/ui/ProgressBar";
+import { AchievementCard } from "@/components/ui/AchievementCard";
+import { FloatingXP } from "@/components/ui/FloatingXP";
+import { LevelUpModal } from "@/components/ui/LevelUpModal";
+import { SectionHeader } from "@/components/ui/SectionHeader";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { AddressAvatar } from "@/components/AddressAvatar";
 import { useXP } from "@/hooks/useXP";
-import {
-  getLevelProgress,
-  getSeasonPoints,
-  getAchievements,
-} from "@/lib/xp-engine";
+import { getLevelProgress, getSeasonPoints, getAchievements } from "@/lib/xp-engine";
 import { erc20Abi } from "@/lib/erc20-abi";
-import { formatAddress, formatTokenAmount } from "@/lib/format";
+import { formatAddress, formatCompactNumber, formatTokenAmount } from "@/lib/format";
 
 const MPGR_TOKEN_ADDRESS = process.env.NEXT_PUBLIC_MPGR_TOKEN_ADDRESS as
   | `0x${string}`
@@ -26,7 +27,7 @@ const MPGR_TOKEN_ADDRESS = process.env.NEXT_PUBLIC_MPGR_TOKEN_ADDRESS as
 export default function DashboardPage() {
   const [mounted, setMounted] = useState(false);
   const { address, isConnected } = useAccount();
-  const { record, checkIn } = useXP();
+  const { record, checkIn, claim, lastEvent, leveledUp, dismissEvent, dismissLevelUp } = useXP();
   const [checkInMessage, setCheckInMessage] = useState<string | null>(null);
 
   useEffect(() => setMounted(true), []);
@@ -51,29 +52,30 @@ export default function DashboardPage() {
   const seasonPoints = record ? getSeasonPoints(record) : 0;
   const achievements = record ? getAchievements(record) : [];
 
-  const handleCheckIn = () => {
+  const handleCheckIn = useCallback(() => {
     const result = checkIn();
     if (!result) return;
     setCheckInMessage(
       result.alreadyCheckedIn
         ? "Already checked in today"
-        : `+${result.xpAwarded} XP — streak: ${result.record.streak} days`
+        : `+${result.xpGained} XP — streak: ${result.record.streak} days`
     );
     setTimeout(() => setCheckInMessage(null), 3000);
-  };
+  }, [checkIn]);
 
   return (
     <>
       <Navbar />
+      <FloatingXP amount={lastEvent?.amount ?? null} onComplete={dismissEvent} />
+      <LevelUpModal level={leveledUp} onClose={dismissLevelUp} />
+
       <main className="mx-auto max-w-6xl px-4 py-10">
         {!mounted || !isConnected ? (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="rounded-2xl border border-white/10 bg-white/[0.03] p-10 text-center text-muted"
-          >
-            Connect your wallet to view your dashboard.
-          </motion.div>
+          <EmptyState
+            icon={Wallet}
+            title="Connect your wallet"
+            description="Connect to view your MPGR HUB dashboard, XP, and rewards."
+          />
         ) : (
           <>
             <motion.div
@@ -82,10 +84,10 @@ export default function DashboardPage() {
               transition={{ duration: 0.4 }}
               className="flex flex-wrap items-center justify-between gap-4"
             >
-              <div className="flex items-center gap-4">
+              <div className="flex min-w-0 items-center gap-4">
                 <AddressAvatar address={address ?? ""} size={56} />
-                <div>
-                  <h1 className="text-xl font-semibold text-white">
+                <div className="min-w-0">
+                  <h1 className="truncate text-xl font-semibold text-white">
                     {formatAddress(address ?? "")}
                   </h1>
                   <p className="text-sm text-muted">Welcome back to MPGR HUB</p>
@@ -93,18 +95,14 @@ export default function DashboardPage() {
               </div>
               <button
                 onClick={handleCheckIn}
-                className="rounded-xl bg-gradient-premium px-5 py-2.5 text-sm font-semibold text-white shadow-glow-gold transition-transform hover:scale-[1.03]"
+                className="shrink-0 rounded-xl bg-gradient-premium px-5 py-2.5 text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
               >
                 Daily Check-In
               </button>
             </motion.div>
 
             {checkInMessage && (
-              <motion.p
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="mt-3 text-sm text-gold"
-              >
+              <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-3 text-sm text-gold">
                 {checkInMessage}
               </motion.p>
             )}
@@ -112,9 +110,11 @@ export default function DashboardPage() {
             {levelInfo && (
               <GlassCard className="mt-6 p-5">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className="text-sm font-medium text-white">Level {levelInfo.level}</span>
+                  <span className="text-sm font-medium text-white">
+                    Level {levelInfo.level} → {levelInfo.nextLevel}
+                  </span>
                   <span className="text-xs text-muted">
-                    {levelInfo.xpIntoLevel} / {levelInfo.xpNeededForLevel} XP
+                    {levelInfo.xpIntoLevel}/{levelInfo.xpNeededForLevel} XP ({levelInfo.progress}%)
                   </span>
                 </div>
                 <ProgressBar progress={levelInfo.progress} />
@@ -133,7 +133,7 @@ export default function DashboardPage() {
                 value={
                   MPGR_TOKEN_ADDRESS
                     ? mprBalance
-                      ? formatTokenAmount(mprBalance.toString(), 2)
+                      ? formatCompactNumber(Number(mprBalance))
                       : "0"
                     : "Not launched"
                 }
@@ -141,40 +141,31 @@ export default function DashboardPage() {
                 accent="gold"
                 loading={mprLoading}
               />
-              <StatCard label="XP" value={record ? String(record.xp) : "0"} icon={Trophy} loading={loading} />
+              <StatCard label="XP" value={formatCompactNumber(record?.xp ?? 0)} icon={Trophy} loading={loading} />
               <StatCard
                 label="Daily Streak"
                 value={record ? `${record.streak} days` : "0 days"}
                 icon={Flame}
                 loading={loading}
               />
-              <StatCard
-                label="Season Points"
-                value={String(seasonPoints)}
-                icon={Award}
-                accent="gold"
-                loading={loading}
-              />
-              <StatCard
-                label="Referrals"
-                value={record ? String(record.referralCount) : "0"}
-                icon={Users}
-                loading={loading}
-              />
+              <StatCard label="Season Points" value={formatCompactNumber(seasonPoints)} icon={Award} accent="gold" loading={loading} />
+              <StatCard label="Referrals" value={formatCompactNumber(record?.referralCount ?? 0)} icon={Users} loading={loading} />
             </div>
 
-            <h2 className="mt-8 mb-3 text-sm font-medium text-white">Achievements</h2>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              {achievements.map((achievement) => (
-                <GlassCard
-                  key={achievement.id}
-                  className={`p-4 ${achievement.unlocked ? "" : "opacity-40"}`}
-                >
-                  <p className="text-sm font-medium text-white">{achievement.label}</p>
-                  <p className="mt-1 text-xs text-muted">{achievement.description}</p>
-                </GlassCard>
-              ))}
-            </div>
+            <SectionHeader title="Achievements" />
+            {achievements.length === 0 ? (
+              <EmptyState icon={Award} title="No achievements yet" description="Start earning XP to unlock achievements." />
+            ) : (
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                {achievements.map((achievement) => (
+                  <AchievementCard
+                    key={achievement.id}
+                    achievement={achievement}
+                    onClaim={() => claim(achievement.id)}
+                  />
+                ))}
+              </div>
+            )}
           </>
         )}
       </main>
