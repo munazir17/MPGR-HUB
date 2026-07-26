@@ -2,7 +2,17 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 
-export function FloatingXP({ amount, onComplete }: { amount: number | null; onComplete: () => void }) {
+interface FloatingXPProps {
+  amount: number | null;
+  onComplete: () => void;
+  unit?: string;
+}
+
+export function FloatingXP({
+  amount,
+  onComplete,
+  unit = "XP",
+}: FloatingXPProps) {
   return (
     <AnimatePresence onExitComplete={onComplete}>
       {amount !== null && (
@@ -13,11 +23,13 @@ export function FloatingXP({ amount, onComplete }: { amount: number | null; onCo
           exit={{ opacity: 0, y: -70 }}
           transition={{ duration: 1.4, ease: "easeOut" }}
           onAnimationComplete={(def) => {
-            if (def === "animate") setTimeout(onComplete, 700);
+            if (def === "animate") {
+              setTimeout(onComplete, 700);
+            }
           }}
           className="pointer-events-none fixed left-1/2 top-24 z-[60] -translate-x-1/2 rounded-full bg-gradient-premium px-4 py-1.5 text-sm font-semibold text-white shadow-glow-gold"
         >
-          +{amount} XP
+          +{amount} {unit}
         </motion.div>
       )}
     </AnimatePresence>
