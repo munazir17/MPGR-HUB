@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useAccount, useBalance, useReadContract } from "wagmi";
 import { base } from "wagmi/chains";
+import { formatUnits } from "viem";
 import { motion } from "framer-motion";
 import { Coins, Flame, Trophy, Users, Wallet, Award } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
@@ -133,7 +134,7 @@ export default function DashboardPage() {
                 value={
                   MPGR_TOKEN_ADDRESS
                     ? mprBalance
-                      ? formatCompactNumber(Number(mprBalance))
+                      ? formatCompactNumber(Number(formatUnits(mprBalance, 18)))
                       : "0"
                     : "Not launched"
                 }
