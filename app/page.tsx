@@ -154,7 +154,7 @@ export default function DashboardPage() {
       <FloatingXP amount={lastEvent?.amount ?? null} onComplete={dismissEvent} />
       <LevelUpModal level={leveledUp} onClose={dismissLevelUp} />
 
-      <main className="mx-auto max-w-6xl px-4 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
         {!mounted || !isConnected ? (
           <EmptyState
             icon={Wallet}
@@ -166,48 +166,80 @@ export default function DashboardPage() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4 }}
-            className="space-y-8"
+            className="space-y-10 sm:space-y-12"
           >
-            {/* Header */}
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div className="flex min-w-0 items-center gap-4">
-                <AddressAvatar address={address ?? ""} size={56} />
-                <div className="min-w-0">
-                  <h1 className="truncate text-xl font-semibold text-white">
-                    {formatAddress(address ?? "")}
-                  </h1>
-                  <p className="text-sm text-muted">Welcome back to MPGR HUB</p>
-                </div>
-              </div>
-              <button
-                onClick={handleCheckIn}
-                className="shrink-0 rounded-xl bg-gradient-premium px-5 py-2.5 text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
-              >
-                Daily Check-In
-              </button>
-            </div>
+            {/* Hero */}
+            <div className="relative overflow-hidden rounded-3xl border border-white/[0.08] bg-white/[0.03] p-5 backdrop-blur-xl shadow-glow sm:p-7">
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute -left-16 -top-20 h-64 w-64 rounded-full bg-gradient-premium opacity-20 blur-3xl"
+              />
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute -bottom-24 -right-16 h-56 w-56 rounded-full bg-gradient-gold opacity-10 blur-3xl"
+              />
 
-            {checkInMessage && (
-              <motion.p
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="-mt-4 text-sm text-gold"
-              >
-                {checkInMessage}
-              </motion.p>
-            )}
+              <div className="relative flex flex-wrap items-center justify-between gap-4">
+                <div className="flex min-w-0 items-center gap-4">
+                  <div className="relative shrink-0">
+                    <div
+                      aria-hidden="true"
+                      className="absolute -inset-0.5 rounded-full bg-gradient-premium opacity-70 blur-[3px]"
+                    />
+                    <div className="relative rounded-full ring-2 ring-background">
+                      <AddressAvatar address={address ?? ""} size={56} />
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
+                      Welcome back
+                    </p>
+                    <h1 className="truncate text-xl font-bold tracking-tight text-white sm:text-2xl">
+                      {formatAddress(address ?? "")}
+                    </h1>
+                    {levelInfo && (
+                      <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5 text-[11px] font-semibold text-gold ring-1 ring-gold/20">
+                        <Award className="h-3 w-3" aria-hidden="true" />
+                        Level {levelInfo.level}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <motion.button
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleCheckIn}
+                  className="shrink-0 rounded-xl bg-gradient-premium px-5 py-2.5 text-sm font-semibold text-white shadow-glow-gold-lg transition-shadow"
+                >
+                  Daily Check-In
+                </motion.button>
+              </div>
+
+              {checkInMessage && (
+                <motion.p
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="relative mt-4 text-sm font-medium text-gold"
+                >
+                  {checkInMessage}
+                </motion.p>
+              )}
+            </div>
 
             {/* XP / Level progress */}
             {levelInfo && (
               <Link href="/games">
-                <GlassCard className="p-5">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="flex items-center gap-1.5 text-sm font-medium text-white">
-                      <Gamepad2 className="h-4 w-4 text-primary" aria-hidden="true" />
+                <GlassCard className="p-5 sm:p-6">
+                  <div className="mb-3 flex items-center justify-between">
+                    <span className="flex items-center gap-2 text-sm font-semibold text-white">
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-primary-glow/20 to-primary/10 ring-1 ring-primary/20">
+                        <Gamepad2 className="h-4 w-4 text-primary" aria-hidden="true" />
+                      </span>
                       Level {levelInfo.level} → {levelInfo.nextLevel}
                     </span>
                     <span className="flex items-center gap-1 text-xs text-muted">
-                      {levelInfo.xpIntoLevel}/{levelInfo.xpNeededForLevel} XP ({levelInfo.progress}%)
+                      {levelInfo.xpIntoLevel}/{levelInfo.xpNeededForLevel} XP
+                      <span className="font-semibold text-gradient-gold">({levelInfo.progress}%)</span>
                       <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
                     </span>
                   </div>
@@ -262,29 +294,30 @@ export default function DashboardPage() {
             {/* 2. Games Preview */}
             <div>
               <SectionHeader title="Games" subtitle="Play to earn XP and MPGR rewards" />
-              <GlassCard className="p-5">
+              <GlassCard className="p-5 sm:p-6">
                 <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
                   {MINI_GAMES.map((game) => {
                     const Icon = game.icon;
                     return (
-                      <div
+                      <motion.div
                         key={game.name}
-                        className="flex flex-col items-center gap-2 rounded-xl border border-white/5 bg-white/[0.02] p-3 text-center"
+                        whileHover={{ y: -2 }}
+                        className="flex flex-col items-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 text-center transition-colors duration-200 hover:border-primary/20 hover:bg-white/[0.05]"
                       >
-                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
+                        <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-primary-glow/20 to-primary/10 ring-1 ring-primary/15">
                           <Icon className="h-5 w-5 text-primary" aria-hidden="true" />
                         </div>
                         <p className="text-[11px] font-medium leading-tight text-white">{game.name}</p>
-                        <span className="rounded-full bg-surface px-2 py-0.5 text-[9px] text-muted">
+                        <span className="rounded-full bg-surface px-2 py-0.5 text-[9px] font-medium text-muted">
                           Soon
                         </span>
-                      </div>
+                      </motion.div>
                     );
                   })}
                 </div>
                 <Link
                   href="/games"
-                  className="mt-4 flex min-h-[44px] w-full items-center justify-center rounded-xl bg-gradient-premium text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
+                  className="mt-5 flex min-h-[44px] w-full items-center justify-center rounded-xl bg-gradient-premium text-sm font-semibold text-white shadow-glow-gold transition-transform duration-200 hover:scale-[1.01] active:scale-95"
                 >
                   Play Now
                 </Link>
@@ -294,7 +327,7 @@ export default function DashboardPage() {
             {/* 3. Leaderboard Preview */}
             <div>
               <SectionHeader title="Leaderboard" subtitle="See where you rank this season" />
-              <GlassCard className="p-4">
+              <GlassCard className="p-4 sm:p-5">
                 {record ? (
                   <>
                     <LeaderboardRow
@@ -316,7 +349,7 @@ export default function DashboardPage() {
                 )}
                 <Link
                   href="/leaderboard"
-                  className="mt-4 flex min-h-[40px] w-full items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-xs font-semibold text-white transition-colors hover:bg-white/[0.06]"
+                  className="mt-4 flex min-h-[40px] w-full items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-xs font-semibold text-white transition-colors duration-200 hover:bg-white/[0.06]"
                 >
                   View Leaderboard
                 </Link>
@@ -326,42 +359,42 @@ export default function DashboardPage() {
             {/* 4. MPGR Agent Preview */}
             <div>
               <SectionHeader title="MPGR Agent" subtitle="Your AI assistant for MPGR HUB" />
-              <GlassCard className="relative overflow-hidden p-5">
+              <GlassCard className="relative overflow-hidden p-5 sm:p-6">
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute -left-10 -top-10 h-40 w-40 rounded-full bg-gradient-premium opacity-20 blur-3xl"
+                  className="pointer-events-none absolute -left-12 -top-12 h-44 w-44 rounded-full bg-gradient-premium opacity-20 blur-3xl animate-glow-pulse"
                 />
                 <div className="relative flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-premium shadow-glow-gold">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-premium shadow-glow-gold-lg">
                       <Bot className="h-5 w-5 text-white" aria-hidden="true" />
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-white">MPGR Agent</p>
-                      <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] text-muted">
+                      <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-medium text-muted">
                         Coming Soon
                       </span>
                     </div>
                   </div>
                   <Link
                     href="/agent"
-                    className="flex min-h-[36px] shrink-0 items-center gap-1 rounded-xl bg-gradient-premium px-3 py-1.5 text-xs font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
+                    className="flex min-h-[36px] shrink-0 items-center gap-1 rounded-xl bg-gradient-premium px-3.5 py-1.5 text-xs font-semibold text-white shadow-glow-gold transition-transform duration-200 hover:scale-[1.03] active:scale-95"
                   >
                     Open Agent
                     <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
                   </Link>
                 </div>
 
-                <div className="relative mt-5 grid grid-cols-3 gap-3 text-center">
-                  <div>
+                <div className="relative mt-6 grid grid-cols-3 gap-3 text-center">
+                  <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] py-3">
                     <TrendingUp className="mx-auto h-4 w-4 text-primary" aria-hidden="true" />
                     <p className="mt-1.5 text-[10px] leading-tight text-muted">Portfolio Analysis</p>
                   </div>
-                  <div>
+                  <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] py-3">
                     <Eye className="mx-auto h-4 w-4 text-primary" aria-hidden="true" />
                     <p className="mt-1.5 text-[10px] leading-tight text-muted">Whale Tracking</p>
                   </div>
-                  <div>
+                  <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] py-3">
                     <Bell className="mx-auto h-4 w-4 text-primary" aria-hidden="true" />
                     <p className="mt-1.5 text-[10px] leading-tight text-muted">Smart Alerts</p>
                   </div>
@@ -375,9 +408,9 @@ export default function DashboardPage() {
                 title="Recent Activity"
                 subtitle="Your latest XP, reward, and staking actions"
               />
-              <GlassCard className="divide-y divide-white/5 p-0">
-                <div className="flex items-center gap-3 p-4">
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
+              <GlassCard className="divide-y divide-white/[0.06] p-0">
+                <div className="flex items-center gap-3 p-4 transition-colors duration-200 hover:bg-white/[0.02]">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary-glow/20 to-primary/10 ring-1 ring-primary/15">
                     <Sparkles className="h-4 w-4 text-primary" aria-hidden="true" />
                   </div>
                   <div className="min-w-0 flex-1">
@@ -389,12 +422,12 @@ export default function DashboardPage() {
                     )}
                   </div>
                   {lastXPEntry && (
-                    <span className="shrink-0 text-sm font-semibold text-gold">+{lastXPEntry.xp} XP</span>
+                    <span className="shrink-0 text-sm font-semibold text-gradient-gold">+{lastXPEntry.xp} XP</span>
                   )}
                 </div>
 
-                <div className="flex items-center gap-3 p-4">
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gold/10">
+                <div className="flex items-center gap-3 p-4 transition-colors duration-200 hover:bg-white/[0.02]">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-gold-glow/20 to-gold/10 ring-1 ring-gold/15">
                     <Gift className="h-4 w-4 text-gold" aria-hidden="true" />
                   </div>
                   <div className="min-w-0 flex-1">
@@ -406,14 +439,14 @@ export default function DashboardPage() {
                     )}
                   </div>
                   {lastRewardClaim && (
-                    <span className="shrink-0 text-sm font-semibold text-gold">
+                    <span className="shrink-0 text-sm font-semibold text-gradient-gold">
                       +{formatCompactNumber(lastRewardClaim.amount)} MPGR
                     </span>
                   )}
                 </div>
 
-                <div className="flex items-center gap-3 p-4">
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                <div className="flex items-center gap-3 p-4 transition-colors duration-200 hover:bg-white/[0.02]">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary-glow/20 to-primary/10 ring-1 ring-primary/15">
                     {lastStakingTx ? (
                       (() => {
                         const Icon = STAKING_TX_ICON[lastStakingTx.type];
@@ -432,7 +465,7 @@ export default function DashboardPage() {
                     )}
                   </div>
                   {lastStakingTx && (
-                    <span className="shrink-0 text-sm font-semibold text-gold">
+                    <span className="shrink-0 text-sm font-semibold text-gradient-gold">
                       {lastStakingTx.type === "stake" ? "-" : "+"}
                       {formatCompactNumber(lastStakingTx.amount)} MPGR
                     </span>
