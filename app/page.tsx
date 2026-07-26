@@ -1,23 +1,25 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
 import { useAccount, useBalance, useReadContract } from "wagmi";
 import { base } from "wagmi/chains";
 import { formatUnits } from "viem";
 import { motion } from "framer-motion";
-import { Coins, Flame, Trophy, Users, Wallet, Award } from "lucide-react";
+import { Coins, Flame, Trophy, Users, Wallet, Award, Gamepad2, ArrowUpRight } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { StatCard } from "@/components/ui/StatCard";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { ProgressBar } from "@/components/ui/ProgressBar";
-import { AchievementCard } from "@/components/ui/AchievementCard";
+import { StakingSummaryCard } from "@/components/ui/StakingSummaryCard";
 import { FloatingXP } from "@/components/ui/FloatingXP";
 import { LevelUpModal } from "@/components/ui/LevelUpModal";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { AddressAvatar } from "@/components/AddressAvatar";
 import { useXP } from "@/hooks/useXP";
-import { getLevelProgress, getSeasonPoints, getAchievements } from "@/lib/xp-engine";
+import { useStaking } from "@/hooks/useStaking";
+import { getLevelProgress, getSeasonPoints } from "@/lib/xp-engine";
 import { erc20Abi } from "@/lib/erc20-abi";
 import { formatAddress, formatCompactNumber, formatTokenAmount } from "@/lib/format";
 
@@ -28,7 +30,8 @@ const MPGR_TOKEN_ADDRESS = process.env.NEXT_PUBLIC_MPGR_TOKEN_ADDRESS as
 export default function DashboardPage() {
   const [mounted, setMounted] = useState(false);
   const { address, isConnected } = useAccount();
-  const { record, checkIn, claim, lastEvent, leveledUp, dismissEvent, dismissLevelUp } = useXP();
+  const { record, checkIn, lastEvent, leveledUp, dismissEvent, dismissLevelUp } = useXP();
+  const { totalStaked, totalClaimableRewards, activePositionsCount, loading: stakingLoading } = useStaking();
   const [checkInMessage, setCheckInMessage] = useState<string | null>(null);
 
   useEffect(() => setMounted(true), []);
@@ -51,7 +54,6 @@ export default function DashboardPage() {
   const loading = !mounted || (isConnected && !record);
   const levelInfo = record ? getLevelProgress(record.xp) : null;
   const seasonPoints = record ? getSeasonPoints(record) : 0;
-  const achievements = record ? getAchievements(record) : [];
 
   const handleCheckIn = useCallback(() => {
     const result = checkIn();
@@ -109,17 +111,21 @@ export default function DashboardPage() {
             )}
 
             {levelInfo && (
-              <GlassCard className="mt-6 p-5">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-sm font-medium text-white">
-                    Level {levelInfo.level} → {levelInfo.nextLevel}
-                  </span>
-                  <span className="text-xs text-muted">
-                    {levelInfo.xpIntoLevel}/{levelInfo.xpNeededForLevel} XP ({levelInfo.progress}%)
-                  </span>
-                </div>
-                <ProgressBar progress={levelInfo.progress} />
-              </GlassCard>
+              <Link href="/games" className="mt-6 block">
+                <GlassCard className="p-5">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-white">
+                      <Gamepad2 className="h-4 w-4 text-primary" aria-hidden="true" />
+                      Level {levelInfo.level} → {levelInfo.nextLevel}
+                    </span>
+                    <span className="flex items-center gap-1 text-xs text-muted">
+                      {levelInfo.xpIntoLevel}/{levelInfo.xpNeededForLevel} XP ({levelInfo.progress}%)
+                      <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+                    </span>
+                  </div>
+                  <ProgressBar progress={levelInfo.progress} />
+                </GlassCard>
+              </Link>
             )}
 
             <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
@@ -153,20 +159,29 @@ export default function DashboardPage() {
               <StatCard label="Referrals" value={formatCompactNumber(record?.referralCount ?? 0)} icon={Users} loading={loading} />
             </div>
 
-            <SectionHeader title="Achievements" />
-            {achievements.length === 0 ? (
-              <EmptyState icon={Award} title="No achievements yet" description="Start earning XP to unlock achievements." />
-            ) : (
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                {achievements.map((achievement) => (
-                  <AchievementCard
-                    key={achievement.id}
-                    achievement={achievement}
-                    onClaim={() => claim(achievement.id)}
-                  />
-                ))}
-              </div>
-            )}
+            <SectionHeader title="Staking" />
+            <StakingSummaryCard
+              totalStaked={totalStaked}
+              totalClaimableRewards={totalClaimableRewards}
+              activePositionsCount={activePositionsCount}
+              loading={stakingLoading}
+            />
+
+            <SectionHeader title="Games" />
+            <Link href="/games">
+              <GlassCard className="flex items-center justify-between gap-3 p-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
+                    <Award className="h-4 w-4 text-primary" aria-hidden="true" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-white">Achievements &amp; Leveling</p>
+                    <p className="text-[11px] text-muted">View your badges and progress</p>
+                  </div>
+                </div>
+                <ArrowUpRight className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
+              </GlassCard>
+            </Link>
           </>
         )}
       </main>
