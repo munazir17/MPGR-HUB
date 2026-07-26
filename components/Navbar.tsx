@@ -10,6 +10,7 @@ const NAV_LINKS = [
   { href: "/", label: "Home" },
   { href: "/season", label: "Season" },
   { href: "/rewards", label: "Rewards" },
+  { href: "/staking", label: "Staking" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/profile", label: "Profile" },
 ];
@@ -42,7 +43,7 @@ export function Navbar() {
                 className={clsx(
                   "text-sm transition-colors",
                   pathname === link.href
-                    ? "text-white"
+                    ? "text-white font-semibold"
                     : "text-muted hover:text-white"
                 )}
               >
