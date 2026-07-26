@@ -11,6 +11,7 @@ const NAV_LINKS = [
   { href: "/season", label: "Season" },
   { href: "/rewards", label: "Rewards" },
   { href: "/staking", label: "Staking" },
+  { href: "/token-lock", label: "Token Lock" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/profile", label: "Profile" },
 ];
@@ -35,7 +36,7 @@ export function Navbar() {
             MPGR <span className="text-gradient-premium">HUB</span>
           </Link>
 
-          <nav className="hidden gap-5 sm:flex">
+          <nav className="hidden gap-5 overflow-x-auto sm:flex">
             {NAV_LINKS.map((link) => {
               const isActive = pathname === link.href;
               return (
@@ -43,7 +44,7 @@ export function Navbar() {
                   key={link.href}
                   href={link.href}
                   className={clsx(
-                    "relative py-1 text-sm transition-colors duration-200",
+                    "relative shrink-0 py-1 text-sm transition-colors duration-200",
                     isActive ? "font-semibold text-white" : "text-muted hover:text-white"
                   )}
                 >
