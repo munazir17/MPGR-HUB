@@ -54,7 +54,7 @@ export function LockHistoryTimeline({ positions, limit = 12 }: LockHistoryTimeli
               <span className="shrink-0 text-[11px] font-semibold text-gold">
                 {STATUS_LABEL[position.status]}
               </span>
-            </GlassCard>
+            </motion.div>
           </motion.div>
         );
       })}
