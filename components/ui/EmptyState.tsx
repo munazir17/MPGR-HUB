@@ -16,17 +16,21 @@ export function EmptyState({ icon: Icon, title, description, ctaLabel, onCta }: 
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      className="flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03] px-6 py-12 text-center"
+      className="relative overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] px-6 py-16 text-center backdrop-blur-xl shadow-glow"
     >
-      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
-        <Icon className="h-6 w-6 text-primary" />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute left-1/2 top-0 h-56 w-56 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gradient-premium opacity-20 blur-3xl animate-glow-pulse"
+      />
+      <div className="relative mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-primary-glow/20 to-primary/10 ring-1 ring-primary/25 shadow-glow animate-float mx-auto">
+        <Icon className="h-7 w-7 text-primary" />
       </div>
-      <p className="text-sm font-medium text-white">{title}</p>
-      <p className="mt-1 max-w-xs text-xs text-muted">{description}</p>
+      <p className="relative text-base font-semibold text-white">{title}</p>
+      <p className="relative mx-auto mt-2 max-w-xs text-sm text-muted">{description}</p>
       {ctaLabel && onCta && (
         <button
           onClick={onCta}
-          className="mt-4 rounded-xl bg-gradient-premium px-4 py-2 text-xs font-semibold text-white"
+          className="relative mt-6 rounded-xl bg-gradient-premium px-5 py-2.5 text-xs font-semibold text-white shadow-glow-gold transition-transform duration-200 hover:scale-[1.03] active:scale-95"
         >
           {ctaLabel}
         </button>
