@@ -8,10 +8,12 @@ import {
   estimateRewards,
   getAvailableBalance,
   getStakingPositions,
+  getStakingState,
   stake as stakeAction,
   unstake as unstakeAction,
   type LockDurationDays,
   type StakingPositionView,
+  type StakingTransaction,
 } from "@/lib/staking-engine";
 
 interface StakeEvent {
@@ -22,6 +24,7 @@ interface StakeEvent {
 export function useStaking() {
   const { address, isConnected } = useAccount();
   const [positions, setPositions] = useState<StakingPositionView[]>([]);
+  const [transactions, setTransactions] = useState<StakingTransaction[]>([]);
   const [availableBalance, setAvailableBalance] = useState(0);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,11 +34,17 @@ export function useStaking() {
     if (!address) return;
     setPositions(getStakingPositions(address));
     setAvailableBalance(getAvailableBalance(address));
+    setTransactions(
+      [...getStakingState(address).transactions].sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      )
+    );
   }, [address]);
 
   useEffect(() => {
     if (!isConnected || !address) {
       setPositions([]);
+      setTransactions([]);
       setAvailableBalance(0);
       setHasLoaded(false);
       return;
@@ -58,7 +67,11 @@ export function useStaking() {
 
   const totalClaimableRewards = positions.reduce((sum, p) => sum + p.claimableReward, 0);
 
+  const activePositionsCount = positions.filter((p) => p.status !== "unstaked").length;
+
   const stake = useCallback(
+    // Phase 2B swap point: once the staking contract exists on Base, this
+    // becomes `await writeContractAsync({ ...stakeCall })`.
     (amount: number, lockDurationDays: LockDurationDays) => {
       if (!address) return;
       setError(null);
@@ -67,11 +80,10 @@ export function useStaking() {
         setError(result.error ?? "Unable to stake right now.");
         return;
       }
-      setPositions(getStakingPositions(address));
-      setAvailableBalance(getAvailableBalance(address));
+      refresh();
       if (result.amount) setLastEvent({ amount: result.amount, id: Date.now() });
     },
-    [address]
+    [address, refresh]
   );
 
   const claimReward = useCallback(
@@ -83,14 +95,14 @@ export function useStaking() {
         setError(result.error ?? "Unable to claim reward right now.");
         return;
       }
-      setPositions(getStakingPositions(address));
-      setAvailableBalance(getAvailableBalance(address));
+      refresh();
       if (result.amount) setLastEvent({ amount: result.amount, id: Date.now() });
     },
-    [address]
+    [address, refresh]
   );
 
   const unstake = useCallback(
+    // Phase 2B swap point: replace with an awaited unstake contract call.
     (positionId: string) => {
       if (!address) return;
       setError(null);
@@ -99,11 +111,10 @@ export function useStaking() {
         setError(result.error ?? "Unable to unstake right now.");
         return;
       }
-      setPositions(getStakingPositions(address));
-      setAvailableBalance(getAvailableBalance(address));
+      refresh();
       if (result.amount) setLastEvent({ amount: result.amount, id: Date.now() });
     },
-    [address]
+    [address, refresh]
   );
 
   const dismissError = useCallback(() => setError(null), []);
@@ -113,9 +124,11 @@ export function useStaking() {
     lockOptions: LOCK_OPTIONS,
     estimateRewards,
     positions,
+    transactions,
     availableBalance,
     totalStaked,
     totalClaimableRewards,
+    activePositionsCount,
     error,
     lastEvent,
     stake,
