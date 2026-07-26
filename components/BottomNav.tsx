@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
-import { Home, Sparkles, Trophy, User } from "lucide-react";
+import { Home, Sparkles, Gift, Trophy, User } from "lucide-react";
 import { clsx } from "clsx";
 
 const TABS = [
   { href: "/", label: "Home", icon: Home },
   { href: "/season", label: "Season", icon: Sparkles },
+  { href: "/rewards", label: "Rewards", icon: Gift },
   { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
   { href: "/profile", label: "Profile", icon: User },
 ];
@@ -22,10 +23,11 @@ export function BottomNav() {
       className="fixed inset-x-0 bottom-0 z-50 border-t border-white/10 bg-background/90 backdrop-blur-xl sm:hidden"
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
-      <div className="grid grid-cols-4">
+      <div className="grid grid-cols-5">
         {TABS.map((tab) => {
           const active = pathname === tab.href;
           const Icon = tab.icon;
+
           return (
             <Link
               key={tab.href}
@@ -41,12 +43,20 @@ export function BottomNav() {
                   transition={{ type: "spring", stiffness: 300, damping: 30 }}
                 />
               )}
+
               <Icon className={clsx("h-5 w-5", active && "text-primary")} />
-              <span className={clsx("text-[10px]", active && "font-medium text-white")}>{tab.label}</span>
+
+              <span
+                className={clsx(
+                  "text-[10px]",
+                  active && "font-medium text-white"
+                )}
+              >
+                {tab.label}
+              </span>
             </Link>
           );
         })}
       </div>
     </nav>
   );
-}
