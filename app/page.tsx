@@ -30,12 +30,18 @@ import {
   Gem,
   Sparkles,
   Gift,
+  Vault,
+  PieChart,
+  Lock as LockIcon,
+  Users2,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { StatCard } from "@/components/ui/StatCard";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { StakingSummaryCard } from "@/components/ui/StakingSummaryCard";
+import { TokenLockSummaryCard } from "@/components/ui/TokenLockSummaryCard";
+import { QuickActions } from "@/components/ui/QuickActions";
 import { LeaderboardRow } from "@/components/ui/LeaderboardRow";
 import { FloatingXP } from "@/components/ui/FloatingXP";
 import { LevelUpModal } from "@/components/ui/LevelUpModal";
@@ -45,7 +51,8 @@ import { AddressAvatar } from "@/components/AddressAvatar";
 import { useXP } from "@/hooks/useXP";
 import { useStaking } from "@/hooks/useStaking";
 import { useRewards } from "@/hooks/useRewards";
-import { getLevelProgress, getSeasonPoints, XP_ACTIONS } from "@/lib/xp-engine";
+import { useTokenLock } from "@/hooks/useTokenLock";
+import { getLevelProgress, getSeasonPoints, getSeasonNumber, XP_ACTIONS } from "@/lib/xp-engine";
 import { getRewardState } from "@/lib/rewards-engine";
 import { erc20Abi } from "@/lib/erc20-abi";
 import {
@@ -80,6 +87,18 @@ const STAKING_TX_ICON: Record<string, typeof ArrowUpCircle> = {
   claim: Coins,
 };
 
+const LOCK_TX_LABEL: Record<string, string> = {
+  lock: "Locked MPGR",
+  release: "Released Lock",
+  early_unlock: "Early Unlocked MPGR",
+};
+
+const LOCK_TX_ICON: Record<string, typeof ArrowUpCircle> = {
+  lock: ArrowUpCircle,
+  release: ArrowDownCircle,
+  early_unlock: ArrowDownCircle,
+};
+
 export default function DashboardPage() {
   const [mounted, setMounted] = useState(false);
   const { address, isConnected } = useAccount();
@@ -91,7 +110,14 @@ export default function DashboardPage() {
     transactions: stakingTransactions,
     loading: stakingLoading,
   } = useStaking();
-  const { claims: rewardClaims } = useRewards();
+  const {
+    totalLocked,
+    activeLocksCount,
+    upcomingUnlockAt,
+    transactions: lockTransactions,
+    loading: lockLoading,
+  } = useTokenLock();
+  const { claims: rewardClaims, claimableTotal, loading: rewardsLoading } = useRewards();
   const [checkInMessage, setCheckInMessage] = useState<string | null>(null);
 
   useEffect(() => setMounted(true), []);
@@ -114,6 +140,11 @@ export default function DashboardPage() {
   const loading = !mounted || (isConnected && !record);
   const levelInfo = record ? getLevelProgress(record.xp) : null;
   const seasonPoints = record ? getSeasonPoints(record) : 0;
+  const seasonNumber = getSeasonNumber();
+
+  const walletMPGR = MPGR_TOKEN_ADDRESS && mprBalance ? Number(formatUnits(mprBalance, 18)) : 0;
+  const totalMPGR = walletMPGR + totalStaked + totalLocked;
+  const portfolioLoading = mprLoading || stakingLoading || lockLoading;
 
   const handleCheckIn = useCallback(() => {
     const result = checkIn();
@@ -127,7 +158,8 @@ export default function DashboardPage() {
   }, [checkIn]);
 
   // Recent Activity — derived from real, already-persisted data sources
-  // (XP history, reward claim history, staking transactions). No mock data.
+  // (XP history, reward claim history, staking transactions, lock
+  // transactions). No mock data.
   const lastXPEntry =
     record && record.history.length > 0
       ? [...record.history].sort(
@@ -147,6 +179,7 @@ export default function DashboardPage() {
   })();
 
   const lastStakingTx = stakingTransactions[0] ?? null;
+  const lastLockTx = lockTransactions[0] ?? null;
 
   return (
     <>
@@ -226,6 +259,50 @@ export default function DashboardPage() {
               )}
             </div>
 
+            {/* Quick Actions */}
+            <div>
+              <SectionHeader title="Quick Actions" subtitle="Jump straight into what you came here for" />
+              <QuickActions />
+            </div>
+
+            {/* Portfolio Overview */}
+            <div>
+              <SectionHeader
+                title="Portfolio Overview"
+                subtitle="Your MPGR across wallet, staking, and locks"
+              />
+              <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
+                <StatCard
+                  label="Total MPGR"
+                  value={
+                    MPGR_TOKEN_ADDRESS ? formatCompactNumber(totalMPGR) : "Not launched"
+                  }
+                  icon={PieChart}
+                  accent="gold"
+                  loading={portfolioLoading}
+                />
+                <StatCard
+                  label="Staked MPGR"
+                  value={formatCompactNumber(totalStaked)}
+                  icon={Coins}
+                  loading={stakingLoading}
+                />
+                <StatCard
+                  label="Locked MPGR"
+                  value={formatCompactNumber(totalLocked)}
+                  icon={LockIcon}
+                  loading={lockLoading}
+                />
+                <StatCard
+                  label="Claimable Rewards"
+                  value={formatCompactNumber(claimableTotal)}
+                  icon={Gift}
+                  accent="gold"
+                  loading={rewardsLoading}
+                />
+              </div>
+            </div>
+
             {/* XP / Level progress */}
             {levelInfo && (
               <Link href="/games">
@@ -247,6 +324,25 @@ export default function DashboardPage() {
                 </GlassCard>
               </Link>
             )}
+
+            {/* Season Progress */}
+            <Link href="/rewards">
+              <GlassCard className="p-5 sm:p-6">
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-sm font-semibold text-white">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-gold-glow/20 to-gold/10 ring-1 ring-gold/20">
+                      <Award className="h-4 w-4 text-gold" aria-hidden="true" />
+                    </span>
+                    Season {seasonNumber} Progress
+                  </span>
+                  <span className="flex items-center gap-1 text-xs text-muted">
+                    {formatCompactNumber(seasonPoints)}/1,000 pts
+                    <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                </div>
+                <ProgressBar progress={Math.min(100, Math.round((seasonPoints / 1000) * 100))} />
+              </GlassCard>
+            </Link>
 
             {/* Wallet & stats */}
             <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
@@ -280,18 +376,58 @@ export default function DashboardPage() {
               <StatCard label="Referrals" value={formatCompactNumber(record?.referralCount ?? 0)} icon={Users} loading={loading} />
             </div>
 
-            {/* 1. Staking Summary */}
+            {/* 1. Staking + Token Lock Summary */}
             <div>
-              <SectionHeader title="Staking" subtitle="Your locked MPGR at a glance" />
-              <StakingSummaryCard
-                totalStaked={totalStaked}
-                totalClaimableRewards={totalClaimableRewards}
-                activePositionsCount={activePositionsCount}
-                loading={stakingLoading}
-              />
+              <SectionHeader title="Staking & Token Lock" subtitle="Your locked and staked MPGR at a glance" />
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <StakingSummaryCard
+                  totalStaked={totalStaked}
+                  totalClaimableRewards={totalClaimableRewards}
+                  activePositionsCount={activePositionsCount}
+                  loading={stakingLoading}
+                />
+                <TokenLockSummaryCard
+                  totalLocked={totalLocked}
+                  activeLocksCount={activeLocksCount}
+                  upcomingUnlockAt={upcomingUnlockAt}
+                  loading={lockLoading}
+                />
+              </div>
             </div>
 
-            {/* 2. Games Preview */}
+            {/* 2. Weekly Community Reward Pool */}
+            <div>
+              <SectionHeader
+                title="Weekly Community Reward Pool"
+                subtitle="Shared MPGR rewards distributed to the community"
+              />
+              <GlassCard className="relative overflow-hidden p-5 sm:p-6">
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute -left-12 -top-12 h-44 w-44 rounded-full bg-gradient-gold opacity-10 blur-3xl"
+                />
+                <div className="relative flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-gold shadow-glow-gold">
+                      <Users2 className="h-5 w-5 text-background" aria-hidden="true" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-white">Community Pool</p>
+                      <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-medium text-muted">
+                        Coming Soon
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <p className="relative mt-4 text-xs leading-relaxed text-muted">
+                  A weekly MPGR pool shared across active community members is planned for a future
+                  release. Once live, your share here will be based on real on-chain activity —
+                  no placeholder numbers until then.
+                </p>
+              </GlassCard>
+            </div>
+
+            {/* 3. Games Preview */}
             <div>
               <SectionHeader title="Games" subtitle="Play to earn XP and MPGR rewards" />
               <GlassCard className="p-5 sm:p-6">
@@ -324,7 +460,7 @@ export default function DashboardPage() {
               </GlassCard>
             </div>
 
-            {/* 3. Leaderboard Preview */}
+            {/* 4. Leaderboard Preview */}
             <div>
               <SectionHeader title="Leaderboard" subtitle="See where you rank this season" />
               <GlassCard className="p-4 sm:p-5">
@@ -356,7 +492,7 @@ export default function DashboardPage() {
               </GlassCard>
             </div>
 
-            {/* 4. MPGR Agent Preview */}
+            {/* 5. MPGR Agent Preview */}
             <div>
               <SectionHeader title="MPGR Agent" subtitle="Your AI assistant for MPGR HUB" />
               <GlassCard className="relative overflow-hidden p-5 sm:p-6">
@@ -402,11 +538,11 @@ export default function DashboardPage() {
               </GlassCard>
             </div>
 
-            {/* 5. Recent Activity */}
+            {/* 6. Recent Activity */}
             <div>
               <SectionHeader
                 title="Recent Activity"
-                subtitle="Your latest XP, reward, and staking actions"
+                subtitle="Your latest XP, reward, staking, and lock actions"
               />
               <GlassCard className="divide-y divide-white/[0.06] p-0">
                 <div className="flex items-center gap-3 p-4 transition-colors duration-200 hover:bg-white/[0.02]">
@@ -468,6 +604,33 @@ export default function DashboardPage() {
                     <span className="shrink-0 text-sm font-semibold text-gradient-gold">
                       {lastStakingTx.type === "stake" ? "-" : "+"}
                       {formatCompactNumber(lastStakingTx.amount)} MPGR
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3 p-4 transition-colors duration-200 hover:bg-white/[0.02]">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-gold-glow/20 to-gold/10 ring-1 ring-gold/15">
+                    {lastLockTx ? (
+                      (() => {
+                        const Icon = LOCK_TX_ICON[lastLockTx.type];
+                        return <Icon className="h-4 w-4 text-gold" aria-hidden="true" />;
+                      })()
+                    ) : (
+                      <Vault className="h-4 w-4 text-gold" aria-hidden="true" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-white">
+                      {lastLockTx ? LOCK_TX_LABEL[lastLockTx.type] : "No lock activity yet"}
+                    </p>
+                    {lastLockTx && (
+                      <p className="text-[11px] text-muted">{formatRelativeTime(lastLockTx.timestamp)}</p>
+                    )}
+                  </div>
+                  {lastLockTx && (
+                    <span className="shrink-0 text-sm font-semibold text-gradient-gold">
+                      {lastLockTx.type === "lock" ? "-" : "+"}
+                      {formatCompactNumber(lastLockTx.amount)} MPGR
                     </span>
                   )}
                 </div>
