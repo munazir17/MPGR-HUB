@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAccount } from "wagmi";
 import { motion } from "framer-motion";
-import { Gift, Coins, Trophy, Sparkles, Flag, HelpCircle } from "lucide-react";
+import { Gift, Coins, Trophy, Sparkles, Flag, HelpCircle, History } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { StatCard } from "@/components/ui/StatCard";
@@ -18,7 +18,7 @@ import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
 import { useRewards } from "@/hooks/useRewards";
 import { useXP } from "@/hooks/useXP";
 import { getSeasonEnd, getSeasonNumber, getSeasonPoints } from "@/lib/xp-engine";
-import { formatCompactNumber } from "@/lib/format";
+import { formatCompactNumber, formatRelativeTime } from "@/lib/format";
 
 const SEASON_MILESTONES = [250, 500, 1000];
 
@@ -29,6 +29,7 @@ export default function RewardsPage() {
     claims,
     claimableTotal,
     totalClaimed,
+    claimHistory,
     claim,
     claimAll,
     lastClaimEvent,
@@ -124,6 +125,44 @@ export default function RewardsPage() {
                 {claims.map((reward) => (
                   <RewardClaimCard key={reward.id} reward={reward} onClaim={() => claim(reward.id)} />
                 ))}
+              </div>
+            )}
+
+            <SectionHeader title="Claim History" subtitle="Newest first" />
+            {loading ? (
+              <SkeletonCard lines={3} />
+            ) : claimHistory.length === 0 ? (
+              <EmptyState
+                icon={History}
+                title="No claims yet"
+                description="Rewards you claim will show up here with the date and amount."
+              />
+            ) : (
+              <div className="space-y-2">
+                {claimHistory.slice(0, 12).map((entry, i) => {
+                  const title = claims.find((c) => c.id === entry.rewardId)?.title ?? "Reward Claimed";
+                  return (
+                    <motion.div
+                      key={`${entry.rewardId}-${entry.timestamp}`}
+                      initial={{ opacity: 0, x: -8 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: Math.min(i, 8) * 0.03 }}
+                    >
+                      <GlassCard className="flex items-center gap-3 p-3">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gold/10">
+                          <Gift className="h-4 w-4 text-gold" aria-hidden="true" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm text-white">{title}</p>
+                          <p className="text-[11px] text-muted">{formatRelativeTime(entry.timestamp)}</p>
+                        </div>
+                        <span className="shrink-0 text-sm font-semibold text-gold">
+                          +{formatCompactNumber(entry.amount)} MPGR
+                        </span>
+                      </GlassCard>
+                    </motion.div>
+                  );
+                })}
               </div>
             )}
 
