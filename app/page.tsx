@@ -6,12 +6,37 @@ import { useAccount, useBalance, useReadContract } from "wagmi";
 import { base } from "wagmi/chains";
 import { formatUnits } from "viem";
 import { motion } from "framer-motion";
-import { Coins, Flame, Trophy, Users, Wallet, Award, Gamepad2, ArrowUpRight } from "lucide-react";
+import {
+  Coins,
+  Flame,
+  Trophy,
+  Users,
+  Wallet,
+  Award,
+  Gamepad2,
+  ArrowUpRight,
+  ArrowUpCircle,
+  ArrowDownCircle,
+  History,
+  Bot,
+  Bell,
+  Eye,
+  TrendingUp,
+  LineChart,
+  Dices,
+  Brain,
+  Zap,
+  HelpCircle,
+  Gem,
+  Sparkles,
+  Gift,
+} from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { StatCard } from "@/components/ui/StatCard";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { StakingSummaryCard } from "@/components/ui/StakingSummaryCard";
+import { LeaderboardRow } from "@/components/ui/LeaderboardRow";
 import { FloatingXP } from "@/components/ui/FloatingXP";
 import { LevelUpModal } from "@/components/ui/LevelUpModal";
 import { SectionHeader } from "@/components/ui/SectionHeader";
@@ -19,19 +44,54 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { AddressAvatar } from "@/components/AddressAvatar";
 import { useXP } from "@/hooks/useXP";
 import { useStaking } from "@/hooks/useStaking";
-import { getLevelProgress, getSeasonPoints } from "@/lib/xp-engine";
+import { useRewards } from "@/hooks/useRewards";
+import { getLevelProgress, getSeasonPoints, XP_ACTIONS } from "@/lib/xp-engine";
+import { getRewardState } from "@/lib/rewards-engine";
 import { erc20Abi } from "@/lib/erc20-abi";
-import { formatAddress, formatCompactNumber, formatTokenAmount } from "@/lib/format";
+import {
+  formatAddress,
+  formatCompactNumber,
+  formatTokenAmount,
+  formatRelativeTime,
+} from "@/lib/format";
 
 const MPGR_TOKEN_ADDRESS = process.env.NEXT_PUBLIC_MPGR_TOKEN_ADDRESS as
   | `0x${string}`
   | undefined;
 
+const MINI_GAMES = [
+  { name: "Lucky Spin", icon: Dices },
+  { name: "Memory Game", icon: Brain },
+  { name: "Tap Challenge", icon: Zap },
+  { name: "Quiz", icon: HelpCircle },
+  { name: "Treasure Hunt", icon: Gem },
+  { name: "Prediction", icon: LineChart },
+];
+
+const STAKING_TX_LABEL: Record<string, string> = {
+  stake: "Staked MPGR",
+  unstake: "Unstaked MPGR",
+  claim: "Claimed Staking Reward",
+};
+
+const STAKING_TX_ICON: Record<string, typeof ArrowUpCircle> = {
+  stake: ArrowUpCircle,
+  unstake: ArrowDownCircle,
+  claim: Coins,
+};
+
 export default function DashboardPage() {
   const [mounted, setMounted] = useState(false);
   const { address, isConnected } = useAccount();
   const { record, checkIn, lastEvent, leveledUp, dismissEvent, dismissLevelUp } = useXP();
-  const { totalStaked, totalClaimableRewards, activePositionsCount, loading: stakingLoading } = useStaking();
+  const {
+    totalStaked,
+    totalClaimableRewards,
+    activePositionsCount,
+    transactions: stakingTransactions,
+    loading: stakingLoading,
+  } = useStaking();
+  const { claims: rewardClaims } = useRewards();
   const [checkInMessage, setCheckInMessage] = useState<string | null>(null);
 
   useEffect(() => setMounted(true), []);
@@ -66,6 +126,28 @@ export default function DashboardPage() {
     setTimeout(() => setCheckInMessage(null), 3000);
   }, [checkIn]);
 
+  // Recent Activity — derived from real, already-persisted data sources
+  // (XP history, reward claim history, staking transactions). No mock data.
+  const lastXPEntry =
+    record && record.history.length > 0
+      ? [...record.history].sort(
+          (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        )[0]
+      : null;
+
+  const lastRewardClaim = (() => {
+    if (!address) return null;
+    const history = getRewardState(address).history;
+    if (history.length === 0) return null;
+    const latest = [...history].sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    )[0];
+    const title = rewardClaims.find((c) => c.id === latest.rewardId)?.title ?? "Reward Claimed";
+    return { title, amount: latest.amount, timestamp: latest.timestamp };
+  })();
+
+  const lastStakingTx = stakingTransactions[0] ?? null;
+
   return (
     <>
       <Navbar />
@@ -80,13 +162,14 @@ export default function DashboardPage() {
             description="Connect to view your MPGR HUB dashboard, XP, and rewards."
           />
         ) : (
-          <>
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4 }}
-              className="flex flex-wrap items-center justify-between gap-4"
-            >
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="space-y-8"
+          >
+            {/* Header */}
+            <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex min-w-0 items-center gap-4">
                 <AddressAvatar address={address ?? ""} size={56} />
                 <div className="min-w-0">
@@ -102,16 +185,21 @@ export default function DashboardPage() {
               >
                 Daily Check-In
               </button>
-            </motion.div>
+            </div>
 
             {checkInMessage && (
-              <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-3 text-sm text-gold">
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="-mt-4 text-sm text-gold"
+              >
                 {checkInMessage}
               </motion.p>
             )}
 
+            {/* XP / Level progress */}
             {levelInfo && (
-              <Link href="/games" className="mt-6 block">
+              <Link href="/games">
                 <GlassCard className="p-5">
                   <div className="mb-2 flex items-center justify-between">
                     <span className="flex items-center gap-1.5 text-sm font-medium text-white">
@@ -128,7 +216,8 @@ export default function DashboardPage() {
               </Link>
             )}
 
-            <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+            {/* Wallet & stats */}
+            <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
               <StatCard
                 label="Base ETH"
                 value={ethBalance ? formatTokenAmount(ethBalance.formatted, 4) : "0"}
@@ -159,30 +248,199 @@ export default function DashboardPage() {
               <StatCard label="Referrals" value={formatCompactNumber(record?.referralCount ?? 0)} icon={Users} loading={loading} />
             </div>
 
-            <SectionHeader title="Staking" />
-            <StakingSummaryCard
-              totalStaked={totalStaked}
-              totalClaimableRewards={totalClaimableRewards}
-              activePositionsCount={activePositionsCount}
-              loading={stakingLoading}
-            />
+            {/* 1. Staking Summary */}
+            <div>
+              <SectionHeader title="Staking" subtitle="Your locked MPGR at a glance" />
+              <StakingSummaryCard
+                totalStaked={totalStaked}
+                totalClaimableRewards={totalClaimableRewards}
+                activePositionsCount={activePositionsCount}
+                loading={stakingLoading}
+              />
+            </div>
 
-            <SectionHeader title="Games" />
-            <Link href="/games">
-              <GlassCard className="flex items-center justify-between gap-3 p-5">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
-                    <Award className="h-4 w-4 text-primary" aria-hidden="true" />
+            {/* 2. Games Preview */}
+            <div>
+              <SectionHeader title="Games" subtitle="Play to earn XP and MPGR rewards" />
+              <GlassCard className="p-5">
+                <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+                  {MINI_GAMES.map((game) => {
+                    const Icon = game.icon;
+                    return (
+                      <div
+                        key={game.name}
+                        className="flex flex-col items-center gap-2 rounded-xl border border-white/5 bg-white/[0.02] p-3 text-center"
+                      >
+                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
+                          <Icon className="h-5 w-5 text-primary" aria-hidden="true" />
+                        </div>
+                        <p className="text-[11px] font-medium leading-tight text-white">{game.name}</p>
+                        <span className="rounded-full bg-surface px-2 py-0.5 text-[9px] text-muted">
+                          Soon
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <Link
+                  href="/games"
+                  className="mt-4 flex min-h-[44px] w-full items-center justify-center rounded-xl bg-gradient-premium text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
+                >
+                  Play Now
+                </Link>
+              </GlassCard>
+            </div>
+
+            {/* 3. Leaderboard Preview */}
+            <div>
+              <SectionHeader title="Leaderboard" subtitle="See where you rank this season" />
+              <GlassCard className="p-4">
+                {record ? (
+                  <>
+                    <LeaderboardRow
+                      rank={1}
+                      address={address ?? ""}
+                      xp={record.xp}
+                      seasonPoints={seasonPoints}
+                      referrals={record.referralCount}
+                      isCurrentUser
+                    />
+                    <p className="mt-3 text-center text-[11px] text-muted">
+                      Global rankings launch soon — invite friends to climb faster.
+                    </p>
+                  </>
+                ) : (
+                  <p className="py-2 text-center text-xs text-muted">
+                    Start earning XP to appear on the leaderboard.
+                  </p>
+                )}
+                <Link
+                  href="/leaderboard"
+                  className="mt-4 flex min-h-[40px] w-full items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-xs font-semibold text-white transition-colors hover:bg-white/[0.06]"
+                >
+                  View Leaderboard
+                </Link>
+              </GlassCard>
+            </div>
+
+            {/* 4. MPGR Agent Preview */}
+            <div>
+              <SectionHeader title="MPGR Agent" subtitle="Your AI assistant for MPGR HUB" />
+              <GlassCard className="relative overflow-hidden p-5">
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute -left-10 -top-10 h-40 w-40 rounded-full bg-gradient-premium opacity-20 blur-3xl"
+                />
+                <div className="relative flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-premium shadow-glow-gold">
+                      <Bot className="h-5 w-5 text-white" aria-hidden="true" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-white">MPGR Agent</p>
+                      <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] text-muted">
+                        Coming Soon
+                      </span>
+                    </div>
+                  </div>
+                  <Link
+                    href="/agent"
+                    className="flex min-h-[36px] shrink-0 items-center gap-1 rounded-xl bg-gradient-premium px-3 py-1.5 text-xs font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
+                  >
+                    Open Agent
+                    <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  </Link>
+                </div>
+
+                <div className="relative mt-5 grid grid-cols-3 gap-3 text-center">
+                  <div>
+                    <TrendingUp className="mx-auto h-4 w-4 text-primary" aria-hidden="true" />
+                    <p className="mt-1.5 text-[10px] leading-tight text-muted">Portfolio Analysis</p>
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-white">Achievements &amp; Leveling</p>
-                    <p className="text-[11px] text-muted">View your badges and progress</p>
+                    <Eye className="mx-auto h-4 w-4 text-primary" aria-hidden="true" />
+                    <p className="mt-1.5 text-[10px] leading-tight text-muted">Whale Tracking</p>
+                  </div>
+                  <div>
+                    <Bell className="mx-auto h-4 w-4 text-primary" aria-hidden="true" />
+                    <p className="mt-1.5 text-[10px] leading-tight text-muted">Smart Alerts</p>
                   </div>
                 </div>
-                <ArrowUpRight className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
               </GlassCard>
-            </Link>
-          </>
+            </div>
+
+            {/* 5. Recent Activity */}
+            <div>
+              <SectionHeader
+                title="Recent Activity"
+                subtitle="Your latest XP, reward, and staking actions"
+              />
+              <GlassCard className="divide-y divide-white/5 p-0">
+                <div className="flex items-center gap-3 p-4">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                    <Sparkles className="h-4 w-4 text-primary" aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-white">
+                      {lastXPEntry ? XP_ACTIONS[lastXPEntry.action]?.label ?? "XP Earned" : "No XP earned yet"}
+                    </p>
+                    {lastXPEntry && (
+                      <p className="text-[11px] text-muted">{formatRelativeTime(lastXPEntry.timestamp)}</p>
+                    )}
+                  </div>
+                  {lastXPEntry && (
+                    <span className="shrink-0 text-sm font-semibold text-gold">+{lastXPEntry.xp} XP</span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3 p-4">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gold/10">
+                    <Gift className="h-4 w-4 text-gold" aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-white">
+                      {lastRewardClaim ? lastRewardClaim.title : "No rewards claimed yet"}
+                    </p>
+                    {lastRewardClaim && (
+                      <p className="text-[11px] text-muted">{formatRelativeTime(lastRewardClaim.timestamp)}</p>
+                    )}
+                  </div>
+                  {lastRewardClaim && (
+                    <span className="shrink-0 text-sm font-semibold text-gold">
+                      +{formatCompactNumber(lastRewardClaim.amount)} MPGR
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3 p-4">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                    {lastStakingTx ? (
+                      (() => {
+                        const Icon = STAKING_TX_ICON[lastStakingTx.type];
+                        return <Icon className="h-4 w-4 text-primary" aria-hidden="true" />;
+                      })()
+                    ) : (
+                      <History className="h-4 w-4 text-primary" aria-hidden="true" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-white">
+                      {lastStakingTx ? STAKING_TX_LABEL[lastStakingTx.type] : "No staking activity yet"}
+                    </p>
+                    {lastStakingTx && (
+                      <p className="text-[11px] text-muted">{formatRelativeTime(lastStakingTx.timestamp)}</p>
+                    )}
+                  </div>
+                  {lastStakingTx && (
+                    <span className="shrink-0 text-sm font-semibold text-gold">
+                      {lastStakingTx.type === "stake" ? "-" : "+"}
+                      {formatCompactNumber(lastStakingTx.amount)} MPGR
+                    </span>
+                  )}
+                </div>
+              </GlassCard>
+            </div>
+          </motion.div>
         )}
       </main>
     </>
