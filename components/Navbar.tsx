@@ -9,6 +9,7 @@ import { clsx } from "clsx";
 const NAV_LINKS = [
   { href: "/", label: "Home" },
   { href: "/season", label: "Season" },
+  { href: "/rewards", label: "Rewards" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/profile", label: "Profile" },
 ];
@@ -26,9 +27,13 @@ export function Navbar() {
     >
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-4 py-3">
         <div className="flex min-w-0 items-center gap-6">
-          <Link href="/" className="shrink-0 text-lg font-semibold tracking-tight text-white">
+          <Link
+            href="/"
+            className="shrink-0 text-lg font-semibold tracking-tight text-white"
+          >
             MPGR <span className="text-primary">HUB</span>
           </Link>
+
           <nav className="hidden gap-4 sm:flex">
             {NAV_LINKS.map((link) => (
               <Link
@@ -36,7 +41,9 @@ export function Navbar() {
                 href={link.href}
                 className={clsx(
                   "text-sm transition-colors",
-                  pathname === link.href ? "text-white" : "text-muted hover:text-white"
+                  pathname === link.href
+                    ? "text-white"
+                    : "text-muted hover:text-white"
                 )}
               >
                 {link.label}
@@ -44,6 +51,7 @@ export function Navbar() {
             ))}
           </nav>
         </div>
+
         <ConnectButton showBalance={false} />
       </div>
     </motion.header>
