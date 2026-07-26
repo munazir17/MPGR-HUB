@@ -8,6 +8,18 @@ interface FloatingXPProps {
   unit?: string;
 }
 
+function formatAmount(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+
+  if (Math.abs(value) < 0.000001) {
+    return "0";
+  }
+
+  return value
+    .toFixed(6)
+    .replace(/\.?0+$/, "");
+}
+
 export function FloatingXP({
   amount,
   onComplete,
@@ -29,7 +41,7 @@ export function FloatingXP({
           }}
           className="pointer-events-none fixed left-1/2 top-24 z-[60] -translate-x-1/2 rounded-full bg-gradient-premium px-4 py-1.5 text-sm font-semibold text-white shadow-glow-gold"
         >
-          +{amount} {unit}
+          +{formatAmount(amount)} {unit}
         </motion.div>
       )}
     </AnimatePresence>
