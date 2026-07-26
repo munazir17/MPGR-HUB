@@ -3,14 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
-import { Home, Sparkles, Gift, Trophy, User } from "lucide-react";
+import { Home, Gamepad2, Gift, Bot, User } from "lucide-react";
 import { clsx } from "clsx";
 
 const TABS = [
   { href: "/", label: "Home", icon: Home },
-  { href: "/season", label: "Season", icon: Sparkles },
+  { href: "/games", label: "Games", icon: Gamepad2 },
   { href: "/rewards", label: "Rewards", icon: Gift },
-  { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
+  { href: "/agent", label: "MPGR Agent", icon: Bot },
   { href: "/profile", label: "Profile", icon: User },
 ];
 
