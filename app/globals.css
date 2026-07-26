@@ -9,12 +9,26 @@ html {
 }
 
 body {
+  position: relative;
   background-color: #0a0b0d;
   color: #f3f4f6;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-tap-highlight-color: transparent;
+}
+
+/* Ambient premium background glow — fixed, behind all content */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 40% at 15% -5%, rgba(59, 130, 246, 0.16), transparent 60%),
+    radial-gradient(ellipse 55% 40% at 100% 0%, rgba(240, 185, 11, 0.10), transparent 60%),
+    radial-gradient(ellipse 70% 50% at 50% 110%, rgba(59, 130, 246, 0.08), transparent 60%);
 }
 
 img {
@@ -34,6 +48,9 @@ img {
   background: #1e2128;
   border-radius: 8px;
 }
+::-webkit-scrollbar-thumb:hover {
+  background: #2a2e38;
+}
 
 button,
 a[role="button"],
@@ -45,6 +62,21 @@ a[role="button"],
   outline: 2px solid #3b82f6;
   outline-offset: 2px;
   border-radius: 6px;
+}
+
+/* Reusable premium text treatment for numeric/gold highlights */
+.text-gradient-gold {
+  background: linear-gradient(135deg, #fcd34d 0%, #f0b90b 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.text-gradient-premium {
+  background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 45%, #f0b90b 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {
