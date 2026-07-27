@@ -1,13 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAccount } from "wagmi";
 import { useXP } from "@/hooks/useXP";
 import {
   claimAllRewards,
   claimReward,
+  getClaimedInWindow,
   getRewardClaims,
   getRewardState,
+  getWeeklyClaimSeries,
   type RewardClaim,
   type RewardClaimHistoryEntry,
 } from "@/lib/rewards-engine";
@@ -17,6 +19,16 @@ interface ClaimEvent {
   id: number;
 }
 
+// Small artificial delay before a claim resolves so the action reads as a
+// real transaction instead of an instant state flip. Purely a UX wrapper —
+// the underlying claim logic in lib/rewards-engine.ts is untouched, and the
+// resulting state is identical either way.
+const CLAIM_FEEDBACK_MS = 550;
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
 export function useRewards() {
   const { address, isConnected } = useAccount();
   const { record } = useXP();
@@ -24,6 +36,8 @@ export function useRewards() {
   const [totalClaimed, setTotalClaimed] = useState(0);
   const [claimHistory, setClaimHistory] = useState<RewardClaimHistoryEntry[]>([]);
   const [lastClaimEvent, setLastClaimEvent] = useState<ClaimEvent | null>(null);
+  const [claimingId, setClaimingId] = useState<string | null>(null);
+  const [claimingAll, setClaimingAll] = useState(false);
 
   const refreshHistory = useCallback(() => {
     if (!address) return;
@@ -51,31 +65,55 @@ export function useRewards() {
     .reduce((sum, c) => sum + c.amount, 0);
 
   const claim = useCallback(
-    (rewardId: string) => {
-      if (!address) return;
-      const result = claimReward(address, rewardId);
+    async (rewardId: string) => {
+      if (!address || claimingId || claimingAll) return;
+      setClaimingId(rewardId);
+      try {
+        await wait(CLAIM_FEEDBACK_MS);
+        const result = claimReward(address, rewardId);
+        setClaims(result.claims);
+        if (result.claimedAmount > 0) {
+          setTotalClaimed((prev) => prev + result.claimedAmount);
+          setLastClaimEvent({ amount: result.claimedAmount, id: Date.now() });
+          refreshHistory();
+        }
+      } finally {
+        setClaimingId(null);
+      }
+    },
+    [address, claimingId, claimingAll, refreshHistory]
+  );
+
+  const claimAll = useCallback(async () => {
+    if (!address || claimingId || claimingAll) return;
+    setClaimingAll(true);
+    try {
+      await wait(CLAIM_FEEDBACK_MS);
+      const result = claimAllRewards(address);
       setClaims(result.claims);
       if (result.claimedAmount > 0) {
         setTotalClaimed((prev) => prev + result.claimedAmount);
         setLastClaimEvent({ amount: result.claimedAmount, id: Date.now() });
         refreshHistory();
       }
-    },
-    [address, refreshHistory]
-  );
-
-  const claimAll = useCallback(() => {
-    if (!address) return;
-    const result = claimAllRewards(address);
-    setClaims(result.claims);
-    if (result.claimedAmount > 0) {
-      setTotalClaimed((prev) => prev + result.claimedAmount);
-      setLastClaimEvent({ amount: result.claimedAmount, id: Date.now() });
-      refreshHistory();
+    } finally {
+      setClaimingAll(false);
     }
-  }, [address, refreshHistory]);
+  }, [address, claimingId, claimingAll, refreshHistory]);
 
   const dismissClaimEvent = useCallback(() => setLastClaimEvent(null), []);
+
+  // Derived weekly stats — computed from claimHistory only, no extra
+  // storage reads. Memoized so the page doesn't recompute on every render.
+  const weeklySeries = useMemo(() => getWeeklyClaimSeries(claimHistory), [claimHistory]);
+  const weeklyClaimed = useMemo(
+    () => weeklySeries.reduce((sum, d) => sum + d.amount, 0),
+    [weeklySeries]
+  );
+  const previousWeekClaimed = useMemo(
+    () => getClaimedInWindow(claimHistory, 14, 7),
+    [claimHistory]
+  );
 
   return {
     claims,
@@ -87,5 +125,10 @@ export function useRewards() {
     lastClaimEvent,
     dismissClaimEvent,
     loading: isConnected && !record,
+    claimingId,
+    claimingAll,
+    weeklySeries,
+    weeklyClaimed,
+    previousWeekClaimed,
   };
 }
