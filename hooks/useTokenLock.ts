@@ -9,6 +9,7 @@ import {
   earlyUnlockLock as earlyUnlockAction,
   estimateLockBonus,
   getAvailableBalance,
+  getTokenLockLifetimeStats,
   getTokenLockPositions,
   getTokenLockState,
   getTokenLockSummary,
@@ -65,6 +66,7 @@ export function useTokenLock() {
   }, [address, isConnected, refresh]);
 
   const summary = getTokenLockSummary(positions);
+  const lifetimeStats = getTokenLockLifetimeStats(positions);
 
   const createLock = useCallback(
     // Phase 2B swap point: once the lock contract exists on Base, this
@@ -151,6 +153,9 @@ export function useTokenLock() {
     averageLockPeriodDays: summary.averageLockPeriodDays,
     longestLockDays: summary.longestLockDays,
     upcomingUnlockAt: summary.upcomingUnlockAt,
+    lifetimeBonusEarned: lifetimeStats.lifetimeBonusEarned,
+    locksReleasedCount: lifetimeStats.locksReleasedCount,
+    earlyUnlocksCount: lifetimeStats.earlyUnlocksCount,
     error,
     lastEvent,
     createLock,
