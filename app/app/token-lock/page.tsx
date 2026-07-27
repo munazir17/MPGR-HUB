@@ -35,6 +35,9 @@ export default function TokenLockPage() {
     averageLockPeriodDays,
     longestLockDays,
     upcomingUnlockAt,
+    lifetimeBonusEarned,
+    locksReleasedCount,
+    earlyUnlocksCount,
     lastEvent,
     createLock,
     releaseLock,
@@ -182,12 +185,12 @@ export default function TokenLockPage() {
 
             {/* Summary Cards */}
             <div>
-              <SectionHeader title="Lock Summary" subtitle="Overview of your locking activity" />
+              <SectionHeader title="Lock Summary" subtitle="Your lifetime locking activity" />
               <LockSummaryCards
-                totalLocked={totalLocked}
-                averageLockPeriodDays={averageLockPeriodDays}
+                lifetimeBonusEarned={lifetimeBonusEarned}
+                locksReleasedCount={locksReleasedCount}
+                earlyUnlocksCount={earlyUnlocksCount}
                 longestLockDays={longestLockDays}
-                upcomingUnlockAt={upcomingUnlockAt}
                 loading={loading}
               />
             </div>
