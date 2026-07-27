@@ -44,6 +44,22 @@ export interface ClaimResult {
   claimedIds: string[];
 }
 
+export interface WeeklyClaimPoint {
+  date: string; // YYYY-MM-DD
+  label: string; // short weekday, e.g. "Mon"
+  amount: number;
+}
+
+// Human-readable labels for each reward source, used by the UI for badges.
+// Additive only — doesn't change how RewardSource itself is produced.
+export const REWARD_SOURCE_LABEL: Record<RewardSource, string> = {
+  DAILY_CHECK_IN: "Daily",
+  STREAK: "Streak",
+  LEVEL: "Level",
+  REFERRAL: "Referral",
+  SEASON: "Season",
+};
+
 const STORAGE_PREFIX = "mpgr_rewards_v1_";
 
 function storageKey(address: string) {
@@ -219,4 +235,70 @@ export function claimAllRewards(address: string): ClaimResult {
   saveRewardState(state);
 
   return { claims: getRewardClaims(record), claimedAmount, claimedIds };
+}
+
+// --- Derived stats (read-only, layered on top of claim history) ---------
+// Everything below reads existing RewardClaimHistoryEntry data — no new
+// storage keys, no schema changes. Pure functions, safe to memoize in hooks.
+
+// Last 7 calendar days (oldest → newest) of claimed MPGR, bucketed by day.
+// Powers the "Claimed This Week" chart on the Rewards page.
+export function getWeeklyClaimSeries(history: RewardClaimHistoryEntry[]): WeeklyClaimPoint[] {
+  const days: WeeklyClaimPoint[] = [];
+  const now = new Date();
+
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    days.push({
+      date: d.toISOString().slice(0, 10),
+      label: d.toLocaleDateString("en-US", { weekday: "short" }),
+      amount: 0,
+    });
+  }
+
+  const byDate = new Map(days.map((d) => [d.date, d]));
+  for (const entry of history) {
+    const point = byDate.get(new Date(entry.timestamp).toISOString().slice(0, 10));
+    if (point) point.amount += entry.amount;
+  }
+
+  return days;
+}
+
+// Sum of claimed MPGR between `daysAgoStart` and `daysAgoEnd` (exclusive of
+// end), counting back from now. Used to compare this week vs. last week.
+export function getClaimedInWindow(
+  history: RewardClaimHistoryEntry[],
+  daysAgoStart: number,
+  daysAgoEnd: number
+): number {
+  const now = Date.now();
+  const start = now - daysAgoStart * 86_400_000;
+  const end = now - daysAgoEnd * 86_400_000;
+  return history
+    .filter((h) => {
+      const t = new Date(h.timestamp).getTime();
+      return t >= start && t < end;
+    })
+    .reduce((sum, h) => sum + h.amount, 0);
+}
+
+// Resolves a title/source for a claim-history entry even after its reward
+// definition has rotated out of getRewardClaims() (e.g. a previous day's
+// check-in id). Falls back to the id prefix, which every reward id in this
+// module is namespaced by.
+export function inferRewardMeta(
+  rewardId: string,
+  claims: RewardClaim[]
+): { title: string; source: RewardSource } {
+  const match = claims.find((c) => c.id === rewardId);
+  if (match) return { title: match.title, source: match.source };
+
+  if (rewardId.startsWith("checkin-")) return { title: "Daily Check-In Bonus", source: "DAILY_CHECK_IN" };
+  if (rewardId.startsWith("streak-")) return { title: "Streak Reward", source: "STREAK" };
+  if (rewardId.startsWith("level-")) return { title: "Level Reward", source: "LEVEL" };
+  if (rewardId.startsWith("referral-")) return { title: "Referral Milestone", source: "REFERRAL" };
+  if (rewardId.startsWith("season-")) return { title: "Season Milestone", source: "SEASON" };
+  return { title: "Reward Claimed", source: "DAILY_CHECK_IN" };
 }
