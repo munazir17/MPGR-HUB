@@ -36,9 +36,14 @@ export function EarlyUnlockModal({
 
   if (!position) return null;
 
-  const { id, amount, daysRemaining } = position;
-  const penaltyAmount = amount * (penaltyPercent / 100);
-  const netPayout = amount - penaltyAmount;
+  const { id, amount, daysRemaining, payoutIfReleasedNow } = position;
+  // Single source of truth: reuse the engine's own payout projection
+  // (lib/token-lock-engine.ts `toView`) instead of recomputing the
+  // penalty formula here. Keeps the modal's preview guaranteed to match
+  // whatever `earlyUnlockLock()` actually pays out, even if the penalty
+  // rule ever becomes tiered/non-linear.
+  const netPayout = payoutIfReleasedNow;
+  const penaltyAmount = amount - netPayout;
   const canSubmit = phase !== "submitting";
 
   const handleConfirm = () => {
