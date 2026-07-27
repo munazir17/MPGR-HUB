@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAccount } from "wagmi";
 import { motion } from "framer-motion";
-import { Gift, Coins, Trophy, Sparkles, Flag, HelpCircle, History } from "lucide-react";
+import { Gift, Coins, Trophy, Sparkles, Flag, HelpCircle, History, ListChecks, Loader2 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { StatCard } from "@/components/ui/StatCard";
 import { RewardClaimCard } from "@/components/ui/RewardClaimCard";
+import { WeeklyRewardCard } from "@/components/ui/WeeklyRewardCard";
+import { RewardTimeline } from "@/components/ui/RewardTimeline";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonCard } from "@/components/ui/SkeletonCard";
@@ -18,7 +20,7 @@ import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
 import { useRewards } from "@/hooks/useRewards";
 import { useXP } from "@/hooks/useXP";
 import { getSeasonEnd, getSeasonNumber, getSeasonPoints } from "@/lib/xp-engine";
-import { formatCompactNumber, formatRelativeTime } from "@/lib/format";
+import { formatCompactNumber } from "@/lib/format";
 
 const SEASON_MILESTONES = [250, 500, 1000];
 
@@ -35,12 +37,20 @@ export default function RewardsPage() {
     lastClaimEvent,
     dismissClaimEvent,
     loading,
+    claimingId,
+    claimingAll,
+    weeklySeries,
+    weeklyClaimed,
+    previousWeekClaimed,
   } = useRewards();
   const { record } = useXP();
 
   useEffect(() => setMounted(true), []);
 
-  const claimableCount = claims.filter((c) => c.unlocked && !c.claimed).length;
+  const claimableCount = useMemo(
+    () => claims.filter((c) => c.unlocked && !c.claimed).length,
+    [claims]
+  );
 
   const seasonPoints = record ? getSeasonPoints(record) : 0;
   const seasonNumber = getSeasonNumber();
@@ -67,7 +77,7 @@ export default function RewardsPage() {
               subtitle="Claim MPGR earned from check-ins, streaks, levels, and season milestones"
             />
 
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4">
               <StatCard
                 label="Available to Claim"
                 value={`${formatCompactNumber(claimableTotal)} MPGR`}
@@ -79,6 +89,12 @@ export default function RewardsPage() {
                 label="Total Claimed"
                 value={`${formatCompactNumber(totalClaimed)} MPGR`}
                 icon={Coins}
+                loading={loading}
+              />
+              <StatCard
+                label="Rewards Ready"
+                value={loading ? "0 of 0" : `${claimableCount} of ${claims.length}`}
+                icon={ListChecks}
                 loading={loading}
               />
             </div>
@@ -96,15 +112,32 @@ export default function RewardsPage() {
               </div>
               <motion.button
                 onClick={claimAll}
-                disabled={claimableCount === 0}
-                whileHover={claimableCount > 0 ? { scale: 1.03 } : undefined}
-                whileTap={claimableCount > 0 ? { scale: 0.97 } : undefined}
+                disabled={claimableCount === 0 || claimingAll || claimingId !== null}
+                whileHover={claimableCount > 0 && !claimingAll ? { scale: 1.03 } : undefined}
+                whileTap={claimableCount > 0 && !claimingAll ? { scale: 0.97 } : undefined}
                 aria-label="Claim all available rewards"
                 className="flex min-h-[44px] w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-gold px-5 py-2.5 text-sm font-semibold text-background transition-colors disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted sm:w-auto"
               >
-                Claim All
+                {claimingAll ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    Claiming All
+                  </>
+                ) : (
+                  "Claim All"
+                )}
               </motion.button>
             </GlassCard>
+
+            <div>
+              <SectionHeader title="This Week" subtitle="Your weekly MPGR claim activity" />
+              <WeeklyRewardCard
+                series={weeklySeries}
+                total={weeklyClaimed}
+                previousTotal={previousWeekClaimed}
+                loading={loading}
+              />
+            </div>
 
             <SectionHeader title="All Rewards" />
             {loading ? (
@@ -123,14 +156,26 @@ export default function RewardsPage() {
             ) : (
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                 {claims.map((reward) => (
-                  <RewardClaimCard key={reward.id} reward={reward} onClaim={() => claim(reward.id)} />
+                  <RewardClaimCard
+                    key={reward.id}
+                    reward={reward}
+                    onClaim={() => claim(reward.id)}
+                    claiming={
+                      claimingId === reward.id ||
+                      (claimingAll && reward.unlocked && !reward.claimed)
+                    }
+                  />
                 ))}
               </div>
             )}
 
             <SectionHeader title="Claim History" subtitle="Newest first" />
             {loading ? (
-              <SkeletonCard lines={3} />
+              <div className="space-y-2">
+                <SkeletonCard lines={1} />
+                <SkeletonCard lines={1} />
+                <SkeletonCard lines={1} />
+              </div>
             ) : claimHistory.length === 0 ? (
               <EmptyState
                 icon={History}
@@ -138,32 +183,7 @@ export default function RewardsPage() {
                 description="Rewards you claim will show up here with the date and amount."
               />
             ) : (
-              <div className="space-y-2">
-                {claimHistory.slice(0, 12).map((entry, i) => {
-                  const title = claims.find((c) => c.id === entry.rewardId)?.title ?? "Reward Claimed";
-                  return (
-                    <motion.div
-                      key={`${entry.rewardId}-${entry.timestamp}`}
-                      initial={{ opacity: 0, x: -8 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: Math.min(i, 8) * 0.03 }}
-                    >
-                      <GlassCard className="flex items-center gap-3 p-3">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gold/10">
-                          <Gift className="h-4 w-4 text-gold" aria-hidden="true" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm text-white">{title}</p>
-                          <p className="text-[11px] text-muted">{formatRelativeTime(entry.timestamp)}</p>
-                        </div>
-                        <span className="shrink-0 text-sm font-semibold text-gold">
-                          +{formatCompactNumber(entry.amount)} MPGR
-                        </span>
-                      </GlassCard>
-                    </motion.div>
-                  );
-                })}
-              </div>
+              <RewardTimeline history={claimHistory} claims={claims} limit={12} />
             )}
 
             <SectionHeader
