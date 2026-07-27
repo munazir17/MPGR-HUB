@@ -82,6 +82,12 @@ export interface TokenLockSummary {
   upcomingUnlockAt: string | null;
 }
 
+export interface TokenLockLifetimeStats {
+  lifetimeBonusEarned: number;
+  locksReleasedCount: number;
+  earlyUnlocksCount: number;
+}
+
 // --- Storage layer -----------------------------------------------------
 // Same SSR-safe localStorage helper the rest of Phase 2B uses.
 
@@ -227,6 +233,26 @@ export function getTokenLockSummary(positions: TokenLockPositionView[]): TokenLo
   };
 }
 
+// Lifetime, history-based stats — distinct from getTokenLockSummary (which
+// only reflects currently-active positions). Reuses estimateLockBonus so
+// the "bonus earned" figure never drifts from the same formula the create
+// -lock preview and payout math already use.
+export function getTokenLockLifetimeStats(positions: TokenLockPositionView[]): TokenLockLifetimeStats {
+  const released = positions.filter((p) => p.status === "released");
+  const maturedReleases = released.filter((p) => !p.wasEarlyUnlock);
+
+  const lifetimeBonusEarned = maturedReleases.reduce(
+    (sum, p) => sum + estimateLockBonus(p.amount, p.lockPeriodDays),
+    0
+  );
+
+  return {
+    lifetimeBonusEarned,
+    locksReleasedCount: maturedReleases.length,
+    earlyUnlocksCount: released.length - maturedReleases.length,
+  };
+}
+
 // --- Actions -----------------------------------------------------------
 
 function makeId(prefix: string): string {
@@ -356,4 +382,4 @@ export function earlyUnlockLock(address: string, lockId: string): TokenLockActio
   saveTokenLockState(state);
 
   return { success: true, amount: payout, state };
-  }
+}
