@@ -2,7 +2,9 @@
 
 import { motion } from "framer-motion";
 import { AddressAvatar } from "@/components/AddressAvatar";
+import { PremiumBadge } from "@/components/ui/PremiumBadge";
 import { formatAddress, formatCompactNumber } from "@/lib/format";
+import type { PremiumTierId } from "@/lib/premium-config";
 import { clsx } from "clsx";
 
 interface LeaderboardRowProps {
@@ -12,9 +14,19 @@ interface LeaderboardRowProps {
   seasonPoints: number;
   referrals: number;
   isCurrentUser?: boolean;
+  /** Optional — omitted callers render exactly as before (no badge). */
+  tier?: PremiumTierId;
 }
 
-export function LeaderboardRow({ rank, address, xp, seasonPoints, referrals, isCurrentUser }: LeaderboardRowProps) {
+export function LeaderboardRow({
+  rank,
+  address,
+  xp,
+  seasonPoints,
+  referrals,
+  isCurrentUser,
+  tier,
+}: LeaderboardRowProps) {
   const isTop3 = rank <= 3;
   const medalBg =
     rank === 1
@@ -47,8 +59,9 @@ export function LeaderboardRow({ rank, address, xp, seasonPoints, referrals, isC
       </span>
       <AddressAvatar address={address} size={32} />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-white">
+        <p className="flex items-center gap-1.5 truncate text-sm font-medium text-white">
           {formatAddress(address)} {isCurrentUser && <span className="text-primary">(you)</span>}
+          {tier && tier !== "none" && <PremiumBadge tier={tier} size="sm" />}
         </p>
         <p className="text-[11px] text-muted">{referrals} referrals</p>
       </div>
