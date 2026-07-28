@@ -213,7 +213,11 @@ export default function RewardsPage() {
             <div>
               <SectionHeader title="Claim History" />
               {claimHistory.length > 0 ? (
-                <RewardTimeline entries={claimHistory} limit={10} />
+                <RewardTimeline
+  history={claimHistory}
+  claims={claims}
+  limit={10}
+/>
               ) : (
                 <EmptyState
                   icon={History}
