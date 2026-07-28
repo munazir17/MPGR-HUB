@@ -48,10 +48,14 @@ import { LevelUpModal } from "@/components/ui/LevelUpModal";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { AddressAvatar } from "@/components/AddressAvatar";
+import { PremiumBadge } from "@/components/ui/PremiumBadge";
+import { SeasonRewardsPreview } from "@/components/features/season-pass/SeasonRewardsPreview";
 import { useXP } from "@/hooks/useXP";
 import { useStaking } from "@/hooks/useStaking";
 import { useRewards } from "@/hooks/useRewards";
 import { useTokenLock } from "@/hooks/useTokenLock";
+import { usePremium } from "@/hooks/usePremium";
+import { useSeasonPass } from "@/hooks/useSeasonPass";
 import { getLevelProgress, getSeasonPoints, getSeasonNumber, XP_ACTIONS } from "@/lib/xp-engine";
 import { getRewardState } from "@/lib/rewards-engine";
 import { erc20Abi } from "@/lib/erc20-abi";
@@ -118,6 +122,8 @@ export default function DashboardPage() {
     loading: lockLoading,
   } = useTokenLock();
   const { claims: rewardClaims, claimableTotal, loading: rewardsLoading } = useRewards();
+  const { status: premiumStatus } = usePremium();
+  const { status: seasonPassStatus, track: seasonTrack } = useSeasonPass();
   const [checkInMessage, setCheckInMessage] = useState<string | null>(null);
 
   useEffect(() => setMounted(true), []);
@@ -230,12 +236,20 @@ export default function DashboardPage() {
                     <h1 className="truncate text-xl font-bold tracking-tight text-white sm:text-2xl">
                       {formatAddress(address ?? "")}
                     </h1>
-                    {levelInfo && (
-                      <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5 text-[11px] font-semibold text-gold ring-1 ring-gold/20">
-                        <Award className="h-3 w-3" aria-hidden="true" />
-                        Level {levelInfo.level}
-                      </span>
-                    )}
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      {levelInfo && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5 text-[11px] font-semibold text-gold ring-1 ring-gold/20">
+                          <Award className="h-3 w-3" aria-hidden="true" />
+                          Level {levelInfo.level}
+                        </span>
+                      )}
+                      {premiumStatus && <PremiumBadge tier={premiumStatus.tier} size="sm" />}
+                      {premiumStatus?.isPremium && (
+                        <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary ring-1 ring-primary/20">
+                          {premiumStatus.xpMultiplier}× XP · {premiumStatus.rewardsMultiplier}× Rewards
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
                 <motion.button
@@ -264,6 +278,11 @@ export default function DashboardPage() {
               <SectionHeader title="Quick Actions" subtitle="Jump straight into what you came here for" />
               <QuickActions />
             </div>
+
+            {/* Season Pass Preview */}
+            {record && seasonPassStatus && (
+              <SeasonRewardsPreview track={seasonTrack} currentLevel={seasonPassStatus.levelProgress.level} />
+            )}
 
             {/* Portfolio Overview */}
             <div>
@@ -472,6 +491,7 @@ export default function DashboardPage() {
                       xp={record.xp}
                       seasonPoints={seasonPoints}
                       referrals={record.referralCount}
+                      tier={premiumStatus?.tier}
                       isCurrentUser
                     />
                     <p className="mt-3 text-center text-[11px] text-muted">
