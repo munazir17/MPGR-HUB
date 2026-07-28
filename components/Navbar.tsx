@@ -1,10 +1,15 @@
 "use client";
 
 import { ConnectButton } from "@rainbow-me/rainbowkit";
+import { useAccount } from "wagmi";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
 import { clsx } from "clsx";
+import { PremiumBadge } from "@/components/ui/PremiumBadge";
+import { HolderTierBadge } from "@/components/features/holder-tier/HolderTierBadge";
+import { usePremium } from "@/hooks/usePremium";
+import { useHolderTier } from "@/lib/useHolderTier";
 
 const NAV_LINKS = [
   { href: "/", label: "Home" },
@@ -20,6 +25,9 @@ const NAV_LINKS = [
 
 export function Navbar() {
   const pathname = usePathname();
+  const { isConnected } = useAccount();
+  const { status: premiumStatus } = usePremium();
+  const { status: holderTierStatus } = useHolderTier();
 
   return (
     <motion.header
@@ -64,7 +72,15 @@ export function Navbar() {
           </nav>
         </div>
 
-        <ConnectButton showBalance={false} />
+        <div className="flex shrink-0 items-center gap-2">
+          {isConnected && (
+            <div className="hidden items-center gap-1.5 sm:flex">
+              {premiumStatus && <PremiumBadge tier={premiumStatus.tier} size="sm" />}
+              {holderTierStatus && <HolderTierBadge tier={holderTierStatus.tier} size="sm" />}
+            </div>
+          )}
+          <ConnectButton showBalance={false} />
+        </div>
       </div>
     </motion.header>
   );
