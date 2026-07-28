@@ -10,12 +10,14 @@ import { SkeletonCard } from "@/components/ui/SkeletonCard";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useXP } from "@/hooks/useXP";
+import { usePremium } from "@/hooks/usePremium";
 import { getSeasonPoints } from "@/lib/xp-engine";
 
 export default function LeaderboardPage() {
   const [mounted, setMounted] = useState(false);
   const { address, isConnected } = useAccount();
   const { record } = useXP();
+  const { status: premiumStatus } = usePremium();
 
   useEffect(() => setMounted(true), []);
 
@@ -49,6 +51,7 @@ export default function LeaderboardPage() {
                 xp={record.xp}
                 seasonPoints={getSeasonPoints(record)}
                 referrals={record.referralCount}
+                tier={premiumStatus?.tier}
                 isCurrentUser
               />
               <p className="mt-4 text-center text-xs text-muted">
