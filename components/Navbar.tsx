@@ -11,7 +11,8 @@ const NAV_LINKS = [
   { href: "/season", label: "Season" },
   { href: "/rewards", label: "Rewards" },
   { href: "/staking", label: "Staking" },
-  { href: "/token-lock", label: "Token Lock" },
+  { href: "/app/token-lock", label: "Token Lock" },
+  { href: "/premium", label: "Premium" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/profile", label: "Profile" },
 ];
