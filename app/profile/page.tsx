@@ -14,11 +14,14 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { AddressAvatar } from "@/components/AddressAvatar";
 import { PremiumBadge } from "@/components/ui/PremiumBadge";
 import { PremiumStatusCard } from "@/components/features/premium/PremiumStatusCard";
+import { SeasonProgressCard } from "@/components/features/season-pass/SeasonProgressCard";
 import { useXP } from "@/hooks/useXP";
 import { usePremium } from "@/hooks/usePremium";
+import { useSeasonPass } from "@/hooks/useSeasonPass";
 import { getLevelProgress, getAchievements } from "@/lib/xp-engine";
 import { formatAddress, formatCompactNumber } from "@/lib/format";
 import { clsx } from "clsx";
+import Link from "next/link";
 
 export default function ProfilePage() {
   const [mounted, setMounted] = useState(false);
@@ -26,6 +29,7 @@ export default function ProfilePage() {
   const { address, isConnected } = useAccount();
   const { record, claim } = useXP();
   const { status: premiumStatus, cosmetics: premiumCosmetics } = usePremium();
+  const { status: seasonPassStatus } = useSeasonPass();
 
   useEffect(() => setMounted(true), []);
 
@@ -85,6 +89,21 @@ export default function ProfilePage() {
             </GlassCard>
 
             {premiumStatus && <PremiumStatusCard status={premiumStatus} />}
+
+            {seasonPassStatus && (
+              <div>
+                <SeasonProgressCard
+                  levelProgress={seasonPassStatus.levelProgress}
+                  seasonPoints={seasonPassStatus.seasonPoints}
+                />
+                <Link
+                  href="/season-pass"
+                  className="mt-3 flex min-h-[40px] w-full items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-xs font-semibold text-white transition-colors duration-200 hover:bg-white/[0.06]"
+                >
+                  View Season {seasonPassStatus.seasonNumber} Pass
+                </Link>
+              </div>
+            )}
 
             {levelInfo && (
               <GlassCard className="p-5">
