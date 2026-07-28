@@ -50,6 +50,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { AddressAvatar } from "@/components/AddressAvatar";
 import { PremiumBadge } from "@/components/ui/PremiumBadge";
 import { SeasonRewardsPreview } from "@/components/features/season-pass/SeasonRewardsPreview";
+import { HolderTierOverview } from "@/components/features/holder-tier/HolderTierOverview";
 import { useXP } from "@/hooks/useXP";
 import { useStaking } from "@/hooks/useStaking";
 import { useRewards } from "@/hooks/useRewards";
@@ -321,6 +322,9 @@ export default function DashboardPage() {
                 />
               </div>
             </div>
+
+            {/* Holder Tier */}
+            <HolderTierOverview />
 
             {/* XP / Level progress */}
             {levelInfo && (
