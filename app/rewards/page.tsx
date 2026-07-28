@@ -17,8 +17,12 @@ import { FloatingXP } from "@/components/ui/FloatingXP";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { CountdownCard } from "@/components/ui/CountdownCard";
 import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
+import { PremiumBadge } from "@/components/ui/PremiumBadge";
+import { SeasonRewardsPreview } from "@/components/features/season-pass/SeasonRewardsPreview";
 import { useRewards } from "@/hooks/useRewards";
 import { useXP } from "@/hooks/useXP";
+import { usePremium } from "@/hooks/usePremium";
+import { useSeasonPass } from "@/hooks/useSeasonPass";
 import { getSeasonEnd, getSeasonNumber, getSeasonPoints } from "@/lib/xp-engine";
 import { formatCompactNumber } from "@/lib/format";
 
@@ -44,6 +48,8 @@ export default function RewardsPage() {
     previousWeekClaimed,
   } = useRewards();
   const { record } = useXP();
+  const { status: premiumStatus } = usePremium();
+  const { status: seasonPassStatus, track: seasonTrack } = useSeasonPass();
 
   useEffect(() => setMounted(true), []);
 
@@ -98,6 +104,22 @@ export default function RewardsPage() {
                 loading={loading}
               />
             </div>
+
+            {premiumStatus?.isPremium && (
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-gold/20 bg-gold/[0.05] px-4 py-3">
+                <PremiumBadge tier={premiumStatus.tier} size="sm" />
+                <p className="text-xs text-muted">
+                  Your {premiumStatus.currentTierDef?.label} tier unlocks a{" "}
+                  <span className="font-semibold text-gold">{premiumStatus.xpMultiplier}× XP</span> and{" "}
+                  <span className="font-semibold text-gold">{premiumStatus.rewardsMultiplier}× rewards</span>{" "}
+                  multiplier — applied automatically once multiplier payouts go live.
+                </p>
+              </div>
+            )}
+
+            {seasonPassStatus && (
+              <SeasonRewardsPreview track={seasonTrack} currentLevel={seasonPassStatus.levelProgress.level} />
+            )}
 
             <GlassCard className="flex flex-col items-center gap-3 p-6 text-center sm:flex-row sm:justify-between sm:text-left">
               <div>
@@ -160,110 +182,62 @@ export default function RewardsPage() {
                     key={reward.id}
                     reward={reward}
                     onClaim={() => claim(reward.id)}
-                    claiming={
-                      claimingId === reward.id ||
-                      (claimingAll && reward.unlocked && !reward.claimed)
-                    }
+                    claiming={claimingId === reward.id}
                   />
                 ))}
               </div>
             )}
 
-            <SectionHeader title="Claim History" subtitle="Newest first" />
-            {loading ? (
-              <div className="space-y-2">
-                <SkeletonCard lines={1} />
-                <SkeletonCard lines={1} />
-                <SkeletonCard lines={1} />
+            <div>
+              <SectionHeader title="Season Progress" subtitle={`Season ${seasonNumber} milestones`} />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <GlassCard className="p-5">
+                  <div className="flex items-center gap-2">
+                    <Trophy className="h-4 w-4 text-gold" aria-hidden="true" />
+                    <p className="text-xs text-muted">Season Points</p>
+                  </div>
+                  <p className="mt-2 text-2xl font-bold text-white">{formatCompactNumber(seasonPoints)}</p>
+                  <div className="mt-3">
+                    <ProgressBar progress={seasonProgress} label="Progress to 1,000 pts" />
+                  </div>
+                  {nextSeasonMilestone && (
+                    <p className="mt-2 text-[11px] text-muted">
+                      {formatCompactNumber(nextSeasonMilestone - seasonPoints)} points to next milestone
+                    </p>
+                  )}
+                </GlassCard>
+                <CountdownCard target={seasonEnd} label="Season ends in" />
               </div>
-            ) : claimHistory.length === 0 ? (
-              <EmptyState
-                icon={History}
-                title="No claims yet"
-                description="Rewards you claim will show up here with the date and amount."
-              />
-            ) : (
-              <RewardTimeline history={claimHistory} claims={claims} limit={12} />
-            )}
-
-            <SectionHeader
-              title={`Season ${seasonNumber}`}
-              subtitle="Earn XP this month to climb the season ranking"
-            />
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <GlassCard className="p-5">
-                <div className="flex items-center gap-2">
-                  <Trophy className="h-4 w-4 text-gold" aria-hidden="true" />
-                  <p className="text-xs text-muted">Season Points</p>
-                </div>
-                <p className="mt-2 text-3xl font-bold text-white">{formatCompactNumber(seasonPoints)}</p>
-                <div className="mt-3">
-                  <ProgressBar progress={seasonProgress} label="Progress to 1,000 pts" />
-                </div>
-              </GlassCard>
-
-              <CountdownCard target={seasonEnd} label="Season ends in" />
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <GlassCard className="p-5">
-                <div className="flex items-center gap-2">
-                  <Flag className="h-4 w-4 text-primary" aria-hidden="true" />
-                  <p className="text-sm font-medium text-white">Current Rank</p>
-                </div>
-                <p className="mt-2 text-2xl font-bold text-white">Unranked</p>
-                <p className="mt-1 text-xs text-muted">
-                  Global ranking launches once the MPGR HUB leaderboard backend is live.
-                </p>
-              </GlassCard>
-
-              <GlassCard className="p-5">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-gold" aria-hidden="true" />
-                  <p className="text-sm font-medium text-white">Next Milestone</p>
-                </div>
-                <p className="mt-2 text-2xl font-bold text-white">
-                  {nextSeasonMilestone ? `${formatCompactNumber(nextSeasonMilestone)} pts` : "All reached"}
-                </p>
-                <p className="mt-1 text-xs text-muted">
-                  {nextSeasonMilestone
-                    ? `${formatCompactNumber(nextSeasonMilestone - seasonPoints)} points to go`
-                    : "You've hit every milestone this season"}
-                </p>
-              </GlassCard>
+            <div>
+              <SectionHeader title="Claim History" />
+              {claimHistory.length > 0 ? (
+                <RewardTimeline entries={claimHistory} limit={10} />
+              ) : (
+                <EmptyState
+                  icon={History}
+                  title="No claims yet"
+                  description="Your reward claim history will appear here."
+                />
+              )}
             </div>
-
-            <GlassCard className="p-5">
-              <div className="flex items-center gap-2">
-                <Gift className="h-4 w-4 text-primary" aria-hidden="true" />
-                <p className="text-sm font-medium text-white">Estimated Season Reward</p>
-              </div>
-              <p className="mt-2 text-xs leading-relaxed text-muted">
-                Reward pool and distribution are finalized at season end. This is a placeholder
-                until Season {seasonNumber} rewards are announced.
-              </p>
-              <span className="mt-3 inline-block rounded-full bg-surface px-3 py-1 text-xs text-muted">
-                Not yet claimable
-              </span>
-            </GlassCard>
 
             <GlassCard className="p-5">
               <div className="flex items-center gap-2">
                 <HelpCircle className="h-4 w-4 text-primary" aria-hidden="true" />
-                <p className="text-sm font-medium text-white">How Seasons Work</p>
+                <p className="text-sm font-medium text-white">How Rewards Work</p>
               </div>
               <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-muted">
-                <li>• Season points reset every calendar month</li>
-                <li>• Every XP-earning action counts toward your season total</li>
-                <li>• Milestones unlock as your season points grow</li>
-                <li>• Rewards are calculated and distributed after the season ends</li>
+                <li>• Rewards unlock from daily check-ins, streaks, levels, referrals, and season milestones</li>
+                <li>• Claim individually or all at once once unlocked</li>
+                <li>• Season points and milestones reset every calendar month</li>
               </ul>
             </GlassCard>
 
             {record && record.history.length > 0 && (
               <div>
-                <SectionHeader title="Recent Activity" />
+                <SectionHeader title="Recent XP Activity" />
                 <ActivityTimeline entries={record.history} limit={8} />
               </div>
             )}
