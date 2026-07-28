@@ -15,9 +15,11 @@ import { AddressAvatar } from "@/components/AddressAvatar";
 import { PremiumBadge } from "@/components/ui/PremiumBadge";
 import { PremiumStatusCard } from "@/components/features/premium/PremiumStatusCard";
 import { SeasonProgressCard } from "@/components/features/season-pass/SeasonProgressCard";
+import { HolderTierCard } from "@/components/features/holder-tier/HolderTierCard";
 import { useXP } from "@/hooks/useXP";
 import { usePremium } from "@/hooks/usePremium";
 import { useSeasonPass } from "@/hooks/useSeasonPass";
+import { useHolderTier } from "@/lib/useHolderTier";
 import { getLevelProgress, getAchievements } from "@/lib/xp-engine";
 import { formatAddress, formatCompactNumber } from "@/lib/format";
 import { clsx } from "clsx";
@@ -30,6 +32,7 @@ export default function ProfilePage() {
   const { record, claim } = useXP();
   const { status: premiumStatus, cosmetics: premiumCosmetics } = usePremium();
   const { status: seasonPassStatus } = useSeasonPass();
+  const { status: holderTierStatus } = useHolderTier();
 
   useEffect(() => setMounted(true), []);
 
@@ -89,6 +92,13 @@ export default function ProfilePage() {
             </GlassCard>
 
             {premiumStatus && <PremiumStatusCard status={premiumStatus} />}
+
+            {holderTierStatus && (
+              <div>
+                <SectionHeader title="Current Holder Tier" subtitle="Your MPGR Holder Score & tier" />
+                <HolderTierCard status={holderTierStatus} />
+              </div>
+            )}
 
             {seasonPassStatus && (
               <div>
