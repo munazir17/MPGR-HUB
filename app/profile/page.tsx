@@ -12,15 +12,20 @@ import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { AddressAvatar } from "@/components/AddressAvatar";
+import { PremiumBadge } from "@/components/ui/PremiumBadge";
+import { PremiumStatusCard } from "@/components/features/premium/PremiumStatusCard";
 import { useXP } from "@/hooks/useXP";
+import { usePremium } from "@/hooks/usePremium";
 import { getLevelProgress, getAchievements } from "@/lib/xp-engine";
 import { formatAddress, formatCompactNumber } from "@/lib/format";
+import { clsx } from "clsx";
 
 export default function ProfilePage() {
   const [mounted, setMounted] = useState(false);
   const [copied, setCopied] = useState(false);
   const { address, isConnected } = useAccount();
   const { record, claim } = useXP();
+  const { status: premiumStatus, cosmetics: premiumCosmetics } = usePremium();
 
   useEffect(() => setMounted(true), []);
 
@@ -63,9 +68,14 @@ export default function ProfilePage() {
         ) : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <GlassCard className="flex items-center gap-4 p-6">
-              <AddressAvatar address={address} size={72} />
+              <div className={clsx("shrink-0 rounded-full", premiumCosmetics?.frameClass)}>
+                <AddressAvatar address={address} size={72} />
+              </div>
               <div className="min-w-0">
-                <h1 className="truncate text-xl font-semibold text-white">{formatAddress(address, 6)}</h1>
+                <div className="flex items-center gap-2">
+                  <h1 className="truncate text-xl font-semibold text-white">{formatAddress(address, 6)}</h1>
+                  {premiumStatus && <PremiumBadge tier={premiumStatus.tier} size="sm" />}
+                </div>
                 {levelInfo && (
                   <p className="mt-1 text-sm text-muted">
                     Level {levelInfo.level} · {formatCompactNumber(record?.xp ?? 0)} XP total
@@ -73,6 +83,8 @@ export default function ProfilePage() {
                 )}
               </div>
             </GlassCard>
+
+            {premiumStatus && <PremiumStatusCard status={premiumStatus} />}
 
             {levelInfo && (
               <GlassCard className="p-5">
