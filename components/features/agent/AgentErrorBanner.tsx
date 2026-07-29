@@ -9,25 +9,16 @@ interface AgentErrorBannerProps {
   onDismiss?: () => void;
 }
 
-// Phase 3A.4 Batch 2 — surfaces hooks/useAgentChat.ts's `error` state
-// (set when lib/agent-engine.ts's appendAssistantReply / regenerateLastReply
-// throws) without touching conversation history. The user's message that
-// triggered the failed generation is already persisted by the time this
-// can appear — appendUserMessage runs and saves before generation ever
-// starts — so this banner is only ever "the next reply failed", never
-// "you lost something".
-//
-// Presentation-only: retry/dismiss map straight to
-// hooks/useAgentChat.ts's retryLastMessage / dismissError, wired by the
-// caller (app/agent/page.tsx, in Batch 3). Uses Tailwind's default red
-// palette since the design tokens in tailwind.config.ts don't define a
-// dedicated "danger" color yet — same soft-tint/ring pill language as
-// AgentStatusBadge, just red instead of primary/gold.
+// Phase 3A.4 Batch 2 — surfaces hooks/useAgentChat.ts's `error` state.
+// Batch 3 addendum: added `exit` so wrapping it in <AnimatePresence>
+// (app/agent/page.tsx) animates it out on dismiss/retry instead of
+// popping instantly — no other change.
 export function AgentErrorBanner({ message, onRetry, onDismiss }: AgentErrorBannerProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
       role="alert"
       className="flex items-center gap-2.5 border-t border-red-500/20 bg-red-500/10 px-4 py-2.5 sm:px-6"
     >
