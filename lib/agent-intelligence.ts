@@ -1,5 +1,6 @@
 import { formatCompactNumber } from "@/lib/format";
 import type { AgentContext } from "@/lib/agent-context";
+import { getAgentActions, getAgentHighlights, getFollowUpPrompts, type AgentAction, type AgentHighlight } from "@/lib/agent-actions";
 
 // lib/format.ts's formatRelativeTime is past-only ("2 days ago",
 // "Yesterday") — it produces incorrect output for a future unlock date, so
@@ -17,9 +18,15 @@ function formatUpcomingDate(iso: string): string {
 // generation. No model, no network call — this is the piece that gets
 // swapped out wholesale in Phase 3B for a real model call. Everything
 // downstream (hooks/useAgentChat.ts, lib/agent-engine.ts, and every UI
-// component) only ever sees `{ intent, reply }`, so that swap won't
-// require touching anything outside this file plus its call site in
-// lib/agent-engine.ts.
+// component) only ever sees `{ intent, reply, actions, highlights,
+// followUps }`, so that swap won't require touching anything outside this
+// file plus its call site in lib/agent-engine.ts.
+//
+// Phase 3A.3 — Smart Actions & Conversational UX: `actions`, `highlights`,
+// and `followUps` are new fields on the result, all derived in
+// lib/agent-actions.ts from the exact same AgentContext the text reply
+// already reads from. No new data source, no new hook — this is presentation
+// on top of state that was already being computed.
 //
 // "XP Status" and "Level Progress" are intentionally the SAME intent here
 // (`xp_status`) rather than two — level is directly derived from XP via
@@ -43,6 +50,9 @@ export type AgentIntent =
 export interface AgentIntelligenceResult {
   intent: AgentIntent;
   reply: string;
+  actions: AgentAction[];
+  highlights: AgentHighlight[];
+  followUps: string[];
 }
 
 // --- Normalization -----------------------------------------------------
@@ -333,20 +343,31 @@ const INTENT_HANDLERS: Record<AgentIntent, (ctx: AgentContext) => string> = {
 // Single entry point. Phase 3B swap point: this function's body becomes an
 // async model call; its signature (prompt + context + previousIntent) can
 // stay the same since AgentContext already carries everything a model
-// would need to ground its answer in real app state.
+// would need to ground its answer in real app state. actions/highlights/
+// followUps would then come from the model's structured output instead of
+// lib/agent-actions.ts's deterministic builders — the result shape stays
+// identical either way.
 export function generateIntelligentReply(
   prompt: string,
   context: AgentContext,
   previousIntent: AgentIntent | null
 ): AgentIntelligenceResult {
   if (!context.isConnected) {
-    return { intent: "general_help", reply: NOT_CONNECTED_REPLY };
+    return { intent: "general_help", reply: NOT_CONNECTED_REPLY, actions: [], highlights: [], followUps: [] };
   }
 
   const { intent, greeting } = detectIntent(prompt, previousIntent);
+
   if (greeting) {
-    return { intent, reply: GREETING_REPLY };
+    return { intent, reply: GREETING_REPLY, actions: [], highlights: [], followUps: getFollowUpPrompts(intent) };
   }
 
-  return { intent, reply: INTENT_HANDLERS[intent](context) };
+  const reply = INTENT_HANDLERS[intent](context);
+  return {
+    intent,
+    reply,
+    actions: getAgentActions(intent, context),
+    highlights: getAgentHighlights(intent, context),
+    followUps: getFollowUpPrompts(intent),
+  };
 }
