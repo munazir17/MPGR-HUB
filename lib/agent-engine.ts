@@ -1,6 +1,7 @@
 import { readJSON, writeJSON } from "@/lib/storage";
 import { generateIntelligentReply, type AgentIntent } from "@/lib/agent-intelligence";
 import type { AgentContext } from "@/lib/agent-context";
+import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 
 // Phase 3A — local/mock persistence for MPGR Agent conversations, using the
 // same localStorage-backed JSON helper the rest of the app's mock services
@@ -14,6 +15,11 @@ import type { AgentContext } from "@/lib/agent-context";
 // produced it so the next turn can resolve short follow-ups
 // ("What about rewards?") against the previous topic — see
 // lib/agent-intelligence.ts's RELATED_TOPICS.
+//
+// Phase 3A.3: assistant messages now also carry `actions`, `highlights`,
+// and `followUps` — all plain, JSON-serializable data (icons are string
+// keys, see lib/agent-actions.ts) so they round-trip through
+// writeJSON/readJSON exactly like the rest of AgentMessage.
 //
 // Phase 3B swap point: once a real backend exists, `appendAssistantReply`
 // moves behind an async API call — the shape of AgentMessage / AgentState
@@ -29,6 +35,12 @@ export interface AgentMessage {
   // Only ever set on assistant messages — the detected intent that
   // produced this reply, used as conversational context for the next turn.
   intent?: AgentIntent;
+  // Only ever set on assistant messages. Empty arrays are omitted rather
+  // than stored, keeping user messages and "no actions for this intent"
+  // replies visually and structurally identical in storage.
+  actions?: AgentAction[];
+  highlights?: AgentHighlight[];
+  followUps?: string[];
 }
 
 export interface AgentState {
@@ -53,13 +65,20 @@ function saveAgentState(state: AgentState): AgentState {
   return state;
 }
 
-function createMessage(role: AgentRole, content: string, intent?: AgentIntent): AgentMessage {
+function createMessage(
+  role: AgentRole,
+  content: string,
+  extra?: { intent?: AgentIntent; actions?: AgentAction[]; highlights?: AgentHighlight[]; followUps?: string[] }
+): AgentMessage {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
     role,
     content,
     timestamp: new Date().toISOString(),
-    ...(intent ? { intent } : {}),
+    ...(extra?.intent ? { intent: extra.intent } : {}),
+    ...(extra?.actions && extra.actions.length > 0 ? { actions: extra.actions } : {}),
+    ...(extra?.highlights && extra.highlights.length > 0 ? { highlights: extra.highlights } : {}),
+    ...(extra?.followUps && extra.followUps.length > 0 ? { followUps: extra.followUps } : {}),
   };
 }
 
@@ -93,10 +112,10 @@ function findPreviousIntent(messages: AgentMessage[]): AgentIntent | null {
 export function appendAssistantReply(address: string, userPrompt: string, context: AgentContext): AgentState {
   const state = getAgentState(address);
   const previousIntent = findPreviousIntent(state.messages);
-  const { intent, reply } = generateIntelligentReply(userPrompt, context, previousIntent);
+  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(userPrompt, context, previousIntent);
   const updated: AgentState = {
     ...state,
-    messages: [...state.messages, createMessage("assistant", reply, intent)],
+    messages: [...state.messages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
   };
   return saveAgentState(updated);
 }
