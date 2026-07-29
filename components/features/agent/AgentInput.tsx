@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { motion } from "framer-motion";
 import { Send } from "lucide-react";
 
@@ -9,8 +9,34 @@ interface AgentInputProps {
   disabled?: boolean;
 }
 
+const MIN_HEIGHT_PX = 44;
+const MAX_HEIGHT_PX = 112; // same visual cap as the previous max-h-28
+
+// Phase 3A.4 Batch 2 update — two fixes, zero change to the onSend/disabled
+// contract every caller already relies on (app/agent/page.tsx,
+// AgentEmptyState -> AgentPromptSuggestions all still just call onSend):
+//
+// 1. Auto-growing height instead of a fixed 1-row box that silently
+//    scrolled — multi-line prompts (e.g. pasted text) are common, and a
+//    growing textarea matches expected mobile chat-input behavior.
+// 2. IME composition guard — on mobile/CJK input methods, the Enter that
+//    commits a composed character was previously also triggering send,
+//    corrupting the message mid-composition. Only affects IME users;
+//    plain typing behaves exactly as before.
 export function AgentInput({ onSend, disabled }: AgentInputProps) {
   const [value, setValue] = useState("");
+  const [isComposing, setIsComposing] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Re-measures on every value change (including the programmatic
+  // setValue("") after send) so height resets correctly, not just on
+  // keystrokes.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, MIN_HEIGHT_PX), MAX_HEIGHT_PX)}px`;
+  }, [value]);
 
   const handleSend = () => {
     const trimmed = value.trim();
@@ -20,7 +46,7 @@ export function AgentInput({ onSend, disabled }: AgentInputProps) {
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !isComposing) {
       event.preventDefault();
       handleSend();
     }
@@ -29,13 +55,17 @@ export function AgentInput({ onSend, disabled }: AgentInputProps) {
   return (
     <div className="flex items-end gap-2 border-t border-white/[0.08] bg-white/[0.02] p-3 sm:p-4">
       <textarea
+        ref={textareaRef}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
+        onCompositionStart={() => setIsComposing(true)}
+        onCompositionEnd={() => setIsComposing(false)}
         disabled={disabled}
         rows={1}
         placeholder="Ask MPGR Agent anything..."
-        className="max-h-28 min-h-[44px] flex-1 resize-none rounded-xl border border-white/10 bg-background/50 px-3.5 py-2.5 text-sm text-white placeholder:text-muted focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
+        aria-label="Message MPGR Agent"
+        className="max-h-28 min-h-[44px] flex-1 resize-none overflow-y-auto rounded-xl border border-white/10 bg-background/50 px-3.5 py-2.5 text-sm text-white placeholder:text-muted focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
       />
       <motion.button
         type="button"
