@@ -59,7 +59,7 @@ export default function AgentPage() {
               </div>
 
               {hasMessages ? (
-                <AgentChatWindow messages={messages} thinking={thinking} />
+                <AgentChatWindow messages={messages} thinking={thinking} onSelectPrompt={sendMessage} />
               ) : (
                 <AgentEmptyState onSelectPrompt={sendMessage} />
               )}
