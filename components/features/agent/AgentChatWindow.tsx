@@ -4,11 +4,13 @@ import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Bot } from "lucide-react";
 import { AgentChatBubble } from "./AgentChatBubble";
+import { AgentFollowUpChips } from "./AgentFollowUpChips";
 import type { AgentMessage } from "@/lib/agent-engine";
 
 interface AgentChatWindowProps {
   messages: AgentMessage[];
   thinking: boolean;
+  onSelectPrompt: (prompt: string) => void;
 }
 
 function ThinkingBubble() {
@@ -35,19 +37,44 @@ function ThinkingBubble() {
   );
 }
 
+// Finds the last assistant message that actually has follow-up prompts to
+// offer. Follow-ups are only ever shown for this one message — never for
+// every assistant turn in the history, and never while a new reply is
+// being generated (see the `!thinking` check below) so they don't sit
+// underneath a stale reply the person has already moved past.
+function findLastFollowUpIndex(messages: AgentMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role === "assistant" && message.followUps && message.followUps.length > 0) return i;
+  }
+  return -1;
+}
+
 // Auto-scrolling message list. Kept dumb/presentational — all persistence
 // and reply generation lives in hooks/useAgentChat.ts + lib/agent-engine.ts.
-export function AgentChatWindow({ messages, thinking }: AgentChatWindowProps) {
+//
+// Phase 3A.3: now also renders AgentFollowUpChips under the latest
+// assistant reply, wired straight to the same onSelectPrompt (= sendMessage
+// from hooks/useAgentChat.ts) that AgentInput and AgentPromptSuggestions
+// already use — tapping a follow-up behaves identically to typing it.
+export function AgentChatWindow({ messages, thinking, onSelectPrompt }: AgentChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length, thinking]);
 
+  const lastFollowUpIndex = thinking ? -1 : findLastFollowUpIndex(messages);
+
   return (
     <div className="flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
-      {messages.map((message) => (
-        <AgentChatBubble key={message.id} message={message} />
+      {messages.map((message, i) => (
+        <div key={message.id} className="space-y-2">
+          <AgentChatBubble message={message} />
+          {i === lastFollowUpIndex && (
+            <AgentFollowUpChips followUps={message.followUps!} onSelect={onSelectPrompt} disabled={thinking} />
+          )}
+        </div>
       ))}
       {thinking && <ThinkingBubble />}
       <div ref={bottomRef} />
