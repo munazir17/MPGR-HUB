@@ -5,12 +5,16 @@ import { motion } from "framer-motion";
 import { Bot } from "lucide-react";
 import { AgentChatBubble } from "./AgentChatBubble";
 import { AgentFollowUpChips } from "./AgentFollowUpChips";
-import type { AgentMessage } from "@/lib/agent-engine";
+import { AgentDateSeparator, getMessageDayKey } from "./AgentDateSeparator";
+import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 
 interface AgentChatWindowProps {
   messages: AgentMessage[];
   thinking: boolean;
   onSelectPrompt: (prompt: string) => void;
+  onFeedback: (messageId: string, feedback: AgentFeedback) => void;
+  onRegenerate: () => void;
+  canRegenerate: boolean;
 }
 
 function ThinkingBubble() {
@@ -38,10 +42,7 @@ function ThinkingBubble() {
 }
 
 // Finds the last assistant message that actually has follow-up prompts to
-// offer. Follow-ups are only ever shown for this one message — never for
-// every assistant turn in the history, and never while a new reply is
-// being generated (see the `!thinking` check below) so they don't sit
-// underneath a stale reply the person has already moved past.
+// offer — unchanged from 3A.3.
 function findLastFollowUpIndex(messages: AgentMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
@@ -50,14 +51,27 @@ function findLastFollowUpIndex(messages: AgentMessage[]): number {
   return -1;
 }
 
-// Auto-scrolling message list. Kept dumb/presentational — all persistence
-// and reply generation lives in hooks/useAgentChat.ts + lib/agent-engine.ts.
+// Auto-scrolling message list. Persistence and reply generation still live
+// entirely in hooks/useAgentChat.ts + lib/agent-engine.ts — this component
+// only decides what to render and forwards callbacks.
 //
-// Phase 3A.3: now also renders AgentFollowUpChips under the latest
-// assistant reply, wired straight to the same onSelectPrompt (= sendMessage
-// from hooks/useAgentChat.ts) that AgentInput and AgentPromptSuggestions
-// already use — tapping a follow-up behaves identically to typing it.
-export function AgentChatWindow({ messages, thinking, onSelectPrompt }: AgentChatWindowProps) {
+// Phase 3A.4 Batch 3:
+// - Inserts an <AgentDateSeparator> whenever a message's calendar day
+//   differs from the previous one (via AgentDateSeparator.tsx's
+//   getMessageDayKey), so a multi-day conversation reads like a normal
+//   chat history instead of one undifferentiated scroll.
+// - Forwards onFeedback/onRegenerate to each AgentChatBubble, and computes
+//   `showRegenerate` per-message (true only for the actual last message,
+//   and only when the hook says regeneration is currently valid) rather
+//   than trusting each bubble to know its own position in the list.
+export function AgentChatWindow({
+  messages,
+  thinking,
+  onSelectPrompt,
+  onFeedback,
+  onRegenerate,
+  canRegenerate,
+}: AgentChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -65,17 +79,34 @@ export function AgentChatWindow({ messages, thinking, onSelectPrompt }: AgentCha
   }, [messages.length, thinking]);
 
   const lastFollowUpIndex = thinking ? -1 : findLastFollowUpIndex(messages);
+  const lastMessageIndex = messages.length - 1;
+
+  let previousDayKey: string | null = null;
 
   return (
     <div className="flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
-      {messages.map((message, i) => (
-        <div key={message.id} className="space-y-2">
-          <AgentChatBubble message={message} />
-          {i === lastFollowUpIndex && (
-            <AgentFollowUpChips followUps={message.followUps!} onSelect={onSelectPrompt} disabled={thinking} />
-          )}
-        </div>
-      ))}
+      {messages.map((message, i) => {
+        const dayKey = getMessageDayKey(message.timestamp);
+        const showSeparator = dayKey !== previousDayKey;
+        previousDayKey = dayKey;
+        const isLastAssistant = i === lastMessageIndex && message.role === "assistant";
+
+        return (
+          <div key={message.id} className="space-y-2">
+            {showSeparator && <AgentDateSeparator iso={message.timestamp} />}
+            <AgentChatBubble
+              message={message}
+              onFeedback={onFeedback}
+              onRegenerate={onRegenerate}
+              showRegenerate={isLastAssistant && canRegenerate}
+              disabled={thinking}
+            />
+            {i === lastFollowUpIndex && (
+              <AgentFollowUpChips followUps={message.followUps!} onSelect={onSelectPrompt} disabled={thinking} />
+            )}
+          </div>
+        );
+      })}
       {thinking && <ThinkingBubble />}
       <div ref={bottomRef} />
     </div>
