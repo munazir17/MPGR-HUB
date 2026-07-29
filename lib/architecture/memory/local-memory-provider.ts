@@ -34,4 +34,26 @@ export class LocalMemoryProvider implements MemoryProvider {
       return false;
     }
   }
+
+  // Phase 3A.5 (final) — localStorage has no native transaction
+  // primitive, and every get/set here is already a single synchronous
+  // operation, so there is nothing to batch or roll back at this layer.
+  // These are deliberate, safe no-ops: they satisfy the MemoryProvider
+  // contract (so callers can begin/commit/rollback against ANY provider
+  // uniformly) without pretending to guarantee atomicity this provider
+  // can't actually provide. A future PersistentMemoryProvider /
+  // HybridMemoryProvider (Phase 3B) is where these become real —
+  // wrapping a server transaction or batching remote writes.
+  async beginTransaction(): Promise<void> {
+    // No-op — nothing to stage for a synchronous local provider.
+  }
+
+  async commit(): Promise<void> {
+    // No-op — every set() above already persisted immediately.
+  }
+
+  async rollback(): Promise<void> {
+    // No-op — there is no staged state to discard; callers relying on
+    // real rollback semantics must use a transactional provider.
+  }
 }
