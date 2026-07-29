@@ -1,7 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAccount } from "wagmi";
+import { useXP } from "@/hooks/useXP";
+import { useRewards } from "@/hooks/useRewards";
+import { useStaking } from "@/hooks/useStaking";
+import { useTokenLock } from "@/hooks/useTokenLock";
+import { usePremium } from "@/hooks/usePremium";
+import { useSeasonPass } from "@/hooks/useSeasonPass";
+import { useHolderTier } from "@/lib/useHolderTier";
+import { buildAgentContext } from "@/lib/agent-context";
 import {
   appendAssistantReply,
   appendUserMessage,
@@ -10,17 +18,62 @@ import {
   type AgentMessage,
 } from "@/lib/agent-engine";
 
-// Simulated "thinking" delay so the mock reply doesn't appear instantly —
+// Simulated "thinking" delay so the reply doesn't appear instantly —
 // purely a local UX beat, not a network call.
 const THINKING_DELAY_MIN_MS = 600;
 const THINKING_DELAY_MAX_MS = 1400;
 
+// Phase 3A.2 — this hook is the only place in the Agent feature that calls
+// other hooks (useXP, useRewards, useStaking, useTokenLock, usePremium,
+// useHolderTier, useSeasonPass), matching how the Dashboard and Profile
+// pages already read this same state. Their results are folded into a
+// single AgentContext snapshot (lib/agent-context.ts) every render, so
+// each sendMessage() call always reasons over the freshest values from
+// existing app state — nothing about the message-handling flow below
+// changed from Phase 3A.
 export function useAgentChat() {
   const { address, isConnected } = useAccount();
+  const { record: xpRecord } = useXP();
+  const { claimableTotal, totalClaimed } = useRewards();
+  const { totalStaked, totalClaimableRewards, activePositionsCount } = useStaking();
+  const { totalLocked, activeLocksCount, upcomingUnlockAt } = useTokenLock();
+  const { status: premiumStatus } = usePremium();
+  const { status: holderTierStatus } = useHolderTier();
+  const { status: seasonStatus } = useSeasonPass();
+
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [thinking, setThinking] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const context = useMemo(
+    () =>
+      buildAgentContext({
+        isConnected,
+        xpRecord,
+        premiumStatus,
+        holderTierStatus,
+        seasonStatus,
+        staking: { totalStaked, totalClaimableRewards, activePositionsCount },
+        tokenLock: { totalLocked, activeLocksCount, upcomingUnlockAt },
+        rewards: { claimableTotal, totalClaimed },
+      }),
+    [
+      isConnected,
+      xpRecord,
+      premiumStatus,
+      holderTierStatus,
+      seasonStatus,
+      totalStaked,
+      totalClaimableRewards,
+      activePositionsCount,
+      totalLocked,
+      activeLocksCount,
+      upcomingUnlockAt,
+      claimableTotal,
+      totalClaimed,
+    ]
+  );
 
   const refresh = useCallback(() => {
     if (!address) return;
@@ -58,12 +111,12 @@ export function useAgentChat() {
 
       const delay = THINKING_DELAY_MIN_MS + Math.random() * (THINKING_DELAY_MAX_MS - THINKING_DELAY_MIN_MS);
       timeoutRef.current = setTimeout(() => {
-        const afterAssistant = appendAssistantReply(address, trimmed);
+        const afterAssistant = appendAssistantReply(address, trimmed, context);
         setMessages(afterAssistant.messages);
         setThinking(false);
       }, delay);
     },
-    [address, thinking]
+    [address, thinking, context]
   );
 
   const clearChat = useCallback(() => {
