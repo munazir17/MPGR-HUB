@@ -21,11 +21,21 @@ import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 // keys, see lib/agent-actions.ts) so they round-trip through
 // writeJSON/readJSON exactly like the rest of AgentMessage.
 //
+// Phase 3A.4: adds `feedback` (👍/👎, toggled via setMessageFeedback) and
+// two new mutation entry points — regenerateLastReply and
+// setMessageFeedback — plus makes createMessage's extras all optional and
+// uniformly omitted-when-empty, matching the convention 3A.3 already
+// established for actions/highlights/followUps. hooks/useAgentChat.ts
+// wraps both new functions with try/catch + a "thinking" beat so a failure
+// surfaces as a retryable error in the UI instead of an unhandled
+// exception.
+//
 // Phase 3B swap point: once a real backend exists, `appendAssistantReply`
-// moves behind an async API call — the shape of AgentMessage / AgentState
-// and the storage key don't need to change.
+// and `regenerateLastReply` move behind an async API call — the shape of
+// AgentMessage / AgentState and the storage key don't need to change.
 
 export type AgentRole = "user" | "assistant";
+export type AgentFeedback = "up" | "down";
 
 export interface AgentMessage {
   id: string;
@@ -35,12 +45,16 @@ export interface AgentMessage {
   // Only ever set on assistant messages — the detected intent that
   // produced this reply, used as conversational context for the next turn.
   intent?: AgentIntent;
-  // Only ever set on assistant messages. Empty arrays are omitted rather
-  // than stored, keeping user messages and "no actions for this intent"
-  // replies visually and structurally identical in storage.
+  // Only ever set on assistant messages. Empty arrays/undefined are
+  // omitted rather than stored (JSON.stringify drops undefined-valued
+  // keys), keeping user messages and "nothing to show" replies
+  // structurally identical in storage.
   actions?: AgentAction[];
   highlights?: AgentHighlight[];
   followUps?: string[];
+  // Only ever set on assistant messages. Tapping the same reaction twice
+  // clears it — see setMessageFeedback below.
+  feedback?: AgentFeedback;
 }
 
 export interface AgentState {
@@ -65,11 +79,14 @@ function saveAgentState(state: AgentState): AgentState {
   return state;
 }
 
-function createMessage(
-  role: AgentRole,
-  content: string,
-  extra?: { intent?: AgentIntent; actions?: AgentAction[]; highlights?: AgentHighlight[]; followUps?: string[] }
-): AgentMessage {
+interface AssistantExtras {
+  intent?: AgentIntent;
+  actions?: AgentAction[];
+  highlights?: AgentHighlight[];
+  followUps?: string[];
+}
+
+function createMessage(role: AgentRole, content: string, extra?: AssistantExtras): AgentMessage {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
     role,
@@ -116,6 +133,54 @@ export function appendAssistantReply(address: string, userPrompt: string, contex
   const updated: AgentState = {
     ...state,
     messages: [...state.messages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
+  };
+  return saveAgentState(updated);
+}
+
+// Phase 3A.4 — discards the last assistant reply and generates a fresh one
+// for the same user prompt. Deliberately restricted to the true last
+// message (not "the last assistant message anywhere in history") — this
+// is "regenerate last reply", not "edit an arbitrary past reply". Reuses
+// generateIntelligentReply + createMessage as-is; no reply logic is
+// duplicated here.
+export function regenerateLastReply(address: string, context: AgentContext): AgentState {
+  const state = getAgentState(address);
+  const last = state.messages[state.messages.length - 1];
+  if (!last || last.role !== "assistant") return state;
+
+  let userIndex = -1;
+  for (let i = state.messages.length - 2; i >= 0; i--) {
+    if (state.messages[i].role === "user") {
+      userIndex = i;
+      break;
+    }
+  }
+  if (userIndex === -1) return state;
+
+  const userPrompt = state.messages[userIndex].content;
+  const trimmedMessages = state.messages.slice(0, -1);
+  const previousIntent = findPreviousIntent(trimmedMessages);
+  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(userPrompt, context, previousIntent);
+  const updated: AgentState = {
+    ...state,
+    messages: [...trimmedMessages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
+  };
+  return saveAgentState(updated);
+}
+
+// Phase 3A.4 — toggles 👍/👎 on an assistant message. Tapping the same
+// reaction again clears it (feedback: undefined is dropped by
+// JSON.stringify on save, same as the empty-array omission convention
+// above). No-ops on user messages or unknown ids.
+export function setMessageFeedback(address: string, messageId: string, feedback: AgentFeedback): AgentState {
+  const state = getAgentState(address);
+  const updated: AgentState = {
+    ...state,
+    messages: state.messages.map((message) =>
+      message.id === messageId && message.role === "assistant"
+        ? { ...message, feedback: message.feedback === feedback ? undefined : feedback }
+        : message
+    ),
   };
   return saveAgentState(updated);
 }
