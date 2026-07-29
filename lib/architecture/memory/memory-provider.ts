@@ -17,4 +17,14 @@ export interface MemoryProvider {
   set<T>(key: string, value: T): Promise<void>;
   remove(key: string): Promise<void>;
   has(key: string): Promise<boolean>;
+
+  // Phase 3A.5 (final) — transaction boundary, in preparation for AI
+  // Trading and the Hybrid Memory provider (Phase 3B), where a set of
+  // writes (e.g. "record trade" + "update portfolio memory") must either
+  // all land or all be discarded together. No existing caller uses these
+  // today, so no existing behavior changes — see LocalMemoryProvider for
+  // why a safe no-op is the correct implementation for local storage.
+  beginTransaction(): Promise<void>;
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
 }
