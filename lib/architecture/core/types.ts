@@ -48,10 +48,26 @@ export type AgentEventName = keyof AgentEventMap;
 
 export type AgentEventHandler<E extends AgentEventName> = (payload: AgentEventMap[E]) => void;
 
+// Phase 3A.5 (final) — middleware sits in front of every emit(), able to
+// inspect/log/audit an event before subscribers ever see it, without the
+// emitter (AgentAIService, future Trading/Execution services) knowing
+// middleware exists at all. `next()` must be called to continue the
+// chain; not calling it short-circuits delivery to handlers — useful for
+// a future security/filtering middleware, though today's use() consumers
+// (logging, analytics, audit) always call it.
+export type EventMiddleware = <E extends AgentEventName>(
+  event: E,
+  payload: AgentEventMap[E],
+  next: () => void
+) => void;
+
 export interface EventBus {
   on<E extends AgentEventName>(event: E, handler: AgentEventHandler<E>): () => void;
   off<E extends AgentEventName>(event: E, handler: AgentEventHandler<E>): void;
   emit<E extends AgentEventName>(event: E, payload: AgentEventMap[E]): void;
+  // Registers a middleware, run in registration order before handlers on
+  // every emit(). Returns an unsubscribe function, mirroring on()'s shape.
+  use(middleware: EventMiddleware): () => void;
 }
 
 // --- Performance monitoring -------------------------------------------------
@@ -76,6 +92,12 @@ export interface PerformanceMonitor {
 
 export type TaskStatus = "pending" | "running" | "done" | "failed";
 
+// Phase 3A.5 (final) — HIGH drains before NORMAL, which drains before LOW;
+// FIFO order is preserved *within* each priority. Optional and defaults to
+// "normal" everywhere, so every existing enqueue(label, work) call site
+// keeps its current (single-FIFO-lane) behavior unchanged.
+export type TaskPriority = "high" | "normal" | "low";
+
 export interface Task<T = unknown> {
   id: string;
   label: string;
@@ -83,15 +105,18 @@ export interface Task<T = unknown> {
   createdAt: string;
   error?: string;
   result?: T;
+  priority: TaskPriority;
 }
 
 export interface TaskQueue {
   // Enqueues work and returns its task id immediately; execution happens
-  // asynchronously, sequentially, in FIFO order. Never blocks the caller —
-  // this is for non-critical background work (memory summarization,
-  // ranking, portfolio refresh, trading analysis, knowledge indexing),
-  // never anything the UI is synchronously waiting on.
-  enqueue<T>(label: string, work: () => Promise<T>): string;
+  // asynchronously, sequentially, in FIFO order within the chosen
+  // priority lane (default "normal" — omit it and behavior is identical
+  // to before). Never blocks the caller — this is for non-critical
+  // background work (memory summarization, ranking, portfolio refresh,
+  // trading analysis, knowledge indexing), never anything the UI is
+  // synchronously waiting on.
+  enqueue<T>(label: string, work: () => Promise<T>, priority?: TaskPriority): string;
   getTask(id: string): Task | undefined;
   getTasks(): Task[];
 }
