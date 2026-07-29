@@ -5,23 +5,37 @@ import { Bot, User } from "lucide-react";
 import { clsx } from "clsx";
 import { AgentHighlightChips } from "./AgentHighlightChips";
 import { AgentActionCard } from "./AgentActionCard";
-import type { AgentMessage } from "@/lib/agent-engine";
+import { AgentMessageToolbar } from "./AgentMessageToolbar";
+import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 
 interface AgentChatBubbleProps {
   message: AgentMessage;
+  onFeedback?: (messageId: string, feedback: AgentFeedback) => void;
+  onRegenerate?: () => void;
+  showRegenerate?: boolean;
+  disabled?: boolean;
 }
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// Phase 3A.3: assistant messages can now carry `highlights` (key-stat
-// chips, shown above the bubble) and `actions` (smart action cards, shown
-// below it). Both are optional and independently omitted when empty
-// (lib/agent-engine.ts's createMessage never stores an empty array), so a
-// plain-text reply like a greeting renders exactly as it did in 3A.2 with
-// no extra spacing.
-export function AgentChatBubble({ message }: AgentChatBubbleProps) {
+// Phase 3A.3: highlights/actions rendering unchanged.
+//
+// Phase 3A.4 Batch 3: assistant bubbles now render AgentMessageToolbar
+// (copy / feedback / regenerate) next to the timestamp. Only rendered for
+// assistant messages — a user's own message has nothing to copy-feedback-
+// regenerate against. `onFeedback` / `onRegenerate` stay optional so this
+// component still works standalone (e.g. isolated preview/testing) without
+// a live hook wired behind it — it never reaches into agent-engine.ts or
+// storage.ts itself.
+export function AgentChatBubble({
+  message,
+  onFeedback,
+  onRegenerate,
+  showRegenerate,
+  disabled,
+}: AgentChatBubbleProps) {
   const isUser = message.role === "user";
   const hasHighlights = !isUser && !!message.highlights && message.highlights.length > 0;
   const hasActions = !isUser && !!message.actions && message.actions.length > 0;
@@ -70,7 +84,19 @@ export function AgentChatBubble({ message }: AgentChatBubbleProps) {
           </div>
         )}
 
-        <span className="px-1 text-[10px] text-muted">{formatTime(message.timestamp)}</span>
+        <div className="flex items-center gap-1 px-1">
+          <span className="text-[10px] text-muted">{formatTime(message.timestamp)}</span>
+          {!isUser && onFeedback && (
+            <AgentMessageToolbar
+              content={message.content}
+              feedback={message.feedback}
+              onFeedback={(feedback) => onFeedback(message.id, feedback)}
+              showRegenerate={showRegenerate}
+              onRegenerate={onRegenerate}
+              disabled={disabled}
+            />
+          )}
+        </div>
       </div>
     </motion.div>
   );
