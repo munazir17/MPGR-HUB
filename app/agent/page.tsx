@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { RotateCcw, Wallet } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { GlassCard } from "@/components/ui/GlassCard";
@@ -10,11 +10,25 @@ import { AgentChatWindow } from "@/components/features/agent/AgentChatWindow";
 import { AgentEmptyState } from "@/components/features/agent/AgentEmptyState";
 import { AgentInput } from "@/components/features/agent/AgentInput";
 import { AgentPromptSuggestions } from "@/components/features/agent/AgentPromptSuggestions";
+import { AgentErrorBanner } from "@/components/features/agent/AgentErrorBanner";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import type { AgentStatusId } from "@/lib/agent-config";
 
 export default function AgentPage() {
-  const { messages, thinking, isConnected, hasLoaded, sendMessage, clearChat } = useAgentChat();
+  const {
+    messages,
+    thinking,
+    isConnected,
+    hasLoaded,
+    error,
+    canRegenerate,
+    sendMessage,
+    clearChat,
+    retryLastMessage,
+    regenerateLastMessage,
+    sendFeedback,
+    dismissError,
+  } = useAgentChat();
 
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking", "beta"] : ["online", "beta"];
   const hasMessages = messages.length > 0;
@@ -59,7 +73,14 @@ export default function AgentPage() {
               </div>
 
               {hasMessages ? (
-                <AgentChatWindow messages={messages} thinking={thinking} onSelectPrompt={sendMessage} />
+                <AgentChatWindow
+                  messages={messages}
+                  thinking={thinking}
+                  onSelectPrompt={sendMessage}
+                  onFeedback={sendFeedback}
+                  onRegenerate={regenerateLastMessage}
+                  canRegenerate={canRegenerate}
+                />
               ) : (
                 <AgentEmptyState onSelectPrompt={sendMessage} />
               )}
@@ -69,6 +90,12 @@ export default function AgentPage() {
                   <AgentPromptSuggestions variant="row" onSelect={sendMessage} disabled={thinking} />
                 </div>
               )}
+
+              <AnimatePresence>
+                {error && (
+                  <AgentErrorBanner message={error} onRetry={retryLastMessage} onDismiss={dismissError} />
+                )}
+              </AnimatePresence>
 
               <AgentInput onSend={sendMessage} disabled={thinking} />
             </GlassCard>
