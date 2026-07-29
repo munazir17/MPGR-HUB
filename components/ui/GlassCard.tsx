@@ -2,13 +2,18 @@
 
 import { motion, type HTMLMotionProps } from "framer-motion";
 import { clsx } from "clsx";
+import type { ReactNode } from "react";
 
 interface GlassCardProps extends HTMLMotionProps<"div"> {
-  children: React.ReactNode;
+  children: ReactNode;
   className?: string;
 }
 
-export function GlassCard({ children, className, ...props }: GlassCardProps) {
+export function GlassCard({
+  children,
+  className,
+  ...props
+}: GlassCardProps) {
   return (
     <motion.div
       whileHover={{ y: -3 }}
@@ -21,12 +26,16 @@ export function GlassCard({ children, className, ...props }: GlassCardProps) {
       )}
       {...props}
     >
-      {/* Subtle top glass highlight */}
+      {/* Glass highlight */}
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-b from-white/[0.05] via-transparent to-transparent"
       />
-      <div className="relative">{children}</div>
+
+      {/* Content */}
+      <div className="relative flex h-full flex-col">
+        {children}
+      </div>
     </motion.div>
   );
 }
