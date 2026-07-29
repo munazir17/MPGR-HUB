@@ -1,4 +1,4 @@
-import type { Logger, Task, TaskQueue } from "./types";
+import type { Logger, Task, TaskPriority, TaskQueue } from "./types";
 import { logger as defaultLogger } from "./logger";
 
 function makeTaskId(): string {
@@ -15,19 +15,36 @@ function makeTaskId(): string {
 // ranking, portfolio refresh, trading analysis, knowledge indexing. Those
 // future jobs just call `.enqueue(label, work)`; this file doesn't need
 // to change for them.
+//
+// Phase 3A.5 (final) — priority lanes. Three FIFO lanes (high/normal/low)
+// instead of one; drain() always exhausts "high" before touching
+// "normal", and "normal" before "low". Every existing enqueue(label, work)
+// call site is unaffected: the third argument defaults to "normal", which
+// is the only lane that existed before this change, so a queue with only
+// normal-priority work drains in exactly the same order as today.
 export class InMemoryTaskQueue implements TaskQueue {
   private tasks = new Map<string, Task>();
-  private queue: Array<{ id: string; work: () => Promise<unknown> }> = [];
+  private lanes: Record<TaskPriority, Array<{ id: string; work: () => Promise<unknown> }>> = {
+    high: [],
+    normal: [],
+    low: [],
+  };
   private draining = false;
 
   constructor(private readonly logger: Logger = defaultLogger) {}
 
-  enqueue<T>(label: string, work: () => Promise<T>): string {
+  enqueue<T>(label: string, work: () => Promise<T>, priority: TaskPriority = "normal"): string {
     const id = makeTaskId();
-    const task: Task<T> = { id, label, status: "pending", createdAt: new Date().toISOString() };
+    const task: Task<T> = {
+      id,
+      label,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      priority,
+    };
     this.tasks.set(id, task as Task);
-    this.queue.push({ id, work: work as () => Promise<unknown> });
-    this.logger.debug(`Task queued: ${label}`, { id });
+    this.lanes[priority].push({ id, work: work as () => Promise<unknown> });
+    this.logger.debug(`Task queued: ${label}`, { id, priority });
     void this.drain();
     return id;
   }
@@ -40,11 +57,17 @@ export class InMemoryTaskQueue implements TaskQueue {
     return [...this.tasks.values()];
   }
 
+  // Pulls the next item across lanes in priority order (high, then
+  // normal, then low), FIFO within whichever lane it comes from.
+  private takeNext(): { id: string; work: () => Promise<unknown> } | undefined {
+    return this.lanes.high.shift() ?? this.lanes.normal.shift() ?? this.lanes.low.shift();
+  }
+
   private async drain(): Promise<void> {
     if (this.draining) return;
     this.draining = true;
     try {
-      let next = this.queue.shift();
+      let next = this.takeNext();
       while (next) {
         const task = this.tasks.get(next.id);
         if (task) task.status = "running";
@@ -61,7 +84,7 @@ export class InMemoryTaskQueue implements TaskQueue {
           }
           this.logger.error(`Task failed: ${next.id}`, { error: err });
         }
-        next = this.queue.shift();
+        next = this.takeNext();
       }
     } finally {
       this.draining = false;
