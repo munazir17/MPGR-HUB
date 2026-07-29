@@ -11,6 +11,7 @@ import { AgentEmptyState } from "@/components/features/agent/AgentEmptyState";
 import { AgentInput } from "@/components/features/agent/AgentInput";
 import { AgentPromptSuggestions } from "@/components/features/agent/AgentPromptSuggestions";
 import { AgentErrorBanner } from "@/components/features/agent/AgentErrorBanner";
+import { AgentErrorBoundary } from "@/components/features/agent/AgentErrorBoundary";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import type { AgentStatusId } from "@/lib/agent-config";
 
@@ -56,49 +57,55 @@ export default function AgentPage() {
               <p className="text-sm text-muted">Loading conversation...</p>
             </GlassCard>
           ) : (
-            <GlassCard className="flex h-[560px] flex-col overflow-hidden p-0 sm:h-[600px]">
-              <div className="flex items-center justify-between border-b border-white/[0.08] px-4 py-3 sm:px-6">
-                <p className="text-sm font-semibold text-white">Conversation</p>
-                {hasMessages && (
-                  <button
-                    type="button"
-                    onClick={clearChat}
-                    disabled={thinking}
-                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] font-medium text-muted transition-colors duration-200 hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <RotateCcw className="h-3 w-3" aria-hidden="true" />
-                    Clear
-                  </button>
-                )}
-              </div>
-
-              {hasMessages ? (
-                <AgentChatWindow
-                  messages={messages}
-                  thinking={thinking}
-                  onSelectPrompt={sendMessage}
-                  onFeedback={sendFeedback}
-                  onRegenerate={regenerateLastMessage}
-                  canRegenerate={canRegenerate}
-                />
-              ) : (
-                <AgentEmptyState onSelectPrompt={sendMessage} />
-              )}
-
-              {hasMessages && (
-                <div className="px-4 pt-3 sm:px-6">
-                  <AgentPromptSuggestions variant="row" onSelect={sendMessage} disabled={thinking} />
+            // Phase 3A.5 — wrapped in AgentErrorBoundary (objective 8) so a
+            // render crash anywhere in the conversation UI can't take down
+            // the rest of the page (Navbar, hero, wallet connection state
+            // above all stay outside the boundary and unaffected).
+            <AgentErrorBoundary>
+              <GlassCard className="flex h-[560px] flex-col overflow-hidden p-0 sm:h-[600px]">
+                <div className="flex items-center justify-between border-b border-white/[0.08] px-4 py-3 sm:px-6">
+                  <p className="text-sm font-semibold text-white">Conversation</p>
+                  {hasMessages && (
+                    <button
+                      type="button"
+                      onClick={clearChat}
+                      disabled={thinking}
+                      className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] font-medium text-muted transition-colors duration-200 hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                      Clear
+                    </button>
+                  )}
                 </div>
-              )}
 
-              <AnimatePresence>
-                {error && (
-                  <AgentErrorBanner message={error} onRetry={retryLastMessage} onDismiss={dismissError} />
+                {hasMessages ? (
+                  <AgentChatWindow
+                    messages={messages}
+                    thinking={thinking}
+                    onSelectPrompt={sendMessage}
+                    onFeedback={sendFeedback}
+                    onRegenerate={regenerateLastMessage}
+                    canRegenerate={canRegenerate}
+                  />
+                ) : (
+                  <AgentEmptyState onSelectPrompt={sendMessage} />
                 )}
-              </AnimatePresence>
 
-              <AgentInput onSend={sendMessage} disabled={thinking} />
-            </GlassCard>
+                {hasMessages && (
+                  <div className="px-4 pt-3 sm:px-6">
+                    <AgentPromptSuggestions variant="row" onSelect={sendMessage} disabled={thinking} />
+                  </div>
+                )}
+
+                <AnimatePresence>
+                  {error && (
+                    <AgentErrorBanner message={error} onRetry={retryLastMessage} onDismiss={dismissError} />
+                  )}
+                </AnimatePresence>
+
+                <AgentInput onSend={sendMessage} disabled={thinking} />
+              </GlassCard>
+            </AgentErrorBoundary>
           )}
 
           <p className="text-center text-[11px] text-muted">
