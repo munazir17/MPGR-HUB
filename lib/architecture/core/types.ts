@@ -34,18 +34,20 @@ export interface Logger {
 // without importing UI or engine internals.
 
 export interface AgentEventMap {
-   message_sent: { address: string; messageId: string; content: string };
-   message_received: { address: string; messageId: string; intent: string };
-   memory_saved: { address: string; key: string };
-   memory_updated: { address: string; key: string };
-   wallet_changed: { address: string | null };
-   portfolio_updated: { address: string };
-   rewards_claimed: { address: string; amount: number };
-   staking_changed: { address: string };
-+  // Phase 3A.6 — Advanced Conversational UX. Additive only; every event
-+  // above is untouched.
-+  command_executed: { address: string; commandName: string; resultKind: "message" | "navigate" | "error" };
-+  action_history_cleared: { address: string };
+  message_sent: { address: string; messageId: string; content: string };
+  message_received: { address: string; messageId: string; intent: string };
+  memory_saved: { address: string; key: string };
+  memory_updated: { address: string; key: string };
+  wallet_changed: { address: string | null };
+  portfolio_updated: { address: string };
+  rewards_claimed: { address: string; amount: number };
+  staking_changed: { address: string };
+  // Phase 3A.6 — Advanced Conversational UX. Additive only; every event
+  // above is untouched. Emitted by
+  // lib/architecture/ai/agent-ai-service.ts's runCommand() and, in
+  // future, lib/agent-commands/action-history.ts's clear flow.
+  command_executed: { address: string; commandName: string; resultKind: "message" | "navigate" | "error" };
+  action_history_cleared: { address: string };
 }
 
 export type AgentEventName = keyof AgentEventMap;
