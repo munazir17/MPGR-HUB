@@ -7,35 +7,13 @@ import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 // Phase 3A.2 — replies come from lib/agent-intelligence.ts.
 // Phase 3A.3 — messages carry actions/highlights/followUps.
 // Phase 3A.4 — feedback + regenerateLastReply + setMessageFeedback.
+// Phase 3A.5 — persistence goes through getMemoryProvider() instead of
+// lib/storage.ts directly; every exported function here is async.
 //
-// Phase 3A.5 — Production Architecture Hardening: persistence no longer
-// calls lib/storage.ts's readJSON/writeJSON directly. It goes through
-// getMemoryProvider() (lib/architecture/memory/memory-provider-registry.ts),
-// whose default implementation (LocalMemoryProvider) wraps those exact
-// same functions — so behavior is unchanged, but the AI layer no longer
-// has a hard dependency on localStorage. This is what makes
-// PersistentMemoryProvider / HybridMemoryProvider swappable later without
-// touching this file again.
-//
-// The ONLY externally-visible effect of that change: every exported
-// function below is async (it awaits the provider) instead of sync.
-// hooks/useAgentChat.ts — the sole consumer of these functions — has been
-// updated accordingly (see lib/architecture/ai/agent-ai-service.ts, which
-// wraps these calls, and the hook itself).
-//
-// Message-shape and business-rule logic (createMessage, findPreviousIntent,
-// the regenerate/feedback rules) is UNCHANGED from 3A.4 — only the two
-// persistence primitives (getAgentState / saveAgentState) were touched.
-//
-// Phase 3A.6 — Advanced Conversational UX. AgentMessage gains two
-// optional fields (isCommand, commandName) so a slash-command reply can
-// be told apart from a lib/agent-intelligence.ts reply, and one new
-// exported function (appendCommandMessage) that persists a command reply
-// through the exact same getAgentState/saveAgentState path as
-// appendAssistantReply. It does NOT call lib/agent-intelligence.ts —
-// lib/agent-commands/action-executor.ts has already computed the reply
-// text before this is called. Every existing function/field below is
-// otherwise untouched.
+// Phase 3A.6 addendum — added appendAssistantMessage (below) for the
+// slash-command path in lib/agent-commands/*, which resolves replies
+// deterministically and must NOT go through generateIntelligentReply.
+// Everything above this line is unchanged from 3A.5.
 
 export type AgentRole = "user" | "assistant";
 export type AgentFeedback = "up" | "down";
@@ -50,13 +28,6 @@ export interface AgentMessage {
   highlights?: AgentHighlight[];
   followUps?: string[];
   feedback?: AgentFeedback;
-  // Phase 3A.6 — set when this message originated from a slash command
-  // rather than lib/agent-intelligence.ts's NLP reply path. Purely
-  // informational (e.g. lets the UI skip the streaming reveal for
-  // instant command replies if desired) — persistence/shape otherwise
-  // identical to any other assistant message.
-  isCommand?: boolean;
-  commandName?: string;
 }
 
 export interface AgentState {
@@ -101,11 +72,6 @@ function createMessage(role: AgentRole, content: string, extra?: AssistantExtras
   };
 }
 
-// Appends a user message and persists immediately, so the message is never
-// lost even if the assistant reply step is interrupted. This ordering
-// guarantee (user message always saved BEFORE reply generation starts) is
-// what lib/architecture/ai/crash-recovery.ts relies on to detect an
-// interrupted generation on the next load.
 export async function appendUserMessage(address: string, content: string): Promise<AgentState> {
   const trimmed = content.trim();
   if (!trimmed) return getAgentState(address);
@@ -140,8 +106,27 @@ export async function appendAssistantReply(
   return saveAgentState(updated);
 }
 
-// Phase 3A.4 — discards the last assistant reply and generates a fresh one
-// for the same user prompt. Restricted to the true last message.
+// Phase 3A.6 — appends an assistant message whose text was already
+// computed elsewhere (e.g. lib/agent-commands/action-executor.ts's
+// deterministic command results) without calling
+// generateIntelligentReply. Reuses the exact same createMessage +
+// saveAgentState path every other function here uses — no new
+// persistence logic, no duplicated message-shape rules. `extra` is
+// optional so a future command result carrying actions/highlights can
+// use this same function without a signature change.
+export async function appendAssistantMessage(
+  address: string,
+  content: string,
+  extra?: AssistantExtras
+): Promise<AgentState> {
+  const state = await getAgentState(address);
+  const updated: AgentState = {
+    ...state,
+    messages: [...state.messages, createMessage("assistant", content, extra)],
+  };
+  return saveAgentState(updated);
+}
+
 export async function regenerateLastReply(address: string, context: AgentContext): Promise<AgentState> {
   const state = await getAgentState(address);
   const last = state.messages[state.messages.length - 1];
@@ -167,7 +152,6 @@ export async function regenerateLastReply(address: string, context: AgentContext
   return saveAgentState(updated);
 }
 
-// Phase 3A.4 — toggles 👍/👎 on an assistant message.
 export async function setMessageFeedback(
   address: string,
   messageId: string,
@@ -187,28 +171,4 @@ export async function setMessageFeedback(
 
 export async function clearAgentState(address: string): Promise<AgentState> {
   return saveAgentState(emptyState(address));
-}
-
-// Phase 3A.6 — persists a command-originated assistant message through
-// the exact same state/save path as appendAssistantReply, so command
-// replies live in the same AgentState, survive reload, and interact
-// correctly with regenerate/feedback/crash-recovery. Does not call
-// lib/agent-intelligence.ts at all — the reply text is already computed
-// by lib/agent-commands/action-executor.ts before this is called.
-export async function appendCommandMessage(
-  address: string,
-  content: string,
-  commandName: string
-): Promise<AgentState> {
-  const state = await getAgentState(address);
-  const message: AgentMessage = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-    role: "assistant",
-    content,
-    timestamp: new Date().toISOString(),
-    isCommand: true,
-    commandName,
-  };
-  const updated: AgentState = { ...state, messages: [...state.messages, message] };
-  return saveAgentState(updated);
 }
