@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { motion } from "framer-motion";
-import { Bot } from "lucide-react";
 import { AgentChatBubble } from "./AgentChatBubble";
 import { AgentFollowUpChips } from "./AgentFollowUpChips";
 import { AgentDateSeparator, getMessageDayKey } from "./AgentDateSeparator";
+import { AgentTypingIndicator } from "./AgentTypingIndicator";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 
 interface AgentChatWindowProps {
@@ -15,30 +14,10 @@ interface AgentChatWindowProps {
   onFeedback: (messageId: string, feedback: AgentFeedback) => void;
   onRegenerate: () => void;
   canRegenerate: boolean;
-}
-
-function ThinkingBubble() {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="flex items-end gap-2"
-    >
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-premium shadow-glow-gold ring-1 ring-white/10">
-        <Bot className="h-3.5 w-3.5 text-white" aria-hidden="true" />
-      </span>
-      <div className="flex items-center gap-1 rounded-2xl rounded-bl-sm border border-white/[0.08] bg-white/[0.04] px-4 py-3 backdrop-blur-xl">
-        {[0, 1, 2].map((i) => (
-          <motion.span
-            key={i}
-            className="h-1.5 w-1.5 rounded-full bg-primary-glow"
-            animate={{ opacity: [0.3, 1, 0.3] }}
-            transition={{ duration: 1.1, repeat: Infinity, delay: i * 0.15, ease: "easeInOut" }}
-          />
-        ))}
-      </div>
-    </motion.div>
-  );
+  // Phase 3A.6 — id of the message currently being revealed via
+  // useStreamingText. Optional so this component still renders correctly
+  // with no streaming behavior if unset (e.g. isolated preview).
+  streamingMessageId?: string | null;
 }
 
 // Finds the last assistant message that actually has follow-up prompts to
@@ -57,13 +36,16 @@ function findLastFollowUpIndex(messages: AgentMessage[]): number {
 //
 // Phase 3A.4 Batch 3:
 // - Inserts an <AgentDateSeparator> whenever a message's calendar day
-//   differs from the previous one (via AgentDateSeparator.tsx's
-//   getMessageDayKey), so a multi-day conversation reads like a normal
-//   chat history instead of one undifferentiated scroll.
-// - Forwards onFeedback/onRegenerate to each AgentChatBubble, and computes
-//   `showRegenerate` per-message (true only for the actual last message,
-//   and only when the hook says regeneration is currently valid) rather
-//   than trusting each bubble to know its own position in the list.
+//   differs from the previous one.
+// - Forwards onFeedback/onRegenerate to each AgentChatBubble, computes
+//   `showRegenerate` per-message.
+//
+// Phase 3A.6:
+// - ThinkingBubble extracted to AgentTypingIndicator.tsx (same markup,
+//   reusable) — no visual change here.
+// - The message matching streamingMessageId is passed through as
+//   `isStreaming` to AgentChatBubble, which owns the actual reveal via
+//   useStreamingText.
 export function AgentChatWindow({
   messages,
   thinking,
@@ -71,6 +53,7 @@ export function AgentChatWindow({
   onFeedback,
   onRegenerate,
   canRegenerate,
+  streamingMessageId,
 }: AgentChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -100,6 +83,7 @@ export function AgentChatWindow({
               onRegenerate={onRegenerate}
               showRegenerate={isLastAssistant && canRegenerate}
               disabled={thinking}
+              isStreaming={message.id === streamingMessageId}
             />
             {i === lastFollowUpIndex && (
               <AgentFollowUpChips followUps={message.followUps!} onSelect={onSelectPrompt} disabled={thinking} />
@@ -107,7 +91,7 @@ export function AgentChatWindow({
           </div>
         );
       })}
-      {thinking && <ThinkingBubble />}
+      {thinking && <AgentTypingIndicator />}
       <div ref={bottomRef} />
     </div>
   );
