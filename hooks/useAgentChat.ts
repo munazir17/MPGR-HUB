@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAccount } from "wagmi";
 import { useXP } from "@/hooks/useXP";
 import { useRewards } from "@/hooks/useRewards";
@@ -12,7 +13,12 @@ import { useHolderTier } from "@/lib/useHolderTier";
 import { buildAgentContext } from "@/lib/agent-context";
 import { agentAIService } from "@/lib/architecture/ai/agent-ai-service-instance";
 import { findInterruptedPrompt } from "@/lib/architecture/ai/crash-recovery";
+import { isSlashCommand } from "@/lib/agent-commands/parser";
+import { executeCommandInput } from "@/lib/agent-commands/action-executor";
+import { getActionHistory, recordAction, clearActionHistory, type ActionHistoryEntry } from "@/lib/agent-commands/action-history";
+import { useCommandPalette } from "@/hooks/useCommandPalette";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
+import type { SlashCommand } from "@/lib/agent-commands/types";
 
 const THINKING_DELAY_MIN_MS = 600;
 const THINKING_DELAY_MAX_MS = 1400;
@@ -35,19 +41,17 @@ const GENERATION_ERROR_MESSAGE = "Something went wrong generating a reply. Pleas
 // emission, timing, and logging. The hook's PUBLIC return shape (messages,
 // thinking, error, sendMessage, clearChat, retryLastMessage,
 // regenerateLastMessage, sendFeedback, dismissError, canRegenerate) is
-// UNCHANGED — app/agent/page.tsx needed no changes for this refactor.
+// UNCHANGED from 3A.5 — only additive fields below.
 //
-// Also adds crash recovery on load (lib/architecture/ai/crash-recovery.ts):
-// if a wallet's persisted conversation ends with a user message that
-// never got a reply (tab closed mid-generation), that reply is generated
-// once, automatically, without re-appending the user's message.
-//
-// `loadTokenRef` guards every async continuation against a stale response
-// landing after the wallet address has changed mid-flight — irrelevant
-// for today's LocalMemoryProvider (resolves near-instantly) but the
-// correct behavior once a MemoryProvider can hit a network.
+// Phase 3A.6 — Advanced Conversational UX. sendMessage now detects a
+// leading "/" and routes through lib/agent-commands/action-executor.ts
+// instead of agentAIService.generateReply(); every other message still
+// goes through the exact same conversational path as before. New
+// additive return fields: commandPalette, actionHistory,
+// clearActionHistory, streamingMessageId.
 export function useAgentChat() {
   const { address, isConnected } = useAccount();
+  const router = useRouter();
   const { record: xpRecord } = useXP();
   const { claimableTotal, totalClaimed } = useRewards();
   const { totalStaked, totalClaimableRewards, activePositionsCount } = useStaking();
@@ -60,8 +64,12 @@ export function useAgentChat() {
   const [thinking, setThinking] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionHistory, setActionHistory] = useState<ActionHistoryEntry[]>([]);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadTokenRef = useRef(0);
+
+  const commandPalette = useCommandPalette();
 
   const context = useMemo(
     () =>
@@ -92,8 +100,6 @@ export function useAgentChat() {
     ]
   );
 
-  // Load (or reset) conversation state whenever the wallet changes, then
-  // run crash recovery if the loaded state ends mid-generation.
   useEffect(() => {
     loadTokenRef.current += 1;
     const token = loadTokenRef.current;
@@ -103,6 +109,7 @@ export function useAgentChat() {
       setThinking(false);
       setHasLoaded(false);
       setError(null);
+      setActionHistory([]);
       return;
     }
 
@@ -113,6 +120,10 @@ export function useAgentChat() {
       if (loadTokenRef.current !== token) return;
       setMessages(state.messages);
       setHasLoaded(true);
+
+      const history = await getActionHistory(address);
+      if (loadTokenRef.current !== token) return;
+      setActionHistory(history);
 
       const interruptedPrompt = findInterruptedPrompt(state);
       if (!interruptedPrompt) return;
@@ -130,9 +141,6 @@ export function useAgentChat() {
       } finally {
         if (loadTokenRef.current === token) setThinking(false);
       }
-      // Deliberately only re-runs on address/connection change, not on
-      // every context recompute — recovery should happen once per load,
-      // not every time an unrelated hook (useXP, useStaking, ...) updates.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -144,11 +152,58 @@ export function useAgentChat() {
     };
   }, [address]);
 
+  // Phase 3A.6 — command path. Never touches lib/agent-intelligence.ts;
+  // resolves instantly (no THINKING_DELAY), matching a command's
+  // deterministic nature. "navigate" results also push a route change.
+  const executeCommand = useCallback(
+    (raw: string) => {
+      if (!address) return;
+      const executed = executeCommandInput(raw, context);
+      if (!executed) return;
+
+      const { commandName, result } = executed;
+      const token = loadTokenRef.current;
+
+      (async () => {
+        if (result.kind === "error") {
+          setError(result.text);
+          return;
+        }
+
+        const replyText = result.text;
+        try {
+          const state = await agentAIService.runCommand(address, commandName, replyText);
+          if (loadTokenRef.current !== token) return;
+          setMessages(state.messages);
+          setError(null);
+          const last = state.messages[state.messages.length - 1];
+          setStreamingMessageId(last?.id ?? null);
+
+          const history = await recordAction(address, commandName, result);
+          if (loadTokenRef.current !== token) return;
+          setActionHistory(history);
+        } catch (err) {
+          if (loadTokenRef.current !== token) return;
+          console.error("MPGR Agent: command execution failed", err);
+          setError(GENERATION_ERROR_MESSAGE);
+        }
+
+        if (result.kind === "navigate") router.push(result.href);
+      })();
+    },
+    [address, context, router]
+  );
+
   const sendMessage = useCallback(
     (content: string) => {
       if (!address) return;
       const trimmed = content.trim();
       if (!trimmed || thinking) return;
+
+      if (isSlashCommand(trimmed)) {
+        executeCommand(trimmed);
+        return;
+      }
 
       const token = loadTokenRef.current;
       setThinking(true);
@@ -174,6 +229,8 @@ export function useAgentChat() {
             if (loadTokenRef.current !== token) return;
             setMessages(afterAssistant.messages);
             setError(null);
+            const last = afterAssistant.messages[afterAssistant.messages.length - 1];
+            setStreamingMessageId(last?.id ?? null);
           } catch (err) {
             if (loadTokenRef.current !== token) return;
             console.error("MPGR Agent: failed to generate a reply", err);
@@ -184,7 +241,7 @@ export function useAgentChat() {
         }, delay);
       })();
     },
-    [address, thinking, context]
+    [address, thinking, context, executeCommand]
   );
 
   const retryLastMessage = useCallback(() => {
@@ -268,6 +325,23 @@ export function useAgentChat() {
     })();
   }, [address]);
 
+  // Phase 3A.6
+  const clearHistory = useCallback(() => {
+    if (!address) return;
+    (async () => {
+      await clearActionHistory(address);
+      setActionHistory([]);
+    })();
+  }, [address]);
+
+  const selectPaletteCommand = useCallback(
+    (command: SlashCommand) => {
+      commandPalette.close();
+      executeCommand(`/${command.name}`);
+    },
+    [commandPalette, executeCommand]
+  );
+
   const canRegenerate = !thinking && messages.length > 0 && messages[messages.length - 1]?.role === "assistant";
 
   return {
@@ -283,5 +357,11 @@ export function useAgentChat() {
     regenerateLastMessage,
     sendFeedback,
     dismissError,
+    // Phase 3A.6 additions
+    commandPalette,
+    selectPaletteCommand,
+    actionHistory,
+    clearHistory,
+    streamingMessageId,
   };
 }
