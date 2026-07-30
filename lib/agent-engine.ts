@@ -31,70 +31,57 @@ export type AgentRole = "user" | "assistant";
 export type AgentFeedback = "up" | "down";
 
 export interface AgentMessage {
-  id: string;
-  role: AgentRole;
-  content: string;
-  timestamp: string;
-  intent?: AgentIntent;
-  actions?: AgentAction[];
-  highlights?: AgentHighlight[];
-  followUps?: string[];
-  feedback?: AgentFeedback;
-
-  // Phase 3A.6 — set when this message originated from a slash command
-  // rather than lib/agent-intelligence.ts's NLP reply path. Purely
-  // informational (e.g. lets the UI skip the streaming reveal for
-  // instant command replies if desired) — persistence/shape otherwise
-  // identical to any other assistant message.
-  isCommand?: boolean;
-  commandName?: string;
+id: string;
+role: AgentRole;
+content: string;
+timestamp: string;
+intent?: AgentIntent;
+actions?: AgentAction[];
+highlights?: AgentHighlight[];
+followUps?: string[];
+feedback?: AgentFeedback;
 }
 
 export interface AgentState {
-  address: string;
-  messages: AgentMessage[];
+address: string;
+messages: AgentMessage[];
 }
 
 function storageKey(address: string): string {
-  return `mpgr-hub:agent:${address.toLowerCase()}`;
+return mpgr-hub:agent:${address.toLowerCase()};
 }
 
 function emptyState(address: string): AgentState {
-  return { address, messages: [] };
+return { address, messages: [] };
 }
 
 export async function getAgentState(address: string): Promise<AgentState> {
-  return getMemoryProvider().get<AgentState>(storageKey(address), emptyState(address));
+return getMemoryProvider().get<AgentState>(storageKey(address), emptyState(address));
 }
 
 async function saveAgentState(state: AgentState): Promise<AgentState> {
-  await getMemoryProvider().set(storageKey(state.address), state);
-  return state;
+await getMemoryProvider().set(storageKey(state.address), state);
+return state;
 }
 
 interface AssistantExtras {
-  intent?: AgentIntent;
-  actions?: AgentAction[];
-  highlights?: AgentHighlight[];
-  followUps?: string[];
-
-  isCommand?: boolean;
-  commandName?: string;
+intent?: AgentIntent;
+actions?: AgentAction[];
+highlights?: AgentHighlight[];
+followUps?: string[];
 }
 
 function createMessage(role: AgentRole, content: string, extra?: AssistantExtras): AgentMessage {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-    role,
-    content,
-    timestamp: new Date().toISOString(),
-    ...(extra?.intent ? { intent: extra.intent } : {}),
-    ...(extra?.actions && extra.actions.length > 0 ? { actions: extra.actions } : {}),
-    ...(extra?.highlights && extra.highlights.length > 0 ? { highlights: extra.highlights } : {}),
-    ...(extra?.followUps && extra.followUps.length > 0 ? { followUps: extra.followUps } : {}),
-    ...(extra?.isCommand ? { isCommand: true } : {}),
-    ...(extra?.commandName ? { commandName: extra.commandName } : {}),
-  };
+return {
+id: ${Date.now()}-${Math.random().toString(36).slice(2, 9)},
+role,
+content,
+timestamp: new Date().toISOString(),
+...(extra?.intent ? { intent: extra.intent } : {}),
+...(extra?.actions && extra.actions.length > 0 ? { actions: extra.actions } : {}),
+...(extra?.highlights && extra.highlights.length > 0 ? { highlights: extra.highlights } : {}),
+...(extra?.followUps && extra.followUps.length > 0 ? { followUps: extra.followUps } : {}),
+};
 }
 
 // Appends a user message and persists immediately, so the message is never
@@ -103,122 +90,86 @@ function createMessage(role: AgentRole, content: string, extra?: AssistantExtras
 // what lib/architecture/ai/crash-recovery.ts relies on to detect an
 // interrupted generation on the next load.
 export async function appendUserMessage(address: string, content: string): Promise<AgentState> {
-  const trimmed = content.trim();
-  if (!trimmed) return getAgentState(address);
-  const state = await getAgentState(address);
-  const updated: AgentState = {
-    ...state,
-    messages: [...state.messages, createMessage("user", trimmed)],
-  };
-  return saveAgentState(updated);
+const trimmed = content.trim();
+if (!trimmed) return getAgentState(address);
+const state = await getAgentState(address);
+const updated: AgentState = {
+...state,
+messages: [...state.messages, createMessage("user", trimmed)],
+};
+return saveAgentState(updated);
 }
 
 function findPreviousIntent(messages: AgentMessage[]): AgentIntent | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message.role === "assistant" && message.intent) return message.intent;
-  }
-  return null;
+for (let i = messages.length - 1; i >= 0; i--) {
+const message = messages[i];
+if (message.role === "assistant" && message.intent) return message.intent;
+}
+return null;
 }
 
 export async function appendAssistantReply(
-  address: string,
-  userPrompt: string,
-  context: AgentContext
+address: string,
+userPrompt: string,
+context: AgentContext
 ): Promise<AgentState> {
-  const state = await getAgentState(address);
-  const previousIntent = findPreviousIntent(state.messages);
-  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(
-    userPrompt,
-    context,
-    previousIntent
-  );
-
-  const updated: AgentState = {
-    ...state,
-    messages: [
-      ...state.messages,
-      createMessage("assistant", reply, {
-        intent,
-        actions,
-        highlights,
-        followUps,
-      }),
-    ],
-  };
-
-  return saveAgentState(updated);
+const state = await getAgentState(address);
+const previousIntent = findPreviousIntent(state.messages);
+const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(userPrompt, context, previousIntent);
+const updated: AgentState = {
+...state,
+messages: [...state.messages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
+};
+return saveAgentState(updated);
 }
 
 // Phase 3A.4 — discards the last assistant reply and generates a fresh one
 // for the same user prompt. Restricted to the true last message.
-export async function regenerateLastReply(
-  address: string,
-  context: AgentContext
-): Promise<AgentState> {
-  const state = await getAgentState(address);
-  const last = state.messages[state.messages.length - 1];
-  if (!last || last.role !== "assistant") return state;
+export async function regenerateLastReply(address: string, context: AgentContext): Promise<AgentState> {
+const state = await getAgentState(address);
+const last = state.messages[state.messages.length - 1];
+if (!last || last.role !== "assistant") return state;
 
-  let userIndex = -1;
-  for (let i = state.messages.length - 2; i >= 0; i--) {
-    if (state.messages[i].role === "user") {
-      userIndex = i;
-      break;
-    }
-  }
+let userIndex = -1;
+for (let i = state.messages.length - 2; i >= 0; i--) {
+if (state.messages[i].role === "user") {
+userIndex = i;
+break;
+}
+}
+if (userIndex === -1) return state;
 
-  if (userIndex === -1) return state;
-
-  const userPrompt = state.messages[userIndex].content;
-  const trimmedMessages = state.messages.slice(0, -1);
-  const previousIntent = findPreviousIntent(trimmedMessages);
-
-  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(
-    userPrompt,
-    context,
-    previousIntent
-  );
-
-  const updated: AgentState = {
-    ...state,
-    messages: [
-      ...trimmedMessages,
-      createMessage("assistant", reply, {
-        intent,
-        actions,
-        highlights,
-        followUps,
-      }),
-    ],
-  };
-
-  return saveAgentState(updated);
+const userPrompt = state.messages[userIndex].content;
+const trimmedMessages = state.messages.slice(0, -1);
+const previousIntent = findPreviousIntent(trimmedMessages);
+const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(userPrompt, context, previousIntent);
+const updated: AgentState = {
+...state,
+messages: [...trimmedMessages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
+};
+return saveAgentState(updated);
 }
 
 // Phase 3A.4 — toggles 👍/👎 on an assistant message.
 export async function setMessageFeedback(
-  address: string,
-  messageId: string,
-  feedback: AgentFeedback
+address: string,
+messageId: string,
+feedback: AgentFeedback
 ): Promise<AgentState> {
-  const state = await getAgentState(address);
-
-  const updated: AgentState = {
-    ...state,
-    messages: state.messages.map((message) =>
-      message.id === messageId && message.role === "assistant"
-        ? {
-            ...message,
-            feedback: message.feedback === feedback ? undefined : feedback,
-          }
-        : message
-    ),
-  };
-
-  return saveAgentState(updated);
+const state = await getAgentState(address);
+const updated: AgentState = {
+...state,
+messages: state.messages.map((message) =>
+message.id === messageId && message.role === "assistant"
+? { ...message, feedback: message.feedback === feedback ? undefined : feedback }
+: message
+),
+};
+return saveAgentState(updated);
 }
 
 export async function clearAgentState(address: string): Promise<AgentState> {
-  return saveAgentState(emptyState(address));
+return saveAgentState(emptyState(address));
 }
+
+Pura file replace kr ke do
