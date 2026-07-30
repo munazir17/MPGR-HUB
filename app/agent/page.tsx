@@ -29,6 +29,10 @@ export default function AgentPage() {
     regenerateLastMessage,
     sendFeedback,
     dismissError,
+    // Phase 3A.6
+    commandPalette,
+    selectPaletteCommand,
+    streamingMessageId,
   } = useAgentChat();
 
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking", "beta"] : ["online", "beta"];
@@ -57,10 +61,6 @@ export default function AgentPage() {
               <p className="text-sm text-muted">Loading conversation...</p>
             </GlassCard>
           ) : (
-            // Phase 3A.5 — wrapped in AgentErrorBoundary (objective 8) so a
-            // render crash anywhere in the conversation UI can't take down
-            // the rest of the page (Navbar, hero, wallet connection state
-            // above all stay outside the boundary and unaffected).
             <AgentErrorBoundary>
               <GlassCard className="flex h-[560px] flex-col overflow-hidden p-0 sm:h-[600px]">
                 <div className="flex items-center justify-between border-b border-white/[0.08] px-4 py-3 sm:px-6">
@@ -86,6 +86,7 @@ export default function AgentPage() {
                     onFeedback={sendFeedback}
                     onRegenerate={regenerateLastMessage}
                     canRegenerate={canRegenerate}
+                    streamingMessageId={streamingMessageId}
                   />
                 ) : (
                   <AgentEmptyState onSelectPrompt={sendMessage} />
@@ -103,14 +104,20 @@ export default function AgentPage() {
                   )}
                 </AnimatePresence>
 
-                <AgentInput onSend={sendMessage} disabled={thinking} />
+                <AgentInput
+                  onSend={sendMessage}
+                  disabled={thinking}
+                  commandPalette={commandPalette}
+                  onSelectCommand={selectPaletteCommand}
+                />
               </GlassCard>
             </AgentErrorBoundary>
           )}
 
           <p className="text-center text-[11px] text-muted">
             MPGR Agent is in local preview — replies are generated on-device. No external AI
-            services are connected in this phase.
+            services are connected in this phase. Try{" "}
+            <span className="text-primary-glow">/help</span> for available commands.
           </p>
         </motion.div>
       </main>
