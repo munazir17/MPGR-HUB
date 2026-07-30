@@ -40,6 +40,14 @@ export interface AgentMessage {
   highlights?: AgentHighlight[];
   followUps?: string[];
   feedback?: AgentFeedback;
+
+  // Phase 3A.6 — set when this message originated from a slash command
+  // rather than lib/agent-intelligence.ts's NLP reply path. Purely
+  // informational (e.g. lets the UI skip the streaming reveal for
+  // instant command replies if desired) — persistence/shape otherwise
+  // identical to any other assistant message.
+  isCommand?: boolean;
+  commandName?: string;
 }
 
 export interface AgentState {
@@ -69,6 +77,9 @@ interface AssistantExtras {
   actions?: AgentAction[];
   highlights?: AgentHighlight[];
   followUps?: string[];
+
+  isCommand?: boolean;
+  commandName?: string;
 }
 
 function createMessage(role: AgentRole, content: string, extra?: AssistantExtras): AgentMessage {
@@ -81,6 +92,8 @@ function createMessage(role: AgentRole, content: string, extra?: AssistantExtras
     ...(extra?.actions && extra.actions.length > 0 ? { actions: extra.actions } : {}),
     ...(extra?.highlights && extra.highlights.length > 0 ? { highlights: extra.highlights } : {}),
     ...(extra?.followUps && extra.followUps.length > 0 ? { followUps: extra.followUps } : {}),
+    ...(extra?.isCommand ? { isCommand: true } : {}),
+    ...(extra?.commandName ? { commandName: extra.commandName } : {}),
   };
 }
 
@@ -115,17 +128,34 @@ export async function appendAssistantReply(
 ): Promise<AgentState> {
   const state = await getAgentState(address);
   const previousIntent = findPreviousIntent(state.messages);
-  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(userPrompt, context, previousIntent);
+  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(
+    userPrompt,
+    context,
+    previousIntent
+  );
+
   const updated: AgentState = {
     ...state,
-    messages: [...state.messages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
+    messages: [
+      ...state.messages,
+      createMessage("assistant", reply, {
+        intent,
+        actions,
+        highlights,
+        followUps,
+      }),
+    ],
   };
+
   return saveAgentState(updated);
 }
 
 // Phase 3A.4 — discards the last assistant reply and generates a fresh one
 // for the same user prompt. Restricted to the true last message.
-export async function regenerateLastReply(address: string, context: AgentContext): Promise<AgentState> {
+export async function regenerateLastReply(
+  address: string,
+  context: AgentContext
+): Promise<AgentState> {
   const state = await getAgentState(address);
   const last = state.messages[state.messages.length - 1];
   if (!last || last.role !== "assistant") return state;
@@ -137,16 +167,32 @@ export async function regenerateLastReply(address: string, context: AgentContext
       break;
     }
   }
+
   if (userIndex === -1) return state;
 
   const userPrompt = state.messages[userIndex].content;
   const trimmedMessages = state.messages.slice(0, -1);
   const previousIntent = findPreviousIntent(trimmedMessages);
-  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(userPrompt, context, previousIntent);
+
+  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(
+    userPrompt,
+    context,
+    previousIntent
+  );
+
   const updated: AgentState = {
     ...state,
-    messages: [...trimmedMessages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
+    messages: [
+      ...trimmedMessages,
+      createMessage("assistant", reply, {
+        intent,
+        actions,
+        highlights,
+        followUps,
+      }),
+    ],
   };
+
   return saveAgentState(updated);
 }
 
@@ -157,14 +203,19 @@ export async function setMessageFeedback(
   feedback: AgentFeedback
 ): Promise<AgentState> {
   const state = await getAgentState(address);
+
   const updated: AgentState = {
     ...state,
     messages: state.messages.map((message) =>
       message.id === messageId && message.role === "assistant"
-        ? { ...message, feedback: message.feedback === feedback ? undefined : feedback }
+        ? {
+            ...message,
+            feedback: message.feedback === feedback ? undefined : feedback,
+          }
         : message
     ),
   };
+
   return saveAgentState(updated);
 }
 
