@@ -1,5 +1,6 @@
 import {
   appendAssistantReply,
+  appendCommandMessage,
   appendUserMessage,
   clearAgentState,
   getAgentState,
@@ -32,6 +33,13 @@ export interface AgentAIServiceDeps {
 // wanting a different Logger/EventBus, supplies its own without touching
 // this class's internals. See agent-ai-service-instance.ts for the one
 // place these are actually wired together.
+//
+// Phase 3A.6 — Advanced Conversational UX. Adds runCommand(), which
+// mirrors generateReply()'s exact shape (time -> persist -> emit events)
+// for command-originated messages instead of lib/agent-intelligence.ts
+// replies. No new dependency was needed — it reuses the same injected
+// deps, so agent-ai-service-instance.ts's constructor call is unchanged.
+// Every existing method below is untouched.
 export class AgentAIService {
   constructor(private readonly deps: AgentAIServiceDeps) {}
 
@@ -95,5 +103,20 @@ export class AgentAIService {
   // new dependency chain.
   enqueueBackgroundTask<T>(label: string, work: () => Promise<T>): string {
     return this.deps.taskQueue.enqueue(label, work);
+  }
+
+  // Phase 3A.6 — mirrors generateReply's shape exactly (time -> persist ->
+  // emit events), but for command-originated messages instead of
+  // lib/agent-intelligence.ts replies. replyText is already computed by
+  // lib/agent-commands/action-executor.ts before this is called; this
+  // method's only job is persistence + telemetry, same division of
+  // responsibility as every other method above.
+  async runCommand(address: string, commandName: string, replyText: string): Promise<AgentState> {
+    const state = await this.deps.performanceMonitor.time("agent.runCommand", () =>
+      appendCommandMessage(address, replyText, commandName)
+    );
+    this.deps.eventBus.emit("command_executed", { address, commandName, resultKind: "message" });
+    this.deps.eventBus.emit("memory_updated", { address, key: `agent:${address}` });
+    return state;
   }
 }
