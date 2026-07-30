@@ -127,6 +127,23 @@ export async function appendAssistantMessage(
   return saveAgentState(updated);
 }
 
+// Phase 3A.6 — appends an assistant message for a slash-command result
+// (lib/agent-commands/action-executor.ts's replyText), called by
+// lib/architecture/ai/agent-ai-service.ts's runCommand(). Reuses the same
+// createMessage + saveAgentState path as appendAssistantMessage — no new
+// persistence logic. `commandName` isn't stored on AgentMessage (no UI
+// currently reads it there); it's accepted here to match runCommand()'s
+// call signature and is already captured separately by the
+// command_executed event and lib/agent-commands/action-history.ts.
+export async function appendCommandMessage(
+  address: string,
+  content: string,
+  commandName: string
+): Promise<AgentState> {
+  void commandName;
+  return appendAssistantMessage(address, content);
+}
+
 export async function regenerateLastReply(address: string, context: AgentContext): Promise<AgentState> {
   const state = await getAgentState(address);
   const last = state.messages[state.messages.length - 1];
