@@ -1,6 +1,6 @@
 import {
+  appendAssistantMessage,
   appendAssistantReply,
-  appendCommandMessage,
   appendUserMessage,
   clearAgentState,
   getAgentState,
@@ -19,27 +19,6 @@ export interface AgentAIServiceDeps {
   taskQueue: TaskQueue;
 }
 
-// Phase 3A.5 — the "AI Service" in the UI -> Hook -> AI Service -> Memory
-// Provider -> Storage chain. This class does NOT reimplement
-// lib/agent-engine.ts's message rules (createMessage, intent carry-over,
-// regenerate/feedback semantics) — it calls them as-is and adds the
-// cross-cutting concerns those pure functions shouldn't know about: event
-// emission, timing, and logging. hooks/useAgentChat.ts talks to this
-// class; it never imports lib/agent-engine.ts's functions directly
-// anymore.
-//
-// Every dependency is injected via the constructor (objective 9) rather
-// than imported — a test, or a future service (AI Trading, AI Execution)
-// wanting a different Logger/EventBus, supplies its own without touching
-// this class's internals. See agent-ai-service-instance.ts for the one
-// place these are actually wired together.
-//
-// Phase 3A.6 — Advanced Conversational UX. Adds runCommand(), which
-// mirrors generateReply()'s exact shape (time -> persist -> emit events)
-// for command-originated messages instead of lib/agent-intelligence.ts
-// replies. No new dependency was needed — it reuses the same injected
-// deps, so agent-ai-service-instance.ts's constructor call is unchanged.
-// Every existing method below is untouched.
 export class AgentAIService {
   constructor(private readonly deps: AgentAIServiceDeps) {}
 
@@ -76,6 +55,28 @@ export class AgentAIService {
     return state;
   }
 
+  // Phase 3A.6 — command path (lib/agent-commands/*). Slash commands
+  // resolve deterministically and skip lib/agent-intelligence.ts
+  // entirely, so this persists the already-computed reply text via
+  // lib/agent-engine.ts's appendAssistantMessage rather than
+  // appendAssistantReply — same createMessage/saveAgentState path as
+  // every other method here, just without the intent-generation call.
+  // `commandName` is used as the emitted event's `intent` field so
+  // downstream listeners (future analytics/indexing) can distinguish a
+  // command result from a conversational one.
+  async runCommand(address: string, commandName: string, replyText: string): Promise<AgentState> {
+    const state = await this.deps.performanceMonitor.time("agent.runCommand", () =>
+      appendAssistantMessage(address, replyText)
+    );
+    const last = state.messages[state.messages.length - 1];
+    if (last && last.role === "assistant") {
+      this.deps.eventBus.emit("message_received", { address, messageId: last.id, intent: commandName });
+      this.deps.eventBus.emit("memory_updated", { address, key: `agent:${address}` });
+    }
+    this.deps.logger.debug("Command executed", { address, commandName });
+    return state;
+  }
+
   async regenerate(address: string, context: AgentContext): Promise<AgentState> {
     const state = await this.deps.performanceMonitor.time("agent.regenerate", () =>
       regenerateLastReply(address, context)
@@ -96,27 +97,7 @@ export class AgentAIService {
     return state;
   }
 
-  // Background-safe hook for future work (memory summarization/ranking,
-  // knowledge indexing, portfolio refresh) — enqueues onto the shared
-  // TaskQueue instead of running inline. Nothing calls this yet; it
-  // exists so Phase 3B can start enqueueing real jobs without adding a
-  // new dependency chain.
   enqueueBackgroundTask<T>(label: string, work: () => Promise<T>): string {
     return this.deps.taskQueue.enqueue(label, work);
-  }
-
-  // Phase 3A.6 — mirrors generateReply's shape exactly (time -> persist ->
-  // emit events), but for command-originated messages instead of
-  // lib/agent-intelligence.ts replies. replyText is already computed by
-  // lib/agent-commands/action-executor.ts before this is called; this
-  // method's only job is persistence + telemetry, same division of
-  // responsibility as every other method above.
-  async runCommand(address: string, commandName: string, replyText: string): Promise<AgentState> {
-    const state = await this.deps.performanceMonitor.time("agent.runCommand", () =>
-      appendCommandMessage(address, replyText, commandName)
-    );
-    this.deps.eventBus.emit("command_executed", { address, commandName, resultKind: "message" });
-    this.deps.eventBus.emit("memory_updated", { address, key: `agent:${address}` });
-    return state;
   }
 }
