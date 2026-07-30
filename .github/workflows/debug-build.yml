@@ -3,36 +3,19 @@ name: Debug Build
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
   debug:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
-      - name: Install
-        run: npm install
-
-      - name: Show TypeScript Version
-        run: npx tsc --version
-
-      - name: Find EventBus
-        run: |
-          grep -R "interface EventBus" . || true
-          grep -R "class InMemoryEventBus" . || true
-
-      - name: Type Check
-        run: npx tsc --noEmit --pretty false
-
-      - name: Next Build
-        run: npm run build
+      - run: npm install
+      - run: npx tsc --noEmit --pretty false
+      - run: npm run build
