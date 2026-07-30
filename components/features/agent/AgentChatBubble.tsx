@@ -6,6 +6,7 @@ import { clsx } from "clsx";
 import { AgentHighlightChips } from "./AgentHighlightChips";
 import { AgentActionCard } from "./AgentActionCard";
 import { AgentMessageToolbar } from "./AgentMessageToolbar";
+import { useStreamingText } from "@/hooks/useStreamingText";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 
 interface AgentChatBubbleProps {
@@ -14,6 +15,9 @@ interface AgentChatBubbleProps {
   onRegenerate?: () => void;
   showRegenerate?: boolean;
   disabled?: boolean;
+  // Phase 3A.6 — optional; only the freshest assistant message is ever
+  // marked streaming (see AgentChatWindow's streamingMessageId).
+  isStreaming?: boolean;
 }
 
 function formatTime(iso: string): string {
@@ -23,22 +27,27 @@ function formatTime(iso: string): string {
 // Phase 3A.3: highlights/actions rendering unchanged.
 //
 // Phase 3A.4 Batch 3: assistant bubbles now render AgentMessageToolbar
-// (copy / feedback / regenerate) next to the timestamp. Only rendered for
-// assistant messages — a user's own message has nothing to copy-feedback-
-// regenerate against. `onFeedback` / `onRegenerate` stay optional so this
-// component still works standalone (e.g. isolated preview/testing) without
-// a live hook wired behind it — it never reaches into agent-engine.ts or
-// storage.ts itself.
+// (copy / feedback / regenerate) next to the timestamp.
+//
+// Phase 3A.6: assistant messages reveal via useStreamingText when
+// isStreaming is true (freshest message only — see AgentChatWindow).
+// Highlights/actions/toolbar only appear once the reveal finishes
+// (`streamDone`), so action cards don't pop in mid-sentence.
 export function AgentChatBubble({
   message,
   onFeedback,
   onRegenerate,
   showRegenerate,
   disabled,
+  isStreaming,
 }: AgentChatBubbleProps) {
   const isUser = message.role === "user";
-  const hasHighlights = !isUser && !!message.highlights && message.highlights.length > 0;
-  const hasActions = !isUser && !!message.actions && message.actions.length > 0;
+  const { text: streamedContent, done: streamDone } = useStreamingText(message.content, !isUser && !!isStreaming);
+  const displayContent = !isUser && isStreaming ? streamedContent : message.content;
+  const revealComplete = isUser || !isStreaming || streamDone;
+
+  const hasHighlights = !isUser && revealComplete && !!message.highlights && message.highlights.length > 0;
+  const hasActions = !isUser && revealComplete && !!message.actions && message.actions.length > 0;
 
   return (
     <motion.div
@@ -73,7 +82,7 @@ export function AgentChatBubble({
               : "rounded-bl-sm border border-white/[0.08] bg-white/[0.04] text-white backdrop-blur-xl"
           )}
         >
-          {message.content}
+          {displayContent}
         </div>
 
         {hasActions && (
@@ -86,7 +95,7 @@ export function AgentChatBubble({
 
         <div className="flex items-center gap-1 px-1">
           <span className="text-[10px] text-muted">{formatTime(message.timestamp)}</span>
-          {!isUser && onFeedback && (
+          {!isUser && onFeedback && revealComplete && (
             <AgentMessageToolbar
               content={message.content}
               feedback={message.feedback}
