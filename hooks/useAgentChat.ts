@@ -17,6 +17,11 @@ import { isSlashCommand } from "@/lib/agent-commands/parser";
 import { executeCommandInput } from "@/lib/agent-commands/action-executor";
 import { getActionHistory, recordAction, clearActionHistory, type ActionHistoryEntry } from "@/lib/agent-commands/action-history";
 import { useCommandPalette } from "@/hooks/useCommandPalette";
+// Phase 3B Part 3 — Personalization snapshot (favorite topics, most-used
+// commands, preferred token, recent pages). Read-only from this hook's
+// perspective — every write into it happens in the background via
+// lib/architecture/ai/agent-ai-service.ts and hooks/useRecentPageTracking.ts.
+import { getPersonalizationSnapshot, type PersonalizationSnapshot } from "@/lib/architecture/memory/memory-engine";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 import type { SlashCommand } from "@/lib/agent-commands/types";
 
@@ -24,6 +29,15 @@ const THINKING_DELAY_MIN_MS = 600;
 const THINKING_DELAY_MAX_MS = 1400;
 
 const GENERATION_ERROR_MESSAGE = "Something went wrong generating a reply. Please try again.";
+
+const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
+  favoriteTopics: [],
+  mostUsedCommands: [],
+  preferredToken: "MPGR",
+  recentPages: [],
+  interactionCount: 0,
+  isReturningUser: false,
+};
 
 // Phase 3A.2 — this hook is the only place in the Agent feature that calls
 // other hooks (useXP, useRewards, useStaking, useTokenLock, usePremium,
@@ -49,6 +63,13 @@ const GENERATION_ERROR_MESSAGE = "Something went wrong generating a reply. Pleas
 // goes through the exact same conversational path as before. New
 // additive return fields: commandPalette, actionHistory,
 // clearActionHistory, streamingMessageId.
+//
+// Phase 3B Part 3 — Personalization. Loads a PersonalizationSnapshot
+// alongside the existing state/actionHistory load (same effect, same
+// address-change trigger), feeds its mostUsedCommands into
+// useCommandPalette() for usage-based ordering, and returns it as a new
+// additive field (`personalization`). No existing return field changes
+// shape or meaning.
 export function useAgentChat() {
   const { address, isConnected } = useAccount();
   const router = useRouter();
@@ -66,10 +87,11 @@ export function useAgentChat() {
   const [error, setError] = useState<string | null>(null);
   const [actionHistory, setActionHistory] = useState<ActionHistoryEntry[]>([]);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [personalization, setPersonalization] = useState<PersonalizationSnapshot>(EMPTY_PERSONALIZATION);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadTokenRef = useRef(0);
 
-  const commandPalette = useCommandPalette();
+  const commandPalette = useCommandPalette(personalization.mostUsedCommands);
 
   const context = useMemo(
     () =>
@@ -110,6 +132,7 @@ export function useAgentChat() {
       setHasLoaded(false);
       setError(null);
       setActionHistory([]);
+      setPersonalization(EMPTY_PERSONALIZATION);
       return;
     }
 
@@ -124,6 +147,18 @@ export function useAgentChat() {
       const history = await getActionHistory(address);
       if (loadTokenRef.current !== token) return;
       setActionHistory(history);
+
+      // Phase 3B Part 3 — loaded alongside action history; failure here
+      // is non-fatal to the chat itself, so it's wrapped so a broken
+      // memory read can never block the conversation from loading.
+      try {
+        const snapshot = await getPersonalizationSnapshot(address);
+        if (loadTokenRef.current !== token) return;
+        setPersonalization(snapshot);
+      } catch (err) {
+        if (loadTokenRef.current !== token) return;
+        console.error("MPGR Agent: failed to load personalization snapshot", err);
+      }
 
       const interruptedPrompt = findInterruptedPrompt(state);
       if (!interruptedPrompt) return;
@@ -363,5 +398,7 @@ export function useAgentChat() {
     actionHistory,
     clearHistory,
     streamingMessageId,
+    // Phase 3B Part 3 addition
+    personalization,
   };
 }
