@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import { MiniAppAutoConnect } from "@/components/MiniAppAutoConnect";
+import { RecentPageTracker } from "@/components/RecentPageTracker";
 import { BottomNav } from "@/components/BottomNav";
 
 export const metadata: Metadata = {
@@ -25,6 +26,7 @@ export default function RootLayout({
       <body className="min-h-screen bg-background pb-20 antialiased sm:pb-0">
         <Providers>
           <MiniAppAutoConnect />
+          <RecentPageTracker />
           {children}
           <BottomNav />
         </Providers>
