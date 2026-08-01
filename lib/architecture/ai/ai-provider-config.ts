@@ -2,15 +2,17 @@
 //
 // A pure, side-effect-free (besides reading process.env) resolver for
 // WHICH provider kind should be active — not the provider itself. No
-// network code, no SDK import, no API key is read or referenced here;
-// only a plain string identifying which provider a future composition
-// root (lib/architecture/ai/agent-ai-service-instance.ts, or a later
-// settings surface) should construct.
+// API key is read or referenced here; only a plain string identifying
+// which provider a composition root (lib/architecture/ai/ai-provider-registry.ts)
+// should construct.
 //
-// Only "deterministic" is implemented today (Phase 3C Part 1). The other
-// kinds are declared now so later Phase 3C parts can add real
-// implementations one at a time without touching this file's shape —
-// only IMPLEMENTED_PROVIDER_KINDS grows.
+// Phase 3C Part 6 addendum — "openai" is now implemented
+// (lib/architecture/ai/openai-ai-provider.ts + app/api/agent/complete/route.ts)
+// and added to IMPLEMENTED_PROVIDER_KINDS. The default remains
+// "deterministic" — setting NEXT_PUBLIC_AI_PROVIDER=openai is an
+// explicit opt-in, not automatic. "anthropic" / "gemini" / "ollama" are
+// still declared-but-unimplemented; requesting any of them still falls
+// back to "deterministic", exactly as before.
 
 export type AIProviderKind = "deterministic" | "openai" | "anthropic" | "gemini" | "ollama";
 
@@ -21,7 +23,7 @@ const ALL_PROVIDER_KINDS: readonly AIProviderKind[] = ["deterministic", "openai"
 // Grows as later Phase 3C parts add real implementations. Kept as its own
 // explicit list (rather than inferred from a registry) so "is this kind
 // actually usable right now" has a single, obvious source of truth.
-const IMPLEMENTED_PROVIDER_KINDS: readonly AIProviderKind[] = ["deterministic"];
+const IMPLEMENTED_PROVIDER_KINDS: readonly AIProviderKind[] = ["deterministic", "openai"];
 
 function isKnownProviderKind(value: string): value is AIProviderKind {
   return (ALL_PROVIDER_KINDS as readonly string[]).includes(value);
