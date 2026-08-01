@@ -188,9 +188,11 @@ function bestIntent(normalized: string): AgentIntent | null {
   const scored = scoreIntents(normalized);
   let best: { intent: AgentIntent; score: number } | null = null;
   for (const entry of scored) {
-    if (entry.score > 0 && (!best || entry.score > best.score)) best = entry;
+    if (entry.score > 0 && (!best || entry.score > best.score)) {
+      best = entry;
+    }
   }
-  return best?.intent ?? null;
+  return best ? best.intent : null;
 }
 
 interface DetectedIntent {
@@ -235,7 +237,7 @@ export function detectIntent(
   // generic general_help reply. If ranked recent history (across the
   // whole conversation, not just the last message) points strongly at
   // one topic, use that instead of a blind generic answer.
-  if (memoryContext?.dominantRecentIntent) {
+  if (memoryContext && memoryContext.dominantRecentIntent) {
     return { intent: memoryContext.dominantRecentIntent, greeting: false };
   }
 
@@ -431,5 +433,57 @@ function buildRecallNote(intent: AgentIntent, memoryContext?: ConversationMemory
         : null;
     case "locked_tokens":
       return delta.lockedChange !== null && delta.lockedChange !== 0
-        ? `Your locked balance is ${delta.lockedChange > 0 ? "up" : "down"} ${form
-                                                                              
+        ? `Your locked balance is ${delta.lockedChange > 0 ? "up" : "down"} ${formatCompactNumber(Math.abs(delta.lockedChange))} MPGR since last time.`
+        : null;
+    case "season_progress":
+      return delta.seasonPointsChange !== null && delta.seasonPointsChange > 0
+        ? `You've earned ${formatCompactNumber(delta.seasonPointsChange)} more season points since we last talked.`
+        : null;
+    default:
+      return null;
+  }
+}
+
+// Single entry point. Phase 3B swap point: this function's body becomes an
+// async model call; its signature (prompt + context + previousIntent) can
+// stay the same since AgentContext already carries everything a model
+// would need to ground its answer in real app state. actions/highlights/
+// followUps would then come from the model's structured output instead of
+// lib/agent-actions.ts's deterministic builders — the result shape stays
+// identical either way.
+//
+// Phase 3B Part 2 — memoryContext is the fourth, optional argument. It
+// only ever (a) resolves the fallback branch of detectIntent when nothing
+// else matched, and (b) appends an extra sentence onto a reply that would
+// otherwise be identical to before. It never changes which handler runs
+// for a direct keyword match, and omitting it entirely reproduces the
+// exact pre-Phase-3B-Part-2 output.
+export function generateIntelligentReply(
+  prompt: string,
+  context: AgentContext,
+  previousIntent: AgentIntent | null,
+  memoryContext?: ConversationMemoryContext
+): AgentIntelligenceResult {
+  if (!context.isConnected) {
+    return { intent: "general_help", reply: NOT_CONNECTED_REPLY, actions: [], highlights: [], followUps: [] };
+  }
+
+  const { intent, greeting } = detectIntent(prompt, previousIntent, memoryContext);
+
+  if (greeting) {
+    const reply = buildGreetingReply(memoryContext);
+    return { intent, reply, actions: [], highlights: [], followUps: getFollowUpPrompts(intent) };
+  }
+
+  const baseReply = INTENT_HANDLERS[intent](context);
+  const recallNote = buildRecallNote(intent, memoryContext);
+  const reply = recallNote ? `${baseReply} ${recallNote}` : baseReply;
+
+  return {
+    intent,
+    reply,
+    actions: getAgentActions(intent, context),
+    highlights: getAgentHighlights(intent, context),
+    followUps: getFollowUpPrompts(intent),
+  };
+}
