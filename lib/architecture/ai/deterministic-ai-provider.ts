@@ -10,8 +10,14 @@ import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-pro
 // Phase 3B Part 2 memory-aware recall note — is produced by the exact
 // same function call as before, with the exact same arguments, in the
 // exact same order.
+//
+// Phase 3C Part 2 — declares `requiresNetwork = false`: this provider is
+// local, synchronous under the hood, and cannot fail due to connectivity,
+// which is exactly why lib/architecture/ai/fallback-ai-provider.ts uses
+// an instance of this class as its fallback target.
 export class DeterministicAIProvider implements AIProvider {
   readonly name = "deterministic";
+  readonly requiresNetwork = false;
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
     return generateIntelligentReply(
