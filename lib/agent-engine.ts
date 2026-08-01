@@ -1,5 +1,11 @@
 import { getMemoryProvider } from "@/lib/architecture/memory/memory-provider-registry";
 import { generateIntelligentReply, type AgentIntent } from "@/lib/agent-intelligence";
+// Phase 3B Part 2 — Conversation Intelligence. Builds the memory context
+// consumed by generateIntelligentReply. Only appendAssistantReply and
+// regenerateLastReply need it (they're the two call sites that invoke
+// lib/agent-intelligence.ts); appendUserMessage, appendCommandMessage,
+// setMessageFeedback, and clearAgentState are all untouched below.
+import { buildConversationMemoryContext } from "@/lib/architecture/memory/memory-context";
 import type { AgentContext } from "@/lib/agent-context";
 import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 
@@ -13,7 +19,12 @@ import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 // Phase 3A.6 addendum — added appendAssistantMessage (below) for the
 // slash-command path in lib/agent-commands/*, which resolves replies
 // deterministically and must NOT go through generateIntelligentReply.
-// Everything above this line is unchanged from 3A.5.
+//
+// Phase 3B Part 2 addendum — appendAssistantReply and regenerateLastReply
+// now build a ConversationMemoryContext (lib/architecture/memory/memory-context.ts)
+// before calling generateIntelligentReply, and pass it as that function's
+// new optional fourth argument. Every other function below, and every
+// other part of these two functions, is unchanged from 3A.5.
 
 export type AgentRole = "user" | "assistant";
 export type AgentFeedback = "up" | "down";
@@ -98,7 +109,15 @@ export async function appendAssistantReply(
 ): Promise<AgentState> {
   const state = await getAgentState(address);
   const previousIntent = findPreviousIntent(state.messages);
-  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(userPrompt, context, previousIntent);
+  // Phase 3B Part 2 — resolved before generateIntelligentReply runs, so
+  // that function itself stays synchronous.
+  const memoryContext = await buildConversationMemoryContext(address, userPrompt, previousIntent, state.messages);
+  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(
+    userPrompt,
+    context,
+    previousIntent,
+    memoryContext
+  );
   const updated: AgentState = {
     ...state,
     messages: [...state.messages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
@@ -161,7 +180,16 @@ export async function regenerateLastReply(address: string, context: AgentContext
   const userPrompt = state.messages[userIndex].content;
   const trimmedMessages = state.messages.slice(0, -1);
   const previousIntent = findPreviousIntent(trimmedMessages);
-  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(userPrompt, context, previousIntent);
+  // Phase 3B Part 2 — same memory context resolution as appendAssistantReply,
+  // computed against the trimmed history (i.e. excluding the reply being
+  // regenerated), matching how previousIntent is already computed above.
+  const memoryContext = await buildConversationMemoryContext(address, userPrompt, previousIntent, trimmedMessages);
+  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(
+    userPrompt,
+    context,
+    previousIntent,
+    memoryContext
+  );
   const updated: AgentState = {
     ...state,
     messages: [...trimmedMessages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
