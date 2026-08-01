@@ -48,6 +48,14 @@ export interface AgentEventMap {
   // future, lib/agent-commands/action-history.ts's clear flow.
   command_executed: { address: string; commandName: string; resultKind: "message" | "navigate" | "error" };
   action_history_cleared: { address: string };
+  // Phase 3C Part 2 — AI Provider resilience. Emitted by
+  // lib/architecture/ai/fallback-ai-provider.ts when a primary AIProvider
+  // throws and generation falls back to a secondary provider (today:
+  // back to DeterministicAIProvider — no other provider exists yet to
+  // trigger this in practice). Additive only; every event above is
+  // untouched.
+  ai_provider_error: { address: string; provider: string; message: string };
+  ai_provider_fallback: { address: string; from: string; to: string };
 }
 
 export type AgentEventName = keyof AgentEventMap;
