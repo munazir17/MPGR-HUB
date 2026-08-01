@@ -1,15 +1,23 @@
 // Phase 3B Part 1 — Memory Engine orchestrator.
 //
 // The single entry point for everything in this directory. Consumers
-// (AgentAIService today; a future Context Builder in Part 4) call THIS
-// file, never the individual stores directly — same "one composition
-// point" pattern as agent-ai-service-instance.ts for the AI Service layer
-// and memory-provider-registry.ts for the provider itself.
+// (AgentAIService, hooks/useAgentChat.ts, hooks/useRecentPageTracking.ts,
+// lib/architecture/memory/memory-context.ts) call THIS file, never the
+// individual stores directly — same "one composition point" pattern as
+// agent-ai-service-instance.ts for the AI Service layer and
+// memory-provider-registry.ts for the provider itself.
 //
 // Nothing here talks to localStorage or MemoryProvider directly except
 // through the store modules below, and nothing here changes
 // lib/agent-engine.ts's message persistence — this is a read/derive layer
 // on top of it.
+//
+// Phase 3B Part 3 addendum — recordFeedback() (wraps
+// user-memory-store.ts's recordResponseFeedback) and
+// getPersonalizationSnapshot() (a lighter-weight read than
+// getMemorySnapshot, used by hooks/useAgentChat.ts). recordPageView()
+// already existed from Part 1 as an unused hook point — it's now called
+// by hooks/useRecentPageTracking.ts.
 
 import type { AgentContext } from "@/lib/agent-context";
 import type { AgentIntent } from "@/lib/agent-intelligence";
@@ -19,8 +27,10 @@ import { getSessionMemory, recordSessionTurn, resetSessionMemory } from "./sessi
 import {
   clearUserMemory,
   getUserMemory,
+  mostUsedCommands,
   recordCommandUsage,
   recordPageVisit,
+  recordResponseFeedback,
   recordTopicInterest,
   topFavoriteTopics,
 } from "./user-memory-store";
@@ -69,9 +79,7 @@ export async function recordAssistantTurn(
     await appendConversationSummary(address, compressed.summary);
     // Note: `compressed.remaining` is intentionally not written back into
     // lib/agent-engine.ts's AgentState here — trimming the canonical
-    // message list is a Part 2 concern (once agent-intelligence.ts reads
-    // from summaries instead of raw history for old turns). Part 1 only
-    // produces and persists the summary.
+    // message list is a separate concern from producing the summary.
   }
 }
 
@@ -79,15 +87,24 @@ export async function recordCommandTurn(address: string, commandName: string): P
   await recordCommandUsage(address, commandName);
 }
 
-/** Part 3 hook point — call from route-change handling once wired in. */
+/** Called by hooks/useRecentPageTracking.ts on every route change. */
 export async function recordPageView(address: string, path: string): Promise<void> {
   await recordPageVisit(address, path);
 }
 
 /**
+ * Phase 3B Part 3 — records a thumbs up/down against an intent, called by
+ * lib/architecture/ai/agent-ai-service.ts's setFeedback() only when the
+ * feedback was just set (not toggled off).
+ */
+export async function recordFeedback(address: string, intent: AgentIntent, feedback: "up" | "down"): Promise<void> {
+  await recordResponseFeedback(address, intent, feedback);
+}
+
+/**
  * Retrieval: the most relevant recent messages for the current prompt,
- * ranked rather than just "last N". Used by a future Context Builder
- * (Part 4) instead of the full raw history.
+ * ranked rather than just "last N". Used by lib/architecture/memory/memory-context.ts
+ * instead of the full raw history.
  */
 export function retrieveRelevantMessages(
   messages: AgentMessage[],
@@ -112,6 +129,33 @@ export async function getMemorySnapshot(address: string): Promise<MemorySnapshot
     wallet,
     conversationSummaries: conversation.summaries,
     favoriteTopics: topFavoriteTopics(user),
+  };
+}
+
+/**
+ * Phase 3B Part 3 — a lighter, personalization-focused read (skips the
+ * wallet/conversation reads getMemorySnapshot does), used by
+ * hooks/useAgentChat.ts to populate its `personalization` return field
+ * and to feed hooks/useCommandPalette.ts's usage-based ordering.
+ */
+export interface PersonalizationSnapshot {
+  favoriteTopics: AgentIntent[];
+  mostUsedCommands: string[];
+  preferredToken: string;
+  recentPages: string[];
+  interactionCount: number;
+  isReturningUser: boolean;
+}
+
+export async function getPersonalizationSnapshot(address: string): Promise<PersonalizationSnapshot> {
+  const user = await getUserMemory(address);
+  return {
+    favoriteTopics: topFavoriteTopics(user),
+    mostUsedCommands: mostUsedCommands(user, 5),
+    preferredToken: user.preferredToken,
+    recentPages: user.recentPages.map((p) => p.path),
+    interactionCount: user.interactionCount,
+    isReturningUser: user.interactionCount > 0,
   };
 }
 
