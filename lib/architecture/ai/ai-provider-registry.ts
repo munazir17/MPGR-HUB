@@ -2,6 +2,7 @@ import type { AIProvider } from "./ai-provider";
 import { createAIProvider } from "./ai-provider-factory";
 import { resolveConfiguredProviderKind } from "./ai-provider-config";
 import { DiagnosticsAIProvider, type AIProviderStats } from "./ai-provider-diagnostics";
+import { GuardrailAIProvider } from "./ai-provider-guardrails";
 import { agentPerformanceMonitor } from "@/lib/architecture/core/performance-monitor";
 import { logger } from "@/lib/architecture/core/logger";
 
@@ -10,17 +11,22 @@ import { logger } from "@/lib/architecture/core/logger";
 // lib/agent-engine.ts calls this module's getAIProvider() instead of
 // importing a concrete provider directly.
 //
-// Phase 3C Part 3 addendum — the default active provider is now actually
-// built from Part 2's config resolver (resolveConfiguredProviderKind())
-// via Part 3's factory (createAIProvider()), rather than a hardcoded
-// `new DeterministicAIProvider()`. It's also wrapped in
-// DiagnosticsAIProvider (Part 3) for call-count/latency/error visibility.
-// This is a pure indirection, not a behavior change: today
-// resolveConfiguredProviderKind() always resolves to "deterministic" (no
-// other kind is implemented yet), so createAIProvider() always returns a
-// DeterministicAIProvider, and DiagnosticsAIProvider forwards every
-// request/response through it untouched — every existing reply is
-// produced exactly as before.
+// Phase 3C Part 3 addendum — the default active provider is built from
+// Part 2's config resolver (resolveConfiguredProviderKind()) via Part 3's
+// factory (createAIProvider()), and wrapped in DiagnosticsAIProvider for
+// call-count/latency/error visibility.
+//
+// Phase 3C Part 4 addendum — GuardrailAIProvider (Part 4) now sits
+// between the raw provider and DiagnosticsAIProvider: createAIProvider()
+// -> GuardrailAIProvider -> DiagnosticsAIProvider -> getAIProvider().
+// Validation happens as close to the raw provider as possible so a
+// validation failure still gets recorded as a failure by diagnostics, and
+// would still be catchable by a future FallbackAIProvider wrapped around
+// the whole thing. This is a pure indirection today: today
+// resolveConfiguredProviderKind() always resolves to "deterministic",
+// whose output is already well-formed, so GuardrailAIProvider is a cheap
+// no-op pass-through in practice — every existing reply is produced
+// exactly as before.
 //
 // This module directly imports agentPerformanceMonitor and logger (the
 // same singletons lib/architecture/ai/agent-ai-service-instance.ts
@@ -33,11 +39,13 @@ import { logger } from "@/lib/architecture/core/logger";
 // Phase 3C Part 2+ swap point (unchanged): once an OpenAIProvider /
 // AnthropicProvider / GeminiProvider / OllamaProvider exists, call
 // setAIProvider(...) once with whatever composition is appropriate (e.g.
-// wrapped in FallbackAIProvider and/or DiagnosticsAIProvider) — every
-// existing caller of getAIProvider() picks up the new provider
-// automatically.
+// wrapped in FallbackAIProvider, GuardrailAIProvider, and/or
+// DiagnosticsAIProvider) — every existing caller of getAIProvider() picks
+// up the new provider automatically.
 function buildDefaultProvider(): AIProvider {
-  return new DiagnosticsAIProvider(createAIProvider(resolveConfiguredProviderKind()), agentPerformanceMonitor, logger);
+  const base = createAIProvider(resolveConfiguredProviderKind());
+  const guarded = new GuardrailAIProvider(base, logger);
+  return new DiagnosticsAIProvider(guarded, agentPerformanceMonitor, logger);
 }
 
 let activeProvider: AIProvider = buildDefaultProvider();
@@ -51,9 +59,9 @@ export function setAIProvider(provider: AIProvider): void {
 }
 
 /**
- * Phase 3C Part 3 — returns call/success/failure diagnostics for the
- * active provider, or null if it isn't diagnostics-wrapped (e.g. after a
- * future setAIProvider() call whose composition doesn't include
+ * Returns call/success/failure diagnostics for the active provider, or
+ * null if it isn't diagnostics-wrapped (e.g. after a future
+ * setAIProvider() call whose composition doesn't include
  * DiagnosticsAIProvider). Never throws. Nothing calls this yet — it's
  * exposed for a future diagnostics surface.
  */
