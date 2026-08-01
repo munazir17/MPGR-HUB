@@ -11,12 +11,30 @@ import type { SlashCommand } from "@/lib/agent-commands/types";
 // hook (rather than folded into useAgentChat.ts) so the palette's
 // open/filter/keyboard-nav concerns don't bloat the chat hook's already
 // substantial surface area.
-export function useCommandPalette() {
+//
+// Phase 3B Part 3 — Personalization. Optional `mostUsedCommandNames`
+// (most-used-first, from lib/architecture/memory/memory-engine.ts's
+// getPersonalizationSnapshot via hooks/useAgentChat.ts) reorders only the
+// DEFAULT (empty-query) view so a returning user's frequent commands
+// surface first. Any active search query is completely unaffected, and
+// omitting the argument reproduces the exact previous behavior — the
+// default parameter is `[]`, which is a no-op reorder.
+export function useCommandPalette(mostUsedCommandNames: string[] = []) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
 
-  const results = useMemo<SlashCommand[]>(() => agentCommandRegistry.search(query), [query]);
+  const results = useMemo<SlashCommand[]>(() => {
+    const matches = agentCommandRegistry.search(query);
+    if (query.trim() || mostUsedCommandNames.length === 0) return matches;
+
+    const rank = new Map(mostUsedCommandNames.map((name, index) => [name, index]));
+    return [...matches].sort((a, b) => {
+      const rankA = rank.has(a.name) ? (rank.get(a.name) as number) : Number.MAX_SAFE_INTEGER;
+      const rankB = rank.has(b.name) ? (rank.get(b.name) as number) : Number.MAX_SAFE_INTEGER;
+      return rankA - rankB;
+    });
+  }, [query, mostUsedCommandNames]);
 
   const open = (initialQuery = "") => {
     setQuery(initialQuery);
