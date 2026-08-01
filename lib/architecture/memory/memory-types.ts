@@ -5,6 +5,12 @@
 // Nothing here changes MemoryProvider's interface or LocalMemoryProvider's
 // implementation — every store below is just another get/set through
 // getMemoryProvider(), using its own namespaced key.
+//
+// Phase 3B Part 3 addendum — UserMemory gains commandUsageCounts (for
+// "previous commands" personalization — Command Palette ordering) and
+// responsePreference (for "preferred responses" — thumbs up/down per
+// intent). Both are additive fields; every existing reader of UserMemory
+// that doesn't know about them is unaffected.
 
 import type { AgentIntent } from "@/lib/agent-intelligence";
 
@@ -36,6 +42,12 @@ export interface RecentCommandUse {
   usedAt: string;
 }
 
+/** Per-intent thumbs up/down tally — "preferred responses" signal. */
+export interface ResponsePreferenceTally {
+  up: number;
+  down: number;
+}
+
 export interface UserMemory {
   address: string;
   firstSeenAt: string;
@@ -47,6 +59,12 @@ export interface UserMemory {
   recentCommands: RecentCommandUse[];
   /** Reserved for multi-token support; defaults to the app's own token. */
   preferredToken: string;
+  /** command name -> total times run, uncapped (unlike recentCommands,
+   *  which is a capped recency list) — the accurate frequency source for
+   *  Command Palette ordering. */
+  commandUsageCounts: Partial<Record<string, number>>;
+  /** intent -> thumbs up/down tally, from message feedback. */
+  responsePreference: Partial<Record<AgentIntent, ResponsePreferenceTally>>;
 }
 
 // --- Wallet Context Memory ---------------------------------------------------
