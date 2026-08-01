@@ -1,6 +1,13 @@
 import { formatCompactNumber } from "@/lib/format";
 import type { AgentContext } from "@/lib/agent-context";
 import { getAgentActions, getAgentHighlights, getFollowUpPrompts, type AgentAction, type AgentHighlight } from "@/lib/agent-actions";
+// Phase 3B Part 2 — Conversation Intelligence. Type-only import: no
+// runtime dependency is introduced here (memory-context.ts's only
+// runtime imports are from the memory layer + action-history.ts), so
+// this stays exactly what it was before — a deterministic, local,
+// no-network reasoning layer. See generateIntelligentReply's doc comment
+// below for how memoryContext is used.
+import type { ConversationMemoryContext } from "@/lib/architecture/memory/memory-context";
 
 // lib/format.ts's formatRelativeTime is past-only ("2 days ago",
 // "Yesterday") — it produces incorrect output for a future unlock date, so
@@ -34,6 +41,14 @@ function formatUpcomingDate(iso: string): string {
 // source that would justify a separate branch. This also matches the
 // product spec's own example, where "How much XP?", "What level am I?",
 // "My XP", and "Show progress" are all expected to resolve to one intent.
+//
+// Phase 3B Part 2 — Conversation Intelligence. detectIntent() and
+// generateIntelligentReply() both take an optional ConversationMemoryContext
+// (built by lib/architecture/memory/memory-context.ts and passed in by
+// lib/agent-engine.ts). It's optional and every existing call path that
+// omits it behaves byte-for-byte the same as before — this is additive
+// personalization/continuity on top of the exact same deterministic
+// pattern matching, not a replacement for it.
 
 export type AgentIntent =
   | "portfolio_summary"
@@ -183,7 +198,17 @@ interface DetectedIntent {
   greeting: boolean;
 }
 
-export function detectIntent(rawPrompt: string, previousIntent: AgentIntent | null): DetectedIntent {
+// Phase 3B Part 2 — third param is optional and only ever changes the
+// FINAL fallback branch (previously always "general_help" when nothing
+// else matched). Every other branch — direct pattern match, greeting,
+// previousIntent-based follow-up — is byte-for-byte unchanged, so this
+// can only ever produce a MORE specific answer than before, never a
+// different one where the old logic already had a confident match.
+export function detectIntent(
+  rawPrompt: string,
+  previousIntent: AgentIntent | null,
+  memoryContext?: ConversationMemoryContext
+): DetectedIntent {
   const normalized = normalize(rawPrompt);
 
   if (isGreeting(normalized)) {
@@ -202,6 +227,16 @@ export function detectIntent(rawPrompt: string, previousIntent: AgentIntent | nu
 
   if (previousIntent && followUp) {
     return { intent: previousIntent, greeting: false };
+  }
+
+  // Phase 3B Part 2 — memory-informed fallback. Only reached when there
+  // was no keyword match at all AND no immediate previous-message
+  // follow-up — i.e. a case that previously always fell through to the
+  // generic general_help reply. If ranked recent history (across the
+  // whole conversation, not just the last message) points strongly at
+  // one topic, use that instead of a blind generic answer.
+  if (memoryContext?.dominantRecentIntent) {
+    return { intent: memoryContext.dominantRecentIntent, greeting: false };
   }
 
   return { intent: "general_help", greeting: false };
@@ -340,34 +375,60 @@ const INTENT_HANDLERS: Record<AgentIntent, (ctx: AgentContext) => string> = {
   general_help: () => GENERAL_HELP_REPLY,
 };
 
-// Single entry point. Phase 3B swap point: this function's body becomes an
-// async model call; its signature (prompt + context + previousIntent) can
-// stay the same since AgentContext already carries everything a model
-// would need to ground its answer in real app state. actions/highlights/
-// followUps would then come from the model's structured output instead of
-// lib/agent-actions.ts's deterministic builders — the result shape stays
-// identical either way.
-export function generateIntelligentReply(
-  prompt: string,
-  context: AgentContext,
-  previousIntent: AgentIntent | null
-): AgentIntelligenceResult {
-  if (!context.isConnected) {
-    return { intent: "general_help", reply: NOT_CONNECTED_REPLY, actions: [], highlights: [], followUps: [] };
-  }
+// Phase 3B Part 2 — human-readable labels for recall notes / returning-
+// user greetings below. Kept as one small lookup rather than scattering
+// strings through each branch.
+const INTENT_LABELS: Record<AgentIntent, string> = {
+  portfolio_summary: "your portfolio",
+  xp_status: "your XP and level progress",
+  holder_tier: "your Holder Tier",
+  premium_status: "Premium",
+  claimable_rewards: "claimable rewards",
+  staking_summary: "staking",
+  locked_tokens: "locked tokens",
+  season_progress: "Season Pass",
+  referral_overview: "referrals",
+  general_help: "MPGR HUB",
+};
 
-  const { intent, greeting } = detectIntent(prompt, previousIntent);
-
-  if (greeting) {
-    return { intent, reply: GREETING_REPLY, actions: [], highlights: [], followUps: getFollowUpPrompts(intent) };
-  }
-
-  const reply = INTENT_HANDLERS[intent](context);
-  return {
-    intent,
-    reply,
-    actions: getAgentActions(intent, context),
-    highlights: getAgentHighlights(intent, context),
-    followUps: getFollowUpPrompts(intent),
-  };
+function buildGreetingReply(memoryContext?: ConversationMemoryContext): string {
+  if (!memoryContext || !memoryContext.isReturningUser) return GREETING_REPLY;
+  const topic = memoryContext.favoriteTopics[0];
+  const topicNote = topic ? ` Want to check in on ${INTENT_LABELS[topic]} again, or ask about something else?` : "";
+  return `Welcome back! I've got your MPGR HUB context loaded — XP, staking, Holder Tier, and more.${topicNote}`;
 }
+
+// Appends a short, memory-grounded note to an otherwise-unchanged handler
+// reply. Returns null (no note) far more often than not — this is meant
+// to feel occasional and earned, not attached to every single reply.
+function buildRecallNote(intent: AgentIntent, memoryContext?: ConversationMemoryContext): string | null {
+  if (!memoryContext) return null;
+
+  if (intent === "general_help") {
+    const topic = memoryContext.favoriteTopics[0];
+    return topic ? `You've mostly been asking about ${INTENT_LABELS[topic]} — happy to dig into that again, or anything else.` : null;
+  }
+
+  const delta = memoryContext.walletDelta;
+  if (!delta) return null;
+
+  switch (intent) {
+    case "xp_status":
+      return delta.xpGained !== null && delta.xpGained > 0
+        ? `Since we last talked, you've gained ${formatCompactNumber(delta.xpGained)} XP.`
+        : null;
+    case "portfolio_summary":
+      return delta.holdingsChange !== null && delta.holdingsChange !== 0
+        ? `Your total holdings are ${delta.holdingsChange > 0 ? "up" : "down"} ${formatCompactNumber(Math.abs(delta.holdingsChange))} MPGR since last time.`
+        : null;
+    case "holder_tier":
+      return delta.tierChanged && delta.currentTierLabel
+        ? `You've moved up to ${delta.currentTierLabel} Holder Tier since we last talked — nice progress.`
+        : null;
+    case "staking_summary":
+      return delta.stakedChange !== null && delta.stakedChange !== 0
+        ? `Your staked balance is ${delta.stakedChange > 0 ? "up" : "down"} ${formatCompactNumber(Math.abs(delta.stakedChange))} MPGR since last time.`
+        : null;
+    case "locked_tokens":
+      return delta.lockedChange !== null && delta.lockedChange !== 0
+        ? `Your locked balance is ${delta.lockedChange > 0 ? "up" : "down"} ${form
