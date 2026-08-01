@@ -38,12 +38,13 @@ import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 //
 // Phase 3C Part 1 addendum — reply generation itself now goes through
 // getAIProvider().generateReply() instead of calling
-// generateIntelligentReply directly. The active provider is
-// DeterministicAIProvider, which calls generateIntelligentReply with
-// identical arguments — so output is unchanged. This is the seam a real
-// model provider will later be swapped into via
-// lib/architecture/ai/ai-provider-registry.ts's setAIProvider(), with no
-// further change required in this file.
+// generateIntelligentReply directly.
+//
+// Phase 3C Part 2 addendum — both AIProviderRequest objects below now
+// include `address`, so a future FallbackAIProvider sitting behind
+// getAIProvider() can attribute its ai_provider_error /
+// ai_provider_fallback events to the right user. This is the only change
+// in this file for Part 2 — every other line is identical to Part 1.
 
 export type AgentRole = "user" | "assistant";
 export type AgentFeedback = "up" | "down";
@@ -120,14 +121,12 @@ export async function appendAssistantReply(
 ): Promise<AgentState> {
   const state = await getAgentState(address);
   const promptContext = await buildAgentPromptContext(address, userPrompt, context, state.messages);
-  // Phase 3C Part 1 — routed through the AI Provider abstraction instead
-  // of calling generateIntelligentReply directly. Same four inputs, same
-  // output shape, same result today.
   const { intent, reply, actions, highlights, followUps } = await getAIProvider().generateReply({
     prompt: userPrompt,
     agentContext: promptContext.agent,
     previousIntent: promptContext.previousIntent,
     memoryContext: promptContext.memory,
+    address,
   });
   const updated: AgentState = {
     ...state,
@@ -191,14 +190,12 @@ export async function regenerateLastReply(address: string, context: AgentContext
   const userPrompt = state.messages[userIndex].content;
   const trimmedMessages = state.messages.slice(0, -1);
   const promptContext = await buildAgentPromptContext(address, userPrompt, context, trimmedMessages);
-  // Phase 3C Part 1 — same AI Provider routing as appendAssistantReply,
-  // computed against the trimmed history (excluding the reply being
-  // regenerated).
   const { intent, reply, actions, highlights, followUps } = await getAIProvider().generateReply({
     prompt: userPrompt,
     agentContext: promptContext.agent,
     previousIntent: promptContext.previousIntent,
     memoryContext: promptContext.memory,
+    address,
   });
   const updated: AgentState = {
     ...state,
