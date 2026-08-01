@@ -432,3 +432,4 @@ function buildRecallNote(intent: AgentIntent, memoryContext?: ConversationMemory
     case "locked_tokens":
       return delta.lockedChange !== null && delta.lockedChange !== 0
         ? `Your locked balance is ${delta.lockedChange > 0 ? "up" : "down"} ${form
+                                                                              
