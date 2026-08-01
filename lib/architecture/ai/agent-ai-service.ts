@@ -11,11 +11,17 @@ import {
 } from "@/lib/agent-engine";
 import type { AgentContext } from "@/lib/agent-context";
 import type { EventBus, Logger, PerformanceMonitor, TaskQueue } from "../core/types";
-// Phase 3B Part 1 — Memory Engine. Every call below runs through
+// Phase 3B Part 1/3 — Memory Engine. Every call below runs through
 // enqueueBackgroundTask()/taskQueue.enqueue(), so it can never block a
 // reply reaching the UI, and a failure here never surfaces as a chat
 // error (it's logged by the task queue instead).
-import { clearAllMemory, recordAssistantTurn, recordCommandTurn, recordUserTurn } from "@/lib/architecture/memory/memory-engine";
+import {
+  clearAllMemory,
+  recordAssistantTurn,
+  recordCommandTurn,
+  recordFeedback,
+  recordUserTurn,
+} from "@/lib/architecture/memory/memory-engine";
 
 export interface AgentAIServiceDeps {
   eventBus: EventBus;
@@ -52,6 +58,11 @@ export interface AgentAIServiceDeps {
 // enqueued onto the existing TaskQueue (taskQueue.enqueue(..., "low")),
 // so they run after the method has already returned and can never delay
 // a reply reaching the UI or change what the UI receives.
+//
+// Phase 3B Part 3 — Personalization. setFeedback() now records a thumbs
+// up/down into User Memory, but ONLY when the feedback was just SET —
+// lib/agent-engine.ts's setMessageFeedback() toggles a repeated click
+// off, and an "un-click" must not be recorded as a preference signal.
 export class AgentAIService {
   constructor(private readonly deps: AgentAIServiceDeps) {}
 
@@ -114,6 +125,16 @@ export class AgentAIService {
   async setFeedback(address: string, messageId: string, feedback: AgentFeedback): Promise<AgentState> {
     const state = await setMessageFeedback(address, messageId, feedback);
     this.deps.eventBus.emit("memory_updated", { address, key: `agent:${address}` });
+
+    // Phase 3B Part 3 — only record when this call just SET the feedback
+    // (the rated message's stored feedback matches what was just passed
+    // in), not when it toggled an existing value off.
+    const rated = state.messages.find((message) => message.id === messageId);
+    if (rated && rated.feedback === feedback && rated.intent) {
+      const intent = rated.intent;
+      this.deps.taskQueue.enqueue("memory.recordFeedback", () => recordFeedback(address, intent, feedback), "low");
+    }
+
     return state;
   }
 
