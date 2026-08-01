@@ -15,35 +15,29 @@ import type { EventBus, Logger } from "@/lib/architecture/core/types";
 // lib/agent-engine.ts's callers.
 //
 // Nothing in this file makes a network call — it only decides what to do
-// if one were to fail. It exists now, ahead of any real network
-// provider, so that when a later Phase 3C part adds one (e.g. an
-// OpenAIProvider), wrapping it is a one-line change at the composition
-// root (lib/architecture/ai/agent-ai-service-instance.ts):
+// if one were to fail. `name`/`requiresNetwork` mirror the PRIMARY
+// provider so logging/diagnostics reflect what's actually being
+// attempted first, not the fallback that only runs on failure.
 //
-//   setAIProvider(new FallbackAIProvider(
-//     new OpenAIProvider(...),
-//     new DeterministicAIProvider(),
-//     agentEventBus,
-//     logger,
-//   ));
+// Phase 3C Part 5 — now actually wired in as the outermost layer of
+// lib/architecture/ai/ai-provider-registry.ts's default composition:
+// primary is the full guarded/circuit-broken/diagnosed chain, fallback is
+// a bare DeterministicAIProvider — the ultimate, always-available safety
+// net if anything upstream throws for any reason.
 //
-// — with zero changes to lib/agent-engine.ts,
-// lib/architecture/ai/ai-provider-registry.ts, or anything upstream of
-// it. `name`/`requiresNetwork` mirror the PRIMARY provider so
-// logging/diagnostics reflect what's actually being attempted first, not
-// the fallback that only runs on failure.
-//
-// Not wired into ai-provider-registry.ts yet — there is only one
-// provider (DeterministicAIProvider) today, and wrapping it as its own
-// fallback would be a meaningless no-op. This class becomes active the
-// moment a second provider exists.
+// `primary` and `fallback` are exposed as public readonly properties
+// (rather than private) so a composition root can introspect the chain —
+// e.g. ai-provider-registry.ts's getAIProviderDiagnostics() walks into
+// `.primary` to find a nested DiagnosticsAIProvider. This is read-only
+// exposure of already-injected dependencies, not a new dependency or a
+// behavior change.
 export class FallbackAIProvider implements AIProvider {
   readonly name: string;
   readonly requiresNetwork: boolean;
 
   constructor(
-    private readonly primary: AIProvider,
-    private readonly fallback: AIProvider,
+    public readonly primary: AIProvider,
+    public readonly fallback: AIProvider,
     private readonly eventBus: EventBus,
     private readonly logger: Logger
   ) {
