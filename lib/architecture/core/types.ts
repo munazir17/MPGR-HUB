@@ -50,12 +50,18 @@ export interface AgentEventMap {
   action_history_cleared: { address: string };
   // Phase 3C Part 2 — AI Provider resilience. Emitted by
   // lib/architecture/ai/fallback-ai-provider.ts when a primary AIProvider
-  // throws and generation falls back to a secondary provider (today:
-  // back to DeterministicAIProvider — no other provider exists yet to
-  // trigger this in practice). Additive only; every event above is
-  // untouched.
+  // throws and generation falls back to a secondary provider. Additive
+  // only; every event above is untouched.
   ai_provider_error: { address: string; provider: string; message: string };
   ai_provider_fallback: { address: string; from: string; to: string };
+  // Phase 3C Part 5 — AI Provider circuit breaker. Emitted by
+  // lib/architecture/ai/circuit-breaker-ai-provider.ts when a provider's
+  // consecutive-failure count crosses its threshold (circuit opens, every
+  // further call fails fast without invoking the provider) and when a
+  // trial call after the cooldown succeeds (circuit closes again).
+  // Additive only; every event above is untouched.
+  ai_provider_circuit_opened: { provider: string; consecutiveFailures: number };
+  ai_provider_circuit_closed: { provider: string };
 }
 
 export type AgentEventName = keyof AgentEventMap;
