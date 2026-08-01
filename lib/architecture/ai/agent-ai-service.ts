@@ -11,6 +11,11 @@ import {
 } from "@/lib/agent-engine";
 import type { AgentContext } from "@/lib/agent-context";
 import type { EventBus, Logger, PerformanceMonitor, TaskQueue } from "../core/types";
+// Phase 3B Part 1 — Memory Engine. Every call below runs through
+// enqueueBackgroundTask()/taskQueue.enqueue(), so it can never block a
+// reply reaching the UI, and a failure here never surfaces as a chat
+// error (it's logged by the task queue instead).
+import { clearAllMemory, recordAssistantTurn, recordCommandTurn, recordUserTurn } from "@/lib/architecture/memory/memory-engine";
 
 export interface AgentAIServiceDeps {
   eventBus: EventBus;
@@ -38,8 +43,15 @@ export interface AgentAIServiceDeps {
 // mirrors generateReply()'s exact shape (time -> persist -> emit events)
 // for command-originated messages instead of lib/agent-intelligence.ts
 // replies. No new dependency was needed — it reuses the same injected
-// deps, so agent-ai-service-instance.ts requires no change. Every
-// existing method below is untouched.
+// deps, so agent-ai-service-instance.ts requires no change.
+//
+// Phase 3B Part 1 — Memory Engine. Adds background recording calls into
+// lib/architecture/memory/memory-engine.ts inside generateReply(),
+// clear(), and runCommand(). Every existing method's signature, return
+// value, and persisted-state behavior is UNCHANGED — the new calls are
+// enqueued onto the existing TaskQueue (taskQueue.enqueue(..., "low")),
+// so they run after the method has already returned and can never delay
+// a reply reaching the UI or change what the UI receives.
 export class AgentAIService {
   constructor(private readonly deps: AgentAIServiceDeps) {}
 
@@ -72,6 +84,21 @@ export class AgentAIService {
         intent: last.intent ?? "general_help",
       });
       this.deps.eventBus.emit("memory_updated", { address, key: `agent:${address}` });
+
+      // Phase 3B Part 1 — background memory recording. Runs after the
+      // reply has already been returned to the caller above; never
+      // delays message delivery. Any failure here is caught and logged
+      // by InMemoryTaskQueue.drain(), never thrown back into the chat
+      // flow.
+      const intent = last.intent ?? null;
+      this.deps.taskQueue.enqueue(
+        "memory.recordTurn",
+        async () => {
+          await recordUserTurn(address, intent);
+          await recordAssistantTurn(address, context, state.messages);
+        },
+        "low"
+      );
     }
     return state;
   }
@@ -93,14 +120,16 @@ export class AgentAIService {
   async clear(address: string): Promise<AgentState> {
     const state = await clearAgentState(address);
     this.deps.eventBus.emit("memory_updated", { address, key: `agent:${address}` });
+    // Phase 3B Part 1 — clearing the chat also resets session/derived
+    // memory, so a fresh conversation isn't silently biased by stale
+    // topic-interest or summary data from before the clear.
+    this.deps.taskQueue.enqueue("memory.clearAll", () => clearAllMemory(address), "low");
     return state;
   }
 
   // Background-safe hook for future work (memory summarization/ranking,
   // knowledge indexing, portfolio refresh) — enqueues onto the shared
-  // TaskQueue instead of running inline. Nothing calls this yet; it
-  // exists so Phase 3B can start enqueueing real jobs without adding a
-  // new dependency chain.
+  // TaskQueue instead of running inline.
   enqueueBackgroundTask<T>(label: string, work: () => Promise<T>): string {
     return this.deps.taskQueue.enqueue(label, work);
   }
@@ -117,6 +146,9 @@ export class AgentAIService {
     );
     this.deps.eventBus.emit("command_executed", { address, commandName, resultKind: "message" });
     this.deps.eventBus.emit("memory_updated", { address, key: `agent:${address}` });
+    // Phase 3B Part 1 — records command usage into User Memory for Part 3
+    // personalization (favorite commands / modules).
+    this.deps.taskQueue.enqueue("memory.recordCommand", () => recordCommandTurn(address, commandName), "low");
     return state;
   }
 }
