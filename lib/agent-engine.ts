@@ -1,11 +1,19 @@
 import { getMemoryProvider } from "@/lib/architecture/memory/memory-provider-registry";
-import { generateIntelligentReply, type AgentIntent } from "@/lib/agent-intelligence";
+import type { AgentIntent } from "@/lib/agent-intelligence";
 // Phase 3B Part 4 — Context Builder. Replaces the old two-step
 // (findPreviousIntent + buildConversationMemoryContext) that used to live
 // directly in this file — both appendAssistantReply and
-// regenerateLastReply now make one call to buildAgentPromptContext
-// instead.
+// regenerateLastReply make one call to buildAgentPromptContext instead.
 import { buildAgentPromptContext } from "@/lib/agent-prompt-context";
+// Phase 3C Part 1 — AI Provider abstraction. This file no longer calls
+// lib/agent-intelligence.ts's generateIntelligentReply directly; it goes
+// through getAIProvider().generateReply() instead, mirroring how this
+// same file already goes through getMemoryProvider() instead of
+// lib/storage.ts directly. The active provider today
+// (DeterministicAIProvider) calls the exact same generateIntelligentReply
+// function with the exact same arguments — this is a pure indirection,
+// not a behavior change. See lib/architecture/ai/ai-provider-registry.ts.
+import { getAIProvider } from "@/lib/architecture/ai/ai-provider-registry";
 import type { AgentContext } from "@/lib/agent-context";
 import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 
@@ -18,18 +26,24 @@ import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 //
 // Phase 3A.6 addendum — added appendAssistantMessage (below) for the
 // slash-command path in lib/agent-commands/*, which resolves replies
-// deterministically and must NOT go through generateIntelligentReply.
+// deterministically and must NOT go through the AI provider.
 //
 // Phase 3B Part 2 addendum — appendAssistantReply and regenerateLastReply
-// pass a ConversationMemoryContext into generateIntelligentReply as its
-// new optional fourth argument.
+// pass a ConversationMemoryContext as part of the request built for
+// reply generation.
 //
-// Phase 3B Part 4 addendum — the findPreviousIntent function that used to
-// live here (private) has moved to lib/agent-prompt-context.ts, and both
-// call sites below now build their full prompt context via ONE call to
-// buildAgentPromptContext (the Context Builder) instead of two separate
-// steps. No behavior changes — this is purely a consolidation of how the
-// same two things (previousIntent, memory context) get assembled.
+// Phase 3B Part 4 addendum — both call sites build their full prompt
+// context via ONE call to buildAgentPromptContext (the Context Builder)
+// instead of two separate steps.
+//
+// Phase 3C Part 1 addendum — reply generation itself now goes through
+// getAIProvider().generateReply() instead of calling
+// generateIntelligentReply directly. The active provider is
+// DeterministicAIProvider, which calls generateIntelligentReply with
+// identical arguments — so output is unchanged. This is the seam a real
+// model provider will later be swapped into via
+// lib/architecture/ai/ai-provider-registry.ts's setAIProvider(), with no
+// further change required in this file.
 
 export type AgentRole = "user" | "assistant";
 export type AgentFeedback = "up" | "down";
@@ -105,15 +119,16 @@ export async function appendAssistantReply(
   context: AgentContext
 ): Promise<AgentState> {
   const state = await getAgentState(address);
-  // Phase 3B Part 4 — one call to the Context Builder replaces the old
-  // findPreviousIntent + buildConversationMemoryContext two-step.
   const promptContext = await buildAgentPromptContext(address, userPrompt, context, state.messages);
-  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(
-    userPrompt,
-    promptContext.agent,
-    promptContext.previousIntent,
-    promptContext.memory
-  );
+  // Phase 3C Part 1 — routed through the AI Provider abstraction instead
+  // of calling generateIntelligentReply directly. Same four inputs, same
+  // output shape, same result today.
+  const { intent, reply, actions, highlights, followUps } = await getAIProvider().generateReply({
+    prompt: userPrompt,
+    agentContext: promptContext.agent,
+    previousIntent: promptContext.previousIntent,
+    memoryContext: promptContext.memory,
+  });
   const updated: AgentState = {
     ...state,
     messages: [...state.messages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
@@ -123,12 +138,12 @@ export async function appendAssistantReply(
 
 // Phase 3A.6 — appends an assistant message whose text was already
 // computed elsewhere (e.g. lib/agent-commands/action-executor.ts's
-// deterministic command results) without calling
-// generateIntelligentReply. Reuses the exact same createMessage +
-// saveAgentState path every other function here uses — no new
-// persistence logic, no duplicated message-shape rules. `extra` is
-// optional so a future command result carrying actions/highlights can
-// use this same function without a signature change.
+// deterministic command results) without calling the AI provider.
+// Reuses the exact same createMessage + saveAgentState path every other
+// function here uses — no new persistence logic, no duplicated
+// message-shape rules. `extra` is optional so a future command result
+// carrying actions/highlights can use this same function without a
+// signature change.
 export async function appendAssistantMessage(
   address: string,
   content: string,
@@ -175,17 +190,16 @@ export async function regenerateLastReply(address: string, context: AgentContext
 
   const userPrompt = state.messages[userIndex].content;
   const trimmedMessages = state.messages.slice(0, -1);
-  // Phase 3B Part 4 — same Context Builder call as appendAssistantReply,
-  // computed against the trimmed history (i.e. excluding the reply being
-  // regenerated) so previousIntent/memory don't include the reply that's
-  // about to be replaced.
   const promptContext = await buildAgentPromptContext(address, userPrompt, context, trimmedMessages);
-  const { intent, reply, actions, highlights, followUps } = generateIntelligentReply(
-    userPrompt,
-    promptContext.agent,
-    promptContext.previousIntent,
-    promptContext.memory
-  );
+  // Phase 3C Part 1 — same AI Provider routing as appendAssistantReply,
+  // computed against the trimmed history (excluding the reply being
+  // regenerated).
+  const { intent, reply, actions, highlights, followUps } = await getAIProvider().generateReply({
+    prompt: userPrompt,
+    agentContext: promptContext.agent,
+    previousIntent: promptContext.previousIntent,
+    memoryContext: promptContext.memory,
+  });
   const updated: AgentState = {
     ...state,
     messages: [...trimmedMessages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
