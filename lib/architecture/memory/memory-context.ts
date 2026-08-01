@@ -11,9 +11,19 @@
 // Reuses lib/agent-commands/action-history.ts as-is for "previous
 // actions" — that store already exists and is already the canonical
 // record of commands the user has run. This file does not duplicate it.
+//
+// Phase 3B Part 4 addendum — ConversationMemoryContext now also carries
+// Session Memory (sessionTurnCount, sessionRecentTopics — recorded since
+// Part 1 but never actually read anywhere until now) and the
+// personalization fields Part 3 introduced (mostUsedCommands,
+// recentPages, preferredToken). This makes this one object the complete
+// memory picture — session + user + wallet + conversation — that
+// lib/agent-prompt-context.ts's Context Builder merges with AgentContext.
 
 import { getMemorySnapshot } from "./memory-engine";
 import { retrieveRelevantMessages } from "./memory-engine";
+import { getSessionMemory } from "./session-memory-store";
+import { mostUsedCommands as mostUsedCommandNames } from "./user-memory-store";
 import { latestSnapshot, previousSnapshot } from "./wallet-context-memory";
 import { getActionHistory } from "@/lib/agent-commands/action-history";
 import type { AgentMessage } from "@/lib/agent-engine";
@@ -49,6 +59,15 @@ export interface ConversationMemoryContext {
    *  fallback when there's no direct keyword match and no immediate
    *  follow-up phrase — see lib/agent-intelligence.ts's detectIntent(). */
   dominantRecentIntent: AgentIntent | null;
+  /** Phase 3B Part 4 — Session Memory, surfaced for the first time. */
+  sessionTurnCount: number;
+  sessionRecentTopics: AgentIntent[];
+  /** Phase 3B Part 4 — personalization fields, previously only read by
+   *  hooks/useAgentChat.ts for UI ordering; now also available to reply
+   *  generation via the Context Builder. */
+  mostUsedCommands: string[];
+  recentPages: string[];
+  preferredToken: string;
 }
 
 function diff(a: number | null, b: number | null): number | null {
@@ -92,9 +111,9 @@ function deriveDominantIntent(relevantHistory: AgentMessage[]): AgentIntent | nu
 
 /**
  * Builds the full memory context for one reply-generation turn. Called by
- * lib/agent-engine.ts's appendAssistantReply/regenerateLastReply before
- * invoking generateIntelligentReply — this function does all the async
- * memory reads up front so the reasoning layer itself stays synchronous.
+ * lib/agent-prompt-context.ts's buildAgentPromptContext (the Context
+ * Builder) — not called directly by lib/agent-engine.ts anymore as of
+ * Phase 3B Part 4.
  */
 export async function buildConversationMemoryContext(
   address: string,
@@ -108,6 +127,7 @@ export async function buildConversationMemoryContext(
   const walletDelta = computeWalletDelta(snapshot.wallet);
   const dominantRecentIntent = deriveDominantIntent(relevantHistory);
   const lastEntry = actionHistory[actionHistory.length - 1] ?? null;
+  const session = getSessionMemory(address);
 
   return {
     relevantHistory,
@@ -120,5 +140,10 @@ export async function buildConversationMemoryContext(
     isReturningUser: snapshot.user.interactionCount > 0,
     interactionCount: snapshot.user.interactionCount,
     dominantRecentIntent,
+    sessionTurnCount: session.turnCount,
+    sessionRecentTopics: session.recentTopics,
+    mostUsedCommands: mostUsedCommandNames(snapshot.user, 5),
+    recentPages: snapshot.user.recentPages.map((p) => p.path),
+    preferredToken: snapshot.user.preferredToken,
   };
 }
