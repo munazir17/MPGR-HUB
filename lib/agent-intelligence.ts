@@ -49,6 +49,16 @@ function formatUpcomingDate(iso: string): string {
 // omits it behaves byte-for-byte the same as before — this is additive
 // personalization/continuity on top of the exact same deterministic
 // pattern matching, not a replacement for it.
+//
+// Bug fix (post Phase 3C audit) — isFollowUp() previously treated ANY
+// message of 3 words or fewer as a follow-up to the previous topic,
+// regardless of what it actually said. This meant short, standalone
+// questions like "Who are you?" would silently inherit whatever intent
+// was last discussed (e.g. rewards/staking) instead of getting their own
+// answer. Fixed below: a message is now only a follow-up if it actually
+// matches one of FOLLOW_UP_PATTERNS ("what about...", "and...", "also...",
+// "what else...", "how about..."). Every other branch of detectIntent is
+// unchanged.
 
 export type AgentIntent =
   | "portfolio_summary"
@@ -65,12 +75,8 @@ export type AgentIntent =
 // Phase 3C Part 4 — a canonical runtime array mirroring AgentIntent's
 // union members, one-to-one. TypeScript unions have no runtime
 // representation, so anything that needs to validate an untrusted value
-// (e.g. lib/architecture/ai/ai-provider-guardrails.ts, checking a future
-// real model's output) needs an actual array to check membership
-// against. Keeping it here, right next to the type it mirrors, is the
-// single source of truth — if AgentIntent ever gains or loses a member,
-// this array is updated in the same place, in the same file, in the same
-// diff.
+// (e.g. lib/architecture/ai/ai-provider-guardrails.ts, checking a real
+// model's output) needs an actual array to check membership against.
 export const AGENT_INTENTS: readonly AgentIntent[] = [
   "portfolio_summary",
   "xp_status",
@@ -179,9 +185,13 @@ function isGreeting(normalized: string): boolean {
 // standalone question.
 const FOLLOW_UP_PATTERNS = [/^what about\b/, /^and\b/, /^also\b/, /^what else\b/, /^how about\b/];
 
+// Bug fix — the old implementation also returned true for ANY message of
+// 3 words or fewer ("|| wordCount <= 3"), regardless of content. That
+// swallowed short, standalone questions like "Who are you?" into
+// whatever the previous topic happened to be. Now this only returns true
+// when the message actually matches one of FOLLOW_UP_PATTERNS.
 function isFollowUp(normalized: string): boolean {
-  const wordCount = normalized.split(" ").filter(Boolean).length;
-  return FOLLOW_UP_PATTERNS.some((re) => re.test(normalized)) || wordCount <= 3;
+  return FOLLOW_UP_PATTERNS.some((re) => re.test(normalized));
 }
 
 // When a follow-up's own best match is one of these "generic" intents,
