@@ -91,8 +91,28 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: `OpenAI returned ${upstream.status}: ${errorText}` }, { status: 502 });
   }
 
-  const data = await upstream.json();
-  const content: string | undefined = data?.choices?.[0]?.message?.content;
+  // The fetch succeeding and upstream.ok being true only means OpenAI
+  // sent back a 2xx status line — it does not guarantee the body that
+  // follows is well-formed JSON by the time we read it (truncated
+  // stream, proxy/CDN interstitial, partial write). Previously this
+  // call was unguarded, so a malformed body here threw *outside* any
+  // try/catch and crashed the Route Handler's invocation outright —
+  // which Vercel reports as a raw 502 (FUNCTION_INVOCATION_FAILED)
+  // that never reaches the NextResponse.json(...) below, and is
+  // indistinguishable in Observability from the deliberate 502 two
+  // lines above. Guarding it means every failure path in this file now
+  // always returns a real JSON response instead of ever crashing the
+  // function.
+  let data: unknown;
+  try {
+    data = await upstream.json();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: `OpenAI response body was not valid JSON: ${message}` }, { status: 502 });
+  }
+
+  const content: string | undefined = (data as { choices?: Array<{ message?: { content?: string } }> })
+    ?.choices?.[0]?.message?.content;
 
   if (!content) {
     return NextResponse.json({ error: "OpenAI response contained no content." }, { status: 502 });
