@@ -105,7 +105,7 @@ export function AgentInput({ onSend, disabled, commandPalette, onSelectCommand }
           onSelect={handleSelectCommand}
         />
       )}
-      <div className="flex items-end gap-2 border-t border-white/[0.08] bg-white/[0.02] p-3 sm:p-4">
+      <div className="flex items-end gap-2 border-t border-white/[0.08] bg-white/[0.02] p-2.5 sm:p-3 md:p-4">
         <textarea
           ref={textareaRef}
           value={value}
