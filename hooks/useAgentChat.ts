@@ -17,10 +17,10 @@ import { isSlashCommand } from "@/lib/agent-commands/parser";
 import { executeCommandInput } from "@/lib/agent-commands/action-executor";
 import { getActionHistory, recordAction, clearActionHistory, type ActionHistoryEntry } from "@/lib/agent-commands/action-history";
 import { useCommandPalette } from "@/hooks/useCommandPalette";
-// Diagnostic wiring — subscribes to the same EventBus every AI provider
-// decorator already emits on (lib/architecture/ai/fallback-ai-provider.ts,
-// circuit-breaker-ai-provider.ts). agentEventBus is the exact singleton
-// injected into the active provider chain by
+// Production audit addendum — subscribes to the same EventBus every AI
+// provider decorator already emits on (lib/architecture/ai/fallback-ai-provider.ts,
+// lib/architecture/core/types.ts:55). agentEventBus is the exact
+// singleton injected into the active provider chain by
 // lib/architecture/ai/ai-provider-registry.ts's buildDefaultProvider(),
 // so listening here requires no change to that composition.
 import { agentEventBus } from "@/lib/architecture/core/event-bus";
@@ -28,7 +28,15 @@ import { agentEventBus } from "@/lib/architecture/core/event-bus";
 // commands, preferred token, recent pages). Read-only from this hook's
 // perspective — every write into it happens in the background via
 // lib/architecture/ai/agent-ai-service.ts and hooks/useRecentPageTracking.ts.
-import { getPersonalizationSnapshot, type PersonalizationSnapshot } from "@/lib/architecture/memory/memory-engine";
+//
+// Production audit addendum — runMemoryCleanup is Phase 3B Part 1's
+// housekeeping pass (lib/architecture/memory/memory-cleanup.ts), fully
+// implemented and exported from here, but until now never actually
+// called anywhere in the app (that file's own header says Part 1 "wires
+// it in as a one-off background task" — it didn't). Wired in below,
+// alongside the personalization load this hook already performs on
+// every address change.
+import { getPersonalizationSnapshot, runMemoryCleanup, type PersonalizationSnapshot } from "@/lib/architecture/memory/memory-engine";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 import type { SlashCommand } from "@/lib/agent-commands/types";
 
@@ -78,22 +86,19 @@ const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
 // additive field (`personalization`). No existing return field changes
 // shape or meaning.
 //
-// Diagnostic addendum — lib/architecture/ai/fallback-ai-provider.ts
-// silently swallows a failing primary provider (GeminiAIProvider or
-// OpenAIAIProvider, whichever is active) and substitutes
-// DeterministicAIProvider's reply so the conversation never breaks —
-// that's its intended job. But until now nothing surfaced WHICH provider
-// failed or WHY: it only logged and emitted `ai_provider_error` on
-// agentEventBus (payload includes `provider`, the exact name of whatever
-// failed — "openai" or "gemini" — plus `message`, its real failure
-// reason), which nothing subscribed to. This hook now listens for that
-// event and reuses the exact same `error` state that already drives
-// AgentErrorBanner (app/agent/page.tsx) — so which provider was actually
-// attempted, and why it failed, shows up directly in the chat UI instead
-// of only being visible in server-side logs. This does not change which
-// provider answers a given message — DeterministicAIProvider's reply
-// still appends to the conversation exactly as before — it only makes
-// the failure that caused the fallback visible.
+// Production audit addendum — two additive fixes, neither changing this
+// hook's public shape:
+//   1. The address-load effect now also enqueues runMemoryCleanup() as a
+//      low-priority background task (same agentAIService.enqueueBackgroundTask
+//      pattern hooks/useRecentPageTracking.ts already uses) — completing
+//      Phase 3B Part 1's documented-but-never-wired cleanup pass.
+//   2. A new effect subscribes to the `ai_provider_error` event every AI
+//      provider decorator chain already emits on failure
+//      (lib/architecture/ai/fallback-ai-provider.ts). Previously nothing
+//      surfaced this: a failing primary provider fell back to
+//      DeterministicAIProvider completely silently. This reuses the
+//      existing `error` state (already rendered by AgentErrorBanner in
+//      app/agent/page.tsx) — no new UI wiring required.
 export function useAgentChat() {
   const { address, isConnected } = useAccount();
   const router = useRouter();
@@ -184,6 +189,16 @@ export function useAgentChat() {
         console.error("MPGR Agent: failed to load personalization snapshot", err);
       }
 
+      // Production audit addendum — completes Phase 3B Part 1's
+      // documented-but-unwired cleanup pass. Enqueued (not awaited)
+      // through the same background-task path every other Memory Engine
+      // write already uses, at "low" priority, so it can never delay the
+      // conversation load above or the crash-recovery branch below. A
+      // failure here is caught and logged by InMemoryTaskQueue.drain(),
+      // exactly like every other enqueued memory task — never thrown
+      // back into this hook.
+      agentAIService.enqueueBackgroundTask("memory.cleanup", () => runMemoryCleanup(address));
+
       const interruptedPrompt = findInterruptedPrompt(state);
       if (!interruptedPrompt) return;
 
@@ -211,18 +226,17 @@ export function useAgentChat() {
     };
   }, [address]);
 
-  // Diagnostic addendum — subscribes to `ai_provider_error`
+  // Production audit addendum — subscribes to `ai_provider_error`
   // (lib/architecture/ai/fallback-ai-provider.ts,
   // lib/architecture/core/types.ts:55) whenever the primary provider
   // throws for any reason. Filters by the current address so a stale
   // subscription from a previous wallet can't set an error for the
   // wrong session. The message is prefixed with `[provider]` using the
   // event's own `provider` field, so the banner tells you directly which
-  // provider actually ran (e.g. "[gemini] GEMINI_API_KEY is not
-  // configured on the server.") rather than requiring a guess. Reuses
-  // the existing `error` state — AgentErrorBanner (already rendered in
-  // app/agent/page.tsx) picks this up exactly as it does
-  // GENERATION_ERROR_MESSAGE below.
+  // provider actually ran and why it failed, rather than only degrading
+  // silently to the deterministic reply. Reuses the existing `error`
+  // state — AgentErrorBanner (already rendered in app/agent/page.tsx)
+  // picks this up exactly as it does GENERATION_ERROR_MESSAGE below.
   useEffect(() => {
     const unsubscribe = agentEventBus.on("ai_provider_error", (payload) => {
       if (payload.address !== address) return;
@@ -307,6 +321,7 @@ export function useAgentChat() {
             const afterAssistant = await agentAIService.generateReply(address, trimmed, context);
             if (loadTokenRef.current !== token) return;
             setMessages(afterAssistant.messages);
+            setError(null);
             const last = afterAssistant.messages[afterAssistant.messages.length - 1];
             setStreamingMessageId(last?.id ?? null);
           } catch (err) {
@@ -342,6 +357,7 @@ export function useAgentChat() {
           const afterAssistant = await agentAIService.generateReply(address, lastUser.content, context);
           if (loadTokenRef.current !== token) return;
           setMessages(afterAssistant.messages);
+          setError(null);
         } catch (err) {
           if (loadTokenRef.current !== token) return;
           console.error("MPGR Agent: retry failed", err);
@@ -363,6 +379,7 @@ export function useAgentChat() {
         const result = await agentAIService.regenerate(address, context);
         if (loadTokenRef.current !== token) return;
         setMessages(result.messages);
+        setError(null);
       } catch (err) {
         if (loadTokenRef.current !== token) return;
         console.error("MPGR Agent: regenerate failed", err);
