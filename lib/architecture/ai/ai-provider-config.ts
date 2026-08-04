@@ -6,24 +6,31 @@
 // which provider a composition root (lib/architecture/ai/ai-provider-registry.ts)
 // should construct.
 //
-// Phase 3C Part 6 addendum — "openai" is now implemented
+// Phase 3C Part 6 addendum — "openai" is implemented
 // (lib/architecture/ai/openai-ai-provider.ts + app/api/agent/complete/route.ts)
-// and added to IMPLEMENTED_PROVIDER_KINDS. The default remains
-// "deterministic" — setting NEXT_PUBLIC_AI_PROVIDER=openai is an
-// explicit opt-in, not automatic. "anthropic" / "gemini" / "ollama" are
-// still declared-but-unimplemented; requesting any of them still falls
-// back to "deterministic", exactly as before.
+// and added to IMPLEMENTED_PROVIDER_KINDS.
+//
+// Gemini addendum — "gemini" is now also implemented
+// (lib/architecture/ai/gemini-ai-provider.ts +
+// app/api/agent/complete/gemini/route.ts), added to
+// IMPLEMENTED_PROVIDER_KINDS alongside "openai" (not replacing it — both
+// remain selectable), and is now the DEFAULT provider kind: setting
+// NEXT_PUBLIC_AI_PROVIDER=openai is still fully supported and switches
+// back to OpenAI; leaving it unset now resolves to "gemini" instead of
+// "deterministic". "anthropic" / "ollama" remain declared-but-unimplemented;
+// requesting either still falls back to "deterministic", exactly as
+// before.
 
 export type AIProviderKind = "deterministic" | "openai" | "anthropic" | "gemini" | "ollama";
 
-const DEFAULT_PROVIDER_KIND: AIProviderKind = "deterministic";
+const DEFAULT_PROVIDER_KIND: AIProviderKind = "gemini";
 
 const ALL_PROVIDER_KINDS: readonly AIProviderKind[] = ["deterministic", "openai", "anthropic", "gemini", "ollama"];
 
 // Grows as later Phase 3C parts add real implementations. Kept as its own
 // explicit list (rather than inferred from a registry) so "is this kind
 // actually usable right now" has a single, obvious source of truth.
-const IMPLEMENTED_PROVIDER_KINDS: readonly AIProviderKind[] = ["deterministic", "openai"];
+const IMPLEMENTED_PROVIDER_KINDS: readonly AIProviderKind[] = ["deterministic", "openai", "gemini"];
 
 function isKnownProviderKind(value: string): value is AIProviderKind {
   return (ALL_PROVIDER_KINDS as readonly string[]).includes(value);
@@ -36,7 +43,7 @@ export function isProviderKindImplemented(kind: AIProviderKind): boolean {
 /**
  * Reads the requested provider kind from NEXT_PUBLIC_AI_PROVIDER (a
  * plain identifier string — no key, no endpoint, no secret) and falls
- * back to "deterministic" when unset, unrecognized, or not yet
+ * back to "gemini" (the default) when unset, unrecognized, or not yet
  * implemented. Never throws and performs no I/O beyond reading env, so a
  * composition root can call it unconditionally at startup without any
  * error handling of its own.
