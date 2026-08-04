@@ -53,85 +53,101 @@ export default function AgentPage() {
 
   return (
     <>
-      <Navbar />
-      <main className="mx-auto max-w-3xl px-4 py-8 sm:py-12">
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4 }}
-          className="space-y-6"
-        >
-          <AgentHero statuses={heroStatuses} />
+      {/*
+        Mobile UX polish (below md/768px only): this wrapper + <main> pin
+        the page to exactly the viewport height that's left after the
+        (in-flow, sticky) Navbar and the (fixed) BottomNav, so the
+        Conversation card can flex-grow to fill it instead of the page
+        scrolling as a whole. At md (768px) and up every class below
+        reverts to the original desktop layout (mx-auto max-w-3xl px-4
+        py-8, natural height, page-level scroll) — nothing about the
+        desktop experience changes.
+      */}
+      <div className="flex min-h-[calc(100dvh-5rem)] flex-col sm:min-h-[100dvh] md:block md:min-h-0">
+        <Navbar />
+        <main className="flex flex-1 flex-col overflow-hidden px-4 pb-3 pt-4 md:mx-auto md:block md:max-w-3xl md:flex-none md:overflow-visible md:px-4 md:py-8 lg:py-12">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="flex min-h-0 flex-1 flex-col space-y-3 md:block md:min-h-0 md:flex-none md:space-y-6"
+          >
+            <div className="shrink-0">
+              <AgentHero statuses={heroStatuses} />
+            </div>
 
-          {!isConnected ? (
-            <EmptyState
-              icon={Wallet}
-              title="Connect your wallet"
-              description="Connect to start a conversation with the MPGR Agent."
-            />
-          ) : !hasLoaded ? (
-            <GlassCard className="flex h-[420px] items-center justify-center p-6">
-              <p className="text-sm text-muted">Loading conversation...</p>
-            </GlassCard>
-          ) : (
-            <AgentErrorBoundary>
-              <GlassCard className="flex h-[560px] flex-col overflow-hidden p-0 sm:h-[600px]">
-                <div className="flex items-center justify-between border-b border-white/[0.08] px-4 py-3 sm:px-6">
-                  <p className="text-sm font-semibold text-white">Conversation</p>
-                  {hasMessages && (
-                    <button
-                      type="button"
-                      onClick={clearChat}
-                      disabled={thinking}
-                      className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] font-medium text-muted transition-colors duration-200 hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <RotateCcw className="h-3 w-3" aria-hidden="true" />
-                      Clear
-                    </button>
-                  )}
-                </div>
-
-                {hasMessages ? (
-                  <AgentChatWindow
-                    messages={messages}
-                    thinking={thinking}
-                    onSelectPrompt={sendMessage}
-                    onFeedback={sendFeedback}
-                    onRegenerate={regenerateLastMessage}
-                    canRegenerate={canRegenerate}
-                    streamingMessageId={streamingMessageId}
-                  />
-                ) : (
-                  <AgentEmptyState onSelectPrompt={sendMessage} />
-                )}
-
-                {hasMessages && (
-                  <div className="px-4 pt-3 sm:px-6">
-                    <AgentPromptSuggestions variant="row" onSelect={sendMessage} disabled={thinking} />
-                  </div>
-                )}
-
-                <AnimatePresence>
-                  {error && (
-                    <AgentErrorBanner message={error} onRetry={retryLastMessage} onDismiss={dismissError} />
-                  )}
-                </AnimatePresence>
-
-                <AgentInput
-                  onSend={sendMessage}
-                  disabled={thinking}
-                  commandPalette={commandPalette}
-                  onSelectCommand={selectPaletteCommand}
-                />
+            {!isConnected ? (
+              <EmptyState
+                icon={Wallet}
+                title="Connect your wallet"
+                description="Connect to start a conversation with the MPGR Agent."
+              />
+            ) : !hasLoaded ? (
+              <GlassCard className="flex flex-1 items-center justify-center p-6 md:h-[420px] md:flex-none">
+                <p className="text-sm text-muted">Loading conversation...</p>
               </GlassCard>
-            </AgentErrorBoundary>
-          )}
+            ) : (
+              <AgentErrorBoundary>
+                <GlassCard className="flex min-h-0 flex-1 flex-col overflow-hidden p-0 md:h-[600px] md:flex-none">
+                  <div className="flex shrink-0 items-center justify-between border-b border-white/[0.08] px-4 py-2.5 sm:px-6 md:py-3">
+                    <p className="text-sm font-semibold text-white">Conversation</p>
+                    {hasMessages && (
+                      <button
+                        type="button"
+                        onClick={clearChat}
+                        disabled={thinking}
+                        className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] font-medium text-muted transition-colors duration-200 hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                        Clear
+                      </button>
+                    )}
+                  </div>
 
-          <p className="text-center text-[11px] text-muted">
-            {providerStatusText} Try <span className="text-primary-glow">/help</span> for available commands.
-          </p>
-        </motion.div>
-      </main>
+                  {hasMessages ? (
+                    <AgentChatWindow
+                      messages={messages}
+                      thinking={thinking}
+                      onSelectPrompt={sendMessage}
+                      onFeedback={sendFeedback}
+                      onRegenerate={regenerateLastMessage}
+                      canRegenerate={canRegenerate}
+                      streamingMessageId={streamingMessageId}
+                    />
+                  ) : (
+                    <AgentEmptyState onSelectPrompt={sendMessage} />
+                  )}
+
+                  {hasMessages && (
+                    <div className="shrink-0 px-4 pt-2 sm:px-6 md:pt-3">
+                      <AgentPromptSuggestions variant="row" onSelect={sendMessage} disabled={thinking} />
+                    </div>
+                  )}
+
+                  <AnimatePresence>
+                    {error && (
+                      <AgentErrorBanner message={error} onRetry={retryLastMessage} onDismiss={dismissError} />
+                    )}
+                  </AnimatePresence>
+
+                  <div className="shrink-0">
+                    <AgentInput
+                      onSend={sendMessage}
+                      disabled={thinking}
+                      commandPalette={commandPalette}
+                      onSelectCommand={selectPaletteCommand}
+                    />
+                  </div>
+                </GlassCard>
+              </AgentErrorBoundary>
+            )}
+
+            <p className="shrink-0 text-center text-[11px] text-muted">
+              {providerStatusText} Try <span className="text-primary-glow">/help</span> for available commands.
+            </p>
+          </motion.div>
+        </main>
+      </div>
     </>
   );
 }
