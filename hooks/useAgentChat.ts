@@ -17,6 +17,13 @@ import { isSlashCommand } from "@/lib/agent-commands/parser";
 import { executeCommandInput } from "@/lib/agent-commands/action-executor";
 import { getActionHistory, recordAction, clearActionHistory, type ActionHistoryEntry } from "@/lib/agent-commands/action-history";
 import { useCommandPalette } from "@/hooks/useCommandPalette";
+// Diagnostic wiring — subscribes to the same EventBus every AI provider
+// decorator already emits on (lib/architecture/ai/fallback-ai-provider.ts,
+// circuit-breaker-ai-provider.ts). agentEventBus is the exact singleton
+// injected into the active provider chain by
+// lib/architecture/ai/ai-provider-registry.ts's buildDefaultProvider(),
+// so listening here requires no change to that composition.
+import { agentEventBus } from "@/lib/architecture/core/event-bus";
 // Phase 3B Part 3 — Personalization snapshot (favorite topics, most-used
 // commands, preferred token, recent pages). Read-only from this hook's
 // perspective — every write into it happens in the background via
@@ -70,6 +77,23 @@ const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
 // useCommandPalette() for usage-based ordering, and returns it as a new
 // additive field (`personalization`). No existing return field changes
 // shape or meaning.
+//
+// Diagnostic addendum — lib/architecture/ai/fallback-ai-provider.ts
+// silently swallows a failing primary provider (GeminiAIProvider or
+// OpenAIAIProvider, whichever is active) and substitutes
+// DeterministicAIProvider's reply so the conversation never breaks —
+// that's its intended job. But until now nothing surfaced WHICH provider
+// failed or WHY: it only logged and emitted `ai_provider_error` on
+// agentEventBus (payload includes `provider`, the exact name of whatever
+// failed — "openai" or "gemini" — plus `message`, its real failure
+// reason), which nothing subscribed to. This hook now listens for that
+// event and reuses the exact same `error` state that already drives
+// AgentErrorBanner (app/agent/page.tsx) — so which provider was actually
+// attempted, and why it failed, shows up directly in the chat UI instead
+// of only being visible in server-side logs. This does not change which
+// provider answers a given message — DeterministicAIProvider's reply
+// still appends to the conversation exactly as before — it only makes
+// the failure that caused the fallback visible.
 export function useAgentChat() {
   const { address, isConnected } = useAccount();
   const router = useRouter();
@@ -187,6 +211,26 @@ export function useAgentChat() {
     };
   }, [address]);
 
+  // Diagnostic addendum — subscribes to `ai_provider_error`
+  // (lib/architecture/ai/fallback-ai-provider.ts,
+  // lib/architecture/core/types.ts:55) whenever the primary provider
+  // throws for any reason. Filters by the current address so a stale
+  // subscription from a previous wallet can't set an error for the
+  // wrong session. The message is prefixed with `[provider]` using the
+  // event's own `provider` field, so the banner tells you directly which
+  // provider actually ran (e.g. "[gemini] GEMINI_API_KEY is not
+  // configured on the server.") rather than requiring a guess. Reuses
+  // the existing `error` state — AgentErrorBanner (already rendered in
+  // app/agent/page.tsx) picks this up exactly as it does
+  // GENERATION_ERROR_MESSAGE below.
+  useEffect(() => {
+    const unsubscribe = agentEventBus.on("ai_provider_error", (payload) => {
+      if (payload.address !== address) return;
+      setError(`[${payload.provider}] ${payload.message}`);
+    });
+    return unsubscribe;
+  }, [address]);
+
   // Phase 3A.6 — command path. Never touches lib/agent-intelligence.ts;
   // resolves instantly (no THINKING_DELAY), matching a command's
   // deterministic nature. "navigate" results also push a route change.
@@ -263,7 +307,6 @@ export function useAgentChat() {
             const afterAssistant = await agentAIService.generateReply(address, trimmed, context);
             if (loadTokenRef.current !== token) return;
             setMessages(afterAssistant.messages);
-            setError(null);
             const last = afterAssistant.messages[afterAssistant.messages.length - 1];
             setStreamingMessageId(last?.id ?? null);
           } catch (err) {
@@ -299,7 +342,6 @@ export function useAgentChat() {
           const afterAssistant = await agentAIService.generateReply(address, lastUser.content, context);
           if (loadTokenRef.current !== token) return;
           setMessages(afterAssistant.messages);
-          setError(null);
         } catch (err) {
           if (loadTokenRef.current !== token) return;
           console.error("MPGR Agent: retry failed", err);
@@ -321,7 +363,6 @@ export function useAgentChat() {
         const result = await agentAIService.regenerate(address, context);
         if (loadTokenRef.current !== token) return;
         setMessages(result.messages);
-        setError(null);
       } catch (err) {
         if (loadTokenRef.current !== token) return;
         console.error("MPGR Agent: regenerate failed", err);
