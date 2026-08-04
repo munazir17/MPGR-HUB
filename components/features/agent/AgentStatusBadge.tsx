@@ -17,7 +17,7 @@ export function AgentStatusBadge({ status, className }: AgentStatusBadgeProps) {
   return (
     <span
       className={clsx(
-        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1",
+        "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 md:gap-1.5 md:px-2.5 md:py-1 md:text-xs",
         def.bgClass,
         def.textClass,
         def.ringClass,
