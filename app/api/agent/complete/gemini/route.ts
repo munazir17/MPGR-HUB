@@ -19,8 +19,17 @@ import { NextResponse } from "next/server";
 // through lib/architecture/ai/ai-provider-guardrails.ts exactly like
 // every other provider's output — this route doesn't duplicate that
 // validation.
+//
+// Model addendum — gemini-2.5-flash-lite and gemini-2.5-flash are both
+// now restricted from new Google AI Studio accounts ("This model is no
+// longer available to new users."). Per Google's current Gemini API
+// documentation (ai.google.dev/gemini-api/docs/latest-model,
+// ai.google.dev/api), the currently supported, generally-available
+// Flash model for new accounts is gemini-3.5-flash, served through the
+// same generateContent REST endpoint and x-goog-api-key header already
+// used below — no other request shape changes.
 
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-3.5-flash";
 
 interface CompleteRequestBody {
   systemPrompt: string;
