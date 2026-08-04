@@ -65,12 +65,12 @@ export default function AgentPage() {
       */}
       <div className="flex min-h-[calc(100dvh-5rem)] flex-col sm:min-h-[100dvh] md:block md:min-h-0">
         <Navbar />
-        <main className="flex flex-1 flex-col overflow-hidden px-4 pb-3 pt-4 md:mx-auto md:block md:max-w-3xl md:flex-none md:overflow-visible md:px-4 md:py-8 lg:py-12">
+        <main className="flex flex-1 flex-col overflow-hidden px-3 pb-2 pt-2 md:mx-auto md:block md:max-w-3xl md:flex-none md:overflow-visible md:px-4 md:py-8 lg:py-12">
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4 }}
-            className="flex min-h-0 flex-1 flex-col space-y-3 md:block md:min-h-0 md:flex-none md:space-y-6"
+            className="flex min-h-0 flex-1 flex-col space-y-1.5 md:block md:min-h-0 md:flex-none md:space-y-6"
           >
             <div className="shrink-0">
               <AgentHero statuses={heroStatuses} />
