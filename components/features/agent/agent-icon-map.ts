@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { PieChart, Flame, Gauge, Crown, Gift, Coins, Lock, Award, User, Trophy } from "lucide-react";
+import { PieChart, Flame, Gauge, Crown, Gift, Coins, Lock, Award, User, Trophy, Gamepad2 } from "lucide-react";
 import type { AgentIconKey } from "@/lib/agent-actions";
 
 // Phase 3A.3 — resolves the string icon keys stored on AgentAction /
@@ -26,4 +26,6 @@ export const AGENT_ICON_MAP: Record<AgentIconKey, LucideIcon> = {
   season: Award,
   profile: User,
   leaderboard: Trophy,
+  // Phase 3D — matches components/BottomNav.tsx's own icon for Games.
+  games: Gamepad2,
 };
