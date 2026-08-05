@@ -30,7 +30,14 @@ interface UseMPGRTransactionHistoryReturn {
 export function useMPGRTransactionHistory(): UseMPGRTransactionHistoryReturn {
   const { address, isConnected } = useAccount();
   const [transfers, setTransfers] = useState<TokenTransferEvent[]>([]);
-  const [pageSize, setPageSize] = useState(MPGR_TOKEN_CONFIG.transactionHistoryPageSize);
+  // Explicitly typed <number>: MPGR_TOKEN_CONFIG is declared `as const`,
+  // so `transactionHistoryPageSize` has the literal type `20`, not
+  // `number`. Without this annotation, useState's generic infers from
+  // that literal (unlike a fresh literal such as `useState(false)`,
+  // which widens to `boolean`, a literal read off a const-asserted
+  // object does not widen), locking pageSize's state type to the
+  // literal `20` and rejecting any other number passed to setPageSize.
+  const [pageSize, setPageSize] = useState<number>(MPGR_TOKEN_CONFIG.transactionHistoryPageSize);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
