@@ -11,17 +11,12 @@ import {IMPGRStaking} from "./interfaces/IMPGRStaking.sol";
 import {RewardMath} from "./libraries/RewardMath.sol";
 
 /// @title MPGRStaking
-/// @notice Single-sided MPGR staking pool. Stakers lock no fixed term —
-///         rewards accrue continuously and (once Milestone 1B lands) can
-///         be claimed or unstaked at any time.
-/// @dev MILESTONE 1 SCOPE — this contract currently implements only:
-///        imports, storage, custom errors, events, structs, constructor,
-///        modifiers, reward-calculation helpers, the updateReward
-///        modifier, rewardPerToken(), and earned().
-///      stake(), unstake(), claimRewards(), and exit() are NOT implemented
-///      yet and are deliberately absent — they arrive in Milestone 1B.
-///      The contract compiles and is deployable as-is; it simply has no
-///      way to move tokens until Milestone 1B adds those functions.
+/// @notice Single-sided MPGR staking pool. No lock term — rewards accrue
+///         continuously and can be staked, claimed, or unstaked at any time.
+/// @dev MILESTONE 1B — adds stake(), unstake(), claimRewards(), exit(), and
+///      depositRewards() on top of Milestone 1A's accounting core. Every
+///      Milestone 1A function (constructor, modifiers, rewardPerToken(),
+///      earned(), pause()/unpause()) is unchanged.
 contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -74,20 +69,28 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
     ///         yet paid out via claimRewards().
     mapping(address account => uint256 owedReward) public rewards;
 
-    // --- Constructor ---------------------------------------------------------
+    /// @notice MPGR currently available in the reward pool to pay out.
+    /// @dev Tracked independently of stakingToken.balanceOf(address(this))
+    ///      because stakingToken == rewardsToken here: the contract's raw
+    ///      token balance is principal + reward pool combined. Using raw
+    ///      balanceOf() as the payout check would let rewards be paid out
+    ///      of user principal, and would let large stakes fake reward-pool
+    ///      solvency. This variable is the sole source of truth for "is
+    ///      there enough reward left to pay this claim" and is the only
+    ///      thing depositRewards() increments / _payReward() decrements —
+    ///      it never moves in stake()/unstake().
+    uint256 public rewardPoolBalance;
+
+    // --- Constructor (Milestone 1A — unchanged) -------------------------------
 
     /// @param _mpgrToken Address of the deployed MPGR ERC-20 token. Used as
     ///        both the staking token and the reward token.
     /// @param _initialOwner Address to receive ownership (pause/recovery rights).
     /// @dev Establishes the reward schedule immediately at deployment:
     ///      REWARD_POOL emitted linearly over REWARDS_DURATION starting now.
-    ///      This contract does NOT pull REWARD_POOL tokens into itself in
-    ///      the constructor — funding the pool with the actual 25,000,000
-    ///      MPGR (via a dedicated funding function, using SafeERC20) is
-    ///      Milestone 1B scope, alongside stake()/claimRewards(). Until
-    ///      funded, earned()/rewardPerToken() will compute correctly but
-    ///      any payout would be unbacked — Milestone 1B's claim path must
-    ///      check contract balance before paying out.
+    ///      Does NOT pull any MPGR into the contract — depositRewards()
+    ///      (Milestone 1B) funds rewardPoolBalance separately, and staking
+    ///      principal only ever arrives via stake().
     constructor(address _mpgrToken, address _initialOwner) Ownable(_initialOwner) {
         if (_mpgrToken == address(0)) revert ZeroAddress();
         if (_initialOwner == address(0)) revert ZeroAddress();
@@ -108,17 +111,12 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
         emit RewardAdded(REWARD_POOL, rewardRate, periodFinish);
     }
 
-    // --- Modifiers -----------------------------------------------------------
+    // --- Modifiers (Milestone 1A — unchanged) ---------------------------------
 
     /// @notice Checkpoints global reward accounting, and — if `account` is
     ///         not the zero address — checkpoints that account's owed
     ///         reward too, before the wrapped function runs.
-    /// @dev Applied to stake(), unstake(), claimRewards(), and exit() once
-    ///      those land in Milestone 1B. Not applied to anything in this
-    ///      milestone since none of those functions exist yet; included
-    ///      now because it is itself one of this milestone's required
-    ///      deliverables (the accrual checkpoint logic reward math depends
-    ///      on).
+    /// @dev Applied to stake(), unstake(), claimRewards(), and exit().
     modifier updateReward(address account) {
         rewardState.rewardPerTokenStored = rewardPerToken();
         rewardState.lastUpdateTime = lastTimeRewardApplicable();
@@ -130,14 +128,13 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
         _;
     }
 
-    /// @notice Reverts if `addr` is the zero address. Reused by Milestone
-    ///         1B's stake()/unstake() argument validation.
+    /// @notice Reverts if `addr` is the zero address.
     modifier nonZeroAddress(address addr) {
         if (addr == address(0)) revert ZeroAddress();
         _;
     }
 
-    // --- Reward calculation views --------------------------------------------
+    // --- Reward calculation views (Milestone 1A — unchanged) -------------------
 
     /// @inheritdoc IMPGRStaking
     function lastTimeRewardApplicable() public view returns (uint256) {
@@ -165,17 +162,131 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
         );
     }
 
-    // --- Owner controls (pause/unpause) --------------------------------------
-    // Included because Pausable is a required dependency for this milestone;
-    // without an exposed switch it would be dead weight. Not in the excluded
-    // function list (stake/unstake/claimRewards/exit).
+    // --- Mutating functions (Milestone 1B) ------------------------------------
 
-    /// @notice Pauses stake/unstake/claim actions once they exist in Milestone 1B.
+    /// @inheritdoc IMPGRStaking
+    /// @dev whenNotPaused applies here only. Pausing stake() lets the owner
+    ///      stop new inflows in an emergency without ever blocking a
+    ///      user's ability to unstake or claim what they're already owed —
+    ///      matching the "claim anytime / unstake anytime" design and
+    ///      avoiding a pause path that could trap user funds.
+    function stake(uint256 amount) external nonReentrant whenNotPaused updateReward(msg.sender) {
+        if (amount == 0) revert ZeroAmount();
+        if (amount < MINIMUM_STAKE) revert BelowMinimumStake(amount, MINIMUM_STAKE);
+
+        unchecked {
+            // Safe: totalStaked and balanceOf only ever grow by `amount`
+            // added here, both bounded well below uint256 max for any
+            // realistic MPGR supply.
+            totalStaked += amount;
+            balanceOf[msg.sender] += amount;
+        }
+
+        stakingToken.safeTransferFrom(msg.sender, address(this), amount);
+
+        emit Staked(msg.sender, amount);
+    }
+
+    /// @inheritdoc IMPGRStaking
+    /// @dev Deliberately NOT whenNotPaused — principal withdrawal must
+    ///      always be available to users regardless of pause state.
+    function unstake(uint256 amount) external nonReentrant updateReward(msg.sender) {
+        _unstake(msg.sender, amount);
+    }
+
+    /// @inheritdoc IMPGRStaking
+    /// @dev Deliberately NOT whenNotPaused, matching unstake().
+    function claimRewards() external nonReentrant updateReward(msg.sender) {
+        uint256 reward = rewards[msg.sender];
+        if (reward == 0) revert NoRewardToClaim();
+
+        _payReward(msg.sender, reward);
+    }
+
+    /// @inheritdoc IMPGRStaking
+    function exit() external nonReentrant updateReward(msg.sender) {
+        uint256 staked = balanceOf[msg.sender];
+        if (staked == 0) revert NothingStaked();
+
+        _unstake(msg.sender, staked);
+
+        uint256 reward = rewards[msg.sender];
+        if (reward > 0) {
+            _payReward(msg.sender, reward);
+        }
+    }
+
+    /// @inheritdoc IMPGRStaking
+    /// @dev Increases rewardPoolBalance only — never touches totalStaked
+    ///      or any user's balanceOf, so this can never be mistaken for (or
+    ///      abused as) a path that affects staked principal.
+    function depositRewards(uint256 amount) external onlyOwner nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+
+        rewardPoolBalance += amount;
+
+        rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
+
+        emit RewardsDeposited(msg.sender, amount);
+    }
+
+    // --- Internal helpers --------------------------------------------------
+
+    /// @dev Shared by unstake() and exit(). Caller must have already run
+    ///      the updateReward(msg.sender) modifier this transaction.
+    function _unstake(address account, uint256 amount) internal {
+        if (amount == 0) revert ZeroAmount();
+
+        uint256 staked = balanceOf[account];
+        if (amount > staked) revert InsufficientStakedBalance(amount, staked);
+
+        unchecked {
+            // Safe: amount <= staked <= totalStaked is the pool's
+            // standing invariant (totalStaked is the sum of all
+            // balanceOf[*], and we just checked amount <= balanceOf[account]).
+            balanceOf[account] = staked - amount;
+            totalStaked -= amount;
+        }
+
+        stakingToken.safeTransfer(account, amount);
+
+        emit Unstaked(account, amount);
+    }
+
+    /// @dev Shared by claimRewards() and exit(). Caller must have already
+    ///      run the updateReward(msg.sender) modifier this transaction and
+    ///      confirmed reward > 0 where relevant. Checks rewardPoolBalance
+    ///      (not raw token balance) before paying out, per contract-level
+    ///      invariant that rewardPoolBalance is the sole reward solvency
+    ///      source of truth.
+    function _payReward(address account, uint256 reward) internal {
+        if (reward > rewardPoolBalance) {
+            revert InsufficientRewardBalance(reward, rewardPoolBalance);
+        }
+
+        rewards[account] = 0;
+        unchecked {
+            // Safe: reward <= rewardPoolBalance was just checked above.
+            rewardPoolBalance -= reward;
+        }
+
+        rewardsToken.safeTransfer(account, reward);
+
+        emit RewardPaid(account, reward);
+    }
+
+    // --- Owner controls (Milestone 1A — unchanged) ------------------------
+    // No owner function anywhere in this contract can move stakingToken out
+    // of a user's balanceOf or out of totalStaked — pause()/unpause() only
+    // gate stake(), and depositRewards() only ever adds to rewardPoolBalance.
+
+    /// @notice Pauses new stake() calls. unstake()/claimRewards()/exit()
+    ///         remain available regardless of pause state.
     function pause() external onlyOwner {
         _pause();
     }
 
-    /// @notice Resumes stake/unstake/claim actions.
+    /// @notice Resumes stake().
     function unpause() external onlyOwner {
         _unpause();
     }
