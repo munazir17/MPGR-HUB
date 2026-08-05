@@ -105,6 +105,62 @@ export interface AgentEventMap {
     timestamp: string;
     scope: "balance" | "metadata" | "all";
   };
+
+  // Phase 3E Part 2 — Live Token Infrastructure (transaction history,
+  // wallet activity, portfolio sync, background polling). Additive only;
+  // every event above is untouched. Emitted by
+  // lib/token/transaction-history-service.ts, lib/token/portfolio-sync-service.ts,
+  // and lib/token/background-sync-scheduler.ts.
+
+  // Emitted once per newly-discovered Transfer touching the wallet
+  // (either direction) whenever transaction-history-service scans forward
+  // and finds blocks it hasn't seen before.
+  transfer_detected: {
+    address: string;
+    direction: "in" | "out";
+    counterpartyAddress: string;
+    amount: {
+      raw: bigint;
+      formatted: string;
+      decimal: number;
+    };
+    txHash: string;
+    blockNumber: bigint;
+  };
+  // Emitted once per history scan that found at least one new transfer —
+  // fired after any transfer_detected events for that same scan, so a
+  // subscriber can choose to listen to individual transfers, the
+  // summary, or both.
+  transaction_history_updated: {
+    address: string;
+    totalCount: number;
+    newCount: number;
+    latestTimestamp: string | null;
+  };
+  // Emitted after portfolio-sync-service completes a full sync round
+  // (balance + transaction history together), regardless of whether every
+  // part of that round succeeded — subscribers that only care about
+  // "did a sync round just happen" don't need to inspect the result.
+  portfolio_synced: {
+    address: string;
+    timestamp: string;
+    source: "manual" | "poll" | "event";
+  };
+  // Background sync lifecycle — emitted by background-sync-scheduler.ts
+  // when a wallet's polling loop starts, stops, or a tick fails.
+  sync_started: {
+    address: string;
+    strategy: "polling" | "websocket";
+    intervalMs: number;
+  };
+  sync_stopped: {
+    address: string;
+  };
+  sync_error: {
+    address: string;
+    message: string;
+    consecutiveFailures: number;
+  };
 }
 
 export type AgentEventName = keyof AgentEventMap;
