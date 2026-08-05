@@ -32,11 +32,19 @@ import { agentEventBus } from "@/lib/architecture/core/event-bus";
 // Production audit addendum — runMemoryCleanup is Phase 3B Part 1's
 // housekeeping pass (lib/architecture/memory/memory-cleanup.ts), fully
 // implemented and exported from here, but until now never actually
-// called anywhere in the app (that file's own header says Part 1 "wires
-// it in as a one-off background task" — it didn't). Wired in below,
-// alongside the personalization load this hook already performs on
-// every address change.
+// called anywhere in the app. Wired in below, alongside the
+// personalization load this hook already performs on every address
+// change.
 import { getPersonalizationSnapshot, runMemoryCleanup, type PersonalizationSnapshot } from "@/lib/architecture/memory/memory-engine";
+// Phase 3D — Smart Actions & AI Automation. Turns an AI-generated
+// reply's `intent` into a real navigation side effect when that intent
+// is one of lib/agent-actions.ts's whitelisted open_* intents — see
+// lib/architecture/ai/smart-action-engine.ts's header for the full
+// safety/performance/diagnostics rationale. Never used for the
+// slash-command path (executeCommand below) — that path already
+// navigates directly via its own CommandResult "navigate" kind, exactly
+// as it did before Phase 3D.
+import { executeSmartAction } from "@/lib/architecture/ai/smart-action-engine";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 import type { SlashCommand } from "@/lib/agent-commands/types";
 
@@ -87,18 +95,30 @@ const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
 // shape or meaning.
 //
 // Production audit addendum — two additive fixes, neither changing this
-// hook's public shape:
-//   1. The address-load effect now also enqueues runMemoryCleanup() as a
-//      low-priority background task (same agentAIService.enqueueBackgroundTask
-//      pattern hooks/useRecentPageTracking.ts already uses) — completing
-//      Phase 3B Part 1's documented-but-never-wired cleanup pass.
-//   2. A new effect subscribes to the `ai_provider_error` event every AI
-//      provider decorator chain already emits on failure
-//      (lib/architecture/ai/fallback-ai-provider.ts). Previously nothing
-//      surfaced this: a failing primary provider fell back to
-//      DeterministicAIProvider completely silently. This reuses the
-//      existing `error` state (already rendered by AgentErrorBanner in
-//      app/agent/page.tsx) — no new UI wiring required.
+// hook's public shape: (1) the address-load effect now also enqueues
+// runMemoryCleanup() as a low-priority background task; (2) a new effect
+// subscribes to `ai_provider_error` so a failing primary AI provider
+// surfaces through the existing `error`/AgentErrorBanner path instead of
+// silently degrading to the deterministic engine.
+//
+// Phase 3D — Smart Actions & AI Automation. Two additions, both fully
+// additive to this hook's public shape:
+//   1. Every AI-generated reply (sendMessage, retryLastMessage,
+//      regenerateLastMessage — NOT the slash-command path, which already
+//      had its own navigation) now calls
+//      lib/architecture/ai/smart-action-engine.ts's executeSmartAction()
+//      right after the new message is set, passing router.push as the
+//      navigate callback. For the vast majority of intents this is a
+//      no-op (getNavigateTarget returns undefined); for the six new
+//      open_* intents it auto-navigates, mirroring the exact pattern
+//      executeCommand below already used for slash commands (`if
+//      (result.kind === "navigate") router.push(result.href)`) — not a
+//      new interaction paradigm, the same one extended to conversational
+//      phrasing.
+//   2. executeCommand's existing recordAction() call now also measures
+//      execution time and passes it through as `meta`, and the catch
+//      block now ALSO records a (failed) history entry — previously a
+//      failed command execution left no trace in Action History at all.
 export function useAgentChat() {
   const { address, isConnected } = useAccount();
   const router = useRouter();
@@ -193,10 +213,7 @@ export function useAgentChat() {
       // documented-but-unwired cleanup pass. Enqueued (not awaited)
       // through the same background-task path every other Memory Engine
       // write already uses, at "low" priority, so it can never delay the
-      // conversation load above or the crash-recovery branch below. A
-      // failure here is caught and logged by InMemoryTaskQueue.drain(),
-      // exactly like every other enqueued memory task — never thrown
-      // back into this hook.
+      // conversation load above or the crash-recovery branch below.
       agentAIService.enqueueBackgroundTask("memory.cleanup", () => runMemoryCleanup(address));
 
       const interruptedPrompt = findInterruptedPrompt(state);
@@ -231,12 +248,9 @@ export function useAgentChat() {
   // lib/architecture/core/types.ts:55) whenever the primary provider
   // throws for any reason. Filters by the current address so a stale
   // subscription from a previous wallet can't set an error for the
-  // wrong session. The message is prefixed with `[provider]` using the
-  // event's own `provider` field, so the banner tells you directly which
-  // provider actually ran and why it failed, rather than only degrading
-  // silently to the deterministic reply. Reuses the existing `error`
-  // state — AgentErrorBanner (already rendered in app/agent/page.tsx)
-  // picks this up exactly as it does GENERATION_ERROR_MESSAGE below.
+  // wrong session. Reuses the existing `error` state — AgentErrorBanner
+  // (already rendered in app/agent/page.tsx) picks this up exactly as it
+  // does GENERATION_ERROR_MESSAGE below.
   useEffect(() => {
     const unsubscribe = agentEventBus.on("ai_provider_error", (payload) => {
       if (payload.address !== address) return;
@@ -256,10 +270,21 @@ export function useAgentChat() {
 
       const { commandName, result } = executed;
       const token = loadTokenRef.current;
+      const startedAt = Date.now();
 
       (async () => {
         if (result.kind === "error") {
           setError(result.text);
+          // Phase 3D — previously a failed command left no trace in
+          // Action History at all. Recorded here (background-safe: this
+          // whole IIFE is already fire-and-forget from React's
+          // perspective) so "success: false" entries are actually
+          // reachable via getActionHistoryByCategory("error", ...).
+          void recordAction(address, commandName, result, {
+            success: false,
+            durationMs: Date.now() - startedAt,
+            category: "error",
+          });
           return;
         }
 
@@ -272,13 +297,21 @@ export function useAgentChat() {
           const last = state.messages[state.messages.length - 1];
           setStreamingMessageId(last?.id ?? null);
 
-          const history = await recordAction(address, commandName, result);
+          const history = await recordAction(address, commandName, result, {
+            success: true,
+            durationMs: Date.now() - startedAt,
+          });
           if (loadTokenRef.current !== token) return;
           setActionHistory(history);
         } catch (err) {
           if (loadTokenRef.current !== token) return;
           console.error("MPGR Agent: command execution failed", err);
           setError(GENERATION_ERROR_MESSAGE);
+          void recordAction(address, commandName, result, {
+            success: false,
+            durationMs: Date.now() - startedAt,
+            category: "error",
+          });
         }
 
         if (result.kind === "navigate") router.push(result.href);
@@ -324,6 +357,11 @@ export function useAgentChat() {
             setError(null);
             const last = afterAssistant.messages[afterAssistant.messages.length - 1];
             setStreamingMessageId(last?.id ?? null);
+            // Phase 3D — no-op unless `last.intent` is one of
+            // lib/agent-actions.ts's whitelisted open_* intents.
+            if (last?.role === "assistant") {
+              executeSmartAction(address, last.intent, (href) => router.push(href));
+            }
           } catch (err) {
             if (loadTokenRef.current !== token) return;
             console.error("MPGR Agent: failed to generate a reply", err);
@@ -334,7 +372,7 @@ export function useAgentChat() {
         }, delay);
       })();
     },
-    [address, thinking, context, executeCommand]
+    [address, thinking, context, executeCommand, router]
   );
 
   const retryLastMessage = useCallback(() => {
@@ -358,6 +396,10 @@ export function useAgentChat() {
           if (loadTokenRef.current !== token) return;
           setMessages(afterAssistant.messages);
           setError(null);
+          const last = afterAssistant.messages[afterAssistant.messages.length - 1];
+          if (last?.role === "assistant") {
+            executeSmartAction(address, last.intent, (href) => router.push(href));
+          }
         } catch (err) {
           if (loadTokenRef.current !== token) return;
           console.error("MPGR Agent: retry failed", err);
@@ -367,7 +409,7 @@ export function useAgentChat() {
         }
       }, THINKING_DELAY_MIN_MS);
     })();
-  }, [address, thinking, context]);
+  }, [address, thinking, context, router]);
 
   const regenerateLastMessage = useCallback(() => {
     if (!address || thinking) return;
@@ -380,6 +422,10 @@ export function useAgentChat() {
         if (loadTokenRef.current !== token) return;
         setMessages(result.messages);
         setError(null);
+        const last = result.messages[result.messages.length - 1];
+        if (last?.role === "assistant") {
+          executeSmartAction(address, last.intent, (href) => router.push(href));
+        }
       } catch (err) {
         if (loadTokenRef.current !== token) return;
         console.error("MPGR Agent: regenerate failed", err);
@@ -388,7 +434,7 @@ export function useAgentChat() {
         if (loadTokenRef.current === token) setThinking(false);
       }
     }, THINKING_DELAY_MIN_MS);
-  }, [address, thinking, context]);
+  }, [address, thinking, context, router]);
 
   const sendFeedback = useCallback(
     (messageId: string, feedback: AgentFeedback) => {
