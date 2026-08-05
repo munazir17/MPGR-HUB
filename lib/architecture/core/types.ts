@@ -62,6 +62,24 @@ export interface AgentEventMap {
   // Additive only; every event above is untouched.
   ai_provider_circuit_opened: { provider: string; consecutiveFailures: number };
   ai_provider_circuit_closed: { provider: string };
+  // Phase 3D — Smart Actions & AI Automation. Emitted by
+  // lib/architecture/ai/smart-action-engine.ts every time an assistant
+  // reply's intent resolves to a whitelisted navigation target
+  // (lib/agent-actions.ts's getNavigateTarget) and the engine attempts to
+  // act on it — success or failure. Additive only; every event above is
+  // untouched. `action` is fixed to "navigate" today (the only smart
+  // action kind Phase 3D implements); the field exists as a string,
+  // rather than a literal union of one, so a future action kind
+  // (display_card, confirm) doesn't require a breaking change here.
+  smart_action_executed: {
+    address: string;
+    intent: string;
+    action: string;
+    target: string;
+    durationMs: number;
+    success: boolean;
+    error?: string;
+  };
 }
 
 export type AgentEventName = keyof AgentEventMap;
