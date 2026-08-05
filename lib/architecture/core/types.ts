@@ -46,16 +46,7 @@ export interface AgentEventMap {
   // above is untouched. Emitted by
   // lib/architecture/ai/agent-ai-service.ts's runCommand() and, in
   // future, lib/agent-commands/action-history.ts's clear flow.
-  // Phase 3D — resultKind's union widened to include "card" (Smart
-  // Response Cards) and "confirm" (dangerous-action confirmation
-  // prompts), alongside the original three kinds. Purely additive to the
-  // type; every existing emit() call site still passes one of the
-  // original three values and remains valid.
-  command_executed: {
-    address: string;
-    commandName: string;
-    resultKind: "message" | "navigate" | "card" | "confirm" | "error";
-  };
+  command_executed: { address: string; commandName: string; resultKind: "message" | "navigate" | "error" };
   action_history_cleared: { address: string };
   // Phase 3C Part 2 — AI Provider resilience. Emitted by
   // lib/architecture/ai/fallback-ai-provider.ts when a primary AIProvider
@@ -71,14 +62,6 @@ export interface AgentEventMap {
   // Additive only; every event above is untouched.
   ai_provider_circuit_opened: { provider: string; consecutiveFailures: number };
   ai_provider_circuit_closed: { provider: string };
-  // Phase 3D — Smart Actions & AI Automation. Emitted by
-  // lib/architecture/actions/smart-action-engine.ts's executeSmartAction()
-  // on every resolved SmartActionPayload (navigate, display_card,
-  // quick_action, confirm) and whenever a payload fails validation
-  // (lib/architecture/actions/action-guardrails.ts). Additive only;
-  // every event above is untouched.
-  smart_action_executed: { address: string; intent: string; action: string; target: string | null };
-  smart_action_blocked: { address: string; intent: string; reason: string };
 }
 
 export type AgentEventName = keyof AgentEventMap;
