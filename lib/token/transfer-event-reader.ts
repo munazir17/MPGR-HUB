@@ -240,7 +240,16 @@ export const transferEventReader = {
         eventName: "Transfer",
         args: { to: walletAddress },
         pollingInterval: MPGR_TOKEN_CONFIG.watchPollingIntervalMs,
-        onLogs: handleLogs("in") as (logs: Log[]) => void,
+        // viem's onLogs is typed (logs: Log[]) => void; our handler is
+        // typed against DecodedTransferLog[] (Log narrowed to this
+        // event's decoded args) so call sites get properly-typed
+        // args.from/args.to/args.value. The two Log shapes don't
+        // structurally overlap enough for TS to allow a direct cast, so
+        // the cast is routed through `unknown` first — this is a type
+        // annotation change only; the runtime value viem hands back is
+        // already shaped exactly like DecodedTransferLog for a
+        // single-event watch, so no behavior changes here.
+        onLogs: handleLogs("in") as unknown as (logs: Log[]) => void,
         onError: (err) => logger.error("transferEventReader.watchTransfers (in) error", { error: err.message }),
       });
       unwatchOutgoing = watchContractEvent(client, {
@@ -249,7 +258,7 @@ export const transferEventReader = {
         eventName: "Transfer",
         args: { from: walletAddress },
         pollingInterval: MPGR_TOKEN_CONFIG.watchPollingIntervalMs,
-        onLogs: handleLogs("out") as (logs: Log[]) => void,
+        onLogs: handleLogs("out") as unknown as (logs: Log[]) => void,
         onError: (err) => logger.error("transferEventReader.watchTransfers (out) error", { error: err.message }),
       });
     } catch (err) {
