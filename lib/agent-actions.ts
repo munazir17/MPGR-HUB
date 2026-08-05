@@ -25,6 +25,29 @@ import { formatCompactNumber } from "@/lib/format";
 // intent), which is the /season-pass page's data source — NOT /season,
 // which is a separate, XP-engine-driven season-points page. Token Lock
 // lives at /app/token-lock (matches components/Navbar.tsx's own link).
+//
+// Phase 3D — Smart Actions & AI Automation. Three additions, all in the
+// same spirit as everything above (deterministic, derived from the exact
+// same AgentContext, no new data source):
+//   1. Action builders + highlight builders + follow-ups for the seven
+//      new intents lib/agent-intelligence.ts now detects (open_rewards,
+//      open_games, open_profile, open_staking, open_premium,
+//      open_leaderboard, suggest_next_action).
+//   2. NAVIGATE_TARGETS + getNavigateTarget() — a small, fixed,
+//      compile-time-checked whitelist (keys are literal AgentIntent
+//      values, so a typo doesn't compile) mapping ONLY the six open_*
+//      intents to an in-app route. This is the single source of truth
+//      hooks/useAgentChat.ts and lib/architecture/ai/smart-action-engine.ts
+//      use to decide whether/where an assistant reply should auto-
+//      navigate — nothing ever navigates to a raw string an AI provider
+//      produced; it always goes through this closed map first, so an
+//      unrecognized or malformed intent simply yields `undefined` (no
+//      navigation), never a broken or unexpected route.
+//   3. AgentIconKey gained "games" for the new open_games action, mapped
+//      in components/features/agent/agent-icon-map.ts to the exact same
+//      Gamepad2 icon components/BottomNav.tsx already uses for Games —
+//      reusing established icon language, per this file's own existing
+//      convention (see the Crown/Coins examples above).
 
 export type AgentIconKey =
   | "portfolio"
@@ -38,7 +61,8 @@ export type AgentIconKey =
   | "lock"
   | "season"
   | "profile"
-  | "leaderboard";
+  | "leaderboard"
+  | "games";
 
 export interface AgentAction {
   id: string;
@@ -262,6 +286,168 @@ function actionsReferralOverview(ctx: AgentContext): AgentAction[] {
   ];
 }
 
+// Phase 3D — one action per open_* intent, doubling as the visible,
+// tappable confirmation of where the conversation is about to
+// auto-navigate to (see getNavigateTarget below). Always returned (never
+// []) since, unlike the info intents above, there's no missing-context
+// case here — "open rewards" doesn't depend on any portfolio data being
+// loaded yet.
+function actionsOpenRewards(): AgentAction[] {
+  return [
+    {
+      id: "open-rewards",
+      label: "Open Rewards",
+      description: "Claim your MPGR rewards now",
+      href: "/rewards",
+      icon: "rewards",
+      variant: "primary",
+    },
+  ];
+}
+
+function actionsOpenGames(): AgentAction[] {
+  return [
+    {
+      id: "open-games",
+      label: "Open Games",
+      description: "See what's available to play",
+      href: "/games",
+      icon: "games",
+      variant: "primary",
+    },
+  ];
+}
+
+function actionsOpenProfile(): AgentAction[] {
+  return [
+    {
+      id: "open-profile",
+      label: "Open Profile",
+      description: "XP, Holder Tier, Premium & Season Pass in one place",
+      href: "/profile",
+      icon: "profile",
+      variant: "primary",
+    },
+  ];
+}
+
+function actionsOpenStaking(): AgentAction[] {
+  return [
+    {
+      id: "open-staking",
+      label: "Open Staking",
+      description: "Manage your active staking positions",
+      href: "/staking",
+      icon: "staking",
+      variant: "primary",
+    },
+  ];
+}
+
+function actionsOpenPremium(): AgentAction[] {
+  return [
+    {
+      id: "open-premium",
+      label: "Open Premium",
+      description: "See every tier and what it unlocks",
+      href: "/premium",
+      icon: "premium",
+      variant: "primary",
+    },
+  ];
+}
+
+function actionsOpenLeaderboard(): AgentAction[] {
+  return [
+    {
+      id: "open-leaderboard",
+      label: "Open Leaderboard",
+      description: "See how you rank community-wide",
+      href: "/leaderboard",
+      icon: "leaderboard",
+      variant: "primary",
+    },
+  ];
+}
+
+// Phase 3D — "Suggest Best Next Action". Mirrors
+// lib/agent-intelligence.ts's replySuggestNextAction's exact same
+// priority chain (claimable rewards -> staking rewards -> Premium ->
+// start staking -> create a lock -> portfolio fallback) so the single
+// action returned here always matches what the reply text just said.
+function actionsSuggestNextAction(ctx: AgentContext): AgentAction[] {
+  if (ctx.rewards && ctx.rewards.claimableTotal > 0) {
+    return [
+      {
+        id: "suggest-claim-rewards",
+        label: "Claim Rewards",
+        description: `${formatCompactNumber(ctx.rewards.claimableTotal)} MPGR ready to claim`,
+        href: "/rewards",
+        icon: "rewards",
+        variant: "primary",
+      },
+    ];
+  }
+  if (ctx.staking && ctx.staking.claimableRewards > 0) {
+    return [
+      {
+        id: "suggest-claim-staking",
+        label: "Claim Staking Rewards",
+        description: `${formatCompactNumber(ctx.staking.claimableRewards)} MPGR ready to claim`,
+        href: "/staking",
+        icon: "staking",
+        variant: "primary",
+      },
+    ];
+  }
+  if (ctx.premium && !ctx.premium.isPremium) {
+    return [
+      {
+        id: "suggest-premium",
+        label: "Lock MPGR for Premium",
+        description: "Unlock a Premium tier and boost your multipliers",
+        href: "/app/token-lock",
+        icon: "lock",
+        variant: "primary",
+      },
+    ];
+  }
+  if (ctx.staking && ctx.staking.activePositionsCount === 0) {
+    return [
+      {
+        id: "suggest-start-staking",
+        label: "Start Staking",
+        description: "Stake MPGR and start earning rewards",
+        href: "/staking",
+        icon: "staking",
+        variant: "primary",
+      },
+    ];
+  }
+  if (ctx.tokenLock && ctx.tokenLock.activeLocksCount === 0) {
+    return [
+      {
+        id: "suggest-lock",
+        label: "Create a Lock",
+        description: "Boost your Premium tier and Holder Score",
+        href: "/app/token-lock",
+        icon: "lock",
+        variant: "primary",
+      },
+    ];
+  }
+  return [
+    {
+      id: "suggest-portfolio",
+      label: "View Full Profile",
+      description: "XP, Holder Tier, Premium & Season Pass in one place",
+      href: "/profile",
+      icon: "profile",
+      variant: "primary",
+    },
+  ];
+}
+
 const ACTION_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentAction[]> = {
   portfolio_summary: actionsPortfolioSummary,
   xp_status: actionsXPStatus,
@@ -273,6 +459,13 @@ const ACTION_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentAction[]>
   season_progress: actionsSeasonProgress,
   referral_overview: actionsReferralOverview,
   general_help: () => [],
+  open_rewards: actionsOpenRewards,
+  open_games: actionsOpenGames,
+  open_profile: actionsOpenProfile,
+  open_staking: actionsOpenStaking,
+  open_premium: actionsOpenPremium,
+  open_leaderboard: actionsOpenLeaderboard,
+  suggest_next_action: actionsSuggestNextAction,
 };
 
 export function getAgentActions(intent: AgentIntent, ctx: AgentContext): AgentAction[] {
@@ -370,6 +563,18 @@ const HIGHLIGHT_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentHighli
   season_progress: highlightsSeasonProgress,
   referral_overview: highlightsReferralOverview,
   general_help: () => [],
+  // Phase 3D — the open_* intents are pure navigation confirmations; a
+  // stat chip above "Opening Rewards for you..." would just repeat the
+  // action card directly beneath it, so these intentionally return [].
+  // suggest_next_action also returns [] — its single AgentAction above
+  // already carries the "what" and "why" in its label/description.
+  open_rewards: () => [],
+  open_games: () => [],
+  open_profile: () => [],
+  open_staking: () => [],
+  open_premium: () => [],
+  open_leaderboard: () => [],
+  suggest_next_action: () => [],
 };
 
 export function getAgentHighlights(intent: AgentIntent, ctx: AgentContext): AgentHighlight[] {
@@ -392,8 +597,43 @@ const FOLLOW_UP_PROMPTS: Record<AgentIntent, string[]> = {
   season_progress: ["How much XP do I have?", "What's my Holder Tier?"],
   referral_overview: ["How much XP do I have?", "Show my portfolio summary"],
   general_help: ["Show my portfolio summary", "How much XP do I have?", "What's my Holder Tier?"],
+  open_rewards: ["Any rewards to claim?", "Show my portfolio summary"],
+  open_games: ["Show my portfolio summary", "How much XP do I have?"],
+  open_profile: ["Show my portfolio summary", "What's my Holder Tier?"],
+  open_staking: ["Any rewards to claim?", "Show my portfolio summary"],
+  open_premium: ["What's my Holder Tier?", "Show my portfolio summary"],
+  open_leaderboard: ["How much XP do I have?", "Show my portfolio summary"],
+  suggest_next_action: ["Show my portfolio summary", "What's my Holder Tier?", "Any rewards to claim?"],
 };
 
 export function getFollowUpPrompts(intent: AgentIntent): string[] {
   return FOLLOW_UP_PROMPTS[intent] ?? [];
+}
+
+// --- Navigation whitelist ----------------------------------------------
+// Phase 3D — Safety. The ONLY map hooks/useAgentChat.ts and
+// lib/architecture/ai/smart-action-engine.ts consult to decide whether an
+// assistant reply should auto-navigate, and to where. Deliberately a
+// closed, `Partial<Record<AgentIntent, string>>` with literal string
+// values, never a route built from AI-provided text — an AI provider
+// (OpenAI/Gemini) only ever gets to influence which KEY is looked up
+// (`intent`, already validated against AGENT_INTENTS by
+// lib/architecture/ai/ai-provider-guardrails.ts before it ever reaches
+// here), never the VALUE. An unrecognized or non-open_* intent simply
+// isn't a key in this map, so getNavigateTarget() returns undefined and
+// no navigation happens — "ignore malformed output, never navigate
+// somewhere invalid" is a structural property of this map, not a runtime
+// check that could be forgotten.
+const NAVIGATE_TARGETS: Partial<Record<AgentIntent, string>> = {
+  open_rewards: "/rewards",
+  open_games: "/games",
+  open_profile: "/profile",
+  open_staking: "/staking",
+  open_premium: "/premium",
+  open_leaderboard: "/leaderboard",
+};
+
+export function getNavigateTarget(intent: AgentIntent | undefined): string | undefined {
+  if (!intent) return undefined;
+  return NAVIGATE_TARGETS[intent];
 }
