@@ -40,6 +40,42 @@ export const MPGR_TOKEN_CONFIG = {
   // wallets, only refresh once after they've settled (to avoid
   // duplicate RPC calls).
   addressChangeDebounceMs: 500,
+
+  // --- Phase 3E Part 2 — Live Token Infrastructure additions ---------------
+  //
+  // How far back (in blocks) an initial transaction history scan looks
+  // when a wallet has never been scanned before. Base runs ~2s blocks, so
+  // ~300,000 blocks is roughly a week of history — enough to be useful
+  // for a "recent activity" timeline without scanning from genesis.
+  transferLogLookbackBlocks: 300_000,
+  // Maximum block span per single eth_getLogs call. Public RPC endpoints
+  // (including Base's own mainnet.base.org) commonly reject or truncate
+  // wide log ranges, so every scan is chunked to this width regardless of
+  // how large the overall lookback window is.
+  transferLogChunkSize: 2_000,
+  // How long a scanned transaction history stays valid before the next
+  // getHistory() call re-checks the chain for new blocks.
+  transactionHistoryCacheTtl: 20 * 1000,
+  // Number of transfers returned per "page" of history by default.
+  transactionHistoryPageSize: 20,
+  // Polling interval viem's watchContractEvent uses internally while the
+  // configured transport is http() (see lib/wagmi.ts). Has no effect if
+  // the transport is ever upgraded to a push-based one (e.g. webSocket()).
+  watchPollingIntervalMs: 4_000,
+  // Background portfolio sync cadence (balance + history together), and
+  // the ceiling background-sync-scheduler backs off to on repeated
+  // failures. Keeps a struggling RPC endpoint from being hammered at a
+  // fixed interval regardless of how many consecutive syncs have failed.
+  backgroundSyncIntervalMs: 20 * 1000,
+  backgroundSyncMaxIntervalMs: 2 * 60 * 1000,
+  // Shared retry policy for the RPC-facing calls this phase's modules
+  // make (log scans, block lookups). Exponential backoff with jitter,
+  // capped at maxDelayMs — see lib/token/rpc-retry.ts.
+  retry: {
+    maxAttempts: 3,
+    baseDelayMs: 300,
+    maxDelayMs: 4_000,
+  },
 } as const;
 
 export type MPGRTokenConfig = typeof MPGR_TOKEN_CONFIG;
