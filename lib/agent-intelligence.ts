@@ -1,6 +1,19 @@
 import { formatCompactNumber } from "@/lib/format";
 import type { AgentContext } from "@/lib/agent-context";
-import { getAgentActions, getAgentHighlights, getFollowUpPrompts, type AgentAction, type AgentHighlight } from "@/lib/agent-actions";
+import {
+  getAgentActions,
+  getAgentHighlights,
+  getFollowUpPrompts,
+  getSmartCard,
+  buildSmartActionPayload,
+  PREMIUM_TIERS,
+  PREMIUM_XP_MULTIPLIER,
+  PREMIUM_REWARDS_MULTIPLIER,
+  type AgentAction,
+  type AgentHighlight,
+  type SmartCardPayload,
+  type SmartActionPayload,
+} from "@/lib/agent-actions";
 // Phase 3B Part 2 — Conversation Intelligence. Type-only import: no
 // runtime dependency is introduced here (memory-context.ts's only
 // runtime imports are from the memory layer + action-history.ts), so
@@ -59,6 +72,17 @@ function formatUpcomingDate(iso: string): string {
 // matches one of FOLLOW_UP_PATTERNS ("what about...", "and...", "also...",
 // "what else...", "how about..."). Every other branch of detectIntent is
 // unchanged.
+//
+// Phase 3D — Smart Actions & AI Automation. Two additions, additive only:
+//   1. Two new intents — compare_premium ("Compare Premium Tiers") and
+//      suggest_next_action ("Suggest Best Next Action") — registered into
+//      every Record<AgentIntent, ...> below exactly like every existing
+//      intent already is.
+//   2. AgentIntelligenceResult gains `card` and `smartAction`, computed at
+//      the very end of generateIntelligentReply() from
+//      lib/agent-actions.ts's getSmartCard()/buildSmartActionPayload() —
+//      both pure reshapes of data this file already has in hand (intent +
+//      AgentContext), never a second calculation.
 
 export type AgentIntent =
   | "portfolio_summary"
@@ -70,6 +94,8 @@ export type AgentIntent =
   | "locked_tokens"
   | "season_progress"
   | "referral_overview"
+  | "compare_premium"
+  | "suggest_next_action"
   | "general_help";
 
 // Phase 3C Part 4 — a canonical runtime array mirroring AgentIntent's
@@ -87,6 +113,8 @@ export const AGENT_INTENTS: readonly AgentIntent[] = [
   "locked_tokens",
   "season_progress",
   "referral_overview",
+  "compare_premium",
+  "suggest_next_action",
   "general_help",
 ];
 
@@ -96,6 +124,12 @@ export interface AgentIntelligenceResult {
   actions: AgentAction[];
   highlights: AgentHighlight[];
   followUps: string[];
+  // Phase 3D — additive. Both are omitted (undefined) on the
+  // not-connected and greeting early-return branches below, exactly like
+  // actions/highlights are already []-but-present there; every existing
+  // caller that doesn't read these two fields is unaffected.
+  card?: SmartCardPayload | null;
+  smartAction?: SmartActionPayload;
 }
 
 // --- Normalization -----------------------------------------------------
@@ -155,6 +189,23 @@ const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
   locked_tokens: ["locked", "token lock", "my lock", "unlock", "lock period"],
   season_progress: ["season pass", "season point", "season level", "season"],
   referral_overview: ["referral", "invite", "refer a friend", "my invites"],
+  compare_premium: [
+    "compare premium",
+    "premium tiers",
+    "premium tier comparison",
+    "which premium tier",
+    "compare tiers",
+    "difference between premium tiers",
+  ],
+  suggest_next_action: [
+    "what should i do next",
+    "suggest next action",
+    "best next action",
+    "what should i do",
+    "recommend something",
+    "any suggestions",
+    "what's my next move",
+  ],
   general_help: ["help", "what can you do", "what do you do"],
 };
 
@@ -163,6 +214,7 @@ const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
 const INTENT_PRIORITY: AgentIntent[] = [
   "portfolio_summary",
   "holder_tier",
+  "compare_premium",
   "premium_status",
   "season_progress",
   "staking_summary",
@@ -170,6 +222,7 @@ const INTENT_PRIORITY: AgentIntent[] = [
   "claimable_rewards",
   "xp_status",
   "referral_overview",
+  "suggest_next_action",
   "general_help",
 ];
 
@@ -288,7 +341,7 @@ const GREETING_REPLY =
   "Hey! I'm the MPGR Agent. Ask me about your XP, staking, Holder Tier, Premium status, locked tokens, Season Pass, or claimable rewards.";
 
 const GENERAL_HELP_REPLY =
-  "I can help with: Portfolio Summary, XP & Level Progress, Holder Tier, Premium Status, Claimable Rewards, Staking Summary, Locked Tokens, Season Progress, and Referral Overview. Just ask — for example, \"What's my Holder Tier?\" or \"How much XP do I have?\"";
+  "I can help with: Portfolio Summary, XP & Level Progress, Holder Tier, Premium Status, Compare Premium Tiers, Claimable Rewards, Staking Summary, Locked Tokens, Season Progress, Referral Overview, and Suggest Best Next Action. Just ask — for example, \"What's my Holder Tier?\", \"Compare Premium tiers\", or \"What should I do next?\"";
 
 function notAvailable(topic: string): string {
   return `Your ${topic} data isn't available yet — this usually means it's still loading. Give it a moment and ask again.`;
@@ -396,6 +449,37 @@ function replyReferralOverview(ctx: AgentContext): string {
   return `You've referred ${referralCount} friend${referralCount === 1 ? "" : "s"} so far. Share your referral link from your Profile page to earn even more.`;
 }
 
+// Phase 3D — "Compare Premium Tiers". Every tier shares the same flat
+// multipliers (lib/premium-config.ts's own header explains why — V1 has
+// no per-tier multiplier scaling); the only thing that differs between
+// tiers is the MPGR required, so that's what this reply actually
+// compares.
+function replyComparePremiumTiers(ctx: AgentContext): string {
+  const tierLines = PREMIUM_TIERS.map((t) => `${t.label} (${formatCompactNumber(t.minLocked)}+ MPGR locked)`).join(
+    ", "
+  );
+  const currentNote = ctx.premium
+    ? ctx.premium.isPremium
+      ? ` You're currently on the ${ctx.premium.tierLabel} tier.`
+      : " You're not on a Premium tier yet."
+    : "";
+  return `Every Premium tier gives the same ${PREMIUM_XP_MULTIPLIER}× XP and ${PREMIUM_REWARDS_MULTIPLIER}× Rewards multiplier — what changes is how much MPGR you need locked: ${tierLines}.${currentNote}`;
+}
+
+// Phase 3D — "Suggest Best Next Action". Reuses
+// lib/agent-actions.ts's getAgentActions("suggest_next_action", ctx) —
+// the exact same deterministic, priority-ordered checklist the action
+// cards and Smart Response Card for this intent already render — so the
+// sentence below can never disagree with what's shown underneath it.
+function replySuggestNextAction(ctx: AgentContext): string {
+  const suggestions = getAgentActions("suggest_next_action", ctx);
+  const top = suggestions[0];
+  if (!top) return notAvailable("recommendations");
+  const rest = suggestions.slice(1).map((a) => a.label);
+  const restNote = rest.length > 0 ? ` After that: ${rest.join(", ")}.` : "";
+  return `Right now, the best next move is to ${top.label.toLowerCase()} — ${top.description}.${restNote}`;
+}
+
 const INTENT_HANDLERS: Record<AgentIntent, (ctx: AgentContext) => string> = {
   portfolio_summary: replyPortfolioSummary,
   xp_status: replyXPStatus,
@@ -406,6 +490,8 @@ const INTENT_HANDLERS: Record<AgentIntent, (ctx: AgentContext) => string> = {
   locked_tokens: replyLockedTokens,
   season_progress: replySeasonProgress,
   referral_overview: replyReferralOverview,
+  compare_premium: replyComparePremiumTiers,
+  suggest_next_action: replySuggestNextAction,
   general_help: () => GENERAL_HELP_REPLY,
 };
 
@@ -422,6 +508,8 @@ const INTENT_LABELS: Record<AgentIntent, string> = {
   locked_tokens: "locked tokens",
   season_progress: "Season Pass",
   referral_overview: "referrals",
+  compare_premium: "Premium tier comparisons",
+  suggest_next_action: "what to do next",
   general_help: "MPGR HUB",
 };
 
@@ -490,6 +578,13 @@ function buildRecallNote(intent: AgentIntent, memoryContext?: ConversationMemory
 // otherwise be identical to before. It never changes which handler runs
 // for a direct keyword match, and omitting it entirely reproduces the
 // exact pre-Phase-3B-Part-2 output.
+//
+// Phase 3D — the returned result now also carries `card` (a Smart
+// Response Card, or null when this intent has none) and `smartAction`
+// (the structured `{ intent, action, target }` payload). Both are
+// computed here, once, from the SAME `intent`/`context` this function
+// already has — never a second AgentContext read, never a second
+// intent-detection pass.
 export function generateIntelligentReply(
   prompt: string,
   context: AgentContext,
@@ -517,5 +612,7 @@ export function generateIntelligentReply(
     actions: getAgentActions(intent, context),
     highlights: getAgentHighlights(intent, context),
     followUps: getFollowUpPrompts(intent),
+    card: getSmartCard(intent, context),
+    smartAction: buildSmartActionPayload(intent, context),
   };
 }
