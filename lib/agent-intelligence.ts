@@ -42,9 +42,9 @@ function formatUpcomingDate(iso: string): string {
 // product spec's own example, where "How much XP?", "What level am I?",
 // "My XP", and "Show progress" are all expected to resolve to one intent.
 //
-// Phase 3B Part 2 — Conversation Intelligence. detectIntent() and
-// generateIntelligentReply() both take an optional ConversationMemoryContext
-// (built by lib/architecture/memory/memory-context.ts and passed in by
+// Phase 3B Part 2 — detectIntent() and generateIntelligentReply() both
+// take an optional ConversationMemoryContext (built by
+// lib/architecture/memory/memory-context.ts and passed in by
 // lib/agent-engine.ts). It's optional and every existing call path that
 // omits it behaves byte-for-byte the same as before — this is additive
 // personalization/continuity on top of the exact same deterministic
@@ -56,9 +56,50 @@ function formatUpcomingDate(iso: string): string {
 // questions like "Who are you?" would silently inherit whatever intent
 // was last discussed (e.g. rewards/staking) instead of getting their own
 // answer. Fixed below: a message is now only a follow-up if it actually
-// matches one of FOLLOW_UP_PATTERNS ("what about...", "and...", "also...",
-// "what else...", "how about..."). Every other branch of detectIntent is
+// matches one of FOLLOW_UP_PATTERNS ("what about...", "and...",
+// "also...", "what else...", "how about...") or PRONOUN_REFERENCE_PATTERN
+// (see Phase 3D note below). Every other branch of detectIntent is
 // unchanged.
+//
+// Phase 3D — Smart Actions & AI Automation.
+//   1. Seven new intents: open_rewards, open_games, open_profile,
+//      open_staking, open_premium, open_leaderboard (direct navigation
+//      requests — "open rewards", "take me to staking") and
+//      suggest_next_action ("what should I do next?", a single
+//      context-ranked recommendation). Each slots into the exact same
+//      INTENT_PATTERNS / INTENT_PRIORITY / INTENT_HANDLERS /
+//      INTENT_LABELS machinery every existing intent already goes
+//      through — no new pipeline. The open_* intents are placed first in
+//      INTENT_PRIORITY so an explicit "open staking" wins ties against
+//      the plain "stak" substring also matching staking_summary; every
+//      original intent's relative order among themselves is otherwise
+//      completely unchanged, so ties between two pre-existing intents
+//      resolve exactly as before. Their actual navigation side effect
+//      (auto-routing, not just a tappable link) is wired in
+//      hooks/useAgentChat.ts via lib/agent-actions.ts's
+//      getNavigateTarget() and lib/architecture/ai/smart-action-engine.ts
+//      — this file only ever produces text + the same
+//      AgentAction/AgentHighlight shapes every other intent already
+//      does; it has no knowledge of routing or navigation.
+//   2. "Compare Premium Tiers" is NOT a new intent — the action already
+//      existed under premium_status (lib/agent-actions.ts's
+//      actionsPremiumStatus, id "premium-compare") since Phase 3A.3. Two
+//      new phrasings ("compare premium", "compare premium tiers") were
+//      just added to premium_status's own INTENT_PATTERNS below so that
+//      exact ask now also routes reliably, without introducing a second
+//      intent, a second reply handler, and a second action builder for
+//      what was already a fully-built feature.
+//   3. Context awareness ("it"/"that"/"them") — PRONOUN_REFERENCE_PATTERN
+//      widens isFollowUp() (previously only connector phrases like "what
+//      about...") to also recognize a bare pronoun reference anywhere in
+//      the message. "How much am I staking?" -> "Can I increase it?" now
+//      resolves "it" back to staking_summary via the exact same
+//      previousIntent fallback branch connector phrases already used —
+//      no new resolution mechanism, just a wider trigger for the
+//      existing one. This only ever adds cases that used to fall through
+//      to a generic general_help reply; it can't change behavior for any
+//      message that already had a direct keyword match, since `direct`
+//      still wins whenever it exists (see detectIntent below).
 
 export type AgentIntent =
   | "portfolio_summary"
@@ -70,7 +111,15 @@ export type AgentIntent =
   | "locked_tokens"
   | "season_progress"
   | "referral_overview"
-  | "general_help";
+  | "general_help"
+  // Phase 3D — Smart Actions
+  | "open_rewards"
+  | "open_games"
+  | "open_profile"
+  | "open_staking"
+  | "open_premium"
+  | "open_leaderboard"
+  | "suggest_next_action";
 
 // Phase 3C Part 4 — a canonical runtime array mirroring AgentIntent's
 // union members, one-to-one. TypeScript unions have no runtime
@@ -88,6 +137,13 @@ export const AGENT_INTENTS: readonly AgentIntent[] = [
   "season_progress",
   "referral_overview",
   "general_help",
+  "open_rewards",
+  "open_games",
+  "open_profile",
+  "open_staking",
+  "open_premium",
+  "open_leaderboard",
+  "suggest_next_action",
 ];
 
 export interface AgentIntelligenceResult {
@@ -149,6 +205,11 @@ const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
     "membership",
     "xp multiplier",
     "rewards multiplier",
+    // Phase 3D — routes "compare premium tiers" reliably to the existing
+    // "Compare Premium Tiers" action (lib/agent-actions.ts's
+    // actionsPremiumStatus, id "premium-compare") without a new intent.
+    "compare premium",
+    "premium tiers",
   ],
   claimable_rewards: ["claimable", "claim my reward", "reward", "rewards page", "what can i claim"],
   staking_summary: ["stak", "staking position", "staking reward"],
@@ -156,11 +217,60 @@ const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
   season_progress: ["season pass", "season point", "season level", "season"],
   referral_overview: ["referral", "invite", "refer a friend", "my invites"],
   general_help: ["help", "what can you do", "what do you do"],
+  // Phase 3D — Smart Actions. Deliberately action-verb-led ("open",
+  // "go to", "take me to", "navigate to") so these never fire on a plain
+  // topic mention alone — "how much am I staking" still resolves to
+  // staking_summary, not open_staking, because it contains no navigation
+  // verb.
+  open_rewards: ["open rewards", "go to rewards", "take me to rewards", "navigate to rewards", "open the rewards page"],
+  open_games: ["open games", "go to games", "take me to games", "navigate to games", "play games", "show games page"],
+  open_profile: [
+    "open profile",
+    "open my profile",
+    "go to profile",
+    "go to my profile",
+    "take me to profile",
+    "navigate to profile",
+  ],
+  open_staking: ["open staking", "go to staking", "take me to staking", "navigate to staking", "open the staking page"],
+  open_premium: ["open premium", "go to premium", "take me to premium", "navigate to premium", "open the premium page"],
+  open_leaderboard: [
+    "open leaderboard",
+    "go to leaderboard",
+    "take me to leaderboard",
+    "navigate to leaderboard",
+    "show leaderboard",
+  ],
+  suggest_next_action: [
+    "what should i do next",
+    "what should i do",
+    "best next action",
+    "suggest something",
+    "what do you recommend",
+    "recommend something",
+    "next step",
+    "what next",
+  ],
 };
 
 // Fixed iteration order used as the tie-break when two intents score
 // equally — first match in this list wins.
+//
+// Phase 3D — the seven new intents are prepended, ahead of every
+// original entry. This is required for open_staking (etc.) to win a tie
+// against staking_summary when a message like "open staking" matches
+// both ("open staking" contains "stak"), since an explicit navigation
+// verb should outrank a bare topic mention. Every original entry below
+// keeps its exact prior relative order, so any tie-break between two
+// pre-existing intents is completely unchanged.
 const INTENT_PRIORITY: AgentIntent[] = [
+  "open_rewards",
+  "open_games",
+  "open_profile",
+  "open_staking",
+  "open_premium",
+  "open_leaderboard",
+  "suggest_next_action",
   "portfolio_summary",
   "holder_tier",
   "premium_status",
@@ -185,13 +295,20 @@ function isGreeting(normalized: string): boolean {
 // standalone question.
 const FOLLOW_UP_PATTERNS = [/^what about\b/, /^and\b/, /^also\b/, /^what else\b/, /^how about\b/];
 
+// Phase 3D — Context Awareness. A bare pronoun reference ("Can I increase
+// it?", "How do I claim that?", "What about them?") anywhere in the
+// message is also treated as a follow-up. Whole-word matches only (word
+// boundaries), so this never fires on substrings like "item" or "attic".
+const PRONOUN_REFERENCE_PATTERN = /\b(it|that|those|them)\b/;
+
 // Bug fix — the old implementation also returned true for ANY message of
 // 3 words or fewer ("|| wordCount <= 3"), regardless of content. That
 // swallowed short, standalone questions like "Who are you?" into
 // whatever the previous topic happened to be. Now this only returns true
-// when the message actually matches one of FOLLOW_UP_PATTERNS.
+// when the message actually matches one of FOLLOW_UP_PATTERNS, or (Phase
+// 3D) contains a pronoun reference to something already discussed.
 function isFollowUp(normalized: string): boolean {
-  return FOLLOW_UP_PATTERNS.some((re) => re.test(normalized));
+  return FOLLOW_UP_PATTERNS.some((re) => re.test(normalized)) || PRONOUN_REFERENCE_PATTERN.test(normalized);
 }
 
 // When a follow-up's own best match is one of these "generic" intents,
@@ -288,7 +405,7 @@ const GREETING_REPLY =
   "Hey! I'm the MPGR Agent. Ask me about your XP, staking, Holder Tier, Premium status, locked tokens, Season Pass, or claimable rewards.";
 
 const GENERAL_HELP_REPLY =
-  "I can help with: Portfolio Summary, XP & Level Progress, Holder Tier, Premium Status, Claimable Rewards, Staking Summary, Locked Tokens, Season Progress, and Referral Overview. Just ask — for example, \"What's my Holder Tier?\" or \"How much XP do I have?\"";
+  "I can help with: Portfolio Summary, XP & Level Progress, Holder Tier, Premium Status, Claimable Rewards, Staking Summary, Locked Tokens, Season Progress, and Referral Overview. Just ask — for example, \"What's my Holder Tier?\" or \"How much XP do I have?\" I can also open a page for you directly — try \"open rewards\" or \"what should I do next?\"";
 
 function notAvailable(topic: string): string {
   return `Your ${topic} data isn't available yet — this usually means it's still loading. Give it a moment and ask again.`;
@@ -396,6 +513,62 @@ function replyReferralOverview(ctx: AgentContext): string {
   return `You've referred ${referralCount} friend${referralCount === 1 ? "" : "s"} so far. Share your referral link from your Profile page to earn even more.`;
 }
 
+// Phase 3D — Smart Actions reply handlers. Each is a short confirmation
+// of what's about to happen; the actual navigation is a side effect
+// handled entirely outside this file (hooks/useAgentChat.ts +
+// lib/architecture/ai/smart-action-engine.ts), so these never need
+// AgentContext and are written as zero-arg functions — exactly the same
+// pattern general_help's handler below already uses, since a function
+// with fewer parameters satisfies INTENT_HANDLERS' `(ctx) => string`
+// shape.
+function replyOpenRewards(): string {
+  return "Opening Rewards for you — here's your claimable balance and claim history.";
+}
+function replyOpenGames(): string {
+  return "Opening Games — check out what's available to play right now.";
+}
+function replyOpenProfile(): string {
+  return "Opening your Profile — XP, Holder Tier, Premium, and Season Pass all in one place.";
+}
+function replyOpenStaking(): string {
+  return "Opening Staking — manage your positions and claim staking rewards.";
+}
+function replyOpenPremium(): string {
+  return "Opening Premium — compare every tier and see what each one unlocks.";
+}
+function replyOpenLeaderboard(): string {
+  return "Opening the Leaderboard — see how you rank community-wide.";
+}
+
+// Phase 3D — "Suggest Best Next Action". A single, deterministic priority
+// chain over the exact same AgentContext every other handler already
+// reads — claimable rewards first (free value sitting there), then
+// Premium (biggest multiplier upgrade), then an empty staking or lock
+// position (getting started), falling back to a clean bill of health.
+// lib/agent-actions.ts's actionsSuggestNextAction mirrors this exact
+// same chain so the reply text and the tappable action always agree on
+// what "next" means. Every branch checks its own ctx slice for null/zero
+// first, so a still-loading piece of context is skipped rather than
+// crashing — same defensive style as every handler above.
+function replySuggestNextAction(ctx: AgentContext): string {
+  if (ctx.rewards && ctx.rewards.claimableTotal > 0) {
+    return `You have ${formatCompactNumber(ctx.rewards.claimableTotal)} MPGR claimable right now — claiming your rewards is the best next move.`;
+  }
+  if (ctx.staking && ctx.staking.claimableRewards > 0) {
+    return `You have ${formatCompactNumber(ctx.staking.claimableRewards)} MPGR in staking rewards ready to claim — that's your best next move.`;
+  }
+  if (ctx.premium && !ctx.premium.isPremium) {
+    return "You're not on a Premium tier yet — locking MPGR to unlock Premium is a great next step for boosting your multipliers.";
+  }
+  if (ctx.staking && ctx.staking.activePositionsCount === 0) {
+    return "You don't have any active staking positions — starting to stake MPGR is a solid next move to start earning rewards.";
+  }
+  if (ctx.tokenLock && ctx.tokenLock.activeLocksCount === 0) {
+    return "You don't have any active token locks — locking some MPGR boosts your Premium tier and Holder Score.";
+  }
+  return "You're in good shape across the board — check your portfolio summary to see the full picture.";
+}
+
 const INTENT_HANDLERS: Record<AgentIntent, (ctx: AgentContext) => string> = {
   portfolio_summary: replyPortfolioSummary,
   xp_status: replyXPStatus,
@@ -407,6 +580,13 @@ const INTENT_HANDLERS: Record<AgentIntent, (ctx: AgentContext) => string> = {
   season_progress: replySeasonProgress,
   referral_overview: replyReferralOverview,
   general_help: () => GENERAL_HELP_REPLY,
+  open_rewards: replyOpenRewards,
+  open_games: replyOpenGames,
+  open_profile: replyOpenProfile,
+  open_staking: replyOpenStaking,
+  open_premium: replyOpenPremium,
+  open_leaderboard: replyOpenLeaderboard,
+  suggest_next_action: replySuggestNextAction,
 };
 
 // Phase 3B Part 2 — human-readable labels for recall notes / returning-
@@ -423,6 +603,13 @@ const INTENT_LABELS: Record<AgentIntent, string> = {
   season_progress: "Season Pass",
   referral_overview: "referrals",
   general_help: "MPGR HUB",
+  open_rewards: "Rewards",
+  open_games: "Games",
+  open_profile: "your Profile",
+  open_staking: "Staking",
+  open_premium: "Premium",
+  open_leaderboard: "the Leaderboard",
+  suggest_next_action: "what to do next",
 };
 
 function buildGreetingReply(memoryContext?: ConversationMemoryContext): string {
