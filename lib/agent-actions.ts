@@ -1,6 +1,7 @@
 import type { AgentIntent } from "@/lib/agent-intelligence";
 import type { AgentContext } from "@/lib/agent-context";
 import { formatCompactNumber } from "@/lib/format";
+import { PREMIUM_TIERS, PREMIUM_REWARDS_MULTIPLIER, PREMIUM_XP_MULTIPLIER } from "@/lib/premium-config";
 
 // Phase 3A.3 — Smart Actions & Conversational UX.
 //
@@ -18,13 +19,32 @@ import { formatCompactNumber } from "@/lib/format";
 // does not survive that round-trip, so resolving the key to an actual icon
 // component only happens in the UI layer
 // (components/features/agent/agent-icon-map.ts). Keep it that way — do not
-// import lucide-react components into this file.
+// import lucide-react components into this file. The exact same rule now
+// applies to Phase 3D's SmartCardPayload/SmartActionPayload below.
 //
 // Routes below were verified against the actual app/ tree, not assumed:
 // Season Pass status here comes from useSeasonPass (season_progress
 // intent), which is the /season-pass page's data source — NOT /season,
 // which is a separate, XP-engine-driven season-points page. Token Lock
 // lives at /app/token-lock (matches components/Navbar.tsx's own link).
+//
+// Phase 3D addendum — Smart Actions & AI Automation. Three additions,
+// none of which touch a single line above this comment block:
+//   1. SmartCardType/SmartCardStat/SmartCardPayload + getSmartCard(): a
+//      compact, reusable "Smart Response Card" built from the exact same
+//      AgentContext slice each highlightsX()/actionsX() function below
+//      already reads — no new data source, no duplicated aggregation.
+//   2. SmartActionPayload + buildSmartActionPayload(): the structured
+//      `{ intent, action, target }` shape the product spec asks for,
+//      derived from getSmartCard()/getAgentActions() rather than
+//      recomputed — a thin reshape of data this file already produces.
+//   3. Two new intents (compare_premium, suggest_next_action) and their
+//      action/highlight/follow-up builders, registered into the same
+//      Record<AgentIntent, ...> maps every existing intent already goes
+//      through.
+// lib/architecture/actions/action-types.ts imports FROM this file
+// (one-way), never the other way around — this file has zero dependency
+// on the Action Engine.
 
 export type AgentIconKey =
   | "portfolio"
@@ -38,7 +58,8 @@ export type AgentIconKey =
   | "lock"
   | "season"
   | "profile"
-  | "leaderboard";
+  | "leaderboard"
+  | "suggestion";
 
 export interface AgentAction {
   id: string;
@@ -262,6 +283,115 @@ function actionsReferralOverview(ctx: AgentContext): AgentAction[] {
   ];
 }
 
+// Phase 3D — "Compare Premium Tiers" as its own intent (distinct from
+// premium_status, which reports the user's CURRENT tier). Always offers
+// the /premium comparison page as the primary action, since that's the
+// one page in the app that actually renders every tier side-by-side
+// (components/features/premium/PremiumTierTable.tsx).
+function actionsComparePremium(ctx: AgentContext): AgentAction[] {
+  const actions: AgentAction[] = [
+    {
+      id: "compare-premium-open",
+      label: "Open Premium Tiers",
+      description: "See every tier, requirement, and multiplier",
+      href: "/premium",
+      icon: "premium",
+      variant: "primary",
+    },
+  ];
+  if (ctx.premium && !ctx.premium.isPremium) {
+    actions.push({
+      id: "compare-premium-lock",
+      label: "Lock MPGR for Premium",
+      description: "Start climbing toward Silver, the first tier",
+      href: "/app/token-lock",
+      icon: "lock",
+      variant: "secondary",
+    });
+  }
+  return actions;
+}
+
+// Phase 3D — "Suggest Best Next Action". A small, deterministic
+// recommendation checklist over AgentContext, ordered by what's most
+// immediately valuable to the user right now (money already earned and
+// waiting > underused features > general exploration). Each rule reuses
+// exactly the same context fields (and, for the claim/staking/lock
+// actions, the exact SAME AgentAction shape) the intent-specific builders
+// above already produce — no second definition of "what does claiming
+// rewards look like" exists anywhere in this file.
+function actionsSuggestNextAction(ctx: AgentContext): AgentAction[] {
+  const suggestions: AgentAction[] = [];
+
+  if (ctx.rewards && ctx.rewards.claimableTotal > 0) {
+    suggestions.push({
+      id: "suggest-claim-rewards",
+      label: "Claim Rewards",
+      description: `${formatCompactNumber(ctx.rewards.claimableTotal)} MPGR ready to claim right now`,
+      href: "/rewards",
+      icon: "rewards",
+      variant: "primary",
+    });
+  }
+
+  if (ctx.staking && ctx.staking.claimableRewards > 0) {
+    suggestions.push({
+      id: "suggest-claim-staking",
+      label: "Claim Staking Rewards",
+      description: `${formatCompactNumber(ctx.staking.claimableRewards)} MPGR staking rewards ready`,
+      href: "/staking",
+      icon: "staking",
+      variant: suggestions.length === 0 ? "primary" : "secondary",
+    });
+  }
+
+  if (ctx.staking && ctx.staking.activePositionsCount === 0) {
+    suggestions.push({
+      id: "suggest-start-staking",
+      label: "Start Staking",
+      description: "You aren't staking yet — put idle MPGR to work",
+      href: "/staking",
+      icon: "staking",
+      variant: suggestions.length === 0 ? "primary" : "secondary",
+    });
+  }
+
+  if (ctx.premium && !ctx.premium.isPremium) {
+    suggestions.push({
+      id: "suggest-unlock-premium",
+      label: "Unlock Premium",
+      description: "Lock MPGR to boost your XP and Rewards multipliers",
+      href: "/app/token-lock",
+      icon: "lock",
+      variant: suggestions.length === 0 ? "primary" : "secondary",
+    });
+  }
+
+  if (ctx.holderTier && ctx.holderTier.nextTierLabel) {
+    suggestions.push({
+      id: "suggest-holder-tier",
+      label: "Grow Your Holder Tier",
+      description: `${formatCompactNumber(ctx.holderTier.amountToNextTier)} MPGR from ${ctx.holderTier.nextTierLabel}`,
+      href: "/profile",
+      icon: "holderTier",
+      variant: suggestions.length === 0 ? "primary" : "secondary",
+    });
+  }
+
+  if (suggestions.length === 0) {
+    suggestions.push({
+      id: "suggest-profile",
+      label: "View Full Profile",
+      description: "You're in great shape — check your full standing",
+      href: "/profile",
+      icon: "profile",
+      variant: "primary",
+    });
+  }
+
+  return suggestions.slice(0, 3);
+}
+
 const ACTION_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentAction[]> = {
   portfolio_summary: actionsPortfolioSummary,
   xp_status: actionsXPStatus,
@@ -272,6 +402,8 @@ const ACTION_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentAction[]>
   locked_tokens: actionsLockedTokens,
   season_progress: actionsSeasonProgress,
   referral_overview: actionsReferralOverview,
+  compare_premium: actionsComparePremium,
+  suggest_next_action: actionsSuggestNextAction,
   general_help: () => [],
 };
 
@@ -359,6 +491,18 @@ function highlightsReferralOverview(ctx: AgentContext): AgentHighlight[] {
   return [{ id: "h-referrals", label: `${ctx.xp.referralCount} Referral${ctx.xp.referralCount === 1 ? "" : "s"}`, icon: "profile" }];
 }
 
+function highlightsComparePremium(ctx: AgentContext): AgentHighlight[] {
+  if (!ctx.premium) return [];
+  return ctx.premium.isPremium
+    ? [{ id: "h-compare-current", label: `Currently ${ctx.premium.tierLabel}`, icon: "premium" }]
+    : [];
+}
+
+function highlightsSuggestNextAction(ctx: AgentContext): AgentHighlight[] {
+  const top = actionsSuggestNextAction(ctx)[0];
+  return top ? [{ id: "h-suggest-top", label: top.label, icon: "suggestion" }] : [];
+}
+
 const HIGHLIGHT_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentHighlight[]> = {
   portfolio_summary: highlightsPortfolioSummary,
   xp_status: highlightsXPStatus,
@@ -369,6 +513,8 @@ const HIGHLIGHT_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentHighli
   locked_tokens: highlightsLockedTokens,
   season_progress: highlightsSeasonProgress,
   referral_overview: highlightsReferralOverview,
+  compare_premium: highlightsComparePremium,
+  suggest_next_action: highlightsSuggestNextAction,
   general_help: () => [],
 };
 
@@ -391,9 +537,241 @@ const FOLLOW_UP_PROMPTS: Record<AgentIntent, string[]> = {
   locked_tokens: ["What's my Premium status?", "Show my portfolio summary"],
   season_progress: ["How much XP do I have?", "What's my Holder Tier?"],
   referral_overview: ["How much XP do I have?", "Show my portfolio summary"],
-  general_help: ["Show my portfolio summary", "How much XP do I have?", "What's my Holder Tier?"],
+  compare_premium: ["What's my Premium status?", "What should I do next?"],
+  suggest_next_action: ["Show my portfolio summary", "What's my Holder Tier?"],
+  general_help: ["Show my portfolio summary", "How much XP do I have?", "What should I do next?"],
 };
 
 export function getFollowUpPrompts(intent: AgentIntent): string[] {
   return FOLLOW_UP_PROMPTS[intent] ?? [];
 }
+
+// --- Smart Response Cards (Phase 3D) ---------------------------------------
+// A single generic card shape (title + compact stat list + optional
+// progress bar + optional nested actions) covers all nine card types the
+// spec calls out, rather than nine bespoke payload shapes — every field
+// is plain, JSON-serializable data (same "no component reference" rule
+// as AgentAction/AgentHighlight above), rendered by exactly one component
+// (components/features/agent/AgentSmartCard.tsx) that reuses the app's
+// existing GlassCard/ProgressBar/AgentActionCard primitives instead of
+// duplicating their layout logic.
+
+export type SmartCardType =
+  | "xp_summary"
+  | "season_summary"
+  | "holder_tier"
+  | "premium_status"
+  | "rewards_summary"
+  | "portfolio_snapshot"
+  | "staking_summary"
+  | "lock_summary"
+  | "action_suggestions";
+
+export interface SmartCardStat {
+  label: string;
+  value: string;
+}
+
+export interface SmartCardPayload {
+  id: string;
+  type: SmartCardType;
+  title: string;
+  subtitle?: string;
+  icon: AgentIconKey;
+  stats: SmartCardStat[];
+  progress?: { label: string; percent: number } | null;
+  actions?: AgentAction[];
+}
+
+function cardXPSummary(ctx: AgentContext): SmartCardPayload | null {
+  if (!ctx.xp) return null;
+  return {
+    id: "card-xp",
+    type: "xp_summary",
+    title: "XP Summary",
+    subtitle: `Level ${ctx.xp.level}`,
+    icon: "xp",
+    stats: [
+      { label: "Total XP", value: formatCompactNumber(ctx.xp.xp) },
+      { label: "Streak", value: `${ctx.xp.streak} day${ctx.xp.streak === 1 ? "" : "s"}` },
+      { label: "Referrals", value: `${ctx.xp.referralCount}` },
+    ],
+    progress: { label: `Toward Level ${ctx.xp.nextLevel}`, percent: ctx.xp.progress },
+  };
+}
+
+function cardSeasonSummary(ctx: AgentContext): SmartCardPayload | null {
+  if (!ctx.season) return null;
+  return {
+    id: "card-season",
+    type: "season_summary",
+    title: `Season ${ctx.season.seasonNumber}`,
+    subtitle: `Level ${ctx.season.level}`,
+    icon: "season",
+    stats: [{ label: "Season Points", value: formatCompactNumber(ctx.season.seasonPoints) }],
+    progress: { label: "Level Progress", percent: ctx.season.progress },
+  };
+}
+
+function cardHolderTier(ctx: AgentContext): SmartCardPayload | null {
+  if (!ctx.holderTier || !ctx.holderTier.tierLabel) return null;
+  return {
+    id: "card-holder-tier",
+    type: "holder_tier",
+    title: `${ctx.holderTier.tierLabel} Holder Tier`,
+    subtitle: ctx.holderTier.nextTierLabel ? `Next: ${ctx.holderTier.nextTierLabel}` : "Top tier reached",
+    icon: "holderTier",
+    stats: [
+      { label: "Holder Score", value: formatCompactNumber(ctx.holderTier.totalScore) },
+      { label: "Voting Weight", value: formatCompactNumber(ctx.holderTier.votingWeight) },
+      { label: "Reputation", value: formatCompactNumber(ctx.holderTier.reputationScore) },
+    ],
+    progress: ctx.holderTier.nextTierLabel
+      ? { label: `Toward ${ctx.holderTier.nextTierLabel}`, percent: Math.round(ctx.holderTier.progressToNextTier * 100) }
+      : null,
+  };
+}
+
+function cardPremiumStatus(ctx: AgentContext): SmartCardPayload | null {
+  if (!ctx.premium) return null;
+  return {
+    id: "card-premium",
+    type: "premium_status",
+    title: ctx.premium.isPremium ? `${ctx.premium.tierLabel} Premium` : "Not Premium Yet",
+    subtitle: ctx.premium.nextTierLabel ? `Next: ${ctx.premium.nextTierLabel}` : undefined,
+    icon: "premium",
+    stats: [
+      { label: "XP Multiplier", value: `${ctx.premium.xpMultiplier}×` },
+      { label: "Rewards Multiplier", value: `${ctx.premium.rewardsMultiplier}×` },
+    ],
+    progress: ctx.premium.nextTierLabel
+      ? { label: `Toward ${ctx.premium.nextTierLabel}`, percent: Math.round(ctx.premium.progressToNextTier * 100) }
+      : null,
+  };
+}
+
+function cardRewardsSummary(ctx: AgentContext): SmartCardPayload | null {
+  if (!ctx.rewards) return null;
+  return {
+    id: "card-rewards",
+    type: "rewards_summary",
+    title: "Rewards Summary",
+    icon: "rewards",
+    stats: [
+      { label: "Claimable Now", value: `${formatCompactNumber(ctx.rewards.claimableTotal)} MPGR` },
+      { label: "Claimed Lifetime", value: `${formatCompactNumber(ctx.rewards.totalClaimed)} MPGR` },
+    ],
+  };
+}
+
+function cardPortfolioSnapshot(ctx: AgentContext): SmartCardPayload | null {
+  if (!ctx.portfolio) return null;
+  return {
+    id: "card-portfolio",
+    type: "portfolio_snapshot",
+    title: "Portfolio Snapshot",
+    icon: "portfolio",
+    stats: [
+      { label: "Wallet", value: formatCompactNumber(ctx.portfolio.walletBalance) },
+      { label: "Staked", value: formatCompactNumber(ctx.portfolio.stakedBalance) },
+      { label: "Locked", value: formatCompactNumber(ctx.portfolio.lockedBalance) },
+      { label: "Total", value: formatCompactNumber(ctx.portfolio.totalHoldings) },
+    ],
+  };
+}
+
+function cardStakingSummary(ctx: AgentContext): SmartCardPayload | null {
+  if (!ctx.staking) return null;
+  return {
+    id: "card-staking",
+    type: "staking_summary",
+    title: "Staking Summary",
+    subtitle: `${ctx.staking.activePositionsCount} active position${ctx.staking.activePositionsCount === 1 ? "" : "s"}`,
+    icon: "staking",
+    stats: [
+      { label: "Total Staked", value: formatCompactNumber(ctx.staking.totalStaked) },
+      { label: "Claimable", value: formatCompactNumber(ctx.staking.claimableRewards) },
+    ],
+  };
+}
+
+function cardLockSummary(ctx: AgentContext): SmartCardPayload | null {
+  if (!ctx.tokenLock) return null;
+  return {
+    id: "card-lock",
+    type: "lock_summary",
+    title: "Lock Summary",
+    subtitle: `${ctx.tokenLock.activeLocksCount} active lock${ctx.tokenLock.activeLocksCount === 1 ? "" : "s"}`,
+    icon: "lock",
+    stats: [{ label: "Total Locked", value: formatCompactNumber(ctx.tokenLock.totalLocked) }],
+  };
+}
+
+function cardActionSuggestions(ctx: AgentContext): SmartCardPayload | null {
+  const suggestions = actionsSuggestNextAction(ctx);
+  if (suggestions.length === 0) return null;
+  return {
+    id: "card-suggestions",
+    type: "action_suggestions",
+    title: "Suggested Next Actions",
+    icon: "suggestion",
+    stats: [],
+    actions: suggestions,
+  };
+}
+
+const CARD_BUILDERS: Partial<Record<AgentIntent, (ctx: AgentContext) => SmartCardPayload | null>> = {
+  xp_status: cardXPSummary,
+  season_progress: cardSeasonSummary,
+  holder_tier: cardHolderTier,
+  premium_status: cardPremiumStatus,
+  compare_premium: cardPremiumStatus,
+  claimable_rewards: cardRewardsSummary,
+  portfolio_summary: cardPortfolioSnapshot,
+  staking_summary: cardStakingSummary,
+  locked_tokens: cardLockSummary,
+  suggest_next_action: cardActionSuggestions,
+};
+
+// Builds a Smart Response Card for intents that have one — several
+// intents (general_help, referral_overview) intentionally have none, in
+// which case this returns null and the assistant reply stays plain
+// text + action cards, exactly as before Phase 3D.
+export function getSmartCard(intent: AgentIntent, ctx: AgentContext): SmartCardPayload | null {
+  const builder = CARD_BUILDERS[intent];
+  return builder ? builder(ctx) : null;
+}
+
+// --- Structured Action Payloads (Phase 3D) ---------------------------------
+// The `{ intent, action, target }` shape the product spec's own examples
+// show. Built from data this file already computed above (getSmartCard /
+// getAgentActions) — never a second calculation.
+
+export type SmartActionKind = "navigate" | "display_card" | "quick_action" | "confirm";
+
+export interface SmartActionPayload {
+  intent: AgentIntent;
+  action: SmartActionKind;
+  target?: string;
+  card?: SmartCardPayload;
+}
+
+export function buildSmartActionPayload(intent: AgentIntent, ctx: AgentContext): SmartActionPayload {
+  const card = getSmartCard(intent, ctx);
+  if (card) {
+    return { intent, action: "display_card", target: undefined, card };
+  }
+
+  const actions = getAgentActions(intent, ctx);
+  const primary = actions.find((a) => a.variant === "primary") ?? actions[0];
+  if (primary) {
+    return { intent, action: "navigate", target: primary.href };
+  }
+
+  return { intent, action: "quick_action" };
+}
+
+// Re-exported so lib/agent-intelligence.ts's compare_premium reply text
+// can read tier/multiplier constants without a second, separate import
+// path to lib/premium-config.ts.
+export { PREMIUM_TIERS, PREMIUM_REWARDS_MULTIPLIER, PREMIUM_XP_MULTIPLIER };
