@@ -80,6 +80,31 @@ export interface AgentEventMap {
     success: boolean;
     error?: string;
   };
+
+  // Phase 3E Part 1 — B20 Foundation & Live Token Integration. Emitted by
+  // lib/token/refresh-manager.ts when balance state changes, either via
+  // automatic refresh, manual refresh, or post-transaction update. Additive
+  // only; every event above is untouched.
+  balance_updated: {
+    address: string;
+    balance: {
+      raw: bigint;
+      formatted: string;
+      decimal: number;
+    };
+  };
+  // Emitted when token metadata (name, symbol, decimals, totalSupply) has
+  // been loaded or refreshed. Used to trigger UI updates for token info.
+  token_loaded: {
+    name: string;
+    symbol: string;
+    decimals: number;
+  };
+  // Emitted after a wallet refresh (could be balance, metadata, or both).
+  wallet_refreshed: {
+    timestamp: string;
+    scope: "balance" | "metadata" | "all";
+  };
 }
 
 export type AgentEventName = keyof AgentEventMap;
