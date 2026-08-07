@@ -15,8 +15,8 @@ import type { SeasonPassStatus } from "@/lib/season-engine";
 //
 // Every field here traces back to a real value already computed elsewhere
 // in the app (xp-engine, premium-engine, holder-tier-engine, season-engine,
-// staking-engine, token-lock-engine, rewards-engine) — nothing is
-// invented or estimated here.
+// the live staking module, token-lock-engine, rewards-engine) — nothing
+// is invented or estimated here.
 
 export interface AgentXPContext {
   xp: number;
@@ -57,10 +57,15 @@ export interface AgentHolderTierContext {
   reputationScore: number;
 }
 
+// Phase 3E Part 3 — the deployed MPGRStaking contract has one continuous
+// staked balance and one earned-reward amount per wallet, no lock terms
+// and no positions, so this context mirrors exactly that: what's staked,
+// what's earned, and the pool's current global APR (null until the pool
+// owner has configured one on-chain).
 export interface AgentStakingContext {
   totalStaked: number;
-  claimableRewards: number;
-  activePositionsCount: number;
+  earnedRewards: number;
+  currentAPRPercent: number | null;
 }
 
 export interface AgentLockContext {
@@ -101,8 +106,8 @@ export interface BuildAgentContextInput {
   seasonStatus: SeasonPassStatus | null;
   staking: {
     totalStaked: number;
-    totalClaimableRewards: number;
-    activePositionsCount: number;
+    earnedRewards: number;
+    currentAPRPercent: number | null;
   };
   tokenLock: {
     totalLocked: number;
@@ -177,8 +182,8 @@ export function buildAgentContext(input: BuildAgentContextInput): AgentContext {
   const stakingCtx: AgentStakingContext | null = isConnected
     ? {
         totalStaked: staking.totalStaked,
-        claimableRewards: staking.totalClaimableRewards,
-        activePositionsCount: staking.activePositionsCount,
+        earnedRewards: staking.earnedRewards,
+        currentAPRPercent: staking.currentAPRPercent,
       }
     : null;
 
