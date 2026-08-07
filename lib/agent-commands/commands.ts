@@ -121,12 +121,13 @@ const commandDefs: SlashCommand[] = [
     execute: (ctx): CommandResult => {
       if (!ctx.staking) return NOT_CONNECTED;
       const s = ctx.staking;
+      const aprNote = s.currentAPRPercent === null ? "" : ` · ${s.currentAPRPercent}% APR`;
       return {
         kind: "message",
         icon: "staking",
-        text: `${formatCompactNumber(s.totalStaked)} MPGR staked across ${s.activePositionsCount} position${
-          s.activePositionsCount === 1 ? "" : "s"
-        } · ${formatCompactNumber(s.claimableRewards)} claimable.`,
+        text: `${formatCompactNumber(s.totalStaked)} MPGR staked · ${formatCompactNumber(
+          s.earnedRewards
+        )} claimable${aprNote}.`,
       };
     },
   },
