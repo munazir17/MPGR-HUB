@@ -60,10 +60,12 @@ import { useSeasonPass } from "@/hooks/useSeasonPass";
 import { getLevelProgress, getSeasonPoints, getSeasonNumber, XP_ACTIONS } from "@/lib/xp-engine";
 import { getRewardState } from "@/lib/rewards-engine";
 import { erc20Abi } from "@/lib/erc20-abi";
+import type { StakingLiveActivityEntry } from "@/lib/staking/staking-types";
 import {
   formatAddress,
   formatCompactNumber,
   formatTokenAmount,
+  formatTokenBalance,
   formatRelativeTime,
 } from "@/lib/format";
 
@@ -80,16 +82,16 @@ const MINI_GAMES = [
   { name: "Prediction", icon: LineChart },
 ];
 
-const STAKING_TX_LABEL: Record<string, string> = {
-  stake: "Staked MPGR",
-  unstake: "Unstaked MPGR",
-  claim: "Claimed Staking Reward",
+const STAKING_TX_LABEL: Record<StakingLiveActivityEntry["kind"], string> = {
+  Staked: "Staked MPGR",
+  Unstaked: "Unstaked MPGR",
+  RewardPaid: "Claimed Staking Reward",
 };
 
-const STAKING_TX_ICON: Record<string, typeof ArrowUpCircle> = {
-  stake: ArrowUpCircle,
-  unstake: ArrowDownCircle,
-  claim: Coins,
+const STAKING_TX_ICON: Record<StakingLiveActivityEntry["kind"], typeof ArrowUpCircle> = {
+  Staked: ArrowUpCircle,
+  Unstaked: ArrowDownCircle,
+  RewardPaid: Coins,
 };
 
 const LOCK_TX_LABEL: Record<string, string> = {
@@ -109,10 +111,11 @@ export default function DashboardPage() {
   const { address, isConnected } = useAccount();
   const { record, checkIn, lastEvent, leveledUp, dismissEvent, dismissLevelUp } = useXP();
   const {
-    totalStaked,
-    totalClaimableRewards,
-    activePositionsCount,
-    transactions: stakingTransactions,
+    stakedBalanceRaw,
+    earnedRewardsRaw,
+    currentAPRPercent,
+    decimals: stakingDecimals,
+    liveActivity: stakingLiveActivity,
     loading: stakingLoading,
   } = useStaking();
   const {
@@ -150,7 +153,8 @@ export default function DashboardPage() {
   const seasonNumber = getSeasonNumber();
 
   const walletMPGR = MPGR_TOKEN_ADDRESS && mprBalance ? Number(formatUnits(mprBalance, 18)) : 0;
-  const totalMPGR = walletMPGR + totalStaked + totalLocked;
+  const stakedMPGR = Number(formatUnits(stakedBalanceRaw, stakingDecimals));
+  const totalMPGR = walletMPGR + stakedMPGR + totalLocked;
   const portfolioLoading = mprLoading || stakingLoading || lockLoading;
 
   const handleCheckIn = useCallback(() => {
@@ -165,8 +169,11 @@ export default function DashboardPage() {
   }, [checkIn]);
 
   // Recent Activity — derived from real, already-persisted data sources
-  // (XP history, reward claim history, staking transactions, lock
-  // transactions). No mock data.
+  // (XP history, reward claim history, lock transactions) plus, for
+  // staking, the live Staked/Unstaked/RewardPaid events observed this
+  // session via useStaking's on-chain event watcher. The deployed
+  // MPGRStaking contract has no indexer, so there is no backfilled
+  // staking history to show — only what's been seen live. No mock data.
   const lastXPEntry =
     record && record.history.length > 0
       ? [...record.history].sort(
@@ -185,7 +192,7 @@ export default function DashboardPage() {
     return { title, amount: latest.amount, timestamp: latest.timestamp };
   })();
 
-  const lastStakingTx = stakingTransactions[0] ?? null;
+  const lastStakingTx = stakingLiveActivity[0] ?? null;
   const lastLockTx = lockTransactions[0] ?? null;
 
   return (
@@ -303,7 +310,7 @@ export default function DashboardPage() {
                 />
                 <StatCard
                   label="Staked MPGR"
-                  value={formatCompactNumber(totalStaked)}
+                  value={formatCompactNumber(stakedMPGR)}
                   icon={Coins}
                   loading={stakingLoading}
                 />
@@ -404,9 +411,10 @@ export default function DashboardPage() {
               <SectionHeader title="Staking & Token Lock" subtitle="Your locked and staked MPGR at a glance" />
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 <StakingSummaryCard
-                  totalStaked={totalStaked}
-                  totalClaimableRewards={totalClaimableRewards}
-                  activePositionsCount={activePositionsCount}
+                  stakedBalanceRaw={stakedBalanceRaw}
+                  earnedRewardsRaw={earnedRewardsRaw}
+                  currentAPRPercent={currentAPRPercent}
+                  decimals={stakingDecimals}
                   loading={stakingLoading}
                 />
                 <TokenLockSummaryCard
@@ -609,7 +617,7 @@ export default function DashboardPage() {
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary-glow/20 to-primary/10 ring-1 ring-primary/15">
                     {lastStakingTx ? (
                       (() => {
-                        const Icon = STAKING_TX_ICON[lastStakingTx.type];
+                        const Icon = STAKING_TX_ICON[lastStakingTx.kind];
                         return <Icon className="h-4 w-4 text-primary" aria-hidden="true" />;
                       })()
                     ) : (
@@ -618,16 +626,16 @@ export default function DashboardPage() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm text-white">
-                      {lastStakingTx ? STAKING_TX_LABEL[lastStakingTx.type] : "No staking activity yet"}
+                      {lastStakingTx ? STAKING_TX_LABEL[lastStakingTx.kind] : "No staking activity yet"}
                     </p>
                     {lastStakingTx && (
-                      <p className="text-[11px] text-muted">{formatRelativeTime(lastStakingTx.timestamp)}</p>
+                      <p className="text-[11px] text-muted">{formatRelativeTime(lastStakingTx.observedAt)}</p>
                     )}
                   </div>
                   {lastStakingTx && (
                     <span className="shrink-0 text-sm font-semibold text-gradient-gold">
-                      {lastStakingTx.type === "stake" ? "-" : "+"}
-                      {formatCompactNumber(lastStakingTx.amount)} MPGR
+                      {lastStakingTx.kind === "Staked" ? "-" : "+"}
+                      {formatTokenBalance(lastStakingTx.amount, stakingDecimals)} MPGR
                     </span>
                   )}
                 </div>
