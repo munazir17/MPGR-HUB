@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAccount } from "wagmi";
+import { formatUnits } from "viem";
 import { useXP } from "@/hooks/useXP";
 import { useRewards } from "@/hooks/useRewards";
 import { useStaking } from "@/hooks/useStaking";
@@ -124,7 +125,12 @@ export function useAgentChat() {
   const router = useRouter();
   const { record: xpRecord } = useXP();
   const { claimableTotal, totalClaimed } = useRewards();
-  const { totalStaked, totalClaimableRewards, activePositionsCount } = useStaking();
+  const {
+    stakedBalanceRaw,
+    earnedRewardsRaw,
+    currentAPRPercent,
+    decimals: stakingDecimals,
+  } = useStaking();
   const { totalLocked, activeLocksCount, upcomingUnlockAt } = useTokenLock();
   const { status: premiumStatus } = usePremium();
   const { status: holderTierStatus } = useHolderTier();
@@ -142,6 +148,15 @@ export function useAgentChat() {
 
   const commandPalette = useCommandPalette(personalization.mostUsedCommands);
 
+  const totalStaked = useMemo(
+    () => Number(formatUnits(stakedBalanceRaw, stakingDecimals)),
+    [stakedBalanceRaw, stakingDecimals]
+  );
+  const earnedRewards = useMemo(
+    () => Number(formatUnits(earnedRewardsRaw, stakingDecimals)),
+    [earnedRewardsRaw, stakingDecimals]
+  );
+
   const context = useMemo(
     () =>
       buildAgentContext({
@@ -150,7 +165,7 @@ export function useAgentChat() {
         premiumStatus,
         holderTierStatus,
         seasonStatus,
-        staking: { totalStaked, totalClaimableRewards, activePositionsCount },
+        staking: { totalStaked, earnedRewards, currentAPRPercent },
         tokenLock: { totalLocked, activeLocksCount, upcomingUnlockAt },
         rewards: { claimableTotal, totalClaimed },
       }),
@@ -161,8 +176,8 @@ export function useAgentChat() {
       holderTierStatus,
       seasonStatus,
       totalStaked,
-      totalClaimableRewards,
-      activePositionsCount,
+      earnedRewards,
+      currentAPRPercent,
       totalLocked,
       activeLocksCount,
       upcomingUnlockAt,
