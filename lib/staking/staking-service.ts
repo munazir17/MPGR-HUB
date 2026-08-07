@@ -11,9 +11,11 @@ import type { StakingGlobalCacheEntry, StakingGlobalState, StakingWalletCacheEnt
 // shape exactly (cache-first reads, short TTL, manual invalidation after a
 // confirmed transaction). Every value returned is exactly what
 // stakingClient read from the deployed contract on Base Mainnet — no
-// reward math, no APR derivation, nothing recomputed here. This is the
-// ONLY reward/staking calculation surface on the frontend, and it performs
-// zero calculations: it caches and returns.
+// reward math, no APR derivation, nothing recomputed here. Phase 3E Part 4
+// adds rewardPerTokenStored/lastUpdateTime (global) and
+// userRewardPerTokenPaid/accruedRewards (wallet) — still just raw reads,
+// still zero computation; the reward math itself lives in
+// lib/staking/reward-math.ts, consumed by hooks/useStaking.ts.
 
 const GLOBAL_CACHE_KEY = "staking:global";
 const globalCache = new Map<string, StakingGlobalCacheEntry>();
@@ -52,6 +54,11 @@ export const stakingService = {
       periodFinish: rewardState.periodFinish,
       isPaused,
       minimumStake,
+      // Phase 3E Part 4 — already returned by getRewardState() above;
+      // previously discarded, now carried through for the live reward
+      // counter's client-side rewardPerToken() computation.
+      rewardPerTokenStored: rewardState.rewardPerTokenStored,
+      lastUpdateTime: rewardState.lastUpdateTime,
     };
 
     globalCache.set(GLOBAL_CACHE_KEY, {
@@ -72,13 +79,25 @@ export const stakingService = {
       return cached.state;
     }
 
-    const [stakedBalance, earnedRewards, allowance] = await Promise.all([
+    const [stakedBalance, earnedRewards, allowance, userRewardPerTokenPaid, accruedRewards] = await Promise.all([
       stakingClient.getStakedBalance(address),
       stakingClient.getEarnedRewards(address),
       stakingClient.getAllowance(address),
+      // Phase 3E Part 4 — raw per-account checkpoint reads for the live
+      // reward counter's client-side earned() computation. earnedRewards
+      // above is untouched and remains the authoritative value for claim
+      // eligibility and claim/exit payout amounts.
+      stakingClient.getUserRewardPerTokenPaid(address),
+      stakingClient.getAccruedRewards(address),
     ]);
 
-    const state: StakingWalletState = { stakedBalance, earnedRewards, allowance };
+    const state: StakingWalletState = {
+      stakedBalance,
+      earnedRewards,
+      allowance,
+      userRewardPerTokenPaid,
+      accruedRewards,
+    };
 
     walletCache.set(cacheKey, {
       state,
