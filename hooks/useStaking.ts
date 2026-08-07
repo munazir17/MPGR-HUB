@@ -15,6 +15,7 @@ import { logger } from "@/lib/architecture/core/logger";
 import { tokenUtils } from "@/lib/token/token-utils";
 import { MPGR_TOKEN_CONFIG } from "@/lib/token/token-config";
 import { useMPGRBalance } from "@/hooks/useMPGRBalance";
+import * as rewardMath from "@/lib/staking/reward-math";
 import {
   idleActionState,
   type StakingActionState,
@@ -34,7 +35,20 @@ import {
 // (stake/unstake/claim/exit). Every number returned comes directly from
 // stakingService (which reads straight from stakingClient / the contract)
 // or from useMPGRBalance (which reads the live MPGR ERC20 balance) — no
-// reward math or APR derivation happens in this file.
+// reward math or APR derivation happens in this file, except the
+// Phase 3E Part 4 addition below.
+//
+// Phase 3E Part 4 — Live Reward Counter. earnedRewardsRaw (below) remains
+// exactly what it always was: the contract's own earned() result as of
+// the last poll/action, used unchanged for claim eligibility and
+// claim/exit payout amounts. liveEarnedRewardsRaw is new and additive: it
+// re-evaluates lib/staking/reward-math.ts's earned()/rewardPerToken() —
+// the exact same formulas the deployed contract runs — every second,
+// using the client's current time in place of the next block's
+// timestamp. Every poll and every confirmed action re-fetches the real
+// on-chain checkpoint values it's built from, so it can never drift from
+// what earned() would actually return on-chain; it only fills in the
+// seconds between reads.
 
 interface StakeEvent {
   amount: number; // human-readable MPGR, for FloatingXP display only
@@ -306,6 +320,41 @@ export function useStaking() {
 
   const dismissEvent = useCallback(() => setLastEvent(null), []);
 
+  // --- Phase 3E Part 4 — Live Reward Counter -----------------------------
+  // Ticks a client-side "now" once per second so liveEarnedRewardsRaw
+  // below re-evaluates reward-math.ts's earned() continuously between
+  // polls. This is purely a display derivation — no RPC calls happen
+  // here, and nothing above (including earnedRewardsRaw, used for claim
+  // eligibility/amounts) is affected.
+  const [nowSeconds, setNowSeconds] = useState<bigint>(() => BigInt(Math.floor(Date.now() / 1000)));
+
+  useEffect(() => {
+    if (!isConnected || !address || !globalState || !walletState) return;
+    const id = setInterval(() => {
+      setNowSeconds(BigInt(Math.floor(Date.now() / 1000)));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isConnected, address, globalState, walletState]);
+
+  const liveEarnedRewardsRaw = useMemo(() => {
+    if (!globalState || !walletState) return 0n;
+
+    const lastApplicableTime = rewardMath.lastTimeRewardApplicable(globalState.periodFinish, nowSeconds);
+    const currentRewardPerToken = rewardMath.rewardPerToken(
+      globalState.rewardPerTokenStored,
+      globalState.lastUpdateTime,
+      lastApplicableTime,
+      globalState.rewardRate,
+      globalState.totalStaked
+    );
+    return rewardMath.earned(
+      walletState.stakedBalance,
+      currentRewardPerToken,
+      walletState.userRewardPerTokenPaid,
+      walletState.accruedRewards
+    );
+  }, [globalState, walletState, nowSeconds]);
+
   // --- Derived, display-ready values ------------------------------------------
   // All formatting below is pure display formatting (bigint -> decimal
   // string), never reward math — the underlying bigints came straight from
@@ -374,5 +423,8 @@ export function useStaking() {
     exit: exitStaking,
 
     refresh,
+
+    // Phase 3E Part 4 — new, additive.
+    liveEarnedRewardsRaw,
   };
 }
