@@ -145,13 +145,29 @@ export const stakingClient = {
   // "submitted, waiting for confirmation" state distinct from "wallet is
   // asking you to sign."
 
+  // MPGR (stakingTokenAddress) is a Base B20 native asset — its approve()
+  // executes inside the chain's Rust precompile, not EVM bytecode. The
+  // standard eth_estimateGas binary search that RPC nodes run is tuned for
+  // ordinary contract bytecode and has been observed to converge on a gas
+  // limit (44090) that is too low for the precompile's actual approve()
+  // execution, producing an on-chain "out of gas" revert even though the
+  // call is entirely valid. Passing an explicit `gas` here means
+  // simulateContract never calls eth_estimateGas for this request, and the
+  // returned `request.gas` — which writeContract sends unchanged — carries
+  // this value instead of the flawed estimate. 150,000 gas is a generous
+  // safety margin over a normal ERC20 approve's ~46,000 gas cost and leaves
+  // headroom for the precompile's own accounting; adjust if a specific
+  // deployment ever needs more.
   async approve(amount: bigint): Promise<Hash> {
+    const B20_APPROVE_GAS_LIMIT = 150_000n;
+
     const { request } = await simulateContract(config, {
       address: MPGR_STAKING_CONFIG.stakingTokenAddress,
       abi: erc20Abi,
       functionName: "approve",
       args: [MPGR_STAKING_CONFIG.address, amount],
       chainId: MPGR_STAKING_CONFIG.chainId,
+      gas: B20_APPROVE_GAS_LIMIT,
     });
     return writeContract(config, request);
   },
