@@ -340,7 +340,7 @@ export function useStaking() {
     isRefreshing,
     readError,
 
-    walletBalanceRaw,
+    walletBalanceRaw: walletBalanceRaw ?? 0n,
     walletBalanceFormatted,
 
     stakedBalanceRaw: walletState?.stakedBalance ?? 0n,
