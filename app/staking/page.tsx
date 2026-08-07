@@ -9,6 +9,7 @@ import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { FloatingXP } from "@/components/ui/FloatingXP";
 import { StakingStats } from "@/components/ui/StakingStats";
+import { LiveRewardCounter } from "@/components/ui/LiveRewardCounter";
 import { StakingAnalyticsCards } from "@/components/ui/StakingAnalyticsCards";
 import { StakingActivityTimeline } from "@/components/ui/StakingActivityTimeline";
 import { StakingCard } from "@/components/ui/StakingCard";
@@ -19,14 +20,6 @@ import { useStaking } from "@/hooks/useStaking";
 import { useStakingHistory } from "@/hooks/useStakingHistory";
 import { formatTokenBalance } from "@/lib/format";
 
-// Phase 3E Part 4 — Production Polish & Analytics.
-//
-// Adds a dedicated analytics grid and a merged live+historical activity
-// timeline on top of the Phase 3E Part 3 staking page. useStaking() (the
-// wallet-action funnel: balances, approve/stake/unstake/claim/exit,
-// modals) is untouched — every value and callback below comes from the
-// same hook it always did. useStakingHistory() is new and additive.
-
 export default function StakingPage() {
   const [mounted, setMounted] = useState(false);
   const { isConnected } = useAccount();
@@ -34,6 +27,7 @@ export default function StakingPage() {
     walletBalanceRaw,
     stakedBalanceRaw,
     earnedRewardsRaw,
+    liveEarnedRewardsRaw,
     totalStakedRaw,
     rewardPoolBalanceRaw,
     currentAPRPercent,
@@ -170,6 +164,8 @@ export default function StakingPage() {
               decimals={decimals}
               loading={loading}
             />
+
+            <LiveRewardCounter liveEarnedRewardsRaw={liveEarnedRewardsRaw} decimals={decimals} loading={loading} />
 
             <StakingCard
               walletBalanceRaw={walletBalanceRaw}
