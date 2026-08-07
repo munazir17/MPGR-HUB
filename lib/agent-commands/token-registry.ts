@@ -1,9 +1,9 @@
 // Phase 3A.6 — Token Lookup.
 //
 // Local/mock, matching the exact pattern the rest of this codebase uses
-// for pre-chain data (see lib/burn-utils.ts, lib/staking-engine.ts —
-// each documents its own "Phase 2B swap point" for when a live
-// contract/price feed exists). This is that same pattern applied to
+// for pre-chain data (see lib/burn-utils.ts — it documents its own
+// "Phase 2B swap point" for when a live contract/price feed exists).
+// This is that same pattern applied to
 // token metadata: static today, swappable for an on-chain/price-API
 // lookup later without changing this file's exported shape.
 
