@@ -2,7 +2,8 @@ import { getRewardState } from "@/lib/rewards-engine";
 import { readJSON, writeJSON } from "@/lib/storage";
 
 // Token Lock — Phase 2B, Module 2B.
-// Deliberately isolated from lib/staking-engine.ts: Token Lock is a
+// Deliberately isolated from the live staking module (lib/staking/):
+// Token Lock is a
 // separate product surface (fixed-term lock + maturity bonus, no ongoing
 // yield accrual, optional early-exit penalty) with its own storage
 // namespace, its own transaction log, and its own available-balance
@@ -132,7 +133,7 @@ export const UNLOCKING_SOON_THRESHOLD_DAYS = 3;
 export const EARLY_UNLOCK_PENALTY_PERCENT = 15;
 
 // --- Balance -----------------------------------------------------------
-// Same pattern as lib/staking-engine.ts: available-to-lock balance is
+// Available-to-lock balance is
 // derived from Module 1's claimed MPGR minus whatever this module
 // currently has locked (never-released positions). Token Lock never
 // writes to the rewards state — it only reads it.
