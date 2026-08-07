@@ -139,6 +139,38 @@ export const stakingClient = {
     }
   },
 
+  // Phase 3E Part 4 — Live Reward Counter. Raw per-account checkpoint
+  // values (RewardState.rewardPerTokenStored's per-account counterpart)
+  // needed alongside balanceOf() to reproduce RewardMath.earned() exactly
+  // on the client. Both getters already exist on the deployed contract
+  // (public mappings, in STAKING_ABI) — this only adds the read calls,
+  // nothing on-chain changes.
+  async getUserRewardPerTokenPaid(walletAddress: Address): Promise<bigint> {
+    try {
+      return await readContract(config, {
+        ...STAKING_CONTRACT,
+        functionName: "userRewardPerTokenPaid",
+        args: [walletAddress],
+      });
+    } catch (err) {
+      console.error("stakingClient.getUserRewardPerTokenPaid failed", { walletAddress, error: err });
+      throw new Error(`Failed to fetch reward checkpoint: ${toError(err).message}`);
+    }
+  },
+
+  async getAccruedRewards(walletAddress: Address): Promise<bigint> {
+    try {
+      return await readContract(config, {
+        ...STAKING_CONTRACT,
+        functionName: "rewards",
+        args: [walletAddress],
+      });
+    } catch (err) {
+      console.error("stakingClient.getAccruedRewards failed", { walletAddress, error: err });
+      throw new Error(`Failed to fetch accrued rewards: ${toError(err).message}`);
+    }
+  },
+
   // --- Writes ----------------------------------------------------------------
   // Each returns the submitted transaction hash once the wallet accepts it.
   // Confirmation is a separate step (waitForReceipt) so callers can show a
