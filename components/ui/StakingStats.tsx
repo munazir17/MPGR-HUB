@@ -1,50 +1,66 @@
 "use client";
 
-import { Wallet, Lock, Coins, Layers } from "lucide-react";
+import { Wallet, Lock, Coins, Percent, Vault } from "lucide-react";
 import { StatCard } from "./StatCard";
-import { formatCompactNumber } from "@/lib/format";
+import { formatTokenBalance } from "@/lib/format";
+
+// Phase 3E Part 3 — redesigned for the live, single-balance, no-lock
+// MPGRStaking contract. Five values, each read directly from the deployed
+// contract (via useStaking -> stakingService -> stakingClient): Available
+// Balance, Your Staked, Earned Rewards, Current APR, Reward Pool. No
+// per-position or lock-duration stats — the contract has none.
 
 interface StakingStatsProps {
-  availableBalance: number;
-  totalStaked: number;
-  totalClaimableRewards: number;
-  activePositionsCount: number;
+  walletBalanceRaw: bigint;
+  stakedBalanceRaw: bigint;
+  earnedRewardsRaw: bigint;
+  rewardPoolBalanceRaw: bigint;
+  currentAPRPercent: number | null;
+  decimals: number;
   loading?: boolean;
 }
 
 export function StakingStats({
-  availableBalance,
-  totalStaked,
-  totalClaimableRewards,
-  activePositionsCount,
+  walletBalanceRaw,
+  stakedBalanceRaw,
+  earnedRewardsRaw,
+  rewardPoolBalanceRaw,
+  currentAPRPercent,
+  decimals,
   loading,
 }: StakingStatsProps) {
   return (
-    <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
       <StatCard
         label="Available Balance"
-        value={`${formatCompactNumber(availableBalance)} MPGR`}
+        value={`${formatTokenBalance(walletBalanceRaw, decimals)} MPGR`}
         icon={Wallet}
         loading={loading}
       />
       <StatCard
-        label="Total Staked"
-        value={`${formatCompactNumber(totalStaked)} MPGR`}
+        label="Your Staked"
+        value={`${formatTokenBalance(stakedBalanceRaw, decimals)} MPGR`}
         icon={Lock}
         accent="gold"
         loading={loading}
       />
       <StatCard
-        label="Claimable Rewards"
-        value={`${formatCompactNumber(totalClaimableRewards)} MPGR`}
+        label="Earned Rewards"
+        value={`${formatTokenBalance(earnedRewardsRaw, decimals)} MPGR`}
         icon={Coins}
         accent="gold"
         loading={loading}
       />
       <StatCard
-        label="Active Positions"
-        value={`${activePositionsCount}`}
-        icon={Layers}
+        label="Current APR"
+        value={currentAPRPercent === null ? "Not set" : `${currentAPRPercent}%`}
+        icon={Percent}
+        loading={loading}
+      />
+      <StatCard
+        label="Reward Pool"
+        value={`${formatTokenBalance(rewardPoolBalanceRaw, decimals)} MPGR`}
+        icon={Vault}
         loading={loading}
       />
     </div>
