@@ -1,22 +1,24 @@
 "use client";
 
 import Link from "next/link";
-import { Lock, Coins, ArrowUpRight, Layers } from "lucide-react";
+import { Lock, Coins, ArrowUpRight, Percent } from "lucide-react";
 import { GlassCard } from "./GlassCard";
 import { Skeleton } from "./Skeleton";
-import { formatCompactNumber } from "@/lib/format";
+import { formatTokenBalance } from "@/lib/format";
 
 interface StakingSummaryCardProps {
-  totalStaked: number;
-  totalClaimableRewards: number;
-  activePositionsCount: number;
+  stakedBalanceRaw: bigint;
+  earnedRewardsRaw: bigint;
+  currentAPRPercent: number | null;
+  decimals: number;
   loading?: boolean;
 }
 
 export function StakingSummaryCard({
-  totalStaked,
-  totalClaimableRewards,
-  activePositionsCount,
+  stakedBalanceRaw,
+  earnedRewardsRaw,
+  currentAPRPercent,
+  decimals,
   loading,
 }: StakingSummaryCardProps) {
   return (
@@ -33,7 +35,7 @@ export function StakingSummaryCard({
           </div>
           <div>
             <p className="text-sm font-semibold text-white">Staking</p>
-            <p className="text-[11px] text-muted">Lock MPGR to earn yield</p>
+            <p className="text-[11px] text-muted">Stake MPGR to earn yield — no lock</p>
           </div>
         </div>
 
@@ -48,37 +50,39 @@ export function StakingSummaryCard({
 
       <div className="relative mt-6 grid grid-cols-3 divide-x divide-white/[0.06]">
         <div className="pr-3">
-          <p className="text-[11px] text-muted">Total Staked</p>
+          <p className="text-[11px] text-muted">Your Staked</p>
           {loading ? (
             <Skeleton className="mt-1.5 h-6 w-16" />
           ) : (
             <p className="mt-1 text-lg font-bold tracking-tight text-white sm:text-xl">
-              {formatCompactNumber(totalStaked)}
+              {formatTokenBalance(stakedBalanceRaw, decimals)}
             </p>
           )}
         </div>
         <div className="px-3">
           <p className="flex items-center gap-1 text-[11px] text-muted">
             <Coins className="h-3 w-3" aria-hidden="true" />
-            Claimable
+            Earned
           </p>
           {loading ? (
             <Skeleton className="mt-1.5 h-6 w-16" />
           ) : (
             <p className="mt-1 text-lg font-bold tracking-tight text-gradient-gold sm:text-xl">
-              {formatCompactNumber(totalClaimableRewards)}
+              {formatTokenBalance(earnedRewardsRaw, decimals)}
             </p>
           )}
         </div>
         <div className="pl-3">
           <p className="flex items-center gap-1 text-[11px] text-muted">
-            <Layers className="h-3 w-3" aria-hidden="true" />
-            Positions
+            <Percent className="h-3 w-3" aria-hidden="true" />
+            APR
           </p>
           {loading ? (
-            <Skeleton className="mt-1.5 h-6 w-10" />
+            <Skeleton className="mt-1.5 h-6 w-14" />
           ) : (
-            <p className="mt-1 text-lg font-bold tracking-tight text-white sm:text-xl">{activePositionsCount}</p>
+            <p className="mt-1 text-lg font-bold tracking-tight text-white sm:text-xl">
+              {currentAPRPercent === null ? "—" : `${currentAPRPercent}%`}
+            </p>
           )}
         </div>
       </div>
