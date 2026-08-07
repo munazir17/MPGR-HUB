@@ -124,7 +124,7 @@ function buildSystemPrompt(request: AIProviderRequest): string {
   }
   if (agentContext.staking) {
     lines.push(
-      `- Staking: ${agentContext.staking.totalStaked} staked across ${agentContext.staking.activePositionsCount} positions, ${agentContext.staking.claimableRewards} claimable.`
+      `- Staking: ${agentContext.staking.totalStaked} staked, ${agentContext.staking.earnedRewards} claimable${agentContext.staking.currentAPRPercent !== null ? `, ${agentContext.staking.currentAPRPercent}% APR` : ""}.`
     );
   }
   if (agentContext.tokenLock) {
