@@ -76,4 +76,30 @@ export interface StakingActionResult {
   error?: string;
 }
 
+// --- Phase 3E Part 4 — Staking History additions ----------------------------
+//
+// Unlike StakingLiveActivityEntry above (session-only, never backfilled),
+// these represent real on-chain history fetched via eth_getLogs — they
+// survive a page reload and reflect actions taken in another tab/device,
+// exactly the way lib/token/token-types.ts's TokenTransferEvent does for
+// the token module.
+
+export type StakingHistoryEventKind = "Staked" | "Unstaked" | "RewardPaid";
+
+export interface StakingHistoryEvent {
+  id: string; // `${txHash}:${logIndex}` — unique even for two same-kind events in one tx
+  kind: StakingHistoryEventKind;
+  amount: bigint; // raw, 18-decimal MPGR
+  txHash: Hash;
+  blockNumber: bigint;
+  timestamp: string; // ISO, resolved from the event's block
+}
+
+export interface StakingHistoryCacheEntry {
+  entries: StakingHistoryEvent[];
+  timestamp: number;
+  ttl: number;
+  lastBlockScanned: bigint;
+}
+
 export type { Address };
