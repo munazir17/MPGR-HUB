@@ -6,6 +6,20 @@ import type { Address, Hash } from "viem";
 // shape of lib/token/token-types.ts so staking-client, staking-service, and
 // hooks/useStaking.ts share one set of definitions instead of each
 // inventing their own.
+//
+// Phase 3E Part 4 added StakingHistoryEventKind / StakingHistoryEvent /
+// StakingHistoryCacheEntry (consumed by staking-history-reader.ts,
+// staking-history-service.ts, hooks/useStakingHistory.ts, and
+// components/ui/StakingActivityTimeline.tsx).
+//
+// Phase 3E Part 5 added rewardPerTokenStored/lastUpdateTime to
+// StakingGlobalState and userRewardPerTokenPaid/accruedRewards to
+// StakingWalletState (consumed by hooks/useStaking.ts's live reward
+// counter via lib/staking/reward-math.ts).
+//
+// This file is the single, complete union of all three phases — every
+// type any staking module imports from "@/lib/staking/staking-types"
+// is exported here.
 
 // Pool-wide state — identical for every visitor, independent of the
 // connected wallet. Every field is exactly what the contract returned;
@@ -18,11 +32,11 @@ export interface StakingGlobalState {
   periodFinish: bigint; // unix seconds
   isPaused: boolean;
   minimumStake: bigint;
-  // Phase 3E Part 4 — Live Reward Counter. Both already fetched by
+  // Phase 3E Part 5 — Live Reward Counter. Both already fetched by
   // stakingClient.getRewardState() as part of the existing Promise.all in
-  // stakingService.getGlobalState(); previously read and then discarded.
-  // Needed, together with rewardRate/periodFinish above and totalStaked,
-  // to reproduce RewardMath.rewardPerToken() exactly on the client — see
+  // stakingService.getGlobalState(). Needed, together with
+  // rewardRate/periodFinish above and totalStaked, to reproduce
+  // RewardMath.rewardPerToken() exactly on the client — see
   // lib/staking/reward-math.ts.
   rewardPerTokenStored: bigint;
   lastUpdateTime: bigint; // unix seconds
@@ -33,7 +47,7 @@ export interface StakingWalletState {
   stakedBalance: bigint;
   earnedRewards: bigint;
   allowance: bigint; // current MPGR approval for the staking contract
-  // Phase 3E Part 4 — Live Reward Counter. Raw per-account checkpoint
+  // Phase 3E Part 5 — Live Reward Counter. Raw per-account checkpoint
   // values (contract's userRewardPerTokenPaid/rewards mappings) needed,
   // together with stakedBalance above, to reproduce
   // RewardMath.earned() exactly on the client. earnedRewards above is
@@ -75,10 +89,10 @@ export function idleActionState(): StakingActionState {
 
 // A live-observed Staked/Unstaked/RewardPaid event for the connected
 // wallet, captured via useWatchContractEvent while a staking page is open.
-// Session-only — never persisted, never backfilled from history (this app
-// has no indexer for the staking contract), so it only ever reflects
-// events genuinely seen live. Never used as a substitute for the
-// authoritative on-chain balances above.
+// Session-only — never persisted, never backfilled from history (that is
+// what StakingHistoryEvent below is for), so it only ever reflects events
+// genuinely seen live. Never used as a substitute for the authoritative
+// on-chain balances above.
 export interface StakingLiveActivityEntry {
   id: string;
   kind: "Staked" | "Unstaked" | "RewardPaid";
@@ -93,4 +107,30 @@ export interface StakingActionResult {
   error?: string;
 }
 
-export type { Address };
+// --- Phase 3E Part 4 — Staking History ---------------------------------
+//
+// Unlike StakingLiveActivityEntry above (session-only, never backfilled),
+// these represent real on-chain history fetched via eth_getLogs — they
+// survive a page reload and reflect actions taken in another tab/device,
+// exactly the way lib/token/token-types.ts's TokenTransferEvent does for
+// the token module.
+
+export type StakingHistoryEventKind = "Staked" | "Unstaked" | "RewardPaid";
+
+export interface StakingHistoryEvent {
+  id: string; // `${txHash}:${logIndex}` — unique even for two same-kind events in one tx
+  kind: StakingHistoryEventKind;
+  amount: bigint; // raw, 18-decimal MPGR
+  txHash: Hash;
+  blockNumber: bigint;
+  timestamp: string; // ISO, resolved from the event's block
+}
+
+export interface StakingHistoryCacheEntry {
+  entries: StakingHistoryEvent[];
+  timestamp: number;
+  ttl: number;
+  lastBlockScanned: bigint;
+}
+
+export type { Address, Hash };
