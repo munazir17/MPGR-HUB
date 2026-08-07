@@ -471,8 +471,8 @@ function replyClaimableRewards(ctx: AgentContext): string {
   if (!ctx.rewards) return notAvailable("rewards");
   const { claimableTotal, totalClaimed } = ctx.rewards;
   const stakingNote =
-    ctx.staking && ctx.staking.claimableRewards > 0
-      ? ` That's separate from the ${formatCompactNumber(ctx.staking.claimableRewards)} MPGR in staking rewards also ready to claim.`
+    ctx.staking && ctx.staking.earnedRewards > 0
+      ? ` That's separate from the ${formatCompactNumber(ctx.staking.earnedRewards)} MPGR in staking rewards also ready to claim.`
       : "";
   return `You have ${formatCompactNumber(claimableTotal)} MPGR claimable right now on the Rewards page, and ${formatCompactNumber(
     totalClaimed
@@ -481,11 +481,12 @@ function replyClaimableRewards(ctx: AgentContext): string {
 
 function replyStakingSummary(ctx: AgentContext): string {
   if (!ctx.staking) return notAvailable("staking");
-  const { totalStaked, claimableRewards, activePositionsCount } = ctx.staking;
-  if (activePositionsCount === 0) {
-    return "You don't have any active staking positions right now — head to the Staking page to start earning rewards.";
+  const { totalStaked, earnedRewards, currentAPRPercent } = ctx.staking;
+  if (totalStaked === 0) {
+    return "You don't have any MPGR staked right now — head to the Staking page to start earning rewards.";
   }
-  return `You have ${formatCompactNumber(totalStaked)} MPGR staked across ${activePositionsCount} active position${activePositionsCount === 1 ? "" : "s"}, with ${formatCompactNumber(claimableRewards)} MPGR in staking rewards ready to claim.`;
+  const aprNote = currentAPRPercent === null ? "" : ` at the current ${currentAPRPercent}% APR`;
+  return `You have ${formatCompactNumber(totalStaked)} MPGR staked${aprNote}, with ${formatCompactNumber(earnedRewards)} MPGR in staking rewards ready to claim.`;
 }
 
 function replyLockedTokens(ctx: AgentContext): string {
@@ -531,7 +532,7 @@ function replyOpenProfile(): string {
   return "Opening your Profile — XP, Holder Tier, Premium, and Season Pass all in one place.";
 }
 function replyOpenStaking(): string {
-  return "Opening Staking — manage your positions and claim staking rewards.";
+  return "Opening Staking — manage your staked MPGR and claim staking rewards.";
 }
 function replyOpenPremium(): string {
   return "Opening Premium — compare every tier and see what each one unlocks.";
@@ -554,14 +555,14 @@ function replySuggestNextAction(ctx: AgentContext): string {
   if (ctx.rewards && ctx.rewards.claimableTotal > 0) {
     return `You have ${formatCompactNumber(ctx.rewards.claimableTotal)} MPGR claimable right now — claiming your rewards is the best next move.`;
   }
-  if (ctx.staking && ctx.staking.claimableRewards > 0) {
-    return `You have ${formatCompactNumber(ctx.staking.claimableRewards)} MPGR in staking rewards ready to claim — that's your best next move.`;
+  if (ctx.staking && ctx.staking.earnedRewards > 0) {
+    return `You have ${formatCompactNumber(ctx.staking.earnedRewards)} MPGR in staking rewards ready to claim — that's your best next move.`;
   }
   if (ctx.premium && !ctx.premium.isPremium) {
     return "You're not on a Premium tier yet — locking MPGR to unlock Premium is a great next step for boosting your multipliers.";
   }
-  if (ctx.staking && ctx.staking.activePositionsCount === 0) {
-    return "You don't have any active staking positions — starting to stake MPGR is a solid next move to start earning rewards.";
+  if (ctx.staking && ctx.staking.totalStaked === 0) {
+    return "You don't have any MPGR staked — starting to stake MPGR is a solid next move to start earning rewards.";
   }
   if (ctx.tokenLock && ctx.tokenLock.activeLocksCount === 0) {
     return "You don't have any active token locks — locking some MPGR boosts your Premium tier and Holder Score.";
