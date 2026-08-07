@@ -1,90 +1,98 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { X, Loader2, CheckCircle2, AlertCircle, Sparkles } from "lucide-react";
-import type { LockDurationDays, LockOption } from "@/lib/staking-engine";
-import { formatCompactNumber } from "@/lib/format";
+import { X, Loader2, CheckCircle2, AlertCircle, ExternalLink } from "lucide-react";
+import { formatTokenBalance } from "@/lib/format";
+import { tokenUtils } from "@/lib/token/token-utils";
+import type { StakingActionState } from "@/lib/staking/staking-types";
 
-type Phase = "idle" | "submitting" | "success" | "error";
+// Phase 3E Part 3 — redesigned for the live contract: a plain amount
+// input (no lock-duration selector, since the pool has no lock terms),
+// an approve-then-stake flow driven directly by useStaking's action
+// state, and a real transaction hash linked to BaseScan on success.
 
 interface StakeModalProps {
   open: boolean;
   onClose: () => void;
-  availableBalance: number;
-  lockOptions: LockOption[];
-  estimateRewards: (amount: number, lockDurationDays: LockDurationDays) => number;
-  onConfirm: (amount: number, lockDurationDays: LockDurationDays) => void;
-  error: string | null;
-  successSignal: number | null;
+  walletBalanceRaw: bigint;
+  minimumStakeRaw: bigint;
+  decimals: number;
+  needsApproval: (amountRaw: bigint) => boolean;
+  approveState: StakingActionState;
+  stakeState: StakingActionState;
+  onApprove: (amountRaw: bigint) => void;
+  onStake: (amountRaw: bigint) => void;
+  onReset: () => void;
+  isWrongNetwork: boolean;
+  onSwitchNetwork: () => void;
+}
+
+function busyLabel(phase: StakingActionState["phase"]): string | null {
+  if (phase === "simulating") return "Confirm in wallet...";
+  if (phase === "pending") return "Submitting...";
+  if (phase === "confirming") return "Confirming on Base...";
+  return null;
 }
 
 export function StakeModal({
   open,
   onClose,
-  availableBalance,
-  lockOptions,
-  estimateRewards,
-  onConfirm,
-  error,
-  successSignal,
+  walletBalanceRaw,
+  minimumStakeRaw,
+  decimals,
+  needsApproval,
+  approveState,
+  stakeState,
+  onApprove,
+  onStake,
+  onReset,
+  isWrongNetwork,
+  onSwitchNetwork,
 }: StakeModalProps) {
   const [amountInput, setAmountInput] = useState("");
-  const [lockDurationDays, setLockDurationDays] = useState<LockDurationDays>(
-    lockOptions[0]?.days ?? 30
-  );
-  const [phase, setPhase] = useState<Phase>("idle");
-  const baseline = useRef<{ error: string | null; signal: number | null }>({
-    error: null,
-    signal: null,
-  });
 
   useEffect(() => {
     if (open) {
       setAmountInput("");
-      setLockDurationDays(lockOptions[0]?.days ?? 30);
-      setPhase("idle");
+      onReset();
     }
-  }, [open, lockOptions]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
-  // Watch for the outcome of a submitted stake — the hook updates `error`
-  // or `successSignal` (a fresh lastEvent id) once the action resolves.
-  // Phase 2B swap point: once staking is a real contract call, this effect
-  // becomes an awaited try/catch around the transaction instead.
-  useEffect(() => {
-    if (phase !== "submitting") return;
-    if (error && error !== baseline.current.error) {
-      setPhase("error");
-      return;
+  const amountRaw = useMemo(() => {
+    try {
+      if (!amountInput || Number.isNaN(parseFloat(amountInput))) return 0n;
+      return tokenUtils.parseTokenAmount(amountInput, decimals);
+    } catch {
+      return 0n;
     }
-    if (successSignal !== null && successSignal !== baseline.current.signal) {
-      setPhase("success");
-      const timer = setTimeout(onClose, 1400);
-      return () => clearTimeout(timer);
-    }
-  }, [phase, error, successSignal, onClose]);
+  }, [amountInput, decimals]);
 
-  const amount = parseFloat(amountInput);
-  const validAmount = Number.isFinite(amount) && amount > 0;
-  const exceedsBalance = validAmount && amount > availableBalance;
-  const estimatedReward = validAmount ? estimateRewards(amount, lockDurationDays) : 0;
-  const selectedOption = lockOptions.find((o) => o.days === lockDurationDays) ?? lockOptions[0];
+  const validAmount = amountRaw > 0n;
+  const exceedsBalance = validAmount && amountRaw > walletBalanceRaw;
+  const belowMinimum = validAmount && amountRaw < minimumStakeRaw;
+  const requiresApproval = validAmount && needsApproval(amountRaw);
 
-  const canSubmit = validAmount && !exceedsBalance && availableBalance > 0 && phase !== "submitting";
+  const approveBusy = busyLabel(approveState.phase);
+  const stakeBusy = busyLabel(stakeState.phase);
+  const isBusy = approveBusy !== null || stakeBusy !== null;
 
-  const handleMax = () => setAmountInput(String(availableBalance));
+  const canSubmit = validAmount && !exceedsBalance && !belowMinimum && !isWrongNetwork && !isBusy;
 
-  const handleConfirm = () => {
+  const handleMax = () => setAmountInput(formatFullAmount(walletBalanceRaw, decimals));
+
+  const handlePrimaryAction = () => {
     if (!canSubmit) return;
-    baseline.current = { error, signal: successSignal };
-    setPhase("submitting");
-    // Simulated confirmation delay — mirrors the latency a real Base
-    // transaction would introduce, so the loading state is exercised
-    // consistently once this becomes an on-chain call.
-    setTimeout(() => {
-      onConfirm(amount, lockDurationDays);
-    }, 500);
+    if (requiresApproval) {
+      onApprove(amountRaw);
+    } else {
+      onStake(amountRaw);
+    }
   };
+
+  const explorerUrl = stakeState.hash ? `https://basescan.org/tx/${stakeState.hash}` : null;
+  const anyError = approveState.error ?? stakeState.error;
 
   return (
     <AnimatePresence>
@@ -93,7 +101,7 @@ export function StakeModal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={phase === "submitting" ? undefined : onClose}
+          onClick={isBusy ? undefined : onClose}
           className="fixed inset-0 z-[70] flex items-end justify-center bg-black/70 backdrop-blur-sm sm:items-center sm:px-4"
         >
           <motion.div
@@ -107,7 +115,7 @@ export function StakeModal({
           >
             <button
               onClick={onClose}
-              disabled={phase === "submitting"}
+              disabled={isBusy}
               aria-label="Close stake dialog"
               className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-full text-muted transition-colors hover:text-white disabled:opacity-40"
             >
@@ -115,7 +123,7 @@ export function StakeModal({
             </button>
 
             <AnimatePresence mode="wait">
-              {phase === "success" ? (
+              {stakeState.phase === "success" ? (
                 <motion.div
                   key="success"
                   initial={{ opacity: 0, scale: 0.9 }}
@@ -128,14 +136,25 @@ export function StakeModal({
                   </div>
                   <p className="mt-4 text-sm font-semibold text-white">MPGR Staked</p>
                   <p className="mt-1 text-xs text-muted">
-                    {formatCompactNumber(amount)} MPGR locked for {lockDurationDays} days
+                    {formatTokenBalance(amountRaw, decimals)} MPGR added to your staked balance
                   </p>
+                  {explorerUrl && (
+                    <a
+                      href={explorerUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-3 flex items-center gap-1 text-[11px] text-primary hover:underline"
+                    >
+                      View on BaseScan
+                      <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                    </a>
+                  )}
                 </motion.div>
               ) : (
                 <motion.div key="form" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                   <p className="text-sm font-semibold text-white">Stake MPGR</p>
                   <p className="mt-1 text-xs text-muted">
-                    Available: {formatCompactNumber(availableBalance)} MPGR
+                    Available: {formatTokenBalance(walletBalanceRaw, decimals)} MPGR
                   </p>
 
                   <div className="mt-4">
@@ -150,13 +169,13 @@ export function StakeModal({
                         min={0}
                         placeholder="0.00"
                         value={amountInput}
-                        disabled={phase === "submitting"}
+                        disabled={isBusy}
                         onChange={(e) => setAmountInput(e.target.value)}
                         className="w-full bg-transparent text-lg font-semibold text-white placeholder:text-muted focus:outline-none"
                       />
                       <button
                         onClick={handleMax}
-                        disabled={phase === "submitting"}
+                        disabled={isBusy}
                         className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-primary disabled:opacity-40"
                       >
                         Max
@@ -165,65 +184,53 @@ export function StakeModal({
                     {exceedsBalance && (
                       <p className="mt-1.5 text-[11px] text-red-400">Amount exceeds available balance.</p>
                     )}
+                    {!exceedsBalance && belowMinimum && (
+                      <p className="mt-1.5 text-[11px] text-red-400">
+                        Minimum stake is {formatTokenBalance(minimumStakeRaw, decimals)} MPGR.
+                      </p>
+                    )}
                   </div>
 
-                  <div className="mt-4">
-                    <p className="text-xs text-muted">Lock duration</p>
-                    <div className="mt-1.5 grid grid-cols-2 gap-2">
-                      {lockOptions.map((option) => {
-                        const selected = option.days === lockDurationDays;
-                        return (
-                          <button
-                            key={option.days}
-                            onClick={() => setLockDurationDays(option.days)}
-                            disabled={phase === "submitting"}
-                            aria-pressed={selected}
-                            className={`min-h-[44px] rounded-xl border px-3 py-2 text-left text-xs transition-colors disabled:opacity-40 ${
-                              selected
-                                ? "border-primary/50 bg-primary/10 text-white"
-                                : "border-white/10 bg-white/[0.03] text-muted hover:text-white"
-                            }`}
-                          >
-                            <span className="block font-semibold">{option.label}</span>
-                            <span className={selected ? "text-gold" : "text-muted"}>{option.apy}% APY</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
+                  {requiresApproval && !isBusy && (
+                    <p className="mt-3 text-[11px] text-muted">
+                      First-time staking requires a one-time approval so the contract can transfer
+                      this amount from your wallet.
+                    </p>
+                  )}
 
-                  <div className="mt-4 flex items-center justify-between rounded-xl bg-background/50 px-3 py-2.5">
-                    <span className="flex items-center gap-1.5 text-xs text-muted">
-                      <Sparkles className="h-3.5 w-3.5 text-gold" aria-hidden="true" />
-                      Est. reward at {selectedOption?.label ?? ""}
-                    </span>
-                    <span className="text-sm font-semibold text-gold">
-                      +{formatCompactNumber(estimatedReward)} MPGR
-                    </span>
-                  </div>
-
-                  {phase === "error" && (
+                  {anyError && (
                     <div className="mt-3 flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
                       <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
-                      {error ?? "Unable to stake right now."}
+                      {anyError}
                     </div>
                   )}
 
-                  <button
-                    onClick={handleConfirm}
-                    disabled={!canSubmit}
-                    aria-label="Confirm stake"
-                    className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold py-2.5 text-sm font-semibold text-background transition-transform active:scale-95 disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
-                  >
-                    {phase === "submitting" ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                        Staking...
-                      </>
-                    ) : (
-                      "Confirm Stake"
-                    )}
-                  </button>
+                  {isWrongNetwork ? (
+                    <button
+                      onClick={onSwitchNetwork}
+                      className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold py-2.5 text-sm font-semibold text-background transition-transform active:scale-95"
+                    >
+                      Switch to Base
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handlePrimaryAction}
+                      disabled={!canSubmit}
+                      aria-label={requiresApproval ? "Approve MPGR" : "Confirm stake"}
+                      className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold py-2.5 text-sm font-semibold text-background transition-transform active:scale-95 disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
+                    >
+                      {isBusy ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                          {approveBusy ?? stakeBusy}
+                        </>
+                      ) : requiresApproval ? (
+                        "Approve MPGR"
+                      ) : (
+                        "Confirm Stake"
+                      )}
+                    </button>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -232,4 +239,15 @@ export function StakeModal({
       )}
     </AnimatePresence>
   );
+}
+
+// Full (non-compact) decimal string for the Max button, so clicking Max
+// stakes the wallet's exact balance rather than a rounded display figure.
+function formatFullAmount(raw: bigint, decimals: number): string {
+  const divisor = 10n ** BigInt(decimals);
+  const whole = raw / divisor;
+  const remainder = raw % divisor;
+  if (remainder === 0n) return whole.toString();
+  const fraction = remainder.toString().padStart(decimals, "0").replace(/0+$/, "");
+  return `${whole.toString()}.${fraction}`;
 }
