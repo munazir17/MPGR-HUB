@@ -89,6 +89,21 @@ export const stakingService = {
     return state;
   },
 
+  // Synchronous cache-only reads — return null/stale-free data without
+  // touching the RPC. Used by callers with a synchronous contract that
+  // can't await a fetch (e.g. lib/holder-score-providers.ts). Never
+  // triggers a fetch and never fabricates a value: null means "not
+  // fetched by anything else yet this session."
+  getCachedGlobalState(): StakingGlobalState | null {
+    const cached = globalCache.get(GLOBAL_CACHE_KEY);
+    return cached && isCacheValid(cached.timestamp, cached.ttl) ? cached.state : null;
+  },
+
+  getCachedWalletState(address: Address): StakingWalletState | null {
+    const cached = walletCache.get(walletCacheKey(address));
+    return cached && isCacheValid(cached.timestamp, cached.ttl) ? cached.state : null;
+  },
+
   clearGlobalCache(): void {
     globalCache.delete(GLOBAL_CACHE_KEY);
   },
