@@ -199,7 +199,7 @@ function actionsClaimableRewards(ctx: AgentContext): AgentAction[] {
       variant: "primary",
     },
   ];
-  if (ctx.staking && ctx.staking.claimableRewards > 0) {
+  if (ctx.staking && ctx.staking.earnedRewards > 0) {
     actions.push({
       id: "rewards-staking",
       label: "Claim Staking Rewards",
@@ -215,7 +215,7 @@ function actionsClaimableRewards(ctx: AgentContext): AgentAction[] {
 function actionsStakingSummary(ctx: AgentContext): AgentAction[] {
   if (!ctx.staking) return [];
   return [
-    ctx.staking.activePositionsCount === 0
+    ctx.staking.totalStaked === 0
       ? {
           id: "staking-start",
           label: "Start Staking",
@@ -227,7 +227,7 @@ function actionsStakingSummary(ctx: AgentContext): AgentAction[] {
       : {
           id: "staking-open",
           label: "Open Staking",
-          description: "Manage your active staking positions",
+          description: "Manage your staked MPGR",
           href: "/staking",
           icon: "staking" as const,
           variant: "primary" as const,
@@ -388,12 +388,12 @@ function actionsSuggestNextAction(ctx: AgentContext): AgentAction[] {
       },
     ];
   }
-  if (ctx.staking && ctx.staking.claimableRewards > 0) {
+  if (ctx.staking && ctx.staking.earnedRewards > 0) {
     return [
       {
         id: "suggest-claim-staking",
         label: "Claim Staking Rewards",
-        description: `${formatCompactNumber(ctx.staking.claimableRewards)} MPGR ready to claim`,
+        description: `${formatCompactNumber(ctx.staking.earnedRewards)} MPGR ready to claim`,
         href: "/staking",
         icon: "staking",
         variant: "primary",
@@ -412,7 +412,7 @@ function actionsSuggestNextAction(ctx: AgentContext): AgentAction[] {
       },
     ];
   }
-  if (ctx.staking && ctx.staking.activePositionsCount === 0) {
+  if (ctx.staking && ctx.staking.totalStaked === 0) {
     return [
       {
         id: "suggest-start-staking",
@@ -523,15 +523,14 @@ function highlightsClaimableRewards(ctx: AgentContext): AgentHighlight[] {
 }
 
 function highlightsStakingSummary(ctx: AgentContext): AgentHighlight[] {
-  if (!ctx.staking || ctx.staking.activePositionsCount === 0) return [];
-  return [
+  if (!ctx.staking || ctx.staking.totalStaked === 0) return [];
+  const highlights: AgentHighlight[] = [
     { id: "h-staked", label: `${formatCompactNumber(ctx.staking.totalStaked)} Staked`, icon: "staking" },
-    {
-      id: "h-positions",
-      label: `${ctx.staking.activePositionsCount} Position${ctx.staking.activePositionsCount === 1 ? "" : "s"}`,
-      icon: "gauge",
-    },
   ];
+  if (ctx.staking.currentAPRPercent !== null) {
+    highlights.push({ id: "h-apr", label: `${ctx.staking.currentAPRPercent}% APR`, icon: "gauge" });
+  }
+  return highlights;
 }
 
 function highlightsLockedTokens(ctx: AgentContext): AgentHighlight[] {
