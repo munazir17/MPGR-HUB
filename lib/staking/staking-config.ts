@@ -66,6 +66,25 @@ export const MPGR_STAKING_CONFIG = {
     baseDelayMs: 300,
     maxDelayMs: 4_000,
   },
+
+  // --- Phase 3E Part 4 — Staking History additions --------------------------
+  //
+  // How far back (in blocks) an initial Staked/Unstaked/RewardPaid scan
+  // looks for a wallet that's never been scanned before, mirroring
+  // MPGR_TOKEN_CONFIG.transferLogLookbackBlocks. Kept smaller than the
+  // token module's 300,000 — MPGRStaking is a recently deployed contract
+  // (see comment above), so there's little history to miss by scanning a
+  // shorter window; raise this if genesis-to-now history is ever needed.
+  historyLookbackBlocks: 200_000,
+  // Maximum block span per single eth_getLogs call — same rationale as
+  // MPGR_TOKEN_CONFIG.transferLogChunkSize (public RPC endpoints commonly
+  // cap/truncate wide log ranges).
+  historyChunkSize: 2_000,
+  // How long a scanned staking history stays valid before the next
+  // getHistory() call re-checks the chain for new blocks.
+  historyCacheTtl: 20 * 1000,
+  // Number of history entries returned per "page" by default.
+  historyPageSize: 10,
 } as const;
 
 export type MPGRStakingConfig = typeof MPGR_STAKING_CONFIG;
