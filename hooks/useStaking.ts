@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAccount, useChainId, useSwitchChain, useWatchContractEvent } from "wagmi";
 import { base } from "wagmi/chains";
 import { formatUnits } from "viem";
@@ -24,34 +24,8 @@ import {
   type StakingWalletState,
 } from "@/lib/staking/staking-types";
 
-// Phase 3E Part 3 — Live Staking & Rewards.
-//
-// Replaces the entire localStorage-mocked staking hook with a live
-// wagmi/viem integration against the deployed MPGRStaking contract on Base
-// Mainnet. No lock durations, no positions, no per-position APY — the
-// contract has one continuous balance and one global APR per wallet, so
-// this hook exposes exactly that: available wallet balance, total staked,
-// current APR, earned rewards, reward pool balance, and the four actions
-// (stake/unstake/claim/exit). Every number returned comes directly from
-// stakingService (which reads straight from stakingClient / the contract)
-// or from useMPGRBalance (which reads the live MPGR ERC20 balance) — no
-// reward math or APR derivation happens in this file, except the
-// Phase 3E Part 4 addition below.
-//
-// Phase 3E Part 4 — Live Reward Counter. earnedRewardsRaw (below) remains
-// exactly what it always was: the contract's own earned() result as of
-// the last poll/action, used unchanged for claim eligibility and
-// claim/exit payout amounts. liveEarnedRewardsRaw is new and additive: it
-// re-evaluates lib/staking/reward-math.ts's earned()/rewardPerToken() —
-// the exact same formulas the deployed contract runs — every second,
-// using the client's current time in place of the next block's
-// timestamp. Every poll and every confirmed action re-fetches the real
-// on-chain checkpoint values it's built from, so it can never drift from
-// what earned() would actually return on-chain; it only fills in the
-// seconds between reads.
-
 interface StakeEvent {
-  amount: number; // human-readable MPGR, for FloatingXP display only
+  amount: number;
   id: number;
 }
 
@@ -80,8 +54,6 @@ export function useStaking() {
   const isWrongNetwork = isConnected && chainId !== base.id;
 
   const decimals = MPGR_TOKEN_CONFIG.decimals;
-
-  // --- Reads ---------------------------------------------------------------
 
   const loadGlobalState = useCallback(async () => {
     try {
@@ -120,7 +92,6 @@ export function useStaking() {
     }
   }, [address, loadGlobalState, loadWalletState, refreshWalletBalance]);
 
-  // Initial + address-change load.
   useEffect(() => {
     setHasLoaded(false);
     loadGlobalState().finally(() => {
@@ -136,8 +107,6 @@ export function useStaking() {
     loadWalletState(address).finally(() => setHasLoaded(true));
   }, [address, isConnected, loadWalletState]);
 
-  // Reward accrual is continuous, so periodically refetch even without a
-  // user action — earned() visibly ticks up on-screen.
   useEffect(() => {
     if (!isConnected || !address) return;
     const id = setInterval(() => {
@@ -147,9 +116,6 @@ export function useStaking() {
     return () => clearInterval(id);
   }, [address, isConnected, loadGlobalState, loadWalletState]);
 
-  // Listen for staking_changed emitted by refreshManager.refreshStaking
-  // (fired after every confirmed action) so any other part of the app
-  // that also renders staking numbers stays in sync.
   useEffect(() => {
     const unsubscribe = agentEventBus.on("staking_changed", (payload) => {
       if (payload.address !== address) return;
@@ -158,12 +124,6 @@ export function useStaking() {
     });
     return unsubscribe;
   }, [address, loadGlobalState, loadWalletState]);
-
-  // --- Live on-chain event watching (requirement: live event updates) ------
-  // Session-only activity feed of Staked/Unstaked/RewardPaid events for the
-  // connected wallet, observed live via the contract's own event log —
-  // never fabricated, never backfilled. Also triggers a refresh so events
-  // fired by other tabs/devices for the same wallet are reflected here too.
 
   const pushActivity = useCallback((entry: StakingLiveActivityEntry) => {
     setLiveActivity((prev) => [entry, ...prev].slice(0, 20));
@@ -217,8 +177,6 @@ export function useStaking() {
     },
   });
 
-  // --- Shared action runner --------------------------------------------------
-
   const runAction = useCallback(
     async (
       setState: (updater: (prev: StakingActionState) => StakingActionState) => void,
@@ -247,8 +205,6 @@ export function useStaking() {
     [address, refresh]
   );
 
-  // --- Chain guard -----------------------------------------------------------
-
   const ensureBaseNetwork = useCallback(async (): Promise<boolean> => {
     if (!isWrongNetwork) return true;
     try {
@@ -259,8 +215,6 @@ export function useStaking() {
       return false;
     }
   }, [isWrongNetwork, switchChainAsync]);
-
-  // --- Actions ---------------------------------------------------------------
 
   const approve = useCallback(
     async (amountRaw: bigint) => {
@@ -320,12 +274,6 @@ export function useStaking() {
 
   const dismissEvent = useCallback(() => setLastEvent(null), []);
 
-  // --- Phase 3E Part 4 — Live Reward Counter -----------------------------
-  // Ticks a client-side "now" once per second so liveEarnedRewardsRaw
-  // below re-evaluates reward-math.ts's earned() continuously between
-  // polls. This is purely a display derivation — no RPC calls happen
-  // here, and nothing above (including earnedRewardsRaw, used for claim
-  // eligibility/amounts) is affected.
   const [nowSeconds, setNowSeconds] = useState<bigint>(() => BigInt(Math.floor(Date.now() / 1000)));
 
   useEffect(() => {
@@ -355,11 +303,6 @@ export function useStaking() {
     );
   }, [globalState, walletState, nowSeconds]);
 
-  // --- Derived, display-ready values ------------------------------------------
-  // All formatting below is pure display formatting (bigint -> decimal
-  // string), never reward math — the underlying bigints came straight from
-  // stakingService.
-
   const minimumStakeRaw = globalState?.minimumStake ?? tokenUtils.parseTokenAmount("100", decimals);
   const allowanceRaw = walletState?.allowance ?? 0n;
 
@@ -368,11 +311,6 @@ export function useStaking() {
     [allowanceRaw]
   );
 
-  // currentAPRBps reads 0 until the pool owner calls setAPR() at least
-  // once — that's the deployed contract's real state, not a loading
-  // artifact, so it's surfaced as null (meaning "not yet configured")
-  // rather than displayed as "0%", which would misleadingly imply a
-  // deliberately-set zero rate.
   const currentAPRPercent = useMemo(() => {
     if (!globalState || globalState.currentAPRBps === 0n) return null;
     return Number(globalState.currentAPRBps) / 100;
@@ -424,7 +362,6 @@ export function useStaking() {
 
     refresh,
 
-    // Phase 3E Part 4 — new, additive.
     liveEarnedRewardsRaw,
   };
 }
