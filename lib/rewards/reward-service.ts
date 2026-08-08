@@ -1,7 +1,7 @@
 // lib/rewards/reward-service.ts
 
 import type { Address } from "viem";
-import { rewardProviders } from "./providers";
+import { REWARD_PROVIDERS } from "./providers";
 import { trace } from "@/lib/_debug/reward-hub-trace";
 import type {
   RewardClaimHistoryEntry,
@@ -37,23 +37,15 @@ export const rewardService = {
     const cacheKey = getCacheKey(address);
     const cached = summaryCache.get(cacheKey);
 
-    if (
-      cached &&
-      !options.forceRefresh &&
-      isCacheValid(cached)
-    ) {
+    if (cached && !options.forceRefresh && isCacheValid(cached)) {
       trace.mark("rewardService.getRewardHubSummary CACHE HIT", {
         address,
       });
 
-      trace.end(
-        "rewardService.getRewardHubSummary",
-        started,
-        {
-          address,
-          cache: "hit",
-        }
-      );
+      trace.end("rewardService.getRewardHubSummary", started, {
+        address,
+        cache: "hit",
+      });
 
       return cached.summary;
     }
@@ -64,7 +56,7 @@ export const rewardService = {
     });
 
     const providerResults = await Promise.all(
-      rewardProviders.map(async (provider) => {
+      REWARD_PROVIDERS.map(async (provider) => {
         const providerStarted = trace.start(
           `provider.getSummary:${provider.category}`,
           {
@@ -155,15 +147,11 @@ export const rewardService = {
       ttl: MPGR_REWARDS_CONFIG.summaryCacheTtl,
     });
 
-    trace.end(
-      "rewardService.getRewardHubSummary",
-      started,
-      {
-        address,
-        cache: "miss",
-        providerCount: providerResults.length,
-      }
-    );
+    trace.end("rewardService.getRewardHubSummary", started, {
+      address,
+      cache: "miss",
+      providerCount: providerResults.length,
+    });
 
     return summary;
   },
@@ -186,26 +174,18 @@ export const rewardService = {
     const limit =
       options.limit ?? MPGR_REWARDS_CONFIG.historyPageSize;
 
-    if (
-      cached &&
-      !options.forceRefresh &&
-      isCacheValid(cached)
-    ) {
+    if (cached && !options.forceRefresh && isCacheValid(cached)) {
       trace.mark("rewardService.getRewardHistory CACHE HIT", {
         address,
         limit,
         cachedEntries: cached.entries.length,
       });
 
-      trace.end(
-        "rewardService.getRewardHistory",
-        started,
-        {
-          address,
-          cache: "hit",
-          entries: cached.entries.length,
-        }
-      );
+      trace.end("rewardService.getRewardHistory", started, {
+        address,
+        cache: "hit",
+        entries: cached.entries.length,
+      });
 
       return cached.entries.slice(0, limit);
     }
@@ -217,7 +197,7 @@ export const rewardService = {
     });
 
     const providerResults = await Promise.all(
-      rewardProviders.map(async (provider) => {
+      REWARD_PROVIDERS.map(async (provider) => {
         const providerStarted = trace.start(
           `provider.getHistory:${provider.category}`,
           {
@@ -299,16 +279,12 @@ export const rewardService = {
       ttl: MPGR_REWARDS_CONFIG.historyCacheTtl,
     });
 
-    trace.end(
-      "rewardService.getRewardHistory",
-      started,
-      {
-        address,
-        cache: "miss",
-        providerCount: providerResults.length,
-        returnedEntries: entries.length,
-      }
-    );
+    trace.end("rewardService.getRewardHistory", started, {
+      address,
+      cache: "miss",
+      providerCount: providerResults.length,
+      returnedEntries: entries.length,
+    });
 
     return entries;
   },
