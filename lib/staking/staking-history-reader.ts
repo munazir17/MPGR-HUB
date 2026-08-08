@@ -10,16 +10,6 @@ import { withRetry } from "@/lib/token/rpc-retry";
 import { logger } from "@/lib/architecture/core/logger";
 import type { StakingHistoryEvent, StakingHistoryEventKind } from "./staking-types";
 
-// Phase 3E Part 4 — Staking History Reader.
-//
-// Low-level, RPC-facing module that reads a wallet's Staked / Unstaked /
-// RewardPaid events directly from Base Mainnet via eth_getLogs, chunked
-// the same way lib/token/transfer-event-reader.ts chunks its scans
-// (public RPC endpoints commonly cap the width of a single getLogs
-// call). Pure RPC I/O — no caching, no event-bus emission;
-// staking-history-service.ts owns caching and dedup, exactly the way
-// transaction-history-service.ts sits on top of transfer-event-reader.ts.
-
 interface DecodedStakingLog extends Log {
   args: {
     user?: Address;
@@ -34,9 +24,6 @@ const EVENTS: { kind: StakingHistoryEventKind; item: AbiEvent }[] = [
   { kind: "RewardPaid", item: rewardPaidEventAbiItem },
 ];
 
-// Same block -> timestamp(ms) cache pattern as transfer-event-reader.ts,
-// kept as its own map since it's keyed by blocks touched by staking
-// events specifically, not token transfers.
 const blockTimestampCache = new Map<bigint, number>();
 
 function getViemClient() {
@@ -62,11 +49,11 @@ async function getBlockTimestampMs(blockNumber: bigint): Promise<number> {
   return timestampMs;
 }
 
-// Scans a single event kind for `walletAddress` across [fromBlock,
-// toBlock], chunked so no single getLogs call spans more than
-// historyChunkSize blocks. A failed chunk is logged and skipped rather
-// than aborting the whole scan, matching transfer-event-reader.ts's
-// resilience.
+// Phase 3F — Reward Hub perf fix. Same block ranges, same chunk width as
+// before — the only change is that up to historyChunkConcurrency chunk
+// requests for this event kind are now in flight at once instead of
+// strictly one at a time. A failed chunk still logs and contributes an
+// empty result rather than aborting the scan, exactly as before.
 async function scanEventKind(
   walletAddress: Address,
   kind: StakingHistoryEventKind,
@@ -76,36 +63,51 @@ async function scanEventKind(
 ): Promise<DecodedStakingLog[]> {
   const client = getViemClient();
   const chunkSize = BigInt(MPGR_STAKING_CONFIG.historyChunkSize);
-  const results: DecodedStakingLog[] = [];
+  const concurrency = Math.max(1, MPGR_STAKING_CONFIG.historyChunkConcurrency);
 
+  const ranges: [bigint, bigint][] = [];
   let chunkStart = fromBlock;
   while (chunkStart <= toBlock) {
     const chunkEnd = chunkStart + chunkSize - 1n > toBlock ? toBlock : chunkStart + chunkSize - 1n;
-
-    try {
-      const logs = await withRetry(
-        `stakingHistoryReader.getLogs:${kind}:${chunkStart}-${chunkEnd}`,
-        () =>
-          getLogs(client, {
-            address: MPGR_STAKING_CONFIG.address,
-            event: item,
-            args: { user: walletAddress },
-            fromBlock: chunkStart,
-            toBlock: chunkEnd,
-          }),
-        MPGR_STAKING_CONFIG.retry
-      );
-      results.push(...(logs as DecodedStakingLog[]));
-    } catch (err) {
-      logger.error("stakingHistoryReader.scanEventKind chunk failed, skipping chunk", {
-        kind,
-        chunkStart: chunkStart.toString(),
-        chunkEnd: chunkEnd.toString(),
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
+    ranges.push([chunkStart, chunkEnd]);
     chunkStart = chunkEnd + 1n;
+  }
+
+  const results: DecodedStakingLog[] = [];
+
+  for (let i = 0; i < ranges.length; i += concurrency) {
+    const batch = ranges.slice(i, i + concurrency);
+    const batchResults = await Promise.all(
+      batch.map(async ([batchChunkStart, batchChunkEnd]) => {
+        try {
+          const logs = await withRetry(
+            `stakingHistoryReader.getLogs:${kind}:${batchChunkStart}-${batchChunkEnd}`,
+            () =>
+              getLogs(client, {
+                address: MPGR_STAKING_CONFIG.address,
+                event: item,
+                args: { user: walletAddress },
+                fromBlock: batchChunkStart,
+                toBlock: batchChunkEnd,
+              }),
+            MPGR_STAKING_CONFIG.retry
+          );
+          return logs as DecodedStakingLog[];
+        } catch (err) {
+          logger.error("stakingHistoryReader.scanEventKind chunk failed, skipping chunk", {
+            kind,
+            chunkStart: batchChunkStart.toString(),
+            chunkEnd: batchChunkEnd.toString(),
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return [] as DecodedStakingLog[];
+        }
+      })
+    );
+
+    for (const logs of batchResults) {
+      results.push(...logs);
+    }
   }
 
   return results;
@@ -128,8 +130,6 @@ function toHistoryEvent(
 }
 
 export const stakingHistoryReader = {
-  // Returns the current chain tip. Used by staking-history-service to
-  // know how far forward it needs to scan on an incremental refresh.
   async getLatestBlockNumber(): Promise<bigint> {
     const client = getViemClient();
     return withRetry(
@@ -139,11 +139,6 @@ export const stakingHistoryReader = {
     );
   },
 
-  // Fetches every Staked / Unstaked / RewardPaid event for
-  // `walletAddress` between fromBlock and toBlock (inclusive), deduped
-  // and sorted oldest-first. Never throws — a scan that fails entirely
-  // (e.g. RPC totally unreachable) returns an empty array so callers can
-  // fall back to whatever's cached.
   async fetchHistory(
     walletAddress: Address,
     fromBlock: bigint,
