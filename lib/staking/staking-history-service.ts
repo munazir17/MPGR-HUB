@@ -6,19 +6,30 @@ import { logger } from "@/lib/architecture/core/logger";
 import { MPGR_STAKING_CONFIG } from "./staking-config";
 import type { StakingHistoryCacheEntry, StakingHistoryEvent } from "./staking-types";
 
-// Phase 3E Part 4 — Staking History Service.
+// Phase 3F Part 2 — In-flight scan dedup.
 //
-// Sits on top of staking-history-reader.ts exactly the way
-// lib/token/transaction-history-service.ts sits on top of
-// transfer-event-reader.ts: owns caching, incremental scanning (only
-// asks the reader for blocks it hasn't seen yet), and dedup across
-// scans. Deliberately does not emit onto the shared agentEventBus —
-// hooks/useStakingHistory.ts already gets its refresh signal from the
-// existing "staking_changed" event that refreshManager.refreshStaking
-// emits after every confirmed staking action (see hooks/useStaking.ts),
-// so adding a second event here would just duplicate that signal.
+// Root cause of the Reward Hub's slow cold-start load: staking-rewards-
+// provider.ts's getSummary() and getHistory() both call
+// stakingHistoryService.getHistory() for the same wallet, and
+// useRewardHub.ts's load() calls both of those (via
+// rewardService.getRewardHubSummary/getRewardHistory) in one Promise.all.
+// With a cold cache, both calls used to see a miss and each launch its
+// own full chunked eth_getLogs scan (historyLookbackBlocks / chunkSize =
+// ~100 sequential round trips per event kind) — doubling the RPC burst
+// for no reason, since both calls want the exact same data.
+//
+// inFlightScans fixes this at the source: the actual scan-and-cache work
+// is a single async operation per wallet, memoized while it's running.
+// Any caller that arrives while a scan for that wallet is already in
+// flight awaits the SAME promise instead of starting a second one, then
+// slices the result to its own requested `limit`. This changes nothing
+// about which blocks get scanned, how far back, or what results look
+// like — it only removes the duplicate work. Every other consumer
+// (hooks/useStakingHistory.ts, the Staking page) is unaffected: a single
+// caller's behavior is identical to before.
 
 const historyCache = new Map<string, StakingHistoryCacheEntry>();
+const inFlightScans = new Map<string, Promise<StakingHistoryEvent[]>>();
 
 function getCacheKey(walletAddress: Address): string {
   return `staking-history:${walletAddress.toLowerCase()}`;
@@ -38,12 +49,53 @@ function mergeAndSort(existing: StakingHistoryEvent[], incoming: StakingHistoryE
   );
 }
 
+// The actual scan-and-cache work, unchanged from before except that it's
+// now a standalone function so it can be memoized per wallet in
+// inFlightScans. Returns the full merged (unsliced) history — callers in
+// getHistory() apply their own `limit` afterward. Never throws: on
+// failure it logs and falls back to whatever was cached before this
+// scan started, exactly as the previous inline implementation did.
+async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<StakingHistoryEvent[]> {
+  const cached = historyCache.get(cacheKey);
+
+  try {
+    const latestBlock = await stakingHistoryReader.getLatestBlockNumber();
+    const lookback = BigInt(MPGR_STAKING_CONFIG.historyLookbackBlocks);
+    const defaultFromBlock = latestBlock > lookback ? latestBlock - lookback : 0n;
+
+    const fromBlock = cached ? cached.lastBlockScanned + 1n : defaultFromBlock;
+
+    if (cached && fromBlock > latestBlock) {
+      historyCache.set(cacheKey, { ...cached, timestamp: Date.now() });
+      return cached.entries;
+    }
+
+    const newEvents = await stakingHistoryReader.fetchHistory(walletAddress, fromBlock, latestBlock);
+    const merged = mergeAndSort(cached?.entries ?? [], newEvents);
+
+    historyCache.set(cacheKey, {
+      entries: merged,
+      timestamp: Date.now(),
+      ttl: MPGR_STAKING_CONFIG.historyCacheTtl,
+      lastBlockScanned: latestBlock,
+    });
+
+    if (newEvents.length > 0) {
+      logger.debug("stakingHistoryService.getHistory found new staking events", {
+        walletAddress,
+        newCount: newEvents.length,
+      });
+    }
+
+    return merged;
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    logger.error("stakingHistoryService.getHistory failed", { walletAddress, error: errorMsg });
+    return cached ? cached.entries : [];
+  }
+}
+
 export const stakingHistoryService = {
-  // Returns the wallet's Staked/Unstaked/RewardPaid history, newest-first,
-  // refreshing from chain only for the block range not yet scanned. Pass
-  // forceRefresh to ignore the cache TTL. Never throws — degrades to
-  // cached (even stale) data on RPC failure, or an empty list if nothing
-  // is cached yet.
   async getHistory(
     walletAddress: Address,
     options: { forceRefresh?: boolean; limit?: number } = {}
@@ -56,47 +108,27 @@ export const stakingHistoryService = {
       return cached.entries.slice(0, limit);
     }
 
-    try {
-      const latestBlock = await stakingHistoryReader.getLatestBlockNumber();
-      const lookback = BigInt(MPGR_STAKING_CONFIG.historyLookbackBlocks);
-      const defaultFromBlock = latestBlock > lookback ? latestBlock - lookback : 0n;
-
-      const fromBlock = cached ? cached.lastBlockScanned + 1n : defaultFromBlock;
-
-      if (cached && fromBlock > latestBlock) {
-        historyCache.set(cacheKey, { ...cached, timestamp: Date.now() });
-        return cached.entries.slice(0, limit);
-      }
-
-      const newEvents = await stakingHistoryReader.fetchHistory(walletAddress, fromBlock, latestBlock);
-      const merged = mergeAndSort(cached?.entries ?? [], newEvents);
-
-      historyCache.set(cacheKey, {
-        entries: merged,
-        timestamp: Date.now(),
-        ttl: MPGR_STAKING_CONFIG.historyCacheTtl,
-        lastBlockScanned: latestBlock,
-      });
-
-      if (newEvents.length > 0) {
-        logger.debug("stakingHistoryService.getHistory found new staking events", {
-          walletAddress,
-          newCount: newEvents.length,
-        });
-      }
-
+    // Dedup point: if a scan for this wallet is already running (e.g. the
+    // Reward Hub's staking-rewards-provider calling getSummary() and
+    // getHistory() in the same load cycle), share it instead of starting
+    // a second full chunked scan. Registration happens synchronously
+    // before any `await`, so two calls arriving in the same Promise.all
+    // reliably see each other.
+    const existingScan = inFlightScans.get(cacheKey);
+    if (existingScan) {
+      const merged = await existingScan;
       return merged.slice(0, limit);
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      logger.error("stakingHistoryService.getHistory failed", { walletAddress, error: errorMsg });
-      return cached ? cached.entries.slice(0, limit) : [];
     }
+
+    const scanPromise = scanAndCache(walletAddress, cacheKey).finally(() => {
+      inFlightScans.delete(cacheKey);
+    });
+    inFlightScans.set(cacheKey, scanPromise);
+
+    const merged = await scanPromise;
+    return merged.slice(0, limit);
   },
 
-  // All entries currently cached for a wallet (unbounded by page size) —
-  // used to sum "Total Rewards Claimed" over the full cached history and
-  // to compute hasMore for pagination, mirroring
-  // transactionHistoryService.getCachedHistory's role.
   getCachedHistory(walletAddress: Address): StakingHistoryEvent[] | null {
     const cached = historyCache.get(getCacheKey(walletAddress));
     return cached && isCacheValid(cached) ? cached.entries : null;
