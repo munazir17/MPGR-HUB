@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   Gift,
   CalendarDays,
@@ -11,22 +12,13 @@ import {
   Bot,
   Crown,
   Rocket,
+  ArrowRight,
   type LucideIcon,
 } from "lucide-react";
 import { GlassCard } from "./GlassCard";
 import { Skeleton } from "./Skeleton";
 import { formatTokenBalance } from "@/lib/format";
 import type { RewardCategoryKey, RewardCategorySummary } from "@/lib/rewards/reward-types";
-
-// Phase 3F Part 1 — Reward Category Grid.
-//
-// Covers "Reward Categories" / "Reward Breakdown" from the Phase 3F Part 1
-// feature list. Renders all 10 roadmap categories from
-// RewardHubSummary.categories — active categories (a registered provider
-// exists, see lib/rewards/providers/index.ts) show real earned/claimed/
-// claimable numbers; inactive ones show a "Coming soon" state instead of
-// a fabricated zero, using the summary's own isActive flag rather than
-// guessing from the amounts.
 
 const MPGR_DECIMALS = 18;
 
@@ -109,6 +101,15 @@ export function RewardCategoryGrid({ categories, loading }: RewardCategoryGridPr
                   <p className="text-[11px] font-medium text-gold">
                     {formatTokenBalance(category.claimableRaw, MPGR_DECIMALS)} MPGR claimable
                   </p>
+                )}
+                {category.category === "staking" && category.claimableRaw > 0n && (
+                  <Link
+                    href="/staking"
+                    className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:text-primary-glow"
+                  >
+                    Claim on Staking
+                    <ArrowRight className="h-3 w-3" aria-hidden="true" />
+                  </Link>
                 )}
               </div>
             ) : (
