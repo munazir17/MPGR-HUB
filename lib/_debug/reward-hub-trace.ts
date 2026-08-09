@@ -1,78 +1,51 @@
 // lib/_debug/reward-hub-trace.ts
 //
-// TEMPORARY Phase 3F Reward Hub diagnostic instrumentation.
-// This file is intentionally isolated so the trace can be removed
-// completely after the performance bottleneck is identified.
+// TEMPORARY — Phase 3F Reward Hub cold-load diagnostic trace ONLY.
+// Not wired into any production behavior. Safe to delete this entire
+// file, plus the `trace.*` call sites that import it, once the trace
+// data has been captured. No production file imports this except the
+// ones explicitly instrumented for this diagnostic pass.
 
-type TraceMeta = Record<string, unknown>;
-
-const timers = new Map<string, number>();
+import { getRpcDiagnostics } from "@/lib/token/rpc-retry";
 
 function now(): number {
-  return typeof performance !== "undefined"
-    ? performance.now()
-    : Date.now();
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
-function formatMeta(meta?: TraceMeta): string {
-  if (!meta || Object.keys(meta).length === 0) {
-    return "";
-  }
-
-  try {
-    return ` ${JSON.stringify(meta)}`;
-  } catch {
-    return "";
-  }
+function fmt(ms: number): string {
+  return `${ms.toFixed(1)}ms`;
 }
 
 export const trace = {
-  start(label: string, meta?: TraceMeta): number {
-    const started = now();
-    timers.set(label, started);
-
-    console.log(
-      `[RewardHub TRACE] ${label} START${formatMeta(meta)}`
-    );
-
-    return started;
+  // Call at the start of a phase. Returns a token to pass to trace.end().
+  start(label: string, meta?: Record<string, unknown>): number {
+    // eslint-disable-next-line no-console
+    console.log(`[RewardHub TRACE] ${label} START`, meta ?? "");
+    return now();
   },
 
-  end(
-    label: string,
-    started: number,
-    meta?: TraceMeta
-  ): number {
-    const elapsed = now() - started;
-
-    console.log(
-      `[RewardHub TRACE] ${label} END ${elapsed.toFixed(1)}ms${formatMeta(meta)}`
-    );
-
+  // Call at the end of a phase with the token returned by trace.start().
+  end(label: string, startedAt: number, meta?: Record<string, unknown>): number {
+    const elapsed = now() - startedAt;
+    // eslint-disable-next-line no-console
+    console.log(`[RewardHub TRACE] ${label} END ${fmt(elapsed)}`, meta ?? "");
     return elapsed;
   },
 
-  mark(label: string, meta?: TraceMeta): void {
-    console.log(
-      `[RewardHub TRACE] ${label}${formatMeta(meta)}`
-    );
+  // One-off marker with no duration (e.g. cache hit/miss, counts).
+  mark(label: string, meta?: Record<string, unknown>): void {
+    // eslint-disable-next-line no-console
+    console.log(`[RewardHub TRACE] ${label}`, meta ?? "");
   },
 
-  elapsed(label: string): number | null {
-    const started = timers.get(label);
-
-    if (started === undefined) {
-      return null;
-    }
-
-    return now() - started;
+  // Snapshots the existing rpc-retry.ts diagnostics counters (read-only —
+  // does not modify retry behavior) so retry/backoff cost is visible
+  // per-phase without adding any new retry-tracking logic.
+  rpcSnapshot(label: string): { totalCalls: number; totalFailures: number; totalRetries: number } {
+    const d = getRpcDiagnostics();
+    const snap = { totalCalls: d.totalCalls, totalFailures: d.totalFailures, totalRetries: d.totalRetries };
+    // eslint-disable-next-line no-console
+    console.log(`[RewardHub TRACE] ${label} rpcDiagnostics`, snap);
+    return snap;
   },
-
-  clear(label?: string): void {
-    if (label) {
-      timers.delete(label);
-    } else {
-      timers.clear();
-    }
-  },
-} as const;
+};
