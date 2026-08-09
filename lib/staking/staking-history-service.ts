@@ -5,6 +5,8 @@ import { stakingHistoryReader } from "./staking-history-reader";
 import { logger } from "@/lib/architecture/core/logger";
 import { MPGR_STAKING_CONFIG } from "./staking-config";
 import type { StakingHistoryCacheEntry, StakingHistoryEvent } from "./staking-types";
+// TEMPORARY — Phase 3F diagnostic trace only. See lib/_debug/reward-hub-trace.ts.
+import { trace } from "@/lib/_debug/reward-hub-trace";
 
 // Phase 3F Part 2 — In-flight scan dedup.
 //
@@ -57,9 +59,18 @@ function mergeAndSort(existing: StakingHistoryEvent[], incoming: StakingHistoryE
 // scan started, exactly as the previous inline implementation did.
 async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<StakingHistoryEvent[]> {
   const cached = historyCache.get(cacheKey);
+  // TEMPORARY — Phase 3F diagnostic trace only.
+  const scanAndCacheStarted = trace.start("staking-history-service.scanAndCache", {
+    walletAddress,
+    hadCachedEntry: !!cached,
+  });
 
   try {
+    // TEMPORARY — Phase 3F diagnostic trace only.
+    const latestBlockStarted = trace.start("staking-history-reader.getLatestBlockNumber");
     const latestBlock = await stakingHistoryReader.getLatestBlockNumber();
+    trace.end("staking-history-reader.getLatestBlockNumber", latestBlockStarted, { latestBlock: latestBlock.toString() });
+
     const lookback = BigInt(MPGR_STAKING_CONFIG.historyLookbackBlocks);
     const defaultFromBlock = latestBlock > lookback ? latestBlock - lookback : 0n;
 
@@ -67,10 +78,20 @@ async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<S
 
     if (cached && fromBlock > latestBlock) {
       historyCache.set(cacheKey, { ...cached, timestamp: Date.now() });
+      // TEMPORARY — Phase 3F diagnostic trace only.
+      trace.end("staking-history-service.scanAndCache", scanAndCacheStarted, { skippedRescan: true });
       return cached.entries;
     }
 
+    // TEMPORARY — Phase 3F diagnostic trace only.
+    const fetchStarted = trace.start("staking-history-reader.fetchHistory", {
+      fromBlock: fromBlock.toString(),
+      toBlock: latestBlock.toString(),
+      blockSpan: (latestBlock - fromBlock).toString(),
+    });
     const newEvents = await stakingHistoryReader.fetchHistory(walletAddress, fromBlock, latestBlock);
+    trace.end("staking-history-reader.fetchHistory", fetchStarted, { newEventsCount: newEvents.length });
+
     const merged = mergeAndSort(cached?.entries ?? [], newEvents);
 
     historyCache.set(cacheKey, {
@@ -87,10 +108,14 @@ async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<S
       });
     }
 
+    // TEMPORARY — Phase 3F diagnostic trace only.
+    trace.end("staking-history-service.scanAndCache", scanAndCacheStarted, { mergedCount: merged.length });
     return merged;
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     logger.error("stakingHistoryService.getHistory failed", { walletAddress, error: errorMsg });
+    // TEMPORARY — Phase 3F diagnostic trace only.
+    trace.end("staking-history-service.scanAndCache", scanAndCacheStarted, { failed: true, error: errorMsg });
     return cached ? cached.entries : [];
   }
 }
@@ -105,6 +130,8 @@ export const stakingHistoryService = {
     const limit = options.limit ?? MPGR_STAKING_CONFIG.historyPageSize;
 
     if (cached && !options.forceRefresh && isCacheValid(cached)) {
+      // TEMPORARY — Phase 3F diagnostic trace only.
+      trace.mark("staking-history-service cache HIT", { walletAddress });
       return cached.entries.slice(0, limit);
     }
 
@@ -116,10 +143,16 @@ export const stakingHistoryService = {
     // reliably see each other.
     const existingScan = inFlightScans.get(cacheKey);
     if (existingScan) {
+      // TEMPORARY — Phase 3F diagnostic trace only. Confirms/denies
+      // dedup: this line firing means a second concurrent caller
+      // correctly joined the in-flight scan instead of starting a new one.
+      trace.mark("staking-history-service DEDUP HIT (joined in-flight scan)", { walletAddress });
       const merged = await existingScan;
       return merged.slice(0, limit);
     }
 
+    // TEMPORARY — Phase 3F diagnostic trace only.
+    trace.mark("staking-history-service cache MISS, starting new scan", { walletAddress, forceRefresh: options.forceRefresh });
     const scanPromise = scanAndCache(walletAddress, cacheKey).finally(() => {
       inFlightScans.delete(cacheKey);
     });
