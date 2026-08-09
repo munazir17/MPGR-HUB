@@ -9,6 +9,8 @@ import { stakedEventAbiItem, unstakedEventAbiItem, rewardPaidEventAbiItem } from
 import { withRetry } from "@/lib/token/rpc-retry";
 import { logger } from "@/lib/architecture/core/logger";
 import type { StakingHistoryEvent, StakingHistoryEventKind } from "./staking-types";
+// TEMPORARY — Phase 3F diagnostic trace only. See lib/_debug/reward-hub-trace.ts.
+import { trace } from "@/lib/_debug/reward-hub-trace";
 
 interface DecodedStakingLog extends Log {
   args: {
@@ -34,16 +36,26 @@ function getViemClient() {
   return client;
 }
 
+// TEMPORARY — Phase 3F diagnostic trace only.
+let getBlockCallCount = 0;
+export function __resetGetBlockCallCount(): void {
+  getBlockCallCount = 0;
+}
+
 async function getBlockTimestampMs(blockNumber: bigint): Promise<number> {
   const cached = blockTimestampCache.get(blockNumber);
   if (cached !== undefined) return cached;
 
   const client = getViemClient();
+  // TEMPORARY — Phase 3F diagnostic trace only.
+  getBlockCallCount += 1;
+  const started = trace.start(`getBlock:${blockNumber}`);
   const block = await withRetry(
     `stakingHistoryReader.getBlock:${blockNumber}`,
     () => getBlock(client, { blockNumber }),
     MPGR_STAKING_CONFIG.retry
   );
+  trace.end(`getBlock:${blockNumber}`, started);
   const timestampMs = Number(block.timestamp) * 1000;
   blockTimestampCache.set(blockNumber, timestampMs);
   return timestampMs;
@@ -73,10 +85,20 @@ async function scanEventKind(
     chunkStart = chunkEnd + 1n;
   }
 
+  // TEMPORARY — Phase 3F diagnostic trace only.
+  const kindStarted = trace.start(`${kind} scan`, {
+    totalChunks: ranges.length,
+    totalBatches: Math.ceil(ranges.length / concurrency),
+    concurrency,
+  });
+
   const results: DecodedStakingLog[] = [];
 
   for (let i = 0; i < ranges.length; i += concurrency) {
     const batch = ranges.slice(i, i + concurrency);
+    const batchIndex = i / concurrency;
+    // TEMPORARY — Phase 3F diagnostic trace only.
+    const batchStarted = trace.start(`${kind} scan batch ${batchIndex}`, { chunksInBatch: batch.length });
     const batchResults = await Promise.all(
       batch.map(async ([batchChunkStart, batchChunkEnd]) => {
         try {
@@ -104,11 +126,16 @@ async function scanEventKind(
         }
       })
     );
+    // TEMPORARY — Phase 3F diagnostic trace only.
+    trace.end(`${kind} scan batch ${batchIndex}`, batchStarted);
 
     for (const logs of batchResults) {
       results.push(...logs);
     }
   }
+
+  // TEMPORARY — Phase 3F diagnostic trace only.
+  trace.end(`${kind} scan`, kindStarted, { logs: results.length });
 
   return results;
 }
@@ -146,19 +173,39 @@ export const stakingHistoryReader = {
   ): Promise<StakingHistoryEvent[]> {
     if (fromBlock > toBlock) return [];
 
+    // TEMPORARY — Phase 3F diagnostic trace only.
+    __resetGetBlockCallCount();
+    const fetchStarted = trace.start("fetchHistory internal", {
+      fromBlock: fromBlock.toString(),
+      toBlock: toBlock.toString(),
+    });
+    trace.rpcSnapshot("fetchHistory internal BEFORE scans");
+
     try {
+      const scansStarted = trace.start("all scanEventKind (Staked/Unstaked/RewardPaid, parallel)");
       const scans = await Promise.all(
         EVENTS.map(({ kind, item }) => scanEventKind(walletAddress, kind, item, fromBlock, toBlock))
       );
+      trace.end("all scanEventKind (Staked/Unstaked/RewardPaid, parallel)", scansStarted);
+      trace.rpcSnapshot("fetchHistory internal AFTER scans, BEFORE timestamp phase");
 
       const decoded = EVENTS.flatMap(({ kind }, i) =>
         scans[i].filter((log) => log.blockNumber !== null).map((log) => ({ log, kind }))
       );
 
       const uniqueBlocks = [...new Set(decoded.map(({ log }) => log.blockNumber as bigint))];
+      // TEMPORARY — Phase 3F diagnostic trace only.
+      const timestampPhaseStarted = trace.start("timestamp phase (getBlockTimestampMs fan-out)", {
+        uniqueBlocks: uniqueBlocks.length,
+      });
       const timestampEntries = await Promise.all(
         uniqueBlocks.map(async (blockNumber) => [blockNumber, await getBlockTimestampMs(blockNumber)] as const)
       );
+      trace.end("timestamp phase (getBlockTimestampMs fan-out)", timestampPhaseStarted, {
+        uniqueBlocks: uniqueBlocks.length,
+        getBlockCallCount,
+      });
+      trace.rpcSnapshot("fetchHistory internal AFTER timestamp phase");
       const timestampsByBlock = new Map(timestampEntries);
 
       const events = decoded.map(({ log, kind }) => {
@@ -175,6 +222,8 @@ export const stakingHistoryReader = {
       }
       deduped.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
 
+      // TEMPORARY — Phase 3F diagnostic trace only.
+      trace.end("fetchHistory internal", fetchStarted, { eventCount: deduped.length, uniqueBlocks: uniqueBlocks.length });
       return deduped;
     } catch (err) {
       logger.error("stakingHistoryReader.fetchHistory failed", {
@@ -183,6 +232,8 @@ export const stakingHistoryReader = {
         toBlock: toBlock.toString(),
         error: err instanceof Error ? err.message : String(err),
       });
+      // TEMPORARY — Phase 3F diagnostic trace only.
+      trace.end("fetchHistory internal", fetchStarted, { failed: true });
       return [];
     }
   },
