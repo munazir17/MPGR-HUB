@@ -2,7 +2,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount } from "wagmi";
 import { rewardService } from "@/lib/rewards/reward-service";
 import { claimAllRewards, claimReward } from "@/lib/rewards-engine";
@@ -22,6 +22,22 @@ import { trace } from "@/lib/_debug/reward-hub-trace";
 // This file contains trace.start/end/mark calls only.
 // No production behavior, reward logic, staking logic, or UI behavior
 // is intentionally changed by the instrumentation.
+//
+// Phase 3F perf fix (measured-evidence pass) — loadingRef below:
+// stakingHistoryService's inFlightScans already dedupes the history scan
+// itself, but nothing previously stopped a second load() (from the
+// liveReadPollingIntervalMs timer, or a staking_changed/rewards_claimed
+// event) from re-running the WHOLE aggregation while an earlier load()
+// for the same address was still in flight — including a fresh
+// stakingService.getWalletState() RPC call, which has no in-flight dedup
+// of its own. Measured trace evidence showed exactly this: a polling
+// "load START" firing while the initial cold-load scan was still running,
+// adding extra concurrent RPC load on top of an already rate-limited
+// endpoint. loadingRef is a simple per-address in-flight guard: if a
+// load() for this hook instance is already running, a second call is a
+// same-address, whole-aggregation, RPC-hitting call — this defers to the
+// running one instead of duplicating that work. It resolves once the
+// in-flight load finishes and its result lands in state as normal.
 
 interface UseRewardHubReturn {
   summary: RewardHubSummary | null;
@@ -53,10 +69,23 @@ export function useRewardHub(): UseRewardHubReturn {
   const [error, setError] = useState<string | null>(null);
   const [claimingId, setClaimingId] = useState<string | null>(null);
   const [claimingAll, setClaimingAll] = useState(false);
+  // Phase 3F perf fix — in-flight guard, see comment above the imports.
+  const loadingRef = useRef(false);
 
   const load = useCallback(
     async (limit: number, forceRefresh: boolean) => {
       if (!address) return;
+
+      // Phase 3F perf fix — a load for this address is already running;
+      // skip this call rather than re-running the whole aggregation
+      // (including an un-deduped stakingService.getWalletState() RPC
+      // call) on top of it. The in-flight load will update state when it
+      // resolves.
+      if (loadingRef.current) {
+        trace.mark("load SKIPPED (already in flight)", { address });
+        return;
+      }
+      loadingRef.current = true;
 
       const loadStarted = trace.start("load", {
         address,
@@ -117,6 +146,9 @@ export function useRewardHub(): UseRewardHubReturn {
         trace.end("load", loadStarted, {
           address,
         });
+        // Phase 3F perf fix — release the guard so the next call site
+        // (poll, event, manual refresh) can run normally.
+        loadingRef.current = false;
       }
     },
     [address]
