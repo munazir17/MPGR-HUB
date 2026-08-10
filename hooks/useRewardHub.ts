@@ -9,7 +9,6 @@ import { claimAllRewards, claimReward } from "@/lib/rewards-engine";
 import { agentEventBus } from "@/lib/architecture/core/event-bus";
 import { MPGR_REWARDS_CONFIG } from "@/lib/rewards/reward-config";
 import type { RewardClaimHistoryEntry, RewardHubSummary } from "@/lib/rewards/reward-types";
-import { trace } from "@/lib/_debug/reward-hub-trace";
 
 // Phase 3F Part 1 — useRewardHub Hook.
 //
@@ -18,26 +17,22 @@ import { trace } from "@/lib/_debug/reward-hub-trace";
 // immediately off two events — the existing "staking_changed" and
 // "rewards_claimed" events.
 //
-// TEMPORARY DIAGNOSTIC INSTRUMENTATION:
-// This file contains trace.start/end/mark calls only.
-// No production behavior, reward logic, staking logic, or UI behavior
-// is intentionally changed by the instrumentation.
-//
-// Phase 3F perf fix (measured-evidence pass) — loadingRef below:
+// Phase 3F perf fix — loadingRef below:
 // stakingHistoryService's inFlightScans already dedupes the history scan
 // itself, but nothing previously stopped a second load() (from the
 // liveReadPollingIntervalMs timer, or a staking_changed/rewards_claimed
 // event) from re-running the WHOLE aggregation while an earlier load()
 // for the same address was still in flight — including a fresh
 // stakingService.getWalletState() RPC call, which has no in-flight dedup
-// of its own. Measured trace evidence showed exactly this: a polling
-// "load START" firing while the initial cold-load scan was still running,
-// adding extra concurrent RPC load on top of an already rate-limited
-// endpoint. loadingRef is a simple per-address in-flight guard: if a
-// load() for this hook instance is already running, a second call is a
-// same-address, whole-aggregation, RPC-hitting call — this defers to the
-// running one instead of duplicating that work. It resolves once the
-// in-flight load finishes and its result lands in state as normal.
+// of its own. Measured trace evidence during diagnosis showed exactly
+// this: a polling load firing while the initial cold-load scan was still
+// running, adding extra concurrent RPC load on top of an already
+// rate-limited endpoint. loadingRef is a simple per-address in-flight
+// guard: if a load() for this hook instance is already running, a second
+// call is a same-address, whole-aggregation, RPC-hitting call — this
+// defers to the running one instead of duplicating that work. It resolves
+// once the in-flight load finishes and its result lands in state as
+// normal.
 
 interface UseRewardHubReturn {
   summary: RewardHubSummary | null;
@@ -82,55 +77,19 @@ export function useRewardHub(): UseRewardHubReturn {
       // call) on top of it. The in-flight load will update state when it
       // resolves.
       if (loadingRef.current) {
-        trace.mark("load SKIPPED (already in flight)", { address });
         return;
       }
       loadingRef.current = true;
 
-      const loadStarted = trace.start("load", {
-        address,
-        limit,
-        forceRefresh,
-      });
-
       try {
         const [summaryResult, historyResult] = await Promise.all([
-          (async () => {
-            const started = trace.start("getRewardHubSummary", {
-              address,
-              forceRefresh,
-            });
-
-            const result = await rewardService.getRewardHubSummary(address, {
-              forceRefresh,
-            });
-
-            trace.end("getRewardHubSummary", started, {
-              address,
-            });
-
-            return result;
-          })(),
-
-          (async () => {
-            const started = trace.start("getRewardHistory", {
-              address,
-              limit,
-              forceRefresh,
-            });
-
-            const result = await rewardService.getRewardHistory(address, {
-              limit,
-              forceRefresh,
-            });
-
-            trace.end("getRewardHistory", started, {
-              address,
-              limit,
-            });
-
-            return result;
-          })(),
+          rewardService.getRewardHubSummary(address, {
+            forceRefresh,
+          }),
+          rewardService.getRewardHistory(address, {
+            limit,
+            forceRefresh,
+          }),
         ]);
 
         setSummary(summaryResult);
@@ -143,9 +102,6 @@ export function useRewardHub(): UseRewardHubReturn {
             : "Failed to load reward data."
         );
       } finally {
-        trace.end("load", loadStarted, {
-          address,
-        });
         // Phase 3F perf fix — release the guard so the next call site
         // (poll, event, manual refresh) can run normally.
         loadingRef.current = false;
@@ -166,10 +122,6 @@ export function useRewardHub(): UseRewardHubReturn {
 
     setHistoryPageSize(MPGR_REWARDS_CONFIG.historyPageSize);
 
-    trace.mark("load call site: initial mount effect", {
-      address,
-    });
-
     load(MPGR_REWARDS_CONFIG.historyPageSize, false).finally(() =>
       setHasLoaded(true)
     );
@@ -179,10 +131,6 @@ export function useRewardHub(): UseRewardHubReturn {
     if (!isConnected || !address) return;
 
     const id = setInterval(() => {
-      trace.mark("load call site: polling interval", {
-        address,
-      });
-
       load(historyPageSize, true);
     }, MPGR_REWARDS_CONFIG.liveReadPollingIntervalMs);
 
@@ -197,10 +145,6 @@ export function useRewardHub(): UseRewardHubReturn {
 
         rewardService.clearCache(address);
 
-        trace.mark("load call site: staking_changed event", {
-          address,
-        });
-
         void load(historyPageSize, true);
       }
     );
@@ -211,10 +155,6 @@ export function useRewardHub(): UseRewardHubReturn {
         if (!address || payload.address !== address) return;
 
         rewardService.clearCache(address);
-
-        trace.mark("load call site: rewards_claimed event", {
-          address,
-        });
 
         void load(historyPageSize, true);
       }
