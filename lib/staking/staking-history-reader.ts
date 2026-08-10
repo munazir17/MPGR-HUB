@@ -2,8 +2,7 @@
 
 import { getClient } from "wagmi/actions";
 import { getBlock, getBlockNumber, getLogs } from "viem/actions";
-import { decodeEventLog, encodeEventTopics } from "viem";
-import type { Address, Hex, Log } from "viem";
+import type { Address } from "viem";
 import { config } from "@/lib/wagmi";
 import { MPGR_STAKING_CONFIG } from "./staking-config";
 import { stakedEventAbiItem, unstakedEventAbiItem, rewardPaidEventAbiItem } from "./staking-events-abi";
@@ -13,7 +12,7 @@ import type { StakingHistoryEvent, StakingHistoryEventKind } from "./staking-typ
 // TEMPORARY — Phase 3F diagnostic trace only. See lib/_debug/reward-hub-trace.ts.
 import { trace } from "@/lib/_debug/reward-hub-trace";
 
-// Phase 3F perf fix (measured-evidence pass, raw-topic revision).
+// Phase 3F perf fix (measured-evidence pass, events-without-args revision).
 //
 // Previously this file called scanEventKind() three times — once per event
 // kind, each running its own independent 100-chunk scan, all three fired
@@ -24,40 +23,41 @@ import { trace } from "@/lib/_debug/reward-hub-trace";
 // getting 429'd by mainnet.base.org, with retry/backoff consuming the
 // ~40-55s cold load.
 //
-// A first attempt to combine the three scans used viem's getLogs()
-// `events` (plural) + `args` parameters, which failed to type-check: this
-// project's installed viem version can only infer the `args` filter shape
-// against a single event ABI — passing multiple distinct AbiEvent objects
-// via `events` collapses the allowed `args` type to `undefined`, even
-// though the RPC method itself supports multi-event filtering fine.
+// Two combined-scan approaches were tried and rejected by this project's
+// installed viem version (2.55.10) before this one:
+//   1. getLogs({ events: [...], args: { user } }) — viem's typed getLogs
+//      infers the `args` filter shape against a single event ABI; passing
+//      multiple distinct AbiEvent objects via `events` collapses the
+//      allowed `args` type to `undefined`, so `{ user: walletAddress }`
+//      isn't assignable. This is a hard constraint of the `events`
+//      overload in this version, not a narrow-typing gap.
+//   2. getLogs({ topics: [...] }) — viem's typed getLogs action doesn't
+//      expose a raw `topics` parameter at all; its parameter type is a
+//      closed union of {address, event?, events?, args?, strict?}
+//      variants, none of which include `topics`.
 //
-// This revision achieves the same combined-scan result using viem's raw
-// `topics` filter instead, which types unambiguously regardless of event
-// count:
-//   topics[0] = [topic0(Staked), topic0(Unstaked), topic0(RewardPaid)]
-//     -> an array at a topic position is an OR match in eth_getLogs.
-//   topics[1] = the wallet's indexed `user` topic (identical for all three
-//     events, since all three declare `user` as their sole indexed
-//     parameter at the same position)
-//     -> a single value at a topic position is an AND match.
-// Combined: "(Staked OR Unstaked OR RewardPaid) AND user == this wallet" —
-// byte-identical filtering to three separate calls, server-side, in one
-// request per chunk. Each topic is computed via encodeEventTopics() called
-// once per event (single-event calls, so fully typed, no ambiguity) so the
-// encoded address bytes are guaranteed identical to what the original
-// per-event calls produced.
+// This revision uses `events: [...]` WITHOUT `args` — the one combined
+// shape this project's build has already proven it accepts (the very
+// first build error was specifically about `args`, not about `events`
+// itself being rejected). getLogs() returns logs filtered server-side by
+// event signature (Staked OR Unstaked OR RewardPaid) and auto-decoded
+// into `{ eventName, args }`. The wallet filter, which can no longer ride
+// along as `args` on this call, is applied immediately after as a plain
+// equality check on the already-decoded `args.user` — the same
+// comparison `args: { user }` would have made, evaluated in-process
+// instead of server-side.
 //
-// Returned logs are undecoded (raw topics filtering doesn't auto-decode),
-// so each is decoded via decodeEventLog() against all three event ABIs at
-// once — viem picks the matching event by topic0 — wrapped in try/catch so
-// a single bad log is skipped and logged rather than aborting the scan,
-// matching the existing failed-chunk philosophy.
+// Tradeoff: each chunk request now returns Staked/Unstaked/RewardPaid logs
+// for ALL stakers in that block range, not just this wallet, filtered down
+// immediately after decode. This does not change request count (~100) or
+// concurrency (8) — the measured 429 cause — only response payload size
+// per chunk, which scales with total protocol-wide staking activity in
+// that range rather than just this wallet's.
 //
 // Same lookback, same chunk size, same historyChunkConcurrency value, same
-// event/block coverage, same wallet filter — only the number of RPC round
-// trips changes: ~300 -> ~100 total, peak concurrent requests 24 -> 8.
-
-const STAKING_EVENT_ABI = [stakedEventAbiItem, unstakedEventAbiItem, rewardPaidEventAbiItem] as const;
+// event coverage, same wallet filtering result (server-side -> in-process
+// equality check) — only the number of RPC round trips changes: ~300 ->
+// ~100 total, peak concurrent requests 24 -> 8.
 
 interface ScannedStakingEvent {
   kind: StakingHistoryEventKind;
@@ -109,47 +109,13 @@ async function getBlockTimestampMs(blockNumber: bigint): Promise<number> {
   return timestampMs;
 }
 
-// Decodes a single raw log against all three staking event ABIs at once
-// (viem matches by topic0 internally) and extracts the amount/reward field
-// per kind, exactly as the previous per-event toHistoryEvent() did. Returns
-// null (rather than throwing) for a log that doesn't decode against any of
-// the three — logged and skipped by the caller, scan continues.
-function decodeStakingLog(log: Log): ScannedStakingEvent | null {
-  if (log.blockNumber === null) return null;
-
-  try {
-    const decoded = decodeEventLog({
-      abi: STAKING_EVENT_ABI,
-      data: log.data,
-      topics: log.topics,
-    });
-
-    const amount = decoded.eventName === "RewardPaid" ? decoded.args.reward : decoded.args.amount;
-
-    return {
-      kind: decoded.eventName,
-      amount: amount ?? 0n,
-      txHash: (log.transactionHash ?? "0x0") as `0x${string}`,
-      blockNumber: log.blockNumber,
-      logIndex: log.logIndex ?? 0,
-    };
-  } catch (err) {
-    logger.error("stakingHistoryReader.decodeStakingLog failed, skipping log", {
-      txHash: log.transactionHash,
-      logIndex: log.logIndex,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
-}
-
-// Phase 3F perf fix (measured-evidence pass, raw-topic revision). See the
-// file-level comment above for full rationale. Same 100 chunks, same
-// historyChunkConcurrency-bounded batching, same fromBlock/toBlock range,
-// same per-wallet filter (now via raw topics rather than viem's `args`
-// sugar, producing byte-identical filtering), same retry wrapper, same
-// "failed chunk logs and contributes nothing rather than aborting the
-// scan" behavior.
+// Phase 3F perf fix (measured-evidence pass, events-without-args revision).
+// See the file-level comment above for full rationale. Same 100 chunks,
+// same historyChunkConcurrency-bounded batching, same fromBlock/toBlock
+// range, same retry wrapper, same "failed chunk logs and contributes
+// nothing rather than aborting the scan" behavior. Wallet filtering is
+// applied in-process immediately after each chunk's decode (see rationale
+// above) rather than as a server-side `args` filter.
 async function scanAllEvents(
   walletAddress: Address,
   fromBlock: bigint,
@@ -158,50 +124,7 @@ async function scanAllEvents(
   const client = getViemClient();
   const chunkSize = BigInt(MPGR_STAKING_CONFIG.historyChunkSize);
   const concurrency = Math.max(1, MPGR_STAKING_CONFIG.historyChunkConcurrency);
-
-  // Each encodeEventTopics call is single-event (fully typed, unambiguous,
-  // same pattern as the original per-event scan calls) — only the raw
-  // topic0/topic1 hex values are merged afterward, at the untyped hex
-  // level, which is always type-safe.
-  const stakedTopics = encodeEventTopics({
-    abi: [stakedEventAbiItem],
-    eventName: "Staked",
-    args: { user: walletAddress },
-  });
-  const unstakedTopics = encodeEventTopics({
-    abi: [unstakedEventAbiItem],
-    eventName: "Unstaked",
-    args: { user: walletAddress },
-  });
-  const rewardPaidTopics = encodeEventTopics({
-    abi: [rewardPaidEventAbiItem],
-    eventName: "RewardPaid",
-    args: { user: walletAddress },
-  });
-
-  const stakedTopic0 = stakedTopics[0];
-  const unstakedTopic0 = unstakedTopics[0];
-  const rewardPaidTopic0 = rewardPaidTopics[0];
-  // `user` is the sole indexed parameter on all three events at the same
-  // position, so this is the same wallet topic for all of them — take it
-  // from any one of the three encoded results. encodeEventTopics() types
-  // an indexed-argument position as `Hex | Hex[] | null` in general (it
-  // supports OR-filtering multiple values there), even though a single
-  // concrete address argument — as passed above — always produces a
-  // single Hex at runtime. Narrow that with a real runtime check rather
-  // than asserting past it, so an actual shape mismatch would fail loudly
-  // instead of silently miscoding the wallet filter.
-  const rawUserTopic = stakedTopics[1];
-
-  if (!stakedTopic0 || !unstakedTopic0 || !rewardPaidTopic0 || !rawUserTopic) {
-    throw new Error("stakingHistoryReader.scanAllEvents: failed to encode event topics");
-  }
-  if (Array.isArray(rawUserTopic)) {
-    throw new Error("stakingHistoryReader.scanAllEvents: expected a single user topic, got an array");
-  }
-  const userTopic: Hex = rawUserTopic;
-
-  const combinedTopics: [Hex[], Hex] = [[stakedTopic0, unstakedTopic0, rewardPaidTopic0], userTopic];
+  const walletLower = walletAddress.toLowerCase();
 
   const ranges: [bigint, bigint][] = [];
   let chunkStart = fromBlock;
@@ -235,20 +158,22 @@ async function scanAllEvents(
             () =>
               getLogs(client, {
                 address: MPGR_STAKING_CONFIG.address,
-                topics: combinedTopics,
+                events: [stakedEventAbiItem, unstakedEventAbiItem, rewardPaidEventAbiItem],
                 fromBlock: batchChunkStart,
                 toBlock: batchChunkEnd,
               }),
             MPGR_STAKING_CONFIG.retry
           );
-          return logs;
+          // In-process wallet filter — see file-level comment for why
+          // this can't ride along as a server-side `args` filter here.
+          return logs.filter((log) => log.args.user?.toLowerCase() === walletLower);
         } catch (err) {
           logger.error("stakingHistoryReader.scanAllEvents chunk failed, skipping chunk", {
             chunkStart: batchChunkStart.toString(),
             chunkEnd: batchChunkEnd.toString(),
             error: err instanceof Error ? err.message : String(err),
           });
-          return [] as Log[];
+          return [];
         }
       })
     );
@@ -257,8 +182,14 @@ async function scanAllEvents(
 
     for (const logs of batchResults) {
       for (const log of logs) {
-        const decoded = decodeStakingLog(log);
-        if (decoded) results.push(decoded);
+        if (log.blockNumber === null) continue;
+        results.push({
+          kind: log.eventName,
+          amount: log.eventName === "RewardPaid" ? log.args.reward ?? 0n : log.args.amount ?? 0n,
+          txHash: (log.transactionHash ?? "0x0") as `0x${string}`,
+          blockNumber: log.blockNumber,
+          logIndex: log.logIndex ?? 0,
+        });
       }
     }
   }
