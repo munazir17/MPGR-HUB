@@ -26,11 +26,10 @@ import { trace } from "@/lib/_debug/reward-hub-trace";
 //
 // A first attempt to combine the three scans used viem's getLogs()
 // `events` (plural) + `args` parameters, which failed to type-check: this
-// project's installed viem version (^2.21.19) can only infer the `args`
-// filter shape against a single event ABI — passing multiple distinct
-// AbiEvent objects via `events` collapses the allowed `args` type to
-// `undefined`, even though the RPC method itself supports multi-event
-// filtering fine.
+// project's installed viem version can only infer the `args` filter shape
+// against a single event ABI — passing multiple distinct AbiEvent objects
+// via `events` collapses the allowed `args` type to `undefined`, even
+// though the RPC method itself supports multi-event filtering fine.
 //
 // This revision achieves the same combined-scan result using viem's raw
 // `topics` filter instead, which types unambiguously regardless of event
@@ -185,12 +184,22 @@ async function scanAllEvents(
   const rewardPaidTopic0 = rewardPaidTopics[0];
   // `user` is the sole indexed parameter on all three events at the same
   // position, so this is the same wallet topic for all of them — take it
-  // from any one of the three encoded results.
-  const userTopic = stakedTopics[1];
+  // from any one of the three encoded results. encodeEventTopics() types
+  // an indexed-argument position as `Hex | Hex[] | null` in general (it
+  // supports OR-filtering multiple values there), even though a single
+  // concrete address argument — as passed above — always produces a
+  // single Hex at runtime. Narrow that with a real runtime check rather
+  // than asserting past it, so an actual shape mismatch would fail loudly
+  // instead of silently miscoding the wallet filter.
+  const rawUserTopic = stakedTopics[1];
 
-  if (!stakedTopic0 || !unstakedTopic0 || !rewardPaidTopic0 || !userTopic) {
+  if (!stakedTopic0 || !unstakedTopic0 || !rewardPaidTopic0 || !rawUserTopic) {
     throw new Error("stakingHistoryReader.scanAllEvents: failed to encode event topics");
   }
+  if (Array.isArray(rawUserTopic)) {
+    throw new Error("stakingHistoryReader.scanAllEvents: expected a single user topic, got an array");
+  }
+  const userTopic: Hex = rawUserTopic;
 
   const combinedTopics: [Hex[], Hex] = [[stakedTopic0, unstakedTopic0, rewardPaidTopic0], userTopic];
 
