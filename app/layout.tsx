@@ -9,6 +9,11 @@ export const metadata: Metadata = {
   title: "MPGR HUB — The Home of MoneyPaiger Ecosystem",
   description:
     "MPGR HUB: quests, XP, leaderboards, staking, and the MoneyPaiger ecosystem on Base.",
+
+  other: {
+    "base:app_id": "6a79d1c8d198f685bc61e308",
+  },
+
   openGraph: {
     title: "MPGR HUB",
     description: "The Home of MoneyPaiger Ecosystem",
