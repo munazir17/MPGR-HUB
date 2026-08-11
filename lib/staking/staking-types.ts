@@ -131,6 +131,12 @@ export interface StakingHistoryCacheEntry {
   timestamp: number;
   ttl: number;
   lastBlockScanned: bigint;
+  // Phase 3G — incremental backward backfill. The oldest block number
+  // covered by `entries` so far. Starts at the initial-window floor on
+  // first scan and walks backward by historyBackfillStepBlocks on each
+  // subsequent call until it reaches the historyLookbackBlocks horizon.
+  // See staking-history-service.ts's scanAndCache for the full strategy.
+  earliestBlockScanned: bigint;
 }
 
 export type { Address, Hash };
