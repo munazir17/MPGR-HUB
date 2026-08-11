@@ -58,6 +58,32 @@ import { trace } from "@/lib/_debug/reward-hub-trace";
 // event coverage, same wallet filtering result (server-side -> in-process
 // equality check) — only the number of RPC round trips changes: ~300 ->
 // ~100 total, peak concurrent requests 24 -> 8.
+//
+// Phase 3G addendum — Alchemy Free-tier compatibility. historyChunkSize is
+// now 10 (Alchemy's Base free-tier eth_getLogs range cap), and
+// historyChunkConcurrency is 4. Neither the request-building loop above
+// nor the per-chunk logic below changed for this — both already derived
+// entirely from MPGR_STAKING_CONFIG. What's new is the CU-budget pacing
+// sleep at the end of each batch (see below), added because 10-block
+// chunks mean many more requests than before, and a fast network could
+// otherwise submit them faster than the account's real throughput budget
+// allows. staking-history-service.ts also changed, to call this function
+// with progressively larger ranges (an initial window, then backward
+// backfill steps) instead of the full historyLookbackBlocks span in one
+// call — this file's scanning logic itself is unaware of that; it always
+// just scans whatever [fromBlock, toBlock] it's given.
+//
+// Phase 3H — completeness signal (correctness fix). scanAllEvents() and
+// fetchHistory() now return { events, complete } instead of a bare array.
+// A chunk that exhausts withRetry, or a per-block timestamp lookup that
+// exhausts withRetry, no longer silently resolves to "zero events for
+// that piece" indistinguishable from a genuinely empty range — it flips
+// `complete` to false while still returning everything that DID succeed.
+// staking-history-service.ts uses this to decide whether it's safe to
+// advance lastBlockScanned/earliestBlockScanned; see that file's
+// scanAndCache for the consuming logic. No change to which events get
+// returned on success, no change to retry behavior (still the single
+// withRetry authority), no change to chunk size/concurrency/pacing.
 
 interface ScannedStakingEvent {
   kind: StakingHistoryEventKind;
@@ -65,6 +91,13 @@ interface ScannedStakingEvent {
   txHash: `0x${string}`;
   blockNumber: bigint;
   logIndex: number;
+}
+
+// Phase 3G — CU-budget batch pacing. Self-contained (not imported from
+// rpc-retry.ts) since this paces the scan's request-submission rate, a
+// different concern from that file's per-call retry/backoff.
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const blockTimestampCache = new Map<bigint, number>();
@@ -116,11 +149,23 @@ async function getBlockTimestampMs(blockNumber: bigint): Promise<number> {
 // nothing rather than aborting the scan" behavior. Wallet filtering is
 // applied in-process immediately after each chunk's decode (see rationale
 // above) rather than as a server-side `args` filter.
+// Phase 3H — result shape for scanAllEvents/fetchHistory. `complete: false`
+// means at least one chunk (or, in fetchHistory, a block timestamp lookup)
+// failed after exhausting withRetry's attempts. `events` still contains
+// everything that DID succeed — never discarded — but callers in
+// staking-history-service.ts must not advance a scan-boundary pointer
+// across an incomplete range. See that file's scanAndCache for how this
+// is used.
+interface ScanResult<T> {
+  events: T[];
+  complete: boolean;
+}
+
 async function scanAllEvents(
   walletAddress: Address,
   fromBlock: bigint,
   toBlock: bigint
-): Promise<ScannedStakingEvent[]> {
+): Promise<ScanResult<ScannedStakingEvent>> {
   const client = getViemClient();
   const chunkSize = BigInt(MPGR_STAKING_CONFIG.historyChunkSize);
   const concurrency = Math.max(1, MPGR_STAKING_CONFIG.historyChunkConcurrency);
@@ -142,12 +187,17 @@ async function scanAllEvents(
   });
 
   const results: ScannedStakingEvent[] = [];
+  // Phase 3H — starts true; any chunk that exhausts withRetry and lands
+  // in the catch below flips it to false and stays false for the rest of
+  // this call. Never flipped back to true.
+  let complete = true;
 
   for (let i = 0; i < ranges.length; i += concurrency) {
     const batch = ranges.slice(i, i + concurrency);
     const batchIndex = i / concurrency;
     // TEMPORARY — Phase 3F diagnostic trace only.
     const batchStarted = trace.start(`combined scan batch ${batchIndex}`, { chunksInBatch: batch.length });
+    const batchWallStart = Date.now();
     const batchResults = await Promise.all(
       batch.map(async ([batchChunkStart, batchChunkEnd]) => {
         try {
@@ -168,11 +218,16 @@ async function scanAllEvents(
           // this can't ride along as a server-side `args` filter here.
           return logs.filter((log) => log.args.user?.toLowerCase() === walletLower);
         } catch (err) {
-          logger.error("stakingHistoryReader.scanAllEvents chunk failed, skipping chunk", {
+          logger.error("stakingHistoryReader.scanAllEvents chunk failed after retries, marking range incomplete", {
             chunkStart: batchChunkStart.toString(),
             chunkEnd: batchChunkEnd.toString(),
             error: err instanceof Error ? err.message : String(err),
           });
+          // Phase 3H — this chunk's range is NOT confirmed scanned. Return
+          // no events for it (never fabricate what it might have
+          // contained), but the caller must not treat the requested
+          // [fromBlock, toBlock] as fully covered because of this.
+          complete = false;
           return [];
         }
       })
@@ -192,6 +247,26 @@ async function scanAllEvents(
         });
       }
     }
+
+    // Phase 3G — CU-budget pacing. Alchemy Free tier's account-wide
+    // throughput cap is historyMaxCuPerSecond (see staking-config.ts);
+    // eth_getLogs costs historyGetLogsCuCostEstimate CU each. Without
+    // this, a fast network (low round-trip time) would submit batches
+    // faster than the account's real throughput budget and trigger
+    // avoidable 429 throttling — the retry layer would then mask it,
+    // but at the cost of extra wall-clock time and requests. This makes
+    // the scan self-limiting instead: if a batch's own round trip
+    // already took longer than the budget requires, no extra wait is
+    // added; only the shortfall is slept.
+    const minBatchIntervalMs = Math.ceil(
+      (batch.length * MPGR_STAKING_CONFIG.historyGetLogsCuCostEstimate /
+        MPGR_STAKING_CONFIG.historyMaxCuPerSecond) *
+        1000
+    );
+    const batchElapsedMs = Date.now() - batchWallStart;
+    if (batchElapsedMs < minBatchIntervalMs) {
+      await sleep(minBatchIntervalMs - batchElapsedMs);
+    }
   }
 
   // TEMPORARY — Phase 3F diagnostic trace only.
@@ -201,9 +276,10 @@ async function scanAllEvents(
     unstaked: results.filter((e) => e.kind === "Unstaked").length,
     rewardPaid: results.filter((e) => e.kind === "RewardPaid").length,
     getLogsCallCount,
+    complete,
   });
 
-  return results;
+  return { events: results, complete };
 }
 
 export const stakingHistoryReader = {
@@ -220,8 +296,8 @@ export const stakingHistoryReader = {
     walletAddress: Address,
     fromBlock: bigint,
     toBlock: bigint
-  ): Promise<StakingHistoryEvent[]> {
-    if (fromBlock > toBlock) return [];
+  ): Promise<ScanResult<StakingHistoryEvent>> {
+    if (fromBlock > toBlock) return { events: [], complete: true };
 
     // TEMPORARY — Phase 3F diagnostic trace only.
     __resetGetBlockCallCount();
@@ -234,8 +310,13 @@ export const stakingHistoryReader = {
 
     try {
       const scansStarted = trace.start("combined scanAllEvents");
-      const scanned = await scanAllEvents(walletAddress, fromBlock, toBlock);
-      trace.end("combined scanAllEvents", scansStarted, { logs: scanned.length });
+      const scanResult = await scanAllEvents(walletAddress, fromBlock, toBlock);
+      const scanned = scanResult.events;
+      // Phase 3H — overall completeness for this fetchHistory call. Starts
+      // from scanAllEvents' getLogs-chunk result; the timestamp phase
+      // below can additionally flip it to false, but never back to true.
+      let complete = scanResult.complete;
+      trace.end("combined scanAllEvents", scansStarted, { logs: scanned.length, complete });
       trace.rpcSnapshot("fetchHistory internal AFTER scans, BEFORE timestamp phase");
 
       const uniqueBlocks = [...new Set(scanned.map((e) => e.blockNumber))];
@@ -244,6 +325,18 @@ export const stakingHistoryReader = {
       // last cold load, not a meaningful contributor to the ~40-55s total.
       // Left as-is (still bounded per-batch below), unchanged from the
       // prior diagnostic pass.
+      //
+      // Phase 3H — each lookup is now individually caught. Previously an
+      // exhausted-retries failure here was UNCAUGHT: it propagated out of
+      // Promise.all, was caught by this function's outer try/catch below,
+      // and that catch returned an empty result — discarding every event
+      // scanAllEvents had already successfully found, not just the one
+      // block's timestamp. Now a failed lookup is logged, marks the whole
+      // call incomplete (so staking-history-service retries the range),
+      // and simply leaves that block out of timestampsByBlock — the
+      // existing `?? Date.now()` fallback below already handles a missing
+      // entry, so the affected event still renders with an approximate
+      // timestamp rather than vanishing.
       const timestampConcurrency = Math.max(1, MPGR_STAKING_CONFIG.historyChunkConcurrency);
       // TEMPORARY — Phase 3F diagnostic trace only.
       const timestampPhaseStarted = trace.start("timestamp phase (getBlockTimestampMs fan-out)", {
@@ -258,11 +351,27 @@ export const stakingHistoryReader = {
         // TEMPORARY — Phase 3F diagnostic trace only.
         const batchStarted = trace.start(`timestamp phase batch ${batchIndex}`, { blocksInBatch: batch.length });
         const batchResults = await Promise.all(
-          batch.map(async (blockNumber) => [blockNumber, await getBlockTimestampMs(blockNumber)] as const)
+          batch.map(async (blockNumber) => {
+            try {
+              const timestampMs = await getBlockTimestampMs(blockNumber);
+              return { blockNumber, timestampMs: timestampMs as number | undefined };
+            } catch (err) {
+              logger.error("stakingHistoryReader.fetchHistory timestamp lookup failed after retries, marking range incomplete", {
+                blockNumber: blockNumber.toString(),
+                error: err instanceof Error ? err.message : String(err),
+              });
+              complete = false;
+              return { blockNumber, timestampMs: undefined as number | undefined };
+            }
+          })
         );
         // TEMPORARY — Phase 3F diagnostic trace only.
         trace.end(`timestamp phase batch ${batchIndex}`, batchStarted);
-        timestampEntries.push(...batchResults);
+        for (const r of batchResults) {
+          if (r.timestampMs !== undefined) {
+            timestampEntries.push([r.blockNumber, r.timestampMs] as const);
+          }
+        }
       }
       trace.end("timestamp phase (getBlockTimestampMs fan-out)", timestampPhaseStarted, {
         uniqueBlocks: uniqueBlocks.length,
@@ -297,8 +406,9 @@ export const stakingHistoryReader = {
         eventCount: deduped.length,
         uniqueBlocks: uniqueBlocks.length,
         getLogsCallCount,
+        complete,
       });
-      return deduped;
+      return { events: deduped, complete };
     } catch (err) {
       logger.error("stakingHistoryReader.fetchHistory failed", {
         walletAddress,
@@ -308,7 +418,11 @@ export const stakingHistoryReader = {
       });
       // TEMPORARY — Phase 3F diagnostic trace only.
       trace.end("fetchHistory internal", fetchStarted, { failed: true });
-      return [];
+      // Phase 3H — this path is now only reached by a genuinely
+      // unexpected error outside the per-chunk/per-timestamp handling
+      // above (e.g. getViemClient() itself failing). Always incomplete —
+      // never claim a range was scanned when this branch runs.
+      return { events: [], complete: false };
     }
   },
 } as const;
