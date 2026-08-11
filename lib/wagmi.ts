@@ -48,8 +48,21 @@ export const config = createConfig({
   connectors: [...rainbowKitConnectors, farcasterConnector],
   chains: [base],
   transports: {
+    // retryCount: 0 — viem's transport-level retry is disabled here so
+    // lib/token/rpc-retry.ts's withRetry() is the single, coordinated
+    // retry layer for every RPC call. Without this, viem's own default
+    // (retryCount: 3, exponential backoff) retries underneath withRetry's
+    // own maxAttempts, so one "logical" call (one getLogs chunk, one
+    // readContract, etc.) can produce up to ~12 real HTTP requests before
+    // withRetry ever sees a failure — amplification that's invisible to
+    // the app's own retry diagnostics but still consumes real request
+    // budget against the RPC provider, whichever URL
+    // NEXT_PUBLIC_BASE_RPC_URL points at. No change to maxAttempts,
+    // backoff strategy, or any call-site behavior — only removes the
+    // duplicate inner layer.
     [base.id]: http(
-      process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org"
+      process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org",
+      { retryCount: 0 }
     ),
   },
   ssr: true,
