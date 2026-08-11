@@ -35,13 +35,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Full-jitter backoff: delay = random(0, min(maxDelay, base * 2^attempt)).
+// Minimum backoff floor. Full jitter's random(0, exp) can round down to
+// ~0ms on early attempts, which lets a retry fire almost immediately back
+// into an endpoint that just returned an error — defeating the point of
+// backing off. A small fixed floor (well under every config's
+// baseDelayMs, so it never overrides the intended backoff curve at later
+// attempts) guarantees every retry waits at least this long, while the
+// existing random upper bound is untouched — retries still spread out
+// under a burst of simultaneous failures instead of retrying in lockstep.
+const MIN_BACKOFF_FLOOR_MS = 50;
+
+// Full-jitter backoff: delay = random(floor, min(maxDelay, base * 2^attempt)).
 // Spreads retries out over time so a burst of simultaneous failures (an
 // RPC hiccup hitting every in-flight call at once) doesn't cause every
 // caller to retry at the exact same moment and re-create the same burst.
 function computeBackoffDelay(attempt: number, options: RetryOptions): number {
   const exp = Math.min(options.maxDelayMs, options.baseDelayMs * 2 ** attempt);
-  return Math.floor(Math.random() * exp);
+  const floor = Math.min(MIN_BACKOFF_FLOOR_MS, exp);
+  return Math.floor(floor + Math.random() * (exp - floor));
 }
 
 // Runs `fn`, retrying on failure up to options.maxAttempts times with
