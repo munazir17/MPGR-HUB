@@ -4,11 +4,17 @@ import { Lock, Layers, Timer, CalendarClock } from "lucide-react";
 import { StatCard } from "@/components/ui/StatCard";
 import { formatCompactNumber } from "@/lib/format";
 
+// All four figures are derived directly from on-chain getLock() reads
+// (amount, unlockTime, withdrawn) for the connected wallet's lock ids --
+// no bonus/APY field exists on the deployed contract to show here.
+// "Avg. Days Left" replaces the old mock's "Avg. Lock Period" (which
+// depended on a per-lock creation timestamp the contract does not store).
+
 interface LockStatsProps {
   totalLocked: number;
   activeLocksCount: number;
   unlockingSoonCount: number;
-  averageLockPeriodDays: number;
+  averageLockDaysRemaining: number;
   loading?: boolean;
 }
 
@@ -16,7 +22,7 @@ export function LockStats({
   totalLocked,
   activeLocksCount,
   unlockingSoonCount,
-  averageLockPeriodDays,
+  averageLockDaysRemaining,
   loading,
 }: LockStatsProps) {
   return (
@@ -28,12 +34,7 @@ export function LockStats({
         accent="gold"
         loading={loading}
       />
-      <StatCard
-        label="Active Locks"
-        value={`${activeLocksCount}`}
-        icon={Layers}
-        loading={loading}
-      />
+      <StatCard label="Active Locks" value={`${activeLocksCount}`} icon={Layers} loading={loading} />
       <StatCard
         label="Unlocking Soon"
         value={`${unlockingSoonCount}`}
@@ -42,8 +43,8 @@ export function LockStats({
         loading={loading}
       />
       <StatCard
-        label="Avg. Lock Period"
-        value={averageLockPeriodDays > 0 ? `${averageLockPeriodDays}d` : "—"}
+        label="Avg. Days Left"
+        value={averageLockDaysRemaining > 0 ? `${averageLockDaysRemaining}d` : "—"}
         icon={CalendarClock}
         loading={loading}
       />
