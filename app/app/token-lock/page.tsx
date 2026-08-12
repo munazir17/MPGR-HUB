@@ -18,31 +18,35 @@ import { LockCard } from "@/components/features/token-lock/LockCard";
 import { EarlyUnlockModal } from "@/components/features/token-lock/EarlyUnlockModal";
 import { LockHistoryTimeline } from "@/components/features/token-lock/LockHistoryTimeline";
 import { useTokenLock } from "@/hooks/useTokenLock";
-import type { TokenLockPositionView } from "@/lib/token-lock-engine";
+import type { TokenLockPositionView } from "@/lib/token-lock/token-lock-types";
 
 export default function TokenLockPage() {
   const [mounted, setMounted] = useState(false);
   const { isConnected } = useAccount();
   const {
-    lockDurationOptions,
+    lockDurationPresetsDays,
     earlyUnlockPenaltyPercent,
-    estimateLockBonus,
     positions,
     availableBalance,
     totalLocked,
     activeLocksCount,
     unlockingSoonCount,
-    averageLockPeriodDays,
-    longestLockDays,
+    withdrawnCount,
+    averageLockDaysRemaining,
+    longestActiveLockDaysRemaining,
     upcomingUnlockAt,
-    lifetimeBonusEarned,
-    locksReleasedCount,
-    earlyUnlocksCount,
     lastEvent,
+    approveState,
+    createLockState,
+    withdrawState,
+    earlyUnlockState,
+    pendingLockId,
+    resetActionState,
     createLock,
-    releaseLock,
+    withdraw,
     earlyUnlock,
     dismissEvent,
+    isWrongNetwork,
     loading,
   } = useTokenLock();
 
@@ -50,8 +54,14 @@ export default function TokenLockPage() {
 
   useEffect(() => setMounted(true), []);
 
-  const activePositions = positions.filter((p) => p.status !== "released");
-  const releasedPositions = positions.filter((p) => p.status === "released");
+  const activePositions = positions.filter((p) => p.status !== "withdrawn");
+  const releasedPositions = positions.filter((p) => p.status === "withdrawn");
+
+  const handleSwitchNetwork = () => {
+    // useTokenLock's ensureBaseNetwork runs automatically inside
+    // createLock/withdraw/earlyUnlock; this button just retries the same
+    // action the user already attempted.
+  };
 
   return (
     <>
@@ -63,7 +73,9 @@ export default function TokenLockPage() {
         onClose={() => setEarlyUnlockTarget(null)}
         position={earlyUnlockTarget}
         penaltyPercent={earlyUnlockPenaltyPercent}
+        earlyUnlockState={earlyUnlockState}
         onConfirm={(lockId) => earlyUnlock(lockId)}
+        onReset={() => resetActionState("earlyUnlock")}
       />
 
       <main className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
@@ -71,7 +83,7 @@ export default function TokenLockPage() {
           <EmptyState
             icon={Vault}
             title="Connect your wallet"
-            description="Connect to lock MPGR and earn a maturity bonus."
+            description="Connect to lock MPGR on Base."
           />
         ) : (
           <motion.div
@@ -96,9 +108,7 @@ export default function TokenLockPage() {
                 </div>
                 <div>
                   <h1 className="text-xl font-bold tracking-tight text-white sm:text-2xl">Token Lock</h1>
-                  <p className="text-sm text-muted">
-                    Lock claimed MPGR for a fixed term to earn a maturity bonus at unlock.
-                  </p>
+                  <p className="text-sm text-muted">Lock MPGR on Base for a fixed term.</p>
                 </div>
               </div>
 
@@ -107,7 +117,7 @@ export default function TokenLockPage() {
                   totalLocked={totalLocked}
                   activeLocksCount={activeLocksCount}
                   unlockingSoonCount={unlockingSoonCount}
-                  averageLockPeriodDays={averageLockPeriodDays}
+                  averageLockDaysRemaining={averageLockDaysRemaining}
                   loading={loading}
                 />
               </div>
@@ -116,12 +126,17 @@ export default function TokenLockPage() {
             {/* Create Lock + Next Unlock countdown */}
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
               <div className="lg:col-span-2">
-                <SectionHeader title="Create Lock" subtitle="Choose a term and lock in your bonus rate" />
+                <SectionHeader title="Create Lock" subtitle="Choose an amount and a term" />
                 <CreateLockCard
                   availableBalance={availableBalance}
-                  lockDurationOptions={lockDurationOptions}
-                  estimateLockBonus={estimateLockBonus}
-                  onCreateLock={createLock}
+                  lockDurationPresetsDays={lockDurationPresetsDays}
+                  approveState={approveState}
+                  createLockState={createLockState}
+                  onCreateLock={(amount, days) => createLock(amount, days)}
+                  onResetApprove={() => resetActionState("approve")}
+                  onResetCreateLock={() => resetActionState("createLock")}
+                  isWrongNetwork={isWrongNetwork}
+                  onSwitchNetwork={handleSwitchNetwork}
                   loading={loading}
                 />
               </div>
@@ -151,16 +166,18 @@ export default function TokenLockPage() {
                 <EmptyState
                   icon={Vault}
                   title="No active locks"
-                  description="Create your first lock above to start earning a maturity bonus."
+                  description="Create your first lock above."
                 />
               ) : (
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                   {activePositions.map((position) => (
                     <LockCard
-                      key={position.id}
+                      key={position.id.toString()}
                       position={position}
-                      onRelease={() => releaseLock(position.id)}
+                      onWithdraw={() => withdraw(position.id)}
                       onEarlyUnlock={() => setEarlyUnlockTarget(position)}
+                      isPending={pendingLockId === position.id}
+                      actionState={withdrawState}
                     />
                   ))}
                 </div>
@@ -173,10 +190,12 @@ export default function TokenLockPage() {
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                   {releasedPositions.map((position) => (
                     <LockCard
-                      key={position.id}
+                      key={position.id.toString()}
                       position={position}
-                      onRelease={() => releaseLock(position.id)}
+                      onWithdraw={() => withdraw(position.id)}
                       onEarlyUnlock={() => setEarlyUnlockTarget(position)}
+                      isPending={pendingLockId === position.id}
+                      actionState={withdrawState}
                     />
                   ))}
                 </div>
@@ -187,10 +206,10 @@ export default function TokenLockPage() {
             <div>
               <SectionHeader title="Lock Summary" subtitle="Your lifetime locking activity" />
               <LockSummaryCards
-                lifetimeBonusEarned={lifetimeBonusEarned}
-                locksReleasedCount={locksReleasedCount}
-                earlyUnlocksCount={earlyUnlocksCount}
-                longestLockDays={longestLockDays}
+                totalLocksCount={activeLocksCount + withdrawnCount}
+                withdrawnCount={withdrawnCount}
+                activeLocksCount={activeLocksCount}
+                longestActiveLockDaysRemaining={longestActiveLockDaysRemaining}
                 loading={loading}
               />
             </div>
@@ -204,7 +223,7 @@ export default function TokenLockPage() {
                 <EmptyState
                   icon={History}
                   title="No lock history yet"
-                  description="Your lock, release, and early-unlock activity will show up here."
+                  description="Your lock and withdrawal activity will show up here."
                 />
               ) : (
                 <LockHistoryTimeline positions={positions} />
