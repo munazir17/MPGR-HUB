@@ -1,48 +1,42 @@
 "use client";
 
-import { Sparkles, CheckCircle2, Zap, Trophy } from "lucide-react";
+import { CheckCircle2, Vault, Layers, Trophy } from "lucide-react";
 import { StatCard } from "@/components/ui/StatCard";
-import { formatCompactNumber } from "@/lib/format";
+
+// Redesigned around what's actually derivable from getUserLockIds() +
+// getLock() for the connected wallet, with no event-log scan:
+// - the deployed contract has no bonus mechanism, so "Lifetime Bonus
+//   Earned" is gone;
+// - withdrawn locks aren't tagged on-chain as "matured" vs "early-exited"
+//   (both just set withdrawn = true), so an Early-Unlocks-only count isn't
+//   derivable from getLock() alone -- distinguishing that would require
+//   scanning LockWithdrawn vs EarlyUnlocked event history, which is out of
+//   scope here. "Withdrawn Locks" reports the combined total instead of
+//   fabricating a split.
 
 interface LockSummaryCardsProps {
-  lifetimeBonusEarned: number;
-  locksReleasedCount: number;
-  earlyUnlocksCount: number;
-  longestLockDays: number;
+  totalLocksCount: number;
+  withdrawnCount: number;
+  activeLocksCount: number;
+  longestActiveLockDaysRemaining: number;
   loading?: boolean;
 }
 
 export function LockSummaryCards({
-  lifetimeBonusEarned,
-  locksReleasedCount,
-  earlyUnlocksCount,
-  longestLockDays,
+  totalLocksCount,
+  withdrawnCount,
+  activeLocksCount,
+  longestActiveLockDaysRemaining,
   loading,
 }: LockSummaryCardsProps) {
   return (
     <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+      <StatCard label="Total Locks Created" value={`${totalLocksCount}`} icon={Vault} accent="gold" loading={loading} />
+      <StatCard label="Active Locks" value={`${activeLocksCount}`} icon={Layers} loading={loading} />
+      <StatCard label="Withdrawn Locks" value={`${withdrawnCount}`} icon={CheckCircle2} loading={loading} />
       <StatCard
-        label="Lifetime Bonus Earned"
-        value={`${formatCompactNumber(lifetimeBonusEarned)} MPGR`}
-        icon={Sparkles}
-        accent="gold"
-        loading={loading}
-      />
-      <StatCard
-        label="Locks Released"
-        value={`${locksReleasedCount}`}
-        icon={CheckCircle2}
-        loading={loading}
-      />
-      <StatCard
-        label="Early Unlocks"
-        value={`${earlyUnlocksCount}`}
-        icon={Zap}
-        loading={loading}
-      />
-      <StatCard
-        label="Longest Lock"
-        value={longestLockDays > 0 ? `${longestLockDays}d` : "—"}
+        label="Longest Active Lock"
+        value={longestActiveLockDaysRemaining > 0 ? `${longestActiveLockDaysRemaining}d left` : "—"}
         icon={Trophy}
         accent="gold"
         loading={loading}
