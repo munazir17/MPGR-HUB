@@ -84,5 +84,5 @@ export async function sendB20Write<TAbi extends Abi>(params: B20WriteParams<TAbi
     chainId,
     gas,
     account,
-  } as Omit<Parameters<typeof writeContract>[1], "chain">);
+  });
 }
