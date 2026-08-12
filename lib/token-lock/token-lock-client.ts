@@ -185,11 +185,22 @@ export const tokenLockClient = {
     return writeContract(config, request);
   },
 
+  // createLock() internally performs an MPGR transferFrom/safeTransferFrom,
+  // which routes through the same Base B20 precompile path documented above
+  // approve(). eth_estimateGas's binary search under-estimates that path and
+  // simulateContract's default gas would carry that flawed estimate straight
+  // into writeContract, producing an on-chain "out of gas" revert. Passing an
+  // explicit `gas` here skips eth_estimateGas entirely, so the returned
+  // `request.gas` — which writeContract sends unchanged — carries this value
+  // instead.
   async createLock(amount: bigint, unlockTime: bigint): Promise<Hash> {
+    const TOKEN_LOCK_CREATE_LOCK_GAS_LIMIT = 300_000n;
+
     const { request } = await simulateContract(config, {
       ...TOKEN_LOCK_CONTRACT,
       functionName: "createLock",
       args: [amount, unlockTime],
+      gas: TOKEN_LOCK_CREATE_LOCK_GAS_LIMIT,
     });
     return writeContract(config, request);
   },
