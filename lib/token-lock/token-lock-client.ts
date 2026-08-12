@@ -193,7 +193,13 @@ export const tokenLockClient = {
   // explicit `gas` here skips eth_estimateGas entirely, so the returned
   // `request.gas` — which writeContract sends unchanged — carries this value
   // instead.
-  async createLock(amount: bigint, unlockTime: bigint): Promise<Hash> {
+  //
+  // `account` is required (not inferred) so the simulate step's implicit
+  // sender is guaranteed to be the exact wallet that just approved —
+  // callers pass the same `address` from useAccount() used for the
+  // approve() call, closing any gap between which account simulateContract
+  // resolves to and which account actually signs.
+  async createLock(amount: bigint, unlockTime: bigint, account: Address): Promise<Hash> {
     const TOKEN_LOCK_CREATE_LOCK_GAS_LIMIT = 300_000n;
 
     const { request } = await simulateContract(config, {
@@ -201,6 +207,7 @@ export const tokenLockClient = {
       functionName: "createLock",
       args: [amount, unlockTime],
       gas: TOKEN_LOCK_CREATE_LOCK_GAS_LIMIT,
+      account,
     });
     return writeContract(config, request);
   },
