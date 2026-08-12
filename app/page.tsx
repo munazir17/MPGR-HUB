@@ -55,12 +55,14 @@ import { useXP } from "@/hooks/useXP";
 import { useStaking } from "@/hooks/useStaking";
 import { useRewards } from "@/hooks/useRewards";
 import { useTokenLock } from "@/hooks/useTokenLock";
+import { MPGR_TOKEN_LOCK_CONFIG } from "@/lib/token-lock/token-lock-config";
 import { usePremium } from "@/hooks/usePremium";
 import { useSeasonPass } from "@/hooks/useSeasonPass";
 import { getLevelProgress, getSeasonPoints, getSeasonNumber, XP_ACTIONS } from "@/lib/xp-engine";
 import { getRewardState } from "@/lib/rewards-engine";
 import { erc20Abi } from "@/lib/erc20-abi";
 import type { StakingLiveActivityEntry } from "@/lib/staking/staking-types";
+import type { TokenLockLiveActivityEntry } from "@/lib/token-lock/token-lock-types";
 import {
   formatAddress,
   formatCompactNumber,
@@ -94,16 +96,16 @@ const STAKING_TX_ICON: Record<StakingLiveActivityEntry["kind"], typeof ArrowUpCi
   RewardPaid: Coins,
 };
 
-const LOCK_TX_LABEL: Record<string, string> = {
-  lock: "Locked MPGR",
-  release: "Released Lock",
-  early_unlock: "Early Unlocked MPGR",
+const LOCK_TX_LABEL: Record<TokenLockLiveActivityEntry["kind"], string> = {
+  LockCreated: "Locked MPGR",
+  LockWithdrawn: "Withdrew Lock",
+  EarlyUnlocked: "Early Unlocked MPGR",
 };
 
-const LOCK_TX_ICON: Record<string, typeof ArrowUpCircle> = {
-  lock: ArrowUpCircle,
-  release: ArrowDownCircle,
-  early_unlock: ArrowDownCircle,
+const LOCK_TX_ICON: Record<TokenLockLiveActivityEntry["kind"], typeof ArrowUpCircle> = {
+  LockCreated: ArrowUpCircle,
+  LockWithdrawn: ArrowDownCircle,
+  EarlyUnlocked: ArrowDownCircle,
 };
 
 export default function DashboardPage() {
@@ -122,7 +124,7 @@ export default function DashboardPage() {
     totalLocked,
     activeLocksCount,
     upcomingUnlockAt,
-    transactions: lockTransactions,
+    liveActivity: lockLiveActivity,
     loading: lockLoading,
   } = useTokenLock();
   const { claims: rewardClaims, claimableTotal, loading: rewardsLoading } = useRewards();
@@ -193,7 +195,7 @@ export default function DashboardPage() {
   })();
 
   const lastStakingTx = stakingLiveActivity[0] ?? null;
-  const lastLockTx = lockTransactions[0] ?? null;
+  const lastLockTx = lockLiveActivity[0] ?? null;
 
   return (
     <>
@@ -644,7 +646,7 @@ export default function DashboardPage() {
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-gold-glow/20 to-gold/10 ring-1 ring-gold/15">
                     {lastLockTx ? (
                       (() => {
-                        const Icon = LOCK_TX_ICON[lastLockTx.type];
+                        const Icon = LOCK_TX_ICON[lastLockTx.kind];
                         return <Icon className="h-4 w-4 text-gold" aria-hidden="true" />;
                       })()
                     ) : (
@@ -653,16 +655,16 @@ export default function DashboardPage() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm text-white">
-                      {lastLockTx ? LOCK_TX_LABEL[lastLockTx.type] : "No lock activity yet"}
+                      {lastLockTx ? LOCK_TX_LABEL[lastLockTx.kind] : "No lock activity yet"}
                     </p>
                     {lastLockTx && (
-                      <p className="text-[11px] text-muted">{formatRelativeTime(lastLockTx.timestamp)}</p>
+                      <p className="text-[11px] text-muted">{formatRelativeTime(lastLockTx.observedAt)}</p>
                     )}
                   </div>
                   {lastLockTx && (
                     <span className="shrink-0 text-sm font-semibold text-gradient-gold">
-                      {lastLockTx.type === "lock" ? "-" : "+"}
-                      {formatCompactNumber(lastLockTx.amount)} MPGR
+                      {lastLockTx.kind === "LockCreated" ? "-" : "+"}
+                      {formatCompactNumber(Number(formatUnits(lastLockTx.amount, MPGR_TOKEN_LOCK_CONFIG.decimals)))} MPGR
                     </span>
                   )}
                 </div>
