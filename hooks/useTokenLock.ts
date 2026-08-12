@@ -238,8 +238,8 @@ export function useTokenLock() {
       setState: (updater: (prev: TokenLockActionState) => TokenLockActionState) => void,
       submit: () => Promise<Hash>,
       onSuccess?: (hash: Hash) => void
-    ) => {
-      if (!address) return;
+    ): Promise<boolean> => {
+      if (!address) return false;
       setState(() => ({ phase: "simulating", hash: null, error: null }));
       try {
         const hash = await submit();
@@ -252,10 +252,12 @@ export function useTokenLock() {
         setState(() => ({ phase: "success", hash, error: null }));
         await refresh();
         onSuccess?.(hash);
+        return true;
       } catch (err) {
         const message = err instanceof Error ? err.message : "Transaction failed.";
         setState(() => ({ phase: "error", hash: null, error: message }));
         console.error("useTokenLock.runAction failed", { error: message });
+        return false;
       }
     },
     [address, refresh]
@@ -285,10 +287,42 @@ export function useTokenLock() {
       const amountRaw = parseUnits(amountInput.toString(), DECIMALS);
       const unlockTime = BigInt(Math.floor(Date.now() / 1000) + durationDays * 86_400);
 
-      await runAction(setApproveState, () => tokenLockClient.approve(amountRaw));
-      await runAction(setCreateLockState, () => tokenLockClient.createLock(amountRaw, unlockTime), () => {
-        setLastEvent({ amount: amountInput, id: Date.now() });
-      });
+      const approved = await runAction(setApproveState, () => tokenLockClient.approve(amountRaw));
+      if (!approved) return;
+
+      // The approval receipt confirms the approve tx was mined, but does not
+      // by itself guarantee the RPC endpoint createLock's simulation hits
+      // will reflect that new allowance yet. Re-read it fresh (no cache)
+      // right before simulating createLock, rather than assuming the
+      // receipt is sufficient.
+      setCreateLockState(() => ({ phase: "simulating", hash: null, error: null }));
+      let currentAllowance: bigint;
+      try {
+        currentAllowance = await tokenLockClient.getAllowance(address);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to verify allowance.";
+        setCreateLockState(() => ({ phase: "error", hash: null, error: message }));
+        console.error("useTokenLock.createLock allowance re-check failed", { error: message });
+        return;
+      }
+
+      if (currentAllowance < amountRaw) {
+        setCreateLockState(() => ({
+          phase: "error",
+          hash: null,
+          error:
+            "Approval was confirmed on-chain, but the updated allowance hasn't been picked up by this read yet. Please try again.",
+        }));
+        return;
+      }
+
+      await runAction(
+        setCreateLockState,
+        () => tokenLockClient.createLock(amountRaw, unlockTime, address),
+        () => {
+          setLastEvent({ amount: amountInput, id: Date.now() });
+        }
+      );
     },
     [address, ensureBaseNetwork, runAction]
   );
