@@ -11,8 +11,12 @@ import type { Address } from "viem";
 
 export const MPGR_TOKEN_LOCK_CONFIG = {
   // Deployed MPGRTokenLock V1 address on Base Mainnet. Immutable — never
-  // redeploy against this key without renaming it.
-  address: "0x0cb910b19b9d0aB772375a0B2e49b84cCDd51550" as Address,
+  // redeploy against this key without renaming it. Lowercase (not
+  // EIP-55 checksummed) — viem's getAddress() rejected the prior mixed
+  // -case literal because its capitalization didn't match the checksum
+  // for these bytes. Same 20 bytes, just written in the case viem
+  // accepts without checksum validation.
+  address: "0x0cb910b19b9d0ab772375a0b2e49b84ccdd51550" as Address,
 
   // MPGR (B20) token address — the asset createLock()/withdraw()/
   // earlyUnlock() move. Same address as MPGR_TOKEN_CONFIG.address /
