@@ -9,19 +9,10 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
-  Coins as CoinsIcon,
-  Flame,
-  Gem as GemIcon,
-  Heart,
-  Magnet,
   Pause,
   Play,
-  Rocket,
   RotateCcw,
   Share2,
-  Shield,
-  Sparkles,
-  Star,
   Trophy,
   Zap,
 } from "lucide-react";
@@ -42,6 +33,16 @@ import {
   type PowerupEntity,
 } from "@/lib/games/mpgr-run/spawn-manager";
 import { getRunAudioHooks } from "@/lib/games/mpgr-run/audio-hooks";
+import {
+  CHARACTER_SPRITES,
+  OBSTACLE_SPRITES,
+  COLLECTIBLE_SPRITES,
+  POWERUP_SPRITES,
+  CHECKPOINT_SPRITE,
+  UI_SPRITES,
+  CITY_ENVIRONMENT,
+  ALL_SPRITE_PATHS,
+} from "@/lib/games/mpgr-run/run-assets";
 import {
   MPGR_RUN_GAME_ID,
   LANE_COUNT,
@@ -195,15 +196,6 @@ const OBSTACLE_COLOR: Record<ObstacleEntity["type"], { fill: string; dark: strin
   barrier: { fill: "#38BDF8", dark: "#0C4A6E" },
 };
 
-const POWERUP_ICON: Record<PowerupType, typeof Zap> = {
-  magnet: Magnet,
-  shield: Shield,
-  speed: Rocket,
-  jetpack: Flame,
-  score2x: Sparkles,
-  invincibility: Star,
-};
-
 interface HudSnapshot {
   distance: number;
   score: number;
@@ -231,6 +223,7 @@ export function RunGame({ address }: RunGameProps) {
   const phaseRef = useRef<Phase>("idle");
   const idRef = useRef(1);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [countdownValue, setCountdownValue] = useState(COUNTDOWN_SECONDS);
@@ -289,6 +282,25 @@ export function RunGame({ address }: RunGameProps) {
     return () => observer.disconnect();
   }, []);
 
+  // --- Sprite preload ---------------------------------------------------
+  // Loads every real asset under public/games/mpgr-run/ once on mount.
+  // draw() below reads straight from this cache and simply skips drawing
+  // (falling back to the procedural shape) for any sprite not yet decoded,
+  // so the very first frame or two of a cold load never shows a blank gap.
+  useEffect(() => {
+    for (const src of ALL_SPRITE_PATHS) {
+      if (imageCacheRef.current.has(src)) continue;
+      const img = new window.Image();
+      img.src = src;
+      imageCacheRef.current.set(src, img);
+    }
+  }, []);
+
+  const getSprite = useCallback((src: string): HTMLImageElement | null => {
+    const img = imageCacheRef.current.get(src);
+    return img && img.complete && img.naturalWidth > 0 ? img : null;
+  }, []);
+
   // --- Particle helper --------------------------------------------------
   const spawnBurst = useCallback((world: World, x: number, y: number, color: string, count: number) => {
     for (let i = 0; i < count; i++) {
@@ -328,7 +340,7 @@ export function RunGame({ address }: RunGameProps) {
       ctx.translate((Math.random() - 0.5) * world.screenShake, (Math.random() - 0.5) * world.screenShake);
     }
 
-    // Background — premium electric-blue city-run gradient (procedural, no external assets).
+    // Background — premium electric-blue city-run environment.
     ctx.clearRect(-20, -20, width + 40, height + 40);
     const skyGradient = ctx.createLinearGradient(0, 0, 0, height);
     skyGradient.addColorStop(0, "#0A0B0D");
@@ -337,15 +349,36 @@ export function RunGame({ address }: RunGameProps) {
     ctx.fillStyle = skyGradient;
     ctx.fillRect(0, 0, width, height);
 
-    // Distant skyline glow strips (parallax-lite, motion via elapsedMs).
-    const scroll = (world.elapsedMs / 40) % width;
-    ctx.globalAlpha = 0.12;
-    ctx.fillStyle = "#3B82F6";
-    for (let i = -1; i < 6; i++) {
-      const bx = ((i * 140 - scroll) % (width + 140)) - 70;
-      ctx.fillRect(bx, height * 0.18, 44, height * 0.32);
+    // Real "City Run" artwork, three depth layers scrolling at different
+    // rates tied to actual distance traveled (so it pauses correctly and
+    // never drifts out of sync with the game clock).
+    const cityBg = getSprite(CITY_ENVIRONMENT.background);
+    const cityMid = getSprite(CITY_ENVIRONMENT.midground);
+    const cityFg = getSprite(CITY_ENVIRONMENT.foreground);
+    const drawParallaxLayer = (img: HTMLImageElement | null, speedFactor: number, alpha: number) => {
+      if (!img) return;
+      const offset = (world.traveledPx * speedFactor) % width;
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(img, -offset, 0, width, height);
+      ctx.drawImage(img, width - offset, 0, width, height);
+      ctx.globalAlpha = 1;
+    };
+    drawParallaxLayer(cityBg, 0.05, 0.9);
+    drawParallaxLayer(cityMid, 0.15, 0.85);
+    drawParallaxLayer(cityFg, 0.35, 0.8);
+
+    // Procedural skyline glow strips — fallback only, while the real
+    // background artwork is still decoding on a cold load.
+    if (!cityBg) {
+      const scroll = (world.elapsedMs / 40) % width;
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = "#3B82F6";
+      for (let i = -1; i < 6; i++) {
+        const bx = ((i * 140 - scroll) % (width + 140)) - 70;
+        ctx.fillRect(bx, height * 0.18, 44, height * 0.32);
+      }
+      ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 1;
 
     // Three lane tracks.
     for (let lane = 0; lane < LANE_COUNT; lane++) {
@@ -371,10 +404,19 @@ export function RunGame({ address }: RunGameProps) {
     // Checkpoint flash.
     if (world.elapsedMs < world.checkpointFlashUntilMs) {
       const remaining = (world.checkpointFlashUntilMs - world.elapsedMs) / 1400;
-      ctx.globalAlpha = clamp(remaining, 0, 1) * 0.5;
+      const flashAlpha = clamp(remaining, 0, 1);
+      ctx.globalAlpha = flashAlpha * 0.5;
       ctx.fillStyle = "#FBBF24";
       ctx.fillRect(0, 0, width, height);
       ctx.globalAlpha = 1;
+
+      const checkpointImg = getSprite(CHECKPOINT_SPRITE);
+      if (checkpointImg) {
+        const size = Math.min(width, height) * 0.28;
+        ctx.globalAlpha = flashAlpha;
+        ctx.drawImage(checkpointImg, width / 2 - size / 2, height * 0.22 - size / 2, size, size);
+        ctx.globalAlpha = 1;
+      }
     }
 
     // Power-up pickups.
@@ -383,16 +425,23 @@ export function RunGame({ address }: RunGameProps) {
       const laneY = laneBaselineScreenY(height, pu.lane);
       const bob = Math.sin(world.elapsedMs / 260 + pu.id) * 5;
       const cfg = POWERUP_TYPES[pu.type];
-      ctx.beginPath();
-      ctx.arc(pu.x, laneY - 20 + bob, pu.radius, 0, Math.PI * 2);
-      ctx.fillStyle = cfg.color;
+      const puImg = getSprite(POWERUP_SPRITES[pu.type]);
+      const puCy = laneY - 20 + bob;
       ctx.shadowColor = cfg.color;
       ctx.shadowBlur = 12;
-      ctx.fill();
+      if (puImg) {
+        const size = pu.radius * 2.6;
+        ctx.drawImage(puImg, pu.x - size / 2, puCy - size / 2, size, size);
+      } else {
+        ctx.beginPath();
+        ctx.arc(pu.x, puCy, pu.radius, 0, Math.PI * 2);
+        ctx.fillStyle = cfg.color;
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.85)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
       ctx.shadowBlur = 0;
-      ctx.strokeStyle = "rgba(255,255,255,0.85)";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
     }
 
     // Collectibles.
@@ -403,20 +452,27 @@ export function RunGame({ address }: RunGameProps) {
       const attracting = c.magnetizedAtMs !== undefined;
       const shrink = attracting ? clamp(1 - (world.elapsedMs - c.magnetizedAtMs!) / MAGNET_ATTRACT_MS, 0.25, 1) : 1;
       const color = COLLECTIBLE_TYPES[c.type].color;
-      ctx.beginPath();
-      ctx.arc(c.x, laneY - 14 + bob, c.radius * shrink, 0, Math.PI * 2);
-      ctx.fillStyle = color;
+      const cImg = getSprite(COLLECTIBLE_SPRITES[c.type]);
+      const cCy = laneY - 14 + bob;
       ctx.shadowColor = color;
       ctx.shadowBlur = 8;
-      ctx.fill();
+      if (cImg) {
+        const size = c.radius * 2.4 * shrink;
+        ctx.drawImage(cImg, c.x - size / 2, cCy - size / 2, size, size);
+      } else {
+        ctx.beginPath();
+        ctx.arc(c.x, cCy, c.radius * shrink, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.6)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
       ctx.shadowBlur = 0;
-      ctx.strokeStyle = "rgba(255,255,255,0.6)";
-      ctx.lineWidth = 1;
-      ctx.stroke();
       if (attracting) {
         ctx.strokeStyle = "rgba(34,211,238,0.5)";
         ctx.beginPath();
-        ctx.moveTo(c.x, laneY - 14 + bob);
+        ctx.moveTo(c.x, cCy);
         ctx.lineTo(playerScreenX + PLAYER_SIZE / 2, laneBaselineScreenY(height, p.lane) - p.playerY - PLAYER_SIZE / 2);
         ctx.stroke();
       }
@@ -428,6 +484,7 @@ export function RunGame({ address }: RunGameProps) {
       const top = laneY - o.groundHeight - o.height;
       const bottom = laneY - o.groundHeight;
       const palette = OBSTACLE_COLOR[o.type];
+      const oImg = getSprite(OBSTACLE_SPRITES[o.type]);
       ctx.save();
       if (o.type === "saw") {
         const cx = o.x + o.width / 2;
@@ -436,24 +493,39 @@ export function RunGame({ address }: RunGameProps) {
         ctx.rotate(world.elapsedMs / 120);
         ctx.translate(-cx, -cy);
       }
-      const gradient = ctx.createLinearGradient(o.x, top, o.x, bottom);
-      gradient.addColorStop(0, palette.fill);
-      gradient.addColorStop(1, palette.dark);
-      ctx.fillStyle = gradient;
-      ctx.shadowColor = palette.fill;
-      ctx.shadowBlur = o.hit ? 0 : 6;
-      const r = 4;
-      ctx.beginPath();
-      ctx.moveTo(o.x + r, top);
-      ctx.lineTo(o.x + o.width - r, top);
-      ctx.quadraticCurveTo(o.x + o.width, top, o.x + o.width, top + r);
-      ctx.lineTo(o.x + o.width, bottom);
-      ctx.lineTo(o.x, bottom);
-      ctx.lineTo(o.x, top + r);
-      ctx.quadraticCurveTo(o.x, top, o.x + r, top);
-      ctx.closePath();
-      ctx.fill();
-      ctx.shadowBlur = 0;
+      ctx.globalAlpha = o.hit ? 0.55 : 1;
+      if (oImg) {
+        const drawW = o.width * 1.5;
+        const drawH = o.height + o.groundHeight + 8;
+        ctx.shadowColor = palette.fill;
+        ctx.shadowBlur = o.hit ? 0 : 6;
+        if (o.type === "saw") {
+          ctx.drawImage(oImg, -drawW / 2, -drawH / 2, drawW, drawH);
+        } else {
+          ctx.drawImage(oImg, o.x + o.width / 2 - drawW / 2, bottom - drawH, drawW, drawH);
+        }
+        ctx.shadowBlur = 0;
+      } else {
+        const gradient = ctx.createLinearGradient(o.x, top, o.x, bottom);
+        gradient.addColorStop(0, palette.fill);
+        gradient.addColorStop(1, palette.dark);
+        ctx.fillStyle = gradient;
+        ctx.shadowColor = palette.fill;
+        ctx.shadowBlur = o.hit ? 0 : 6;
+        const r = 4;
+        ctx.beginPath();
+        ctx.moveTo(o.x + r, top);
+        ctx.lineTo(o.x + o.width - r, top);
+        ctx.quadraticCurveTo(o.x + o.width, top, o.x + o.width, top + r);
+        ctx.lineTo(o.x + o.width, bottom);
+        ctx.lineTo(o.x, bottom);
+        ctx.lineTo(o.x, top + r);
+        ctx.quadraticCurveTo(o.x, top, o.x + r, top);
+        ctx.closePath();
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+      ctx.globalAlpha = 1;
       ctx.restore();
     }
 
@@ -508,32 +580,50 @@ export function RunGame({ address }: RunGameProps) {
     }
 
     ctx.globalAlpha = invulnerable && !shielded ? 0.4 + Math.sin(world.elapsedMs / 60) * 0.3 : 1;
-    const grad = ctx.createLinearGradient(0, playerTop, 0, playerBottom);
-    grad.addColorStop(0, COLORS.player);
-    grad.addColorStop(1, COLORS.playerCore);
-    ctx.fillStyle = grad;
-    ctx.shadowColor = "rgba(59,130,246,0.55)";
-    ctx.shadowBlur = 14;
-    const pr = 7;
-    ctx.beginPath();
-    ctx.moveTo(playerScreenX + pr, playerTop);
-    ctx.lineTo(playerScreenX + PLAYER_SIZE - pr, playerTop);
-    ctx.quadraticCurveTo(playerScreenX + PLAYER_SIZE, playerTop, playerScreenX + PLAYER_SIZE, playerTop + pr);
-    ctx.lineTo(playerScreenX + PLAYER_SIZE, playerBottom - pr);
-    ctx.quadraticCurveTo(playerScreenX + PLAYER_SIZE, playerBottom, playerScreenX + PLAYER_SIZE - pr, playerBottom);
-    ctx.lineTo(playerScreenX + pr, playerBottom);
-    ctx.quadraticCurveTo(playerScreenX, playerBottom, playerScreenX, playerBottom - pr);
-    ctx.lineTo(playerScreenX, playerTop + pr);
-    ctx.quadraticCurveTo(playerScreenX, playerTop, playerScreenX + pr, playerTop);
-    ctx.closePath();
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "#0A0B0D";
-    ctx.fillRect(playerScreenX + PLAYER_SIZE * 0.45, playerTop + playerHeight * 0.28, PLAYER_SIZE * 0.4, playerHeight * 0.22);
+
+    const jetpackActiveNow = !!world.activePowerups.jetpack;
+    let spriteSrc: string = CHARACTER_SPRITES.run;
+    if (jetpackActiveNow) spriteSrc = CHARACTER_SPRITES.fly;
+    else if (p.sliding) spriteSrc = CHARACTER_SPRITES.slide;
+    else if (p.playerY > 0) spriteSrc = p.velocityY > 0 ? CHARACTER_SPRITES.jump : CHARACTER_SPRITES.fall;
+    else spriteSrc = Math.floor(world.elapsedMs / 120) % 2 === 0 ? CHARACTER_SPRITES.run : CHARACTER_SPRITES.run2;
+    const playerImg = getSprite(spriteSrc);
+
+    if (playerImg) {
+      const drawW = PLAYER_SIZE * 1.9;
+      const drawH = playerHeight * 1.9;
+      ctx.shadowColor = "rgba(59,130,246,0.55)";
+      ctx.shadowBlur = 14;
+      ctx.drawImage(playerImg, playerScreenX + PLAYER_SIZE / 2 - drawW / 2, playerBottom - drawH, drawW, drawH);
+      ctx.shadowBlur = 0;
+    } else {
+      const grad = ctx.createLinearGradient(0, playerTop, 0, playerBottom);
+      grad.addColorStop(0, COLORS.player);
+      grad.addColorStop(1, COLORS.playerCore);
+      ctx.fillStyle = grad;
+      ctx.shadowColor = "rgba(59,130,246,0.55)";
+      ctx.shadowBlur = 14;
+      const pr = 7;
+      ctx.beginPath();
+      ctx.moveTo(playerScreenX + pr, playerTop);
+      ctx.lineTo(playerScreenX + PLAYER_SIZE - pr, playerTop);
+      ctx.quadraticCurveTo(playerScreenX + PLAYER_SIZE, playerTop, playerScreenX + PLAYER_SIZE, playerTop + pr);
+      ctx.lineTo(playerScreenX + PLAYER_SIZE, playerBottom - pr);
+      ctx.quadraticCurveTo(playerScreenX + PLAYER_SIZE, playerBottom, playerScreenX + PLAYER_SIZE - pr, playerBottom);
+      ctx.lineTo(playerScreenX + pr, playerBottom);
+      ctx.quadraticCurveTo(playerScreenX, playerBottom, playerScreenX, playerBottom - pr);
+      ctx.lineTo(playerScreenX, playerTop + pr);
+      ctx.quadraticCurveTo(playerScreenX, playerTop, playerScreenX + pr, playerTop);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#0A0B0D";
+      ctx.fillRect(playerScreenX + PLAYER_SIZE * 0.45, playerTop + playerHeight * 0.28, PLAYER_SIZE * 0.4, playerHeight * 0.22);
+    }
     ctx.globalAlpha = 1;
 
     ctx.restore();
-  }, []);
+  }, [getSprite]);
 
   // --- Collect helpers ---------------------------------------------------
   const collectItem = useCallback(
@@ -1004,8 +1094,8 @@ export function RunGame({ address }: RunGameProps) {
               <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
                 <div className="flex flex-wrap gap-1.5">
                   <HudChip icon={Zap} label="Score" value={formatCompactNumber(hud.score)} />
-                  <HudChip icon={CoinsIcon} label="Coins" value={String(hud.coins)} />
-                  <HudChip icon={GemIcon} label="Gems" value={String(hud.gems)} />
+                  <HudChip imgSrc={COLLECTIBLE_SPRITES.coin} label="Coins" value={String(hud.coins)} />
+                  <HudChip imgSrc={COLLECTIBLE_SPRITES.gem} label="Gems" value={String(hud.gems)} />
                 </div>
                 <div className="flex flex-col items-end gap-1.5">
                   <div className="rounded-full bg-black/40 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-md">
@@ -1013,9 +1103,12 @@ export function RunGame({ address }: RunGameProps) {
                   </div>
                   <div className="flex items-center gap-0.5 rounded-full bg-black/40 px-2.5 py-1 backdrop-blur-md">
                     {Array.from({ length: STARTING_HP }).map((_, i) => (
-                      <Heart
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
                         key={i}
-                        className={`h-3.5 w-3.5 ${i < hud.hp ? "fill-rose-500 text-rose-500" : "text-white/20"}`}
+                        src={UI_SPRITES.heart}
+                        alt=""
+                        className={`h-4 w-4 object-contain ${i < hud.hp ? "opacity-100" : "opacity-20 grayscale"}`}
                         aria-hidden="true"
                       />
                     ))}
@@ -1026,7 +1119,6 @@ export function RunGame({ address }: RunGameProps) {
               {hud.activePowerups.length > 0 && (
                 <div className="pointer-events-none absolute left-3 top-16 flex flex-col gap-1.5">
                   {hud.activePowerups.map(({ type, remainingMs }) => {
-                    const Icon = POWERUP_ICON[type];
                     const cfg = POWERUP_TYPES[type];
                     return (
                       <div
@@ -1034,7 +1126,8 @@ export function RunGame({ address }: RunGameProps) {
                         className="flex items-center gap-1.5 rounded-full bg-black/50 px-2.5 py-1 backdrop-blur-md"
                         style={{ boxShadow: `0 0 0 1px ${cfg.color}55` }}
                       >
-                        <Icon className="h-3 w-3" style={{ color: cfg.color }} aria-hidden="true" />
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={POWERUP_SPRITES[type]} alt="" className="h-4 w-4 object-contain" aria-hidden="true" />
                         <span className="text-[10px] font-semibold text-white">{Math.ceil(remainingMs / 1000)}s</span>
                       </div>
                     );
@@ -1067,8 +1160,9 @@ export function RunGame({ address }: RunGameProps) {
                 exit={{ opacity: 0 }}
                 className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background/70 px-6 text-center backdrop-blur-sm"
               >
-                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-primary-glow/25 to-primary/10 text-4xl ring-1 ring-primary/25 animate-float">
-                  ⚡
+                <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-primary-glow/25 to-primary/10 ring-1 ring-primary/25 animate-float">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={CHARACTER_SPRITES.idle} alt="MPGR Runner" className="h-16 w-16 object-contain" />
                 </div>
                 <div>
                   <p className="text-lg font-bold text-white">MPGR Run</p>
@@ -1228,16 +1322,23 @@ export function RunGame({ address }: RunGameProps) {
 
 function HudChip({
   icon: Icon,
+  imgSrc,
   label,
   value,
 }: {
-  icon: typeof Zap;
+  icon?: typeof Zap;
+  imgSrc?: string;
   label: string;
   value: string;
 }) {
   return (
     <div className="flex items-center gap-1.5 rounded-full bg-black/40 px-3 py-1.5 backdrop-blur-md">
-      <Icon className="h-3.5 w-3.5 text-gold" aria-hidden="true" />
+      {imgSrc ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={imgSrc} alt="" className="h-4 w-4 object-contain" aria-hidden="true" />
+      ) : Icon ? (
+        <Icon className="h-3.5 w-3.5 text-gold" aria-hidden="true" />
+      ) : null}
       <span className="text-xs font-semibold text-white">{value}</span>
       <span className="sr-only">{label}</span>
     </div>
@@ -1281,4 +1382,4 @@ function StatPill({ label, value, highlight }: { label: string; value: string; h
       <p className="mt-0.5 text-[10px] text-muted">{label}</p>
     </div>
   );
-      }
+    }
