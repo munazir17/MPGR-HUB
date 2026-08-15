@@ -5,11 +5,23 @@ import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
   Coins as CoinsIcon,
+  Flame,
+  Gem as GemIcon,
+  Heart,
+  Magnet,
   Pause,
   Play,
+  Rocket,
   RotateCcw,
   Share2,
+  Shield,
+  Sparkles,
+  Star,
   Trophy,
   Zap,
 } from "lucide-react";
@@ -20,9 +32,21 @@ import { startSession, endSession, type GameSessionMeta } from "@/lib/games/game
 import { finalizeRun, type RunResult, type RunStats } from "@/lib/games/mpgr-run/run-score";
 import { processRunResult, type ProcessRunResultOutcome } from "@/lib/games/mpgr-run/run-rewards";
 import { getGameStats } from "@/lib/games/game-storage";
+import { resolveDifficulty } from "@/lib/games/mpgr-run/difficulty";
+import {
+  maybeSpawnObstacles,
+  maybeSpawnCollectible,
+  maybeSpawnPowerup,
+  type ObstacleEntity,
+  type CollectibleEntity,
+  type PowerupEntity,
+} from "@/lib/games/mpgr-run/spawn-manager";
+import { getRunAudioHooks } from "@/lib/games/mpgr-run/audio-hooks";
 import {
   MPGR_RUN_GAME_ID,
-  GROUND_Y,
+  LANE_COUNT,
+  LANE_CENTER_Y,
+  LANE_GAP_PX,
   PLAYER_X,
   PLAYER_SIZE,
   GRAVITY,
@@ -32,76 +56,163 @@ import {
   RAMP_DURATION_MS,
   SPEED_TIERS,
   PX_PER_METER,
-  OBSTACLE_MIN_GAP_PX,
-  OBSTACLE_MAX_GAP_PX,
-  COIN_MIN_GAP_PX,
-  COIN_MAX_GAP_PX,
   COUNTDOWN_SECONDS,
+  STARTING_HP,
+  HIT_INVULNERABILITY_MS,
+  SLIDE_DURATION_MS,
+  SLIDE_HITBOX_SCALE,
+  CHECKPOINT_INTERVAL_M,
+  CHECKPOINT_GRACE_MS,
+  JETPACK_FLY_HEIGHT,
+  MAGNET_RANGE_PX,
+  MAGNET_ATTRACT_MS,
+  SPEED_BOOST_MULTIPLIER,
+  COLLECTIBLE_TYPES,
+  POWERUP_TYPES,
+  type PowerupType,
 } from "@/lib/games/mpgr-run/run-config";
 
 type Phase = "idle" | "countdown" | "running" | "paused" | "game_over";
 
-interface Obstacle {
-  x: number;
-  width: number;
-  height: number;
-  passed: boolean;
+interface PlayerState {
+  lane: number;
+  laneOffset: number; // smoothed screen-space vertical offset toward the current lane's baseline
+  playerY: number; // px above the current lane's ground line, 0 = grounded
+  velocityY: number;
+  sliding: boolean;
+  slideUntilMs: number;
+  hp: number;
+  invulnerableUntilMs: number;
 }
 
-interface Coin {
+interface Particle {
+  id: number;
   x: number;
-  heightAboveGround: number;
-  radius: number;
-  collected: boolean;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  maxLife: number;
+  color: string;
+  size: number;
+}
+
+type ActivePowerups = Partial<Record<PowerupType, number>>; // value = world.elapsedMs when the effect expires
+
+interface RunStatsAccum {
+  coins: number;
+  gems: number;
+  xpOrbs: number;
+  keys: number;
+  chests: number;
+  powerups: number;
+  obstaclesPassed: number;
+  checkpoints: number;
+  hits: number;
 }
 
 interface World {
-  playerY: number; // px above ground, 0 = grounded
-  velocityY: number;
+  player: PlayerState;
   speed: number;
+  effectiveSpeed: number;
   elapsedMs: number;
-  obstacles: Obstacle[];
-  coins: Coin[];
-  coinsCollected: number;
-  obstaclesPassed: number;
-  collided: boolean;
+  traveledPx: number;
+  obstacles: ObstacleEntity[];
+  collectibles: CollectibleEntity[];
+  powerups: PowerupEntity[];
+  particles: Particle[];
+  activePowerups: ActivePowerups;
+  stats: RunStatsAccum;
+  bonusScore: number;
+  nextCheckpointM: number;
+  screenShake: number;
+  checkpointFlashUntilMs: number;
+  gameOver: boolean;
 }
 
 function freshWorld(): World {
   return {
-    playerY: 0,
-    velocityY: 0,
+    player: {
+      lane: 1,
+      laneOffset: 0,
+      playerY: 0,
+      velocityY: 0,
+      sliding: false,
+      slideUntilMs: 0,
+      hp: STARTING_HP,
+      invulnerableUntilMs: 0,
+    },
     speed: BASE_SPEED,
+    effectiveSpeed: BASE_SPEED,
     elapsedMs: 0,
+    traveledPx: 0,
     obstacles: [],
-    coins: [],
-    coinsCollected: 0,
-    obstaclesPassed: 0,
-    collided: false,
+    collectibles: [],
+    powerups: [],
+    particles: [],
+    activePowerups: {},
+    stats: { coins: 0, gems: 0, xpOrbs: 0, keys: 0, chests: 0, powerups: 0, obstaclesPassed: 0, checkpoints: 0, hits: 0 },
+    bonusScore: 0,
+    nextCheckpointM: CHECKPOINT_INTERVAL_M,
+    screenShake: 0,
+    checkpointFlashUntilMs: -Infinity,
+    gameOver: false,
   };
 }
 
-function randRange(min: number, max: number) {
-  return min + Math.random() * (max - min);
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function laneBaselineScreenY(canvasHeight: number, lane: number): number {
+  return canvasHeight * LANE_CENTER_Y + (lane - 1) * LANE_GAP_PX;
+}
+
+/** Vertical hazard-band overlap. tnt/barrier have no vertical escape — only a lane switch avoids them. */
+function verticalOverlap(o: ObstacleEntity, p: PlayerState): boolean {
+  if (o.type === "tnt" || o.type === "barrier") return true;
+  const playerHeight = p.sliding ? PLAYER_SIZE * SLIDE_HITBOX_SCALE : PLAYER_SIZE;
+  const playerBottom = p.playerY;
+  const playerTop = playerBottom + playerHeight;
+  const obstacleBottom = o.groundHeight;
+  const obstacleTop = o.groundHeight + o.height;
+  return playerTop > obstacleBottom && playerBottom < obstacleTop;
 }
 
 const COLORS = {
   bg: "#0A0B0D",
-  ground: "#1E2128",
-  groundLine: "#3B82F6",
+  laneLine: "#3B82F6",
   player: "#60A5FA",
   playerCore: "#3B82F6",
-  obstacle: "#F0B90B",
-  obstacleDark: "#B45309",
-  coin: "#FCD34D",
-  coinRing: "#F0B90B",
+};
+
+const OBSTACLE_COLOR: Record<ObstacleEntity["type"], { fill: string; dark: string }> = {
+  spikes: { fill: "#F87171", dark: "#7F1D1D" },
+  crate: { fill: "#F0B90B", dark: "#92600A" },
+  tnt: { fill: "#FB923C", dark: "#7C2D12" },
+  saw: { fill: "#E5E7EB", dark: "#4B5563" },
+  drone: { fill: "#A78BFA", dark: "#4C1D95" },
+  barrier: { fill: "#38BDF8", dark: "#0C4A6E" },
+};
+
+const POWERUP_ICON: Record<PowerupType, typeof Zap> = {
+  magnet: Magnet,
+  shield: Shield,
+  speed: Rocket,
+  jetpack: Flame,
+  score2x: Sparkles,
+  invincibility: Star,
 };
 
 interface HudSnapshot {
   distance: number;
-  coins: number;
   score: number;
+  coins: number;
+  gems: number;
+  hp: number;
   speedTier: number;
+  activePowerups: { type: PowerupType; remainingMs: number }[];
+  checkpointFlash: boolean;
 }
 
 interface RunGameProps {
@@ -118,10 +229,21 @@ export function RunGame({ address }: RunGameProps) {
   const hudIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sizeRef = useRef({ width: 0, height: 0 });
   const phaseRef = useRef<Phase>("idle");
+  const idRef = useRef(1);
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [countdownValue, setCountdownValue] = useState(COUNTDOWN_SECONDS);
-  const [hud, setHud] = useState<HudSnapshot>({ distance: 0, coins: 0, score: 0, speedTier: 0 });
+  const [hud, setHud] = useState<HudSnapshot>({
+    distance: 0,
+    score: 0,
+    coins: 0,
+    gems: 0,
+    hp: STARTING_HP,
+    speedTier: 0,
+    activePowerups: [],
+    checkpointFlash: false,
+  });
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [outcome, setOutcome] = useState<ProcessRunResultOutcome | null>(null);
   const [personalBest, setPersonalBest] = useState(0);
@@ -130,6 +252,8 @@ export function RunGame({ address }: RunGameProps) {
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+
+  const nextId = useCallback(() => idRef.current++, []);
 
   // Load personal best once on mount / when a run completes.
   const refreshPersonalBest = useCallback(() => {
@@ -165,6 +289,28 @@ export function RunGame({ address }: RunGameProps) {
     return () => observer.disconnect();
   }, []);
 
+  // --- Particle helper --------------------------------------------------
+  const spawnBurst = useCallback((world: World, x: number, y: number, color: string, count: number) => {
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 60 + Math.random() * 140;
+      world.particles.push({
+        id: nextId(),
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 350 + Math.random() * 300,
+        maxLife: 650,
+        color,
+        size: 2 + Math.random() * 3,
+      });
+    }
+    if (world.particles.length > 160) {
+      world.particles.splice(0, world.particles.length - 160);
+    }
+  }, [nextId]);
+
   // --- Render a single frame ------------------------------------------
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -174,74 +320,201 @@ export function RunGame({ address }: RunGameProps) {
     if (width === 0 || height === 0) return;
 
     const world = worldRef.current;
-    const groundY = height * GROUND_Y;
+    const p = world.player;
     const playerScreenX = width * PLAYER_X;
 
-    // Background
-    ctx.clearRect(0, 0, width, height);
+    ctx.save();
+    if (world.screenShake > 0.5) {
+      ctx.translate((Math.random() - 0.5) * world.screenShake, (Math.random() - 0.5) * world.screenShake);
+    }
+
+    // Background — premium electric-blue city-run gradient (procedural, no external assets).
+    ctx.clearRect(-20, -20, width + 40, height + 40);
     const skyGradient = ctx.createLinearGradient(0, 0, 0, height);
     skyGradient.addColorStop(0, "#0A0B0D");
-    skyGradient.addColorStop(1, "#111318");
+    skyGradient.addColorStop(0.55, "#0D1420");
+    skyGradient.addColorStop(1, "#111826");
     ctx.fillStyle = skyGradient;
     ctx.fillRect(0, 0, width, height);
 
-    // Ground
-    ctx.fillStyle = COLORS.ground;
-    ctx.fillRect(0, groundY, width, height - groundY);
-    ctx.strokeStyle = COLORS.groundLine;
-    ctx.globalAlpha = 0.5;
-    ctx.beginPath();
-    ctx.moveTo(0, groundY);
-    ctx.lineTo(width, groundY);
-    ctx.stroke();
+    // Distant skyline glow strips (parallax-lite, motion via elapsedMs).
+    const scroll = (world.elapsedMs / 40) % width;
+    ctx.globalAlpha = 0.12;
+    ctx.fillStyle = "#3B82F6";
+    for (let i = -1; i < 6; i++) {
+      const bx = ((i * 140 - scroll) % (width + 140)) - 70;
+      ctx.fillRect(bx, height * 0.18, 44, height * 0.32);
+    }
     ctx.globalAlpha = 1;
 
-    // Coins
-    for (const c of world.coins) {
-      if (c.collected) continue;
-      const cy = groundY - c.heightAboveGround;
+    // Three lane tracks.
+    for (let lane = 0; lane < LANE_COUNT; lane++) {
+      const laneY = laneBaselineScreenY(height, lane);
+      const isCurrent = lane === p.lane;
+      ctx.strokeStyle = COLORS.laneLine;
+      ctx.globalAlpha = isCurrent ? 0.55 : 0.18;
+      ctx.lineWidth = isCurrent ? 2 : 1;
       ctx.beginPath();
-      ctx.arc(c.x, cy, c.radius, 0, Math.PI * 2);
-      ctx.fillStyle = COLORS.coin;
-      ctx.shadowColor = COLORS.coinRing;
-      ctx.shadowBlur = 8;
+      ctx.moveTo(0, laneY);
+      ctx.lineTo(width, laneY);
+      ctx.stroke();
+      if (isCurrent) {
+        const glow = ctx.createLinearGradient(0, laneY - 10, 0, laneY + 4);
+        glow.addColorStop(0, "rgba(59,130,246,0.16)");
+        glow.addColorStop(1, "rgba(59,130,246,0)");
+        ctx.fillStyle = glow;
+        ctx.fillRect(0, laneY - 10, width, 14);
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // Checkpoint flash.
+    if (world.elapsedMs < world.checkpointFlashUntilMs) {
+      const remaining = (world.checkpointFlashUntilMs - world.elapsedMs) / 1400;
+      ctx.globalAlpha = clamp(remaining, 0, 1) * 0.5;
+      ctx.fillStyle = "#FBBF24";
+      ctx.fillRect(0, 0, width, height);
+      ctx.globalAlpha = 1;
+    }
+
+    // Power-up pickups.
+    for (const pu of world.powerups) {
+      if (pu.collected) continue;
+      const laneY = laneBaselineScreenY(height, pu.lane);
+      const bob = Math.sin(world.elapsedMs / 260 + pu.id) * 5;
+      const cfg = POWERUP_TYPES[pu.type];
+      ctx.beginPath();
+      ctx.arc(pu.x, laneY - 20 + bob, pu.radius, 0, Math.PI * 2);
+      ctx.fillStyle = cfg.color;
+      ctx.shadowColor = cfg.color;
+      ctx.shadowBlur = 12;
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.strokeStyle = COLORS.coinRing;
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
       ctx.lineWidth = 1.5;
       ctx.stroke();
     }
 
-    // Obstacles
+    // Collectibles.
+    for (const c of world.collectibles) {
+      if (c.collected) continue;
+      const laneY = laneBaselineScreenY(height, c.lane);
+      const bob = Math.sin(world.elapsedMs / 300 + c.id) * 6;
+      const attracting = c.magnetizedAtMs !== undefined;
+      const shrink = attracting ? clamp(1 - (world.elapsedMs - c.magnetizedAtMs!) / MAGNET_ATTRACT_MS, 0.25, 1) : 1;
+      const color = COLLECTIBLE_TYPES[c.type].color;
+      ctx.beginPath();
+      ctx.arc(c.x, laneY - 14 + bob, c.radius * shrink, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 8;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = "rgba(255,255,255,0.6)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      if (attracting) {
+        ctx.strokeStyle = "rgba(34,211,238,0.5)";
+        ctx.beginPath();
+        ctx.moveTo(c.x, laneY - 14 + bob);
+        ctx.lineTo(playerScreenX + PLAYER_SIZE / 2, laneBaselineScreenY(height, p.lane) - p.playerY - PLAYER_SIZE / 2);
+        ctx.stroke();
+      }
+    }
+
+    // Obstacles.
     for (const o of world.obstacles) {
-      const top = groundY - o.height;
-      const gradient = ctx.createLinearGradient(o.x, top, o.x, groundY);
-      gradient.addColorStop(0, COLORS.obstacle);
-      gradient.addColorStop(1, COLORS.obstacleDark);
+      const laneY = laneBaselineScreenY(height, o.lane);
+      const top = laneY - o.groundHeight - o.height;
+      const bottom = laneY - o.groundHeight;
+      const palette = OBSTACLE_COLOR[o.type];
+      ctx.save();
+      if (o.type === "saw") {
+        const cx = o.x + o.width / 2;
+        const cy = (top + bottom) / 2;
+        ctx.translate(cx, cy);
+        ctx.rotate(world.elapsedMs / 120);
+        ctx.translate(-cx, -cy);
+      }
+      const gradient = ctx.createLinearGradient(o.x, top, o.x, bottom);
+      gradient.addColorStop(0, palette.fill);
+      gradient.addColorStop(1, palette.dark);
       ctx.fillStyle = gradient;
+      ctx.shadowColor = palette.fill;
+      ctx.shadowBlur = o.hit ? 0 : 6;
       const r = 4;
       ctx.beginPath();
       ctx.moveTo(o.x + r, top);
       ctx.lineTo(o.x + o.width - r, top);
       ctx.quadraticCurveTo(o.x + o.width, top, o.x + o.width, top + r);
-      ctx.lineTo(o.x + o.width, groundY);
-      ctx.lineTo(o.x, groundY);
+      ctx.lineTo(o.x + o.width, bottom);
+      ctx.lineTo(o.x, bottom);
       ctx.lineTo(o.x, top + r);
       ctx.quadraticCurveTo(o.x, top, o.x + r, top);
       ctx.closePath();
       ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.restore();
     }
 
-    // Player
-    const playerBottom = groundY - world.playerY;
-    const playerTop = playerBottom - PLAYER_SIZE;
+    // Particles.
+    for (const part of world.particles) {
+      const alpha = clamp(part.life / part.maxLife, 0, 1);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = part.color;
+      ctx.beginPath();
+      ctx.arc(part.x, part.y, part.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Player — drawn from the smoothed lane offset so switching lanes glides
+    // instead of snapping (collision above always uses the logical p.lane).
+    const baselineY = height * LANE_CENTER_Y + p.laneOffset;
+    const playerHeight = p.sliding ? PLAYER_SIZE * SLIDE_HITBOX_SCALE : PLAYER_SIZE;
+    const playerBottom = baselineY - p.playerY;
+    const playerTop = playerBottom - playerHeight;
+    const invulnerable = world.elapsedMs < p.invulnerableUntilMs;
+    const shielded = !!world.activePowerups.shield || !!world.activePowerups.invincibility;
+
+    if (shielded) {
+      ctx.beginPath();
+      ctx.arc(playerScreenX + PLAYER_SIZE / 2, (playerTop + playerBottom) / 2, PLAYER_SIZE * 0.9, 0, Math.PI * 2);
+      ctx.strokeStyle = world.activePowerups.invincibility ? "#F472B6" : "#34D399";
+      ctx.globalAlpha = 0.6 + Math.sin(world.elapsedMs / 90) * 0.2;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    if (world.activePowerups.jetpack) {
+      ctx.beginPath();
+      ctx.moveTo(playerScreenX + 2, playerBottom);
+      ctx.lineTo(playerScreenX - 10 - Math.random() * 10, playerBottom + 6);
+      ctx.lineTo(playerScreenX + 2, playerBottom + 4);
+      ctx.closePath();
+      ctx.fillStyle = "#FB923C";
+      ctx.shadowColor = "#FB923C";
+      ctx.shadowBlur = 10;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+    if (world.activePowerups.speed) {
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = COLORS.player;
+      for (let i = 1; i <= 3; i++) {
+        ctx.fillRect(playerScreenX - i * 10, playerTop + 4, 6, playerHeight - 8);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.globalAlpha = invulnerable && !shielded ? 0.4 + Math.sin(world.elapsedMs / 60) * 0.3 : 1;
     const grad = ctx.createLinearGradient(0, playerTop, 0, playerBottom);
     grad.addColorStop(0, COLORS.player);
     grad.addColorStop(1, COLORS.playerCore);
     ctx.fillStyle = grad;
     ctx.shadowColor = "rgba(59,130,246,0.55)";
     ctx.shadowBlur = 14;
-    const pr = 8;
+    const pr = 7;
     ctx.beginPath();
     ctx.moveTo(playerScreenX + pr, playerTop);
     ctx.lineTo(playerScreenX + PLAYER_SIZE - pr, playerTop);
@@ -255,85 +528,207 @@ export function RunGame({ address }: RunGameProps) {
     ctx.closePath();
     ctx.fill();
     ctx.shadowBlur = 0;
-    // "visor" accent so the runner has an original, simple identity
     ctx.fillStyle = "#0A0B0D";
-    ctx.fillRect(playerScreenX + PLAYER_SIZE * 0.45, playerTop + PLAYER_SIZE * 0.28, PLAYER_SIZE * 0.4, PLAYER_SIZE * 0.22);
+    ctx.fillRect(playerScreenX + PLAYER_SIZE * 0.45, playerTop + playerHeight * 0.28, PLAYER_SIZE * 0.4, playerHeight * 0.22);
+    ctx.globalAlpha = 1;
+
+    ctx.restore();
   }, []);
+
+  // --- Collect helpers ---------------------------------------------------
+  const collectItem = useCallback(
+    (world: World, c: CollectibleEntity, height: number) => {
+      c.collected = true;
+      const cfg = COLLECTIBLE_TYPES[c.type];
+      const hooks = getRunAudioHooks();
+      switch (c.type) {
+        case "coin":
+          world.stats.coins += 1;
+          hooks.onCoinPickup();
+          break;
+        case "gem":
+          world.stats.gems += 1;
+          hooks.onGemPickup();
+          break;
+        case "xpOrb":
+          world.stats.xpOrbs += 1;
+          hooks.onCoinPickup();
+          break;
+        case "key":
+          world.stats.keys += 1;
+          hooks.onCoinPickup();
+          break;
+        case "chest":
+          world.stats.chests += 1;
+          hooks.onCoinPickup();
+          break;
+      }
+      if (world.activePowerups.score2x) world.bonusScore += cfg.scoreValue;
+      spawnBurst(world, c.x, laneBaselineScreenY(height, c.lane) - 14, cfg.color, c.type === "chest" ? 16 : 6);
+    },
+    [spawnBurst]
+  );
+
+  const collectPowerup = useCallback(
+    (world: World, pu: PowerupEntity, height: number) => {
+      pu.collected = true;
+      const cfg = POWERUP_TYPES[pu.type];
+      world.activePowerups[pu.type] = world.elapsedMs + cfg.durationMs;
+      world.stats.powerups += 1;
+      getRunAudioHooks().onPowerupPickup(pu.type);
+      spawnBurst(world, pu.x, laneBaselineScreenY(height, pu.lane) - 20, cfg.color, 10);
+    },
+    [spawnBurst]
+  );
 
   // --- Physics / spawn step -------------------------------------------
-  const step = useCallback((dt: number) => {
-    const world = worldRef.current;
-    const { width } = sizeRef.current;
-    if (width === 0) return;
-    const playerScreenX = width * PLAYER_X;
+  const step = useCallback(
+    (dt: number, canvasHeight: number) => {
+      const world = worldRef.current;
+      const { width } = sizeRef.current;
+      if (width === 0) return;
+      const playerScreenX = width * PLAYER_X;
+      const p = world.player;
+      const hooks = getRunAudioHooks();
 
-    world.elapsedMs += dt * 1000;
-    const rampProgress = Math.min(1, world.elapsedMs / RAMP_DURATION_MS);
-    world.speed = BASE_SPEED + (MAX_SPEED - BASE_SPEED) * rampProgress;
+      world.elapsedMs += dt * 1000;
 
-    // Physics
-    world.velocityY -= GRAVITY * dt;
-    world.playerY += world.velocityY * dt;
-    if (world.playerY <= 0) {
-      world.playerY = 0;
-      world.velocityY = 0;
-    }
+      const distanceMetersSoFar = world.traveledPx / PX_PER_METER;
+      const band = resolveDifficulty(distanceMetersSoFar);
 
-    // Scroll obstacles/coins
-    for (const o of world.obstacles) o.x -= world.speed * dt;
-    for (const c of world.coins) c.x -= world.speed * dt;
-    world.obstacles = world.obstacles.filter((o) => o.x + o.width > -20);
-    world.coins = world.coins.filter((c) => c.x > -30 && !c.collected);
+      const rampProgress = Math.min(1, world.elapsedMs / RAMP_DURATION_MS);
+      world.speed = BASE_SPEED + (MAX_SPEED - BASE_SPEED) * rampProgress;
+      const speedActive = !!world.activePowerups.speed;
+      world.effectiveSpeed = world.speed * (speedActive ? SPEED_BOOST_MULTIPLIER : 1);
+      world.traveledPx += world.effectiveSpeed * dt;
 
-    // Spawn obstacles
-    const lastObstacle = world.obstacles[world.obstacles.length - 1];
-    const obstacleGap = randRange(OBSTACLE_MIN_GAP_PX, OBSTACLE_MAX_GAP_PX);
-    if (!lastObstacle || lastObstacle.x < width - obstacleGap) {
-      world.obstacles.push({
-        x: width + 20,
-        width: 24 + Math.random() * 16,
-        height: 32 + Math.random() * 24,
-        passed: false,
+      // Vertical physics.
+      const jetpackActive = !!world.activePowerups.jetpack;
+      if (jetpackActive) {
+        p.playerY += (JETPACK_FLY_HEIGHT - p.playerY) * Math.min(1, dt * 6);
+        p.velocityY = 0;
+      } else {
+        const wasGrounded = p.playerY <= 0;
+        p.velocityY -= GRAVITY * dt;
+        p.playerY += p.velocityY * dt;
+        if (p.playerY <= 0) {
+          p.playerY = 0;
+          p.velocityY = 0;
+          if (!wasGrounded) hooks.onLand();
+        }
+      }
+      if (p.sliding && world.elapsedMs >= p.slideUntilMs) p.sliding = false;
+
+      // Smooth lane transition (visual only — collision uses the logical lane instantly).
+      const targetOffset = (p.lane - 1) * LANE_GAP_PX;
+      p.laneOffset += (targetOffset - p.laneOffset) * Math.min(1, dt * 10);
+
+      // Scroll entities.
+      for (const o of world.obstacles) o.x -= world.effectiveSpeed * dt;
+      for (const c of world.collectibles) c.x -= world.effectiveSpeed * dt;
+      for (const pu of world.powerups) pu.x -= world.effectiveSpeed * dt;
+      world.obstacles = world.obstacles.filter((o) => o.x + o.width > -40);
+      world.collectibles = world.collectibles.filter((c) => c.x > -40 && !c.collected);
+      world.powerups = world.powerups.filter((pu) => pu.x > -40 && !pu.collected);
+
+      // Particles.
+      for (const part of world.particles) {
+        part.life -= dt * 1000;
+        part.x -= world.effectiveSpeed * dt * 0.5 + part.vx * dt;
+        part.y += part.vy * dt;
+      }
+      world.particles = world.particles.filter((part) => part.life > 0);
+      world.screenShake = Math.max(0, world.screenShake - dt * 40);
+
+      // Spawn.
+      const newObstacles = maybeSpawnObstacles(world.obstacles, width, band, nextId);
+      if (newObstacles.length) world.obstacles.push(...newObstacles);
+      const newCollectible = maybeSpawnCollectible(world.collectibles, width, band, nextId);
+      if (newCollectible) world.collectibles.push(newCollectible);
+      const newPowerup = maybeSpawnPowerup(world.powerups, width, band, nextId);
+      if (newPowerup) world.powerups.push(newPowerup);
+
+      // Expire power-ups.
+      (Object.keys(world.activePowerups) as PowerupType[]).forEach((key) => {
+        const exp = world.activePowerups[key];
+        if (exp !== undefined && world.elapsedMs >= exp) {
+          delete world.activePowerups[key];
+          hooks.onPowerupExpire(key);
+        }
       });
-    }
 
-    // Spawn coins
-    const lastCoin = world.coins[world.coins.length - 1];
-    const coinGap = randRange(COIN_MIN_GAP_PX, COIN_MAX_GAP_PX);
-    if (!lastCoin || lastCoin.x < width - coinGap) {
-      const highBand = Math.random() > 0.5;
-      world.coins.push({
-        x: width + 40,
-        heightAboveGround: highBand ? randRange(70, 130) : randRange(6, 22),
-        radius: 8,
-        collected: false,
-      });
-    }
+      // Obstacle collisions.
+      const damageImmune =
+        world.elapsedMs < p.invulnerableUntilMs || !!world.activePowerups.shield || !!world.activePowerups.invincibility;
 
-    // Collisions: obstacles
-    for (const o of world.obstacles) {
-      const overlapX = playerScreenX + PLAYER_SIZE > o.x && playerScreenX < o.x + o.width;
-      const overlapY = world.playerY < o.height;
-      if (overlapX && overlapY && !world.collided) {
-        world.collided = true;
-      }
-      if (!o.passed && o.x + o.width < playerScreenX) {
-        o.passed = true;
-        world.obstaclesPassed += 1;
-      }
-    }
+      for (const o of world.obstacles) {
+        const overlapX = playerScreenX + PLAYER_SIZE > o.x && playerScreenX < o.x + o.width;
+        const overlapLane = o.lane === p.lane;
 
-    // Collisions: coins
-    for (const c of world.coins) {
-      if (c.collected) continue;
-      const overlapX = Math.abs(c.x - (playerScreenX + PLAYER_SIZE / 2)) < c.radius + PLAYER_SIZE / 2;
-      const overlapY = Math.abs(c.heightAboveGround - (world.playerY + PLAYER_SIZE / 2)) < c.radius + PLAYER_SIZE / 2;
-      if (overlapX && overlapY) {
-        c.collected = true;
-        world.coinsCollected += 1;
+        if (!o.hit && overlapX && overlapLane && verticalOverlap(o, p)) {
+          o.hit = true;
+          if (!o.passed) {
+            o.passed = true;
+            world.stats.obstaclesPassed += 1;
+          }
+          if (damageImmune) {
+            spawnBurst(world, o.x, laneBaselineScreenY(canvasHeight, o.lane) - o.groundHeight - o.height / 2, "#60A5FA", 8);
+          } else {
+            p.hp -= 1;
+            world.stats.hits += 1;
+            p.invulnerableUntilMs = world.elapsedMs + HIT_INVULNERABILITY_MS;
+            world.screenShake = 14;
+            spawnBurst(world, playerScreenX, laneBaselineScreenY(canvasHeight, p.lane) - p.playerY - PLAYER_SIZE / 2, "#F87171", 14);
+            hooks.onHit();
+            if (p.hp <= 0) world.gameOver = true;
+          }
+        }
+
+        if (!o.passed && o.x + o.width < playerScreenX) {
+          o.passed = true;
+          world.stats.obstaclesPassed += 1;
+        }
       }
-    }
-  }, []);
+
+      // Collectible pickup + magnet.
+      const magnetActive = !!world.activePowerups.magnet;
+      for (const c of world.collectibles) {
+        if (c.collected) continue;
+        const sameLane = c.lane === p.lane;
+        const dx = c.x - (playerScreenX + PLAYER_SIZE / 2);
+
+        if (magnetActive && Math.abs(dx) < MAGNET_RANGE_PX) {
+          if (c.magnetizedAtMs === undefined) c.magnetizedAtMs = world.elapsedMs;
+          if (world.elapsedMs - c.magnetizedAtMs >= MAGNET_ATTRACT_MS) {
+            collectItem(world, c, canvasHeight);
+          }
+        } else if (sameLane && Math.abs(dx) < c.radius + PLAYER_SIZE / 2) {
+          collectItem(world, c, canvasHeight);
+        }
+      }
+
+      // Power-up pickup.
+      for (const pu of world.powerups) {
+        if (pu.collected) continue;
+        const sameLane = pu.lane === p.lane;
+        const overlapX = playerScreenX + PLAYER_SIZE > pu.x - pu.radius && playerScreenX < pu.x + pu.radius;
+        if (sameLane && overlapX) {
+          collectPowerup(world, pu, canvasHeight);
+        }
+      }
+
+      // Checkpoints.
+      const distanceMeters = world.traveledPx / PX_PER_METER;
+      if (distanceMeters >= world.nextCheckpointM) {
+        world.stats.checkpoints += 1;
+        world.nextCheckpointM += CHECKPOINT_INTERVAL_M;
+        p.invulnerableUntilMs = Math.max(p.invulnerableUntilMs, world.elapsedMs + CHECKPOINT_GRACE_MS);
+        world.checkpointFlashUntilMs = world.elapsedMs + 1400;
+        hooks.onCheckpoint();
+      }
+    },
+    [nextId, spawnBurst, collectItem, collectPowerup]
+  );
 
   // --- Game loop --------------------------------------------------------
   const loop = useCallback(
@@ -343,10 +738,10 @@ export function RunGame({ address }: RunGameProps) {
       const dt = Math.min((now - last) / 1000, 0.05);
       lastTimeRef.current = now;
 
-      step(dt);
+      step(dt, sizeRef.current.height);
       draw();
 
-      if (worldRef.current.collided) {
+      if (worldRef.current.gameOver) {
         finishRun();
         return;
       }
@@ -364,80 +759,81 @@ export function RunGame({ address }: RunGameProps) {
     hudIntervalRef.current = null;
   }, []);
 
+  const buildStats = useCallback((world: World): RunStats => {
+    return {
+      distanceMeters: world.traveledPx / PX_PER_METER,
+      durationMs: Math.round(world.elapsedMs),
+      coinsCollected: world.stats.coins,
+      gemsCollected: world.stats.gems,
+      xpOrbsCollected: world.stats.xpOrbs,
+      keysCollected: world.stats.keys,
+      chestsCollected: world.stats.chests,
+      powerupsCollected: world.stats.powerups,
+      obstaclesPassed: world.stats.obstaclesPassed,
+      checkpointsReached: world.stats.checkpoints,
+      bonusScore: world.bonusScore,
+      hitsTaken: world.stats.hits,
+      collided: world.stats.hits > 0,
+      maxSpeedTierReached: Math.floor(Math.min(1, world.elapsedMs / RAMP_DURATION_MS) * SPEED_TIERS),
+    };
+  }, []);
+
   const finishRun = useCallback(() => {
     stopLoop();
     const world = worldRef.current;
     const session = sessionRef.current;
     setPhase("game_over");
+    getRunAudioHooks().onGameOver();
     if (!session) return;
 
     const ended = endSession(session);
     sessionRef.current = ended;
 
-    // Distance is derived from accumulated scroll speed*time, tracked as
-    // meters via PX_PER_METER — recomputed here from the same world speed
-    // ramp rather than stored separately, so it can never drift from what
-    // was actually rendered.
-    const traveledPx = integratePxTraveled(world.elapsedMs);
-    const stats: RunStats = {
-      distanceMeters: traveledPx / PX_PER_METER,
-      durationMs: Math.round(world.elapsedMs),
-      coinsCollected: world.coinsCollected,
-      obstaclesPassed: world.obstaclesPassed,
-      collided: world.collided,
-      maxSpeedTierReached: Math.floor(Math.min(1, world.elapsedMs / RAMP_DURATION_MS) * SPEED_TIERS),
-    };
-    const result = finalizeRun(stats);
+    const result = finalizeRun(buildStats(world));
     setRunResult(result);
 
     const rewardOutcome = processRunResult(address, ended.sessionId, result);
     setOutcome(rewardOutcome);
     refreshPersonalBest();
-  }, [address, stopLoop, refreshPersonalBest]);
-
-  // Integrates the same speed ramp used during the run to get total
-  // px traveled — kept as a pure function of elapsed time so it's
-  // deterministic and reproducible from the tracked duration alone.
-  function integratePxTraveled(elapsedMs: number): number {
-    const rampMs = Math.min(elapsedMs, RAMP_DURATION_MS);
-    const afterRampMs = Math.max(0, elapsedMs - RAMP_DURATION_MS);
-    // Average speed during the ramp (linear ramp from BASE to MAX).
-    const avgRampSpeed = (BASE_SPEED + (BASE_SPEED + (MAX_SPEED - BASE_SPEED) * (rampMs / RAMP_DURATION_MS || 0))) / 2;
-    const rampPx = avgRampSpeed * (rampMs / 1000);
-    const afterRampPx = MAX_SPEED * (afterRampMs / 1000);
-    return rampPx + afterRampPx;
-  }
+  }, [address, stopLoop, refreshPersonalBest, buildStats]);
 
   const startHudSync = useCallback(() => {
     if (hudIntervalRef.current != null) clearInterval(hudIntervalRef.current);
     hudIntervalRef.current = setInterval(() => {
       const world = worldRef.current;
-      const distance = integratePxTraveled(world.elapsedMs) / PX_PER_METER;
-      const provisional = finalizeRun({
-        distanceMeters: distance,
-        durationMs: world.elapsedMs,
-        coinsCollected: world.coinsCollected,
-        obstaclesPassed: world.obstaclesPassed,
-        collided: world.collided,
-        maxSpeedTierReached: Math.floor(Math.min(1, world.elapsedMs / RAMP_DURATION_MS) * SPEED_TIERS),
-      });
+      const provisional = finalizeRun(buildStats(world));
+      const activePowerups = (Object.keys(world.activePowerups) as PowerupType[])
+        .map((type) => ({ type, remainingMs: Math.max(0, (world.activePowerups[type] ?? 0) - world.elapsedMs) }))
+        .filter((entry) => entry.remainingMs > 0);
+
       setHud({
-        distance: Math.floor(distance),
-        coins: world.coinsCollected,
+        distance: Math.floor(provisional.distanceMeters),
         score: provisional.score,
+        coins: world.stats.coins,
+        gems: world.stats.gems,
+        hp: world.player.hp,
         speedTier: provisional.maxSpeedTierReached,
+        activePowerups,
+        checkpointFlash: world.elapsedMs < world.checkpointFlashUntilMs,
       });
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, 120);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [buildStats]);
 
   const beginCountdown = useCallback(() => {
     worldRef.current = freshWorld();
     sessionRef.current = startSession(MPGR_RUN_GAME_ID, address);
     setRunResult(null);
     setOutcome(null);
-    setHud({ distance: 0, coins: 0, score: 0, speedTier: 0 });
+    setHud({
+      distance: 0,
+      score: 0,
+      coins: 0,
+      gems: 0,
+      hp: STARTING_HP,
+      speedTier: 0,
+      activePowerups: [],
+      checkpointFlash: false,
+    });
     setCountdownValue(COUNTDOWN_SECONDS);
     setPhase("countdown");
 
@@ -456,12 +852,34 @@ export function RunGame({ address }: RunGameProps) {
     }, 700);
   }, [address, loop, startHudSync]);
 
+  // --- Input actions ------------------------------------------------------
   const jump = useCallback(() => {
     if (phaseRef.current !== "running") return;
     const world = worldRef.current;
-    if (world.playerY <= 0) {
-      world.velocityY = JUMP_VELOCITY;
+    const p = world.player;
+    if (world.activePowerups.jetpack) return;
+    if (p.playerY <= 0 && !p.sliding) {
+      p.velocityY = JUMP_VELOCITY;
+      getRunAudioHooks().onJump();
     }
+  }, []);
+
+  const slide = useCallback(() => {
+    if (phaseRef.current !== "running") return;
+    const world = worldRef.current;
+    const p = world.player;
+    if (world.activePowerups.jetpack) return;
+    if (p.playerY <= 0) {
+      p.sliding = true;
+      p.slideUntilMs = world.elapsedMs + SLIDE_DURATION_MS;
+      getRunAudioHooks().onSlide();
+    }
+  }, []);
+
+  const switchLane = useCallback((dir: -1 | 1) => {
+    if (phaseRef.current !== "running") return;
+    const world = worldRef.current;
+    world.player.lane = clamp(world.player.lane + dir, 0, LANE_COUNT - 1);
   }, []);
 
   const togglePause = useCallback(() => {
@@ -488,23 +906,52 @@ export function RunGame({ address }: RunGameProps) {
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [stopLoop]);
 
-  // Keyboard controls (desktop): Space / ArrowUp = jump.
+  // Keyboard controls (desktop): Arrows/WASD to switch lanes, Space/Up/W jump, Down/S slide.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space" || e.code === "ArrowUp") {
+      if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyW", "KeyA", "KeyS", "KeyD"].includes(e.code)) {
         e.preventDefault();
-        jump();
       }
+      if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") jump();
+      else if (e.code === "ArrowDown" || e.code === "KeyS") slide();
+      else if (e.code === "ArrowLeft" || e.code === "KeyA") switchLane(-1);
+      else if (e.code === "ArrowRight" || e.code === "KeyD") switchLane(1);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [jump]);
+  }, [jump, slide, switchLane]);
 
   useEffect(() => stopLoop, [stopLoop]);
 
+  // Swipe gestures on the canvas surface — short tap still jumps.
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (phase !== "running") return;
+    swipeStartRef.current = { x: e.clientX, y: e.clientY };
+  };
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (phase !== "running") return;
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    if (!start) {
+      jump();
+      return;
+    }
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 40) {
+      switchLane(dx > 0 ? 1 : -1);
+    } else if (dy < -40) {
+      jump();
+    } else if (dy > 40) {
+      slide();
+    } else {
+      jump();
+    }
+  };
+
   const handleShare = async () => {
     if (!runResult) return;
-    const text = `🦖 I survived ${Math.floor(runResult.distanceMeters)}m in MPGR Run.\n\nScore: ${formatCompactNumber(
+    const text = `⚡ I survived ${Math.floor(runResult.distanceMeters)}m in MPGR Run.\n\nScore: ${formatCompactNumber(
       runResult.score
     )}\n\nCan you beat me?\n\n🔵 MPGR HUB`;
     try {
@@ -544,12 +991,8 @@ export function RunGame({ address }: RunGameProps) {
       <GlassCard className="relative overflow-hidden p-0">
         <div
           ref={containerRef}
-          onPointerDown={(e) => {
-            if (phase === "running") {
-              e.preventDefault();
-              jump();
-            }
-          }}
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
           className="relative h-[62vh] max-h-[560px] min-h-[360px] w-full select-none touch-none"
           style={{ touchAction: "none" }}
         >
@@ -557,15 +1000,62 @@ export function RunGame({ address }: RunGameProps) {
 
           {/* In-run HUD */}
           {(phase === "running" || phase === "paused") && (
-            <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
-              <div className="flex gap-2">
-                <HudChip icon={Zap} label="Score" value={formatCompactNumber(hud.score)} />
-                <HudChip icon={CoinsIcon} label="Coins" value={String(hud.coins)} />
+            <>
+              <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
+                <div className="flex flex-wrap gap-1.5">
+                  <HudChip icon={Zap} label="Score" value={formatCompactNumber(hud.score)} />
+                  <HudChip icon={CoinsIcon} label="Coins" value={String(hud.coins)} />
+                  <HudChip icon={GemIcon} label="Gems" value={String(hud.gems)} />
+                </div>
+                <div className="flex flex-col items-end gap-1.5">
+                  <div className="rounded-full bg-black/40 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-md">
+                    {formatCompactNumber(hud.distance)}m
+                  </div>
+                  <div className="flex items-center gap-0.5 rounded-full bg-black/40 px-2.5 py-1 backdrop-blur-md">
+                    {Array.from({ length: STARTING_HP }).map((_, i) => (
+                      <Heart
+                        key={i}
+                        className={`h-3.5 w-3.5 ${i < hud.hp ? "fill-rose-500 text-rose-500" : "text-white/20"}`}
+                        aria-hidden="true"
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
-              <div className="rounded-full bg-black/40 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-md">
-                {formatCompactNumber(hud.distance)}m
-              </div>
-            </div>
+
+              {hud.activePowerups.length > 0 && (
+                <div className="pointer-events-none absolute left-3 top-16 flex flex-col gap-1.5">
+                  {hud.activePowerups.map(({ type, remainingMs }) => {
+                    const Icon = POWERUP_ICON[type];
+                    const cfg = POWERUP_TYPES[type];
+                    return (
+                      <div
+                        key={type}
+                        className="flex items-center gap-1.5 rounded-full bg-black/50 px-2.5 py-1 backdrop-blur-md"
+                        style={{ boxShadow: `0 0 0 1px ${cfg.color}55` }}
+                      >
+                        <Icon className="h-3 w-3" style={{ color: cfg.color }} aria-hidden="true" />
+                        <span className="text-[10px] font-semibold text-white">{Math.ceil(remainingMs / 1000)}s</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* On-screen controls */}
+              {phase === "running" && (
+                <div className="pointer-events-auto absolute inset-x-0 bottom-3 flex items-end justify-between px-3">
+                  <div className="flex gap-2">
+                    <ControlButton icon={ChevronLeft} label="Left" onPress={() => switchLane(-1)} />
+                    <ControlButton icon={ChevronRight} label="Right" onPress={() => switchLane(1)} />
+                  </div>
+                  <div className="flex gap-2">
+                    <ControlButton icon={ChevronDown} label="Slide" onPress={slide} />
+                    <ControlButton icon={ChevronUp} label="Jump" onPress={jump} accent />
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {/* Idle */}
@@ -578,12 +1068,13 @@ export function RunGame({ address }: RunGameProps) {
                 className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background/70 px-6 text-center backdrop-blur-sm"
               >
                 <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-primary-glow/25 to-primary/10 text-4xl ring-1 ring-primary/25 animate-float">
-                  🦖
+                  ⚡
                 </div>
                 <div>
                   <p className="text-lg font-bold text-white">MPGR Run</p>
                   <p className="mt-1 max-w-xs text-xs text-muted">
-                    Tap anywhere to jump. Dodge obstacles, grab coins, and survive as long as you can.
+                    Swipe or use the buttons — left/right to switch lanes, up to jump, down to slide. Dodge hazards,
+                    grab collectibles and power-ups, and survive as long as you can.
                   </p>
                 </div>
                 <button
@@ -666,6 +1157,9 @@ export function RunGame({ address }: RunGameProps) {
                 <div className="mt-2 grid grid-cols-3 gap-2 text-center">
                   <StatPill label="Distance" value={`${formatCompactNumber(runResult.distanceMeters)}m`} />
                   <StatPill label="Coins" value={String(runResult.coinsCollected)} />
+                  <StatPill label="Gems" value={String(runResult.gemsCollected)} />
+                  <StatPill label="Checkpoints" value={String(runResult.checkpointsReached)} />
+                  <StatPill label="Power-ups" value={String(runResult.powerupsCollected)} />
                   <StatPill
                     label="Best"
                     value={formatCompactNumber(Math.max(personalBest, runResult.score))}
@@ -750,6 +1244,36 @@ function HudChip({
   );
 }
 
+function ControlButton({
+  icon: Icon,
+  label,
+  onPress,
+  accent,
+}: {
+  icon: typeof Zap;
+  label: string;
+  onPress: () => void;
+  accent?: boolean;
+}) {
+  return (
+    <button
+      onPointerDown={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onPress();
+      }}
+      aria-label={label}
+      className={`flex h-14 w-14 items-center justify-center rounded-full backdrop-blur-md ring-1 transition-transform active:scale-90 ${
+        accent
+          ? "bg-gradient-premium text-white shadow-glow-gold ring-white/20"
+          : "bg-black/45 text-white ring-white/15"
+      }`}
+    >
+      <Icon className="h-6 w-6" aria-hidden="true" />
+    </button>
+  );
+}
+
 function StatPill({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.03] px-2 py-2.5">
@@ -757,4 +1281,4 @@ function StatPill({ label, value, highlight }: { label: string; value: string; h
       <p className="mt-0.5 text-[10px] text-muted">{label}</p>
     </div>
   );
-}
+      }
