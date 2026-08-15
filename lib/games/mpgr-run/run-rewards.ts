@@ -6,11 +6,7 @@
 // directly (see lib/games/game-rewards.ts) — they fall out of the XP
 // award automatically via lib/xp-engine.ts's getSeasonPoints().
 
-import {
-  getAchievements,
-  getUserRecord,
-  type GameAchievementStats,
-} from "@/lib/xp-engine";
+import { getAchievements, getUserRecord, type GameAchievementStats } from "@/lib/xp-engine";
 import { getGameStats, saveGameStats } from "../game-storage";
 import { awardCappedRunXP } from "../game-rewards";
 import type { GameRewardOutcome, GameStatsRecord } from "../game-types";
@@ -23,9 +19,7 @@ import {
   SPEED_TIERS,
 } from "./run-config";
 
-export function toGameAchievementStats(
-  stats: GameStatsRecord
-): GameAchievementStats {
+export function toGameAchievementStats(stats: GameStatsRecord): GameAchievementStats {
   return {
     totalRuns: stats.totalRuns,
     bestDistance: stats.bestDistance,
@@ -47,11 +41,7 @@ export function processRunResult(
   result: RunResult
 ): ProcessRunResultOutcome {
   const stats = getGameStats(MPGR_RUN_GAME_ID, address);
-  const validation = validateRunResult(
-    result,
-    sessionId,
-    stats.processedSessionIds
-  );
+  const validation = validateRunResult(result, sessionId, stats.processedSessionIds);
 
   const statsBefore = toGameAchievementStats(stats);
   const xpRecord = getUserRecord(address);
@@ -65,31 +55,20 @@ export function processRunResult(
   stats.lastPlayedAt = new Date().toISOString();
   stats.processedSessionIds = [...stats.processedSessionIds, sessionId];
 
-  const isNewPersonalBest =
-    validation.valid && result.score > stats.bestScore;
+  const isNewPersonalBest = validation.valid && result.score > stats.bestScore;
 
   if (validation.valid) {
     stats.totalValidRuns += 1;
     stats.bestScore = Math.max(stats.bestScore, result.score);
-    stats.bestDistance = Math.max(
-      stats.bestDistance,
-      result.distanceMeters
-    );
+    stats.bestDistance = Math.max(stats.bestDistance, result.distanceMeters);
     stats.bestCoins = Math.max(stats.bestCoins, result.coinsCollected);
-    stats.bestDurationMs = Math.max(
-      stats.bestDurationMs,
-      result.durationMs
-    );
+    stats.bestDurationMs = Math.max(stats.bestDurationMs, result.durationMs);
     stats.totalCoinsCollected += result.coinsCollected;
     stats.maxSpeedTierReached = Math.max(
       stats.maxSpeedTierReached,
       Math.min(result.maxSpeedTierReached, SPEED_TIERS)
     );
-
-    if (
-      !result.collided &&
-      result.distanceMeters >= NO_COLLISION_ACHIEVEMENT_MIN_DISTANCE
-    ) {
+    if (!result.collided && result.distanceMeters >= NO_COLLISION_ACHIEVEMENT_MIN_DISTANCE) {
       stats.noCollisionRuns += 1;
     }
   }
@@ -107,10 +86,8 @@ export function processRunResult(
       "GAME_MPGR_RUN_COMPLETE",
       DAILY_XP_RUN_CAP
     );
-
     xpAwarded = xpResult.xpGained;
     dailyCapReached = xpResult.dailyCapReached;
-
     xpAwardedReason = xpResult.awarded
       ? "Completed run"
       : xpResult.dailyCapReached
@@ -122,12 +99,7 @@ export function processRunResult(
 
   const statsAfter = toGameAchievementStats(stats);
   const xpRecordAfter = getUserRecord(address);
-
-  const achievementsAfter = getAchievements(
-    xpRecordAfter,
-    statsAfter
-  ).filter((a) => a.unlocked);
-
+  const achievementsAfter = getAchievements(xpRecordAfter, statsAfter).filter((a) => a.unlocked);
   const newlyUnlockedAchievementIds = achievementsAfter
     .filter((a) => !achievementsBefore.has(a.id))
     .map((a) => a.id);
