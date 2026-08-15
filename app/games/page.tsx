@@ -1,243 +1,101 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useAccount } from "wagmi";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import {
-  Gamepad2,
-  Sparkles,
-  Trophy,
-  Zap,
-} from "lucide-react";
-
+import { Gamepad2, Award, Flame, Star, Trophy } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
-import { GlassCard } from "@/components/ui/GlassCard";
-import { SectionHeader } from "@/components/ui/SectionHeader";
 import { StatCard } from "@/components/ui/StatCard";
-import { AchievementCard } from "@/components/features/achievements/AchievementCard";
-import { SkeletonCard } from "@/components/ui/SkeletonCard";
+import { AchievementCard } from "@/components/ui/AchievementCard";
+import { FloatingXP } from "@/components/ui/FloatingXP";
+import { LevelUpModal } from "@/components/ui/LevelUpModal";
+import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { FeaturedGameBanner } from "@/components/features/games/FeaturedGameBanner";
 import { GameCard } from "@/components/features/games/GameCard";
-
-import {
-  GAME_REGISTRY,
-  getFeaturedGame,
-  getGameStats,
-  getUserRecord,
-  getAchievements,
-} from "@/lib/games";
-
+import { FeaturedGameBanner } from "@/components/features/games/FeaturedGameBanner";
 import { useXP } from "@/hooks/useXP";
+import { getLevelProgress, getAchievements, getSeasonPoints } from "@/lib/xp-engine";
+import { GAME_REGISTRY, getFeaturedGame } from "@/lib/games/game-registry";
+import { getGameStats } from "@/lib/games/game-storage";
+import { toGameAchievementStats } from "@/lib/games/mpgr-run/run-rewards";
+import { MPGR_RUN_GAME_ID } from "@/lib/games/mpgr-run/run-config";
+import { formatCompactNumber } from "@/lib/format";
 
 export default function GamesPage() {
   const [mounted, setMounted] = useState(false);
+  const { record, claim, isConnected, lastEvent, leveledUp, dismissEvent, dismissLevelUp } = useXP();
 
-  const { address, isConnected } = useAccount();
+  useEffect(() => setMounted(true), []);
 
-  const {
-    xp,
-    level,
-    seasonPoints,
-  } = useXP(address);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
+  const levelInfo = record ? getLevelProgress(record.xp) : null;
+  const seasonPoints = record ? getSeasonPoints(record) : 0;
+  const gameStats = record ? getGameStats(MPGR_RUN_GAME_ID, record.address) : null;
+  const gameAchievementStats = gameStats ? toGameAchievementStats(gameStats) : undefined;
+  const achievements = record ? getAchievements(record, gameAchievementStats) : [];
   const featuredGame = getFeaturedGame();
-
-  const memoryStats = useMemo(() => {
-    if (!address) return null;
-
-    return getGameStats("memory-challenge", address);
-  }, [address]);
-
-  const mpgrRunStats = useMemo(() => {
-    if (!address) return null;
-
-    return getGameStats("mpgr-run", address);
-  }, [address]);
-
-  const achievements = useMemo(() => {
-    if (!address) return [];
-
-    const userRecord = getUserRecord(address);
-
-    return getAchievements(userRecord, {
-      totalRuns: mpgrRunStats?.totalRuns ?? 0,
-      bestDistance: mpgrRunStats?.bestDistance ?? 0,
-      noCollisionRuns: mpgrRunStats?.noCollisionRuns ?? 0,
-      totalCoinsCollected: mpgrRunStats?.totalCoinsCollected ?? 0,
-    });
-  }, [address, mpgrRunStats]);
-
-  const unlockedAchievements = achievements.filter(
-    (achievement) => achievement.unlocked
-  );
-
-  if (!mounted) {
-    return (
-      <>
-        <Navbar />
-
-        <main className="mx-auto max-w-6xl px-4 py-6">
-          <SkeletonCard lines={8} />
-        </main>
-      </>
-    );
-  }
-
-  if (!isConnected || !address) {
-    return (
-      <>
-        <Navbar />
-
-        <main className="mx-auto max-w-6xl px-4 py-8">
-          <EmptyState
-            icon={Gamepad2}
-            title="Connect your wallet"
-            description="Connect your wallet to play MPGR HUB games and track your XP, Season Points, achievements, and personal bests."
-          />
-        </main>
-      </>
-    );
-  }
 
   return (
     <>
       <Navbar />
+      <FloatingXP amount={lastEvent?.amount ?? null} onComplete={dismissEvent} />
+      <LevelUpModal level={leveledUp} onClose={dismissLevelUp} />
 
-      <main className="mx-auto max-w-6xl px-4 py-6 pb-24">
-        {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-6"
-        >
-          <div className="flex items-center gap-2">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <Gamepad2 className="h-5 w-5" />
+      <main className="mx-auto max-w-6xl px-4 py-10">
+        {!mounted || !isConnected || !record ? (
+          <EmptyState
+            icon={Gamepad2}
+            title="Connect your wallet"
+            description="Connect to play, track your level, unlock achievements, and climb the leaderboard."
+          />
+        ) : (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-8">
+            <SectionHeader
+              title="🎮 MPGR HUB Games"
+              subtitle="Play, earn XP and Season Points, and unlock achievements across the arcade"
+            />
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <StatCard label="Level" value={String(levelInfo?.level ?? 1)} icon={Star} />
+              <StatCard label="XP" value={formatCompactNumber(record.xp)} icon={Trophy} accent="gold" />
+              <StatCard label="Season Points" value={formatCompactNumber(seasonPoints)} icon={Award} accent="gold" />
+              <StatCard label="Streak" value={`${record.streak}d`} icon={Flame} />
             </div>
 
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-foreground">
-                MPGR Games
-              </h1>
-
-              <p className="text-sm text-muted-foreground">
-                Play. Compete. Level up.
-              </p>
+              <SectionHeader title="Featured Game" />
+              <FeaturedGameBanner game={featuredGame} bestScore={gameStats?.bestScore} />
             </div>
-          </div>
-        </motion.div>
 
-        {/* Player Stats */}
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.05 }}
-          className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4"
-        >
-          <StatCard
-            title="Level"
-            value={level}
-            icon={Zap}
-          />
-
-          <StatCard
-            title="XP"
-            value={xp}
-            icon={Sparkles}
-          />
-
-          <StatCard
-            title="Season Points"
-            value={seasonPoints}
-            icon={Trophy}
-          />
-
-          <StatCard
-            title="Achievements"
-            value={unlockedAchievements.length}
-            icon={Gamepad2}
-          />
-        </motion.div>
-
-        {/* Featured Game */}
-        <section className="mb-8">
-          <SectionHeader
-            title="Featured Game"
-            subtitle="Start your run and chase your personal best."
-          />
-
-          <FeaturedGameBanner
-            game={featuredGame}
-            bestScore={
-              featuredGame.id === "mpgr-run"
-                ? mpgrRunStats?.bestScore ?? 0
-                : 0
-            }
-          />
-        </section>
-
-        {/* Games */}
-        <section className="mb-8">
-          <SectionHeader
-            title="All Games"
-            subtitle={`${GAME_REGISTRY.length} games planned for MPGR HUB`}
-          />
-
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {GAME_REGISTRY.map((game) => {
-              const bestScore =
-                game.id === "mpgr-run"
-                  ? mpgrRunStats?.bestScore ?? 0
-                  : game.id === "memory-challenge"
-                  ? memoryStats?.bestScore ?? 0
-                  : 0;
-
-              return (
-                <GameCard
-                  key={game.id}
-                  game={game}
-                  bestScore={bestScore}
-                />
-              );
-            })}
-          </div>
-        </section>
-
-        {/* Achievements */}
-        <section>
-          <SectionHeader
-            title="Game Achievements"
-            subtitle="Keep playing to unlock new milestones."
-          />
-
-          {achievements.length > 0 ? (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {achievements.map((achievement) => (
-                <AchievementCard
-                  key={achievement.id}
-                  achievement={achievement}
-                />
-              ))}
+            <div>
+              <SectionHeader title="All Games" subtitle="MPGR Run is live — the rest of the roadmap is on the way" />
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                {GAME_REGISTRY.map((game) => (
+                  <GameCard
+                    key={game.id}
+                    game={game}
+                    bestScore={game.id === MPGR_RUN_GAME_ID ? gameStats?.bestScore : null}
+                  />
+                ))}
+              </div>
             </div>
-          ) : (
-            <GlassCard className="p-6 text-center">
-              <Trophy className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
 
-              <p className="text-sm font-medium text-foreground">
-                No achievements yet
-              </p>
-
-              <p className="mt-1 text-xs text-muted-foreground">
-                Start playing to unlock your first achievement.
-              </p>
-            </GlassCard>
-          )}
-        </section>
+            <div>
+              <SectionHeader title="Achievements" />
+              {achievements.length === 0 ? (
+                <EmptyState icon={Award} title="No achievements yet" description="Start earning XP to unlock achievements." />
+              ) : (
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  {achievements.map((achievement) => (
+                    <AchievementCard
+                      key={achievement.id}
+                      achievement={achievement}
+                      onClaim={() => claim(achievement.id, gameAchievementStats)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
       </main>
     </>
   );
