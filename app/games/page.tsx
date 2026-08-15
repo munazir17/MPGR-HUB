@@ -72,7 +72,7 @@ export default function GamesPage() {
                   <GameCard
                     key={game.id}
                     game={game}
-                    bestScore={game.id === MPGR_RUN_GAME_ID ? gameStats?.bestScore : null}
+                    bestScore={game.id === MPGR_RUN_GAME_ID ? gameStats?.bestScore : undefined}
                   />
                 ))}
               </div>
