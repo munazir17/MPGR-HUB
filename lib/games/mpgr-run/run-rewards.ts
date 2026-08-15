@@ -19,6 +19,11 @@ import {
   SPEED_TIERS,
 } from "./run-config";
 
+// toGameAchievementStats intentionally maps ONLY the four fields
+// xp-engine.ts's GameAchievementStats actually declares — the richer Games
+// 1.0 stats added below (gems, orbs, keys, chests, power-ups, checkpoints)
+// live in GameStatsRecord.custom and are not part of this narrow shape, so
+// xp-engine.ts's existing achievement list is completely unaffected.
 export function toGameAchievementStats(stats: GameStatsRecord): GameAchievementStats {
   return {
     totalRuns: stats.totalRuns,
@@ -33,6 +38,14 @@ export interface ProcessRunResultOutcome extends GameRewardOutcome {
   validationReasons: string[];
   updatedStats: GameStatsRecord;
   isNewPersonalBest: boolean;
+}
+
+function bumpCustom(stats: GameStatsRecord, key: string, amount: number): void {
+  stats.custom[key] = (stats.custom[key] ?? 0) + amount;
+}
+
+function maxCustom(stats: GameStatsRecord, key: string, value: number): void {
+  stats.custom[key] = Math.max(stats.custom[key] ?? 0, value);
 }
 
 export function processRunResult(
@@ -71,6 +84,19 @@ export function processRunResult(
     if (!result.collided && result.distanceMeters >= NO_COLLISION_ACHIEVEMENT_MIN_DISTANCE) {
       stats.noCollisionRuns += 1;
     }
+
+    // Games 1.0 extension stats — MPGR-Run-specific, kept out of the shared
+    // GameStatsRecord shape per its own file-level contract (see
+    // lib/games/game-types.ts). Available today for future achievements /
+    // shop / missions work without needing another migration.
+    bumpCustom(stats, "totalGemsCollected", result.gemsCollected);
+    bumpCustom(stats, "totalXpOrbsCollected", result.xpOrbsCollected);
+    bumpCustom(stats, "totalKeysCollected", result.keysCollected);
+    bumpCustom(stats, "totalChestsCollected", result.chestsCollected);
+    bumpCustom(stats, "totalPowerupsCollected", result.powerupsCollected);
+    bumpCustom(stats, "totalCheckpointsReached", result.checkpointsReached);
+    maxCustom(stats, "bestGemsInRun", result.gemsCollected);
+    maxCustom(stats, "bestCheckpointsInRun", result.checkpointsReached);
   }
 
   saveGameStats(stats);
