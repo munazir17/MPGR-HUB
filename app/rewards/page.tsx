@@ -7,6 +7,7 @@ import { Gift, Trophy, HelpCircle, Loader2, AlertCircle, X } from "lucide-react"
 import { Navbar } from "@/components/Navbar";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { RewardClaimCard } from "@/components/ui/RewardClaimCard";
+import { OnChainRewardsSection } from "@/components/ui/OnChainRewardsSection";
 import { WeeklyRewardCard } from "@/components/ui/WeeklyRewardCard";
 import { RewardHubSummaryCards } from "@/components/ui/RewardHubSummaryCards";
 import { RewardCategoryGrid } from "@/components/ui/RewardCategoryGrid";
@@ -58,6 +59,14 @@ import { formatCompactNumber } from "@/lib/format";
 // reward still only ever happens on /staking via hooks/useStaking.ts's
 // claimRewards() — this page's category grid links there instead of
 // duplicating that transaction.
+//
+// Reward Vault Integration — added a third, fully isolated data source:
+// <OnChainRewardsSection /> (hooks/useRewardClaim.ts), which reads and
+// claims real rewards from the deployed MPGRRewardVault contract on Base
+// Mainnet. It shares no state, cache, or claim path with #1 or #2 above
+// — it's a self-contained section with its own loading/error/empty/
+// wrong-network states, so it carries zero risk to the existing local
+// claim grid or the read-only aggregator.
 
 const SEASON_MILESTONES = [250, 500, 1000];
 
@@ -243,6 +252,8 @@ export default function RewardsPage() {
                 ))}
               </div>
             )}
+
+            <OnChainRewardsSection />
 
             <div>
               <SectionHeader title="Season Progress" subtitle={`Season ${seasonNumber} milestones`} />
