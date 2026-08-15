@@ -4,7 +4,12 @@ export type XPAction =
   | "PROFILE_COMPLETED"
   | "SHARE_ON_X"
   | "QUEST_COMPLETED"
-  | "REFERRAL_SUCCESS";
+  | "REFERRAL_SUCCESS"
+  // Games Platform (Games 1.0) — awarded by lib/games/mpgr-run/run-rewards.ts
+  // only after a client-validated, non-duplicate completed run, and only up
+  // to a per-day cap enforced in that module. Fixed amount, same discipline
+  // as every other action here — no arbitrary/variable XP grants.
+  | "GAME_MPGR_RUN_COMPLETE";
 
 export const XP_ACTIONS: Record<XPAction, { label: string; xp: number }> = {
   WALLET_CONNECTED: { label: "Wallet Connected", xp: 50 },
@@ -13,6 +18,7 @@ export const XP_ACTIONS: Record<XPAction, { label: string; xp: number }> = {
   SHARE_ON_X: { label: "Shared on X", xp: 15 },
   QUEST_COMPLETED: { label: "Quest Completed", xp: 40 },
   REFERRAL_SUCCESS: { label: "Referral Success", xp: 100 },
+  GAME_MPGR_RUN_COMPLETE: { label: "MPGR Run Completed", xp: 8 },
 };
 
 export interface XPHistoryEntry {
@@ -194,9 +200,23 @@ export interface Achievement {
   comingSoon?: boolean;
 }
 
-export function getAchievements(record: UserXPRecord): Achievement[] {
+// Games Platform (Games 1.0) — minimal aggregate stats needed to compute
+// game-related achievement progress. Sourced from lib/games/game-storage.ts
+// GameStatsRecord; kept as its own narrow shape here so xp-engine.ts never
+// needs to import anything from lib/games/. Optional everywhere so every
+// existing call site (that doesn't pass it) behaves exactly as before —
+// game achievements just render locked/0-progress until stats are supplied.
+export interface GameAchievementStats {
+  totalRuns: number;
+  bestDistance: number;
+  noCollisionRuns: number;
+  totalCoinsCollected: number;
+}
+
+export function getAchievements(record: UserXPRecord, gameStats?: GameAchievementStats): Achievement[] {
   const level = getLevelProgress(record.xp).level;
   const claimed = record.claimedAchievements;
+  const g = gameStats;
 
   const defs: Omit<Achievement, "claimed">[] = [
     {
@@ -282,14 +302,75 @@ export function getAchievements(record: UserXPRecord): Achievement[] {
       target: 1,
       comingSoon: true,
     },
+    // --- Games Platform: MPGR Run --------------------------------------
+    {
+      id: "mpgr-run-first",
+      title: "First Run",
+      description: "Complete your first MPGR Run",
+      unlocked: !!g && g.totalRuns >= 1,
+      progress: Math.min(g?.totalRuns ?? 0, 1),
+      target: 1,
+    },
+    {
+      id: "mpgr-run-1000m",
+      title: "1,000m Club",
+      description: "Reach 1,000m in a single MPGR Run",
+      unlocked: !!g && g.bestDistance >= 1000,
+      progress: Math.min(g?.bestDistance ?? 0, 1000),
+      target: 1000,
+    },
+    {
+      id: "mpgr-run-5000m",
+      title: "5,000m Club",
+      description: "Reach 5,000m in a single MPGR Run",
+      unlocked: !!g && g.bestDistance >= 5000,
+      progress: Math.min(g?.bestDistance ?? 0, 5000),
+      target: 5000,
+    },
+    {
+      id: "mpgr-run-10000m",
+      title: "10,000m Club",
+      description: "Reach 10,000m in a single MPGR Run",
+      unlocked: !!g && g.bestDistance >= 10000,
+      progress: Math.min(g?.bestDistance ?? 0, 10000),
+      target: 10000,
+    },
+    {
+      id: "mpgr-run-no-collision",
+      title: "Flawless Run",
+      description: "Finish a run of at least 500m without a single collision",
+      unlocked: !!g && g.noCollisionRuns >= 1,
+      progress: Math.min(g?.noCollisionRuns ?? 0, 1),
+      target: 1,
+    },
+    {
+      id: "mpgr-run-coin-collector",
+      title: "Coin Collector",
+      description: "Collect 500 total coins across all MPGR Runs",
+      unlocked: !!g && g.totalCoinsCollected >= 500,
+      progress: Math.min(g?.totalCoinsCollected ?? 0, 500),
+      target: 500,
+    },
+    {
+      id: "mpgr-runner",
+      title: "MPGR Runner",
+      description: "Complete 25 MPGR Runs",
+      unlocked: !!g && g.totalRuns >= 25,
+      progress: Math.min(g?.totalRuns ?? 0, 25),
+      target: 25,
+    },
   ];
 
   return defs.map((d) => ({ ...d, claimed: claimed.includes(d.id) }));
 }
 
-export function claimAchievement(address: string, achievementId: string): UserXPRecord {
+export function claimAchievement(
+  address: string,
+  achievementId: string,
+  gameStats?: GameAchievementStats
+): UserXPRecord {
   const record = getUserRecord(address);
-  const achievement = getAchievements(record).find((a) => a.id === achievementId);
+  const achievement = getAchievements(record, gameStats).find((a) => a.id === achievementId);
   if (!achievement || !achievement.unlocked || record.claimedAchievements.includes(achievementId)) {
     return record;
   }
