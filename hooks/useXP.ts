@@ -8,6 +8,7 @@ import {
   getUserRecord,
   performDailyCheckIn,
   type UserXPRecord,
+  type GameAchievementStats,
 } from "@/lib/xp-engine";
 
 interface XPEvent {
@@ -44,9 +45,9 @@ export function useXP() {
   }, [address]);
 
   const claim = useCallback(
-    (achievementId: string) => {
+    (achievementId: string, gameStats?: GameAchievementStats) => {
       if (!address) return;
-      setRecord(claimAchievement(address, achievementId));
+      setRecord(claimAchievement(address, achievementId, gameStats));
     },
     [address]
   );
