@@ -9,7 +9,11 @@ import { readJSON, writeJSON } from "@/lib/storage";
 
 // --- Types -------------------------------------------------------------
 
-export type RewardSource = "DAILY_CHECK_IN" | "STREAK" | "LEVEL" | "REFERRAL" | "SEASON";
+// GAME/QUEST/WEEKLY/BONUS were added for the real on-chain Reward Vault
+// module (see lib/reward-vault/) — this module itself never produces
+// them; they exist here only so the shared RewardClaimCard UI/label/icon
+// maps can render on-chain vault rewards without a parallel type system.
+export type RewardSource = "DAILY_CHECK_IN" | "STREAK" | "LEVEL" | "REFERRAL" | "SEASON" | "GAME" | "QUEST" | "WEEKLY" | "BONUS";
 
 export interface RewardClaim {
   id: string;
@@ -58,6 +62,10 @@ export const REWARD_SOURCE_LABEL: Record<RewardSource, string> = {
   LEVEL: "Level",
   REFERRAL: "Referral",
   SEASON: "Season",
+  GAME: "Game",
+  QUEST: "Quest",
+  WEEKLY: "Weekly",
+  BONUS: "Bonus",
 };
 
 const STORAGE_PREFIX = "mpgr_rewards_v1_";
