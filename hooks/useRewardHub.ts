@@ -5,7 +5,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount } from "wagmi";
 import { rewardService } from "@/lib/rewards/reward-service";
-import { claimAllRewards, claimReward } from "@/lib/rewards-engine";
 import { agentEventBus } from "@/lib/architecture/core/event-bus";
 import { MPGR_REWARDS_CONFIG } from "@/lib/rewards/reward-config";
 import type { RewardClaimHistoryEntry, RewardHubSummary } from "@/lib/rewards/reward-types";
@@ -14,15 +13,25 @@ import type { RewardClaimHistoryEntry, RewardHubSummary } from "@/lib/rewards/re
 //
 // Mirrors hooks/useStaking.ts's shape: loads on mount/address change,
 // polls at MPGR_REWARDS_CONFIG.liveReadPollingIntervalMs, and refreshes
-// immediately off two events — the existing "staking_changed" and
-// "rewards_claimed" events.
+// immediately off the "staking_changed" event.
+//
+// Reward Vault cleanup — this hook used to also expose claimLocalReward/
+// claimAllLocalRewards, which called lib/rewards-engine.ts's local mock
+// claimReward()/claimAllRewards() and emitted "rewards_claimed" to
+// trigger a refresh. Neither function was ever wired to a button
+// anywhere in the app, and real MPGR reward claiming now happens
+// on-chain via hooks/useRewardClaim.ts (a separate, self-contained hook
+// that doesn't read from or write into this one). Both functions, their
+// claimingId/claimingAll state, and the now-permanently-dead
+// "rewards_claimed" listener have been removed as unused code left over
+// from that removal. This hook is read-only.
 //
 // Phase 3F perf fix — loadingRef below:
 // stakingHistoryService's inFlightScans already dedupes the history scan
 // itself, but nothing previously stopped a second load() (from the
-// liveReadPollingIntervalMs timer, or a staking_changed/rewards_claimed
-// event) from re-running the WHOLE aggregation while an earlier load()
-// for the same address was still in flight — including a fresh
+// liveReadPollingIntervalMs timer, or a staking_changed event) from
+// re-running the WHOLE aggregation while an earlier load() for the same
+// address was still in flight — including a fresh
 // stakingService.getWalletState() RPC call, which has no in-flight dedup
 // of its own. Measured trace evidence during diagnosis showed exactly
 // this: a polling load firing while the initial cold-load scan was still
@@ -42,10 +51,6 @@ interface UseRewardHubReturn {
   isLoadingMore: boolean;
   error: string | null;
   hasMoreHistory: boolean;
-  claimingId: string | null;
-  claimingAll: boolean;
-  claimLocalReward: (rewardId: string) => Promise<void>;
-  claimAllLocalRewards: () => Promise<void>;
   refresh: () => Promise<void>;
   loadMoreHistory: () => Promise<void>;
 }
@@ -62,8 +67,6 @@ export function useRewardHub(): UseRewardHubReturn {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [claimingId, setClaimingId] = useState<string | null>(null);
-  const [claimingAll, setClaimingAll] = useState(false);
   // Phase 3F perf fix — in-flight guard, see comment above the imports.
   const loadingRef = useRef(false);
 
@@ -149,20 +152,8 @@ export function useRewardHub(): UseRewardHubReturn {
       }
     );
 
-    const unsubscribeRewards = agentEventBus.on(
-      "rewards_claimed",
-      (payload) => {
-        if (!address || payload.address !== address) return;
-
-        rewardService.clearCache(address);
-
-        void load(historyPageSize, true);
-      }
-    );
-
     return () => {
       unsubscribeStaking();
-      unsubscribeRewards();
     };
   }, [address, historyPageSize, load]);
 
@@ -199,67 +190,6 @@ export function useRewardHub(): UseRewardHubReturn {
     }
   }, [address, historyPageSize]);
 
-  const claimLocalReward = useCallback(
-    async (rewardId: string) => {
-      if (!address || claimingId || claimingAll) return;
-
-      setClaimingId(rewardId);
-
-      try {
-        const result = claimReward(address, rewardId);
-
-        if (result.claimedAmount > 0) {
-          agentEventBus.emit("rewards_claimed", {
-            address,
-            amount: result.claimedAmount,
-          });
-        }
-
-        rewardService.clearCache(address);
-
-        await load(historyPageSize, true);
-      } finally {
-        setClaimingId(null);
-      }
-    },
-    [
-      address,
-      claimingId,
-      claimingAll,
-      historyPageSize,
-      load,
-    ]
-  );
-
-  const claimAllLocalRewards = useCallback(async () => {
-    if (!address || claimingId || claimingAll) return;
-
-    setClaimingAll(true);
-
-    try {
-      const result = claimAllRewards(address);
-
-      if (result.claimedAmount > 0) {
-        agentEventBus.emit("rewards_claimed", {
-          address,
-          amount: result.claimedAmount,
-        });
-      }
-
-      rewardService.clearCache(address);
-
-      await load(historyPageSize, true);
-    } finally {
-      setClaimingAll(false);
-    }
-  }, [
-    address,
-    claimingId,
-    claimingAll,
-    historyPageSize,
-    load,
-  ]);
-
   const cachedHistory = address
     ? rewardService.getCachedRewardHistory(address)
     : null;
@@ -276,10 +206,6 @@ export function useRewardHub(): UseRewardHubReturn {
     isLoadingMore,
     error,
     hasMoreHistory,
-    claimingId,
-    claimingAll,
-    claimLocalReward,
-    claimAllLocalRewards,
     refresh,
     loadMoreHistory,
   };
