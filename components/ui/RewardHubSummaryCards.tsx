@@ -13,8 +13,8 @@ import type { RewardHubSummary } from "@/lib/rewards/reward-types";
 // Every value comes straight from RewardHubSummary — nothing computed
 // here beyond a MPGR_TOKEN_DECIMALS-aware display format and an active-
 // category count. "Live" comes from hooks/useRewardHub.ts's polling and
-// event-driven refresh (staking_changed / rewards_claimed) — this
-// component itself just renders whatever summary it's given.
+// event-driven refresh (staking_changed) — this component itself just
+// renders whatever summary it's given.
 
 const MPGR_DECIMALS = 18;
 
