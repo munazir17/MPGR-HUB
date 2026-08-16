@@ -167,4 +167,15 @@ export interface GameStatsRecord {
    * Prevents duplicate submission/reward processing.
    */
   processedSessionIds: string[];
+
+  /**
+   * Free-form per-game numeric extension bag.
+   *
+   * Keeps this shared contract generic (per the file-level note above) while
+   * still giving each game's own reward module a persisted place to track
+   * stats that are specific to it — e.g. MPGR Run's gem/orb/key/chest/
+   * power-up counters live here as `custom.totalGemsCollected`, etc. Nothing
+   * in this shared file ever reads or hardcodes a specific key.
+   */
+  custom: Record<string, number>;
 }
