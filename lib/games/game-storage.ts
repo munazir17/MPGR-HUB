@@ -33,6 +33,7 @@ function emptyStats(gameId: GameId, address: string): GameStatsRecord {
     lastPlayedAt: null,
     xpAwardedRunsByDate: {},
     processedSessionIds: [],
+    custom: {},
   };
 }
 
@@ -44,9 +45,15 @@ export function getGameStats(gameId: GameId, address: string): GameStatsRecord {
 
     if (!raw) return emptyStats(gameId, address);
 
+    const parsed = JSON.parse(raw) as Partial<GameStatsRecord>;
+
     return {
       ...emptyStats(gameId, address),
-      ...(JSON.parse(raw) as Partial<GameStatsRecord>),
+      ...parsed,
+      // Merge (not replace) the extension bag so a stats blob saved before
+      // a new `custom.*` key existed doesn't wipe out unrelated keys, and a
+      // blob saved before `custom` existed at all still gets `{}`.
+      custom: { ...emptyStats(gameId, address).custom, ...(parsed.custom ?? {}) },
     };
   } catch {
     return emptyStats(gameId, address);
