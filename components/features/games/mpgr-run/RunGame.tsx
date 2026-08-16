@@ -41,6 +41,8 @@ import {
   CHECKPOINT_SPRITE,
   UI_SPRITES,
   CITY_ENVIRONMENT,
+  EFFECT_SPRITES,
+  BACKGROUND_STRIP_TARGETS,
   ALL_SPRITE_PATHS,
 } from "@/lib/games/mpgr-run/run-assets";
 import {
@@ -98,6 +100,17 @@ interface Particle {
   size: number;
 }
 
+/** A brief real-artwork overlay (hit explosion, coin/gem burst) — separate from the tiny procedural dot particles above. */
+interface SpriteBurst {
+  id: number;
+  x: number;
+  y: number;
+  sprite: string;
+  startMs: number;
+  durationMs: number;
+  maxSize: number;
+}
+
 type ActivePowerups = Partial<Record<PowerupType, number>>; // value = world.elapsedMs when the effect expires
 
 interface RunStatsAccum {
@@ -122,12 +135,14 @@ interface World {
   collectibles: CollectibleEntity[];
   powerups: PowerupEntity[];
   particles: Particle[];
+  spriteBursts: SpriteBurst[];
   activePowerups: ActivePowerups;
   stats: RunStatsAccum;
   bonusScore: number;
   nextCheckpointM: number;
   screenShake: number;
   checkpointFlashUntilMs: number;
+  hitFlashUntilMs: number;
   gameOver: boolean;
 }
 
@@ -151,12 +166,14 @@ function freshWorld(): World {
     collectibles: [],
     powerups: [],
     particles: [],
+    spriteBursts: [],
     activePowerups: {},
     stats: { coins: 0, gems: 0, xpOrbs: 0, keys: 0, chests: 0, powerups: 0, obstaclesPassed: 0, checkpoints: 0, hits: 0 },
     bonusScore: 0,
     nextCheckpointM: CHECKPOINT_INTERVAL_M,
     screenShake: 0,
     checkpointFlashUntilMs: -Infinity,
+    hitFlashUntilMs: -Infinity,
     gameOver: false,
   };
 }
@@ -178,6 +195,72 @@ function verticalOverlap(o: ObstacleEntity, p: PlayerState): boolean {
   const obstacleBottom = o.groundHeight;
   const obstacleTop = o.groundHeight + o.height;
   return playerTop > obstacleBottom && playerBottom < obstacleTop;
+}
+
+/**
+ * Removes a baked-in solid (or near-solid) background from an asset that
+ * has no real alpha channel, via a flood fill seeded from all four edges —
+ * NOT a blanket color match. That distinction matters: a genuinely dark
+ * interior detail (a boot, a chest's iron trim, a checkpoint flag's black
+ * outline) is surrounded by non-background pixels on every side, so the
+ * fill never reaches it and it survives untouched; only background that's
+ * actually connected to the border gets cleared. Runs once per asset (see
+ * BACKGROUND_STRIP_TARGETS in run-assets.ts) and the resulting canvas is
+ * cached — never re-run per frame.
+ */
+function stripBackgroundToTransparent(img: HTMLImageElement, tolerance = 26): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  const width = img.naturalWidth;
+  const height = img.naturalHeight;
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx || width === 0 || height === 0) return canvas;
+
+  ctx.drawImage(img, 0, 0);
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  const toleranceSq = tolerance * tolerance;
+
+  const seed = 0;
+  const bgR = data[seed];
+  const bgG = data[seed + 1];
+  const bgB = data[seed + 2];
+  const matchesBackground = (i: number): boolean => {
+    const dr = data[i] - bgR;
+    const dg = data[i + 1] - bgG;
+    const db = data[i + 2] - bgB;
+    return dr * dr + dg * dg + db * db <= toleranceSq;
+  };
+
+  const visited = new Uint8Array(width * height);
+  const stackX: number[] = [];
+  const stackY: number[] = [];
+  for (let x = 0; x < width; x++) {
+    stackX.push(x, x);
+    stackY.push(0, height - 1);
+  }
+  for (let y = 0; y < height; y++) {
+    stackX.push(0, width - 1);
+    stackY.push(y, y);
+  }
+
+  while (stackX.length > 0) {
+    const x = stackX.pop() as number;
+    const y = stackY.pop() as number;
+    if (x < 0 || y < 0 || x >= width || y >= height) continue;
+    const p = y * width + x;
+    if (visited[p]) continue;
+    const i = p * 4;
+    if (!matchesBackground(i)) continue;
+    visited[p] = 1;
+    data[i + 3] = 0;
+    stackX.push(x + 1, x - 1, x, x);
+    stackY.push(y, y, y + 1, y - 1);
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
 }
 
 const COLORS = {
@@ -223,7 +306,8 @@ export function RunGame({ address }: RunGameProps) {
   const phaseRef = useRef<Phase>("idle");
   const idRef = useRef(1);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
-  const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const rawImagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const readySpritesRef = useRef<Map<string, CanvasImageSource>>(new Map());
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [countdownValue, setCountdownValue] = useState(COUNTDOWN_SECONDS);
@@ -284,21 +368,31 @@ export function RunGame({ address }: RunGameProps) {
 
   // --- Sprite preload ---------------------------------------------------
   // Loads every real asset under public/games/mpgr-run/ once on mount.
-  // draw() below reads straight from this cache and simply skips drawing
-  // (falling back to the procedural shape) for any sprite not yet decoded,
-  // so the very first frame or two of a cold load never shows a blank gap.
+  // draw() below reads straight from the "ready" cache and simply skips
+  // drawing (falling back to the procedural shape) for any sprite not yet
+  // decoded, so the very first frame or two of a cold load never shows a
+  // blank gap. The handful of assets in BACKGROUND_STRIP_TARGETS get run
+  // through stripBackgroundToTransparent() once their raw <img> finishes
+  // loading, and it's that processed (transparent) canvas — not the raw
+  // image — that lands in the ready cache for those specific paths.
   useEffect(() => {
     for (const src of ALL_SPRITE_PATHS) {
-      if (imageCacheRef.current.has(src)) continue;
+      if (rawImagesRef.current.has(src)) continue;
       const img = new window.Image();
+      img.onload = () => {
+        if (BACKGROUND_STRIP_TARGETS.includes(src)) {
+          readySpritesRef.current.set(src, stripBackgroundToTransparent(img));
+        } else {
+          readySpritesRef.current.set(src, img);
+        }
+      };
       img.src = src;
-      imageCacheRef.current.set(src, img);
+      rawImagesRef.current.set(src, img);
     }
   }, []);
 
-  const getSprite = useCallback((src: string): HTMLImageElement | null => {
-    const img = imageCacheRef.current.get(src);
-    return img && img.complete && img.naturalWidth > 0 ? img : null;
+  const getSprite = useCallback((src: string): CanvasImageSource | null => {
+    return readySpritesRef.current.get(src) ?? null;
   }, []);
 
   // --- Particle helper --------------------------------------------------
@@ -322,6 +416,19 @@ export function RunGame({ address }: RunGameProps) {
       world.particles.splice(0, world.particles.length - 160);
     }
   }, [nextId]);
+
+  // A brief real-artwork overlay (explosion/coin/gem burst art), layered on
+  // top of the tiny procedural dot particles above rather than replacing
+  // them — capped short so a flurry of pickups can never pile up visually.
+  const spawnSpriteBurst = useCallback(
+    (world: World, x: number, y: number, sprite: string, durationMs: number, maxSize: number) => {
+      world.spriteBursts.push({ id: nextId(), x, y, sprite, startMs: world.elapsedMs, durationMs, maxSize });
+      if (world.spriteBursts.length > 12) {
+        world.spriteBursts.splice(0, world.spriteBursts.length - 12);
+      }
+    },
+    [nextId]
+  );
 
   // --- Render a single frame ------------------------------------------
   const draw = useCallback(() => {
@@ -355,7 +462,7 @@ export function RunGame({ address }: RunGameProps) {
     const cityBg = getSprite(CITY_ENVIRONMENT.background);
     const cityMid = getSprite(CITY_ENVIRONMENT.midground);
     const cityFg = getSprite(CITY_ENVIRONMENT.foreground);
-    const drawParallaxLayer = (img: HTMLImageElement | null, speedFactor: number, alpha: number) => {
+    const drawParallaxLayer = (img: CanvasImageSource | null, speedFactor: number, alpha: number) => {
       if (!img) return;
       const offset = (world.traveledPx * speedFactor) % width;
       ctx.globalAlpha = alpha;
@@ -403,6 +510,7 @@ export function RunGame({ address }: RunGameProps) {
 
     // Checkpoint flash.
     if (world.elapsedMs < world.checkpointFlashUntilMs) {
+      const elapsedSinceStart = 1400 - (world.checkpointFlashUntilMs - world.elapsedMs);
       const remaining = (world.checkpointFlashUntilMs - world.elapsedMs) / 1400;
       const flashAlpha = clamp(remaining, 0, 1);
       ctx.globalAlpha = flashAlpha * 0.5;
@@ -412,9 +520,25 @@ export function RunGame({ address }: RunGameProps) {
 
       const checkpointImg = getSprite(CHECKPOINT_SPRITE);
       if (checkpointImg) {
-        const size = Math.min(width, height) * 0.28;
+        // Ease-out scale-in over the first 260ms, then hold, then fade with the flash alpha.
+        const growT = clamp(elapsedSinceStart / 260, 0, 1);
+        const easedGrow = 1 - Math.pow(1 - growT, 3);
+        const baseSize = Math.min(width, height) * 0.28;
+        const size = baseSize * (0.7 + easedGrow * 0.3);
+        const cx = width / 2;
+        const cy = height * 0.22;
+
+        // Radiating ring pulse behind the badge.
+        const ringT = clamp(elapsedSinceStart / 700, 0, 1);
+        ctx.globalAlpha = (1 - ringT) * 0.5;
+        ctx.strokeStyle = "#FBBF24";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(cx, cy, baseSize * 0.4 + ringT * baseSize * 0.6, 0, Math.PI * 2);
+        ctx.stroke();
+
         ctx.globalAlpha = flashAlpha;
-        ctx.drawImage(checkpointImg, width / 2 - size / 2, height * 0.22 - size / 2, size, size);
+        ctx.drawImage(checkpointImg, cx - size / 2, cy - size / 2, size, size);
         ctx.globalAlpha = 1;
       }
     }
@@ -540,6 +664,17 @@ export function RunGame({ address }: RunGameProps) {
     }
     ctx.globalAlpha = 1;
 
+    // Sprite bursts — real explosion/coin/gem artwork, growing and fading out.
+    for (const burst of world.spriteBursts) {
+      const img = getSprite(burst.sprite);
+      if (!img) continue;
+      const t = clamp((world.elapsedMs - burst.startMs) / burst.durationMs, 0, 1);
+      const size = burst.maxSize * (0.5 + t * 0.6);
+      ctx.globalAlpha = 1 - t;
+      ctx.drawImage(img, burst.x - size / 2, burst.y - size / 2, size, size);
+    }
+    ctx.globalAlpha = 1;
+
     // Player — drawn from the smoothed lane offset so switching lanes glides
     // instead of snapping (collision above always uses the logical p.lane).
     const baselineY = height * LANE_CENTER_Y + p.laneOffset;
@@ -559,16 +694,23 @@ export function RunGame({ address }: RunGameProps) {
       ctx.globalAlpha = 1;
     }
     if (world.activePowerups.jetpack) {
-      ctx.beginPath();
-      ctx.moveTo(playerScreenX + 2, playerBottom);
-      ctx.lineTo(playerScreenX - 10 - Math.random() * 10, playerBottom + 6);
-      ctx.lineTo(playerScreenX + 2, playerBottom + 4);
-      ctx.closePath();
-      ctx.fillStyle = "#FB923C";
-      ctx.shadowColor = "#FB923C";
-      ctx.shadowBlur = 10;
-      ctx.fill();
+      // Layered flicker flame — richer than a single triangle, still pure procedural VFX.
+      for (let layer = 0; layer < 2; layer++) {
+        const flicker = Math.random() * 8;
+        const len = 14 + layer * 8 + flicker;
+        ctx.beginPath();
+        ctx.moveTo(playerScreenX + 2, playerBottom - 2 - layer * 3);
+        ctx.lineTo(playerScreenX - len, playerBottom + 4 + layer * 2);
+        ctx.lineTo(playerScreenX + 2, playerBottom + 8 + layer * 3);
+        ctx.closePath();
+        ctx.fillStyle = layer === 0 ? "#FDE68A" : "#FB923C";
+        ctx.shadowColor = "#FB923C";
+        ctx.shadowBlur = 14 - layer * 4;
+        ctx.globalAlpha = 0.85 - layer * 0.2;
+        ctx.fill();
+      }
       ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
     }
     if (world.activePowerups.speed) {
       ctx.globalAlpha = 0.35;
@@ -582,8 +724,18 @@ export function RunGame({ address }: RunGameProps) {
     ctx.globalAlpha = invulnerable && !shielded ? 0.4 + Math.sin(world.elapsedMs / 60) * 0.3 : 1;
 
     const jetpackActiveNow = !!world.activePowerups.jetpack;
+    // A gentle vertical bob while grounded and running — cosmetic only, applied
+    // solely to where the sprite is drawn, never to playerTop/playerBottom (which
+    // stay authoritative for collision, the shield ring, and every other effect).
+    const grounded = p.playerY <= 0 && !p.sliding && !jetpackActiveNow;
+    const runBob = grounded ? Math.abs(Math.sin(world.elapsedMs / 120)) * 2.5 : 0;
+
     let spriteSrc: string = CHARACTER_SPRITES.run;
-    if (jetpackActiveNow) spriteSrc = CHARACTER_SPRITES.fly;
+    // NOTE: mpgr-runner-fly.png is intentionally excluded from run-assets.ts
+    // (baked non-uniform sky background, unsafe to auto-cutout — see the
+    // audit note there), so jetpack reuses the properly transparent `jump`
+    // pose plus the flame VFX above and a forward flight tilt below.
+    if (jetpackActiveNow) spriteSrc = CHARACTER_SPRITES.jump;
     else if (p.sliding) spriteSrc = CHARACTER_SPRITES.slide;
     else if (p.playerY > 0) spriteSrc = p.velocityY > 0 ? CHARACTER_SPRITES.jump : CHARACTER_SPRITES.fall;
     else spriteSrc = Math.floor(world.elapsedMs / 120) % 2 === 0 ? CHARACTER_SPRITES.run : CHARACTER_SPRITES.run2;
@@ -592,10 +744,16 @@ export function RunGame({ address }: RunGameProps) {
     if (playerImg) {
       const drawW = PLAYER_SIZE * 1.9;
       const drawH = playerHeight * 1.9;
+      const cx = playerScreenX + PLAYER_SIZE / 2;
+      const cy = playerBottom - drawH / 2 - runBob;
+      ctx.save();
+      ctx.translate(cx, cy);
+      if (jetpackActiveNow) ctx.rotate(-0.12);
       ctx.shadowColor = "rgba(59,130,246,0.55)";
       ctx.shadowBlur = 14;
-      ctx.drawImage(playerImg, playerScreenX + PLAYER_SIZE / 2 - drawW / 2, playerBottom - drawH, drawW, drawH);
+      ctx.drawImage(playerImg, -drawW / 2, -drawH / 2, drawW, drawH);
       ctx.shadowBlur = 0;
+      ctx.restore();
     } else {
       const grad = ctx.createLinearGradient(0, playerTop, 0, playerBottom);
       grad.addColorStop(0, COLORS.player);
@@ -621,6 +779,31 @@ export function RunGame({ address }: RunGameProps) {
       ctx.fillRect(playerScreenX + PLAYER_SIZE * 0.45, playerTop + playerHeight * 0.28, PLAYER_SIZE * 0.4, playerHeight * 0.22);
     }
     ctx.globalAlpha = 1;
+
+    // Cinematic vignette — a constant, subtle cyberpunk framing so the
+    // premium mood holds even where no sprite/particle is on screen.
+    const vignette = ctx.createRadialGradient(
+      width / 2,
+      height / 2,
+      Math.min(width, height) * 0.35,
+      width / 2,
+      height / 2,
+      Math.max(width, height) * 0.7
+    );
+    vignette.addColorStop(0, "rgba(0,0,0,0)");
+    vignette.addColorStop(1, "rgba(0,0,0,0.38)");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, width, height);
+
+    // Hit-damage flash — a brief red pulse over the whole frame, on top of
+    // everything else, so a hit always reads clearly even mid-chaos.
+    if (world.elapsedMs < world.hitFlashUntilMs) {
+      const hitT = clamp((world.hitFlashUntilMs - world.elapsedMs) / 220, 0, 1);
+      ctx.globalAlpha = hitT * 0.35;
+      ctx.fillStyle = "#DC2626";
+      ctx.fillRect(0, 0, width, height);
+      ctx.globalAlpha = 1;
+    }
 
     ctx.restore();
   }, [getSprite]);
@@ -654,9 +837,16 @@ export function RunGame({ address }: RunGameProps) {
           break;
       }
       if (world.activePowerups.score2x) world.bonusScore += cfg.scoreValue;
-      spawnBurst(world, c.x, laneBaselineScreenY(height, c.lane) - 14, cfg.color, c.type === "chest" ? 16 : 6);
+      const cx = c.x;
+      const cy = laneBaselineScreenY(height, c.lane) - 14;
+      spawnBurst(world, cx, cy, cfg.color, c.type === "chest" ? 16 : 6);
+      if (c.type === "coin" || c.type === "xpOrb" || c.type === "key") {
+        spawnSpriteBurst(world, cx, cy, EFFECT_SPRITES.coinBurst, 380, c.radius * 5);
+      } else if (c.type === "gem") {
+        spawnSpriteBurst(world, cx, cy, EFFECT_SPRITES.gemBurst, 420, c.radius * 5.5);
+      }
     },
-    [spawnBurst]
+    [spawnBurst, spawnSpriteBurst]
   );
 
   const collectPowerup = useCallback(
@@ -728,6 +918,13 @@ export function RunGame({ address }: RunGameProps) {
         part.y += part.vy * dt;
       }
       world.particles = world.particles.filter((part) => part.life > 0);
+
+      // Sprite bursts (real hit/pickup artwork) — scroll with the world and expire on a fixed timer.
+      for (const burst of world.spriteBursts) {
+        burst.x -= world.effectiveSpeed * dt * 0.5;
+      }
+      world.spriteBursts = world.spriteBursts.filter((burst) => world.elapsedMs - burst.startMs < burst.durationMs);
+
       world.screenShake = Math.max(0, world.screenShake - dt * 40);
 
       // Spawn.
@@ -768,7 +965,11 @@ export function RunGame({ address }: RunGameProps) {
             world.stats.hits += 1;
             p.invulnerableUntilMs = world.elapsedMs + HIT_INVULNERABILITY_MS;
             world.screenShake = 14;
-            spawnBurst(world, playerScreenX, laneBaselineScreenY(canvasHeight, p.lane) - p.playerY - PLAYER_SIZE / 2, "#F87171", 14);
+            world.hitFlashUntilMs = world.elapsedMs + 220;
+            const hitCx = playerScreenX + PLAYER_SIZE / 2;
+            const hitCy = laneBaselineScreenY(canvasHeight, p.lane) - p.playerY - PLAYER_SIZE / 2;
+            spawnBurst(world, playerScreenX, hitCy, "#F87171", 14);
+            spawnSpriteBurst(world, hitCx, hitCy, EFFECT_SPRITES.hit, 480, PLAYER_SIZE * 3.2);
             hooks.onHit();
             if (p.hp <= 0) world.gameOver = true;
           }
@@ -1091,14 +1292,17 @@ export function RunGame({ address }: RunGameProps) {
           {/* In-run HUD */}
           {(phase === "running" || phase === "paused") && (
             <>
-              <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
+              <div
+                className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3"
+                style={{ paddingTop: "max(0.75rem, env(safe-area-inset-top))" }}
+              >
                 <div className="flex flex-wrap gap-1.5">
                   <HudChip icon={Zap} label="Score" value={formatCompactNumber(hud.score)} />
                   <HudChip imgSrc={COLLECTIBLE_SPRITES.coin} label="Coins" value={String(hud.coins)} />
                   <HudChip imgSrc={COLLECTIBLE_SPRITES.gem} label="Gems" value={String(hud.gems)} />
                 </div>
                 <div className="flex flex-col items-end gap-1.5">
-                  <div className="rounded-full bg-black/40 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-md">
+                  <div className="rounded-full bg-black/40 px-3 py-1.5 text-xs font-semibold text-white shadow-[0_0_0_1px_rgba(59,130,246,0.35)] backdrop-blur-md">
                     {formatCompactNumber(hud.distance)}m
                   </div>
                   <div className="flex items-center gap-0.5 rounded-full bg-black/40 px-2.5 py-1 backdrop-blur-md">
@@ -1108,7 +1312,9 @@ export function RunGame({ address }: RunGameProps) {
                         key={i}
                         src={UI_SPRITES.heart}
                         alt=""
-                        className={`h-4 w-4 object-contain ${i < hud.hp ? "opacity-100" : "opacity-20 grayscale"}`}
+                        className={`h-4 w-4 object-contain transition-all duration-300 ${
+                          i < hud.hp ? "opacity-100 drop-shadow-[0_0_4px_rgba(244,63,94,0.7)]" : "opacity-20 grayscale"
+                        }`}
                         aria-hidden="true"
                       />
                     ))}
@@ -1123,11 +1329,25 @@ export function RunGame({ address }: RunGameProps) {
                     return (
                       <div
                         key={type}
-                        className="flex items-center gap-1.5 rounded-full bg-black/50 px-2.5 py-1 backdrop-blur-md"
-                        style={{ boxShadow: `0 0 0 1px ${cfg.color}55` }}
+                        className="flex items-center gap-1.5 rounded-full bg-black/50 py-1 pl-1 pr-2.5 backdrop-blur-md"
+                        style={{ boxShadow: `0 0 0 1px ${cfg.color}55, 0 0 10px 0 ${cfg.color}33` }}
                       >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={POWERUP_SPRITES[type]} alt="" className="h-4 w-4 object-contain" aria-hidden="true" />
+                        <span className="relative flex h-6 w-6 items-center justify-center">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={UI_SPRITES.powerupFrame}
+                            alt=""
+                            className="absolute inset-0 h-full w-full object-contain opacity-80"
+                            aria-hidden="true"
+                          />
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={POWERUP_SPRITES[type]}
+                            alt=""
+                            className="relative h-4 w-4 object-contain"
+                            aria-hidden="true"
+                          />
+                        </span>
                         <span className="text-[10px] font-semibold text-white">{Math.ceil(remainingMs / 1000)}s</span>
                       </div>
                     );
@@ -1137,7 +1357,10 @@ export function RunGame({ address }: RunGameProps) {
 
               {/* On-screen controls */}
               {phase === "running" && (
-                <div className="pointer-events-auto absolute inset-x-0 bottom-3 flex items-end justify-between px-3">
+                <div
+                  className="pointer-events-auto absolute inset-x-0 bottom-0 flex items-end justify-between px-3 pb-3"
+                  style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+                >
                   <div className="flex gap-2">
                     <ControlButton icon={ChevronLeft} label="Left" onPress={() => switchLane(-1)} />
                     <ControlButton icon={ChevronRight} label="Right" onPress={() => switchLane(1)} />
@@ -1191,195 +1414,3 @@ export function RunGame({ address }: RunGameProps) {
           {/* Countdown */}
           <AnimatePresence>
             {phase === "countdown" && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-0 flex items-center justify-center bg-background/60 backdrop-blur-sm"
-              >
-                <motion.span
-                  key={countdownValue}
-                  initial={{ scale: 0.4, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  transition={{ type: "spring", stiffness: 300, damping: 16 }}
-                  className="text-gradient-premium text-6xl font-extrabold"
-                >
-                  {countdownValue > 0 ? countdownValue : "GO"}
-                </motion.span>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Paused */}
-          <AnimatePresence>
-            {phase === "paused" && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background/75 backdrop-blur-sm"
-              >
-                <p className="text-lg font-bold text-white">Paused</p>
-                <button
-                  onClick={togglePause}
-                  className="flex min-h-[44px] items-center gap-2 rounded-xl bg-gradient-premium px-6 py-2.5 text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
-                >
-                  <Play className="h-4 w-4" aria-hidden="true" />
-                  Resume
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Game over */}
-          <AnimatePresence>
-            {phase === "game_over" && runResult && outcome && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-y-auto bg-background/85 px-5 py-6 text-center backdrop-blur-md"
-              >
-                <p className="text-sm font-semibold uppercase tracking-wider text-rose-400">💀 Game Over</p>
-
-                <AnimatedNumber
-                  value={runResult.score}
-                  className="text-4xl font-extrabold tracking-tight text-white"
-                />
-                <p className="text-xs text-muted">Score</p>
-
-                <div className="mt-2 grid grid-cols-3 gap-2 text-center">
-                  <StatPill label="Distance" value={`${formatCompactNumber(runResult.distanceMeters)}m`} />
-                  <StatPill label="Coins" value={String(runResult.coinsCollected)} />
-                  <StatPill label="Gems" value={String(runResult.gemsCollected)} />
-                  <StatPill label="Checkpoints" value={String(runResult.checkpointsReached)} />
-                  <StatPill label="Power-ups" value={String(runResult.powerupsCollected)} />
-                  <StatPill
-                    label="Best"
-                    value={formatCompactNumber(Math.max(personalBest, runResult.score))}
-                    highlight
-                  />
-                </div>
-
-                {outcome.isNewPersonalBest && (
-                  <p className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-gold">
-                    <Trophy className="h-3.5 w-3.5" aria-hidden="true" />
-                    New personal best!
-                  </p>
-                )}
-
-                {!outcome.valid ? (
-                  <p className="mt-1 max-w-xs text-[11px] text-muted">
-                    This run couldn't be validated, so no XP was awarded. {outcome.validationReasons[0]}
-                  </p>
-                ) : outcome.xpAwarded > 0 ? (
-                  <p className="mt-1 text-xs font-medium text-primary-glow">+{outcome.xpAwarded} XP earned</p>
-                ) : outcome.dailyCapReached ? (
-                  <p className="mt-1 text-[11px] text-muted">Daily XP cap reached — come back tomorrow for more XP.</p>
-                ) : null}
-
-                {outcome.newlyUnlockedAchievementIds.length > 0 && (
-                  <p className="mt-1 text-[11px] text-gold">
-                    🏆 {outcome.newlyUnlockedAchievementIds.length} achievement
-                    {outcome.newlyUnlockedAchievementIds.length > 1 ? "s" : ""} unlocked — check Achievements
-                  </p>
-                )}
-
-                <p className="mt-1 text-[10px] text-muted">
-                  Personal best shown above · verified competitive leaderboards launch once the MPGR HUB backend is live
-                </p>
-
-                <div className="mt-3 flex w-full max-w-xs flex-col gap-2">
-                  <button
-                    onClick={beginCountdown}
-                    className="flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-gradient-premium px-6 py-2.5 text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
-                  >
-                    <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                    Try Again
-                  </button>
-                  <button
-                    onClick={handleShare}
-                    className="flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-white/5 px-6 py-2.5 text-sm font-semibold text-white ring-1 ring-white/10 transition-transform active:scale-95"
-                  >
-                    <Share2 className="h-4 w-4" aria-hidden="true" />
-                    {shareCopied ? "Copied!" : "Share Run"}
-                  </button>
-                  <Link
-                    href="/games"
-                    className="flex min-h-[44px] items-center justify-center gap-2 rounded-xl text-xs font-medium text-muted transition-colors hover:text-white"
-                  >
-                    Back to Games
-                  </Link>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </GlassCard>
-    </div>
-  );
-}
-
-function HudChip({
-  icon: Icon,
-  imgSrc,
-  label,
-  value,
-}: {
-  icon?: typeof Zap;
-  imgSrc?: string;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="flex items-center gap-1.5 rounded-full bg-black/40 px-3 py-1.5 backdrop-blur-md">
-      {imgSrc ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={imgSrc} alt="" className="h-4 w-4 object-contain" aria-hidden="true" />
-      ) : Icon ? (
-        <Icon className="h-3.5 w-3.5 text-gold" aria-hidden="true" />
-      ) : null}
-      <span className="text-xs font-semibold text-white">{value}</span>
-      <span className="sr-only">{label}</span>
-    </div>
-  );
-}
-
-function ControlButton({
-  icon: Icon,
-  label,
-  onPress,
-  accent,
-}: {
-  icon: typeof Zap;
-  label: string;
-  onPress: () => void;
-  accent?: boolean;
-}) {
-  return (
-    <button
-      onPointerDown={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onPress();
-      }}
-      aria-label={label}
-      className={`flex h-14 w-14 items-center justify-center rounded-full backdrop-blur-md ring-1 transition-transform active:scale-90 ${
-        accent
-          ? "bg-gradient-premium text-white shadow-glow-gold ring-white/20"
-          : "bg-black/45 text-white ring-white/15"
-      }`}
-    >
-      <Icon className="h-6 w-6" aria-hidden="true" />
-    </button>
-  );
-}
-
-function StatPill({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-2 py-2.5">
-      <p className={highlight ? "text-sm font-bold text-gold" : "text-sm font-bold text-white"}>{value}</p>
-      <p className="mt-0.5 text-[10px] text-muted">{label}</p>
-    </div>
-  );
-    }
