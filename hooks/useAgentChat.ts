@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAccount } from "wagmi";
 import { formatUnits } from "viem";
 import { useXP } from "@/hooks/useXP";
-import { useRewards } from "@/hooks/useRewards";
+import { useRewardClaim } from "@/hooks/useRewardClaim";
 import { useStaking } from "@/hooks/useStaking";
 import { useTokenLock } from "@/hooks/useTokenLock";
 import { usePremium } from "@/hooks/usePremium";
@@ -64,7 +64,7 @@ const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
 };
 
 // Phase 3A.2 — this hook is the only place in the Agent feature that calls
-// other hooks (useXP, useRewards, useStaking, useTokenLock, usePremium,
+// other hooks (useXP, useRewardClaim, useStaking, useTokenLock, usePremium,
 // useHolderTier, useSeasonPass); their results fold into a single
 // AgentContext snapshot every render (lib/agent-context.ts).
 //
@@ -124,7 +124,11 @@ export function useAgentChat() {
   const { address, isConnected } = useAccount();
   const router = useRouter();
   const { record: xpRecord } = useXP();
-  const { claimableTotal, totalClaimed } = useRewards();
+  const { claimableAmount: claimableTotal, claimedRewards, decimals: rewardVaultDecimals } = useRewardClaim();
+  const totalClaimed = useMemo(
+    () => claimedRewards.reduce((sum, r) => sum + Number(formatUnits(r.amount, rewardVaultDecimals)), 0),
+    [claimedRewards, rewardVaultDecimals]
+  );
   const {
     stakedBalanceRaw,
     earnedRewardsRaw,
