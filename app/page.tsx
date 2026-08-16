@@ -53,13 +53,12 @@ import { SeasonRewardsPreview } from "@/components/features/season-pass/SeasonRe
 import { HolderTierOverview } from "@/components/features/holder-tier/HolderTierOverview";
 import { useXP } from "@/hooks/useXP";
 import { useStaking } from "@/hooks/useStaking";
-import { useRewards } from "@/hooks/useRewards";
+import { useRewardClaim } from "@/hooks/useRewardClaim";
 import { useTokenLock } from "@/hooks/useTokenLock";
 import { MPGR_TOKEN_LOCK_CONFIG } from "@/lib/token-lock/token-lock-config";
 import { usePremium } from "@/hooks/usePremium";
 import { useSeasonPass } from "@/hooks/useSeasonPass";
 import { getLevelProgress, getSeasonPoints, getSeasonNumber, XP_ACTIONS } from "@/lib/xp-engine";
-import { getRewardState } from "@/lib/rewards-engine";
 import { erc20Abi } from "@/lib/erc20-abi";
 import type { StakingLiveActivityEntry } from "@/lib/staking/staking-types";
 import type { TokenLockLiveActivityEntry } from "@/lib/token-lock/token-lock-types";
@@ -127,7 +126,7 @@ export default function DashboardPage() {
     liveActivity: lockLiveActivity,
     loading: lockLoading,
   } = useTokenLock();
-  const { claims: rewardClaims, claimableTotal, loading: rewardsLoading } = useRewards();
+  const { claimableAmount: claimableTotal, isLoading: rewardsLoading } = useRewardClaim();
   const { status: premiumStatus } = usePremium();
   const { status: seasonPassStatus, track: seasonTrack } = useSeasonPass();
   const [checkInMessage, setCheckInMessage] = useState<string | null>(null);
@@ -171,28 +170,24 @@ export default function DashboardPage() {
   }, [checkIn]);
 
   // Recent Activity — derived from real, already-persisted data sources
-  // (XP history, reward claim history, lock transactions) plus, for
-  // staking, the live Staked/Unstaked/RewardPaid events observed this
-  // session via useStaking's on-chain event watcher. The deployed
-  // MPGRStaking contract has no indexer, so there is no backfilled
-  // staking history to show — only what's been seen live. No mock data.
+  // (XP history, lock transactions) plus, for staking, the live
+  // Staked/Unstaked/RewardPaid events observed this session via
+  // useStaking's on-chain event watcher. The deployed MPGRStaking
+  // contract has no indexer, so there is no backfilled staking history
+  // to show — only what's been seen live. No mock data.
+  //
+  // Reward Vault cleanup — this used to also show a "last reward claim"
+  // row sourced from lib/rewards-engine.ts's local mock claim history.
+  // The deployed MPGRRewardVault contract doesn't expose a claim
+  // timestamp, so rather than fabricate one, that row was removed; real
+  // on-chain reward claims are visible on the Rewards page's On-Chain
+  // Rewards section and BaseScan link instead.
   const lastXPEntry =
     record && record.history.length > 0
       ? [...record.history].sort(
           (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         )[0]
       : null;
-
-  const lastRewardClaim = (() => {
-    if (!address) return null;
-    const history = getRewardState(address).history;
-    if (history.length === 0) return null;
-    const latest = [...history].sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    )[0];
-    const title = rewardClaims.find((c) => c.id === latest.rewardId)?.title ?? "Reward Claimed";
-    return { title, amount: latest.amount, timestamp: latest.timestamp };
-  })();
 
   const lastStakingTx = stakingLiveActivity[0] ?? null;
   const lastLockTx = lockLiveActivity[0] ?? null;
@@ -576,7 +571,7 @@ export default function DashboardPage() {
             <div>
               <SectionHeader
                 title="Recent Activity"
-                subtitle="Your latest XP, reward, staking, and lock actions"
+                subtitle="Your latest XP, staking, and lock actions"
               />
               <GlassCard className="divide-y divide-white/[0.06] p-0">
                 <div className="flex items-center gap-3 p-4 transition-colors duration-200 hover:bg-white/[0.02]">
@@ -593,25 +588,6 @@ export default function DashboardPage() {
                   </div>
                   {lastXPEntry && (
                     <span className="shrink-0 text-sm font-semibold text-gradient-gold">+{lastXPEntry.xp} XP</span>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-3 p-4 transition-colors duration-200 hover:bg-white/[0.02]">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-gold-glow/20 to-gold/10 ring-1 ring-gold/15">
-                    <Gift className="h-4 w-4 text-gold" aria-hidden="true" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm text-white">
-                      {lastRewardClaim ? lastRewardClaim.title : "No rewards claimed yet"}
-                    </p>
-                    {lastRewardClaim && (
-                      <p className="text-[11px] text-muted">{formatRelativeTime(lastRewardClaim.timestamp)}</p>
-                    )}
-                  </div>
-                  {lastRewardClaim && (
-                    <span className="shrink-0 text-sm font-semibold text-gradient-gold">
-                      +{formatCompactNumber(lastRewardClaim.amount)} MPGR
-                    </span>
                   )}
                 </div>
 
@@ -675,4 +651,4 @@ export default function DashboardPage() {
       </main>
     </>
   );
-}
+    }
