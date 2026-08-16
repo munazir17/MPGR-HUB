@@ -12,6 +12,27 @@
 // ready for a future multi-environment pass; space/volcanic are empty
 // folders with no art yet, so they're intentionally left out to avoid
 // referencing a path that 404s).
+//
+// --- Transparency audit (Part 2) --------------------------------------
+// Every PNG under public/games/mpgr-run/ was inspected for its color mode
+// and corner-pixel alpha before being wired into rendering:
+//
+// - The vast majority are proper RGBA cutouts with alpha=0 at the edges —
+//   used directly, no processing needed.
+// - Three assets are baked onto a solid near-black background with NO
+//   alpha channel at all: character run-2 (the second run-cycle frame),
+//   the treasure chest collectible, and the checkpoint badge. These are
+//   listed in BACKGROUND_STRIP_TARGETS below — RunGame.tsx flood-fills
+//   the background out from the edges (not a blanket color match, so
+//   genuinely dark interior details like shoes/trim survive) once on
+//   load and caches the resulting transparent canvas.
+// - Two assets — the character "fly" pose and the "powerup-collection"
+//   effect — are baked onto a full non-uniform night-sky scene (not a
+//   flat color), so a safe automatic cutout isn't possible without
+//   risking artifacts. They are intentionally NOT exported/used as
+//   direct sprites below; jetpack reuses the (properly transparent)
+//   jump pose instead, and the powerup pickup burst uses procedural VFX
+//   only. Both real files remain on disk for a future manual crop pass.
 
 import type { ObstacleType, CollectibleType, PowerupType } from "./run-config";
 
@@ -24,9 +45,11 @@ export const CHARACTER_SPRITES = {
   jump: `${BASE}/character/mpgr-runner-jump.png`,
   fall: `${BASE}/character/mpgr-runner-fall.png`,
   slide: `${BASE}/character/mpgr-runner-slide.png`,
-  fly: `${BASE}/character/mpgr-runner-fly.png`,
   land: `${BASE}/character/mpgr-runner-land.png`,
   victory: `${BASE}/character/mpgr-runner-victory.png`,
+  // NOTE: mpgr-runner-fly.png exists on disk but is baked onto a full sky
+  // scene with no alpha channel — see the audit note above. Not exported
+  // here on purpose; jetpack visually reuses `jump` instead.
 } as const;
 
 export const OBSTACLE_SPRITES: Record<ObstacleType, string> = {
@@ -63,11 +86,32 @@ export const UI_SPRITES = {
   powerupFrame: `${BASE}/ui/mpgr-run-powerup-frame.png`,
 } as const;
 
+// Real hit/pickup burst artwork — both confirmed proper RGBA cutouts
+// (alpha=0 at every corner). "powerup-collection" is deliberately
+// excluded — see the audit note above.
+export const EFFECT_SPRITES = {
+  hit: `${BASE}/effects/mpgr-run-explosion-hit.png`,
+  coinBurst: `${BASE}/effects/mpgr-run-coin-collection.png`,
+  gemBurst: `${BASE}/effects/mpgr-run-gem-collection.png`,
+} as const;
+
 export const CITY_ENVIRONMENT = {
   background: `${BASE}/environment/city/city-background.png`,
   midground: `${BASE}/environment/city/city-midground.png`,
   foreground: `${BASE}/environment/city/city-foreground.png`,
 } as const;
+
+/**
+ * Assets confirmed to be baked onto a solid (near-uniform) background with
+ * no alpha channel. RunGame.tsx runs a one-time edge flood-fill on exactly
+ * these paths after they load, replacing the raw <img> in its sprite cache
+ * with a transparent canvas — everything else loads and renders as-is.
+ */
+export const BACKGROUND_STRIP_TARGETS: string[] = [
+  CHARACTER_SPRITES.run2,
+  COLLECTIBLE_SPRITES.chest,
+  CHECKPOINT_SPRITE,
+];
 
 /** Every sprite path used by the live render loop, flattened for a one-time preload on mount. */
 export const ALL_SPRITE_PATHS: string[] = [
@@ -75,7 +119,9 @@ export const ALL_SPRITE_PATHS: string[] = [
   ...Object.values(OBSTACLE_SPRITES),
   ...Object.values(COLLECTIBLE_SPRITES),
   ...Object.values(POWERUP_SPRITES),
+  ...Object.values(EFFECT_SPRITES),
   CHECKPOINT_SPRITE,
   UI_SPRITES.heart,
+  UI_SPRITES.powerupFrame,
   ...Object.values(CITY_ENVIRONMENT),
 ];
