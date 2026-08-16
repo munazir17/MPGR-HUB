@@ -1,27 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAccount } from "wagmi";
 import { motion } from "framer-motion";
-import { Gift, Trophy, HelpCircle, Loader2, AlertCircle, X } from "lucide-react";
+import { Gift, Trophy, HelpCircle, AlertCircle, X } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { GlassCard } from "@/components/ui/GlassCard";
-import { RewardClaimCard } from "@/components/ui/RewardClaimCard";
 import { OnChainRewardsSection } from "@/components/ui/OnChainRewardsSection";
-import { WeeklyRewardCard } from "@/components/ui/WeeklyRewardCard";
 import { RewardHubSummaryCards } from "@/components/ui/RewardHubSummaryCards";
 import { RewardCategoryGrid } from "@/components/ui/RewardCategoryGrid";
 import { RewardClaimHistoryList } from "@/components/ui/RewardClaimHistoryList";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { SkeletonCard } from "@/components/ui/SkeletonCard";
-import { FloatingXP } from "@/components/ui/FloatingXP";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { CountdownCard } from "@/components/ui/CountdownCard";
 import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
 import { PremiumBadge } from "@/components/ui/PremiumBadge";
 import { SeasonRewardsPreview } from "@/components/features/season-pass/SeasonRewardsPreview";
-import { useRewards } from "@/hooks/useRewards";
 import { useRewardHub } from "@/hooks/useRewardHub";
 import { useXP } from "@/hooks/useXP";
 import { usePremium } from "@/hooks/usePremium";
@@ -29,63 +24,47 @@ import { useSeasonPass } from "@/hooks/useSeasonPass";
 import { getSeasonEnd, getSeasonNumber, getSeasonPoints } from "@/lib/xp-engine";
 import { formatCompactNumber } from "@/lib/format";
 
-// Phase 3F Part 2 — Reward Hub Integration.
+// Reward Vault Integration — Rewards page.
 //
-// This page now has two data sources, deliberately kept separate:
+// This page has two data sources:
 //
-// 1. useRewards() — UNCHANGED from before Phase 3F. Still the one and
-//    only place that calls lib/rewards-engine.ts's claimReward()/
-//    claimAllRewards(). Still drives the individual per-reward
-//    RewardClaimCard grid, the "Claim All" button, and the weekly local-
-//    claims chart — exactly as it did before this phase. Nothing about
-//    how a local reward gets claimed changed.
+// 1. useRewardHub() — read-only aggregation across every reward category
+//    (currently just "staking", real and read-only via
+//    lib/rewards/providers/staking-rewards-provider.ts). Powers the
+//    summary cards, the category grid, and the claim history list.
+//    Claiming a staking reward still only ever happens on /staking via
+//    hooks/useStaking.ts's claimRewards() — this page's category grid
+//    links there instead of duplicating that transaction.
 //
-// 2. useRewardHub() — new in Phase 3F. A read-only aggregation across
-//    every reward category (local + on-chain staking), via
-//    lib/rewards/reward-service.ts. It never claims anything itself on
-//    this page; claimLocalReward/claimAllLocalRewards exist on the hook
-//    for future use but are intentionally not wired to any button here,
-//    so there is exactly one claim entry point on this page (#1 above).
+// 2. <OnChainRewardsSection /> (hooks/useRewardClaim.ts) — a fully
+//    isolated section that reads and claims real MPGR rewards from the
+//    deployed MPGRRewardVault contract on Base Mainnet. It shares no
+//    state, cache, or claim path with #1, so it carries zero risk to the
+//    read-only aggregator.
 //
-// Because #1's claim path doesn't go through reward-service.ts's cache,
-// a claim made via the RewardClaimCard grid or "Claim All" button won't
-// automatically invalidate useRewardHub()'s cached summary/history. The
-// effect below closes that gap: whenever useRewards() reports a
-// completed claim (lastClaimEvent), it forces useRewardHub() to refresh
-// — without touching hooks/useRewards.ts or lib/rewards-engine.ts at all.
+// Reward Vault cleanup — this page used to have a third data source:
+// hooks/useRewards.ts, a local/mock claim system (check-in streaks,
+// level milestones, referral and season milestones, all with hardcoded
+// MPGR amounts, claimed via lib/storage.ts rather than any blockchain
+// call). That entire local claim grid, its "Claim All" button, and its
+// weekly local-claims chart have been removed — real MPGR reward
+// claiming on this page now happens exclusively through
+// <OnChainRewardsSection /> above. hooks/useRewards.ts and its
+// mock-claim exports in lib/rewards-engine.ts were deleted outright
+// (see repo-wide dependency scan before this change); lib/rewards-
+// engine.ts's getRewardState()/RewardState were kept because
+// lib/staking-engine.ts, lib/burn-engine.ts, and lib/token-lock-
+// engine.ts still read getRewardState(address).totalClaimed for their
+// own, unrelated "available balance" math.
 //
-// Staking rewards remain fully read-only here (see
-// lib/rewards/providers/staking-rewards-provider.ts). Claiming a staking
-// reward still only ever happens on /staking via hooks/useStaking.ts's
-// claimRewards() — this page's category grid links there instead of
-// duplicating that transaction.
-//
-// Reward Vault Integration — added a third, fully isolated data source:
-// <OnChainRewardsSection /> (hooks/useRewardClaim.ts), which reads and
-// claims real rewards from the deployed MPGRRewardVault contract on Base
-// Mainnet. It shares no state, cache, or claim path with #1 or #2 above
-// — it's a self-contained section with its own loading/error/empty/
-// wrong-network states, so it carries zero risk to the existing local
-// claim grid or the read-only aggregator.
+// Season Points below is unrelated XP/gameplay progression (not an MPGR
+// claim) and was intentionally left untouched.
 
 const SEASON_MILESTONES = [250, 500, 1000];
 
 export default function RewardsPage() {
   const [mounted, setMounted] = useState(false);
   const { isConnected } = useAccount();
-  const {
-    claims,
-    claim,
-    claimAll,
-    lastClaimEvent,
-    dismissClaimEvent,
-    loading,
-    claimingId,
-    claimingAll,
-    weeklySeries,
-    weeklyClaimed,
-    previousWeekClaimed,
-  } = useRewards();
   const { record } = useXP();
   const { status: premiumStatus } = usePremium();
   const { status: seasonPassStatus, track: seasonTrack } = useSeasonPass();
@@ -104,21 +83,7 @@ export default function RewardsPage() {
   const [dismissedRewardHubError, setDismissedRewardHubError] = useState(false);
 
   useEffect(() => setMounted(true), []);
-
-  // Keeps the new Reward Hub aggregation in sync with claims made through
-  // the existing, unchanged useRewards() claim path (see file header).
-  useEffect(() => {
-    if (lastClaimEvent) {
-      void refreshRewardHub();
-    }
-  }, [lastClaimEvent, refreshRewardHub]);
-
   useEffect(() => setDismissedRewardHubError(false), [rewardHubError]);
-
-  const claimableCount = useMemo(
-    () => claims.filter((c) => c.unlocked && !c.claimed).length,
-    [claims]
-  );
 
   const seasonPoints = record ? getSeasonPoints(record) : 0;
   const seasonNumber = getSeasonNumber();
@@ -129,7 +94,6 @@ export default function RewardsPage() {
   return (
     <>
       <Navbar />
-      <FloatingXP amount={lastClaimEvent?.amount ?? null} onComplete={dismissClaimEvent} unit="MPGR" />
 
       <main className="mx-auto max-w-4xl px-4 py-10">
         {!mounted || !isConnected ? (
@@ -142,7 +106,7 @@ export default function RewardsPage() {
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <SectionHeader
               title="Reward Hub"
-              subtitle="Everything you've earned across staking, check-ins, referrals, and seasons"
+              subtitle="Everything you've earned across staking and on-chain rewards"
             />
 
             {rewardHubError && !dismissedRewardHubError && (
@@ -185,73 +149,6 @@ export default function RewardsPage() {
               <SectionHeader title="Reward Categories" subtitle="Earned across every active reward system" />
               <RewardCategoryGrid categories={rewardHubSummary?.categories ?? null} loading={rewardHubLoading} />
             </div>
-
-            <GlassCard className="flex flex-col items-center gap-3 p-6 text-center sm:flex-row sm:justify-between sm:text-left">
-              <div>
-                <p className="text-sm font-medium text-white">
-                  {claimableCount > 0
-                    ? `${claimableCount} reward${claimableCount > 1 ? "s" : ""} ready to claim`
-                    : "No rewards ready yet"}
-                </p>
-                <p className="mt-1 text-xs text-muted">
-                  Keep checking in and earning XP to unlock more MPGR rewards.
-                </p>
-              </div>
-              <motion.button
-                onClick={claimAll}
-                disabled={claimableCount === 0 || claimingAll || claimingId !== null}
-                whileHover={claimableCount > 0 && !claimingAll ? { scale: 1.03 } : undefined}
-                whileTap={claimableCount > 0 && !claimingAll ? { scale: 0.97 } : undefined}
-                aria-label="Claim all available rewards"
-                className="flex min-h-[44px] w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-gold px-5 py-2.5 text-sm font-semibold text-background transition-colors disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted sm:w-auto"
-              >
-                {claimingAll ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                    Claiming All
-                  </>
-                ) : (
-                  "Claim All"
-                )}
-              </motion.button>
-            </GlassCard>
-
-            <div>
-              <SectionHeader title="This Week" subtitle="Your weekly MPGR claim activity" />
-              <WeeklyRewardCard
-                series={weeklySeries}
-                total={weeklyClaimed}
-                previousTotal={previousWeekClaimed}
-                loading={loading}
-              />
-            </div>
-
-            <SectionHeader title="All Rewards" subtitle="Individual check-in, streak, level, referral, and season rewards" />
-            {loading ? (
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <SkeletonCard lines={2} />
-                <SkeletonCard lines={2} />
-                <SkeletonCard lines={2} />
-                <SkeletonCard lines={2} />
-              </div>
-            ) : claims.length === 0 ? (
-              <EmptyState
-                icon={Trophy}
-                title="No rewards yet"
-                description="Start earning XP to unlock MPGR rewards."
-              />
-            ) : (
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                {claims.map((reward) => (
-                  <RewardClaimCard
-                    key={reward.id}
-                    reward={reward}
-                    onClaim={() => claim(reward.id)}
-                    claiming={claimingId === reward.id}
-                  />
-                ))}
-              </div>
-            )}
 
             <OnChainRewardsSection />
 
@@ -296,9 +193,8 @@ export default function RewardsPage() {
                 <p className="text-sm font-medium text-white">How Rewards Work</p>
               </div>
               <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-muted">
-                <li>• Rewards unlock from daily check-ins, streaks, levels, referrals, and season milestones</li>
+                <li>• On-chain rewards are allocated to your wallet in the Reward Vault and claimed directly from Base Mainnet</li>
                 <li>• Staking rewards accrue continuously — claim them from the Staking page</li>
-                <li>• Claim individually or all at once once unlocked</li>
                 <li>• Season points and milestones reset every calendar month</li>
               </ul>
             </GlassCard>
