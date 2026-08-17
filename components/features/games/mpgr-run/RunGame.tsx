@@ -343,6 +343,16 @@ export function RunGame({ address }: RunGameProps) {
   }, [refreshPersonalBest]);
 
   // --- Canvas sizing -------------------------------------------------
+  // Keeps the canvas's drawing-buffer pixels (canvas.width/height, scaled
+  // by DPR) in sync with its CSS display size (canvas.style.width/height,
+  // driven by the container's actual layout box). On mobile this needs
+  // more than a single mount-time measurement + ResizeObserver: the
+  // container's height depends on 100dvh several levels up, and mobile
+  // browsers resolve dvh *after* first paint as the address-bar/toolbar
+  // chrome finishes animating — so an early read can lock the canvas's
+  // inline CSS size to a too-small value before the surrounding layout
+  // has settled. The fixes below don't change how sizing is computed,
+  // only when/how reliably it's re-checked.
   useEffect(() => {
     const container = containerRef.current;
     const canvas = canvasRef.current;
@@ -350,6 +360,12 @@ export function RunGame({ address }: RunGameProps) {
 
     const resize = () => {
       const rect = container.getBoundingClientRect();
+      // A transient 0×0 read (mid-orientation-change, mid-hydration, or
+      // while an ancestor's dvh-based height hasn't resolved yet) must
+      // never be applied — it would lock the canvas to zero size via the
+      // inline style below, with nothing left to trigger a later correct
+      // resize if the container's box doesn't change again afterward.
+      if (rect.width === 0 || rect.height === 0) return;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.round(rect.width * dpr);
       canvas.height = Math.round(rect.height * dpr);
@@ -363,7 +379,28 @@ export function RunGame({ address }: RunGameProps) {
     resize();
     const observer = new ResizeObserver(resize);
     observer.observe(container);
-    return () => observer.disconnect();
+
+    // Extra correction passes shortly after mount, to catch mobile dvh /
+    // safe-area / toolbar settling that can finish after the container's
+    // own ResizeObserver entries have already been delivered once.
+    const settleTimeouts = [50, 200, 500].map((ms) => window.setTimeout(resize, ms));
+    const rafId = window.requestAnimationFrame(resize);
+
+    // ResizeObserver tracks the container's own box reliably in the
+    // steady state, but orientation changes and dynamic viewport-chrome
+    // transitions on iOS/Android are worth listening to directly too.
+    window.addEventListener("resize", resize);
+    window.addEventListener("orientationchange", resize);
+    window.visualViewport?.addEventListener("resize", resize);
+
+    return () => {
+      observer.disconnect();
+      settleTimeouts.forEach((id) => window.clearTimeout(id));
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener("resize", resize);
+      window.removeEventListener("orientationchange", resize);
+      window.visualViewport?.removeEventListener("resize", resize);
+    };
   }, []);
 
   // --- Sprite preload ---------------------------------------------------
@@ -412,9 +449,16 @@ export function RunGame({ address }: RunGameProps) {
 
     CRITICAL_SPRITES.forEach(loadSprite);
 
+    // requestIdleCallback only fires during genuine main-thread idle
+    // time — but this game runs a continuous requestAnimationFrame loop
+    // once a run starts, which can starve idle callbacks indefinitely on
+    // real devices (never truly "idle"). The `timeout` option forces the
+    // callback to run within that many ms regardless, so deferred art
+    // still gets idle-time scheduling when the thread is free, but is
+    // guaranteed to keep making progress instead of stalling mid-run.
     const scheduleIdle: (cb: () => void) => number =
       typeof window.requestIdleCallback === "function"
-        ? (cb) => window.requestIdleCallback(cb)
+        ? (cb) => window.requestIdleCallback(cb, { timeout: 300 })
         : (cb) => window.setTimeout(cb, 32);
     const cancelIdle: (handle: number) => void =
       typeof window.cancelIdleCallback === "function"
