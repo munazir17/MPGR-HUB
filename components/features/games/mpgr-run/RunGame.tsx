@@ -1702,4 +1702,3 @@ function StatPill({ label, value, highlight }: { label: string; value: string; h
     </div>
   );
   }
-
