@@ -23,8 +23,13 @@ export function GameCard({ game, bestScore = 0 }: GameCardProps) {
 
       <div className="relative p-5">
         <div className="mb-5 flex items-start justify-between gap-3">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.06] text-3xl shadow-inner">
-            <span aria-hidden="true">{game.icon}</span>
+          <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-white/[0.06] text-3xl shadow-inner">
+            {game.iconImage ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={game.iconImage} alt="" className="h-11 w-11 object-contain" aria-hidden="true" />
+            ) : (
+              <span aria-hidden="true">{game.icon}</span>
+            )}
           </div>
 
           <span
