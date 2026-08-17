@@ -34,10 +34,15 @@ export function FeaturedGameBanner({
           </div>
 
           <div className="relative mt-3 flex items-center gap-4">
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-primary-glow/25 to-primary/10 text-4xl ring-1 ring-primary/25 shadow-glow animate-float">
-              <span role="img" aria-label={game.name}>
-                {game.icon}
-              </span>
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-primary-glow/25 to-primary/10 text-4xl ring-1 ring-primary/25 shadow-glow animate-float">
+              {game.iconImage ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={game.iconImage} alt={game.name} className="h-12 w-12 object-contain" />
+              ) : (
+                <span role="img" aria-label={game.name}>
+                  {game.icon}
+                </span>
+              )}
             </div>
 
             <div className="min-w-0">
