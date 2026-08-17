@@ -375,11 +375,31 @@ export function RunGame({ address }: RunGameProps) {
   // through stripBackgroundToTransparent() once their raw <img> finishes
   // loading, and it's that processed (transparent) canvas — not the raw
   // image — that lands in the ready cache for those specific paths.
+  //
+  // Loading order: ALL_SPRITE_PATHS is ~69MB of uncompressed artwork
+  // (city environment + every obstacle/collectible/powerup/effect frame)
+  // and was previously requested all-at-once via `new Image()` on mount —
+  // competing for bandwidth and main-thread decode time with the very
+  // first render, which is what made the game feel slow to open. Nothing
+  // here removes or downgrades any asset; it only changes the order they
+  // arrive in. CRITICAL_SPRITES (the idle character pose + small UI
+  // icons) are requested immediately since they're the only sprites the
+  // idle/countdown screen actually needs. Everything else loads in small
+  // chunks scheduled with requestIdleCallback so it doesn't block the
+  // initial paint or input handling; draw() already tolerates any of
+  // these arriving late.
   useEffect(() => {
-    for (const src of ALL_SPRITE_PATHS) {
-      if (rawImagesRef.current.has(src)) continue;
+    const CRITICAL_SPRITES = [CHARACTER_SPRITES.idle, CHARACTER_SPRITES.run, UI_SPRITES.heart, UI_SPRITES.powerupFrame];
+    const deferredSprites = ALL_SPRITE_PATHS.filter((src) => !CRITICAL_SPRITES.includes(src));
+
+    let cancelled = false;
+
+    const loadSprite = (src: string) => {
+      if (rawImagesRef.current.has(src)) return;
       const img = new window.Image();
+      img.decoding = "async";
       img.onload = () => {
+        if (cancelled) return;
         if (BACKGROUND_STRIP_TARGETS.includes(src)) {
           readySpritesRef.current.set(src, stripBackgroundToTransparent(img));
         } else {
@@ -388,7 +408,36 @@ export function RunGame({ address }: RunGameProps) {
       };
       img.src = src;
       rawImagesRef.current.set(src, img);
-    }
+    };
+
+    CRITICAL_SPRITES.forEach(loadSprite);
+
+    const scheduleIdle: (cb: () => void) => number =
+      typeof window.requestIdleCallback === "function"
+        ? (cb) => window.requestIdleCallback(cb)
+        : (cb) => window.setTimeout(cb, 32);
+    const cancelIdle: (handle: number) => void =
+      typeof window.cancelIdleCallback === "function"
+        ? (handle) => window.cancelIdleCallback(handle)
+        : (handle) => window.clearTimeout(handle);
+
+    const CHUNK_SIZE = 4;
+    let index = 0;
+    let handle = 0;
+    const loadNextChunk = () => {
+      if (cancelled) return;
+      deferredSprites.slice(index, index + CHUNK_SIZE).forEach(loadSprite);
+      index += CHUNK_SIZE;
+      if (index < deferredSprites.length) {
+        handle = scheduleIdle(loadNextChunk);
+      }
+    };
+    handle = scheduleIdle(loadNextChunk);
+
+    return () => {
+      cancelled = true;
+      cancelIdle(handle);
+    };
   }, []);
 
   const getSprite = useCallback((src: string): CanvasImageSource | null => {
@@ -1259,11 +1308,14 @@ export function RunGame({ address }: RunGameProps) {
   };
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
+    <div className="flex min-h-0 flex-1 flex-col gap-2 sm:block sm:flex-none sm:space-y-3">
+      <div className="flex shrink-0 items-center justify-between">
+        {/* BottomNav already has a Games tab on mobile, so this link is
+            redundant there and only wastes header space — kept for
+            desktop, where there's no bottom nav. */}
         <Link
           href="/games"
-          className="flex items-center gap-1.5 text-xs font-medium text-muted transition-colors hover:text-white"
+          className="hidden items-center gap-1.5 text-xs font-medium text-muted transition-colors hover:text-white sm:flex"
         >
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
           Back to Games
@@ -1272,19 +1324,19 @@ export function RunGame({ address }: RunGameProps) {
           <button
             onClick={togglePause}
             aria-label="Pause"
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-white/5 text-white ring-1 ring-white/10 active:scale-95"
+            className="ml-auto flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white ring-1 ring-white/10 active:scale-95"
           >
-            <Pause className="h-4 w-4" aria-hidden="true" />
+            <Pause className="h-5 w-5" strokeWidth={2.5} aria-hidden="true" />
           </button>
         )}
       </div>
 
-      <GlassCard className="relative overflow-hidden p-0">
+      <GlassCard className="relative min-h-0 flex-1 overflow-hidden p-0 sm:flex-none">
         <div
           ref={containerRef}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
-          className="relative h-[62vh] max-h-[560px] min-h-[360px] w-full select-none touch-none"
+          className="relative h-full min-h-[360px] w-full select-none touch-none sm:h-[62vh] sm:max-h-[560px]"
           style={{ touchAction: "none" }}
         >
           <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
