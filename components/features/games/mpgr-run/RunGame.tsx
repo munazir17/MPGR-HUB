@@ -1414,3 +1414,195 @@ export function RunGame({ address }: RunGameProps) {
           {/* Countdown */}
           <AnimatePresence>
             {phase === "countdown" && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 flex items-center justify-center bg-background/60 backdrop-blur-sm"
+              >
+                <motion.span
+                  key={countdownValue}
+                  initial={{ scale: 0.4, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ type: "spring", stiffness: 300, damping: 16 }}
+                  className="text-gradient-premium text-6xl font-extrabold"
+                >
+                  {countdownValue > 0 ? countdownValue : "GO"}
+                </motion.span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Paused */}
+          <AnimatePresence>
+            {phase === "paused" && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background/75 backdrop-blur-sm"
+              >
+                <p className="text-lg font-bold text-white">Paused</p>
+                <button
+                  onClick={togglePause}
+                  className="flex min-h-[44px] items-center gap-2 rounded-xl bg-gradient-premium px-6 py-2.5 text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
+                >
+                  <Play className="h-4 w-4" aria-hidden="true" />
+                  Resume
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Game over */}
+          <AnimatePresence>
+            {phase === "game_over" && runResult && outcome && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-y-auto bg-background/85 px-5 py-6 text-center backdrop-blur-md"
+              >
+                <p className="text-sm font-semibold uppercase tracking-wider text-rose-400">💀 Game Over</p>
+
+                <AnimatedNumber
+                  value={runResult.score}
+                  className="text-4xl font-extrabold tracking-tight text-white"
+                />
+                <p className="text-xs text-muted">Score</p>
+
+                <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+                  <StatPill label="Distance" value={`${formatCompactNumber(runResult.distanceMeters)}m`} />
+                  <StatPill label="Coins" value={String(runResult.coinsCollected)} />
+                  <StatPill label="Gems" value={String(runResult.gemsCollected)} />
+                  <StatPill label="Checkpoints" value={String(runResult.checkpointsReached)} />
+                  <StatPill label="Power-ups" value={String(runResult.powerupsCollected)} />
+                  <StatPill
+                    label="Best"
+                    value={formatCompactNumber(Math.max(personalBest, runResult.score))}
+                    highlight
+                  />
+                </div>
+
+                {outcome.isNewPersonalBest && (
+                  <p className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-gold">
+                    <Trophy className="h-3.5 w-3.5" aria-hidden="true" />
+                    New personal best!
+                  </p>
+                )}
+
+                {!outcome.valid ? (
+                  <p className="mt-1 max-w-xs text-[11px] text-muted">
+                    This run couldn't be validated, so no XP was awarded. {outcome.validationReasons[0]}
+                  </p>
+                ) : outcome.xpAwarded > 0 ? (
+                  <p className="mt-1 text-xs font-medium text-primary-glow">+{outcome.xpAwarded} XP earned</p>
+                ) : outcome.dailyCapReached ? (
+                  <p className="mt-1 text-[11px] text-muted">Daily XP cap reached — come back tomorrow for more XP.</p>
+                ) : null}
+
+                {outcome.newlyUnlockedAchievementIds.length > 0 && (
+                  <p className="mt-1 text-[11px] text-gold">
+                    🏆 {outcome.newlyUnlockedAchievementIds.length} achievement
+                    {outcome.newlyUnlockedAchievementIds.length > 1 ? "s" : ""} unlocked — check Achievements
+                  </p>
+                )}
+
+                <p className="mt-1 text-[10px] text-muted">
+                  Personal best shown above · verified competitive leaderboards launch once the MPGR HUB backend is live
+                </p>
+
+                <div className="mt-3 flex w-full max-w-xs flex-col gap-2">
+                  <button
+                    onClick={beginCountdown}
+                    className="flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-gradient-premium px-6 py-2.5 text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
+                  >
+                    <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                    Try Again
+                  </button>
+                  <button
+                    onClick={handleShare}
+                    className="flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-white/5 px-6 py-2.5 text-sm font-semibold text-white ring-1 ring-white/10 transition-transform active:scale-95"
+                  >
+                    <Share2 className="h-4 w-4" aria-hidden="true" />
+                    {shareCopied ? "Copied!" : "Share Run"}
+                  </button>
+                  <Link
+                    href="/games"
+                    className="flex min-h-[44px] items-center justify-center gap-2 rounded-xl text-xs font-medium text-muted transition-colors hover:text-white"
+                  >
+                    Back to Games
+                  </Link>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </GlassCard>
+    </div>
+  );
+}
+
+function HudChip({
+  icon: Icon,
+  imgSrc,
+  label,
+  value,
+}: {
+  icon?: typeof Zap;
+  imgSrc?: string;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 rounded-full bg-black/40 px-3 py-1.5 shadow-[0_0_0_1px_rgba(59,130,246,0.35)] backdrop-blur-md">
+      {imgSrc ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={imgSrc} alt="" className="h-4 w-4 object-contain" aria-hidden="true" />
+      ) : Icon ? (
+        <Icon className="h-3.5 w-3.5 text-gold" aria-hidden="true" />
+      ) : null}
+      <span className="text-xs font-semibold text-white">{value}</span>
+      <span className="sr-only">{label}</span>
+    </div>
+  );
+}
+
+function ControlButton({
+  icon: Icon,
+  label,
+  onPress,
+  accent,
+}: {
+  icon: typeof Zap;
+  label: string;
+  onPress: () => void;
+  accent?: boolean;
+}) {
+  return (
+    <button
+      onPointerDown={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onPress();
+      }}
+      aria-label={label}
+      className={`flex h-14 w-14 items-center justify-center rounded-full backdrop-blur-md ring-1 transition-transform active:scale-90 ${
+        accent
+          ? "bg-gradient-premium text-white shadow-glow-gold ring-white/20"
+          : "bg-black/45 text-white ring-white/15"
+      }`}
+    >
+      <Icon className="h-6 w-6" aria-hidden="true" />
+    </button>
+  );
+}
+
+function StatPill({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-2 py-2.5">
+      <p className={highlight ? "text-sm font-bold text-gold" : "text-sm font-bold text-white"}>{value}</p>
+      <p className="mt-0.5 text-[10px] text-muted">{label}</p>
+    </div>
+  );
+  }
