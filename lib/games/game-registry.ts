@@ -23,6 +23,7 @@ export const GAME_REGISTRY: GameDefinition[] = [
     estimatedPlayTime: "30s–3min",
     status: "playable",
     icon: "🦖",
+    iconImage: "/games/mpgr-run/character/mpgr-runner-idle.png",
     accentGradient: "from-primary-glow/25 to-primary/10",
     route: "/games/mpgr-run",
     supportsLeaderboard: true,
