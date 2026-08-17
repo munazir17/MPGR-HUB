@@ -1380,7 +1380,7 @@ export function RunGame({ address }: RunGameProps) {
           ref={containerRef}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
-          className="relative min-h-[360px] w-full flex-1 select-none touch-none sm:h-[62vh] sm:max-h-[560px] sm:flex-none"
+          className="relative h-[65dvh] min-h-[360px] w-full select-none touch-none sm:relative sm:inset-auto sm:h-[62vh] sm:max-h-[560px] sm:w-full"
           style={{ touchAction: "none" }}
         >
           <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
