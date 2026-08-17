@@ -53,6 +53,13 @@ export interface GameDefinition {
   /** Emoji used as the game's icon across the hub — no external image assets required. */
   icon: string;
 
+  /**
+   * Optional real artwork path (under public/) to use instead of `icon`
+   * on the Games hub and featured banner, for games that have their own
+   * branded sprite. When unset, consumers fall back to the `icon` emoji.
+   */
+  iconImage?: string;
+
   /** Tailwind gradient classes used for the game's card identity accent. */
   accentGradient: string;
 
