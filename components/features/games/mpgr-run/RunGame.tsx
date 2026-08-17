@@ -1375,12 +1375,12 @@ export function RunGame({ address }: RunGameProps) {
         )}
       </div>
 
-      <GlassCard className="relative min-h-0 flex-1 overflow-hidden p-0 sm:flex-none">
+      <GlassCard className="relative flex min-h-0 flex-1 flex-col overflow-hidden p-0 sm:flex-none">
         <div
           ref={containerRef}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
-          className="absolute inset-0 min-h-[360px] w-full select-none touch-none sm:relative sm:inset-auto sm:h-[62vh] sm:max-h-[560px] sm:w-full"
+          className="relative min-h-[360px] w-full flex-1 select-none touch-none sm:h-[62vh] sm:max-h-[560px] sm:flex-none"
           style={{ touchAction: "none" }}
         >
           <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
@@ -1702,3 +1702,4 @@ function StatPill({ label, value, highlight }: { label: string; value: string; h
     </div>
   );
   }
+
