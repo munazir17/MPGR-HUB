@@ -389,7 +389,7 @@ export function RunGame({ address }: RunGameProps) {
   // initial paint or input handling; draw() already tolerates any of
   // these arriving late.
   useEffect(() => {
-    const CRITICAL_SPRITES = [CHARACTER_SPRITES.idle, CHARACTER_SPRITES.run, UI_SPRITES.heart, UI_SPRITES.powerupFrame];
+    const CRITICAL_SPRITES: string[] = [CHARACTER_SPRITES.idle, CHARACTER_SPRITES.run, UI_SPRITES.heart, UI_SPRITES.powerupFrame];
     const deferredSprites = ALL_SPRITE_PATHS.filter((src) => !CRITICAL_SPRITES.includes(src));
 
     let cancelled = false;
