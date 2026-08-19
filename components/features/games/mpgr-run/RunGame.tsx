@@ -303,6 +303,7 @@ export function RunGame({ address }: RunGameProps) {
   const lastTimeRef = useRef<number>(0);
   const hudIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sizeRef = useRef({ width: 0, height: 0 });
+  const resizeRef = useRef<(() => void) | null>(null);
   const phaseRef = useRef<Phase>("idle");
   const idRef = useRef(1);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -376,6 +377,7 @@ export function RunGame({ address }: RunGameProps) {
       sizeRef.current = { width: rect.width, height: rect.height };
     };
 
+    resizeRef.current = resize;
     resize();
     const observer = new ResizeObserver(resize);
     observer.observe(container);
@@ -900,6 +902,12 @@ export function RunGame({ address }: RunGameProps) {
 
     ctx.restore();
   }, [getSprite]);
+    useEffect(() => {
+    if (phase === "running") {
+      resizeRef.current?.();
+      draw();
+    }
+  }, [phase, draw]);
 
   // --- Collect helpers ---------------------------------------------------
   const collectItem = useCallback(
