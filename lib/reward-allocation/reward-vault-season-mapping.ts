@@ -85,3 +85,26 @@ export interface VaultSeasonLookup {
   } | null>;
 }
 
+// --- Implementation (Game Rewards Module — weekly settlement) -------------
+//
+// Resolves decision #1 above as: 1:1 mapping (XP season number == vault
+// seasonId), per the "candidate direction" this file already named.
+// This does NOT call createSeason() — it only reads. If no vault season
+// exists yet for the current XP season, settlement must abort safely and
+// report the exact createSeason(...) call the vault owner needs to run
+// (see app/api/games/mpgr-run/settlement/route.ts) — never silently
+// create one from a gameplay/cron endpoint (LOCKED, master prompt
+// section 17).
+export const vaultSeasonLookup: VaultSeasonLookup = {
+  async resolveActiveVaultSeasonId() {
+    // Imported lazily so this file (which xp-engine.ts's own callers may
+    // reach transitively) never pulls the admin client / viem wallet
+    // machinery into a bundle that doesn't need it.
+    const { rewardVaultAdminClient } = await import("@/lib/reward-vault/reward-vault-admin-client");
+    const seasonId = candidateVaultSeasonId();
+    const exists = await rewardVaultAdminClient.seasonExists(seasonId);
+    if (!exists) return { seasonId, exists: false, finalized: false };
+    const season = await rewardVaultAdminClient.getSeason(seasonId);
+    return { seasonId, exists: true, finalized: season.finalized };
+  },
+};
