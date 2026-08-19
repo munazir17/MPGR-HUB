@@ -8,7 +8,6 @@ import { Navbar } from "@/components/Navbar";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonCard } from "@/components/ui/SkeletonCard";
 import { RunGame } from "@/components/features/games/mpgr-run/RunGame";
-import { DebugOverlay } from "@/components/features/games/mpgr-run/DebugOverlay";
 
 export default function MPGRRunPage() {
   const [mounted, setMounted] = useState(false);
@@ -47,7 +46,7 @@ export default function MPGRRunPage() {
               className="flex min-h-0 flex-1 flex-col sm:block sm:flex-none"
             >
               <RunGame address={address} />
-              <DebugOverlay />
+    
             </motion.div>
           )}
         </main>
