@@ -119,4 +119,3 @@ export interface AllocationStore {
    */
   recordTreasuryLedgerEntry(rewardType: "GAME", amountRaw: bigint): Promise<void>;
 }
-
