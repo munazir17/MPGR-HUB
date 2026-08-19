@@ -33,7 +33,7 @@ export function GlassCard({
       />
 
       {/* Content */}
-      <div className="relative flex h-full flex-col">
+      <div className="relative flex min-h-0 flex-1 flex-col">
         {children}
       </div>
     </motion.div>
