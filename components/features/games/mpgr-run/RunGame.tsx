@@ -22,6 +22,7 @@ import { formatCompactNumber } from "@/lib/format";
 import { startSession, endSession, type GameSessionMeta } from "@/lib/games/game-session";
 import { finalizeRun, type RunResult, type RunStats } from "@/lib/games/mpgr-run/run-score";
 import { processRunResult, type ProcessRunResultOutcome } from "@/lib/games/mpgr-run/run-rewards";
+import { submitRunToServer } from "@/lib/games/mpgr-run/submit-server-reward";
 import { getGameStats } from "@/lib/games/game-storage";
 import { resolveDifficulty } from "@/lib/games/mpgr-run/difficulty";
 import {
@@ -1185,9 +1186,17 @@ export function RunGame({ address }: RunGameProps) {
     setRunResult(result);
 
     const rewardOutcome = processRunResult(address, ended.sessionId, result);
-    setOutcome(rewardOutcome);
-    refreshPersonalBest();
-  }, [address, stopLoop, refreshPersonalBest, buildStats]);
+setOutcome(rewardOutcome);
+refreshPersonalBest();
+
+// Weekly competitive Game Rewards — fire-and-forget. sessionId makes
+// this safe to have fail silently here; XP/gameplay above already
+// completed successfully regardless of this call's outcome. No MPGR
+// amount is ever received or displayed from this response — only
+// this week's validRunCount/bestScore/eligibilityStatus, see
+// WeeklyGameRewardsPanel-style consumers of useWeeklyGameStats.
+void submitRunToServer(address, ended.sessionId, result);
+}, [address, stopLoop, refreshPersonalBest, buildStats]);
 
   const startHudSync = useCallback(() => {
     if (hudIntervalRef.current != null) clearInterval(hudIntervalRef.current);
