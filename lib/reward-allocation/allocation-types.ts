@@ -193,4 +193,3 @@ export interface WeeklySettlement {
 }
 
 export type { Address, Hash };
-
