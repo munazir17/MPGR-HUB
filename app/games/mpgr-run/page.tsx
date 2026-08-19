@@ -8,6 +8,7 @@ import { Navbar } from "@/components/Navbar";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonCard } from "@/components/ui/SkeletonCard";
 import { RunGame } from "@/components/features/games/mpgr-run/RunGame";
+import { WeeklyGameRewardsPanel } from "@/components/features/games/mpgr-run/WeeklyGameRewardsPanel";
 
 export default function MPGRRunPage() {
   const [mounted, setMounted] = useState(false);
@@ -46,7 +47,7 @@ export default function MPGRRunPage() {
               className="flex min-h-0 flex-1 flex-col sm:block sm:flex-none"
             >
               <RunGame address={address} />
-    
+              <WeeklyGameRewardsPanel address={address} />
             </motion.div>
           )}
         </main>
