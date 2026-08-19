@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/games/mpgr-run/settlement",
+      "schedule": "10 0 * * 1"
+    }
+  ]
+}
