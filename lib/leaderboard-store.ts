@@ -83,16 +83,16 @@ function compositeScore(xp: number, seasonPoints: number): number {
 // Types
 // ---------------------------------------------------------------------------
 
-export interface LeaderboardMeta {
+export type LeaderboardMeta = {
   xp: number;
   seasonPoints: number;
   updatedAt: string;
-}
+};
 
-export interface LeaderboardEntry extends LeaderboardMeta {
+export type LeaderboardEntry = LeaderboardMeta & {
   wallet: string;
   rank: number;
-}
+};
 
 function normalizeWallet(wallet: string): string {
   return wallet.toLowerCase();
@@ -136,7 +136,9 @@ export const leaderboardStore = {
 
     await Promise.all([
       kv.zadd(SCORE_ZSET_KEY, { score, member: wallet }),
-      kv.hset(metaKey(wallet), meta),
+      // JSON SET — same pattern as lib/reward-allocation/kv-allocation-store.ts.
+      // Avoids Upstash hset's Record<string, unknown> type mismatch.
+      kv.set(metaKey(wallet), meta),
     ]);
   },
 
@@ -149,7 +151,7 @@ export const leaderboardStore = {
     if (!members || members.length === 0) return [];
 
     const metas = await Promise.all(
-      members.map((wallet) => kv.hgetall(metaKey(wallet)))
+      members.map((wallet) => kv.get<LeaderboardMeta>(metaKey(wallet)))
     );
 
     return members
@@ -171,7 +173,7 @@ export const leaderboardStore = {
 
     const [zRank, meta] = await Promise.all([
       kv.zrevrank(SCORE_ZSET_KEY, wallet),
-      kv.hgetall(metaKey(wallet)),
+      kv.get<LeaderboardMeta>(metaKey(wallet)),
     ]);
 
     const parsedMeta = parseMeta(meta);
