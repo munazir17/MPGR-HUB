@@ -1,7 +1,7 @@
 // app/api/leaderboard/route.ts
 //
 // Global leaderboard API — server-side source of truth backed by Redis
-// (see lib/leaderboard/leaderboard-store.ts). This is what makes the
+// (see lib/leaderboard-store.ts). This is what makes the
 // leaderboard actually GLOBAL: every wallet reads the same Redis-backed
 // ranking, instead of the page only ever knowing about the wallet
 // currently connected in that browser.
@@ -13,7 +13,7 @@
 // existing games reward routes.
 
 import { NextResponse } from "next/server";
-import { leaderboardStore } from "@/lib/leaderboard/leaderboard-store";
+import { leaderboardStore } from "@/lib/leaderboard-store";
 import { referralStore } from "@/lib/referral/referral-store";
 
 export const runtime = "nodejs";
