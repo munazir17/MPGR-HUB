@@ -18,6 +18,7 @@ import { SeasonProgressCard } from "@/components/features/season-pass/SeasonProg
 import { HolderTierCard } from "@/components/features/holder-tier/HolderTierCard";
 import { useXP } from "@/hooks/useXP";
 import { usePremium } from "@/hooks/usePremium";
+import { useReferralCount } from "@/hooks/useReferralCount";
 import { useSeasonPass } from "@/hooks/useSeasonPass";
 import { useHolderTier } from "@/lib/useHolderTier";
 import { getLevelProgress, getAchievements } from "@/lib/xp-engine";
@@ -33,6 +34,10 @@ export default function ProfilePage() {
   const { status: premiumStatus, cosmetics: premiumCosmetics } = usePremium();
   const { status: seasonPassStatus } = useSeasonPass();
   const { status: holderTierStatus } = useHolderTier();
+  // Bug fix — persistent referral attribution: this is the real,
+  // server-side count (lib/referral/referral-store.ts), tied to the
+  // wallet rather than the browser/device.
+  const { count: referralCount } = useReferralCount(address);
 
   useEffect(() => setMounted(true), []);
 
@@ -122,7 +127,12 @@ export default function ProfilePage() {
             )}
 
             <GlassCard className="p-5">
-              <p className="mb-2 text-sm font-medium text-white">Referral Link</p>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-sm font-medium text-white">Referral Link</p>
+                <p className="text-xs text-muted">
+                  Referrals: <span className="font-semibold text-white">{referralCount ?? 0}</span>
+                </p>
+              </div>
               <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-background/50 px-3 py-2">
                 <span className="flex-1 truncate text-xs text-muted">{referralLink}</span>
                 <button onClick={copyReferralLink} aria-label="Copy referral link" className="shrink-0 p-1 text-primary">
