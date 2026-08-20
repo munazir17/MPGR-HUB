@@ -6,6 +6,7 @@ import {
   awardXP,
   claimAchievement,
   getUserRecord,
+  getSeasonPoints,
   performDailyCheckIn,
   type UserXPRecord,
   type GameAchievementStats,
@@ -14,6 +15,34 @@ import {
 interface XPEvent {
   amount: number;
   id: number;
+}
+
+// Bug fix — global leaderboard.
+//
+// lib/xp-engine.ts stays exactly as it was (a local, per-browser XP
+// cache — untouched). The only addition here is a fire-and-forget sync
+// of {wallet, xp, seasonPoints} to the server-side leaderboard store
+// (see lib/leaderboard/leaderboard-store.ts) whenever the local record
+// changes, so every OTHER wallet's leaderboard page can see this
+// wallet's standing too — not just this browser.
+function syncLeaderboard(record: UserXPRecord) {
+  try {
+    fetch("/api/leaderboard", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        wallet: record.address,
+        xp: record.xp,
+        seasonPoints: getSeasonPoints(record),
+      }),
+    }).catch(() => {
+      // Best-effort — a failed sync just means this update won't be
+      // visible globally until the next successful sync; local XP is
+      // completely unaffected either way.
+    });
+  } catch {
+    // ignore — never let leaderboard sync break local XP behavior
+  }
 }
 
 export function useXP() {
@@ -29,6 +58,7 @@ export function useXP() {
     }
     const result = awardXP(address, "WALLET_CONNECTED");
     setRecord(result.record);
+    syncLeaderboard(result.record);
     if (result.xpGained > 0) {
       setLastEvent({ amount: result.xpGained, id: Date.now() });
     }
@@ -39,6 +69,7 @@ export function useXP() {
     if (!address) return null;
     const result = performDailyCheckIn(address);
     setRecord(result.record);
+    syncLeaderboard(result.record);
     if (result.xpGained > 0) setLastEvent({ amount: result.xpGained, id: Date.now() });
     if (result.leveledUp) setLeveledUp(result.newLevel);
     return result;
@@ -47,7 +78,9 @@ export function useXP() {
   const claim = useCallback(
     (achievementId: string, gameStats?: GameAchievementStats) => {
       if (!address) return;
-      setRecord(claimAchievement(address, achievementId, gameStats));
+      const updated = claimAchievement(address, achievementId, gameStats);
+      setRecord(updated);
+      syncLeaderboard(updated);
     },
     [address]
   );
