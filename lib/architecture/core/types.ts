@@ -161,6 +161,29 @@ export interface AgentEventMap {
     message: string;
     consecutiveFailures: number;
   };
+
+  // P0.1 — Agent Tool Runtime + Registry. Emitted by
+  // lib/architecture/tools/agent-tool-runtime.ts around every
+  // tool.execute() call: "started" right before invocation, then exactly
+  // one of "completed" (tool returned, regardless of its own success
+  // flag) or "failed" (tool threw and the runtime caught it) — never
+  // both. Additive only; every event above is untouched.
+  agent_tool_execution_started: {
+    toolId: string;
+    requestId: string;
+    mode: "read" | "prepare" | "execute";
+  };
+  agent_tool_execution_completed: {
+    toolId: string;
+    requestId: string;
+    success: boolean;
+    durationMs: number;
+  };
+  agent_tool_execution_failed: {
+    toolId: string;
+    requestId: string;
+    message: string;
+  };
 }
 
 export type AgentEventName = keyof AgentEventMap;
