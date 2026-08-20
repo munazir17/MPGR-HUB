@@ -3,24 +3,28 @@
 // SERVER-ONLY.
 // Upstash Redis implementation of the AllocationStore interface.
 //
-// This replaces the deprecated @vercel/kv client with the official
-// @upstash/redis SDK. The underlying Redis database remains the same.
+// Important:
+// @upstash/redis can automatically deserialize JSON values returned by GET.
+// Therefore this file safely supports BOTH:
+//   1. legacy/raw JSON strings
+//   2. already-deserialized objects
 //
 // Required Vercel environment variables:
 //   UPSTASH_REDIS_REST_URL
 //   UPSTASH_REDIS_REST_TOKEN
 //
-// For compatibility with older migrated Vercel KV environments, this
-// implementation also accepts:
+// Backward compatibility:
 //   KV_REST_API_URL
 //   KV_REST_API_TOKEN
-//
-// No game/reward logic is changed here. This file only provides the
-// persistent Redis storage implementation used by the allocation system.
 
 import { Redis } from "@upstash/redis";
 import type { Address } from "viem";
-import type { AllocationStore, InsertResult } from "./allocation-store";
+
+import type {
+  AllocationStore,
+  InsertResult,
+} from "./allocation-store";
+
 import type {
   AllocationStatus,
   PlayerWeekRecord,
@@ -31,18 +35,14 @@ import type {
 // ---------------------------------------------------------------------------
 // Redis client
 // ---------------------------------------------------------------------------
-//
-// Prefer the current Upstash environment variables.
-//
-// The fallback keeps compatibility with projects whose existing Vercel
-// integration still exposes the older KV_REST_API_* variables after the
-// Vercel KV -> Upstash migration.
 
 const redisUrl =
-  process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  process.env.UPSTASH_REDIS_REST_URL ??
+  process.env.KV_REST_API_URL;
 
 const redisToken =
-  process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+  process.env.UPSTASH_REDIS_REST_TOKEN ??
+  process.env.KV_REST_API_TOKEN;
 
 if (!redisUrl || !redisToken) {
   throw new Error(
@@ -65,7 +65,10 @@ function runKey(sessionId: string) {
   return `mpgrhub:games:run:${sessionId}`;
 }
 
-function playerWeekKey(wallet: Address, weekKey: string) {
+function playerWeekKey(
+  wallet: Address,
+  weekKey: string
+) {
   return `mpgrhub:games:playerweek:${weekKey}:${wallet.toLowerCase()}`;
 }
 
@@ -84,19 +87,21 @@ function ledgerKey(rewardType: "GAME") {
 // ---------------------------------------------------------------------------
 // BigInt-safe JSON serialization
 // ---------------------------------------------------------------------------
-//
-// Redis stores strings for these records. BigInt values are encoded with
-// an "n" suffix and restored on read.
 
 function serialize(value: unknown): string {
   return JSON.stringify(value, (_key, v) =>
-    typeof v === "bigint" ? `${v.toString()}n` : v
+    typeof v === "bigint"
+      ? `${v.toString()}n`
+      : v
   );
 }
 
 function deserialize<T>(raw: string): T {
   return JSON.parse(raw, (_key, v) => {
-    if (typeof v === "string" && /^-?\d+n$/.test(v)) {
+    if (
+      typeof v === "string" &&
+      /^-?\d+n$/.test(v)
+    ) {
       return BigInt(v.slice(0, -1));
     }
 
@@ -105,22 +110,36 @@ function deserialize<T>(raw: string): T {
 }
 
 // ---------------------------------------------------------------------------
-// Atomic CAS-style player-week update
+// IMPORTANT: Upstash GET normalization
 // ---------------------------------------------------------------------------
 //
-// expectedStatus:
+// @upstash/redis may automatically JSON-decode values returned from GET.
 //
-// "" / undefined:
-//   Create if missing, or update an existing record whose allocationStatus
-//   is "none".
+// Therefore:
+//   string  -> legacy/raw JSON -> deserialize()
+//   object  -> already decoded -> return directly
 //
-// "none":
-//   Same semantics as above.
+// This fixes:
+//   SyntaxError: "[object Object]" is not valid JSON
 //
-// Any other status:
-//   Update only when the existing record has exactly that allocationStatus.
-//
-// Redis executes EVAL atomically.
+
+function normalizeRedisValue<T>(
+  value: unknown
+): T | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    return deserialize<T>(value);
+  }
+
+  return value as T;
+}
+
+// ---------------------------------------------------------------------------
+// Atomic CAS-style player-week update
+// ---------------------------------------------------------------------------
 
 const CAS_UPSERT_SCRIPT = `
 local current = redis.call("GET", KEYS[1])
@@ -186,13 +205,11 @@ export const kvAllocationStore: AllocationStore = {
   // -------------------------------------------------------------------------
 
   async getRunRecord(sessionId) {
-    const raw = await kv.get<string>(runKey(sessionId));
+    const raw = await kv.get<unknown>(
+      runKey(sessionId)
+    );
 
-    if (!raw) {
-      return null;
-    }
-
-    return deserialize<RunRecord>(raw);
+    return normalizeRedisValue<RunRecord>(raw);
   },
 
   async putRunRecordIfAbsent(
@@ -201,27 +218,45 @@ export const kvAllocationStore: AllocationStore = {
     const key = runKey(record.sessionId);
     const payload = serialize(record);
 
-    // NX = only create the key if it does not already exist.
-    //
-    // This is atomic on Redis and prevents duplicate game submissions
-    // from being recorded twice.
-
-    const result = await kv.set(key, payload, {
-      nx: true,
-    });
+    const result = await kv.set(
+      key,
+      payload,
+      {
+        nx: true,
+      }
+    );
 
     if (result === null) {
-      const existingRaw = await kv.get<string>(key);
+      const existingRaw = await kv.get<unknown>(
+        key
+      );
 
-      if (!existingRaw) {
+      const existing =
+        normalizeRedisValue<RunRecord>(
+          existingRaw
+        );
+
+      if (!existing) {
         // Extremely unlikely race:
-        // the key disappeared between the failed NX operation and GET.
-        const retry = await kv.set(key, payload, {
-          nx: true,
-        });
+        // the key disappeared between failed NX
+        // and GET.
+
+        const retry = await kv.set(
+          key,
+          payload,
+          {
+            nx: true,
+          }
+        );
 
         if (retry === null) {
-          const existing2 = await kv.get<string>(key);
+          const existing2Raw =
+            await kv.get<unknown>(key);
+
+          const existing2 =
+            normalizeRedisValue<RunRecord>(
+              existing2Raw
+            );
 
           if (!existing2) {
             throw new Error(
@@ -231,7 +266,7 @@ export const kvAllocationStore: AllocationStore = {
 
           return {
             inserted: false,
-            record: deserialize<RunRecord>(existing2),
+            record: existing2,
           };
         }
 
@@ -243,7 +278,7 @@ export const kvAllocationStore: AllocationStore = {
 
       return {
         inserted: false,
-        record: deserialize<RunRecord>(existingRaw),
+        record: existing,
       };
     }
 
@@ -257,46 +292,62 @@ export const kvAllocationStore: AllocationStore = {
   // Per-player weekly ledger
   // -------------------------------------------------------------------------
 
-  async getPlayerWeekRecord(wallet, weekKey) {
-    const raw = await kv.get<string>(
+  async getPlayerWeekRecord(
+    wallet,
+    weekKey
+  ) {
+    const raw = await kv.get<unknown>(
       playerWeekKey(wallet, weekKey)
     );
 
-    if (!raw) {
-      return null;
-    }
-
-    return deserialize<PlayerWeekRecord>(raw);
+    return normalizeRedisValue<PlayerWeekRecord>(
+      raw
+    );
   },
 
   async upsertPlayerWeekRecord(
     record: PlayerWeekRecord,
     expectedStatus?: AllocationStatus
   ): Promise<PlayerWeekRecord> {
-    const key = playerWeekKey(record.wallet, record.weekKey);
+    const key = playerWeekKey(
+      record.wallet,
+      record.weekKey
+    );
+
     const payload = serialize(record);
 
     const result = await kv.eval(
       CAS_UPSERT_SCRIPT,
       [key],
-      [payload, expectedStatus ?? ""]
+      [
+        payload,
+        expectedStatus ?? "",
+      ]
     );
 
-    if (result === null || result === undefined) {
+    if (
+      result === null ||
+      result === undefined
+    ) {
       throw new Error(
         `upsertPlayerWeekRecord: unexpected empty result for ${key}`
       );
     }
 
-    const resultStr =
-      typeof result === "string"
-        ? result
-        : JSON.stringify(result);
+    const stored =
+      normalizeRedisValue<PlayerWeekRecord>(
+        result
+      );
 
-    const stored = deserialize<PlayerWeekRecord>(resultStr);
+    if (!stored) {
+      throw new Error(
+        `upsertPlayerWeekRecord: unable to decode result for ${key}`
+      );
+    }
 
-    // Maintain a per-week wallet index so settlement does not need
-    // an unsafe Redis KEYS scan.
+    // Maintain per-week wallet index.
+    //
+    // This avoids unsafe Redis KEYS scans during settlement.
 
     await kv.sadd(
       playerWeekIndexKey(record.weekKey),
@@ -313,29 +364,41 @@ export const kvAllocationStore: AllocationStore = {
       playerWeekIndexKey(weekKey)
     );
 
-    if (!wallets || wallets.length === 0) {
+    if (
+      !wallets ||
+      wallets.length === 0
+    ) {
       return [];
     }
 
-    const raws = await Promise.all(
-      wallets.map((wallet) =>
-        kv.get<string>(
-          playerWeekKey(
-            wallet as Address,
-            weekKey
-          )
-        )
-      )
-    );
+    const records =
+      await Promise.all(
+        wallets.map(async (wallet) => {
+          const raw =
+            await kv.get<unknown>(
+              playerWeekKey(
+                wallet as Address,
+                weekKey
+              )
+            );
 
-    return raws
-      .filter((raw): raw is string => !!raw)
-      .map((raw) =>
-        deserialize<PlayerWeekRecord>(raw)
+          return normalizeRedisValue<PlayerWeekRecord>(
+            raw
+          );
+        })
+      );
+
+    return records
+      .filter(
+        (
+          record
+        ): record is PlayerWeekRecord =>
+          record !== null
       )
       .filter(
         (record) =>
-          record.eligibilityStatus === "eligible"
+          record.eligibilityStatus ===
+          "eligible"
       );
   },
 
@@ -343,43 +406,58 @@ export const kvAllocationStore: AllocationStore = {
   // Weekly settlement state
   // -------------------------------------------------------------------------
 
-  async getWeeklySettlement(weekKey) {
-    const raw = await kv.get<string>(
+  async getWeeklySettlement(
+    weekKey
+  ) {
+    const raw = await kv.get<unknown>(
       settlementKey(weekKey)
     );
 
-    if (!raw) {
-      return null;
-    }
-
-    return deserialize<WeeklySettlement>(raw);
+    return normalizeRedisValue<WeeklySettlement>(
+      raw
+    );
   },
 
   async upsertWeeklySettlement(
     settlement: WeeklySettlement,
     expectedStatus?: WeeklySettlement["status"]
   ): Promise<WeeklySettlement> {
-    const key = settlementKey(settlement.weekKey);
+    const key = settlementKey(
+      settlement.weekKey
+    );
+
     const payload = serialize(settlement);
 
     const result = await kv.eval(
       CAS_UPSERT_SETTLEMENT_SCRIPT,
       [key],
-      [payload, expectedStatus ?? ""]
+      [
+        payload,
+        expectedStatus ?? "",
+      ]
     );
 
-    if (result === null || result === undefined) {
+    if (
+      result === null ||
+      result === undefined
+    ) {
       throw new Error(
         `upsertWeeklySettlement: unexpected empty result for ${key}`
       );
     }
 
-    const resultStr =
-      typeof result === "string"
-        ? result
-        : JSON.stringify(result);
+    const stored =
+      normalizeRedisValue<WeeklySettlement>(
+        result
+      );
 
-    return deserialize<WeeklySettlement>(resultStr);
+    if (!stored) {
+      throw new Error(
+        `upsertWeeklySettlement: unable to decode result for ${key}`
+      );
+    }
+
+    return stored;
   },
 
   // -------------------------------------------------------------------------
@@ -389,11 +467,31 @@ export const kvAllocationStore: AllocationStore = {
   async getTreasuryLedgerTotal(
     rewardType: "GAME"
   ): Promise<bigint> {
-    const units = await kv.get<number>(
-      ledgerKey(rewardType)
-    );
+    const units =
+      await kv.get<unknown>(
+        ledgerKey(rewardType)
+      );
 
-    return BigInt(units ?? 0) * LEDGER_SCALE;
+    if (
+      units === null ||
+      units === undefined
+    ) {
+      return 0n;
+    }
+
+    if (typeof units === "number") {
+      return BigInt(units) *
+        LEDGER_SCALE;
+    }
+
+    if (typeof units === "string") {
+      return BigInt(units) *
+        LEDGER_SCALE;
+    }
+
+    throw new Error(
+      `Invalid treasury ledger value for ${rewardType}`
+    );
   },
 
   async recordTreasuryLedgerEntry(
@@ -404,10 +502,15 @@ export const kvAllocationStore: AllocationStore = {
       return;
     }
 
-    // Round UP so the ledger can never under-report real spend.
+    // Round UP so the ledger can never under-report
+    // real spending.
 
     const units =
-      (amountRaw + LEDGER_SCALE - 1n) /
+      (
+        amountRaw +
+        LEDGER_SCALE -
+        1n
+      ) /
       LEDGER_SCALE;
 
     await kv.incrby(
