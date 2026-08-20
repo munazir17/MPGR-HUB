@@ -35,13 +35,26 @@ function syncLeaderboard(record: UserXPRecord) {
         xp: record.xp,
         seasonPoints: getSeasonPoints(record),
       }),
-    }).catch(() => {
-      // Best-effort — a failed sync just means this update won't be
-      // visible globally until the next successful sync; local XP is
-      // completely unaffected either way.
-    });
-  } catch {
-    // ignore — never let leaderboard sync break local XP behavior
+      // `keepalive` lets this request finish even if the user
+      // immediately navigates away (e.g. straight to /leaderboard)
+      // right after connecting — without it, some mobile/webview
+      // environments can abort the in-flight fetch on navigation,
+      // which would silently prevent the sync from ever landing.
+      keepalive: true,
+    })
+      .then((res) => {
+        if (!res.ok) {
+          // Previously fully silent — now at least visible in the
+          // browser console / Vercel function logs, so a failed sync
+          // in production is diagnosable instead of invisible.
+          console.error("Leaderboard sync failed:", res.status, res.statusText);
+        }
+      })
+      .catch((err) => {
+        console.error("Leaderboard sync request failed:", err);
+      });
+  } catch (err) {
+    console.error("Leaderboard sync threw synchronously:", err);
   }
 }
 
