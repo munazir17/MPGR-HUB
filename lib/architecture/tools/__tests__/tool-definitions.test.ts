@@ -221,6 +221,29 @@ describe("token_analyzer", () => {
 });
 
 describe("portfolio_analyzer", () => {
+  it("rejects an invalid address before touching any provider", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "portfolio_analyzer",
+      { address: "not-an-address" },
+      { requestId: "r1", confirmationMode: "always_confirm" }
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe("INVALID_ADDRESS");
+    expect(mockGetBalanceRaw).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-Base chainId", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "portfolio_analyzer",
+      { address: VALID_ADDRESS, chainId: 8453 + 1 },
+      { requestId: "r1", confirmationMode: "always_confirm" }
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe("CHAIN_UNSUPPORTED");
+  });
+
   it("fails the whole call when the core liquid MPGR read fails", async () => {
     mockGetBalanceRaw.mockRejectedValue(new Error("RPC down"));
     const runtime = makeRuntime();
@@ -268,6 +291,29 @@ describe("portfolio_analyzer", () => {
 });
 
 describe("base_research", () => {
+  it("rejects an invalid address before touching any provider", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "base_research",
+      { address: "not-an-address" },
+      { requestId: "r1", confirmationMode: "always_confirm" }
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe("INVALID_ADDRESS");
+    expect(mockGetBytecode).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-Base chainId", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "base_research",
+      { address: VALID_ADDRESS, chainId: 137 },
+      { requestId: "r1", confirmationMode: "always_confirm" }
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe("CHAIN_UNSUPPORTED");
+  });
+
   it("returns ok:false when eth_getCode fails", async () => {
     mockGetBytecode.mockRejectedValue(new Error("RPC down"));
     const runtime = makeRuntime();
@@ -304,6 +350,71 @@ describe("base_research", () => {
     const result = await runtime.executeTool("base_research", { address: VALID_ADDRESS }, { requestId: "r1", confirmationMode: "always_confirm" });
     expect(result.success).toBe(true);
     expect((result.data as { isContract: boolean }).isContract).toBe(false);
+  });
+});
+
+describe("provider errors never leak internal exception details", () => {
+  // agent-tool-result.ts's own contract: AgentToolError.message must
+  // never be "a raw stack trace or internal exception message". For a
+  // tool.execute() that *throws*, AgentToolRuntime's catch-all already
+  // guarantees this (see agent-tool-runtime.test.ts). These P0.2 tools
+  // additionally build AgentToolError values themselves, inside
+  // execute() (via tool-helpers.ts's readOrProviderError, and
+  // token_analyzer's MPGR-metadata catch block) — that path bypasses
+  // the runtime's catch-all entirely, so it has to uphold the same
+  // guarantee on its own. This asserts it actually does.
+  const SECRET = "some internal secret RPC exception detail";
+
+  it("wallet_analyzer: does not leak the underlying RPC exception message", async () => {
+    mockGetBalance.mockRejectedValue(new Error(SECRET));
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "wallet_analyzer",
+      { address: VALID_ADDRESS },
+      { requestId: "r1", confirmationMode: "always_confirm" }
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe("PROVIDER_ERROR");
+    expect(result.error?.message).not.toContain(SECRET);
+  });
+
+  it("base_research: does not leak the underlying RPC exception message", async () => {
+    mockGetBytecode.mockRejectedValue(new Error(SECRET));
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "base_research",
+      { address: VALID_ADDRESS },
+      { requestId: "r1", confirmationMode: "always_confirm" }
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe("PROVIDER_ERROR");
+    expect(result.error?.message).not.toContain(SECRET);
+  });
+
+  it("portfolio_analyzer: does not leak the underlying RPC exception message on the core liquid-MPGR read", async () => {
+    mockGetBalanceRaw.mockRejectedValue(new Error(SECRET));
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "portfolio_analyzer",
+      { address: VALID_ADDRESS },
+      { requestId: "r1", confirmationMode: "always_confirm" }
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe("PROVIDER_ERROR");
+    expect(result.error?.message).not.toContain(SECRET);
+  });
+
+  it("token_analyzer: does not leak the underlying exception message on an MPGR metadata failure", async () => {
+    mockGetMetadata.mockRejectedValue(new Error(SECRET));
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "token_analyzer",
+      { address: "0xB2000000000000000000008d204203177a78AF01" },
+      { requestId: "r1", confirmationMode: "always_confirm" }
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe("PROVIDER_ERROR");
+    expect(result.error?.message).not.toContain(SECRET);
   });
 });
 
