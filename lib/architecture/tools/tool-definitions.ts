@@ -94,10 +94,6 @@ const KNOWN_MPGR_CONTRACTS: Record<string, string> = {
   [MPGR_REWARD_VAULT_CONFIG.address.toLowerCase()]: "MPGR Reward Vault",
 };
 
-function providerError(err: unknown) {
-  return err instanceof Error ? err.message : String(err);
-}
-
 // =============================================================================
 // 1. wallet_analyzer
 // =============================================================================
@@ -239,9 +235,17 @@ export const tokenAnalyzerTool: AgentTool = {
           { chainId: TOOL_CHAIN_ID, source: "lib/token/token-service (cached, 1h TTL)" }
         );
       } catch (err) {
+        // Logged for server-side diagnostics only — the raw exception
+        // message is never put into the user-facing AgentToolError; see
+        // tool-helpers.ts's readOrProviderError for why.
+        console.error("token_analyzer: failed to read MPGR metadata", err);
         return toolError(
           "token_analyzer",
-          { code: "PROVIDER_ERROR", message: `Failed to read MPGR metadata: ${providerError(err)}`, retryable: true },
+          {
+            code: "PROVIDER_ERROR",
+            message: "Failed to read MPGR metadata from Base — the RPC provider may be temporarily unavailable. This is safe to retry.",
+            retryable: true,
+          },
           { chainId: TOOL_CHAIN_ID }
         );
       }
@@ -576,4 +580,4 @@ for (const tool of [
   marketIntelligenceTool,
 ]) {
   if (!registry.has(tool.id)) registry.register(tool);
-}
+      }
