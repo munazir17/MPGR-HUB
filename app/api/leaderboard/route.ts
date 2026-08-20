@@ -1,7 +1,7 @@
 // app/api/leaderboard/route.ts
 //
 // Global leaderboard API — server-side source of truth backed by Redis
-// (see lib/leaderboard-store.ts). This is what makes the
+// (see lib/leaderboard/leaderboard-store.ts). This is what makes the
 // leaderboard actually GLOBAL: every wallet reads the same Redis-backed
 // ranking, instead of the page only ever knowing about the wallet
 // currently connected in that browser.
@@ -13,10 +13,32 @@
 // existing games reward routes.
 
 import { NextResponse } from "next/server";
-import { leaderboardStore } from "@/lib/leaderboard-store";
+import { leaderboardStore } from "@/lib/leaderboard/leaderboard-store";
 import { referralStore } from "@/lib/referral/referral-store";
 
 export const runtime = "nodejs";
+
+// Bug fix — global leaderboard showing only the requesting wallet.
+//
+// Root cause: this route reads a plain `Request` (not `NextRequest`),
+// which sits in a gray area of Next.js's static-analysis for route
+// caching. On Vercel this can result in each distinct request URL
+// (e.g. /api/leaderboard?wallet=0xAAA... vs ?wallet=0xBBB...) being
+// cached independently the FIRST time it's hit, then served from that
+// frozen cache forever afterward — regardless of what's written to
+// Redis later. That exactly reproduces "each wallet only ever sees
+// itself": each wallet's own URL got cached at the moment only their
+// own entry existed.
+//
+// `dynamic = "force-dynamic"` + `revalidate = 0` force this route to
+// execute fresh on every request, and the explicit no-store header is
+// a second layer in case an intermediate cache ignores the route
+// segment config.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+
+const NO_STORE_HEADERS = { "Cache-Control": "no-store, no-cache, must-revalidate" };
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 const TOP_N = 50;
@@ -26,7 +48,10 @@ export async function GET(request: Request) {
   const walletParam = searchParams.get("wallet");
 
   if (walletParam && !ADDRESS_RE.test(walletParam)) {
-    return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid wallet address" },
+      { status: 400, headers: NO_STORE_HEADERS }
+    );
   }
 
   try {
@@ -62,10 +87,13 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json({ top, me, totalRanked });
+    return NextResponse.json({ top, me, totalRanked }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     console.error("GET /api/leaderboard failed:", error);
-    return NextResponse.json({ error: "Failed to load leaderboard" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to load leaderboard" },
+      { status: 500, headers: NO_STORE_HEADERS }
+    );
   }
 }
 
