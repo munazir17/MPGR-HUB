@@ -62,10 +62,6 @@ export function rejectUnsupportedChain(chainId: unknown): AgentToolError | null 
   return null;
 }
 
-function toErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 // Wraps a provider/RPC call so a thrown error becomes an AgentToolError
 // instead of an uncaught exception — used for the "core" read(s) each
 // tool cannot produce meaningful output without (e.g. native balance for
@@ -74,6 +70,17 @@ function toErrorMessage(err: unknown): string {
 // secondary/additive reads (staking, lock, rewards) where a partial
 // failure should instead mark just that field unavailable — see each
 // tool's own try/catch for those.
+//
+// The raw error is logged (console.error) for server-side diagnostics
+// only — it is deliberately NOT interpolated into the returned
+// AgentToolError.message. agent-tool-result.ts's own doc comment on
+// `AgentToolError.message` is explicit: "never a raw stack trace or
+// internal exception message." That guarantee is normally enforced by
+// AgentToolRuntime's catch-all (agent-tool-runtime.ts), but this helper
+// builds an AgentToolError value directly, inside execute(), so it never
+// passes through that catch block — this function has to uphold the
+// same guarantee itself rather than relying on the runtime to sanitize
+// it after the fact.
 export async function readOrProviderError<T>(
   label: string,
   fn: () => Promise<T>
@@ -82,14 +89,14 @@ export async function readOrProviderError<T>(
     const value = await fn();
     return { ok: true, value };
   } catch (err) {
+    console.error(`readOrProviderError: failed to read ${label}`, err);
     return {
       ok: false,
       error: {
         code: "PROVIDER_ERROR",
-        message: `Failed to read ${label} from Base: ${toErrorMessage(err)}`,
+        message: `Failed to read ${label} from Base — the RPC provider may be temporarily unavailable. This is safe to retry.`,
         retryable: true,
       },
     };
   }
 }
-
