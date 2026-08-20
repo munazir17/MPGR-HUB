@@ -22,7 +22,7 @@ interface XPEvent {
 // lib/xp-engine.ts stays exactly as it was (a local, per-browser XP
 // cache — untouched). The only addition here is a fire-and-forget sync
 // of {wallet, xp, seasonPoints} to the server-side leaderboard store
-// (see lib/leaderboard/leaderboard-store.ts) whenever the local record
+// (see lib/leaderboard-store.ts) whenever the local record
 // changes, so every OTHER wallet's leaderboard page can see this
 // wallet's standing too — not just this browser.
 function syncLeaderboard(record: UserXPRecord) {
