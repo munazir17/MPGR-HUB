@@ -43,7 +43,7 @@ export default function ProfilePage() {
 
   const levelInfo = record ? getLevelProgress(record.xp) : null;
   const achievements = record ? getAchievements(record) : [];
-  const referralLink = address ? `https://mpgr-hub-1v1x.vercel.app/?ref=${address}` : "";
+  const referralLink = address ? `https://mpgr-hub-ezxs.vercel.app/?ref=${address}` : "";
 
   const shareReferralLink = async () => {
     if (!referralLink) return;
