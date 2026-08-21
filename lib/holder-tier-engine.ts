@@ -41,16 +41,28 @@ export interface HolderScoreBreakdown {
   totalScore: number;
 }
 
-export function getHolderScore(address: string): HolderScoreBreakdown {
-  const walletBalance = getWalletBalance(address);
-  const stakedBalance = getStakedBalance(address);
-  const lockedBalance = getLockedBalance(address);
+export function getHolderScoreFromBalances(
+  walletBalance: number,
+  stakedBalance: number,
+  lockedBalance: number
+): HolderScoreBreakdown {
+  const wallet = Number.isFinite(walletBalance) ? Math.max(0, walletBalance) : 0;
+  const staked = Number.isFinite(stakedBalance) ? Math.max(0, stakedBalance) : 0;
+  const locked = Number.isFinite(lockedBalance) ? Math.max(0, lockedBalance) : 0;
   return {
-    walletBalance,
-    stakedBalance,
-    lockedBalance,
-    totalScore: walletBalance + stakedBalance + lockedBalance,
+    walletBalance: wallet,
+    stakedBalance: staked,
+    lockedBalance: locked,
+    totalScore: wallet + staked + locked,
   };
+}
+
+export function getHolderScore(address: string): HolderScoreBreakdown {
+  return getHolderScoreFromBalances(
+    getWalletBalance(address),
+    getStakedBalance(address),
+    getLockedBalance(address)
+  );
 }
 
 // --- Status (derived, never stored) -------------------------------------
@@ -67,8 +79,8 @@ export interface HolderTierStatus {
   cosmetics: HolderCosmetics | null;
 }
 
-export function getHolderTierStatus(address: string): HolderTierStatus {
-  const score = getHolderScore(address);
+export function getHolderTierStatus(address: string, liveScore?: HolderScoreBreakdown): HolderTierStatus {
+  const score = liveScore ?? getHolderScore(address);
   const totalScore = score.totalScore;
 
   const sortedAsc = [...HOLDER_TIERS].sort((a, b) => a.minScore - b.minScore);
@@ -87,8 +99,6 @@ export function getHolderTierStatus(address: string): HolderTierStatus {
       ? Math.round(totalScore * currentTierDef.votingWeightMultiplier)
       : 0;
 
-  // Base reputation scales with score (diminishing via sqrt so whales don't
-  // dominate the leaderboard purely on size), plus a flat per-tier bonus.
   const communityReputationScore = isHolderFeatureEnabled("communityReputationScore")
     ? Math.round(Math.sqrt(totalScore) * 10 + (currentTierDef?.reputationBonus ?? 0))
     : 0;
@@ -111,11 +121,6 @@ export function getHolderTierStatus(address: string): HolderTierStatus {
   };
 }
 
-// --- Future perk eligibility flags (all gated, see holder-tier-config) ---
-// Computed cheaply now so the UI can show "eligible, coming soon" states
-// without waiting on the real program logic. Each stays inert until its
-// HOLDER_FEATURE_FLAGS entry flips to true.
-
 export interface HolderFuturePerks {
   launchpadAllocationEligible: boolean;
   airdropPriorityEligible: boolean;
@@ -131,17 +136,12 @@ export function getHolderFuturePerks(status: HolderTierStatus): HolderFuturePerk
   };
 }
 
-// --- Exclusive holder events ------------------------------------------
-// Minimum tier required to see/RSVP an event. Kept as static mock data,
-// same pattern as PREMIUM_TIERS-style config: swap point is a real events
-// API/CMS later, without changing the shape consumers rely on.
-
 export interface HolderEvent {
   id: string;
   title: string;
   description: string;
   minTier: Exclude<HolderTierId, "none">;
-  date: string; // ISO date
+  date: string;
 }
 
 const HOLDER_EVENTS: HolderEvent[] = [
@@ -181,13 +181,6 @@ export function getHolderEvents(status: HolderTierStatus): (HolderEvent & { unlo
   }));
 }
 
-// --- Storage: Holder Tier's own claim state (achievements only) --------
-// Holder Tier stores nothing about balances — those are always derived
-// live from the providers. The only thing worth persisting here is which
-// cosmetic achievement badges the user has acknowledged/claimed, mirroring
-// claimPremiumAchievement()'s cosmetic-only claim pattern (no XP awarded —
-// XP stays entirely owned by lib/xp-engine.ts / Premium).
-
 const STORAGE_PREFIX = "mpgr_holder_tier_v1_";
 
 export interface HolderTierState {
@@ -196,7 +189,7 @@ export interface HolderTierState {
 }
 
 function storageKey(address: string) {
-  return `${STORAGE_PREFIX}${address.toLowerCase()}`;
+  return `\( {STORAGE_PREFIX} \){address.toLowerCase()}`;
 }
 
 function emptyState(address: string): HolderTierState {
@@ -210,10 +203,6 @@ export function getHolderTierState(address: string): HolderTierState {
 function saveHolderTierState(state: HolderTierState) {
   writeJSON(storageKey(state.address), state);
 }
-
-// --- Holder Achievements -------------------------------------------------
-// Milestone badges based purely on Holder Score / tier — never on XP or
-// Rewards, to keep this module fully independent of Premium.
 
 export function getHolderAchievements(status: HolderTierStatus, state: HolderTierState): Achievement[] {
   if (!isHolderFeatureEnabled("holderAchievements")) return [];
@@ -277,9 +266,9 @@ export function getHolderAchievements(status: HolderTierStatus, state: HolderTie
   return defs.map((d) => ({ ...d, claimed: claimed.includes(d.id) }));
 }
 
-export function claimHolderAchievement(address: string, achievementId: string): HolderTierState {
+export function claimHolderAchievement(address: string, achievementId: string, liveScore?: HolderScoreBreakdown): HolderTierState {
   const state = getHolderTierState(address);
-  const status = getHolderTierStatus(address);
+  const status = getHolderTierStatus(address, liveScore);
   const achievement = getHolderAchievements(status, state).find((a) => a.id === achievementId);
 
   if (!achievement || !achievement.unlocked || state.claimedAchievements.includes(achievementId)) {
@@ -291,14 +280,6 @@ export function claimHolderAchievement(address: string, achievementId: string): 
   return state;
 }
 
-// --- Leaderboard ranking --------------------------------------------------
-// Single-address projection used to build a Holder leaderboard row.
-// Aggregating rows across many addresses is left to the caller (same as
-// how components/ui/LeaderboardRow.tsx is fed today) — this module only
-// guarantees the per-address figures used to sort/display feed off the
-// exact same score used for tier derivation, so the leaderboard can never
-// drift from the tier a user is shown holding.
-
 export interface HolderLeaderboardEntry {
   address: string;
   totalScore: number;
@@ -307,9 +288,9 @@ export interface HolderLeaderboardEntry {
   communityReputationScore: number;
 }
 
-export function getHolderLeaderboardEntry(address: string): HolderLeaderboardEntry | null {
+export function getHolderLeaderboardEntry(address: string, liveStatus?: HolderTierStatus | null): HolderLeaderboardEntry | null {
   if (!isHolderFeatureEnabled("holderLeaderboard")) return null;
-  const status = getHolderTierStatus(address);
+  const status = liveStatus ?? getHolderTierStatus(address);
   return {
     address: address.toLowerCase(),
     totalScore: status.score.totalScore,
