@@ -5,7 +5,7 @@ import { useAccount, useChainId, useSwitchChain, useWatchContractEvent } from "w
 import { base } from "wagmi/chains";
 import { formatUnits, parseUnits } from "viem";
 import type { Address, Hash } from "viem";
-import { tokenLockClient } from "@/lib/token-lock/token-lock-client";
+import { tokenLockClient, clearCachedWalletLock, setCachedWalletLock } from "@/lib/token-lock/token-lock-client";
 import { TOKEN_LOCK_ABI } from "@/lib/token-lock/token-lock-abi";
 import { MPGR_TOKEN_LOCK_CONFIG } from "@/lib/token-lock/token-lock-config";
 import { useMPGRBalance } from "@/hooks/useMPGRBalance";
@@ -151,6 +151,7 @@ export function useTokenLock() {
     if (!isConnected || !address) {
       setPositions([]);
       setHasLoaded(false);
+      if (address) clearCachedWalletLock(address);
       return;
     }
     setHasLoaded(false);
@@ -178,7 +179,7 @@ export function useTokenLock() {
         const { user, amount } = log.args as { user?: Address; amount?: bigint };
         if (!user || address?.toLowerCase() !== user.toLowerCase() || amount === undefined) continue;
         pushActivity({
-          id: `${log.transactionHash}-${log.logIndex}`,
+          id: `\( {log.transactionHash}- \){log.logIndex}`,
           kind: "LockCreated",
           amount,
           txHash: log.transactionHash!,
@@ -200,7 +201,7 @@ export function useTokenLock() {
         const { user, amount } = log.args as { user?: Address; amount?: bigint };
         if (!user || address?.toLowerCase() !== user.toLowerCase() || amount === undefined) continue;
         pushActivity({
-          id: `${log.transactionHash}-${log.logIndex}`,
+          id: `\( {log.transactionHash}- \){log.logIndex}`,
           kind: "LockWithdrawn",
           amount,
           txHash: log.transactionHash!,
@@ -222,7 +223,7 @@ export function useTokenLock() {
         const { user, amountReturned } = log.args as { user?: Address; amountReturned?: bigint };
         if (!user || address?.toLowerCase() !== user.toLowerCase() || amountReturned === undefined) continue;
         pushActivity({
-          id: `${log.transactionHash}-${log.logIndex}`,
+          id: `\( {log.transactionHash}- \){log.logIndex}`,
           kind: "EarlyUnlocked",
           amount: amountReturned,
           txHash: log.transactionHash!,
@@ -387,6 +388,21 @@ export function useTokenLock() {
       upcomingUnlockAt: upcoming ? new Date(Number(upcoming.unlockTime) * 1000).toISOString() : null,
     };
   }, [positions]);
+
+  useEffect(() => {
+    if (!address) return;
+    if (!isConnected) {
+      clearCachedWalletLock(address);
+      return;
+    }
+    if (!hasLoaded) return;
+    const active = positions.filter((p) => p.status !== "withdrawn");
+    setCachedWalletLock(address, {
+      totalLocked: active.reduce((sum, p) => sum + p.amountFormatted, 0),
+      lifetimeLocked: positions.reduce((sum, p) => sum + p.amountFormatted, 0),
+      nextUnlockAt: summary.upcomingUnlockAt,
+    });
+  }, [address, isConnected, hasLoaded, positions, summary.upcomingUnlockAt]);
 
   return {
     lockDurationPresetsDays: LOCK_DURATION_PRESETS_DAYS,
