@@ -5,7 +5,6 @@ import { useAccount } from "wagmi";
 import {
   PREMIUM_TIERS,
   PREMIUM_QUEST_XP_REWARD,
-  getPremiumStatus,
   getPremiumState,
   getPremiumAchievements,
   getPremiumQuests,
@@ -15,9 +14,11 @@ import {
   claimTreasureBox,
   canClaimTreasureBox,
   hasEarlyMiniGameAccess,
+  derivePremiumStatus,
   type PremiumStatus,
   type PremiumState,
 } from "@/lib/premium-engine";
+import { useTokenLock } from "@/hooks/useTokenLock";
 import type { Achievement } from "@/lib/xp-engine";
 
 interface PremiumEvent {
@@ -28,6 +29,12 @@ interface PremiumEvent {
 
 export function usePremium() {
   const { address, isConnected } = useAccount();
+  const {
+    totalLocked,
+    upcomingUnlockAt,
+    loading: lockLoading,
+    positions,
+  } = useTokenLock();
   const [status, setStatus] = useState<PremiumStatus | null>(null);
   const [state, setState] = useState<PremiumState | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -36,9 +43,17 @@ export function usePremium() {
 
   const refresh = useCallback(() => {
     if (!address) return;
-    setStatus(getPremiumStatus(address));
+    if (lockLoading) return;
+    const lifetimeLocked = positions.reduce((sum, p) => sum + p.amountFormatted, 0);
+    setStatus(
+      derivePremiumStatus({
+        activeLocked: totalLocked,
+        lifetimeLocked,
+        nextUnlockAt: upcomingUnlockAt,
+      })
+    );
     setState(getPremiumState(address));
-  }, [address]);
+  }, [address, lockLoading, totalLocked, upcomingUnlockAt, positions]);
 
   useEffect(() => {
     if (!isConnected || !address) {
@@ -47,13 +62,15 @@ export function usePremium() {
       setHasLoaded(false);
       return;
     }
+    if (lockLoading) {
+      setHasLoaded(false);
+      setStatus(null);
+      return;
+    }
     refresh();
     setHasLoaded(true);
-  }, [address, isConnected, refresh]);
+  }, [address, isConnected, refresh, lockLoading]);
 
-  // Tier is time-derived (locks unlock over time, same as Token Lock), so
-  // periodically recompute even without a user action — same pattern as
-  // hooks/useTokenLock.ts.
   useEffect(() => {
     if (!isConnected || !address) return;
     const id = setInterval(refresh, 30_000);
