@@ -17,24 +17,6 @@ import {
   type TokenLockPositionView,
 } from "@/lib/token-lock/token-lock-types";
 
-// Real on-chain Token Lock integration, wired to the deployed, immutable
-// MPGRTokenLock V1 contract (MPGR_TOKEN_LOCK_CONFIG.address). Replaces the
-// former lib/token-lock-engine.ts localStorage mock entirely — no
-// setTimeout confirmation delays, no fabricated transaction hashes, no
-// localStorage used as transaction state. Structured the same way
-// hooks/useStaking.ts is: per-action state machines (idle -> simulating ->
-// pending -> confirming -> success/error), simulateContract -> writeContract
-// -> waitForTransactionReceipt for every write, and live event watching
-// for in-session activity.
-//
-// Note on shape changes from the old mock hook (see chat for full
-// rationale): the deployed contract has no bonus/APY mechanism and no
-// per-lock creation timestamp, so `lockDurationOptions`/`estimateLockBonus`
-// /`lifetimeBonusEarned`/`earlyUnlocksCount` -- all of which depended on
-// data the contract does not store or emit in queryable form -- are gone.
-// Everything this hook now returns is either read directly from the
-// contract or derived from fields the contract actually exposes.
-
 export const LOCK_DURATION_PRESETS_DAYS = [30, 90, 180, 365] as const;
 export type LockDurationDays = (typeof LOCK_DURATION_PRESETS_DAYS)[number];
 
@@ -61,9 +43,6 @@ function toView(position: TokenLockPosition, now: number): TokenLockPositionView
         : "locked";
 
   const amountFormatted = Number(formatUnits(position.amount, DECIMALS));
-
-  // Preview only -- see token-lock-config.ts's comment on
-  // earlyUnlockPenaltyBps. The contract alone executes the real split.
   const earlyUnlockPenaltyPreview =
     (amountFormatted * MPGR_TOKEN_LOCK_CONFIG.earlyUnlockPenaltyBps) / MPGR_TOKEN_LOCK_CONFIG.bpsDenominator;
   const earlyUnlockPayoutPreview = amountFormatted - earlyUnlockPenaltyPreview;
@@ -96,9 +75,6 @@ export function useTokenLock() {
   const [createLockState, setCreateLockState] = useState<TokenLockActionState>(idleActionState());
   const [withdrawState, setWithdrawState] = useState<TokenLockActionState>(idleActionState());
   const [earlyUnlockState, setEarlyUnlockState] = useState<TokenLockActionState>(idleActionState());
-  // Which lockId a withdraw/earlyUnlock action is currently targeting, so
-  // the UI can disable only the specific LockCard in flight rather than
-  // every card on the page.
   const [pendingLockId, setPendingLockId] = useState<bigint | null>(null);
 
   const { raw: walletBalanceRaw, formatted: walletBalanceFormatted, refresh: refreshWalletBalance } =
@@ -123,10 +99,6 @@ export function useTokenLock() {
           };
           return toView(position, now);
         })
-        // Newest first -- lockId is assigned by the contract's
-        // monotonically increasing nextLockId counter, so id desc is
-        // exact creation order (no per-lock timestamp exists to sort by
-        // instead).
         .sort((a, b) => (a.id > b.id ? -1 : a.id < b.id ? 1 : 0));
       setPositions(views);
       setReadError(null);
@@ -275,11 +247,6 @@ export function useTokenLock() {
     }
   }, [isWrongNetwork, switchChainAsync]);
 
-  // approve(TokenLockV1, amount) -> createLock(amount, unlockTime).
-  // amountInput is a human-readable MPGR amount (e.g. "1000"); durationDays
-  // is one of the fixed presets, converted client-side to an absolute
-  // unlockTime -- the contract itself accepts any future timestamp, the
-  // presets are purely a frontend convenience.
   const createLock = useCallback(
     async (amountInput: number, durationDays: LockDurationDays) => {
       if (!address || !Number.isFinite(amountInput) || amountInput <= 0) return;
@@ -291,11 +258,6 @@ export function useTokenLock() {
       const approved = await runAction(setApproveState, () => tokenLockClient.approve(amountRaw));
       if (!approved) return;
 
-      // The approval receipt confirms the approve tx was mined, but does not
-      // by itself guarantee the RPC endpoint createLock's simulation hits
-      // will reflect that new allowance yet. Re-read it fresh (no cache)
-      // right before simulating createLock, rather than assuming the
-      // receipt is sufficient.
       setCreateLockState(() => ({ phase: "simulating", hash: null, error: null }));
       let currentAllowance: bigint;
       try {
@@ -368,12 +330,9 @@ export function useTokenLock() {
     const totalLocked = active.reduce((sum, p) => sum + p.amountFormatted, 0);
     const unlockingSoonCount = positions.filter((p) => p.status === "unlocking_soon").length;
     const withdrawnCount = positions.filter((p) => p.status === "withdrawn").length;
-
     const averageLockDaysRemaining =
       active.length === 0 ? 0 : Math.round(active.reduce((sum, p) => sum + p.daysRemaining, 0) / active.length);
-
     const longestActiveLockDaysRemaining = active.reduce((max, p) => Math.max(max, p.daysRemaining), 0);
-
     const upcoming = active
       .filter((p) => p.status === "locked" || p.status === "unlocking_soon")
       .sort((a, b) => Number(a.unlockTime - b.unlockTime))[0];
@@ -407,7 +366,6 @@ export function useTokenLock() {
   return {
     lockDurationPresetsDays: LOCK_DURATION_PRESETS_DAYS,
     earlyUnlockPenaltyPercent: MPGR_TOKEN_LOCK_CONFIG.earlyUnlockPenaltyBps / 100,
-
     positions,
     availableBalanceRaw: walletBalanceRaw ?? 0n,
     availableBalance: parseFloat(walletBalanceFormatted || "0"),
@@ -418,25 +376,21 @@ export function useTokenLock() {
     averageLockDaysRemaining: summary.averageLockDaysRemaining,
     longestActiveLockDaysRemaining: summary.longestActiveLockDaysRemaining,
     upcomingUnlockAt: summary.upcomingUnlockAt,
-
     liveActivity,
     lastEvent,
     readError,
-
     approveState,
     createLockState,
     withdrawState,
     earlyUnlockState,
     pendingLockId,
     resetActionState,
-
     createLock,
     withdraw,
     earlyUnlock,
     dismissEvent,
     dismissError,
     refresh,
-
     isWrongNetwork,
     loading: isConnected && !hasLoaded,
     isRefreshing,
