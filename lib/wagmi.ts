@@ -60,9 +60,23 @@ export const config = createConfig({
     // NEXT_PUBLIC_BASE_RPC_URL points at. No change to maxAttempts,
     // backoff strategy, or any call-site behavior — only removes the
     // duplicate inner layer.
+    //
+    // timeout: 10_000 — Reward Hub loading fix (bounded RPC timeout).
+    // Every RPC call made anywhere in the app (staking reads, the staking
+    // history scan's getLogs/getBlock calls, token reads, etc.) goes
+    // through this single transport via wagmi's getClient(config), so one
+    // bounded timeout here covers all of them without touching any
+    // individual call site. Previously an unresponsive (not erroring,
+    // just hanging) RPC request had no upper bound at this layer, which
+    // could leave withRetry's per-attempt wait — and therefore whatever
+    // loading state was awaiting it — unbounded in the pathological case.
+    // 10s per attempt still leaves room for withRetry's own backoff/retry
+    // cycle on top; it does not change retryCount (still 0, per above) or
+    // add a second retry layer, only a ceiling on how long any single
+    // attempt can hang.
     [base.id]: http(
       process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org",
-      { retryCount: 0 }
+      { retryCount: 0, timeout: 10_000 }
     ),
   },
   ssr: true,
