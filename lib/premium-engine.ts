@@ -27,18 +27,16 @@ import { setPremiumMultiplierProvider } from "@/lib/premium-multiplier-registry"
 export type { PremiumTierId, PremiumTierDef };
 export { PREMIUM_TIERS };
 
-// --- Status (derived, never stored) -------------------------------------
-
 export interface PremiumStatus {
   tier: PremiumTierId;
   isPremium: boolean;
   activeLocked: number;
-  lifetimeLocked: number; // sum of ALL positions ever (active + released) — for milestone achievements
+  lifetimeLocked: number;
   currentTierDef: PremiumTierDef | null;
   nextTierDef: PremiumTierDef | null;
-  progressToNextTier: number; // 0-100
+  progressToNextTier: number;
   amountToNextTier: number;
-  nextUnlockAt: string | null; // soonest unlocksAt among active positions
+  nextUnlockAt: string | null;
   xpMultiplier: number;
   rewardsMultiplier: number;
 }
@@ -79,9 +77,6 @@ export function derivePremiumStatus(input: {
 }
 
 export function getPremiumStatus(address: string): PremiumStatus {
-  // Live on-chain lock summary written by useTokenLock after a real
-  // MPGRTokenLock read. Falling back to the localStorage mock engine is
-  // what produced the stale "100 MPGR actively locked" values on Profile.
   const live = getCachedWalletLock(address);
   if (live) {
     return derivePremiumStatus({
@@ -90,18 +85,12 @@ export function getPremiumStatus(address: string): PremiumStatus {
       nextUnlockAt: live.nextUnlockAt,
     });
   }
-
-  // Not loaded yet — return zeros rather than leftover mock localStorage.
-  // Callers that render before the lock hook has loaded must keep
-  // `status` null / a skeleton, not this zeroed value.
   return derivePremiumStatus({ activeLocked: 0, lifetimeLocked: 0, nextUnlockAt: null });
 }
 
-// --- Cosmetics -----------------------------------------------------------
-
 export interface PremiumCosmetics {
-  frameClass: string; // apply to an avatar wrapper
-  borderGradientClass: string; // apply to a card/profile border
+  frameClass: string;
+  borderGradientClass: string;
 }
 
 export function getPremiumCosmetics(tier: PremiumTierId): PremiumCosmetics | null {
@@ -116,8 +105,6 @@ export function getPremiumCosmetics(tier: PremiumTierId): PremiumCosmetics | nul
       return null;
   }
 }
-
-// --- Storage: Premium-only claim state + Treasure Box ledger -------------
 
 const STORAGE_PREFIX = "mpgr_premium_v1_";
 
@@ -161,11 +148,6 @@ export function getPremiumState(address: string): PremiumState {
 function savePremiumState(state: PremiumState) {
   writeJSON(storageKey(state.address), state);
 }
-
-// --- Premium Quests --------------------------------------------------------
-// One-time, claimable tasks. Claiming reuses the existing XP pipeline
-// (awardXP with the existing "QUEST_COMPLETED" action) instead of inventing
-// new XP math — no changes to lib/xp-engine.ts needed.
 
 export function getPremiumQuests(status: PremiumStatus, state: PremiumState): Achievement[] {
   const claimed = state.claimedQuests;
@@ -225,14 +207,9 @@ export function claimPremiumQuest(address: string, questId: string): PremiumStat
 
   state.claimedQuests.push(questId);
   savePremiumState(state);
-  // Reuses the existing XP action/pipeline — no engine changes required.
   awardXP(address, "QUEST_COMPLETED");
   return state;
 }
-
-// --- Premium Achievements --------------------------------------------------
-// Milestone badges. Claiming is cosmetic acknowledgment only (no XP), same
-// behavior as claimAchievement() in lib/xp-engine.ts.
 
 export function getPremiumAchievements(status: PremiumStatus, state: PremiumState): Achievement[] {
   const claimed = state.claimedAchievements;
@@ -295,13 +272,6 @@ export function claimPremiumAchievement(address: string, achievementId: string):
   return state;
 }
 
-// --- Weekly Premium Treasure Box -------------------------------------------
-// Mock reward ledger, intentionally self-contained (not merged into
-// lib/rewards-engine.ts's claimed balance in V1 — see project notes for how
-// this becomes a real RewardSource ("PREMIUM_BOX") later without breaking
-// anything now, the same way every other Phase 2B module has a documented
-// contract swap-point).
-
 function getISOWeekKey(date: Date): string {
   const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
   const dayNum = d.getUTCDay() || 7;
@@ -351,24 +321,13 @@ export function claimTreasureBox(address: string): TreasureBoxResult {
   return { success: true, amount, state };
 }
 
-// --- Mini Games early access flag ------------------------------------------
-
 export function hasEarlyMiniGameAccess(status: PremiumStatus): boolean {
   return status.isPremium;
 }
 
-// --- Multiplier registry wiring ---------------------------------------------
-// premium-engine registers itself as the multiplier source on import. This
-// runs whenever any Premium-aware surface loads (Premium page, Profile,
-// Leaderboard, usePremium). xp-engine.ts and rewards-engine.ts never import
-// this file — see lib/premium-multiplier-registry.ts for why, and the
-// project notes for how they'll opt in later.
 setPremiumMultiplierProvider((address: string) => {
   const status = getPremiumStatus(address);
   return { xpMultiplier: status.xpMultiplier, rewardsMultiplier: status.rewardsMultiplier };
 });
 
-// Re-exported so callers of premium-engine don't also need to know the XP
-// action name used internally by claimPremiumQuest — kept here only for
-// display purposes (e.g. showing "+40 XP" before a quest is claimed).
 export const PREMIUM_QUEST_XP_REWARD = XP_ACTIONS.QUEST_COMPLETED.xp;
