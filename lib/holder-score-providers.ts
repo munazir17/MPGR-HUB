@@ -7,15 +7,19 @@
 //
 // Each balance comes from a swappable *provider*. Phase 3E Part 3 swaps the
 // wallet and staked providers to read live chain data — exactly the swap
-// this file's registry was built for. Locked MPGR (Token Lock module) is
-// out of scope for this phase and stays on its existing mock engine.
+// this file's registry was built for. Locked MPGR is read from the same
+// live on-chain snapshot hooks/useTokenLock.ts writes after each contract
+// read (lib/live-onchain-cache.ts) — never the leftover localStorage mock
+// in lib/token-lock-engine.ts.
 //
 // No duplicated calculations: staked/wallet totals are read straight from
 // the same shared services (stakingService, balanceService) the Staking
-// module and Navbar/dashboard already use — never recomputed here.
+// module and Navbar/dashboard already use — never recomputed here. Locked
+// totals are the active (non-withdrawn) sum already computed by the Token
+// Lock module, not re-derived here.
 
 import { formatUnits, type Address } from "viem";
-import { getTokenLockState, getTotalLocked } from "@/lib/token-lock-engine";
+import { getLiveLockSnapshot } from "@/lib/live-onchain-cache";
 import { balanceService } from "@/lib/token/balance-service";
 import { stakingService } from "@/lib/staking/staking-service";
 import { MPGR_TOKEN_CONFIG } from "@/lib/token/token-config";
@@ -53,16 +57,17 @@ const defaultWalletBalanceProvider: WalletBalanceProvider = {
     // currently cached rather than fetching — 0 until something else in
     // the app has fetched this wallet's balance at least once this
     // session, never a fabricated number.
+    //
+    // Locked MPGR is added back on top of this by getHolderScore() (via
+    // getLockedBalance) as its own line item, so it must NOT also be
+    // subtracted here — doing both nets the locked amount to zero
+    // contribution, contradicting the documented "each counted at 100%
+    // weight" rule and silently erasing any credit for locking.
     const cached = balanceService.getCachedBalance(address as Address);
     const rawBalance = cached?.raw ?? 0n;
     const freeWalletBalance = parseFloat(formatUnits(rawBalance, MPGR_TOKEN_CONFIG.decimals));
 
-    // Locked MPGR (Token Lock module) is still mock/local-only — it has
-    // not actually left the wallet on-chain — so it's subtracted here to
-    // avoid double-counting the same MPGR as both "locked" and "free".
-    const activeLocked = getTotalLocked(getTokenLockState(address));
-
-    return Math.max(0, freeWalletBalance - activeLocked);
+    return freeWalletBalance;
   },
 };
 
@@ -81,15 +86,23 @@ const defaultStakedBalanceProvider: StakedBalanceProvider = {
 
 const defaultLockedBalanceProvider: LockedBalanceProvider = {
   getLockedBalance(address: string): number {
-    // getTotalLocked already excludes storedStatus === "released" positions.
-    return getTotalLocked(getTokenLockState(address));
+    // Live active locked MPGR, read from the on-chain snapshot written
+    // by hooks/useTokenLock.ts after each successful MPGRTokenLock read.
+    // That snapshot already excludes withdrawn/released positions (the
+    // Token Lock module's equivalent of storedStatus === "released").
+    // Same synchronous-contract reasoning as the wallet/staked providers:
+    // returns 0 until that hook has loaded this wallet's locks at least
+    // once this session — never a fabricated number, and never the
+    // leftover localStorage mock from lib/token-lock-engine.ts.
+    return getLiveLockSnapshot(address)?.totalLocked ?? 0;
   },
 };
 
 // --- Registry ---------------------------------------------------------
 // Module state holds the active provider, defaulting to the implementations
-// above. A future Token Lock on-chain integration calls setLockedBalanceProvider
-// once to swap that provider the same way — no other change needed here.
+// above. Callers always go through getWalletBalance / getStakedBalance /
+// getLockedBalance; tests or a later swap can replace any provider via
+// the setters without touching those callers.
 
 let walletBalanceProvider: WalletBalanceProvider = defaultWalletBalanceProvider;
 let stakedBalanceProvider: StakedBalanceProvider = defaultStakedBalanceProvider;
