@@ -235,3 +235,28 @@ export const tokenLockClient = {
   },
 } as const;
 
+// Session last-read of a wallet's on-chain lock summary. Populated only
+// after hooks/useTokenLock.ts finishes a real getUserLockIds/getLock
+// round-trip. Same role stakingService.getCachedWalletState plays for
+// Holder Score: a synchronous read of data that was already fetched
+// live, never an RPC call and never a fabricated number. Missing entry
+// means "not loaded this session yet."
+export interface TokenLockWalletSummary {
+  totalLocked: number;
+  lifetimeLocked: number;
+  nextUnlockAt: string | null;
+}
+
+const walletLockSummary = new Map<string, TokenLockWalletSummary>();
+
+export function setCachedWalletLock(address: Address | string, summary: TokenLockWalletSummary): void {
+  walletLockSummary.set(address.toLowerCase(), summary);
+}
+
+export function clearCachedWalletLock(address: Address | string): void {
+  walletLockSummary.delete(address.toLowerCase());
+}
+
+export function getCachedWalletLock(address: Address | string): TokenLockWalletSummary | null {
+  return walletLockSummary.get(address.toLowerCase()) ?? null;
+}
