@@ -59,9 +59,6 @@ export function useHolderTier() {
       setHasLoaded(false);
       return;
     }
-    // Wait for live wallet / staking / lock reads so we never flash a
-    // placeholder Holder Score (the previous sync path settled on 100
-    // from leftover mock lock data before on-chain caches populated).
     if (!liveReady) {
       setHasLoaded(false);
       setStatus(null);
