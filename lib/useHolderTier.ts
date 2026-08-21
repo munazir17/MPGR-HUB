@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAccount } from "wagmi";
+import { formatUnits } from "viem";
 import {
   HOLDER_TIERS,
   HOLDER_FEATURE_FLAGS,
@@ -14,22 +15,42 @@ import {
   getHolderFuturePerks,
   getHolderEvents,
   getHolderLeaderboardEntry,
+  getHolderScoreFromBalances,
   type HolderTierStatus,
   type HolderTierState,
 } from "@/lib/holder-tier-engine";
+import { useMPGRBalance } from "@/hooks/useMPGRBalance";
+import { useStaking } from "@/hooks/useStaking";
+import { useTokenLock } from "@/hooks/useTokenLock";
 import type { Achievement } from "@/lib/xp-engine";
 
 export function useHolderTier() {
   const { address, isConnected } = useAccount();
+  const { raw: walletRaw, isLoading: walletLoading, error: walletError } = useMPGRBalance();
+  const {
+    stakedBalanceRaw,
+    decimals: stakingDecimals,
+    loading: stakingLoading,
+  } = useStaking();
+  const { totalLocked, loading: lockLoading } = useTokenLock();
   const [status, setStatus] = useState<HolderTierStatus | null>(null);
   const [state, setState] = useState<HolderTierState | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
 
+  const walletReady = !isConnected || (!walletLoading && (walletRaw !== null || !!walletError));
+  const stakingReady = !isConnected || !stakingLoading;
+  const lockReady = !isConnected || !lockLoading;
+  const liveReady = walletReady && stakingReady && lockReady;
+
   const refresh = useCallback(() => {
     if (!address) return;
-    setStatus(getHolderTierStatus(address));
+    if (!liveReady) return;
+    const walletBalance = walletRaw != null ? parseFloat(formatUnits(walletRaw, stakingDecimals)) : 0;
+    const stakedBalance = parseFloat(formatUnits(stakedBalanceRaw, stakingDecimals));
+    const score = getHolderScoreFromBalances(walletBalance, stakedBalance, totalLocked);
+    setStatus(getHolderTierStatus(address, score));
     setState(getHolderTierState(address));
-  }, [address]);
+  }, [address, liveReady, walletRaw, stakedBalanceRaw, stakingDecimals, totalLocked]);
 
   useEffect(() => {
     if (!isConnected || !address) {
@@ -38,14 +59,15 @@ export function useHolderTier() {
       setHasLoaded(false);
       return;
     }
+    if (!liveReady) {
+      setHasLoaded(false);
+      setStatus(null);
+      return;
+    }
     refresh();
     setHasLoaded(true);
-  }, [address, isConnected, refresh]);
+  }, [address, isConnected, refresh, liveReady]);
 
-  // Holder Score can drift independently of any action here (staking
-  // positions unlock, locks release, wallet balance changes on-chain once
-  // a real provider is wired in) — periodically recompute, same polling
-  // pattern as hooks/usePremium.ts and hooks/useTokenLock.ts.
   useEffect(() => {
     if (!isConnected || !address) return;
     const id = setInterval(refresh, 30_000);
@@ -55,14 +77,14 @@ export function useHolderTier() {
   const achievements: Achievement[] = status && state ? getHolderAchievements(status, state) : [];
   const futurePerks = status ? getHolderFuturePerks(status) : null;
   const events = status ? getHolderEvents(status) : [];
-  const leaderboardEntry = address ? getHolderLeaderboardEntry(address) : null;
+  const leaderboardEntry = address ? getHolderLeaderboardEntry(address, status) : null;
 
   const claimAchievement = useCallback(
     (achievementId: string) => {
       if (!address) return;
-      setState(claimHolderAchievement(address, achievementId));
+      setState(claimHolderAchievement(address, achievementId, status?.score));
     },
-    [address]
+    [address, status]
   );
 
   return {
