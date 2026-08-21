@@ -5,21 +5,16 @@
 // Total Holder Score is an aggregation of three independent balances:
 //   Live Wallet MPGR + Active Staked MPGR + Active Locked MPGR
 //
-// Each balance comes from a swappable *provider*. Phase 3E Part 3 swaps the
-// wallet and staked providers to read live chain data — exactly the swap
-// this file's registry was built for. Locked MPGR is read from the same
-// live on-chain snapshot hooks/useTokenLock.ts writes after each contract
-// read (lib/live-onchain-cache.ts) — never the leftover localStorage mock
-// in lib/token-lock-engine.ts.
-//
-// No duplicated calculations: staked/wallet totals are read straight from
-// the same shared services (stakingService, balanceService) the Staking
-// module and Navbar/dashboard already use — never recomputed here. Locked
-// totals are the active (non-withdrawn) sum already computed by the Token
-// Lock module, not re-derived here.
+// Each balance comes from a swappable *provider*. Wallet and staked
+// providers read the same shared caches populated by useMPGRBalance /
+// useStaking (balanceService, stakingService). Locked MPGR is the last
+// successful on-chain read stored by hooks/useTokenLock.ts on
+// lib/token-lock/token-lock-client.ts after getUserLockIds + getLock.
+// Released/withdrawn locks are excluded by that summary. Missing last-read
+// returns 0 — never a fabricated number, never lib/token-lock-engine.ts.
 
 import { formatUnits, type Address } from "viem";
-import { getLiveLockSnapshot } from "@/lib/live-onchain-cache";
+import { getCachedWalletLock } from "@/lib/token-lock/token-lock-client";
 import { balanceService } from "@/lib/token/balance-service";
 import { stakingService } from "@/lib/staking/staking-service";
 import { MPGR_TOKEN_CONFIG } from "@/lib/token/token-config";
@@ -86,23 +81,11 @@ const defaultStakedBalanceProvider: StakedBalanceProvider = {
 
 const defaultLockedBalanceProvider: LockedBalanceProvider = {
   getLockedBalance(address: string): number {
-    // Live active locked MPGR, read from the on-chain snapshot written
-    // by hooks/useTokenLock.ts after each successful MPGRTokenLock read.
-    // That snapshot already excludes withdrawn/released positions (the
-    // Token Lock module's equivalent of storedStatus === "released").
-    // Same synchronous-contract reasoning as the wallet/staked providers:
-    // returns 0 until that hook has loaded this wallet's locks at least
-    // once this session — never a fabricated number, and never the
-    // leftover localStorage mock from lib/token-lock-engine.ts.
-    return getLiveLockSnapshot(address)?.totalLocked ?? 0;
+    return getCachedWalletLock(address)?.totalLocked ?? 0;
   },
 };
 
 // --- Registry ---------------------------------------------------------
-// Module state holds the active provider, defaulting to the implementations
-// above. Callers always go through getWalletBalance / getStakedBalance /
-// getLockedBalance; tests or a later swap can replace any provider via
-// the setters without touching those callers.
 
 let walletBalanceProvider: WalletBalanceProvider = defaultWalletBalanceProvider;
 let stakedBalanceProvider: StakedBalanceProvider = defaultStakedBalanceProvider;
