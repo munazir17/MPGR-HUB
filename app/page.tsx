@@ -441,9 +441,6 @@ export default function DashboardPage() {
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-white">Community Pool</p>
-                      <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-medium text-muted">
-                        Coming Soon
-                      </span>
                     </div>
                   </div>
                 </div>
@@ -472,9 +469,6 @@ export default function DashboardPage() {
                           <Icon className="h-5 w-5 text-primary" aria-hidden="true" />
                         </div>
                         <p className="text-[11px] font-medium leading-tight text-white">{game.name}</p>
-                        <span className="rounded-full bg-surface px-2 py-0.5 text-[9px] font-medium text-muted">
-                          Soon
-                        </span>
                       </motion.div>
                     );
                   })}
@@ -501,7 +495,9 @@ export default function DashboardPage() {
                       seasonPoints={seasonPoints}
                       referrals={record.referralCount}
                       tier={premiumStatus?.tier}
-                      
+                      isCurrentUser
+                    />
+                  </>
                 ) : (
                   <p className="py-2 text-center text-xs text-muted">
                     Start earning XP to appear on the leaderboard.
@@ -531,9 +527,6 @@ export default function DashboardPage() {
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-white">MPGR Agent</p>
-                      <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-medium text-muted">
-                        Coming Soon
-                      </span>
                     </div>
                   </div>
                   <Link
@@ -646,4 +639,4 @@ export default function DashboardPage() {
       </main>
     </>
   );
-    }
+}
