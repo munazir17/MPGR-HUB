@@ -1,17 +1,17 @@
 // Premium Membership — Phase 2C, Module 1.
 //
 // Premium is NOT purchased and has NO NFT and NO lock system of its own.
-// Tier is derived live, every read, from lib/token-lock-engine.ts positions
-// — the same source of truth the Token Lock page already uses. There is
-// deliberately no stored "premiumExpiresAt": because tier is recomputed from
-// currently-active locked MPGR every time, Premium status ends automatically
-// the moment enough locked MPGR is released to drop under the tier
-// threshold. No separate expiry logic to keep in sync.
+// Tier is derived live, every read, from the connected wallet's on-chain
+// Token Lock positions (snapshot written by hooks/useTokenLock.ts). There
+// is deliberately no stored "premiumExpiresAt": because tier is recomputed
+// from currently-active locked MPGR every time, Premium status ends
+// automatically the moment enough locked MPGR is released to drop under
+// the tier threshold. No separate expiry logic to keep in sync.
 //
 // This module owns only what Token Lock/XP/Rewards don't already track:
 // Premium-only quest/achievement claims and the Weekly Treasure Box ledger.
 
-import { getTokenLockPositions } from "@/lib/token-lock-engine";
+import { getCachedWalletLock } from "@/lib/token-lock/token-lock-client";
 import { awardXP, XP_ACTIONS, type Achievement } from "@/lib/xp-engine";
 import { readJSON, writeJSON } from "@/lib/storage";
 import {
@@ -43,11 +43,16 @@ export interface PremiumStatus {
   rewardsMultiplier: number;
 }
 
-export function getPremiumStatus(address: string): PremiumStatus {
-  const positions = getTokenLockPositions(address);
-  const active = positions.filter((p) => p.status !== "released");
-  const activeLocked = active.reduce((sum, p) => sum + p.amount, 0);
-  const lifetimeLocked = positions.reduce((sum, p) => sum + p.amount, 0);
+export function derivePremiumStatus(input: {
+  activeLocked: number;
+  lifetimeLocked?: number;
+  nextUnlockAt?: string | null;
+}): PremiumStatus {
+  const activeLocked = Number.isFinite(input.activeLocked) ? Math.max(0, input.activeLocked) : 0;
+  const lifetimeLocked =
+    input.lifetimeLocked != null && Number.isFinite(input.lifetimeLocked)
+      ? Math.max(0, input.lifetimeLocked)
+      : activeLocked;
 
   const sortedAsc = [...PREMIUM_TIERS].sort((a, b) => a.minLocked - b.minLocked);
   const currentTierDef = [...sortedAsc].reverse().find((t) => activeLocked >= t.minLocked) ?? null;
@@ -58,10 +63,6 @@ export function getPremiumStatus(address: string): PremiumStatus {
     : 100;
   const amountToNextTier = nextTierDef ? Math.max(0, nextTierDef.minLocked - activeLocked) : 0;
 
-  const nextUnlockAt =
-    [...active].sort((a, b) => new Date(a.unlocksAt).getTime() - new Date(b.unlocksAt).getTime())[0]
-      ?.unlocksAt ?? null;
-
   return {
     tier: currentTierDef?.id ?? "none",
     isPremium: !!currentTierDef,
@@ -71,10 +72,29 @@ export function getPremiumStatus(address: string): PremiumStatus {
     nextTierDef,
     progressToNextTier,
     amountToNextTier,
-    nextUnlockAt,
+    nextUnlockAt: input.nextUnlockAt ?? null,
     xpMultiplier: currentTierDef ? PREMIUM_XP_MULTIPLIER : 1,
     rewardsMultiplier: currentTierDef ? PREMIUM_REWARDS_MULTIPLIER : 1,
   };
+}
+
+export function getPremiumStatus(address: string): PremiumStatus {
+  // Live on-chain lock summary written by useTokenLock after a real
+  // MPGRTokenLock read. Falling back to the localStorage mock engine is
+  // what produced the stale "100 MPGR actively locked" values on Profile.
+  const live = getCachedWalletLock(address);
+  if (live) {
+    return derivePremiumStatus({
+      activeLocked: live.totalLocked,
+      lifetimeLocked: live.lifetimeLocked,
+      nextUnlockAt: live.nextUnlockAt,
+    });
+  }
+
+  // Not loaded yet — return zeros rather than leftover mock localStorage.
+  // Callers that render before the lock hook has loaded must keep
+  // `status` null / a skeleton, not this zeroed value.
+  return derivePremiumStatus({ activeLocked: 0, lifetimeLocked: 0, nextUnlockAt: null });
 }
 
 // --- Cosmetics -----------------------------------------------------------
@@ -122,7 +142,7 @@ export interface PremiumState {
 }
 
 function storageKey(address: string) {
-  return `${STORAGE_PREFIX}${address.toLowerCase()}`;
+  return `\( {STORAGE_PREFIX} \){address.toLowerCase()}`;
 }
 
 function emptyState(address: string): PremiumState {
@@ -288,7 +308,7 @@ function getISOWeekKey(date: Date): string {
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   const weekNum = Math.ceil(((d.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
-  return `${d.getUTCFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+  return `\( {d.getUTCFullYear()}-W \){String(weekNum).padStart(2, "0")}`;
 }
 
 export function canClaimTreasureBox(status: PremiumStatus, state: PremiumState): boolean {
