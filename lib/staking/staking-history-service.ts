@@ -344,6 +344,24 @@ export const stakingHistoryService = {
     return cached && isCacheValid(cached) ? cached.entries : null;
   },
 
+  // Phase 3J — Reward Hub loading fix, hole #2. Same underlying cache
+  // entry as getCachedHistory() above, but WITHOUT the isCacheValid() TTL
+  // check — returns whatever was last scanned even if historyCacheTtl has
+  // since elapsed, instead of null. For a consumer that only needs "the
+  // last known real value to display" (e.g. staking-rewards-provider.ts's
+  // getSummary(), computing claimedRaw), a same-page TTL expiry
+  // shouldn't make a real, already-scanned amount disappear/revert to 0
+  // — that's a display staleness question, not a correctness one; the
+  // underlying scan/backfill/TTL semantics that decide when
+  // scanAndCache() re-scans are completely unchanged, since scanAndCache
+  // reads historyCache directly and never calls this. Existing callers of
+  // getCachedHistory() (hooks/useStakingHistory.ts, hasMoreHistory logic)
+  // are unaffected — this is a new, separate accessor.
+  getCachedHistoryStale(walletAddress: Address): StakingHistoryEvent[] | null {
+    const cached = historyCache.get(getCacheKey(walletAddress));
+    return cached ? cached.entries : null;
+  },
+
   clearCache(walletAddress: Address): void {
     historyCache.delete(getCacheKey(walletAddress));
   },
