@@ -129,7 +129,7 @@ export interface PremiumState {
 }
 
 function storageKey(address: string) {
-  return `\( {STORAGE_PREFIX} \){address.toLowerCase()}`;
+  return `${STORAGE_PREFIX}${address.toLowerCase()}`;
 }
 
 function emptyState(address: string): PremiumState {
@@ -278,7 +278,7 @@ function getISOWeekKey(date: Date): string {
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   const weekNum = Math.ceil(((d.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
-  return `\( {d.getUTCFullYear()}-W \){String(weekNum).padStart(2, "0")}`;
+  return `${d.getUTCFullYear()}-W${String(weekNum).padStart(2, "0")}`;
 }
 
 export function canClaimTreasureBox(status: PremiumStatus, state: PremiumState): boolean {
