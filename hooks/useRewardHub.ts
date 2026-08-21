@@ -26,7 +26,34 @@ import type { RewardClaimHistoryEntry, RewardHubSummary } from "@/lib/rewards/re
 // "rewards_claimed" listener have been removed as unused code left over
 // from that removal. This hook is read-only.
 //
-// Phase 3F perf fix — loadingRef below:
+// Phase 3I — Reward Hub loading fix (decoupled Summary/History loading).
+//
+// This hook used to have ONE shared loading flag (`loading: !hasLoaded`),
+// which only became true once BOTH rewardService.getRewardHubSummary()
+// AND rewardService.getRewardHistory() resolved, via a single
+// Promise.all() inside one load() function. app/rewards/page.tsx then
+// passed that same flag to RewardHubSummaryCards, RewardCategoryGrid, AND
+// RewardClaimHistoryList — so a slow claim-history load (behind
+// lib/staking/staking-history-service.ts's chunked eth_getLogs scan, see
+// staking-config.ts's historyInitialWindowBlocks/historyChunkSize
+// comments for why a cold scan can take several seconds even on a
+// healthy RPC) kept the Summary cards and Category grid skeletons on
+// screen too, even though neither actually depends on that scan
+// (see lib/rewards/providers/staking-rewards-provider.ts's getSummary()
+// for the matching fix on the data side).
+//
+// Summary and History are now two fully independent load cycles —
+// loadSummary() and loadHistory() below — each with its own in-flight
+// guard, its own "has this loaded at least once" flag, and its own error
+// state. Neither awaits the other. A slow or failing history load can
+// never hold back the Summary/Category render, and vice versa; each
+// path's own try/catch/finally guarantees its own loading flag can never
+// get stuck at true, whether it succeeds, fails, or the request times out
+// (lib/wagmi.ts's transport now has a bounded 10s timeout on every RPC
+// call for exactly this reason).
+//
+// Phase 3F perf fix — loadingRef below (now split into two refs, one per
+// load path, for the same reason):
 // stakingHistoryService's inFlightScans already dedupes the history scan
 // itself, but nothing previously stopped a second load() (from the
 // liveReadPollingIntervalMs timer, or a staking_changed event) from
@@ -36,20 +63,21 @@ import type { RewardClaimHistoryEntry, RewardHubSummary } from "@/lib/rewards/re
 // of its own. Measured trace evidence during diagnosis showed exactly
 // this: a polling load firing while the initial cold-load scan was still
 // running, adding extra concurrent RPC load on top of an already
-// rate-limited endpoint. loadingRef is a simple per-address in-flight
-// guard: if a load() for this hook instance is already running, a second
-// call is a same-address, whole-aggregation, RPC-hitting call — this
-// defers to the running one instead of duplicating that work. It resolves
-// once the in-flight load finishes and its result lands in state as
-// normal.
+// rate-limited endpoint. summaryLoadingRef/historyLoadingRef are simple
+// per-address in-flight guards: if a load for this hook instance and
+// path is already running, a second call for that same path defers to
+// the running one instead of duplicating that work. It resolves once the
+// in-flight load finishes and its result lands in state as normal.
 
 interface UseRewardHubReturn {
   summary: RewardHubSummary | null;
   history: RewardClaimHistoryEntry[];
-  loading: boolean;
+  summaryLoading: boolean;
+  historyLoading: boolean;
   isRefreshing: boolean;
   isLoadingMore: boolean;
-  error: string | null;
+  summaryError: string | null;
+  historyError: string | null;
   hasMoreHistory: boolean;
   refresh: () => Promise<void>;
   loadMoreHistory: () => Promise<void>;
@@ -63,82 +91,130 @@ export function useRewardHub(): UseRewardHubReturn {
   const [historyPageSize, setHistoryPageSize] = useState<number>(
     MPGR_REWARDS_CONFIG.historyPageSize
   );
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const [hasLoadedSummary, setHasLoadedSummary] = useState(false);
+  const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Phase 3F perf fix — in-flight guard, see comment above the imports.
-  const loadingRef = useRef(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  // Phase 3I — one in-flight guard per independent load path. See the
+  // Phase 3F perf-fix comment above the imports for why this exists.
+  const summaryLoadingRef = useRef(false);
+  const historyLoadingRef = useRef(false);
 
-  const load = useCallback(
-    async (limit: number, forceRefresh: boolean) => {
+  const loadSummary = useCallback(
+    async (forceRefresh: boolean) => {
       if (!address) return;
 
-      // Phase 3F perf fix — a load for this address is already running;
-      // skip this call rather than re-running the whole aggregation
-      // (including an un-deduped stakingService.getWalletState() RPC
-      // call) on top of it. The in-flight load will update state when it
-      // resolves.
-      if (loadingRef.current) {
+      // A summary load for this address is already running; skip this
+      // call rather than re-running getWalletState() on top of it. The
+      // in-flight load will update state when it resolves.
+      if (summaryLoadingRef.current) {
         return;
       }
-      loadingRef.current = true;
+      summaryLoadingRef.current = true;
 
       try {
-        const [summaryResult, historyResult] = await Promise.all([
-          rewardService.getRewardHubSummary(address, {
-            forceRefresh,
-          }),
-          rewardService.getRewardHistory(address, {
-            limit,
-            forceRefresh,
-          }),
-        ]);
-
-        setSummary(summaryResult);
-        setHistory(historyResult);
-        setError(null);
+        const result = await rewardService.getRewardHubSummary(address, {
+          forceRefresh,
+        });
+        setSummary(result);
+        setSummaryError(null);
       } catch (err) {
-        setError(
+        setSummaryError(
           err instanceof Error
             ? err.message
-            : "Failed to load reward data."
+            : "Failed to load reward summary."
         );
       } finally {
-        // Phase 3F perf fix — release the guard so the next call site
-        // (poll, event, manual refresh) can run normally.
-        loadingRef.current = false;
+        summaryLoadingRef.current = false;
       }
     },
     [address]
+  );
+
+  const loadHistory = useCallback(
+    async (limit: number, forceRefresh: boolean) => {
+      if (!address) return;
+
+      // A history load for this address is already running (this defers
+      // to it rather than starting a second one; the underlying scan
+      // itself is separately deduped by stakingHistoryService's own
+      // inFlightScans regardless).
+      if (historyLoadingRef.current) {
+        return;
+      }
+      historyLoadingRef.current = true;
+
+      try {
+        const result = await rewardService.getRewardHistory(address, {
+          limit,
+          forceRefresh,
+        });
+        setHistory(result);
+        setHistoryError(null);
+
+        // Phase 3J — Reward Hub loading fix, hole #1. Once history
+        // finishes loading and its cache is populated, immediately
+        // re-derive the summary from that now-populated cache instead of
+        // leaving claimedRaw waiting for the next
+        // MPGR_REWARDS_CONFIG.liveReadPollingIntervalMs poll (up to 15s
+        // later) to pick it up. This calls the same loadSummary() as
+        // every other refresh path (poll, staking_changed, manual
+        // refresh) — its own in-flight guard applies as normal, and by
+        // this point hasLoadedSummary is already true on every call site
+        // that matters (the initial mount's own loadSummary() resolves
+        // independently, in parallel with this), so this can never flip
+        // summaryLoading back to true or block the UI — it's a quiet
+        // background update, identical in kind to the existing polling
+        // refresh, just triggered earlier.
+        void loadSummary(true);
+      } catch (err) {
+        setHistoryError(
+          err instanceof Error
+            ? err.message
+            : "Failed to load claim history."
+        );
+      } finally {
+        historyLoadingRef.current = false;
+      }
+    },
+    [address, loadSummary]
   );
 
   useEffect(() => {
     if (!isConnected || !address) {
       setSummary(null);
       setHistory([]);
-      setError(null);
-      setHasLoaded(false);
+      setSummaryError(null);
+      setHistoryError(null);
+      setHasLoadedSummary(false);
+      setHasLoadedHistory(false);
       setHistoryPageSize(MPGR_REWARDS_CONFIG.historyPageSize);
       return;
     }
 
     setHistoryPageSize(MPGR_REWARDS_CONFIG.historyPageSize);
 
-    load(MPGR_REWARDS_CONFIG.historyPageSize, false).finally(() =>
-      setHasLoaded(true)
+    // Independent — neither awaits the other, so a slow/cold history scan
+    // can never delay the summary render, and a slow summary read can
+    // never delay history loading.
+    loadSummary(false).finally(() => setHasLoadedSummary(true));
+    loadHistory(MPGR_REWARDS_CONFIG.historyPageSize, false).finally(() =>
+      setHasLoadedHistory(true)
     );
-  }, [address, isConnected, load]);
+  }, [address, isConnected, loadSummary, loadHistory]);
 
   useEffect(() => {
     if (!isConnected || !address) return;
 
     const id = setInterval(() => {
-      load(historyPageSize, true);
+      loadSummary(true);
+      loadHistory(historyPageSize, true);
     }, MPGR_REWARDS_CONFIG.liveReadPollingIntervalMs);
 
     return () => clearInterval(id);
-  }, [address, isConnected, historyPageSize, load]);
+  }, [address, isConnected, historyPageSize, loadSummary, loadHistory]);
 
   useEffect(() => {
     const unsubscribeStaking = agentEventBus.on(
@@ -148,14 +224,15 @@ export function useRewardHub(): UseRewardHubReturn {
 
         rewardService.clearCache(address);
 
-        void load(historyPageSize, true);
+        void loadSummary(true);
+        void loadHistory(historyPageSize, true);
       }
     );
 
     return () => {
       unsubscribeStaking();
     };
-  }, [address, historyPageSize, load]);
+  }, [address, historyPageSize, loadSummary, loadHistory]);
 
   const refresh = useCallback(async () => {
     if (!address) return;
@@ -164,11 +241,14 @@ export function useRewardHub(): UseRewardHubReturn {
     rewardService.clearCache(address);
 
     try {
-      await load(historyPageSize, true);
+      await Promise.all([
+        loadSummary(true),
+        loadHistory(historyPageSize, true),
+      ]);
     } finally {
       setIsRefreshing(false);
     }
-  }, [address, historyPageSize, load]);
+  }, [address, historyPageSize, loadSummary, loadHistory]);
 
   const loadMoreHistory = useCallback(async () => {
     if (!address) return;
@@ -201,10 +281,12 @@ export function useRewardHub(): UseRewardHubReturn {
   return {
     summary,
     history,
-    loading: isConnected ? !hasLoaded : !summary,
+    summaryLoading: isConnected ? !hasLoadedSummary : !summary,
+    historyLoading: isConnected ? !hasLoadedHistory : history.length === 0,
     isRefreshing,
     isLoadingMore,
-    error,
+    summaryError,
+    historyError,
     hasMoreHistory,
     refresh,
     loadMoreHistory,
