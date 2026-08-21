@@ -8,7 +8,7 @@ import { HOLDER_TIERS, getHolderCosmetics, type HolderTierId } from "@/lib/holde
 import type { HolderTierStatus } from "@/lib/holder-tier-engine";
 
 interface HolderBenefitsProps {
-  status: HolderTierStatus;
+  status?: HolderTierStatus | null;
 }
 
 const TIER_ICON: Record<Exclude<HolderTierId, "none">, LucideIcon> = {
@@ -70,7 +70,7 @@ export function HolderBenefits({ status }: HolderBenefitsProps) {
         {HOLDER_TIERS.map((tierDef, i) => {
           const Icon = TIER_ICON[tierDef.id];
           const cosmetics = getHolderCosmetics(tierDef.id);
-          const isCurrent = status.tier === tierDef.id;
+          const isCurrent = status?.tier === tierDef.id;
           const perks = tierPerks(tierDef.id);
 
           return (
