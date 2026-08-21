@@ -189,7 +189,7 @@ export interface HolderTierState {
 }
 
 function storageKey(address: string) {
-  return `\( {STORAGE_PREFIX} \){address.toLowerCase()}`;
+  return `${STORAGE_PREFIX}${address.toLowerCase()}`;
 }
 
 function emptyState(address: string): HolderTierState {
