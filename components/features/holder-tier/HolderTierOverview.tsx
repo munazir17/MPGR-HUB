@@ -1,14 +1,11 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Gauge } from "lucide-react";
 import { SectionHeader } from "@/components/ui/SectionHeader";
-import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonCard } from "@/components/ui/SkeletonCard";
 import { useHolderTier } from "@/lib/useHolderTier";
 import { HolderTierCard } from "./HolderTierCard";
 import { HolderScoreCard } from "./HolderScoreCard";
-import { HolderTierProgress } from "./HolderTierProgress";
 import { HolderBenefits } from "./HolderBenefits";
 
 export function HolderTierOverview() {
@@ -17,12 +14,8 @@ export function HolderTierOverview() {
   if (!isConnected) {
     return (
       <div>
-        <SectionHeader title="Holder Tier" subtitle="Your MPGR holder status, score, and perks" />
-        <EmptyState
-          icon={Gauge}
-          title="Connect your wallet"
-          description="Connect to view your Holder Tier, score, and benefits."
-        />
+        <SectionHeader title="Holder Benefits" subtitle="Perks unlocked by holding, staking, and locking MPGR" />
+        <HolderBenefits />
       </div>
     );
   }
@@ -50,10 +43,6 @@ export function HolderTierOverview() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <HolderTierCard status={status} />
         <HolderScoreCard status={status} />
-      </div>
-
-      <div className="mt-4">
-        <HolderTierProgress status={status} />
       </div>
 
       <div className="mt-4">
