@@ -501,12 +501,7 @@ export default function DashboardPage() {
                       seasonPoints={seasonPoints}
                       referrals={record.referralCount}
                       tier={premiumStatus?.tier}
-                      isCurrentUser
-                    />
-                    <p className="mt-3 text-center text-[11px] text-muted">
-                      Global rankings launch soon — invite friends to climb faster.
-                    </p>
-                  </>
+                      
                 ) : (
                   <p className="py-2 text-center text-xs text-muted">
                     Start earning XP to appear on the leaderboard.
