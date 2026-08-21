@@ -72,9 +72,11 @@ export default function RewardsPage() {
   const {
     summary: rewardHubSummary,
     history: rewardHubHistory,
-    loading: rewardHubLoading,
+    summaryLoading: rewardHubSummaryLoading,
+    historyLoading: rewardHubHistoryLoading,
     isLoadingMore: rewardHubLoadingMore,
-    error: rewardHubError,
+    summaryError: rewardHubSummaryError,
+    historyError: rewardHubHistoryError,
     hasMoreHistory: rewardHubHasMore,
     refresh: refreshRewardHub,
     loadMoreHistory: loadMoreRewardHubHistory,
@@ -83,7 +85,12 @@ export default function RewardsPage() {
   const [dismissedRewardHubError, setDismissedRewardHubError] = useState(false);
 
   useEffect(() => setMounted(true), []);
-  useEffect(() => setDismissedRewardHubError(false), [rewardHubError]);
+  // Phase 3I — Reward Hub loading fix. Summary and History now have
+  // independent error states (see hooks/useRewardHub.ts); this banner
+  // covers the Summary/Category section specifically. History has its
+  // own error/retry UI inside RewardClaimHistoryList below, so a history
+  // failure doesn't also need to (re-)trigger this banner.
+  useEffect(() => setDismissedRewardHubError(false), [rewardHubSummaryError]);
 
   const seasonPoints = record ? getSeasonPoints(record) : 0;
   const seasonNumber = getSeasonNumber();
@@ -109,12 +116,12 @@ export default function RewardsPage() {
               subtitle="Everything you've earned across staking and on-chain rewards"
             />
 
-            {rewardHubError && !dismissedRewardHubError && (
+            {rewardHubSummaryError && !dismissedRewardHubError && (
               <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}>
                 <div className="flex items-center justify-between gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-3.5 backdrop-blur-xl">
                   <span className="flex items-center gap-2 text-xs text-red-400">
                     <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
-                    {rewardHubError}
+                    {rewardHubSummaryError}
                   </span>
                   <button
                     onClick={() => setDismissedRewardHubError(true)}
@@ -127,7 +134,7 @@ export default function RewardsPage() {
               </motion.div>
             )}
 
-            <RewardHubSummaryCards summary={rewardHubSummary} loading={rewardHubLoading} />
+            <RewardHubSummaryCards summary={rewardHubSummary} loading={rewardHubSummaryLoading} />
 
             {premiumStatus?.isPremium && (
               <div className="flex flex-wrap items-center gap-2 rounded-xl border border-gold/20 bg-gold/[0.05] px-4 py-3">
@@ -147,7 +154,7 @@ export default function RewardsPage() {
 
             <div>
               <SectionHeader title="Reward Categories" subtitle="Earned across every active reward system" />
-              <RewardCategoryGrid categories={rewardHubSummary?.categories ?? null} loading={rewardHubLoading} />
+              <RewardCategoryGrid categories={rewardHubSummary?.categories ?? null} loading={rewardHubSummaryLoading} />
             </div>
 
             <OnChainRewardsSection />
@@ -178,9 +185,9 @@ export default function RewardsPage() {
               <SectionHeader title="Claim History" subtitle="Every claim across every active category" />
               <RewardClaimHistoryList
                 entries={rewardHubHistory}
-                isLoading={rewardHubLoading}
+                isLoading={rewardHubHistoryLoading}
                 isLoadingMore={rewardHubLoadingMore}
-                error={rewardHubError}
+                error={rewardHubHistoryError}
                 hasMore={rewardHubHasMore}
                 onLoadMore={loadMoreRewardHubHistory}
                 onRetry={refreshRewardHub}
