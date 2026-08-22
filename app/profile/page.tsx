@@ -42,7 +42,7 @@ export default function ProfilePage() {
 
   const levelInfo = record ? getLevelProgress(record.xp) : null;
   const achievements = record ? getAchievements(record) : [];
-  const referralLink = address ? `https://mpgr-hub-ezxs.vercel.app/?ref=${address}` : "";
+  const referralLink = address ? `https://mpgrhub.xyz/?ref=${address}` : "";
 
   const shareReferralLink = async () => {
     if (!referralLink) return;
@@ -70,21 +70,25 @@ export default function ProfilePage() {
     <>
       <Navbar />
       <main className="mx-auto max-w-3xl px-4 py-10">
-        {!mounted || !isConnected || !address ? (
-          <EmptyState
-            icon={Activity}
-            title="Connect your wallet"
-            description="Connect to view your profile, XP, and achievements."
-          />
-        ) : (
+        {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+            {!isConnected && (
+              <EmptyState
+                icon={Activity}
+                title="Connect your wallet"
+                description="Connect to view your profile, XP, and achievements."
+              />
+            )}
+
             <GlassCard className="flex items-center gap-4 p-6">
               <div className={clsx("shrink-0 rounded-full", premiumCosmetics?.frameClass)}>
-                <AddressAvatar address={address} size={72} />
+                <AddressAvatar address={address ?? ""} size={72} />
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <h1 className="truncate text-xl font-semibold text-white">{formatAddress(address, 6)}</h1>
+                  <h1 className="truncate text-xl font-semibold text-white">
+                    {address ? formatAddress(address, 6) : "Not connected"}
+                  </h1>
                   {premiumStatus && <PremiumBadge tier={premiumStatus.tier} size="sm" />}
                 </div>
                 {levelInfo && (
@@ -127,15 +131,23 @@ export default function ProfilePage() {
                 </p>
               </div>
               <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-background/50 px-3 py-2">
-                <span className="flex-1 truncate text-xs text-muted">{referralLink}</span>
-                <button onClick={copyReferralLink} aria-label="Copy referral link" className="shrink-0 p-1 text-primary">
+                <span className="flex-1 truncate text-xs text-muted">
+                  {referralLink || "Connect wallet to get your referral link"}
+                </span>
+                <button
+                  onClick={copyReferralLink}
+                  aria-label="Copy referral link"
+                  disabled={!referralLink}
+                  className="shrink-0 p-1 text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
                   <Copy className="h-4 w-4" />
                 </button>
               </div>
               <button
                 onClick={shareReferralLink}
                 aria-label="Share referral link"
-                className="mt-3 flex min-h-[40px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-premium text-sm font-semibold text-white transition-transform active:scale-95"
+                disabled={!referralLink}
+                className="mt-3 flex min-h-[40px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-premium text-sm font-semibold text-white transition-transform active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Share2 className="h-4 w-4" aria-hidden="true" />
                 Share
