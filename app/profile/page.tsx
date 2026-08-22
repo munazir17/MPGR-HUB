@@ -6,7 +6,6 @@ import { motion } from "framer-motion";
 import { Copy, Share2, Activity } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { GlassCard } from "@/components/ui/GlassCard";
-import { ProgressBar } from "@/components/ui/ProgressBar";
 import { AchievementCard } from "@/components/ui/AchievementCard";
 import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
 import { SectionHeader } from "@/components/ui/SectionHeader";
@@ -118,12 +117,6 @@ export default function ProfilePage() {
                   View Season {seasonPassStatus.seasonNumber} Pass
                 </Link>
               </div>
-            )}
-
-            {levelInfo && (
-              <GlassCard className="p-5">
-                <ProgressBar progress={levelInfo.progress} label={`Level ${levelInfo.level} progress`} />
-              </GlassCard>
             )}
 
             <GlassCard className="p-5">
