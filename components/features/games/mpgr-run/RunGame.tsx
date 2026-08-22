@@ -1391,7 +1391,7 @@ void submitRunToServer(address, ended.sessionId, result);
     )}\n\nCan you beat me?\n${shareUrl}\n\n🔵 MPGR HUB`;
     try {
       if (navigator.share) {
-        await navigator.share({ title: "MPGR Run", text, url: shareUrl });
+        await navigator.share({ title: "MPGR Run", text });
       } else {
         await navigator.clipboard.writeText(text);
         setShareCopied(true);
