@@ -120,4 +120,153 @@ export function startRunAssetPipeline(options: RunAssetPipelineOptions): RunAsse
   let optionalStarted = false;
 
   const criticalQueue = critical.filter((src) => !!src);
-  const optionalQueue = optional.filter((src
+  const optionalQueue = optional.filter((src) => !!src);
+  const criticalTotal = criticalQueue.length;
+  const timeoutIds = new Set<number>();
+
+  const commit = (src: string, source: CanvasImageSource) => {
+    inflight.delete(src);
+    if (ready.has(src) || failed.has(src)) return;
+    ready.set(src, source);
+  };
+
+  const markFailed = (src: string) => {
+    inflight.delete(src);
+    if (ready.has(src)) return;
+    failed.add(src);
+  };
+
+  const releaseTimeout = (id: number | null) => {
+    if (id == null) return;
+    timeoutIds.delete(id);
+    cancelTimeout(id);
+  };
+
+  const loadOne = (src: string, lane: Lane) => {
+    if (cancelled) return;
+
+    if (ready.has(src) || failed.has(src) || inflight.has(src)) {
+      onSettled(lane, false);
+      return;
+    }
+
+    if (lane === "critical") criticalInFlight += 1;
+    else optionalInFlight += 1;
+    inflight.add(src);
+
+    let settled = false;
+    let timeoutId: number | null = null;
+    const img = createImage();
+    img.decoding = "async";
+
+    const settle = (ok: boolean, source?: CanvasImageSource) => {
+      if (settled) return;
+      settled = true;
+      releaseTimeout(timeoutId);
+      if (!cancelled) {
+        if (ok && source) commit(src, source);
+        else markFailed(src);
+      } else {
+        inflight.delete(src);
+      }
+      onSettled(lane, true);
+    };
+
+    timeoutId = scheduleTimeout(() => {
+      settle(false);
+    }, timeoutMs);
+    timeoutIds.add(timeoutId);
+
+    img.onload = () => {
+      if (cancelled || settled) {
+        settle(false);
+        return;
+      }
+      Promise.resolve()
+        .then(() => decode(img))
+        .then(() => {
+          if (cancelled || settled) {
+            settle(false);
+            return;
+          }
+          if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+            settle(false);
+            return;
+          }
+          if (stripTargets.has(src)) {
+            try {
+              settle(true, stripBackground(img as unknown as HTMLImageElement));
+            } catch {
+              settle(false);
+            }
+            return;
+          }
+          settle(true, img as unknown as CanvasImageSource);
+        })
+        .catch(() => {
+          settle(false);
+        });
+    };
+
+    img.onerror = () => {
+      settle(false);
+    };
+
+    try {
+      img.src = src;
+    } catch {
+      settle(false);
+    }
+  };
+
+  const pumpCritical = () => {
+    if (cancelled) return;
+    while (criticalInFlight < criticalConcurrency && criticalQueue.length > 0) {
+      const src = criticalQueue.shift() as string;
+      loadOne(src, "critical");
+    }
+  };
+
+  const pumpOptional = () => {
+    if (cancelled || !optionalStarted) return;
+    while (optionalInFlight < optionalConcurrency && optionalQueue.length > 0) {
+      const src = optionalQueue.shift() as string;
+      loadOne(src, "optional");
+    }
+  };
+
+  const maybeStartOptional = () => {
+    if (optionalStarted || cancelled) return;
+    if (criticalSettled < criticalTotal) return;
+    optionalStarted = true;
+    pumpOptional();
+  };
+
+  const onSettled = (lane: Lane, occupiedSlot: boolean) => {
+    if (lane === "critical") {
+      if (occupiedSlot) criticalInFlight = Math.max(0, criticalInFlight - 1);
+      criticalSettled += 1;
+      pumpCritical();
+      maybeStartOptional();
+    } else {
+      if (occupiedSlot) optionalInFlight = Math.max(0, optionalInFlight - 1);
+      pumpOptional();
+    }
+  };
+
+  pumpCritical();
+  maybeStartOptional();
+
+  const handle: RunAssetPipelineHandle = {
+    stop: () => {
+      cancelled = true;
+      timeoutIds.forEach((id) => cancelTimeout(id));
+      timeoutIds.clear();
+    },
+    getCriticalInFlight: () => criticalInFlight,
+    getOptionalInFlight: () => optionalInFlight,
+    getCriticalSettled: () => criticalSettled,
+    optionalHasStarted: () => optionalStarted,
+  };
+  return handle;
+}
