@@ -66,7 +66,7 @@ export function withAssetVersion(path: string, version: string = RUN_ASSET_VERSI
   const search = qIndex >= 0 ? withoutHash.slice(qIndex + 1) : "";
   const params = new URLSearchParams(search);
   params.set(VERSION_PARAM, version);
-  return `\( {pathname}? \){params.toString()}${hash}`;
+  return `${pathname}?${params.toString()}${hash}`;
 }
 
 function asset(path: string): string {
