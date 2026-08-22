@@ -44,8 +44,10 @@ import {
   CITY_ENVIRONMENT,
   EFFECT_SPRITES,
   BACKGROUND_STRIP_TARGETS,
-  ALL_SPRITE_PATHS,
+  CRITICAL_SPRITE_PATHS,
+  OPTIONAL_SPRITE_PATHS,
 } from "@/lib/games/mpgr-run/run-assets";
+import { startRunAssetPipeline } from "@/lib/games/mpgr-run/asset-loader";
 import {
   MPGR_RUN_GAME_ID,
   LANE_COUNT,
@@ -309,8 +311,12 @@ export function RunGame({ address }: RunGameProps) {
   const phaseRef = useRef<Phase>("idle");
   const idRef = useRef(1);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
-  const rawImagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const readySpritesRef = useRef<Map<string, CanvasImageSource>>(new Map());
+  const inflightSpritesRef = useRef<Set<string>>(new Set());
+  const failedSpritesRef = useRef<Set<string>>(new Set());
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const finishRunRef = useRef<() => void>(() => {});
+  const finishingRef = useRef(false);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [countdownValue, setCountdownValue] = useState(COUNTDOWN_SECONDS);
@@ -382,7 +388,10 @@ export function RunGame({ address }: RunGameProps) {
       canvas.height = Math.round(rect.height * dpr);
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
+      // Setting canvas.width resets the context; reuse the same 2d context
+      // object rather than calling getContext from the hot draw path.
       const ctx = canvas.getContext("2d");
+      ctxRef.current = ctx;
       if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       sizeRef.current = { width: rect.width, height: rect.height };
     };
@@ -416,84 +425,35 @@ export function RunGame({ address }: RunGameProps) {
   }, []);
 
   // --- Sprite preload ---------------------------------------------------
-  // Loads every real asset under public/games/mpgr-run/ once on mount.
-  // draw() below reads straight from the "ready" cache and simply skips
-  // drawing (falling back to the procedural shape) for any sprite not yet
-  // decoded, so the very first frame or two of a cold load never shows a
-  // blank gap. The handful of assets in BACKGROUND_STRIP_TARGETS get run
-  // through stripBackgroundToTransparent() once their raw <img> finishes
-  // loading, and it's that processed (transparent) canvas — not the raw
-  // image — that lands in the ready cache for those specific paths.
+  // Two-tier pipeline (see asset-loader.ts):
+  //   CRITICAL  — idle/run/run2/jump/fall/slide + city layers + HUD.
+  //               Slot-limited; each PNG occupies a slot until load +
+  //               decode (+ strip) has settled.
+  //   OPTIONAL  — collectibles, power-ups, obstacles, VFX. Starts only
+  //               after every critical asset has settled, not merely started.
   //
-  // Loading order: ALL_SPRITE_PATHS is \~69MB of uncompressed artwork
-  // (city environment + every obstacle/collectible/powerup/effect frame)
-  // and was previously requested all-at-once via `new Image()` on mount —
-  // competing for bandwidth and main-thread decode time with the very
-  // first render, which is what made the game feel slow to open. Nothing
-  // here removes or downgrades any asset; it only changes the order they
-  // arrive in. CRITICAL_SPRITES (the idle character pose + small UI
-  // icons) are requested immediately since they're the only sprites the
-  // idle/countdown screen actually needs. Everything else loads in small
-  // chunks scheduled with requestIdleCallback so it doesn't block the
-  // initial paint or input handling; draw() already tolerates any of
-  // these arriving late.
+  // draw() reads the ready cache and uses the existing procedural fallback
+  // for anything not yet load+decode-ready. Gameplay NEVER awaits this, so
+  // a slow phone / hung PNG / 404 cannot freeze countdown or the rAF loop.
+  //
+  // Sprites are versioned (RUN_ASSET_VERSION on every path) so a cached
+  // previous-generation PNG cannot win over the current artwork. A sprite
+  // is inserted into readySpritesRef only after decode (and background
+  // strip, if listed) succeeds — never on a raw onload — so we don't
+  // flash an undecoded or black-background frame. Write-once: a late load
+  // cannot overwrite a decoded current-version sprite.
   useEffect(() => {
-    const CRITICAL_SPRITES: string[] = [CHARACTER_SPRITES.idle, CHARACTER_SPRITES.run, UI_SPRITES.heart, UI_SPRITES.powerupFrame];
-    const deferredSprites = ALL_SPRITE_PATHS.filter((src) => !CRITICAL_SPRITES.includes(src));
-
-    let cancelled = false;
-
-    const loadSprite = (src: string) => {
-      if (rawImagesRef.current.has(src)) return;
-      const img = new window.Image();
-      img.decoding = "async";
-      img.onload = () => {
-        if (cancelled) return;
-        if (BACKGROUND_STRIP_TARGETS.includes(src)) {
-          readySpritesRef.current.set(src, stripBackgroundToTransparent(img));
-        } else {
-          readySpritesRef.current.set(src, img);
-        }
-      };
-      img.src = src;
-      rawImagesRef.current.set(src, img);
-    };
-
-    CRITICAL_SPRITES.forEach(loadSprite);
-
-    // requestIdleCallback only fires during genuine main-thread idle
-    // time — but this game runs a continuous requestAnimationFrame loop
-    // once a run starts, which can starve idle callbacks indefinitely on
-    // real devices (never truly "idle"). The `timeout` option forces the
-    // callback to run within that many ms regardless, so deferred art
-    // still gets idle-time scheduling when the thread is free, but is
-    // guaranteed to keep making progress instead of stalling mid-run.
-    const scheduleIdle: (cb: () => void) => number =
-      typeof window.requestIdleCallback === "function"
-        ? (cb) => window.requestIdleCallback(cb, { timeout: 300 })
-        : (cb) => window.setTimeout(cb, 32);
-    const cancelIdle: (handle: number) => void =
-      typeof window.cancelIdleCallback === "function"
-        ? (handle) => window.cancelIdleCallback(handle)
-        : (handle) => window.clearTimeout(handle);
-
-    const CHUNK_SIZE = 4;
-    let index = 0;
-    let handle = 0;
-    const loadNextChunk = () => {
-      if (cancelled) return;
-      deferredSprites.slice(index, index + CHUNK_SIZE).forEach(loadSprite);
-      index += CHUNK_SIZE;
-      if (index < deferredSprites.length) {
-        handle = scheduleIdle(loadNextChunk);
-      }
-    };
-    handle = scheduleIdle(loadNextChunk);
-
-    return () => {
-      cancelled = true;
-      cancelIdle(handle);
-    };
+    const stripTargets = new Set(BACKGROUND_STRIP_TARGETS);
+    const pipeline = startRunAssetPipeline({
+      critical: CRITICAL_SPRITE_PATHS,
+      optional: OPTIONAL_SPRITE_PATHS,
+      ready: readySpritesRef.current,
+      inflight: inflightSpritesRef.current,
+      failed: failedSpritesRef.current,
+      stripTargets,
+      stripBackground: stripBackgroundToTransparent,
+    });
+    return () => pipeline.stop();
   }, []);
 
   const getSprite = useCallback((src: string): CanvasImageSource | null => {
@@ -538,8 +498,13 @@ export function RunGame({ address }: RunGameProps) {
   // --- Render a single frame ------------------------------------------
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
+    if (!canvas) return;
+    let ctx = ctxRef.current;
+    if (!ctx || ctx.canvas !== canvas) {
+      ctx = canvas.getContext("2d");
+      ctxRef.current = ctx;
+    }
+    if (!ctx) return;
     const { width, height } = sizeRef.current;
     if (width === 0 || height === 0) return;
 
@@ -567,6 +532,7 @@ export function RunGame({ address }: RunGameProps) {
     const cityBg = getSprite(CITY_ENVIRONMENT.background);
     const cityMid = getSprite(CITY_ENVIRONMENT.midground);
     const cityFg = getSprite(CITY_ENVIRONMENT.foreground);
+    const cityReady = !!(cityBg && cityMid && cityFg);
     const drawParallaxLayer = (img: CanvasImageSource | null, speedFactor: number, alpha: number) => {
       if (!img) return;
       const offset = (world.traveledPx * speedFactor) % width;
@@ -575,13 +541,17 @@ export function RunGame({ address }: RunGameProps) {
       ctx.drawImage(img, width - offset, 0, width, height);
       ctx.globalAlpha = 1;
     };
-    drawParallaxLayer(cityBg, 0.05, 0.9);
-    drawParallaxLayer(cityMid, 0.15, 0.85);
-    drawParallaxLayer(cityFg, 0.35, 0.8);
+    // All three layers or none — a late mid/fg arriving after bg would
+    // otherwise jump the city from "half-loaded" to full mid-run.
+    if (cityReady) {
+      drawParallaxLayer(cityBg, 0.05, 0.9);
+      drawParallaxLayer(cityMid, 0.15, 0.85);
+      drawParallaxLayer(cityFg, 0.35, 0.8);
+    }
 
-    // Procedural skyline glow strips — fallback only, while the real
-    // background artwork is still decoding on a cold load.
-    if (!cityBg) {
+    // Procedural skyline glow strips — fallback only until every city
+    // layer is load+decode-ready as a set.
+    if (!cityReady) {
       const scroll = (world.elapsedMs / 40) % width;
       ctx.globalAlpha = 0.12;
       ctx.fillStyle = "#3B82F6";
@@ -844,7 +814,16 @@ export function RunGame({ address }: RunGameProps) {
     else if (p.sliding) spriteSrc = CHARACTER_SPRITES.slide;
     else if (p.playerY > 0) spriteSrc = p.velocityY > 0 ? CHARACTER_SPRITES.jump : CHARACTER_SPRITES.fall;
     else spriteSrc = Math.floor(world.elapsedMs / 120) % 2 === 0 ? CHARACTER_SPRITES.run : CHARACTER_SPRITES.run2;
-    const playerImg = getSprite(spriteSrc);
+    let playerImg = getSprite(spriteSrc);
+    // If the pose for this frame isn't decode-ready yet, hold a current-version
+    // stand-in (run / jump / idle) rather than flickering to the procedural
+    // capsule every other run-cycle frame. Procedural is the last resort.
+    if (!playerImg) {
+      playerImg =
+        getSprite(CHARACTER_SPRITES.run) ??
+        getSprite(CHARACTER_SPRITES.jump) ??
+        getSprite(CHARACTER_SPRITES.idle);
+    }
 
     if (playerImg) {
       const drawW = PLAYER_SIZE * 1.9;
@@ -1147,7 +1126,7 @@ export function RunGame({ address }: RunGameProps) {
       draw();
 
       if (worldRef.current.gameOver) {
-        finishRun();
+        finishRunRef.current();
         return;
       }
 
@@ -1184,6 +1163,11 @@ export function RunGame({ address }: RunGameProps) {
   }, []);
 
   const finishRun = useCallback(() => {
+    // Idempotent: a queued rAF + the gameOver flag must not double-submit
+    // rewards or double-fire game-over audio. phaseRef is written first so
+    // any other in-flight frame bails before touching session/rewards.
+    if (finishingRef.current || phaseRef.current === "game_over") return;
+    finishingRef.current = true;
     stopLoop();
     const world = worldRef.current;
     const session = sessionRef.current;
@@ -1210,6 +1194,8 @@ refreshPersonalBest();
 void submitRunToServer(address, ended.sessionId, result);
 }, [address, stopLoop, refreshPersonalBest, buildStats, goToPhase]);
 
+  finishRunRef.current = finishRun;
+
   const startHudSync = useCallback(() => {
     if (hudIntervalRef.current != null) clearInterval(hudIntervalRef.current);
     hudIntervalRef.current = setInterval(() => {
@@ -1233,6 +1219,11 @@ void submitRunToServer(address, ended.sessionId, result);
   }, [buildStats]);
 
   const beginCountdown = useCallback(() => {
+    // Rapid Start / Try Again taps must not spawn duplicate sessions or
+    // duplicate countdown intervals. Countdown and running are already
+    // in-flight; ignore. Idle / paused / game_over may start a new run.
+    if (phaseRef.current === "countdown" || phaseRef.current === "running" || phaseRef.current === "paused") return;
+    finishingRef.current = false;
     if (countdownTimerRef.current != null) {
       clearInterval(countdownTimerRef.current);
       countdownTimerRef.current = null;
