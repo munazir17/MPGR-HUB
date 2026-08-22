@@ -303,6 +303,7 @@ export function RunGame({ address }: RunGameProps) {
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
   const hudIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sizeRef = useRef({ width: 0, height: 0 });
   const resizeRef = useRef<(() => void) | null>(null);
   const phaseRef = useRef<Phase>("idle");
@@ -327,6 +328,14 @@ export function RunGame({ address }: RunGameProps) {
   const [outcome, setOutcome] = useState<ProcessRunResultOutcome | null>(null);
   const [personalBest, setPersonalBest] = useState(0);
   const [shareCopied, setShareCopied] = useState(false);
+
+  // Keep phaseRef in lockstep with React state. Callers that start/stop the
+  // rAF loop must also write phaseRef synchronously (via goToPhase) so a
+  // frame that is already queued cannot observe a stale phase.
+  const goToPhase = useCallback((next: Phase) => {
+    phaseRef.current = next;
+    setPhase(next);
+  }, []);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -416,7 +425,7 @@ export function RunGame({ address }: RunGameProps) {
   // loading, and it's that processed (transparent) canvas — not the raw
   // image — that lands in the ready cache for those specific paths.
   //
-  // Loading order: ALL_SPRITE_PATHS is ~69MB of uncompressed artwork
+  // Loading order: ALL_SPRITE_PATHS is \~69MB of uncompressed artwork
   // (city environment + every obstacle/collectible/powerup/effect frame)
   // and was previously requested all-at-once via `new Image()` on mount —
   // competing for bandwidth and main-thread decode time with the very
@@ -1126,7 +1135,10 @@ export function RunGame({ address }: RunGameProps) {
   // --- Game loop --------------------------------------------------------
   const loop = useCallback(
     (now: number) => {
-      if (phaseRef.current !== "running") return;
+      if (phaseRef.current !== "running") {
+        rafRef.current = null;
+        return;
+      }
       const last = lastTimeRef.current || now;
       const dt = Math.min((now - last) / 1000, 0.05);
       lastTimeRef.current = now;
@@ -1175,7 +1187,7 @@ export function RunGame({ address }: RunGameProps) {
     stopLoop();
     const world = worldRef.current;
     const session = sessionRef.current;
-    setPhase("game_over");
+    goToPhase("game_over");
     getRunAudioHooks().onGameOver();
     if (!session) return;
 
@@ -1196,7 +1208,7 @@ refreshPersonalBest();
 // this week's validRunCount/bestScore/eligibilityStatus, see
 // WeeklyGameRewardsPanel-style consumers of useWeeklyGameStats.
 void submitRunToServer(address, ended.sessionId, result);
-}, [address, stopLoop, refreshPersonalBest, buildStats]);
+}, [address, stopLoop, refreshPersonalBest, buildStats, goToPhase]);
 
   const startHudSync = useCallback(() => {
     if (hudIntervalRef.current != null) clearInterval(hudIntervalRef.current);
@@ -1221,6 +1233,11 @@ void submitRunToServer(address, ended.sessionId, result);
   }, [buildStats]);
 
   const beginCountdown = useCallback(() => {
+    if (countdownTimerRef.current != null) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    stopLoop();
     worldRef.current = freshWorld();
     sessionRef.current = startSession(MPGR_RUN_GAME_ID, address);
     setRunResult(null);
@@ -1236,22 +1253,26 @@ void submitRunToServer(address, ended.sessionId, result);
       checkpointFlash: false,
     });
     setCountdownValue(COUNTDOWN_SECONDS);
-    setPhase("countdown");
+    goToPhase("countdown");
 
     let remaining = COUNTDOWN_SECONDS;
-    const timer = setInterval(() => {
+    countdownTimerRef.current = setInterval(() => {
       remaining -= 1;
       if (remaining <= 0) {
-        clearInterval(timer);
-        setPhase("running");
-        lastTimeRef.current = 0;
-        startHudSync();
-        rafRef.current = requestAnimationFrame(loop);
+        if (countdownTimerRef.current != null) {
+          clearInterval(countdownTimerRef.current);
+          countdownTimerRef.current = null;
+        }
+        // Enter PLAYING here; the effect below owns rAF start. Starting the
+        // loop from this interval previously raced phaseRef (still "countdown"
+        // until React committed), so the first frame bailed and never
+        // rescheduled — UI visible, world frozen.
+        goToPhase("running");
       } else {
         setCountdownValue(remaining);
       }
     }, 700);
-  }, [address, loop, startHudSync]);
+  }, [address, goToPhase, stopLoop]);
 
   // --- Input actions ------------------------------------------------------
   const jump = useCallback(() => {
@@ -1285,27 +1306,37 @@ void submitRunToServer(address, ended.sessionId, result);
 
   const togglePause = useCallback(() => {
     if (phaseRef.current === "running") {
+      goToPhase("paused");
       stopLoop();
-      setPhase("paused");
     } else if (phaseRef.current === "paused") {
-      setPhase("running");
-      lastTimeRef.current = 0;
-      startHudSync();
-      rafRef.current = requestAnimationFrame(loop);
+      goToPhase("running");
     }
-  }, [loop, startHudSync, stopLoop]);
+  }, [goToPhase, stopLoop]);
+
+  // The game loop is started exactly when phase becomes PLAYING (after React
+  // has committed and phaseRef has been synced), and torn down on any other
+  // phase, unmount, or a replacement `loop` callback. This is the single
+  // rAF owner — countdown/Resume/visibility must not requestAnimationFrame
+  // on their own or a stale frame can early-return and kill the chain.
+  useEffect(() => {
+    if (phase !== "running") return;
+    lastTimeRef.current = 0;
+    startHudSync();
+    rafRef.current = requestAnimationFrame(loop);
+    return stopLoop;
+  }, [phase, loop, startHudSync, stopLoop]);
 
   // Pause automatically if the tab loses focus mid-run.
   useEffect(() => {
     const onVisibility = () => {
       if (document.hidden && phaseRef.current === "running") {
+        goToPhase("paused");
         stopLoop();
-        setPhase("paused");
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [stopLoop]);
+  }, [goToPhase, stopLoop]);
 
   // Keyboard controls (desktop): Arrows/WASD to switch lanes, Space/Up/W jump, Down/S slide.
   useEffect(() => {
@@ -1322,7 +1353,15 @@ void submitRunToServer(address, ended.sessionId, result);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [jump, slide, switchLane]);
 
-  useEffect(() => stopLoop, [stopLoop]);
+  useEffect(() => {
+    return () => {
+      stopLoop();
+      if (countdownTimerRef.current != null) {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
+    };
+  }, [stopLoop]);
 
   // Swipe gestures on the canvas surface — short tap still jumps.
   const handlePointerDown = (e: React.PointerEvent) => {
