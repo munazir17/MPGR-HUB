@@ -1382,12 +1382,16 @@ void submitRunToServer(address, ended.sessionId, result);
 
   const handleShare = async () => {
     if (!runResult) return;
+    const shareUrl =
+      typeof window !== "undefined"
+        ? `${window.location.origin}/games/mpgr-run`
+        : "https://mpgrhub.xyz/games/mpgr-run";
     const text = `⚡ I survived ${Math.floor(runResult.distanceMeters)}m in MPGR Run.\n\nScore: ${formatCompactNumber(
       runResult.score
-    )}\n\nCan you beat me?\n\n🔵 MPGR HUB`;
+    )}\n\nCan you beat me?\n${shareUrl}\n\n🔵 MPGR HUB`;
     try {
       if (navigator.share) {
-        await navigator.share({ text });
+        await navigator.share({ title: "MPGR Run", text, url: shareUrl });
       } else {
         await navigator.clipboard.writeText(text);
         setShareCopied(true);
