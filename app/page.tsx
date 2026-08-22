@@ -13,7 +13,6 @@ import {
   Users,
   Wallet,
   Award,
-  Gamepad2,
   ArrowUpRight,
   ArrowUpCircle,
   ArrowDownCircle,
@@ -51,6 +50,7 @@ import { AddressAvatar } from "@/components/AddressAvatar";
 import { PremiumBadge } from "@/components/ui/PremiumBadge";
 import { SeasonRewardsPreview } from "@/components/features/season-pass/SeasonRewardsPreview";
 import { HolderTierOverview } from "@/components/features/holder-tier/HolderTierOverview";
+import { CommunitySocialLinks } from "@/components/ui/CommunitySocialLinks";
 import { useXP } from "@/hooks/useXP";
 import { useStaking } from "@/hooks/useStaking";
 import { useRewardClaim } from "@/hooks/useRewardClaim";
@@ -329,28 +329,6 @@ export default function DashboardPage() {
 
             {/* Holder Tier */}
             <HolderTierOverview />
-
-            {/* XP / Level progress */}
-            {levelInfo && (
-              <Link href="/games">
-                <GlassCard className="p-5 sm:p-6">
-                  <div className="mb-3 flex items-center justify-between">
-                    <span className="flex items-center gap-2 text-sm font-semibold text-white">
-                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-primary-glow/20 to-primary/10 ring-1 ring-primary/20">
-                        <Gamepad2 className="h-4 w-4 text-primary" aria-hidden="true" />
-                      </span>
-                      Level {levelInfo.level} → {levelInfo.nextLevel}
-                    </span>
-                    <span className="flex items-center gap-1 text-xs text-muted">
-                      {levelInfo.xpIntoLevel}/{levelInfo.xpNeededForLevel} XP
-                      <span className="font-semibold text-gradient-gold">({levelInfo.progress}%)</span>
-                      <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
-                    </span>
-                  </div>
-                  <ProgressBar progress={levelInfo.progress} />
-                </GlassCard>
-              </Link>
-            )}
 
             {/* Season Progress */}
             <Link href="/rewards">
@@ -633,6 +611,12 @@ export default function DashboardPage() {
                   )}
                 </div>
               </GlassCard>
+            </div>
+
+            {/* 7. Social Links */}
+            <div>
+              <SectionHeader title="Social Links" subtitle="Stay connected with the MPGR community" />
+              <CommunitySocialLinks />
             </div>
           </motion.div>
         )}
