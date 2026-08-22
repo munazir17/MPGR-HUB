@@ -103,18 +103,20 @@ export default function RewardsPage() {
       <Navbar />
 
       <main className="mx-auto max-w-4xl px-4 py-10">
-        {!mounted || !isConnected ? (
-          <EmptyState
-            icon={Gift}
-            title="Connect your wallet"
-            description="Connect to view and claim your MPGR rewards."
-          />
-        ) : (
+        {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <SectionHeader
               title="Reward Hub"
               subtitle="Everything you've earned across staking and on-chain rewards"
             />
+
+            {!isConnected && (
+              <EmptyState
+                icon={Gift}
+                title="Connect your wallet"
+                description="Connect to view and claim your MPGR rewards."
+              />
+            )}
 
             {rewardHubSummaryError && !dismissedRewardHubError && (
               <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}>
