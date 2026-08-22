@@ -124,18 +124,20 @@ export default function StakingPage() {
       />
 
       <main className="mx-auto max-w-6xl px-4 py-10">
-        {!mounted || !isConnected ? (
-          <EmptyState
-            icon={Lock}
-            title="Connect your wallet"
-            description="Connect to stake MPGR and start earning rewards."
-          />
-        ) : (
+        {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <SectionHeader
               title="MPGR Staking"
               subtitle="Stake MPGR to earn yield — claim or unstake any time, no lock period"
             />
+
+            {!isConnected && (
+              <EmptyState
+                icon={Lock}
+                title="Connect your wallet"
+                description="Connect to stake MPGR and start earning rewards."
+              />
+            )}
 
             {readError && !dismissedError && (
               <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}>
@@ -176,10 +178,10 @@ export default function StakingPage() {
               isWrongNetwork={isWrongNetwork}
               loading={loading}
               claimState={claimState}
-              onOpenStake={() => setStakeModalOpen(true)}
-              onOpenUnstake={() => setUnstakeModalOpen(true)}
-              onOpenExit={() => setExitModalOpen(true)}
-              onClaim={claimRewards}
+              onOpenStake={() => isConnected && setStakeModalOpen(true)}
+              onOpenUnstake={() => isConnected && setUnstakeModalOpen(true)}
+              onOpenExit={() => isConnected && setExitModalOpen(true)}
+              onClaim={() => isConnected && claimRewards()}
               onSwitchNetwork={switchToBase}
             />
 
@@ -217,4 +219,4 @@ export default function StakingPage() {
       </main>
     </>
   );
-}
+      }
