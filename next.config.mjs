@@ -26,6 +26,19 @@ const nextConfig = {
   async headers() {
     return [
       {
+        // Versioned URLs (`?v=` from RUN_ASSET_VERSION) make each art
+        // generation unique, so a long-lived cache here is correct and
+        // prevents phones from drawing a previous PNG under the same
+        // filename. Bump RUN_ASSET_VERSION when replacing artwork.
+        source: "/games/mpgr-run/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+      {
         source: "/:path*",
         headers: [
           {
