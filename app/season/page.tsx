@@ -33,13 +33,7 @@ export default function SeasonPage() {
     <>
       <Navbar />
       <main className="mx-auto max-w-3xl px-4 py-10">
-        {!mounted || !isConnected ? (
-          <EmptyState
-            icon={Sparkles}
-            title="Connect your wallet"
-            description="Connect to track your season progress and points."
-          />
-        ) : !record ? (
+        {!mounted ? (
           <div className="space-y-4">
             <SkeletonCard lines={2} />
             <SkeletonCard lines={1} />
@@ -47,6 +41,14 @@ export default function SeasonPage() {
         ) : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <SectionHeader title={`Season ${seasonNumber}`} subtitle="Earn XP this month to climb the season ranking" />
+
+            {!isConnected && (
+              <EmptyState
+                icon={Sparkles}
+                title="Connect your wallet"
+                description="Connect to track your season progress and points."
+              />
+            )}
 
             <div className="grid gap-4 sm:grid-cols-2">
               <GlassCard className="p-5">
@@ -120,7 +122,7 @@ export default function SeasonPage() {
 
             <div>
               <SectionHeader title="Recent Activity" />
-              {record.history.length > 0 ? (
+              {record && record.history.length > 0 ? (
                 <ActivityTimeline entries={record.history} limit={8} />
               ) : (
                 <EmptyState
