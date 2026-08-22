@@ -61,18 +61,20 @@ export default function BurnPage() {
       />
 
       <main className="mx-auto max-w-6xl px-4 py-8 pb-24 sm:py-12 sm:pb-12">
-        {!mounted || !isConnected ? (
-          <EmptyState
-            icon={Flame}
-            title="Connect your wallet"
-            description="Connect to burn MPGR and track your impact on total supply."
-          />
-        ) : (
+        {!mounted ? null : (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             className="space-y-10 sm:space-y-12"
           >
+            {!isConnected && (
+              <EmptyState
+                icon={Flame}
+                title="Connect your wallet"
+                description="Connect to burn MPGR and track your impact on total supply."
+              />
+            )}
+
             {/* Hero + Summary + Stats */}
             <BurnDashboard stats={stats} milestones={milestones} loading={loading} />
 
