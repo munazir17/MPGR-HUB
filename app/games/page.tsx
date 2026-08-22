@@ -40,24 +40,26 @@ export default function GamesPage() {
       <LevelUpModal level={leveledUp} onClose={dismissLevelUp} />
 
       <main className="mx-auto max-w-6xl px-4 py-10">
-        {!mounted || !isConnected || !record ? (
-          <EmptyState
-            icon={Gamepad2}
-            title="Connect your wallet"
-            description="Connect to play, track your level, unlock achievements, and climb the leaderboard."
-          />
-        ) : (
+        {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-8">
             <SectionHeader
               title="🎮 MPGR HUB Games"
               subtitle="Play, earn XP and Season Points, and unlock achievements across the arcade"
             />
 
+            {!isConnected && (
+              <EmptyState
+                icon={Gamepad2}
+                title="Connect your wallet"
+                description="Connect to save your level, achievements, and leaderboard rank while you play."
+              />
+            )}
+
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <StatCard label="Level" value={String(levelInfo?.level ?? 1)} icon={Star} />
-              <StatCard label="XP" value={formatCompactNumber(record.xp)} icon={Trophy} accent="gold" />
+              <StatCard label="XP" value={formatCompactNumber(record?.xp ?? 0)} icon={Trophy} accent="gold" />
               <StatCard label="Season Points" value={formatCompactNumber(seasonPoints)} icon={Award} accent="gold" />
-              <StatCard label="Streak" value={`${record.streak}d`} icon={Flame} />
+              <StatCard label="Streak" value={`${record?.streak ?? 0}d`} icon={Flame} />
             </div>
 
             <div>
