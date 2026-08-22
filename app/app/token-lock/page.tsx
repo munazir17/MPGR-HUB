@@ -79,18 +79,20 @@ export default function TokenLockPage() {
       />
 
       <main className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
-        {!mounted || !isConnected ? (
-          <EmptyState
-            icon={Vault}
-            title="Connect your wallet"
-            description="Connect to lock MPGR on Base."
-          />
-        ) : (
+        {!mounted ? null : (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             className="space-y-10 sm:space-y-12"
           >
+            {!isConnected && (
+              <EmptyState
+                icon={Vault}
+                title="Connect your wallet"
+                description="Connect to lock MPGR on Base."
+              />
+            )}
+
             {/* Hero */}
             <div className="relative overflow-hidden rounded-3xl border border-white/[0.08] bg-white/[0.03] p-5 backdrop-blur-xl shadow-glow sm:p-7">
               <div
