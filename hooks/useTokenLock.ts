@@ -151,7 +151,7 @@ export function useTokenLock() {
         const { user, amount } = log.args as { user?: Address; amount?: bigint };
         if (!user || address?.toLowerCase() !== user.toLowerCase() || amount === undefined) continue;
         pushActivity({
-          id: `\( {log.transactionHash}- \){log.logIndex}`,
+          id: `${log.transactionHash}-${log.logIndex}`,
           kind: "LockCreated",
           amount,
           txHash: log.transactionHash!,
@@ -173,7 +173,7 @@ export function useTokenLock() {
         const { user, amount } = log.args as { user?: Address; amount?: bigint };
         if (!user || address?.toLowerCase() !== user.toLowerCase() || amount === undefined) continue;
         pushActivity({
-          id: `\( {log.transactionHash}- \){log.logIndex}`,
+          id: `${log.transactionHash}-${log.logIndex}`,
           kind: "LockWithdrawn",
           amount,
           txHash: log.transactionHash!,
@@ -195,7 +195,7 @@ export function useTokenLock() {
         const { user, amountReturned } = log.args as { user?: Address; amountReturned?: bigint };
         if (!user || address?.toLowerCase() !== user.toLowerCase() || amountReturned === undefined) continue;
         pushActivity({
-          id: `\( {log.transactionHash}- \){log.logIndex}`,
+          id: `${log.transactionHash}-${log.logIndex}`,
           kind: "EarlyUnlocked",
           amount: amountReturned,
           txHash: log.transactionHash!,
