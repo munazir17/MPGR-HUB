@@ -1,9 +1,10 @@
 {
   "accountAssociation": {
-    "header": "eyJmaWQiOjM4NTE3OSwidHlwZSI6ImN1c3RvZHkiLCJrZXkiOiIweGM2RjIyMzE1MDIzZjQ3REFGMjFDNTgwRDc3ZDVGODYwQzllQzhEODYifQ",
-    "payload": "eyJkb21haW4iOiJtcGdyLWh1Yi16ZXRhLnZlcmNlbC5hcHAifQ",
-    "signature": "ImyjreVK9jmnIBHCkQC1g99GA+27UZv7RuS5SEHeiBZJZ7gSeaGqnANC6/vCs3zpj1+TXyDg2VOfPq8mQ5IsVRs="
-  },
+    "header": "eyJmaWQiOjM4NTE3OSwidHlwZSI6ImF1dGgiLCJrZXkiOiIweDFEM0FiNmMwNUE2MDU3MTc4QTcwNEI5YTJFRTgxMjQ5NzQyMkUyNDEifQ",
+    "payload": "eyJkb21haW4iOiJtcGdyaHViLnh5eiJ9",
+    "signature": "wQsENwlWjOphFs3rwPTny6/iDlt57Iejwyk5R7/XYLVumjvCQanG64NOpEPBYYG9/LtYTVrQreI64VjlpExbQBw="
+  }
+},
   "miniapp": {
     "version": "1",
     "name": "MPGR HUB",
