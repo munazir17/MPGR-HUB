@@ -1,26 +1,18 @@
 {
   "accountAssociation": {
-    "header": "eyJmaWQiOjM4NTE3OSwidHlwZSI6ImF1dGgiLCJrZXkiOiIweDFEM0FiNmMwNUE2MDU3MTc4QTcwNEI5YTJFRTgxMjQ5NzQyMkUyNDEifQ",
+    "header": "eyJmaWQiOjM4NTE3OSwidHlwZSI6ImN1c3RvZHkiLCJrZXkiOiIweGM2RjIyMzE1MDIzZjQ3REFGMjFDNTgwRDc3ZDVGODYwQzllQzhEODYifQ",
     "payload": "eyJkb21haW4iOiJtcGdyaHViLnh5eiJ9",
-    "signature": "wQsENwlWjOphFs3rwPTny6/iDlt57Iejwyk5R7/XYLVumjvCQanG64NOpEPBYYG9/LtYTVrQreI64VjlpExbQBw="
-  }
-},
-  "miniapp": {
+    "signature": "zgmZ760fywlsU+ScGXwFP/MLqIWRgnryU4ejg/fbvEcpWOlk4IyyrKWlKq79cayRnEp8JcGZav46tl6xCpOx4Rs="
+  },
+  "frame": {
     "version": "1",
-    "name": "MPGR HUB",
+    "name": "Example Frame",
     "iconUrl": "https://mpgrhub.xyz/icon.png",
-    "homeUrl": "https://mpgrhub.xyz/",
+    "homeUrl": "https://mpgrhub.xyz",
     "imageUrl": "https://mpgrhub.xyz/image.png",
-    "buttonTitle": "Open MPGR HUB",
+    "buttonTitle": "Check this out",
     "splashImageUrl": "https://mpgrhub.xyz/splash.png",
-    "splashBackgroundColor": "#0A0B0D",
-    "requiredChains": [
-      "eip155:8453"
-    ],
-    "requiredCapabilities": [
-      "actions.ready",
-      "actions.signIn",
-      "wallet.getEthereumProvider"
-    ]
+    "splashBackgroundColor": "#eeccff",
+    "webhookUrl": "https://mpgrhub.xyz/api/webhook"
   }
 }
