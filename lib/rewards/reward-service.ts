@@ -27,7 +27,22 @@ import { trace } from "@/lib/_debug/reward-hub-trace";
 // summary with isActive: false and zeroed amounts — never silently
 // omitted, and never a fabricated non-zero number.
 
-const ALL_CATEGORIES = Object.keys(REWARD_CATEGORY_METADATA) as RewardCategoryKey[];
+// Root-cause fix — Issue 8 ("Coming Soon" cards in production).
+//
+// This used to be `Object.keys(REWARD_CATEGORY_METADATA)` — every
+// category on the long-term roadmap, active or not — so
+// getRewardHubSummary() below produced an `inactiveSummary()` entry for
+// every not-yet-launched category (daily/weekly/quest/referral/season/
+// ai/premium/airdrop), and RewardCategoryGrid rendered every one of
+// those as a visible "Coming soon" card. Deriving this list from
+// REWARD_PROVIDERS instead means only categories with a real,
+// registered provider are ever included in the summary the UI
+// receives — not hidden with CSS, actually absent from the data.
+// REWARD_CATEGORY_METADATA itself is untouched (labels/descriptions for
+// every roadmap category still exist for whenever a category's
+// provider is registered — see lib/rewards/providers/index.ts's header
+// comment), so no backend/config infrastructure was deleted.
+const ALL_CATEGORIES = REWARD_PROVIDERS.map((provider) => provider.category);
 
 const hubCache = new Map<string, RewardHubCacheEntry>();
 const historyCache = new Map<string, RewardHistoryCacheEntry>();
