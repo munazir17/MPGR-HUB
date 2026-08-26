@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAccount, useChainId, useSwitchChain, useWatchContractEvent } from "wagmi";
 import { base } from "wagmi/chains";
 import { formatUnits } from "viem";
@@ -47,18 +47,41 @@ export function useRewardClaim() {
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastTxHash, setLastTxHash] = useState<Hash | null>(null);
 
+  // Race-condition fix — wallet switching. loadRewards(walletAddress) is
+  // async (an RPC round trip), and this hook fires it again every time
+  // `address` changes plus on an interval — so switching wallets quickly
+  // (or a slow response for the PREVIOUS wallet landing after the new
+  // wallet's own request already resolved) could let a stale response
+  // for wallet A overwrite the already-correct state for wallet B. This
+  // ref always holds the address this hook currently cares about;
+  // loadRewards checks it after every await and discards the result if
+  // the wallet has since changed, instead of trusting whichever request
+  // happens to finish last.
+  const currentAddressRef = useRef<string | null>(null);
+
   const isWrongNetwork = isConnected && chainId !== base.id;
   const decimals = MPGR_REWARD_VAULT_CONFIG.decimals;
 
   const loadRewards = useCallback(async (walletAddress: `0x${string}`) => {
     try {
       const walletRewards = await rewardVaultService.getWalletRewards(walletAddress);
+      if (currentAddressRef.current !== walletAddress.toLowerCase()) return; // stale — wallet changed mid-request
       setRewards(walletRewards);
       setReadError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load your on-chain rewards.";
-      setReadError(message);
-      console.error("useRewardClaim.loadRewards failed", { error: message });
+      if (currentAddressRef.current !== walletAddress.toLowerCase()) return; // stale — wallet changed mid-request
+      // Root-cause fix — Issues 1/12 (raw RPC/contract error text shown
+      // to users). reward-vault-client.ts's thrown Error.message
+      // deliberately embeds the underlying viem error for logging (e.g.
+      // "Failed to fetch your reward IDs: The request took too long to
+      // respond" followed by viem's own multi-line "Request Arguments" /
+      // "Raw Call Arguments" block). That raw text used to be stored in
+      // readError and rendered directly in OnChainRewardsSection. The
+      // full message is still logged below for real diagnostics; only a
+      // short, normalized message reaches state/UI now.
+      const raw = err instanceof Error ? err.message : String(err);
+      setReadError(normalizeReadError(raw));
+      console.error("useRewardClaim.loadRewards failed", { error: raw });
     }
   }, []);
 
@@ -74,13 +97,20 @@ export function useRewardClaim() {
   }, [address, loadRewards]);
 
   useEffect(() => {
+    currentAddressRef.current = address ? address.toLowerCase() : null;
     if (!isConnected || !address) {
       setRewards([]);
       setHasLoaded(false);
       return;
     }
     setHasLoaded(false);
-    loadRewards(address).finally(() => setHasLoaded(true));
+    loadRewards(address).finally(() => {
+      // Only clear the loading state if this effect run is still the
+      // current wallet — an outdated run's `finally` firing after a
+      // switch shouldn't flip `hasLoaded` for the NEW wallet's own
+      // in-flight load back to a misleading state.
+      if (currentAddressRef.current === address.toLowerCase()) setHasLoaded(true);
+    });
   }, [address, isConnected, loadRewards]);
 
   useEffect(() => {
@@ -248,6 +278,25 @@ export function useRewardClaim() {
   };
 }
 
+// Turns a raw read-side error (getUserRewardIds/getReward failures —
+// RPC timeouts, dropped connections, rate limiting) into a short,
+// user-facing message. The full raw error is always logged separately
+// at the call site (see loadRewards above) before this runs, so nothing
+// diagnostic is lost — this only controls what reaches the UI.
+//
+// Deliberately narrow: unlike normalizeClaimError below (which has
+// specific contract revert reasons to map), read failures are almost
+// always transport-level, so this collapses everything to one
+// consistent "couldn't load, try again" message rather than guessing at
+// causes it can't actually distinguish from the message text alone.
+function normalizeReadError(raw: string): string {
+  const lower = raw.toLowerCase();
+  if (lower.includes("chain mismatch") || lower.includes("wrong network")) {
+    return "Please switch to Base Mainnet to view your rewards.";
+  }
+  return "Unable to load your on-chain rewards right now.";
+}
+
 // Turns raw wallet/RPC/contract errors into short, user-facing messages
 // while the original error is still logged (see console.error above the
 // call site) for debugging. Falls back to the raw message rather than
@@ -281,5 +330,10 @@ function normalizeClaimError(err: unknown): string {
     return "Transaction reverted on-chain. It may have already been claimed.";
   }
 
-  return raw;
+  // Issue 12 — unmapped errors used to fall through to the raw
+  // wallet/RPC message verbatim (viem errors include a multi-line
+  // "Request Arguments"/"Raw Call Arguments" block). The raw message is
+  // already logged via console.error at the runClaim() call site above,
+  // so nothing diagnostic is lost by not also rendering it to the user.
+  return "Something went wrong submitting that claim. Please try again.";
 }
