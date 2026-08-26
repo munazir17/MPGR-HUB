@@ -11,10 +11,6 @@ export const metadata: Metadata = {
   description:
     "MPGR HUB: quests, XP, leaderboards, staking, and the MoneyPaiger ecosystem on Base.",
 
-  other: {
-    "base:app_id": "6a79d1c8d198f685bc61e308",
-  },
-
   openGraph: {
     title: "MPGR HUB",
     description: "The Home of MoneyPaiger Ecosystem",
@@ -29,6 +25,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
+      <head>
+        <meta
+          name="base:app_id"
+          content="6a79d1c8d198f685bc61e308"
+        />
+      </head>
+
       <body className="min-h-screen bg-background pb-20 antialiased sm:pb-0">
         <Providers>
           <MiniAppAutoConnect />
