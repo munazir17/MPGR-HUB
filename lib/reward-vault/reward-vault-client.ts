@@ -6,6 +6,7 @@ import { config } from "@/lib/wagmi";
 import { REWARD_VAULT_ABI } from "./reward-vault-abi";
 import { MPGR_REWARD_VAULT_CONFIG } from "./reward-vault-config";
 import { VaultRewardStatus, VaultRewardType, type VaultReward, type VaultSeason } from "./reward-vault-types";
+import { withRetry } from "@/lib/token/rpc-retry";
 
 // Reward Vault Integration — Reward Vault Client.
 //
@@ -17,6 +18,21 @@ import { VaultRewardStatus, VaultRewardType, type VaultReward, type VaultSeason 
 // REWARD_VAULT_ABI's custom errors) BEFORE the wallet prompts the user
 // to sign. Every call is pinned to Base Mainnet via
 // MPGR_REWARD_VAULT_CONFIG.chainId.
+//
+// Root-cause fix — "Failed to fetch your reward IDs: the request took
+// too long to respond". lib/wagmi.ts's transport already disables
+// viem's own per-request retry (retryCount: 0) in favor of ONE shared
+// retry layer, lib/token/rpc-retry.ts's withRetry() — already used by
+// every other RPC-facing module (lib/staking/staking-history-reader.ts,
+// lib/token/transfer-event-reader.ts). This module was the one
+// RPC-facing module that never got wired into it: every read below
+// called readContract() directly, so a single transient RPC hiccup
+// (one dropped connection, one slow node behind a load balancer) had
+// zero retries anywhere in the stack and surfaced immediately as a hard
+// failure. reward-vault-config.ts already defined a `retry` policy for
+// exactly this — it just wasn't being read by anything. No new
+// infrastructure, no new config: this wires reads through the same
+// mechanism, and the same policy, that already exists.
 
 const REWARD_VAULT_CONTRACT = {
   address: MPGR_REWARD_VAULT_CONFIG.address,
@@ -51,7 +67,11 @@ export const rewardVaultClient = {
 
   async getAvailableBalance(): Promise<bigint> {
     try {
-      return await readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "availableBalance" });
+      return await withRetry(
+        "rewardVaultClient.getAvailableBalance",
+        () => readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "availableBalance" }),
+        MPGR_REWARD_VAULT_CONFIG.retry
+      );
     } catch (err) {
       console.error("rewardVaultClient.getAvailableBalance failed", { error: err });
       throw new Error(`Failed to fetch vault available balance: ${toError(err).message}`);
@@ -60,7 +80,11 @@ export const rewardVaultClient = {
 
   async getVaultBalance(): Promise<bigint> {
     try {
-      return await readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "vaultBalance" });
+      return await withRetry(
+        "rewardVaultClient.getVaultBalance",
+        () => readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "vaultBalance" }),
+        MPGR_REWARD_VAULT_CONFIG.retry
+      );
     } catch (err) {
       console.error("rewardVaultClient.getVaultBalance failed", { error: err });
       throw new Error(`Failed to fetch vault balance: ${toError(err).message}`);
@@ -69,7 +93,11 @@ export const rewardVaultClient = {
 
   async getTotalClaimed(): Promise<bigint> {
     try {
-      return await readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "totalClaimed" });
+      return await withRetry(
+        "rewardVaultClient.getTotalClaimed",
+        () => readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "totalClaimed" }),
+        MPGR_REWARD_VAULT_CONFIG.retry
+      );
     } catch (err) {
       console.error("rewardVaultClient.getTotalClaimed failed", { error: err });
       throw new Error(`Failed to fetch vault total claimed: ${toError(err).message}`);
@@ -80,11 +108,16 @@ export const rewardVaultClient = {
 
   async getUserRewardIds(user: Address): Promise<bigint[]> {
     try {
-      const ids = await readContract(config, {
-        ...REWARD_VAULT_CONTRACT,
-        functionName: "getUserRewardIds",
-        args: [user],
-      });
+      const ids = await withRetry(
+        "rewardVaultClient.getUserRewardIds",
+        () =>
+          readContract(config, {
+            ...REWARD_VAULT_CONTRACT,
+            functionName: "getUserRewardIds",
+            args: [user],
+          }),
+        MPGR_REWARD_VAULT_CONFIG.retry
+      );
       return ids as unknown as bigint[];
     } catch (err) {
       console.error("rewardVaultClient.getUserRewardIds failed", { user, error: err });
@@ -94,10 +127,15 @@ export const rewardVaultClient = {
 
   async getReward(rewardId: bigint): Promise<VaultReward> {
     try {
-      const [raw, isClaimable] = await Promise.all([
-        readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "getReward", args: [rewardId] }),
-        readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "isRewardClaimable", args: [rewardId] }),
-      ]);
+      const [raw, isClaimable] = await withRetry(
+        "rewardVaultClient.getReward",
+        () =>
+          Promise.all([
+            readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "getReward", args: [rewardId] }),
+            readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "isRewardClaimable", args: [rewardId] }),
+          ]),
+        MPGR_REWARD_VAULT_CONFIG.retry
+      );
       const reward = raw as unknown as RawRewardTuple;
       return {
         rewardId: reward.rewardId,
@@ -116,7 +154,11 @@ export const rewardVaultClient = {
 
   async getSeason(seasonId: bigint): Promise<VaultSeason> {
     try {
-      const raw = await readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "getSeason", args: [seasonId] });
+      const raw = await withRetry(
+        "rewardVaultClient.getSeason",
+        () => readContract(config, { ...REWARD_VAULT_CONTRACT, functionName: "getSeason", args: [seasonId] }),
+        MPGR_REWARD_VAULT_CONFIG.retry
+      );
       const season = raw as unknown as RawSeasonTuple;
       return {
         seasonId: season.seasonId,
@@ -134,11 +176,16 @@ export const rewardVaultClient = {
 
   async isRewardClaimable(rewardId: bigint): Promise<boolean> {
     try {
-      return await readContract(config, {
-        ...REWARD_VAULT_CONTRACT,
-        functionName: "isRewardClaimable",
-        args: [rewardId],
-      });
+      return await withRetry(
+        "rewardVaultClient.isRewardClaimable",
+        () =>
+          readContract(config, {
+            ...REWARD_VAULT_CONTRACT,
+            functionName: "isRewardClaimable",
+            args: [rewardId],
+          }),
+        MPGR_REWARD_VAULT_CONFIG.retry
+      );
     } catch (err) {
       console.error("rewardVaultClient.isRewardClaimable failed", { rewardId: rewardId.toString(), error: err });
       throw new Error(`Failed to check claimability for reward #${rewardId}: ${toError(err).message}`);
