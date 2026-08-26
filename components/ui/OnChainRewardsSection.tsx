@@ -81,6 +81,8 @@ export function OnChainRewardsSection() {
     claim,
     claimMultiple,
     getActionState,
+    refresh,
+    isRefreshing,
   } = useRewardClaim();
 
   if (!isConnected) return null;
@@ -111,17 +113,35 @@ export function OnChainRewardsSection() {
         </GlassCard>
       ) : (
         <div className="space-y-4">
-          {readError && (
-            <div className="flex items-center gap-2 rounded-2xl border border-red-500/20 bg-red-500/10 p-3.5 text-xs text-red-400 backdrop-blur-xl">
-              <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
-              {readError}
-            </div>
-          )}
-
+          {/*
+            Root-cause fix — Issues 3/7 (RPC failure rendered as a false
+            "No on-chain rewards ready yet" empty state). A failed read
+            and a confirmed-empty read used to be indistinguishable once
+            `rewards` was `[]` in either case — the EmptyState below
+            fired the same "No on-chain rewards yet" copy either way.
+            Now: `readError` with no rewards ever successfully loaded
+            renders a distinct "couldn't load" card with a Retry action;
+            the "No on-chain rewards yet" EmptyState only ever renders
+            once a read has actually SUCCEEDED and confirmed zero
+            rewards (readError is null at that point).
+          */}
           {isLoading ? (
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <SkeletonCard lines={2} />
               <SkeletonCard lines={2} />
+            </div>
+          ) : readError && rewards.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-5 text-center backdrop-blur-xl">
+              <AlertCircle className="h-5 w-5 text-red-400" aria-hidden="true" />
+              <p className="text-sm text-red-400">{readError}</p>
+              <button
+                onClick={() => refresh()}
+                disabled={isRefreshing}
+                className="flex min-h-[36px] items-center justify-center gap-2 rounded-xl border border-red-500/30 px-4 py-1.5 text-xs font-semibold text-red-300 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isRefreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+                Retry
+              </button>
             </div>
           ) : rewards.length === 0 ? (
             <EmptyState
@@ -131,6 +151,17 @@ export function OnChainRewardsSection() {
             />
           ) : (
             <>
+              {readError && (
+                // A background refresh failed but we still have a
+                // previously successful read to show — say so plainly
+                // instead of either hiding the failure or discarding
+                // the still-valid data underneath it.
+                <div className="flex items-center gap-2 rounded-2xl border border-red-500/20 bg-red-500/10 p-3.5 text-xs text-red-400 backdrop-blur-xl">
+                  <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  Showing your last loaded rewards — {readError.charAt(0).toLowerCase()}
+                  {readError.slice(1)}
+                </div>
+              )}
               <GlassCard className="flex flex-col items-center gap-3 p-6 text-center sm:flex-row sm:justify-between sm:text-left">
                 <div>
                   <p className="text-sm font-medium text-white">
