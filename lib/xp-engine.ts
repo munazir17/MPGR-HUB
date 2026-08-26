@@ -1,3 +1,5 @@
+import { calculateSeasonPoints, getUTCSeasonStart, getUTCSeasonEnd } from "./season-points";
+
 export type XPAction =
   | "WALLET_CONNECTED"
   | "DAILY_CHECK_IN"
@@ -161,32 +163,55 @@ export function performDailyCheckIn(address: string): AwardResult & { alreadyChe
   return { ...result, alreadyCheckedIn: false };
 }
 
-// Season points: real XP earned since the 1st of the current calendar month.
+// Season points: real XP earned since the 1st of the current UTC
+// calendar month.
+//
+// Root-cause fix — this used to sum `record.history` itself, filtered
+// against a LOCAL-timezone midnight boundary (`setHours(0,0,0,0)`),
+// with no handling for unparseable timestamps and no recovery for
+// legacy records where `xp` (lifetime total) is higher than
+// `sum(history)` (history was added to the record shape after some
+// wallets had already accrued XP). All of that now lives in ONE place
+// — lib/season-points.ts's calculateSeasonPoints() — shared with the
+// server-authoritative calculation in app/api/leaderboard/route.ts, so
+// this file, the leaderboard POST, and any future recompute/migration
+// tooling can never drift into competing answers for the same wallet.
 export function getSeasonPoints(record: UserXPRecord): number {
-  const start = getSeasonStart();
-  return record.history
-    .filter((entry) => new Date(entry.timestamp) >= start)
-    .reduce((sum, entry) => sum + entry.xp, 0);
+  return calculateSeasonPoints(record.xp, record.history).seasonPoints;
 }
 
+// UTC calendar-month boundaries (was local-timezone midnight — see
+// lib/season-points.ts's header comment for why that was wrong).
+// Re-exported from the canonical module so every existing call site
+// across the app (season countdown displays, Season Pass, etc.) keeps
+// working unchanged while getting the corrected boundary.
 export function getSeasonStart(): Date {
-  const d = new Date();
-  d.setDate(1);
-  d.setHours(0, 0, 0, 0);
-  return d;
+  return getUTCSeasonStart();
 }
 
 export function getSeasonEnd(): Date {
-  const d = getSeasonStart();
-  d.setMonth(d.getMonth() + 1);
-  d.setMilliseconds(-1);
-  return d;
+  // Canonical end is exclusive (first instant of next month); every
+  // existing caller here treats getSeasonEnd() as an inclusive "last
+  // moment of this month" countdown target, so subtract 1ms to match
+  // that existing contract exactly.
+  return new Date(getUTCSeasonEnd().getTime() - 1);
 }
 
+// Season number is 1-indexed from a fixed UTC epoch. Kept UTC-consistent
+// with getSeasonStart()/getSeasonEnd()/calculateSeasonPoints() above —
+// this used to use local-timezone Date methods (getFullYear/getMonth,
+// `new Date(2026, 0, 1)` constructed in local time), so a wallet near a
+// month boundary could see a season NUMBER one month off from the
+// season points/countdown they were actually looking at, even though
+// both were nominally describing "the current season."
 export function getSeasonNumber(): number {
-  const epoch = new Date(2026, 0, 1);
+  const epoch = new Date(Date.UTC(2026, 0, 1));
   const now = new Date();
-  return (now.getFullYear() - epoch.getFullYear()) * 12 + (now.getMonth() - epoch.getMonth()) + 1;
+  return (
+    (now.getUTCFullYear() - epoch.getUTCFullYear()) * 12 +
+    (now.getUTCMonth() - epoch.getUTCMonth()) +
+    1
+  );
 }
 
 export interface Achievement {
