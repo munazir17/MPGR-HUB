@@ -6,7 +6,6 @@ import {
   awardXP,
   claimAchievement,
   getUserRecord,
-  getSeasonPoints,
   performDailyCheckIn,
   type UserXPRecord,
   type GameAchievementStats,
@@ -21,10 +20,20 @@ interface XPEvent {
 //
 // lib/xp-engine.ts stays exactly as it was (a local, per-browser XP
 // cache — untouched). The only addition here is a fire-and-forget sync
-// of {wallet, xp, seasonPoints} to the server-side leaderboard store
-// (see lib/leaderboard-store.ts) whenever the local record
-// changes, so every OTHER wallet's leaderboard page can see this
-// wallet's standing too — not just this browser.
+// of {wallet, xp, history} to the server-side leaderboard store (see
+// lib/leaderboard-store.ts) whenever the local record changes, so every
+// OTHER wallet's leaderboard page can see this wallet's standing too —
+// not just this browser.
+//
+// Root-cause fix — Season Points data integrity. This used to compute
+// `seasonPoints` locally (via getSeasonPoints) and send that finished
+// number to the server, which then stored it as-is. Season Points is
+// now a server-authoritative calculation (see the header comment in
+// app/api/leaderboard/route.ts): the client sends its raw `history`
+// instead, and the server derives Season Points itself using the exact
+// same canonical lib/season-points.ts logic getSeasonPoints() uses for
+// this wallet's own local display. A client can no longer influence
+// its Season Points by sending a bigger number directly.
 function syncLeaderboard(record: UserXPRecord) {
   try {
     fetch("/api/leaderboard", {
@@ -33,7 +42,7 @@ function syncLeaderboard(record: UserXPRecord) {
       body: JSON.stringify({
         wallet: record.address,
         xp: record.xp,
-        seasonPoints: getSeasonPoints(record),
+        history: record.history,
       }),
       // `keepalive` lets this request finish even if the user
       // immediately navigates away (e.g. straight to /leaderboard)
