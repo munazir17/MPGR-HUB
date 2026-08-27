@@ -244,7 +244,14 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
       }
     }
     default:
-      return invalidAction(`Unknown action domain "${String(action.domain)}".`);
+      // action.domain is a discriminated union (AGENT_ACTION_DOMAINS) and
+      // the three cases above are exhaustive, so TS narrows `action` to
+      // `never` here — this branch is unreachable at the type level (it
+      // only guards a runtime value that bypassed the type system, e.g.
+      // an untyped/tampered object cast to AgentActionContract). Don't
+      // access any property of `action` here; it has no statically valid
+      // properties to read.
+      return invalidAction("Unknown action domain.");
   }
 }
 
