@@ -68,7 +68,7 @@ export const AGENT_ACTION_EXECUTION_STATES = [
 export type AgentActionExecutionState =
   (typeof AGENT_ACTION_EXECUTION_STATES)[number];
 
-// --- Errors --------------------------------------------------------------
+// --- Errors ------------------------------------------------------------
 
 export const AGENT_ACTION_EXECUTION_ERROR_CODES = [
   "WALLET_REQUIRED",
@@ -99,7 +99,11 @@ export interface AgentActionExecutionSnapshot {
 }
 
 export function idleExecutionSnapshot(): AgentActionExecutionSnapshot {
-  return { state: "IDLE", hash: null, error: null };
+  return {
+    state: "IDLE",
+    hash: null,
+    error: null,
+  };
 }
 
 function errorSnapshot(
@@ -107,28 +111,43 @@ function errorSnapshot(
   message: string,
   hash: Hash | null = null
 ): AgentActionExecutionSnapshot {
-  return { state: "ERROR", hash, error: { code, message } };
+  return {
+    state: "ERROR",
+    hash,
+    error: {
+      code,
+      message,
+    },
+  };
 }
 
-// --- Gate input ------------------------------------------------------------
+// --- Gate input --------------------------------------------------------
 
 export interface ExecuteAgentActionInput {
   action: AgentActionContract;
-  /** The state P0.5's confirmation state machine reached for this action. Must be READY_FOR_CONFIRMATION. */
+
+  /** The state P0.5's confirmation state machine reached for this action. */
   confirmationState: AgentActionConfirmationState;
+
   /** The account P0.5 verified/simulated this action against. */
   confirmedAccount: Address;
+
   /** The chain that was active when P0.5 reached READY_FOR_CONFIRMATION. */
   confirmedChainId: number;
-  /** The live connected account at the moment execute() is called — never fabricated. */
+
+  /** The live connected account at the moment execute() is called. */
   currentAccount: Address | null | undefined;
+
   /** The live connected chain at the moment execute() is called. */
   currentChainId: number | null | undefined;
 }
 
 type GateResult =
   | { ok: true }
-  | { ok: false; error: AgentActionExecutionError };
+  | {
+      ok: false;
+      error: AgentActionExecutionError;
+    };
 
 function checkGates(input: ExecuteAgentActionInput): GateResult {
   const {
@@ -140,6 +159,7 @@ function checkGates(input: ExecuteAgentActionInput): GateResult {
     currentChainId,
   } = input;
 
+  // Gate 1 — connected wallet/account exists.
   if (!currentAccount || !isAddress(currentAccount)) {
     return {
       ok: false,
@@ -150,6 +170,7 @@ function checkGates(input: ExecuteAgentActionInput): GateResult {
     };
   }
 
+  // Gate 2 — P0.5 must have reached the human confirmation boundary.
   if (confirmationState !== "READY_FOR_CONFIRMATION") {
     return {
       ok: false,
@@ -161,6 +182,8 @@ function checkGates(input: ExecuteAgentActionInput): GateResult {
     };
   }
 
+  // Gate 3 — wallet account must still match the account used during
+  // P0.5 verification/simulation.
   if (currentAccount.toLowerCase() !== confirmedAccount.toLowerCase()) {
     return {
       ok: false,
@@ -172,6 +195,8 @@ function checkGates(input: ExecuteAgentActionInput): GateResult {
     };
   }
 
+  // Gate 4 — current chain must still match the chain used during
+  // P0.5 verification/simulation.
   if (currentChainId !== confirmedChainId) {
     return {
       ok: false,
@@ -183,6 +208,7 @@ function checkGates(input: ExecuteAgentActionInput): GateResult {
     };
   }
 
+  // Gate 5 — current wallet must be on Base Mainnet.
   if (currentChainId !== TOOL_CHAIN_ID) {
     return {
       ok: false,
@@ -193,6 +219,7 @@ function checkGates(input: ExecuteAgentActionInput): GateResult {
     };
   }
 
+  // Gate 6 — the already-built action itself must be Base Mainnet.
   if (action.chainId !== TOOL_CHAIN_ID) {
     return {
       ok: false,
@@ -206,10 +233,11 @@ function checkGates(input: ExecuteAgentActionInput): GateResult {
   return { ok: true };
 }
 
-// --- Error classification ---------------------------------------------------
+// --- Error classification ----------------------------------------------
 //
-// Never surfaces raw provider/RPC text to the UI — only classifies into
-// one of the typed codes above and returns a fixed, safe message.
+// Never surfaces raw provider/RPC text to the UI. Only fixed,
+// user-safe messages are returned.
+
 function classifySendError(err: unknown): AgentActionExecutionError {
   const raw = err instanceof Error ? err.message : String(err);
   const lower = raw.toLowerCase();
@@ -232,45 +260,49 @@ function classifySendError(err: unknown): AgentActionExecutionError {
   };
 }
 
-// --- Duplicate execution protection ----------------------------------------
+// --- Duplicate execution protection -----------------------------------
 //
-// Module-level, keyed by the action's own deterministic id (see
-// buildDeterministicId in agent-action-contract.ts). Two Confirm clicks
-// for the same action — from the same hook instance or two independent
-// callers — must never both reach sendTransaction. This is enforced here
-// (not only in the React hook) so the guarantee holds regardless of
-// caller and is directly unit-testable without rendering a component.
+// Module-level protection ensures that two Confirm clicks for the same
+// action cannot both reach sendTransaction, even if they originate from
+// separate callers/hooks.
+
 const actionsInFlight = new Set<string>();
 
-// --- Driver --------------------------------------------------------------
+// --- Driver ------------------------------------------------------------
 
 /**
  * Executes an already-verified, already-simulated, already-confirmed
- * AgentActionContract by sending EXACTLY its (to, data, value, chainId)
- * fields — never a re-derived or re-encoded transaction.
+ * AgentActionContract.
  *
- * Calls onTransition once per state change (including the final one),
- * mirroring runAgentActionConfirmation's shape, so a caller (typically
- * useAgentActionExecution) can mirror every intermediate step into UI
- * state. Resolves with the same final snapshot it last passed to
- * onTransition.
+ * The execution payload is passed through verbatim:
  *
- * This function is the only place in the entire agent-action-* stack
- * allowed to call sendTransaction / waitForTransactionReceipt.
+ *   action.to
+ *   action.data
+ *   action.value
+ *   action.chainId
+ *
+ * No ABI, functionName, args, calldata decoding, or transaction
+ * reconstruction occurs here.
+ *
+ * This function is the only place in the agent-action-* stack allowed
+ * to call sendTransaction / waitForTransactionReceipt.
  */
 export async function executeAgentAction(
   input: ExecuteAgentActionInput,
   onTransition: (snapshot: AgentActionExecutionSnapshot) => void
 ): Promise<AgentActionExecutionSnapshot> {
+  // Duplicate execution protection.
   if (actionsInFlight.has(input.action.id)) {
     const snapshot = errorSnapshot(
       "EXECUTION_IN_PROGRESS",
       "This action is already being executed — please wait for it to finish."
     );
+
     onTransition(snapshot);
     return snapshot;
   }
 
+  // All six security gates must pass before touching the wallet.
   const gate = checkGates(input);
 
   if (!gate.ok) {
@@ -279,42 +311,83 @@ export async function executeAgentAction(
       hash: null,
       error: gate.error,
     };
+
     onTransition(snapshot);
     return snapshot;
   }
 
   const { action, currentAccount } = input;
 
+  /*
+   * checkGates() has already established:
+   *
+   *   action.chainId === TOOL_CHAIN_ID
+   *
+   * TOOL_CHAIN_ID is Base Mainnet (8453). Wagmi's Base-only config types
+   * the transaction chain as the literal Base chain id, so use the
+   * already-validated Base literal here. This does NOT bypass the runtime
+   * gate above; it only satisfies wagmi's compile-time chain narrowing.
+   */
+  const baseChainId = 8453 as const;
+
   actionsInFlight.add(action.id);
+
   try {
-    onTransition({ state: "AWAITING_WALLET", hash: null, error: null });
+    // Wallet signature/request stage.
+    onTransition({
+      state: "AWAITING_WALLET",
+      hash: null,
+      error: null,
+    });
 
     let hash: Hash;
+
     try {
-      // EXACT PAYLOAD RULE: these four fields come from the verified
-      // action only — never from action.description, UI text, decoded
-      // display formatting, or any independently reconstructed params.
+      /*
+       * EXACT PAYLOAD RULE:
+       *
+       * These values come directly from the AgentActionContract produced
+       * by P0.3 and verified/simulated by P0.4/P0.5.
+       *
+       * No params are reconstructed here.
+       * No calldata is re-encoded here.
+       * No ABI is selected here.
+       * No functionName is selected here.
+       */
       hash = await sendTransaction(config, {
         account: currentAccount as Address,
         to: action.to,
         data: action.data,
         value: action.value,
-        chainId: action.chainId,
+        chainId: baseChainId,
       });
     } catch (err) {
       const classified = classifySendError(err);
-      const snapshot = errorSnapshot(classified.code, classified.message);
+
+      const snapshot = errorSnapshot(
+        classified.code,
+        classified.message
+      );
+
       onTransition(snapshot);
       return snapshot;
     }
 
-    onTransition({ state: "PENDING", hash, error: null });
+    // A hash exists — transaction has been submitted.
+    onTransition({
+      state: "PENDING",
+      hash,
+      error: null,
+    });
 
-    let receipt: { status: "success" | "reverted" | string };
+    let receipt: {
+      status: "success" | "reverted" | string;
+    };
+
     try {
       receipt = await waitForTransactionReceipt(config, {
         hash,
-        chainId: action.chainId,
+        chainId: baseChainId,
       });
     } catch {
       const snapshot = errorSnapshot(
@@ -322,16 +395,19 @@ export async function executeAgentAction(
         "Your transaction was submitted, but we could not confirm its final status. Check a Base explorer for the latest status.",
         hash
       );
+
       onTransition(snapshot);
       return snapshot;
     }
 
+    // Never treat a submitted hash as success.
     if (receipt.status !== "success") {
       const snapshot = errorSnapshot(
         "TRANSACTION_REVERTED",
         "This transaction was submitted but reverted on-chain.",
         hash
       );
+
       onTransition(snapshot);
       return snapshot;
     }
@@ -341,7 +417,9 @@ export async function executeAgentAction(
       hash,
       error: null,
     };
+
     onTransition(successSnapshot);
+
     return successSnapshot;
   } finally {
     actionsInFlight.delete(action.id);
