@@ -45,13 +45,10 @@ import {
 } from "./agent-action-contract";
 import { TOOL_CHAIN_ID } from "./tool-helpers";
 
-// The single source of truth for "which chain this whole agent stack
-// supports" — same constant P0.3's agent-action-contract.ts imports
-// from tool-helpers.ts, imported directly here rather than through
-// agent-action-contract.ts (which does not re-export it).
+// The single source of truth for the chain supported by the agent stack.
 export const SIMULATION_CHAIN_ID = TOOL_CHAIN_ID;
 
-// --- Decoded shape (what P0.5 actually needs) ------------------------------
+// --- Decoded shape ----------------------------------------------------------
 
 export interface DecodedAgentAction {
   domain: AgentActionDomain;
@@ -64,11 +61,7 @@ export interface DecodedAgentAction {
   chainId: number;
 }
 
-// --- Errors ------------------------------------------------------------
-//
-// A deliberately small, closed set — every one of these is reachable from a
-// distinct, real mismatch below, and every message is written to be safe to
-// show a user as-is (no raw provider/exception text ever flows into these).
+// --- Errors -----------------------------------------------------------------
 
 export const AGENT_ACTION_VERIFICATION_ERROR_CODES = [
   "INVALID_ACTION",
@@ -79,14 +72,20 @@ export const AGENT_ACTION_VERIFICATION_ERROR_CODES = [
   "UNSUPPORTED_FUNCTION",
   "PARAMETER_MISMATCH",
 ] as const;
-export type AgentActionVerificationErrorCode = (typeof AGENT_ACTION_VERIFICATION_ERROR_CODES)[number];
 
-export type AgentActionSimulationErrorCode = AgentActionVerificationErrorCode | "ACCOUNT_REQUIRED" | "SIMULATION_FAILED";
+export type AgentActionVerificationErrorCode =
+  (typeof AGENT_ACTION_VERIFICATION_ERROR_CODES)[number];
+
+export type AgentActionSimulationErrorCode =
+  | AgentActionVerificationErrorCode
+  | "ACCOUNT_REQUIRED"
+  | "SIMULATION_FAILED";
 
 export interface AgentActionVerificationError {
   code: AgentActionVerificationErrorCode;
   message: string;
 }
+
 export interface AgentActionSimulationError {
   code: AgentActionSimulationErrorCode;
   message: string;
@@ -97,31 +96,26 @@ export type AgentActionVerificationResult =
   | { ok: false; error: AgentActionVerificationError };
 
 export type AgentActionSimulationResult =
-  | { ok: true; decoded: DecodedAgentAction; simulated: true; safeToProceed: true }
-  | { ok: false; decoded?: DecodedAgentAction; error: AgentActionSimulationError };
+  | {
+      ok: true;
+      decoded: DecodedAgentAction;
+      simulated: true;
+      safeToProceed: true;
+    }
+  | {
+      ok: false;
+      decoded?: DecodedAgentAction;
+      error: AgentActionSimulationError;
+    };
 
-// --- Expected-call resolution -------------------------------------------
+// --- Expected-call resolution -----------------------------------------------
 //
-// Recomputes, purely from (domain, actionType, params) — never from
-// action.to/action.data — exactly what the chain call should look like.
-// This is the independent side of the check; `action.to`/`action.data`
-// are the side under test.
+// ExpectedCall is deliberately a discriminated union.
+//
+// This preserves the ABI <-> functionName relationship required by wagmi's
+// simulateContract generics. It prevents a broad function-name union from
+// becoming detached from the ABI that actually owns that function.
 
-// ExpectedCall is modeled as a discriminated union of the four call shapes
-// P0.4 can actually produce — one per ABI — rather than a single flat shape
-// with a broad `functionName` union. A flat shape (even one derived from
-// the real ABIs) decorrelates `abi` and `functionName`: TypeScript would
-// accept e.g. { abi: erc20Abi, functionName: "createLock" }, which is
-// nonsense, and — the concrete failure this replaces — wagmi's
-// `simulateContract` computes its own `functionName` type from whichever
-// *specific* ABI is passed, filtered to state-changing (nonpayable/payable)
-// functions only; a hand-built union across all four ABIs' function names
-// is neither correlated to the right ABI nor filtered the same way, so it
-// was never assignable to what simulateContract actually expects for any
-// single call. Tagging each variant with `kind` and switching on it (see
-// `runExpectedCallSimulation` below) lets TypeScript narrow `expected` to one concrete
-// ABI before the simulateContract call, so `abi` and `functionName` stay
-// paired exactly as wagmi's own generics require.
 interface Erc20ExpectedCall {
   kind: "erc20";
   to: Address;
@@ -129,6 +123,7 @@ interface Erc20ExpectedCall {
   functionName: "approve";
   args: readonly unknown[];
 }
+
 interface TokenLockExpectedCall {
   kind: "tokenLock";
   to: Address;
@@ -136,6 +131,7 @@ interface TokenLockExpectedCall {
   functionName: "createLock" | "withdraw" | "earlyUnlock";
   args: readonly unknown[];
 }
+
 interface StakingExpectedCall {
   kind: "staking";
   to: Address;
@@ -143,6 +139,7 @@ interface StakingExpectedCall {
   functionName: "stake" | "unstake" | "claimRewards" | "exit";
   args: readonly unknown[];
 }
+
 interface RewardVaultExpectedCall {
   kind: "rewardVault";
   to: Address;
@@ -151,45 +148,52 @@ interface RewardVaultExpectedCall {
   args: readonly unknown[];
 }
 
-type ExpectedCall = Erc20ExpectedCall | TokenLockExpectedCall | StakingExpectedCall | RewardVaultExpectedCall;
+type ExpectedCall =
+  | Erc20ExpectedCall
+  | TokenLockExpectedCall
+  | StakingExpectedCall
+  | RewardVaultExpectedCall;
 
-type ExpectedCallResult = { ok: true; expected: ExpectedCall } | { ok: false; error: AgentActionVerificationError };
+type ExpectedCallResult =
+  | { ok: true; expected: ExpectedCall }
+  | { ok: false; error: AgentActionVerificationError };
 
 function invalidAction(message: string): ExpectedCallResult {
-  return { ok: false, error: { code: "INVALID_ACTION", message } };
+  return {
+    ok: false,
+    error: {
+      code: "INVALID_ACTION",
+      message,
+    },
+  };
 }
 
-function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
-  // Independently verify the envelope agrees with itself before trusting
-  // either half of it: action.actionType (what P0.5/UI would display and
-  // key any confirmation logic off of) must be the exact same value as
-  // action.params.actionType (what actually drives the expected call
-  // below). Without this, a tampered object could carry two different
-  // actionTypes — one for display, a different one actually used to
-  // resolve the expected contract call — and pass verification while
-  // silently describing the wrong action. `action.params` is `unknown`-ish
-  // at the type level relative to `action.actionType` here on purpose: this
-  // check must not assume the two already agree.
-  const paramsActionType = (action.params as { actionType?: unknown } | null)?.actionType;
+function resolveExpectedCall(
+  action: AgentActionContract
+): ExpectedCallResult {
+  // Verify that the envelope's actionType and the params discriminant agree.
+  const paramsActionType = (
+    action.params as { actionType?: unknown } | null
+  )?.actionType;
+
   if (paramsActionType !== action.actionType) {
     return {
       ok: false,
       error: {
         code: "PARAMETER_MISMATCH",
-        message: `action.actionType ("${String(action.actionType)}") does not match action.params.actionType ("${String(paramsActionType)}").`,
+        message: `action.actionType ("${String(
+          action.actionType
+        )}") does not match action.params.actionType ("${String(
+          paramsActionType
+        )}").`,
       },
     };
   }
 
   switch (action.domain) {
     case "tokenLock": {
-      // Switch on params.actionType itself (the union's own discriminant),
-      // not action.actionType — TypeScript's control-flow narrowing only
-      // narrows a value based on switching on that same value's own
-      // discriminant property. Switching on action.actionType (a sibling,
-      // separately-typed field) can't narrow `params`, even though the
-      // check above already proved the two are runtime-equal.
       const params = action.params as TokenLockActionParams;
+
       switch (params.actionType) {
         case "approve":
           return {
@@ -202,6 +206,7 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
               args: [MPGR_TOKEN_LOCK_CONFIG.address, params.amount],
             },
           };
+
         case "createLock":
           return {
             ok: true,
@@ -213,25 +218,41 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
               args: [params.amount, params.unlockTime],
             },
           };
+
         case "withdraw":
           return {
             ok: true,
-            expected: { kind: "tokenLock", to: MPGR_TOKEN_LOCK_CONFIG.address, abi: TOKEN_LOCK_ABI, functionName: "withdraw", args: [params.lockId] },
+            expected: {
+              kind: "tokenLock",
+              to: MPGR_TOKEN_LOCK_CONFIG.address,
+              abi: TOKEN_LOCK_ABI,
+              functionName: "withdraw",
+              args: [params.lockId],
+            },
           };
+
         case "earlyUnlock":
           return {
             ok: true,
-            expected: { kind: "tokenLock", to: MPGR_TOKEN_LOCK_CONFIG.address, abi: TOKEN_LOCK_ABI, functionName: "earlyUnlock", args: [params.lockId] },
+            expected: {
+              kind: "tokenLock",
+              to: MPGR_TOKEN_LOCK_CONFIG.address,
+              abi: TOKEN_LOCK_ABI,
+              functionName: "earlyUnlock",
+              args: [params.lockId],
+            },
           };
+
         default:
-          return invalidAction(`Unknown tokenLock actionType "${String(action.actionType)}".`);
+          return invalidAction(
+            `Unknown tokenLock actionType "${String(action.actionType)}".`
+          );
       }
     }
+
     case "staking": {
-      // Same fix as tokenLock above: switch on params.actionType (the
-      // union's own discriminant) so TS narrows `params` — not on
-      // action.actionType.
       const params = action.params as StakingActionParams;
+
       switch (params.actionType) {
         case "approve":
           return {
@@ -244,33 +265,67 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
               args: [MPGR_STAKING_CONFIG.address, params.amount],
             },
           };
+
         case "stake":
         case "unstake":
           return {
             ok: true,
-            expected: { kind: "staking", to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: params.actionType, args: [params.amount] },
+            expected: {
+              kind: "staking",
+              to: MPGR_STAKING_CONFIG.address,
+              abi: STAKING_ABI,
+              functionName: params.actionType,
+              args: [params.amount],
+            },
           };
+
         case "claim":
-          // actionType "claim" maps to the real on-chain function
-          // claimRewards() — the same mapping P0.3's buildStakingAction
-          // uses; re-declared independently here rather than imported,
-          // since re-deriving it from scratch is the whole point of P0.4.
-          return { ok: true, expected: { kind: "staking", to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: "claimRewards", args: [] } };
+          return {
+            ok: true,
+            expected: {
+              kind: "staking",
+              to: MPGR_STAKING_CONFIG.address,
+              abi: STAKING_ABI,
+              functionName: "claimRewards",
+              args: [],
+            },
+          };
+
         case "exit":
-          return { ok: true, expected: { kind: "staking", to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: "exit", args: [] } };
+          return {
+            ok: true,
+            expected: {
+              kind: "staking",
+              to: MPGR_STAKING_CONFIG.address,
+              abi: STAKING_ABI,
+              functionName: "exit",
+              args: [],
+            },
+          };
+
         default:
-          return invalidAction(`Unknown staking actionType "${String(action.actionType)}".`);
+          return invalidAction(
+            `Unknown staking actionType "${String(action.actionType)}".`
+          );
       }
     }
+
     case "rewardVault": {
-      // Same fix as tokenLock/staking above.
       const params = action.params as RewardVaultActionParams;
+
       switch (params.actionType) {
         case "claim":
           return {
             ok: true,
-            expected: { kind: "rewardVault", to: MPGR_REWARD_VAULT_CONFIG.address, abi: REWARD_VAULT_ABI, functionName: "claim", args: [params.rewardId] },
+            expected: {
+              kind: "rewardVault",
+              to: MPGR_REWARD_VAULT_CONFIG.address,
+              abi: REWARD_VAULT_ABI,
+              functionName: "claim",
+              args: [params.rewardId],
+            },
           };
+
         case "claimMultiple":
           return {
             ok: true,
@@ -282,99 +337,163 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
               args: [params.rewardIds],
             },
           };
+
         default:
-          return invalidAction(`Unknown rewardVault actionType "${String(action.actionType)}".`);
+          return invalidAction(
+            `Unknown rewardVault actionType "${String(action.actionType)}".`
+          );
       }
     }
+
     default:
-      // action.domain is a discriminated union (AGENT_ACTION_DOMAINS) and
-      // the three cases above are exhaustive, so TS narrows `action` to
-      // `never` here — this branch is unreachable at the type level (it
-      // only guards a runtime value that bypassed the type system, e.g.
-      // an untyped/tampered object cast to AgentActionContract). Don't
-      // access any property of `action` here; it has no statically valid
-      // properties to read.
       return invalidAction("Unknown action domain.");
   }
 }
 
-// --- Argument comparison ---------------------------------------------------
-//
-// bigint- and address-aware structural equality. Addresses compare
-// case-insensitively (checksummed vs lowercase is not a mismatch);
-// everything else must match exactly.
+// --- Argument comparison ----------------------------------------------------
 
 function valuesEqual(a: unknown, b: unknown): boolean {
   if (typeof a === "bigint" || typeof b === "bigint") {
     try {
-      return BigInt(a as bigint | number | string) === BigInt(b as bigint | number | string);
+      return (
+        BigInt(a as bigint | number | string) ===
+        BigInt(b as bigint | number | string)
+      );
     } catch {
       return false;
     }
   }
+
   if (Array.isArray(a) && Array.isArray(b)) {
-    return a.length === b.length && a.every((v, i) => valuesEqual(v, b[i]));
+    return (
+      a.length === b.length &&
+      a.every((value, index) => valuesEqual(value, b[index]))
+    );
   }
-  if (typeof a === "string" && typeof b === "string" && a.startsWith("0x") && b.startsWith("0x")) {
+
+  if (
+    typeof a === "string" &&
+    typeof b === "string" &&
+    a.startsWith("0x") &&
+    b.startsWith("0x")
+  ) {
     return a.toLowerCase() === b.toLowerCase();
   }
+
   return a === b;
 }
 
-function argsMatch(decodedArgs: readonly unknown[], expectedArgs: readonly unknown[]): boolean {
-  if (decodedArgs.length !== expectedArgs.length) return false;
-  return decodedArgs.every((value, index) => valuesEqual(value, expectedArgs[index]));
+function argsMatch(
+  decodedArgs: readonly unknown[],
+  expectedArgs: readonly unknown[]
+): boolean {
+  if (decodedArgs.length !== expectedArgs.length) {
+    return false;
+  }
+
+  return decodedArgs.every((value, index) =>
+    valuesEqual(value, expectedArgs[index])
+  );
 }
 
-// --- Verification (decode + compare — no network) --------------------------
+// --- Verification -----------------------------------------------------------
 
-function failVerification(code: AgentActionVerificationErrorCode, message: string): AgentActionVerificationResult {
-  return { ok: false, error: { code, message } };
+function failVerification(
+  code: AgentActionVerificationErrorCode,
+  message: string
+): AgentActionVerificationResult {
+  return {
+    ok: false,
+    error: {
+      code,
+      message,
+    },
+  };
 }
 
 /**
- * Independently decodes and verifies an AgentActionContract. Pure and
- * synchronous — makes no network call. Recomputes the expected
- * destination/ABI/function/args from (domain, actionType, params) alone and
- * requires action.to / action.value / action.data to agree with that
- * recomputation exactly. Never reads action.description.
+ * Independently decodes and verifies an AgentActionContract.
+ *
+ * Pure and synchronous — makes no network call.
+ *
+ * Recomputes destination/ABI/function/args from:
+ *   domain + actionType + params
+ *
+ * and requires:
+ *   action.to + action.value + action.data
+ *
+ * to agree with that independent recomputation.
  */
-export function verifyAgentAction(action: AgentActionContract): AgentActionVerificationResult {
-  if (!(AGENT_ACTION_DOMAINS as readonly string[]).includes(action.domain)) {
-    return failVerification("INVALID_ACTION", "Unknown action domain.");
+export function verifyAgentAction(
+  action: AgentActionContract
+): AgentActionVerificationResult {
+  if (
+    !(AGENT_ACTION_DOMAINS as readonly string[]).includes(action.domain)
+  ) {
+    return failVerification(
+      "INVALID_ACTION",
+      "Unknown action domain."
+    );
   }
 
   if (action.chainId !== SIMULATION_CHAIN_ID) {
-    return failVerification("INVALID_CHAIN", `Only chainId ${SIMULATION_CHAIN_ID} (Base Mainnet) is supported.`);
+    return failVerification(
+      "INVALID_CHAIN",
+      `Only chainId ${SIMULATION_CHAIN_ID} (Base Mainnet) is supported.`
+    );
   }
 
   const expectedResult = resolveExpectedCall(action);
-  if (!expectedResult.ok) return expectedResult;
-  const { expected } = expectedResult;
 
-  // A tampered/malformed runtime object could carry a non-string (or
-  // non-address) `to` — validate before ever touching it as a string, so
-  // this returns a typed failure instead of throwing.
-  if (typeof action.to !== "string" || !isAddress(action.to)) {
-    return failVerification("INVALID_DESTINATION", "The action's destination address is missing or not a valid address.");
+  if (!expectedResult.ok) {
+    return expectedResult;
   }
 
-  if (action.to.toLowerCase() !== expected.to.toLowerCase()) {
-    return failVerification("INVALID_DESTINATION", "The action's destination address does not match the expected contract for this domain/actionType.");
+  const { expected } = expectedResult;
+
+  if (
+    typeof action.to !== "string" ||
+    !isAddress(action.to)
+  ) {
+    return failVerification(
+      "INVALID_DESTINATION",
+      "The action's destination address is missing or not a valid address."
+    );
+  }
+
+  if (
+    action.to.toLowerCase() !==
+    expected.to.toLowerCase()
+  ) {
+    return failVerification(
+      "INVALID_DESTINATION",
+      "The action's destination address does not match the expected contract for this domain/actionType."
+    );
   }
 
   if (action.value !== 0n) {
-    return failVerification("INVALID_VALUE", "No known MPGR action sends native value; a non-zero value is not supported.");
+    return failVerification(
+      "INVALID_VALUE",
+      "No known MPGR action sends native value; a non-zero value is not supported."
+    );
   }
 
   let decodedFunctionName: string;
   let decodedArgs: readonly unknown[];
+
   try {
-    const result = decodeFunctionData({ abi: expected.abi, data: action.data as Hex });
+    const result = decodeFunctionData({
+      abi: expected.abi,
+      data: action.data as Hex,
+    });
+
     decodedFunctionName = result.functionName;
     decodedArgs = (result.args ?? []) as readonly unknown[];
   } catch {
-    return failVerification("INVALID_CALLDATA", "The action's calldata could not be decoded against the expected contract ABI.");
+    return failVerification(
+      "INVALID_CALLDATA",
+      "The action's calldata could not be decoded against the expected contract ABI."
+    );
   }
 
   if (decodedFunctionName !== expected.functionName) {
@@ -385,7 +504,10 @@ export function verifyAgentAction(action: AgentActionContract): AgentActionVerif
   }
 
   if (!argsMatch(decodedArgs, expected.args)) {
-    return failVerification("PARAMETER_MISMATCH", "The action's calldata arguments do not match its own typed parameters.");
+    return failVerification(
+      "PARAMETER_MISMATCH",
+      "The action's calldata arguments do not match its own typed parameters."
+    );
   }
 
   return {
@@ -402,18 +524,30 @@ export function verifyAgentAction(action: AgentActionContract): AgentActionVerif
   };
 }
 
-// --- Simulation (read-only eth_call, network) -------------------------------
+// --- Simulation -------------------------------------------------------------
 
-// Narrows `expected` to one concrete ABI/functionName pairing (via
-// `expected.kind`) before calling simulateContract, so the ABI passed and
-// the functionName passed always come from the same union member — the
-// exact correlation a flat/hand-unioned functionName type couldn't express.
-// Every branch calls the same read-only `simulateContract` primitive; only
-// the static types differ per branch. `args` is still cast — same as
-// before this fix — since the ABI-specific argument-tuple typing that
-// would remove that cast is a separate, larger typing task than the
-// ABI/functionName correlation this fix addresses.
-async function runExpectedCallSimulation(expected: ExpectedCall, address: Address, chainId: number, account: Address): Promise<void> {
+/**
+ * Runs the already-resolved expected call against Base using wagmi's
+ * read-only simulateContract primitive.
+ *
+ * IMPORTANT:
+ * - No writeContract.
+ * - No sendTransaction.
+ * - No signTransaction.
+ * - No wallet signing.
+ * - No broadcast.
+ *
+ * SIMULATION_CHAIN_ID is deliberately used instead of a generic `number`
+ * parameter because wagmi's chain-aware config resolves the supported chain
+ * as the literal Base Mainnet chain ID (8453).
+ *
+ * The `kind` discriminant preserves ABI/functionName correlation.
+ */
+async function runExpectedCallSimulation(
+  expected: ExpectedCall,
+  address: Address,
+  account: Address
+): Promise<void> {
   switch (expected.kind) {
     case "erc20":
       await simulateContract(config, {
@@ -421,37 +555,40 @@ async function runExpectedCallSimulation(expected: ExpectedCall, address: Addres
         abi: expected.abi,
         functionName: expected.functionName,
         args: expected.args as never,
-        chainId,
+        chainId: SIMULATION_CHAIN_ID,
         account,
       });
       return;
+
     case "tokenLock":
       await simulateContract(config, {
         address,
         abi: expected.abi,
         functionName: expected.functionName,
         args: expected.args as never,
-        chainId,
+        chainId: SIMULATION_CHAIN_ID,
         account,
       });
       return;
+
     case "staking":
       await simulateContract(config, {
         address,
         abi: expected.abi,
         functionName: expected.functionName,
         args: expected.args as never,
-        chainId,
+        chainId: SIMULATION_CHAIN_ID,
         account,
       });
       return;
+
     case "rewardVault":
       await simulateContract(config, {
         address,
         abi: expected.abi,
         functionName: expected.functionName,
         args: expected.args as never,
-        chainId,
+        chainId: SIMULATION_CHAIN_ID,
         account,
       });
       return;
@@ -464,53 +601,72 @@ export interface SimulateAgentActionOptions {
 }
 
 /**
- * Verifies the action (see verifyAgentAction) and, only if that passes,
- * performs a single read-only simulateContract call — the same primitive
- * every existing *-client.ts in this repo already calls immediately before
- * its own writeContract, just without the write step. Never signs or
- * broadcasts anything. If `options.account` is missing or malformed, returns
- * a typed ACCOUNT_REQUIRED failure without ever calling simulateContract —
- * there is no default/fallback account.
+ * Verifies the action and, only if verification passes, performs exactly
+ * one read-only simulateContract call.
+ *
+ * If account is missing or malformed, simulation is not attempted.
  */
 export async function simulateAgentAction(
   action: AgentActionContract,
   options: SimulateAgentActionOptions = {}
 ): Promise<AgentActionSimulationResult> {
   const verification = verifyAgentAction(action);
-  if (!verification.ok) return verification;
 
-  if (!options.account || !isAddress(options.account)) {
+  if (!verification.ok) {
+    return verification;
+  }
+
+  if (
+    !options.account ||
+    !isAddress(options.account)
+  ) {
     return {
       ok: false,
       decoded: verification.decoded,
       error: {
         code: "ACCOUNT_REQUIRED",
-        message: "Simulating this action requires the connecting wallet's own address; none was provided.",
+        message:
+          "Simulating this action requires the connecting wallet's own address; none was provided.",
       },
     };
   }
 
   const expectedResult = resolveExpectedCall(action);
-  // Unreachable in practice — verification.ok already proved this resolves —
-  // kept only so this function never assumes what verifyAgentAction did.
-  if (!expectedResult.ok) return { ok: false, error: expectedResult.error };
+
+  // Defensive re-resolution. Verification already proved this succeeds,
+  // but this keeps the simulation layer from assuming that fact.
+  if (!expectedResult.ok) {
+    return {
+      ok: false,
+      error: expectedResult.error,
+    };
+  }
+
   const { expected } = expectedResult;
 
   try {
-    await runExpectedCallSimulation(expected, action.to, action.chainId, options.account as Address);
+    await runExpectedCallSimulation(
+      expected,
+      action.to,
+      options.account as Address
+    );
   } catch {
-    // Raw provider/RPC exception text is never surfaced — same rule
-    // agent-tool-result.ts's AgentToolError.message follows.
+    // Never expose raw provider/RPC exception text.
     return {
       ok: false,
       decoded: verification.decoded,
       error: {
         code: "SIMULATION_FAILED",
-        message: "Simulating this action against Base failed — it would not succeed on-chain in its current form.",
+        message:
+          "Simulating this action against Base failed — it would not succeed on-chain in its current form.",
       },
     };
   }
 
-  return { ok: true, decoded: verification.decoded, simulated: true, safeToProceed: true };
+  return {
+    ok: true,
+    decoded: verification.decoded,
+    simulated: true,
+    safeToProceed: true,
+  };
 }
-
