@@ -2,10 +2,16 @@
 //
 // P2 — Intelligence + Yield.
 // Normalizes real MPGR Staking on-chain data into YieldOpportunity.
-// Read-only only: no wallet, no signing, no transaction execution.
+//
+// READ-ONLY ONLY:
+// - No wallet
+// - No signing
+// - No transaction execution
+// - Reuses the existing stakingService.getGlobalState()
+// - Never fabricates unavailable yield data
 
-import { base } from "wagmi/chains";
 import { formatUnits } from "viem";
+import { base } from "wagmi/chains";
 
 import { MPGR_STAKING_CONFIG } from "@/lib/staking/staking-config";
 import { stakingService } from "@/lib/staking/staking-service";
@@ -30,44 +36,47 @@ import type {
 
 export const MPGR_STAKING_OPPORTUNITY_ID = "mpgr-staking";
 
-function classifyFreshness(
-  ageMs: number,
-  ttlMs: number
-): DataFreshness {
-  if (ageMs < 0) return "current";
-  return ageMs <= ttlMs ? "current" : "stale";
-}
+const STAKING_SOURCE =
+  "lib/staking/staking-service (getGlobalState)";
 
 function fact<T>(
   value: T | null,
-  opts: {
-    source: string;
-    observedAt: string;
-    freshness: DataFreshness;
-  }
+  observedAt: string,
+  freshness: DataFreshness
 ): NormalizedFact<T> {
   return {
     value,
-    source: opts.source,
-    observedAt: opts.observedAt,
-    freshness: opts.freshness,
+    source: STAKING_SOURCE,
+    observedAt,
+    freshness,
     confidence:
       value === null
         ? "unknown"
-        : opts.freshness === "current"
+        : freshness === "current"
           ? "high"
-          : "medium",
+          : freshness === "stale"
+            ? "medium"
+            : "unknown",
   };
 }
 
+/**
+ * The existing stakingService exposes getGlobalState(), but it does not
+ * expose cache age/TTL metadata. Therefore P2 does not invent a cache
+ * freshness value.
+ *
+ * A successful getGlobalState() read is treated as "current" for the
+ * purpose of this tool call because the service itself performed the
+ * underlying read/cache resolution immediately before normalization.
+ *
+ * If the read fails, every dependent fact becomes "unavailable".
+ */
 export async function getYieldOpportunities(): Promise<
   YieldOpportunity[]
 > {
-  const source =
-    "lib/staking/staking-service (cached reads of the deployed MPGRStaking contract)";
+  const observedAt = new Date().toISOString();
 
-  let observedAt = new Date().toISOString();
-  let freshness: DataFreshness = "unavailable";
+  let freshness: DataFreshness = "current";
 
   let totalStaked: bigint | null = null;
   let rewardPoolBalance: bigint | null = null;
@@ -78,15 +87,7 @@ export async function getYieldOpportunities(): Promise<
   let minimumStake: bigint | null = null;
 
   try {
-    const {
-      state,
-      observedAt: at,
-      ageMs,
-      ttlMs,
-    } = await stakingService.getGlobalStateWithMeta();
-
-    observedAt = at;
-    freshness = classifyFreshness(ageMs, ttlMs);
+    const state = await stakingService.getGlobalState();
 
     totalStaked = state.totalStaked;
     rewardPoolBalance = state.rewardPoolBalance;
@@ -95,29 +96,43 @@ export async function getYieldOpportunities(): Promise<
     periodFinish = state.periodFinish;
     isPaused = state.isPaused;
     minimumStake = state.minimumStake;
-  } catch (err) {
-    // Provider details stay server-side and are never exposed to users.
+  } catch (error) {
+    freshness = "unavailable";
+
+    // Provider/RPC details are intentionally not exposed to the user.
     console.error(
       "yield-opportunity-service: failed to read staking global state",
-      err
+      error
     );
   }
+
+  const effectiveFreshness =
+    freshness === "unavailable"
+      ? "unavailable"
+      : "current";
 
   const nowSeconds = BigInt(
     Math.floor(Date.now() / 1000)
   );
 
-  const liquidity = classifyLiquidityRisk(false, false);
+  const liquidityRisk = classifyLiquidityRisk(
+    false,
+    false
+  );
 
-  const volatility = classifyVolatilityExposure();
+  const volatilityRisk =
+    classifyVolatilityExposure();
 
-  const protocol = classifyProtocolRisk(isPaused);
+  const protocolRisk =
+    classifyProtocolRisk(isPaused);
 
-  const smartContract = classifySmartContractRisk();
+  const smartContractRisk =
+    classifySmartContractRisk();
 
-  const withdrawal = classifyWithdrawalRisk(false);
+  const withdrawalRisk =
+    classifyWithdrawalRisk(false);
 
-  const rewardSustainability =
+  const rewardSustainabilityRisk =
     classifyRewardSustainability(
       rewardPoolBalance,
       rewardRate,
@@ -125,52 +140,48 @@ export async function getYieldOpportunities(): Promise<
       nowSeconds
     );
 
-  const dataQuality = classifyDataQuality(freshness);
+  const dataQualityRisk =
+    classifyDataQuality(effectiveFreshness);
 
   const factors = [
-    liquidity,
-    volatility,
-    protocol,
-    smartContract,
-    withdrawal,
-    rewardSustainability,
-    dataQuality,
+    liquidityRisk,
+    volatilityRisk,
+    protocolRisk,
+    smartContractRisk,
+    withdrawalRisk,
+    rewardSustainabilityRisk,
+    dataQualityRisk,
   ];
 
   const opportunity: YieldOpportunity = {
     id: MPGR_STAKING_OPPORTUNITY_ID,
+
     asset: MPGR_TOKEN_CONFIG.symbol,
+
     protocol: "MPGR Staking",
+
     chainId: base.id,
+
     contractAddress: MPGR_STAKING_CONFIG.address,
 
     aprBps: fact(
       currentAPRBps?.toString() ?? null,
-      {
-        source,
-        observedAt,
-        freshness,
-      }
+      observedAt,
+      effectiveFreshness
     ),
 
     aprPercent: fact(
       currentAPRBps !== null
         ? bpsToPercentString(currentAPRBps)
         : null,
-      {
-        source,
-        observedAt,
-        freshness,
-      }
+      observedAt,
+      effectiveFreshness
     ),
 
     totalStakedRaw: fact(
       totalStaked?.toString() ?? null,
-      {
-        source,
-        observedAt,
-        freshness,
-      }
+      observedAt,
+      effectiveFreshness
     ),
 
     totalStakedFormatted: fact(
@@ -180,23 +191,17 @@ export async function getYieldOpportunities(): Promise<
             MPGR_TOKEN_CONFIG.decimals
           )
         : null,
-      {
-        source,
-        observedAt,
-        freshness,
-      }
+      observedAt,
+      effectiveFreshness
     ),
 
     tvlNote:
-      "Denominated in MPGR only — no USD price provider is wired into this codebase.",
+      "TVL is denominated in MPGR only. No USD price provider is wired into this yield-analysis layer.",
 
     rewardPoolBalanceRaw: fact(
       rewardPoolBalance?.toString() ?? null,
-      {
-        source,
-        observedAt,
-        freshness,
-      }
+      observedAt,
+      effectiveFreshness
     ),
 
     rewardPoolBalanceFormatted: fact(
@@ -206,44 +211,32 @@ export async function getYieldOpportunities(): Promise<
             MPGR_TOKEN_CONFIG.decimals
           )
         : null,
-      {
-        source,
-        observedAt,
-        freshness,
-      }
+      observedAt,
+      effectiveFreshness
     ),
 
     rewardPeriodFinish: fact(
       periodFinish?.toString() ?? null,
-      {
-        source,
-        observedAt,
-        freshness,
-      }
+      observedAt,
+      effectiveFreshness
     ),
 
     rewardRateRaw: fact(
       rewardRate?.toString() ?? null,
-      {
-        source,
-        observedAt,
-        freshness,
-      }
+      observedAt,
+      effectiveFreshness
     ),
 
-    isPaused: fact(isPaused, {
-      source,
+    isPaused: fact(
+      isPaused,
       observedAt,
-      freshness,
-    }),
+      effectiveFreshness
+    ),
 
     minimumStakeRaw: fact(
       minimumStake?.toString() ?? null,
-      {
-        source,
-        observedAt,
-        freshness,
-      }
+      observedAt,
+      effectiveFreshness
     ),
 
     minimumStakeFormatted: fact(
@@ -253,24 +246,21 @@ export async function getYieldOpportunities(): Promise<
             MPGR_TOKEN_CONFIG.decimals
           )
         : null,
-      {
-        source,
-        observedAt,
-        freshness,
-      }
+      observedAt,
+      effectiveFreshness
     ),
 
     fees: {
       known: false,
       note:
-        "The deployed MPGRStaking contract exposes no fee getter — no stake/unstake/claim fee is known to exist.",
+        "The deployed MPGRStaking contract exposes no fee getter, so no staking fee is represented as a known value.",
     },
 
     lockConditions: {
       hasLock: false,
       hasCooldown: false,
       note:
-        "unstake() has no lock term or cooldown — staked MPGR can be withdrawn at any time.",
+        "MPGRStaking unstake() has no lock term or cooldown; staked MPGR can be withdrawn without a protocol-imposed waiting period.",
     },
 
     risk: {
@@ -278,14 +268,14 @@ export async function getYieldOpportunities(): Promise<
       factors,
     },
 
-    overallFreshness: freshness,
+    overallFreshness: effectiveFreshness,
 
     overallConfidence:
       currentAPRBps === null
         ? "unknown"
-        : freshness === "current"
+        : effectiveFreshness === "current"
           ? "high"
-          : "medium",
+          : "unknown",
   };
 
   return [opportunity];
@@ -294,11 +284,13 @@ export async function getYieldOpportunities(): Promise<
 export async function getYieldOpportunityById(
   id: string
 ): Promise<YieldOpportunity | null> {
-  const opportunities = await getYieldOpportunities();
+  const opportunities =
+    await getYieldOpportunities();
 
   return (
     opportunities.find(
-      (opportunity) => opportunity.id === id
+      (opportunity) =>
+        opportunity.id === id
     ) ?? null
   );
 }
