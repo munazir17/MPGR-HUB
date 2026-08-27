@@ -144,8 +144,14 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
 
   switch (action.domain) {
     case "tokenLock": {
+      // Switch on params.actionType itself (the union's own discriminant),
+      // not action.actionType — TypeScript's control-flow narrowing only
+      // narrows a value based on switching on that same value's own
+      // discriminant property. Switching on action.actionType (a sibling,
+      // separately-typed field) can't narrow `params`, even though the
+      // check above already proved the two are runtime-equal.
       const params = action.params as TokenLockActionParams;
-      switch (action.actionType) {
+      switch (params.actionType) {
         case "approve":
           return {
             ok: true,
@@ -181,8 +187,11 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
       }
     }
     case "staking": {
+      // Same fix as tokenLock above: switch on params.actionType (the
+      // union's own discriminant) so TS narrows `params` — not on
+      // action.actionType.
       const params = action.params as StakingActionParams;
-      switch (action.actionType) {
+      switch (params.actionType) {
         case "approve":
           return {
             ok: true,
@@ -197,7 +206,7 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
         case "unstake":
           return {
             ok: true,
-            expected: { to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: action.actionType, args: [params.amount] },
+            expected: { to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: params.actionType, args: [params.amount] },
           };
         case "claim":
           // actionType "claim" maps to the real on-chain function
@@ -212,8 +221,9 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
       }
     }
     case "rewardVault": {
+      // Same fix as tokenLock/staking above.
       const params = action.params as RewardVaultActionParams;
-      switch (action.actionType) {
+      switch (params.actionType) {
         case "claim":
           return {
             ok: true,
