@@ -107,10 +107,30 @@ export type AgentActionSimulationResult =
 // This is the independent side of the check; `action.to`/`action.data`
 // are the side under test.
 
+// The literal union of every function name across the four ABIs this file
+// resolves calls against — extracted from the ABIs themselves (all
+// declared `as const`), not hand-typed, so it can never drift out of sync
+// with them. This is what makes ExpectedCall.functionName assignable to
+// wagmi/viem's `simulateContract` `functionName` param, which is typed as
+// exactly this kind of ABI-derived literal union rather than plain
+// `string`. The runtime function-name mapping itself (resolveExpectedCall
+// below) is unchanged — this only widens the *type* enough to describe
+// values that already come from those same ABIs.
+type AbiFunctionName<TAbi extends readonly { readonly type: string; readonly name?: string }[]> = Extract<
+  TAbi[number],
+  { readonly type: "function" }
+>["name"];
+
+type ExpectedCallFunctionName =
+  | AbiFunctionName<typeof erc20Abi>
+  | AbiFunctionName<typeof TOKEN_LOCK_ABI>
+  | AbiFunctionName<typeof STAKING_ABI>
+  | AbiFunctionName<typeof REWARD_VAULT_ABI>;
+
 interface ExpectedCall {
   to: Address;
   abi: typeof erc20Abi | typeof TOKEN_LOCK_ABI | typeof STAKING_ABI | typeof REWARD_VAULT_ABI;
-  functionName: string;
+  functionName: ExpectedCallFunctionName;
   args: readonly unknown[];
 }
 
