@@ -107,32 +107,51 @@ export type AgentActionSimulationResult =
 // This is the independent side of the check; `action.to`/`action.data`
 // are the side under test.
 
-// The literal union of every function name across the four ABIs this file
-// resolves calls against — extracted from the ABIs themselves (all
-// declared `as const`), not hand-typed, so it can never drift out of sync
-// with them. This is what makes ExpectedCall.functionName assignable to
-// wagmi/viem's `simulateContract` `functionName` param, which is typed as
-// exactly this kind of ABI-derived literal union rather than plain
-// `string`. The runtime function-name mapping itself (resolveExpectedCall
-// below) is unchanged — this only widens the *type* enough to describe
-// values that already come from those same ABIs.
-type AbiFunctionName<TAbi extends readonly { readonly type: string; readonly name?: string }[]> = Extract<
-  TAbi[number],
-  { readonly type: "function" }
->["name"];
-
-type ExpectedCallFunctionName =
-  | AbiFunctionName<typeof erc20Abi>
-  | AbiFunctionName<typeof TOKEN_LOCK_ABI>
-  | AbiFunctionName<typeof STAKING_ABI>
-  | AbiFunctionName<typeof REWARD_VAULT_ABI>;
-
-interface ExpectedCall {
+// ExpectedCall is modeled as a discriminated union of the four call shapes
+// P0.4 can actually produce — one per ABI — rather than a single flat shape
+// with a broad `functionName` union. A flat shape (even one derived from
+// the real ABIs) decorrelates `abi` and `functionName`: TypeScript would
+// accept e.g. { abi: erc20Abi, functionName: "createLock" }, which is
+// nonsense, and — the concrete failure this replaces — wagmi's
+// `simulateContract` computes its own `functionName` type from whichever
+// *specific* ABI is passed, filtered to state-changing (nonpayable/payable)
+// functions only; a hand-built union across all four ABIs' function names
+// is neither correlated to the right ABI nor filtered the same way, so it
+// was never assignable to what simulateContract actually expects for any
+// single call. Tagging each variant with `kind` and switching on it (see
+// `runExpectedCallSimulation` below) lets TypeScript narrow `expected` to one concrete
+// ABI before the simulateContract call, so `abi` and `functionName` stay
+// paired exactly as wagmi's own generics require.
+interface Erc20ExpectedCall {
+  kind: "erc20";
   to: Address;
-  abi: typeof erc20Abi | typeof TOKEN_LOCK_ABI | typeof STAKING_ABI | typeof REWARD_VAULT_ABI;
-  functionName: ExpectedCallFunctionName;
+  abi: typeof erc20Abi;
+  functionName: "approve";
   args: readonly unknown[];
 }
+interface TokenLockExpectedCall {
+  kind: "tokenLock";
+  to: Address;
+  abi: typeof TOKEN_LOCK_ABI;
+  functionName: "createLock" | "withdraw" | "earlyUnlock";
+  args: readonly unknown[];
+}
+interface StakingExpectedCall {
+  kind: "staking";
+  to: Address;
+  abi: typeof STAKING_ABI;
+  functionName: "stake" | "unstake" | "claimRewards" | "exit";
+  args: readonly unknown[];
+}
+interface RewardVaultExpectedCall {
+  kind: "rewardVault";
+  to: Address;
+  abi: typeof REWARD_VAULT_ABI;
+  functionName: "claim" | "claimMultiple";
+  args: readonly unknown[];
+}
+
+type ExpectedCall = Erc20ExpectedCall | TokenLockExpectedCall | StakingExpectedCall | RewardVaultExpectedCall;
 
 type ExpectedCallResult = { ok: true; expected: ExpectedCall } | { ok: false; error: AgentActionVerificationError };
 
@@ -176,6 +195,7 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
           return {
             ok: true,
             expected: {
+              kind: "erc20",
               to: MPGR_TOKEN_CONFIG.address,
               abi: erc20Abi,
               functionName: "approve",
@@ -186,6 +206,7 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
           return {
             ok: true,
             expected: {
+              kind: "tokenLock",
               to: MPGR_TOKEN_LOCK_CONFIG.address,
               abi: TOKEN_LOCK_ABI,
               functionName: "createLock",
@@ -195,12 +216,12 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
         case "withdraw":
           return {
             ok: true,
-            expected: { to: MPGR_TOKEN_LOCK_CONFIG.address, abi: TOKEN_LOCK_ABI, functionName: "withdraw", args: [params.lockId] },
+            expected: { kind: "tokenLock", to: MPGR_TOKEN_LOCK_CONFIG.address, abi: TOKEN_LOCK_ABI, functionName: "withdraw", args: [params.lockId] },
           };
         case "earlyUnlock":
           return {
             ok: true,
-            expected: { to: MPGR_TOKEN_LOCK_CONFIG.address, abi: TOKEN_LOCK_ABI, functionName: "earlyUnlock", args: [params.lockId] },
+            expected: { kind: "tokenLock", to: MPGR_TOKEN_LOCK_CONFIG.address, abi: TOKEN_LOCK_ABI, functionName: "earlyUnlock", args: [params.lockId] },
           };
         default:
           return invalidAction(`Unknown tokenLock actionType "${String(action.actionType)}".`);
@@ -216,6 +237,7 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
           return {
             ok: true,
             expected: {
+              kind: "erc20",
               to: MPGR_TOKEN_CONFIG.address,
               abi: erc20Abi,
               functionName: "approve",
@@ -226,16 +248,16 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
         case "unstake":
           return {
             ok: true,
-            expected: { to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: params.actionType, args: [params.amount] },
+            expected: { kind: "staking", to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: params.actionType, args: [params.amount] },
           };
         case "claim":
           // actionType "claim" maps to the real on-chain function
           // claimRewards() — the same mapping P0.3's buildStakingAction
           // uses; re-declared independently here rather than imported,
           // since re-deriving it from scratch is the whole point of P0.4.
-          return { ok: true, expected: { to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: "claimRewards", args: [] } };
+          return { ok: true, expected: { kind: "staking", to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: "claimRewards", args: [] } };
         case "exit":
-          return { ok: true, expected: { to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: "exit", args: [] } };
+          return { ok: true, expected: { kind: "staking", to: MPGR_STAKING_CONFIG.address, abi: STAKING_ABI, functionName: "exit", args: [] } };
         default:
           return invalidAction(`Unknown staking actionType "${String(action.actionType)}".`);
       }
@@ -247,12 +269,13 @@ function resolveExpectedCall(action: AgentActionContract): ExpectedCallResult {
         case "claim":
           return {
             ok: true,
-            expected: { to: MPGR_REWARD_VAULT_CONFIG.address, abi: REWARD_VAULT_ABI, functionName: "claim", args: [params.rewardId] },
+            expected: { kind: "rewardVault", to: MPGR_REWARD_VAULT_CONFIG.address, abi: REWARD_VAULT_ABI, functionName: "claim", args: [params.rewardId] },
           };
         case "claimMultiple":
           return {
             ok: true,
             expected: {
+              kind: "rewardVault",
               to: MPGR_REWARD_VAULT_CONFIG.address,
               abi: REWARD_VAULT_ABI,
               functionName: "claimMultiple",
@@ -381,6 +404,60 @@ export function verifyAgentAction(action: AgentActionContract): AgentActionVerif
 
 // --- Simulation (read-only eth_call, network) -------------------------------
 
+// Narrows `expected` to one concrete ABI/functionName pairing (via
+// `expected.kind`) before calling simulateContract, so the ABI passed and
+// the functionName passed always come from the same union member — the
+// exact correlation a flat/hand-unioned functionName type couldn't express.
+// Every branch calls the same read-only `simulateContract` primitive; only
+// the static types differ per branch. `args` is still cast — same as
+// before this fix — since the ABI-specific argument-tuple typing that
+// would remove that cast is a separate, larger typing task than the
+// ABI/functionName correlation this fix addresses.
+async function runExpectedCallSimulation(expected: ExpectedCall, address: Address, chainId: number, account: Address): Promise<void> {
+  switch (expected.kind) {
+    case "erc20":
+      await simulateContract(config, {
+        address,
+        abi: expected.abi,
+        functionName: expected.functionName,
+        args: expected.args as never,
+        chainId,
+        account,
+      });
+      return;
+    case "tokenLock":
+      await simulateContract(config, {
+        address,
+        abi: expected.abi,
+        functionName: expected.functionName,
+        args: expected.args as never,
+        chainId,
+        account,
+      });
+      return;
+    case "staking":
+      await simulateContract(config, {
+        address,
+        abi: expected.abi,
+        functionName: expected.functionName,
+        args: expected.args as never,
+        chainId,
+        account,
+      });
+      return;
+    case "rewardVault":
+      await simulateContract(config, {
+        address,
+        abi: expected.abi,
+        functionName: expected.functionName,
+        args: expected.args as never,
+        chainId,
+        account,
+      });
+      return;
+  }
+}
+
 export interface SimulateAgentActionOptions {
   /** The address to simulate as (msg.sender). Required — never defaulted or fabricated. */
   account?: string;
@@ -420,14 +497,7 @@ export async function simulateAgentAction(
   const { expected } = expectedResult;
 
   try {
-    await simulateContract(config, {
-      address: action.to,
-      abi: expected.abi,
-      functionName: expected.functionName,
-      args: expected.args as never,
-      chainId: action.chainId,
-      account: options.account as Address,
-    });
+    await runExpectedCallSimulation(expected, action.to, action.chainId, options.account as Address);
   } catch {
     // Raw provider/RPC exception text is never surfaced — same rule
     // agent-tool-result.ts's AgentToolError.message follows.
