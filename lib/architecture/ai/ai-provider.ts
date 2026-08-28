@@ -2,6 +2,7 @@ import type { AgentContext } from "@/lib/agent-context";
 import type { AgentIntent } from "@/lib/agent-intelligence";
 import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 import type { ConversationMemoryContext } from "@/lib/architecture/memory/memory-context";
+import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 
 // Phase 3C Part 1 — AIProvider abstraction. Mirrors
 // lib/architecture/memory/memory-provider.ts exactly: an interface, one
@@ -52,6 +53,16 @@ export interface AIProviderResponse {
   actions: AgentAction[];
   highlights: AgentHighlight[];
   followUps: string[];
+  /**
+   * P3 — set only when this turn's tool-calling loop ran
+   * x402_prepare_payment and it succeeded (see
+   * lib/architecture/ai/agent-tool-calling.ts's runToolCallingLoop).
+   * Always taken directly from that tool's own structured result, never
+   * constructed from the model's reply text. Optional/additive so every
+   * existing AIProviderResponse construction (DeterministicAIProvider,
+   * every existing test) remains valid without change.
+   */
+  x402Proposal?: X402PaymentProposal;
 }
 
 export interface AIProvider {
