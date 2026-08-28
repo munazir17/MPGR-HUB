@@ -1,21 +1,10 @@
 import { getMemoryProvider } from "@/lib/architecture/memory/memory-provider-registry";
 import type { AgentIntent } from "@/lib/agent-intelligence";
-// Phase 3B Part 4 — Context Builder. Replaces the old two-step
-// (findPreviousIntent + buildConversationMemoryContext) that used to live
-// directly in this file — both appendAssistantReply and
-// regenerateLastReply make one call to buildAgentPromptContext instead.
 import { buildAgentPromptContext } from "@/lib/agent-prompt-context";
-// Phase 3C Part 1 — AI Provider abstraction. This file no longer calls
-// lib/agent-intelligence.ts's generateIntelligentReply directly; it goes
-// through getAIProvider().generateReply() instead, mirroring how this
-// same file already goes through getMemoryProvider() instead of
-// lib/storage.ts directly. The active provider today
-// (DeterministicAIProvider) calls the exact same generateIntelligentReply
-// function with the exact same arguments — this is a pure indirection,
-// not a behavior change. See lib/architecture/ai/ai-provider-registry.ts.
 import { getAIProvider } from "@/lib/architecture/ai/ai-provider-registry";
 import type { AgentContext } from "@/lib/agent-context";
 import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
+import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 
 // Phase 3A — local/mock persistence for MPGR Agent conversations.
 // Phase 3A.2 — replies come from lib/agent-intelligence.ts.
@@ -24,27 +13,23 @@ import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 // Phase 3A.5 — persistence goes through getMemoryProvider() instead of
 // lib/storage.ts directly; every exported function here is async.
 //
-// Phase 3A.6 addendum — added appendAssistantMessage (below) for the
-// slash-command path in lib/agent-commands/*, which resolves replies
-// deterministically and must NOT go through the AI provider.
+// Phase 3A.6 — appendAssistantMessage / appendCommandMessage support
+// deterministic slash-command results without invoking the AI provider.
 //
-// Phase 3B Part 2 addendum — appendAssistantReply and regenerateLastReply
-// pass a ConversationMemoryContext as part of the request built for
-// reply generation.
+// Phase 3B — prompt context is built through buildAgentPromptContext(),
+// which combines agent context, conversation memory, and previous intent.
 //
-// Phase 3B Part 4 addendum — both call sites build their full prompt
-// context via ONE call to buildAgentPromptContext (the Context Builder)
-// instead of two separate steps.
+// Phase 3C — reply generation goes through getAIProvider() instead of
+// calling generateIntelligentReply() directly.
 //
-// Phase 3C Part 1 addendum — reply generation itself now goes through
-// getAIProvider().generateReply() instead of calling
-// generateIntelligentReply directly.
+// Phase 3C Part 2 — AIProviderRequest includes the wallet address so
+// provider fallback/diagnostic layers can attribute events correctly.
 //
-// Phase 3C Part 2 addendum — both AIProviderRequest objects below now
-// include `address`, so a future FallbackAIProvider sitting behind
-// getAIProvider() can attribute its ai_provider_error /
-// ai_provider_fallback events to the right user. This is the only change
-// in this file for Part 2 — every other line is identical to Part 1.
+// P3 — x402 payment proposals are carried from AIProviderResponse through
+// AgentMessage to the UI. The proposal is never constructed from assistant
+// text here. It is received only from the structured AI provider response
+// and is rendered by the UI as a review-only proposal. Signing/submission
+// remains outside this module.
 
 export type AgentRole = "user" | "assistant";
 export type AgentFeedback = "up" | "down";
@@ -59,6 +44,19 @@ export interface AgentMessage {
   highlights?: AgentHighlight[];
   followUps?: string[];
   feedback?: AgentFeedback;
+
+  /**
+   * P3 — present only when this assistant turn successfully prepared
+   * an x402 payment proposal.
+   *
+   * The value comes directly from AIProviderResponse.x402Proposal,
+   * which itself is captured from the structured x402 prepare-tool
+   * result rather than reconstructed from model-generated text.
+   *
+   * This field is display/state data only. Nothing in AgentMessage,
+   * persistence, or the agent engine signs or submits the payment.
+   */
+  x402Proposal?: X402PaymentProposal;
 }
 
 export interface AgentState {
@@ -71,11 +69,17 @@ function storageKey(address: string): string {
 }
 
 function emptyState(address: string): AgentState {
-  return { address, messages: [] };
+  return {
+    address,
+    messages: [],
+  };
 }
 
 export async function getAgentState(address: string): Promise<AgentState> {
-  return getMemoryProvider().get<AgentState>(storageKey(address), emptyState(address));
+  return getMemoryProvider().get<AgentState>(
+    storageKey(address),
+    emptyState(address),
+  );
 }
 
 async function saveAgentState(state: AgentState): Promise<AgentState> {
@@ -88,139 +92,238 @@ interface AssistantExtras {
   actions?: AgentAction[];
   highlights?: AgentHighlight[];
   followUps?: string[];
+  x402Proposal?: X402PaymentProposal;
 }
 
-function createMessage(role: AgentRole, content: string, extra?: AssistantExtras): AgentMessage {
+function createMessage(
+  role: AgentRole,
+  content: string,
+  extra?: AssistantExtras,
+): AgentMessage {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
     role,
     content,
     timestamp: new Date().toISOString(),
     ...(extra?.intent ? { intent: extra.intent } : {}),
-    ...(extra?.actions && extra.actions.length > 0 ? { actions: extra.actions } : {}),
-    ...(extra?.highlights && extra.highlights.length > 0 ? { highlights: extra.highlights } : {}),
-    ...(extra?.followUps && extra.followUps.length > 0 ? { followUps: extra.followUps } : {}),
+    ...(extra?.actions && extra.actions.length > 0
+      ? { actions: extra.actions }
+      : {}),
+    ...(extra?.highlights && extra.highlights.length > 0
+      ? { highlights: extra.highlights }
+      : {}),
+    ...(extra?.followUps && extra.followUps.length > 0
+      ? { followUps: extra.followUps }
+      : {}),
+    ...(extra?.x402Proposal
+      ? { x402Proposal: extra.x402Proposal }
+      : {}),
   };
 }
 
-export async function appendUserMessage(address: string, content: string): Promise<AgentState> {
+export async function appendUserMessage(
+  address: string,
+  content: string,
+): Promise<AgentState> {
   const trimmed = content.trim();
-  if (!trimmed) return getAgentState(address);
+
+  if (!trimmed) {
+    return getAgentState(address);
+  }
+
   const state = await getAgentState(address);
+
   const updated: AgentState = {
     ...state,
-    messages: [...state.messages, createMessage("user", trimmed)],
+    messages: [
+      ...state.messages,
+      createMessage("user", trimmed),
+    ],
   };
+
   return saveAgentState(updated);
 }
 
 export async function appendAssistantReply(
   address: string,
   userPrompt: string,
-  context: AgentContext
+  context: AgentContext,
 ): Promise<AgentState> {
   const state = await getAgentState(address);
-  const promptContext = await buildAgentPromptContext(address, userPrompt, context, state.messages);
-  const { intent, reply, actions, highlights, followUps } = await getAIProvider().generateReply({
+
+  const promptContext = await buildAgentPromptContext(
+    address,
+    userPrompt,
+    context,
+    state.messages,
+  );
+
+  const {
+    intent,
+    reply,
+    actions,
+    highlights,
+    followUps,
+    x402Proposal,
+  } = await getAIProvider().generateReply({
     prompt: userPrompt,
     agentContext: promptContext.agent,
     previousIntent: promptContext.previousIntent,
     memoryContext: promptContext.memory,
     address,
   });
+
   const updated: AgentState = {
     ...state,
-    messages: [...state.messages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
+    messages: [
+      ...state.messages,
+      createMessage("assistant", reply, {
+        intent,
+        actions,
+        highlights,
+        followUps,
+        x402Proposal,
+      }),
+    ],
   };
+
   return saveAgentState(updated);
 }
 
-// Phase 3A.6 — appends an assistant message whose text was already
-// computed elsewhere (e.g. lib/agent-commands/action-executor.ts's
-// deterministic command results) without calling the AI provider.
-// Reuses the exact same createMessage + saveAgentState path every other
-// function here uses — no new persistence logic, no duplicated
-// message-shape rules. `extra` is optional so a future command result
-// carrying actions/highlights can use this same function without a
-// signature change.
+/**
+ * Appends an assistant message whose content was already computed
+ * elsewhere, such as a deterministic slash-command result.
+ *
+ * This path deliberately does not invoke the AI provider.
+ */
 export async function appendAssistantMessage(
   address: string,
   content: string,
-  extra?: AssistantExtras
+  extra?: AssistantExtras,
 ): Promise<AgentState> {
   const state = await getAgentState(address);
+
   const updated: AgentState = {
     ...state,
-    messages: [...state.messages, createMessage("assistant", content, extra)],
+    messages: [
+      ...state.messages,
+      createMessage("assistant", content, extra),
+    ],
   };
+
   return saveAgentState(updated);
 }
 
-// Phase 3A.6 — appends an assistant message for a slash-command result
-// (lib/agent-commands/action-executor.ts's replyText), called by
-// lib/architecture/ai/agent-ai-service.ts's runCommand(). Reuses the same
-// createMessage + saveAgentState path as appendAssistantMessage — no new
-// persistence logic. `commandName` isn't stored on AgentMessage (no UI
-// currently reads it there); it's accepted here to match runCommand()'s
-// call signature and is already captured separately by the
-// command_executed event and lib/agent-commands/action-history.ts.
+/**
+ * Appends an assistant message for a slash-command result.
+ *
+ * commandName is intentionally not persisted on AgentMessage because
+ * command execution is already recorded separately by the command
+ * history/event system.
+ */
 export async function appendCommandMessage(
   address: string,
   content: string,
-  commandName: string
+  commandName: string,
 ): Promise<AgentState> {
   void commandName;
   return appendAssistantMessage(address, content);
 }
 
-export async function regenerateLastReply(address: string, context: AgentContext): Promise<AgentState> {
+export async function regenerateLastReply(
+  address: string,
+  context: AgentContext,
+): Promise<AgentState> {
   const state = await getAgentState(address);
+
   const last = state.messages[state.messages.length - 1];
-  if (!last || last.role !== "assistant") return state;
+
+  if (!last || last.role !== "assistant") {
+    return state;
+  }
 
   let userIndex = -1;
+
   for (let i = state.messages.length - 2; i >= 0; i--) {
     if (state.messages[i].role === "user") {
       userIndex = i;
       break;
     }
   }
-  if (userIndex === -1) return state;
+
+  if (userIndex === -1) {
+    return state;
+  }
 
   const userPrompt = state.messages[userIndex].content;
   const trimmedMessages = state.messages.slice(0, -1);
-  const promptContext = await buildAgentPromptContext(address, userPrompt, context, trimmedMessages);
-  const { intent, reply, actions, highlights, followUps } = await getAIProvider().generateReply({
+
+  const promptContext = await buildAgentPromptContext(
+    address,
+    userPrompt,
+    context,
+    trimmedMessages,
+  );
+
+  const {
+    intent,
+    reply,
+    actions,
+    highlights,
+    followUps,
+    x402Proposal,
+  } = await getAIProvider().generateReply({
     prompt: userPrompt,
     agentContext: promptContext.agent,
     previousIntent: promptContext.previousIntent,
     memoryContext: promptContext.memory,
     address,
   });
+
   const updated: AgentState = {
     ...state,
-    messages: [...trimmedMessages, createMessage("assistant", reply, { intent, actions, highlights, followUps })],
+    messages: [
+      ...trimmedMessages,
+      createMessage("assistant", reply, {
+        intent,
+        actions,
+        highlights,
+        followUps,
+        x402Proposal,
+      }),
+    ],
   };
+
   return saveAgentState(updated);
 }
 
 export async function setMessageFeedback(
   address: string,
   messageId: string,
-  feedback: AgentFeedback
+  feedback: AgentFeedback,
 ): Promise<AgentState> {
   const state = await getAgentState(address);
+
   const updated: AgentState = {
     ...state,
     messages: state.messages.map((message) =>
       message.id === messageId && message.role === "assistant"
-        ? { ...message, feedback: message.feedback === feedback ? undefined : feedback }
-        : message
+        ? {
+            ...message,
+            feedback:
+              message.feedback === feedback
+                ? undefined
+                : feedback,
+          }
+        : message,
     ),
   };
+
   return saveAgentState(updated);
 }
 
-export async function clearAgentState(address: string): Promise<AgentState> {
+export async function clearAgentState(
+  address: string,
+): Promise<AgentState> {
   return saveAgentState(emptyState(address));
 }
