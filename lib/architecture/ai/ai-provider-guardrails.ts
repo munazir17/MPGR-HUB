@@ -1,6 +1,7 @@
 import { AGENT_INTENTS, type AgentIntent } from "@/lib/agent-intelligence";
 import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-provider";
 import type { Logger } from "@/lib/architecture/core/types";
+import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 
 // Phase 3C Part 4 — AI Provider guardrails.
 //
@@ -43,6 +44,32 @@ export class AIProviderValidationError extends Error {
 
 function isValidIntent(value: unknown): value is AgentIntent {
   return typeof value === "string" && (AGENT_INTENTS as readonly string[]).includes(value);
+}
+
+/**
+ * P3 — cheap defensive shape check only, NOT a re-validation of trust.
+ * The real trust boundary for a proposal's payment fields is
+ * lib/x402/x402-confirmation.ts's revalidateX402Proposal(), which the
+ * confirmation flow always re-runs before anything can be signed (see
+ * hooks/useX402Payment.ts). This just guards against a malformed/absent
+ * object reaching the UI as if it were a real proposal — e.g. if a
+ * future provider implementation sets this field to something that
+ * isn't actually an X402PaymentProposal.
+ */
+function isPlausibleX402Proposal(value: unknown): value is X402PaymentProposal {
+  if (!value || typeof value !== "object") return false;
+  const proposal = value as Record<string, unknown>;
+  if (typeof proposal.id !== "string" || !proposal.id) return false;
+  if (proposal.requiresConfirmation !== true) return false;
+  const requirement = proposal.requirement;
+  if (!requirement || typeof requirement !== "object") return false;
+  const req = requirement as Record<string, unknown>;
+  return (
+    typeof req.resource === "string" &&
+    typeof req.payTo === "string" &&
+    typeof req.asset === "string" &&
+    typeof req.maxAmountRequired === "string"
+  );
 }
 
 export class GuardrailAIProvider implements AIProvider {
@@ -90,12 +117,20 @@ export class GuardrailAIProvider implements AIProvider {
           .slice(0, MAX_FOLLOW_UPS)
       : [];
 
+    const x402Proposal = isPlausibleX402Proposal(response.x402Proposal) ? response.x402Proposal : undefined;
+    if (response.x402Proposal !== undefined && !x402Proposal) {
+      this.logger.warn("AI provider returned a malformed x402Proposal — dropped, not surfaced to the UI", {
+        provider: this.provider.name,
+      });
+    }
+
     return {
       intent: response.intent,
       reply: sanitizedReply,
       actions,
       highlights,
       followUps,
+      ...(x402Proposal ? { x402Proposal } : {}),
     };
   }
 }
