@@ -51,45 +51,84 @@ export interface X402TypedDataForSigning {
   message: X402AuthorizationMessage;
 }
 
-/** A fresh, cryptographically random 32-byte nonce — required per EIP-3009 to prevent authorization replay. Generated once per signing attempt; never reused across a retry (see x402-execution.ts's idempotency note). */
+/**
+ * A fresh, cryptographically random 32-byte nonce — required per
+ * EIP-3009 to prevent authorization replay.
+ *
+ * Generated once per signing attempt; never reused across a retry
+ * (see x402-execution.ts's idempotency note).
+ */
 export function generateAuthorizationNonce(): Hex {
   const bytes = new Uint8Array(32);
+
   crypto.getRandomValues(bytes);
-  return `0x${Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("")}` as Hex;
+
+  return `0x${Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")}` as Hex;
 }
 
 export interface BuildAuthorizationOptions {
   payerAddress: Address;
   chainId: number;
+
   /** Defaults to "now" (0 leeway) — the authorization is valid immediately. */
   validAfter?: bigint;
-  /** How long the authorization stays valid for, in seconds — defaults to the requirement's own maxTimeoutSeconds, falling back to 300s (5 minutes) if the requirement didn't specify one. */
+
+  /**
+   * How long the authorization stays valid for, in seconds.
+   * Defaults to the requirement's own maxTimeoutSeconds,
+   * falling back to 300s (5 minutes) if the requirement didn't specify one.
+   */
   validForSeconds?: number;
+
   nonce?: Hex;
 }
 
 /**
  * Builds the exact EIP-712 typed data the connected wallet will be
  * asked to sign — a pure function of the proposal plus the payer's own
- * address. Every field of the resulting `message` traces back to
+ * address.
+ *
+ * Every field of the resulting `message` traces back to
  * `proposal.requirement` (payTo, maxAmountRequired) or
  * `proposal.eip712Domain` — nothing here is taken from
  * `proposal.description` or any other freeform text.
  */
 export function buildAuthorizationTypedData(
   proposal: X402PaymentProposal,
-  options: BuildAuthorizationOptions
+  options: BuildAuthorizationOptions,
 ): X402TypedDataForSigning {
+  // A proposal reaching this function is expected to have already been
+  // validated by the P3 parse/proposal pipeline. The signing domain is
+  // therefore mandatory at this point. Fail closed rather than allowing
+  // an undefined EIP-712 domain to reach a wallet.
+  const eip712Domain = proposal.eip712Domain;
+
+  if (!eip712Domain) {
+    throw new Error(
+      "Cannot build x402 authorization: the payment proposal has no EIP-712 domain.",
+    );
+  }
+
   const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+
   const validAfter = options.validAfter ?? 0n;
-  const validForSeconds = options.validForSeconds ?? proposal.requirement.maxTimeoutSeconds ?? 300;
-  const validBefore = nowSeconds + BigInt(Math.max(1, Math.floor(validForSeconds)));
+
+  const validForSeconds =
+    options.validForSeconds ??
+    proposal.requirement.maxTimeoutSeconds ??
+    300;
+
+  const validBefore =
+    nowSeconds + BigInt(Math.max(1, Math.floor(validForSeconds)));
+
   const nonce = options.nonce ?? generateAuthorizationNonce();
 
   return {
     domain: {
-      name: proposal.eip712Domain.domain.name,
-      version: proposal.eip712Domain.domain.version,
+      name: eip712Domain.domain.name,
+      version: eip712Domain.domain.version,
       chainId: options.chainId,
       verifyingContract: proposal.requirement.asset as Address,
     },
