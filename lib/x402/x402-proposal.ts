@@ -19,7 +19,15 @@ import type { ParsedX402Requirement } from "./x402-parse";
 import { resolveKnownAssetDecimals } from "./x402-config";
 import type { X402Error, X402PaymentRequirements } from "./x402-types";
 
-export const X402_PROPOSAL_PHASES = ["idle", "validating", "awaiting_signature", "submitting", "settled", "error"] as const;
+export const X402_PROPOSAL_PHASES = [
+  "idle",
+  "validating",
+  "awaiting_signature",
+  "submitting",
+  "settled",
+  "error",
+] as const;
+
 export type X402ProposalPhase = (typeof X402_PROPOSAL_PHASES)[number];
 
 export interface X402PaymentProposal {
@@ -39,9 +47,13 @@ export interface X402PaymentProposal {
   createdAt: string;
 }
 
-export type X402ProposalResult = { ok: true; proposal: X402PaymentProposal } | { ok: false; error: X402Error };
+export type X402ProposalResult =
+  | { ok: true; proposal: X402PaymentProposal }
+  | { ok: false; error: X402Error };
 
-function formatDisplayAmount(requirement: X402PaymentRequirements): string | null {
+function formatDisplayAmount(
+  requirement: X402PaymentRequirements,
+): string | null {
   const decimals = resolveKnownAssetDecimals(requirement.asset);
   if (decimals === null) return null;
 
@@ -49,11 +61,24 @@ function formatDisplayAmount(requirement: X402PaymentRequirements): string | nul
   const denom = 10n ** BigInt(decimals);
   const whole = raw / denom;
   const frac = raw % denom;
-  const fracStr = frac === 0n ? "" : `.\( {frac.toString().padStart(decimals, "0").replace(/0+ \)/, "")}`;
+
+  const fracStr =
+    frac === 0n
+      ? ""
+      : `.${frac
+          .toString()
+          .padStart(decimals, "0")
+          .replace(/0+$/, "")}`;
+
   // "USDC" label kept generic ("token") for any future known asset —
   // only USDC is registered today (see x402-config.ts).
-  const symbol = requirement.asset.toLowerCase() === "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" ? "USDC" : "token";
-  return `\( {whole} \){fracStr} ${symbol}`;
+  const symbol =
+    requirement.asset.toLowerCase() ===
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bdA02913".toLowerCase()
+      ? "USDC"
+      : "token";
+
+  return `${whole}${fracStr} ${symbol}`;
 }
 
 /**
@@ -61,7 +86,10 @@ function formatDisplayAmount(requirement: X402PaymentRequirements): string | nul
  * caller (a tool, a UI) picks WHICH of a resource's `accepts[]` options
  * to propose; this function never chooses among several itself.
  */
-export function buildX402PaymentProposal(resourceUrl: string, parsed: ParsedX402Requirement): X402ProposalResult {
+export function buildX402PaymentProposal(
+  resourceUrl: string,
+  parsed: ParsedX402Requirement,
+): X402ProposalResult {
   const { requirement, eip712Domain } = parsed;
 
   if (requirement.resource !== resourceUrl) {
@@ -72,20 +100,28 @@ export function buildX402PaymentProposal(resourceUrl: string, parsed: ParsedX402
       ok: false,
       error: {
         code: "REQUIREMENT_CHANGED",
-        message: "This payment requirement's resource does not match the URL being requested.",
+        message:
+          "This payment requirement's resource does not match the URL being requested.",
       },
     };
   }
 
   const displayAmount = formatDisplayAmount(requirement);
+
   const warnings: string[] = [
     "This is a real payment. Funds will leave your connected wallet once you sign and this is submitted.",
   ];
+
   if (requirement.maxTimeoutSeconds) {
-    warnings.push(`The signed authorization must be submitted within ${requirement.maxTimeoutSeconds} seconds or it will expire.`);
+    warnings.push(
+      `The signed authorization must be submitted within ${requirement.maxTimeoutSeconds} seconds or it will expire.`,
+    );
   }
+
   if (eip712Domain.source === "known-asset-registry") {
-    warnings.push("The paid asset's signing domain came from this app's own configuration, not the resource server.");
+    warnings.push(
+      "The paid asset's signing domain came from this app's own configuration, not the resource server.",
+    );
   }
 
   const proposal: X402PaymentProposal = {
@@ -94,7 +130,7 @@ export function buildX402PaymentProposal(resourceUrl: string, parsed: ParsedX402
     eip712Domain,
     displayAmount,
     description: requirement.description
-      ? `Pay \( {displayAmount ?? requirement.maxAmountRequired} \){requirement.description ? ` — ${requirement.description}` : ""} to access ${requirement.resource}`
+      ? `Pay ${displayAmount ?? requirement.maxAmountRequired}${requirement.description ? ` — ${requirement.description}` : ""} to access ${requirement.resource}`
       : `Pay ${displayAmount ?? requirement.maxAmountRequired} to access ${requirement.resource}`,
     postConfirmationSteps: [
       "Your wallet will ask you to sign a payment authorization (no gas fee, no on-chain transaction from you directly).",
@@ -110,12 +146,17 @@ export function buildX402PaymentProposal(resourceUrl: string, parsed: ParsedX402
   return { ok: true, proposal };
 }
 
-function buildDeterministicId(requirement: X402PaymentRequirements): string {
-  const raw = `x402:\( {requirement.resource}: \){requirement.asset.toLowerCase()}:\( {requirement.payTo.toLowerCase()}: \){requirement.maxAmountRequired}`;
+function buildDeterministicId(
+  requirement: X402PaymentRequirements,
+): string {
+  const raw = `x402:${requirement.resource}:${requirement.asset.toLowerCase()}:${requirement.payTo.toLowerCase()}:${requirement.maxAmountRequired}`;
+
   let hash = 0x811c9dc5;
+
   for (let i = 0; i < raw.length; i++) {
     hash ^= raw.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193);
   }
+
   return `x402_${(hash >>> 0).toString(16)}`;
 }
