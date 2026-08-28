@@ -6,6 +6,7 @@ import { AgentFollowUpChips } from "./AgentFollowUpChips";
 import { AgentDateSeparator, getMessageDayKey } from "./AgentDateSeparator";
 import { AgentTypingIndicator } from "./AgentTypingIndicator";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
+import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 
 interface AgentChatWindowProps {
   messages: AgentMessage[];
@@ -18,6 +19,9 @@ interface AgentChatWindowProps {
   // useStreamingText. Optional so this component still renders correctly
   // with no streaming behavior if unset (e.g. isolated preview).
   streamingMessageId?: string | null;
+  // P3 — optional, forwarded straight to AgentChatBubble. See that
+  // component's own prop doc.
+  onReviewX402Proposal?: (proposal: X402PaymentProposal) => void;
 }
 
 // Finds the last assistant message that actually has follow-up prompts to
@@ -54,6 +58,7 @@ export function AgentChatWindow({
   onRegenerate,
   canRegenerate,
   streamingMessageId,
+  onReviewX402Proposal,
 }: AgentChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -84,6 +89,7 @@ export function AgentChatWindow({
               showRegenerate={isLastAssistant && canRegenerate}
               disabled={thinking}
               isStreaming={message.id === streamingMessageId}
+              onReviewX402Proposal={onReviewX402Proposal}
             />
             {i === lastFollowUpIndex && (
               <AgentFollowUpChips followUps={message.followUps!} onSelect={onSelectPrompt} disabled={thinking} />
