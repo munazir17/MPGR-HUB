@@ -37,6 +37,13 @@ import "./tool-definitions";
 // definitions themselves are untouched.
 import "./p2-tool-definitions";
 
+// P3 addendum — registers x402_discover_resource / x402_prepare_payment
+// (lib/architecture/tools/x402-tool-definitions.ts) into this exact same
+// production registry instance, the same way the P2 import above does.
+// Both are read/prepare mode only — see that file's header comment for
+// why signing/submission is never reachable through this registry.
+import "./x402-tool-definitions";
+
 export const agentToolRuntime = new AgentToolRuntime(
   getAgentToolRegistry(),
   agentEventBus,
