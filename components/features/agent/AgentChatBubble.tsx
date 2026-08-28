@@ -5,9 +5,11 @@ import { Bot, User } from "lucide-react";
 import { clsx } from "clsx";
 import { AgentHighlightChips } from "./AgentHighlightChips";
 import { AgentActionCard } from "./AgentActionCard";
+import { AgentX402ProposalCard } from "./AgentX402ProposalCard";
 import { AgentMessageToolbar } from "./AgentMessageToolbar";
 import { useStreamingText } from "@/hooks/useStreamingText";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
+import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 
 interface AgentChatBubbleProps {
   message: AgentMessage;
@@ -18,6 +20,11 @@ interface AgentChatBubbleProps {
   // Phase 3A.6 — optional; only the freshest assistant message is ever
   // marked streaming (see AgentChatWindow's streamingMessageId).
   isStreaming?: boolean;
+  // P3 — optional so every existing render site of this component
+  // (before this change) remains valid without a prop. Only called from
+  // an explicit tap on AgentX402ProposalCard below — never
+  // automatically.
+  onReviewX402Proposal?: (proposal: X402PaymentProposal) => void;
 }
 
 function formatTime(iso: string): string {
@@ -40,6 +47,7 @@ export function AgentChatBubble({
   showRegenerate,
   disabled,
   isStreaming,
+  onReviewX402Proposal,
 }: AgentChatBubbleProps) {
   const isUser = message.role === "user";
   const { text: streamedContent, done: streamDone } = useStreamingText(message.content, !isUser && !!isStreaming);
@@ -48,6 +56,7 @@ export function AgentChatBubble({
 
   const hasHighlights = !isUser && revealComplete && !!message.highlights && message.highlights.length > 0;
   const hasActions = !isUser && revealComplete && !!message.actions && message.actions.length > 0;
+  const hasX402Proposal = !isUser && revealComplete && !!message.x402Proposal && !!onReviewX402Proposal;
 
   return (
     <motion.div
@@ -90,6 +99,12 @@ export function AgentChatBubble({
             {message.actions!.map((action) => (
               <AgentActionCard key={action.id} action={action} />
             ))}
+          </div>
+        )}
+
+        {hasX402Proposal && (
+          <div className="flex w-full flex-col gap-1.5 pt-0.5">
+            <AgentX402ProposalCard proposal={message.x402Proposal!} onReview={onReviewX402Proposal!} />
           </div>
         )}
 
