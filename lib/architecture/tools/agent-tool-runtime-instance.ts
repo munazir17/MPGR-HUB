@@ -24,6 +24,19 @@ import { agentPerformanceMonitor } from "@/lib/architecture/core/performance-mon
 // equivalent registration import in agent-ai-service-instance.ts.
 import "./tool-definitions";
 
+// P2 addendum — registers yield_opportunities / yield_estimator /
+// yield_comparison (lib/architecture/tools/p2-tool-definitions.ts) into
+// this exact same production registry instance, the same way the P0.2
+// import above does. Before this line, p2-tool-definitions.ts was only
+// ever imported by its own unit test, so its side-effect registration
+// never ran outside that test file and these three tools never actually
+// existed in the registry AgentToolRuntime/agentToolRuntime reads from —
+// confirmed by inspection (no other production file imported this
+// module). This is the only change required to make the P2 tools
+// reachable through getAgentToolRegistry()/agentToolRuntime; the tool
+// definitions themselves are untouched.
+import "./p2-tool-definitions";
+
 export const agentToolRuntime = new AgentToolRuntime(
   getAgentToolRegistry(),
   agentEventBus,
