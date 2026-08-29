@@ -1,30 +1,58 @@
 // lib/x402/x402-config.ts
 //
-// P3 — compile-time-constant x402 configuration. Exactly the same
-// "never take a trust-relevant value from untrusted input" posture as
-// tool-helpers.ts's TOOL_CHAIN_ID and agent-action-contract.ts's
-// resolved `to` addresses: the network this app will pay on, and the
-// EIP-712 domain fallback for known assets, are fixed here — never
-// inferred from a resource server's freeform text.
+// P3 — compile-time-constant x402 configuration.
 //
-// This file does NOT invent a facilitator URL, a token address, or a
-// payment amount. It only fixes WHICH chain this app is willing to pay
-// on (Base Mainnet — the app's own existing, single configured chain,
-// see lib/wagmi.ts's `chains: [base]`) and provides a small, explicitly
-// sourced fallback for one well-known asset's EIP-712 domain, which a
-// resource server's own `extra` field always overrides (see
-// resolveEip712Domain below) — the facilitator/recipient/amount
-// themselves always come from the 402 response, never from here.
+// Security boundary:
+// - Only Base Mainnet is supported.
+// - Only the "exact" x402 scheme is supported.
+// - Payment amount, recipient and resource are NEVER invented here.
+// - Known asset EIP-712 domains are keyed canonically by lowercase address.
+// - Resource-supplied `extra.name` / `extra.version` takes precedence.
+// - Unknown assets without a supplied EIP-712 domain are rejected.
+//
+// This file does NOT:
+// - fetch anything
+// - sign anything
+// - submit payments
+// - invent facilitator URLs
+// - invent recipients
+// - invent payment amounts
 
 import { base } from "wagmi/chains";
 import { TOOL_CHAIN_ID } from "@/lib/architecture/tools/tool-helpers";
 
-/** CAIP-2 identifier for the one chain this app pays x402 requirements on. Reuses TOOL_CHAIN_ID (Base Mainnet, 8453) — not a second chain constant. */
-export const X402_SUPPORTED_NETWORK = `eip155:${TOOL_CHAIN_ID}` as const;
+// =============================================================================
+// Supported network
+// =============================================================================
 
-/** Only the "exact" scheme (EIP-3009 TransferWithAuthorization) is implemented in P3 — see the header comment in x402-authorization.ts for why. */
+/**
+ * CAIP-2 identifier for the one chain this app is willing to pay on.
+ *
+ * MPGR HUB is Base-Mainnet-only for these tools, and TOOL_CHAIN_ID already
+ * represents Base Mainnet (8453). We deliberately reuse it rather than
+ * introducing another independent chain constant.
+ */
+export const X402_SUPPORTED_NETWORK =
+  `eip155:${TOOL_CHAIN_ID}` as const;
+
+// =============================================================================
+// Supported schemes
+// =============================================================================
+
+/**
+ * P3 implements the x402 "exact" scheme only.
+ *
+ * "exact" corresponds to the EIP-3009-style TransferWithAuthorization
+ * payment flow implemented elsewhere in the x402 subsystem.
+ */
 export const X402_SUPPORTED_SCHEMES = ["exact"] as const;
-export type X402SupportedScheme = (typeof X402_SUPPORTED_SCHEMES)[number];
+
+export type X402SupportedScheme =
+  (typeof X402_SUPPORTED_SCHEMES)[number];
+
+// =============================================================================
+// EIP-712 asset domain configuration
+// =============================================================================
 
 export interface Eip712AssetDomain {
   name: string;
@@ -32,65 +60,139 @@ export interface Eip712AssetDomain {
 }
 
 /**
- * A small, explicitly-sourced fallback registry of EIP-712 domains for
- * assets this app already knows about, keyed by lowercased Base Mainnet
- * contract address. Used ONLY when a payment requirement's own `extra`
- * field (the spec-defined place for a resource server to supply this)
- * is absent — extra always wins when present (see
- * resolveEip712Domain). Every entry's address is the same
- * project-verified Base Mainnet USDC address this codebase already
- * treats as canonical Circle-issued USDC (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913,
- * base.blockscout.com / BaseScan / Circle's own contract-address docs);
- * name/version are USDC's own published EIP-3009/EIP-2612 domain
- * values on Base. No other asset is pre-registered — an unrecognized
- * asset with no `extra` domain is rejected (UNSUPPORTED_ASSET) rather
- * than guessed at.
+ * Known EIP-712 domains for assets this application explicitly recognizes.
+ *
+ * IMPORTANT:
+ * All keys MUST be lowercase because resolveEip712Domain() normalizes
+ * the supplied asset address with .toLowerCase() before lookup.
+ *
+ * Base Mainnet USDC:
+ *
+ *   0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+ *
+ * Canonical lowercase representation:
+ *
+ *   0x833589fcd6edb6e08f4c7c32d4f71b54bda02913
+ *
+ * The previous version contained an uppercase "A" in the final portion
+ * of this registry key. Because lookups are lowercase-normalized, that
+ * prevented the known USDC domain from being found and caused otherwise
+ * valid x402 requirements to be filtered out.
  */
-export const KNOWN_X402_ASSET_DOMAINS: Record<string, Eip712AssetDomain> = {
-  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": { name: "USDC", version: "2" },
+export const KNOWN_X402_ASSET_DOMAINS: Record<
+  string,
+  Eip712AssetDomain
+> = {
+  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": {
+    name: "USDC",
+    version: "2",
+  },
 };
 
-/** Base Mainnet USDC's own decimals — used only for human-readable proposal formatting, never for calldata/authorization values (those stay in the requirement's own atomic-unit string). */
-export const KNOWN_X402_ASSET_DECIMALS: Record<string, number> = {
+/**
+ * Known decimals for human-readable proposal formatting only.
+ *
+ * These values NEVER modify the atomic-unit payment amount used by the
+ * authorization/signing layer.
+ */
+export const KNOWN_X402_ASSET_DECIMALS: Record<
+  string,
+  number
+> = {
   "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": 6,
 };
 
+// =============================================================================
+// Domain resolution
+// =============================================================================
+
 export interface Eip712DomainResolution {
   domain: Eip712AssetDomain;
-  /** Where the domain came from — surfaced in the proposal so a reviewer can see whether it was resource-supplied or app-configured. */
-  source: "requirement.extra" | "known-asset-registry";
+
+  /**
+   * Indicates whether the domain came from:
+   *
+   * - the resource server's own x402 `extra` field, or
+   * - MPGR HUB's explicitly known-asset registry.
+   */
+  source:
+    | "requirement.extra"
+    | "known-asset-registry";
 }
 
 /**
- * Resolves the EIP-712 domain (name/version) to sign a given asset's
- * TransferWithAuthorization against. Prefers the requirement's own
- * `extra.name`/`extra.version` (the protocol's own mechanism for a
- * resource server to declare this) and falls back to
- * KNOWN_X402_ASSET_DOMAINS only when neither is present. Returns null —
- * never a guess — if neither source has it.
+ * Resolve the EIP-712 domain required to sign a payment.
+ *
+ * Priority:
+ *
+ * 1. Resource requirement's explicit `extra.name` + `extra.version`
+ * 2. MPGR HUB's known-asset registry
+ * 3. null — never guess
+ *
+ * The resource-supplied values are accepted only when BOTH name and
+ * version are non-empty strings.
  */
 export function resolveEip712Domain(
   assetAddress: string,
-  extra: Record<string, unknown> | undefined
+  extra: Record<string, unknown> | undefined,
 ): Eip712DomainResolution | null {
   const extraName = extra?.name;
   const extraVersion = extra?.version;
-  if (typeof extraName === "string" && extraName.length > 0 && typeof extraVersion === "string" && extraVersion.length > 0) {
-    return { domain: { name: extraName, version: extraVersion }, source: "requirement.extra" };
+
+  if (
+    typeof extraName === "string" &&
+    extraName.length > 0 &&
+    typeof extraVersion === "string" &&
+    extraVersion.length > 0
+  ) {
+    return {
+      domain: {
+        name: extraName,
+        version: extraVersion,
+      },
+      source: "requirement.extra",
+    };
   }
 
-  const known = KNOWN_X402_ASSET_DOMAINS[assetAddress.toLowerCase()];
+  const known =
+    KNOWN_X402_ASSET_DOMAINS[
+      assetAddress.toLowerCase()
+    ];
+
   if (known) {
-    return { domain: known, source: "known-asset-registry" };
+    return {
+      domain: known,
+      source: "known-asset-registry",
+    };
   }
 
   return null;
 }
 
-/** Only used for human-readable formatting in a proposal — see the header comment on KNOWN_X402_ASSET_DECIMALS. Returns null (never a guess) for an asset this app doesn't already know the decimals of. */
-export function resolveKnownAssetDecimals(assetAddress: string): number | null {
-  return KNOWN_X402_ASSET_DECIMALS[assetAddress.toLowerCase()] ?? null;
+/**
+ * Resolve decimals for a known asset.
+ *
+ * This is display-only information.
+ * Unknown assets return null rather than guessing.
+ */
+export function resolveKnownAssetDecimals(
+  assetAddress: string,
+): number | null {
+  return (
+    KNOWN_X402_ASSET_DECIMALS[
+      assetAddress.toLowerCase()
+    ] ?? null
+  );
 }
 
-// Re-exported for callers that want the raw chain id alongside the CAIP-2 form.
+// =============================================================================
+// Chain ID
+// =============================================================================
+
+/**
+ * Raw numeric Base Mainnet chain ID.
+ *
+ * Re-exported for callers that need the numeric chain ID alongside
+ * the CAIP-2 x402 network identifier.
+ */
 export const X402_CHAIN_ID = base.id;
