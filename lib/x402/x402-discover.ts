@@ -117,6 +117,15 @@ function validateDiscoveryUrl(value: string): URL {
   return url;
 }
 
+/**
+ * Public SSRF gate used by AgentKit-backed routes before they invoke
+ * make_http_request. Same rules as discoverX402Resource: https only,
+ * no localhost / private / link-local hosts.
+ */
+export function assertPublicHttpsUrl(value: string): URL {
+  return validateDiscoveryUrl(value);
+}
+
 async function readResponseBody(response: Response): Promise<unknown | null> {
   const contentLength = response.headers.get("content-length");
 
