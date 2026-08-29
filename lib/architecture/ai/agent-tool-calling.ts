@@ -15,6 +15,12 @@
 //   - The proposal is returned separately as x402Proposal.
 //   - Signing remains outside this loop and requires explicit human
 //     confirmation through the existing x402 confirmation/execution flow.
+//
+// P3 robustness addendum:
+//   - x402 tool arguments are normalized to resourceUrl (never url).
+//   - A valid tool result on the final allowed turn is turned into a
+//     grounded {"intent","reply"} instead of throwing into
+//     FallbackAIProvider / DeterministicAIProvider.
 
 import {
   getAgentActions,
@@ -35,11 +41,79 @@ import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 
 export const MAX_TOOL_CALL_ROUNDS = 3;
 
+const X402_RESOURCE_URL_TOOL_IDS = new Set([
+  "x402_discover_resource",
+  "x402_prepare_payment",
+]);
+
 function isValidIntent(value: unknown): value is AgentIntent {
   return (
     typeof value === "string" &&
     (AGENT_INTENTS as readonly string[]).includes(value)
   );
+}
+
+// ---------------------------------------------------------------------------
+// x402 argument normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * x402_discover_resource / x402_prepare_payment require `resourceUrl`.
+ *
+ * Models (and a few older tests) sometimes emit `url` or `resource`.
+ * Those aliases are rewritten here so the real tool schema is satisfied
+ * without advertising `url` on the declaration.
+ */
+export function normalizeX402ToolArguments(
+  toolId: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!X402_RESOURCE_URL_TOOL_IDS.has(toolId)) {
+    return args;
+  }
+
+  const resourceUrl = pickResourceUrl(args);
+
+  if (resourceUrl === null) {
+    return args;
+  }
+
+  const next: Record<string, unknown> = {
+    ...args,
+    resourceUrl,
+  };
+
+  delete next.url;
+  delete next.resource;
+
+  return next;
+}
+
+function pickResourceUrl(
+  args: Record<string, unknown>,
+): string | null {
+  if (
+    typeof args.resourceUrl === "string" &&
+    args.resourceUrl.trim()
+  ) {
+    return args.resourceUrl.trim();
+  }
+
+  if (
+    typeof args.url === "string" &&
+    args.url.trim()
+  ) {
+    return args.url.trim();
+  }
+
+  if (
+    typeof args.resource === "string" &&
+    args.resource.trim()
+  ) {
+    return args.resource.trim();
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,7 +132,9 @@ export interface FinalAnswerDirective {
   reply: string;
 }
 
-export type ModelDirective = ToolCallDirective | FinalAnswerDirective;
+export type ModelDirective =
+  | ToolCallDirective
+  | FinalAnswerDirective;
 
 export function parseModelDirective(
   content: string,
@@ -69,11 +145,19 @@ export function parseModelDirective(
   try {
     parsed = JSON.parse(content);
   } catch {
-    throw new Error("AI provider response was not valid JSON.");
+    throw new Error(
+      "AI provider response was not valid JSON.",
+    );
   }
 
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("AI provider response was not a JSON object.");
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed)
+  ) {
+    throw new Error(
+      "AI provider response was not a JSON object.",
+    );
   }
 
   const record = parsed as Record<string, unknown>;
@@ -85,7 +169,8 @@ export function parseModelDirective(
     typeof rawToolCall === "object" &&
     !Array.isArray(rawToolCall)
   ) {
-    const toolCallRecord = rawToolCall as Record<string, unknown>;
+    const toolCallRecord =
+      rawToolCall as Record<string, unknown>;
 
     if (
       typeof toolCallRecord.toolId === "string" &&
@@ -98,15 +183,23 @@ export function parseModelDirective(
           ? (toolCallRecord.arguments as Record<string, unknown>)
           : {};
 
+      const toolId = toolCallRecord.toolId.trim();
+
       return {
         kind: "tool_call",
-        toolId: toolCallRecord.toolId,
-        arguments: args,
+        toolId,
+        arguments: normalizeX402ToolArguments(
+          toolId,
+          args,
+        ),
       };
     }
   }
 
-  const reply = typeof record.reply === "string" ? record.reply : "";
+  const reply =
+    typeof record.reply === "string"
+      ? record.reply
+      : "";
 
   if (!reply.trim()) {
     throw new Error(
@@ -155,7 +248,9 @@ export function getReadAndPrepareToolCatalog(): readonly AnyAgentTool[] {
   return getAgentToolRegistry()
     .list()
     .filter(
-      (tool) => tool.mode === "read" || tool.mode === "prepare",
+      (tool) =>
+        tool.mode === "read" ||
+        tool.mode === "prepare",
     );
 }
 
@@ -185,6 +280,7 @@ export function buildToolCatalogPromptBlock(
     'Once you have enough information, respond with ONLY this JSON: {"intent":"<intent>","reply":"<answer>"}',
     "Call at most one tool per turn.",
     "Never invent a toolId.",
+    'For x402_discover_resource and x402_prepare_payment the URL argument name is resourceUrl — never url.',
     "Never invent payment amount, asset, recipient, or any other payment field. If x402_prepare_payment succeeds, the app itself will display the structured proposal.",
   ].join("\n");
 }
@@ -194,8 +290,10 @@ export function buildToolCatalogPromptBlock(
 // ---------------------------------------------------------------------------
 
 function safeStringify(value: unknown): string {
-  return JSON.stringify(value, (_key, v) =>
-    typeof v === "bigint" ? v.toString() : v,
+  return JSON.stringify(
+    value,
+    (_key, v) =>
+      typeof v === "bigint" ? v.toString() : v,
   );
 }
 
@@ -219,17 +317,21 @@ export async function runRegisteredReadTool(
   }
 
   try {
-    return await agentToolRuntime.executeTool(toolId, args, {
-      appContext: request.agentContext,
-      memoryContext: request.memoryContext,
-      walletAddress: request.address,
-      confirmationMode: "always_confirm",
-      permissions: {
-        canRead: true,
-        canPrepare: false,
-        canExecute: false,
+    return await agentToolRuntime.executeTool(
+      toolId,
+      normalizeX402ToolArguments(toolId, args),
+      {
+        appContext: request.agentContext,
+        memoryContext: request.memoryContext,
+        walletAddress: request.address,
+        confirmationMode: "always_confirm",
+        permissions: {
+          canRead: true,
+          canPrepare: false,
+          canExecute: false,
+        },
       },
-    });
+    );
   } catch {
     return toolError(toolId, {
       code: "PROVIDER_ERROR",
@@ -255,7 +357,8 @@ export async function runRegisteredTool(
 
   if (
     !tool ||
-    (tool.mode !== "read" && tool.mode !== "prepare")
+    (tool.mode !== "read" &&
+      tool.mode !== "prepare")
   ) {
     return toolError(toolId, {
       code: "TOOL_NOT_FOUND",
@@ -264,17 +367,21 @@ export async function runRegisteredTool(
   }
 
   try {
-    return await agentToolRuntime.executeTool(toolId, args, {
-      appContext: request.agentContext,
-      memoryContext: request.memoryContext,
-      walletAddress: request.address,
-      confirmationMode: "always_confirm",
-      permissions: {
-        canRead: true,
-        canPrepare: true,
-        canExecute: false,
+    return await agentToolRuntime.executeTool(
+      toolId,
+      normalizeX402ToolArguments(toolId, args),
+      {
+        appContext: request.agentContext,
+        memoryContext: request.memoryContext,
+        walletAddress: request.address,
+        confirmationMode: "always_confirm",
+        permissions: {
+          canRead: true,
+          canPrepare: true,
+          canExecute: false,
+        },
       },
-    });
+    );
   } catch {
     return toolError(toolId, {
       code: "PROVIDER_ERROR",
@@ -293,6 +400,95 @@ export type SendCompletion = (
   userPrompt: string,
 ) => Promise<string>;
 
+function captureX402Proposal(
+  toolId: string,
+  toolResult: AgentToolResult,
+  current: X402PaymentProposal | undefined,
+): X402PaymentProposal | undefined {
+  if (
+    toolId !== "x402_prepare_payment" ||
+    !toolResult.success
+  ) {
+    return current;
+  }
+
+  const data = toolResult.data as
+    | {
+        proposal?: X402PaymentProposal;
+      }
+    | undefined;
+
+  return data?.proposal ?? current;
+}
+
+function buildLoopResponse(
+  request: AIProviderRequest,
+  intent: AgentIntent,
+  reply: string,
+  x402Proposal: X402PaymentProposal | undefined,
+): AIProviderResponse {
+  return {
+    intent,
+    reply,
+    actions: getAgentActions(
+      intent,
+      request.agentContext,
+    ),
+    highlights: getAgentHighlights(
+      intent,
+      request.agentContext,
+    ),
+    followUps: getFollowUpPrompts(intent),
+    ...(x402Proposal ? { x402Proposal } : {}),
+  };
+}
+
+/**
+ * Last-resort reply when the model keeps requesting tools on its final
+ * allowed turn. Grounded only in the structured tool result — never
+ * invents payment amount / asset / payTo.
+ */
+export function synthesizeFinalReplyFromToolResult(
+  toolId: string,
+  toolResult: AgentToolResult,
+  capturedX402Proposal:
+    | X402PaymentProposal
+    | undefined,
+): string {
+  if (capturedX402Proposal) {
+    return "A payment proposal is ready for you to review in the app. I will not sign or submit anything until you explicitly confirm.";
+  }
+
+  if (toolId === "x402_discover_resource") {
+    if (toolResult.success) {
+      const paymentRequired =
+        (
+          toolResult.data as
+            | { paymentRequired?: unknown }
+            | undefined
+        )?.paymentRequired === true;
+
+      return paymentRequired
+        ? "This resource requires an x402 payment. The accepted options come from the resource server. Say if you want me to prepare a payment proposal — I will not sign or submit it."
+        : "This resource did not request an x402 payment.";
+    }
+
+    return (
+      toolResult.error?.message?.trim() ||
+      "I could not determine whether that resource requires an x402 payment. Please retry."
+    );
+  }
+
+  if (toolResult.success) {
+    return "I finished that lookup. Ask if you want me to go further — I will not sign or submit any transaction.";
+  }
+
+  return (
+    toolResult.error?.message?.trim() ||
+    "I could not complete that lookup. Please retry or rephrase."
+  );
+}
+
 /**
  * Runs one provider turn with bounded client-side tool calling.
  *
@@ -305,15 +501,21 @@ export type SendCompletion = (
  *   5. Final AIProviderResponse carries x402Proposal separately.
  *
  * The model never constructs the proposal.
+ *
+ * If the model requests another tool on the final allowed turn, the
+ * loop still executes that last read/prepare tool (never execute-mode)
+ * and returns a grounded final answer. It does not throw into
+ * FallbackAIProvider after a valid tool result.
  */
 export async function runToolCallingLoop(
   request: AIProviderRequest,
   baseSystemPrompt: string,
   sendCompletion: SendCompletion,
 ): Promise<AIProviderResponse> {
-  const catalogBlock = buildToolCatalogPromptBlock(
-    getReadAndPrepareToolCatalog(),
-  );
+  const catalogBlock =
+    buildToolCatalogPromptBlock(
+      getReadAndPrepareToolCatalog(),
+    );
 
   const systemPrompt = catalogBlock
     ? `${baseSystemPrompt}\n\n${catalogBlock}`
@@ -352,31 +554,11 @@ export async function runToolCallingLoop(
     );
 
     if (directive.kind === "final") {
-      return {
-        intent: directive.intent,
-        reply: directive.reply,
-        actions: getAgentActions(
-          directive.intent,
-          request.agentContext,
-        ),
-        highlights: getAgentHighlights(
-          directive.intent,
-          request.agentContext,
-        ),
-        followUps: getFollowUpPrompts(
-          directive.intent,
-        ),
-        ...(capturedX402Proposal
-          ? {
-              x402Proposal: capturedX402Proposal,
-            }
-          : {}),
-      };
-    }
-
-    if (isFinalRound) {
-      throw new Error(
-        "AI provider requested a tool call on its final allowed turn — refusing to loop further.",
+      return buildLoopResponse(
+        request,
+        directive.intent,
+        directive.reply,
+        capturedX402Proposal,
       );
     }
 
@@ -386,24 +568,31 @@ export async function runToolCallingLoop(
       request,
     );
 
+    capturedX402Proposal =
+      captureX402Proposal(
+        directive.toolId,
+        toolResult,
+        capturedX402Proposal,
+      );
+
+    if (isFinalRound) {
+      const intent =
+        request.previousIntent ?? "general_help";
+
+      return buildLoopResponse(
+        request,
+        intent,
+        synthesizeFinalReplyFromToolResult(
+          directive.toolId,
+          toolResult,
+          capturedX402Proposal,
+        ),
+        capturedX402Proposal,
+      );
+    }
+
     const isX402Prepare =
       directive.toolId === "x402_prepare_payment";
-
-    // ---------------------------------------------------------------
-    // P3: capture proposal ONLY from structured tool output.
-    // ---------------------------------------------------------------
-
-    if (isX402Prepare && toolResult.success) {
-      const data = toolResult.data as
-        | {
-            proposal?: X402PaymentProposal;
-          }
-        | undefined;
-
-      if (data?.proposal) {
-        capturedX402Proposal = data.proposal;
-      }
-    }
 
     // ---------------------------------------------------------------
     // Feed a deliberately restricted x402 result back to the model.
@@ -434,7 +623,8 @@ export async function runToolCallingLoop(
           success: toolResult.success,
           data: toolResult.data ?? null,
           error: toolResult.error ?? null,
-          source: toolResult.metadata.source ?? null,
+          source:
+            toolResult.metadata.source ?? null,
         }),
         'Use this tool result, if relevant, to answer the user\'s original question. Respond ONLY with the final JSON {"intent":"...","reply":"..."}.',
       ].join("\n");
