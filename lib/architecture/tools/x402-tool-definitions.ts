@@ -20,8 +20,6 @@
 // These tools deliberately contain NO execute-mode x402 tool.
 // The AI can discover and prepare a proposal, but signing/submission
 // remains exclusively behind the explicit Confirm & Pay UI flow.
-//
-// The actual AgentToolRuntime permission boundary remains unchanged.
 
 import { parseX402PaymentRequired } from "@/lib/x402/x402-parse";
 import { buildX402PaymentProposal } from "@/lib/x402/x402-proposal";
@@ -35,7 +33,6 @@ const DISCOVERY_API_PATH = "/api/x402/discover";
 
 function isHttpsUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
-
   try {
     return new URL(value).protocol === "https:";
   } catch {
@@ -44,28 +41,11 @@ function isHttpsUrl(value: unknown): value is string {
 }
 
 /**
- * Calls the app's same-origin discovery endpoint.
- *
- * The endpoint returns an HTTP response containing an envelope:
- *
- * {
- *   status,
- *   body,
- *   finalUrl
- * }
- *
- * `status` is the upstream resource status.
- * Therefore an upstream x402 response is represented as:
- *
- * HTTP 200
- * {
- *   status: 402,
- *   body: {...}
- * }
+ * Same-origin discovery. The route always returns HTTP 200 with:
+ *   { status, body, finalUrl }
+ * `status` is the upstream x402 status (402 when payment is required).
  */
-async function discoverResourceServerSide(
-  resourceUrl: string,
-): Promise<{
+async function discoverResourceServerSide(resourceUrl: string): Promise<{
   status: number;
   body: unknown | null;
   finalUrl: string;
@@ -130,9 +110,7 @@ export const x402DiscoverResourceTool: AgentTool = {
   inputSchema: discoverSchema,
 
   async execute(input) {
-    const { resourceUrl } = (input ?? {}) as {
-      resourceUrl?: unknown;
-    };
+    const { resourceUrl } = (input ?? {}) as { resourceUrl?: unknown };
 
     if (!isHttpsUrl(resourceUrl)) {
       return toolError("x402_discover_resource", {
@@ -144,9 +122,7 @@ export const x402DiscoverResourceTool: AgentTool = {
     try {
       const discovered = await discoverResourceServerSide(resourceUrl);
 
-      // IMPORTANT:
-      // Check the upstream status from the JSON envelope,
-      // NOT response.status from the discovery API.
+      // Envelope status — not the HTTP status of /api/x402/discover.
       if (discovered.status !== 402) {
         return toolSuccess("x402_discover_resource", {
           resourceUrl,
@@ -157,7 +133,6 @@ export const x402DiscoverResourceTool: AgentTool = {
       }
 
       const parsed = parseX402PaymentRequired(discovered.body);
-
       if (!parsed.ok) {
         return toolError("x402_discover_resource", {
           code: "DATA_UNAVAILABLE",
@@ -172,7 +147,6 @@ export const x402DiscoverResourceTool: AgentTool = {
         x402Version: parsed.x402Version,
         options: parsed.requirements.map((parsedRequirement, index) => {
           const requirement = parsedRequirement.requirement;
-
           return {
             index,
             scheme: requirement.scheme,
@@ -262,7 +236,6 @@ export const x402PreparePaymentTool: AgentTool = {
       }
 
       const parsed = parseX402PaymentRequired(discovered.body);
-
       if (!parsed.ok) {
         return toolError("x402_prepare_payment", {
           code: "DATA_UNAVAILABLE",
@@ -270,11 +243,8 @@ export const x402PreparePaymentTool: AgentTool = {
         });
       }
 
-      const index =
-        typeof optionIndex === "number" ? optionIndex : 0;
-
+      const index = typeof optionIndex === "number" ? optionIndex : 0;
       const chosen = parsed.requirements[index];
-
       if (!chosen) {
         return toolError("x402_prepare_payment", {
           code: "INVALID_INPUT",
@@ -282,11 +252,7 @@ export const x402PreparePaymentTool: AgentTool = {
         });
       }
 
-      const proposalResult = buildX402PaymentProposal(
-        resourceUrl,
-        chosen,
-      );
-
+      const proposalResult = buildX402PaymentProposal(resourceUrl, chosen);
       if (!proposalResult.ok) {
         return toolError("x402_prepare_payment", {
           code: "DATA_UNAVAILABLE",
@@ -294,12 +260,8 @@ export const x402PreparePaymentTool: AgentTool = {
         });
       }
 
-      const proposal: X402PaymentProposal =
-        proposalResult.proposal;
-
-      return toolSuccess("x402_prepare_payment", {
-        proposal,
-      });
+      const proposal: X402PaymentProposal = proposalResult.proposal;
+      return toolSuccess("x402_prepare_payment", { proposal });
     } catch {
       return toolError("x402_prepare_payment", {
         code: "PROVIDER_ERROR",
@@ -311,11 +273,7 @@ export const x402PreparePaymentTool: AgentTool = {
 };
 
 const registry = getAgentToolRegistry();
-
-for (const tool of [
-  x402DiscoverResourceTool,
-  x402PreparePaymentTool,
-]) {
+for (const tool of [x402DiscoverResourceTool, x402PreparePaymentTool]) {
   if (!registry.has(tool.id)) {
     registry.register(tool);
   }
