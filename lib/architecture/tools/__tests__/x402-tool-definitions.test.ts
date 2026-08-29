@@ -48,19 +48,36 @@ function fetchReturning402() {
   return vi.fn().mockResolvedValue(
     new Response(
       JSON.stringify({
-        x402Version: 1,
-        accepts: [
-          {
-            scheme: "exact",
-            network: X402_SUPPORTED_NETWORK,
-            maxAmountRequired: "1000000",
-            resource: RESOURCE,
-            payTo: PAY_TO,
-            asset: USDC,
-          },
-        ],
+        status: 402,
+        body: {
+          x402Version: 1,
+          accepts: [
+            {
+              scheme: "exact",
+              network: X402_SUPPORTED_NETWORK,
+              maxAmountRequired: "1000000",
+              resource: RESOURCE,
+              payTo: PAY_TO,
+              asset: USDC,
+            },
+          ],
+        },
+        finalUrl: RESOURCE,
       }),
-      { status: 402 }
+      { status: 200 }
+    )
+  );
+}
+
+function fetchReturningOk() {
+  return vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        status: 200,
+        body: null,
+        finalUrl: RESOURCE,
+      }),
+      { status: 200 }
     )
   );
 }
@@ -103,7 +120,7 @@ describe("x402 tools via AgentToolRuntime", () => {
   });
 
   it("36. x402_discover_resource reports paymentRequired: false for a non-402 resource", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 200 })));
+    vi.stubGlobal("fetch", fetchReturningOk());
     const runtime = makeRuntime();
 
     const result = await runtime.executeTool("x402_discover_resource", { resourceUrl: RESOURCE }, {});
@@ -127,7 +144,7 @@ describe("x402 tools via AgentToolRuntime", () => {
   });
 
   it("38. x402_prepare_payment rejects a resource that isn't actually payment-required", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 200 })));
+    vi.stubGlobal("fetch", fetchReturningOk());
     const runtime = makeRuntime();
 
     const result = await runtime.executeTool("x402_prepare_payment", { resourceUrl: RESOURCE }, {});
