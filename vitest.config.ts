@@ -13,6 +13,13 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "."),
+      // Next.js `server-only` throws in a non-react-server resolver.
+      // AgentKit modules import it as a browser-bundle guard; tests run
+      // in Node and need the empty stub.
+      "server-only": path.resolve(
+        __dirname,
+        "lib/architecture/agentkit/__tests__/server-only-stub.ts",
+      ),
     },
   },
   test: {
