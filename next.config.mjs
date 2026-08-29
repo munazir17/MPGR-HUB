@@ -4,14 +4,18 @@ const nextConfig = {
   images: {
     remotePatterns: [{ protocol: "https", hostname: "**" }],
   },
-  webpack: (config) => {
+  // AgentKit and its CDP/x402 stack are Node-only. Keep them out of the
+  // Next bundler so the browser never receives CDP secrets, signers, or
+  // the x402 payment clients.
+  serverExternalPackages: [
+    "@coinbase/agentkit",
+    "@coinbase/cdp-sdk",
+    "@coinbase/coinbase-sdk",
+    "@coinbase/x402",
+  ],
+  webpack: (config, { isServer }) => {
     config.resolve.alias = {
       ...config.resolve.alias,
-      "@x402/evm/upto/client": false,
-      "@x402/evm/exact/client": false,
-      "@x402/core/client": false,
-      "@x402/svm/exact/client": false,
-      "@x402/evm": false,
       // These are optional peer deps pulled in transitively by
       // @metamask/sdk (React Native storage, never used in a browser
       // build) and pino (a pretty-printer for Node dev logging, never
@@ -21,6 +25,19 @@ const nextConfig = {
       "@react-native-async-storage/async-storage": false,
       "pino-pretty": false,
     };
+
+    if (!isServer) {
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        "@x402/evm/upto/client": false,
+        "@x402/evm/exact/client": false,
+        "@x402/core/client": false,
+        "@x402/svm/exact/client": false,
+        "@x402/evm": false,
+        "@coinbase/agentkit": false,
+      };
+    }
+
     return config;
   },
   async headers() {
