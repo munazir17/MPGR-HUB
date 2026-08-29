@@ -2,36 +2,110 @@
 //
 // P3 — x402 Agentic Commerce, agent-facing tools.
 //
-// Exactly two tools, both well inside AgentToolRuntime's existing
-// read/prepare safety envelope (see agent-tool-runtime.ts's header
-// comment — "execute" tools are unconditionally refused there; there is
-// no third tool here that tries to be one):
+// Exactly two tools:
 //
-//   x402_discover_resource  (mode: "read")    — GETs a URL, reports
-//     whether it requires x402 payment and what the accepted payment
-//     options are. No proposal, no amount commitment, no side effects
-//     beyond the read itself.
+//   x402_discover_resource  (mode: "read")
+//     Performs read-only x402 discovery through this app's own
+//     same-origin /api/x402/discover route. The browser therefore never
+//     directly fetches an arbitrary third-party resource and discovery
+//     does not depend on the resource server's CORS policy.
 //
-//   x402_prepare_payment    (mode: "prepare") — builds a structured,
-//     typed X402PaymentProposal (lib/x402/x402-proposal.ts) for ONE
-//     already-discovered requirement. Returns a proposal for the UI to
-//     render and the user to explicitly confirm — it does not sign
-//     anything, does not call the wallet, and does not submit the paid
-//     request. See hooks/useX402Payment.ts for the confirm -> sign ->
-//     submit -> verify path that picks up this tool's output.
+//   x402_prepare_payment    (mode: "prepare")
+//     Re-discovers the resource through the same server-side discovery
+//     route and builds a structured X402PaymentProposal. It never signs,
+//     never touches a wallet, and never submits a payment.
 //
-// The LLM can select which of these to call and which resource/index to
-// pass, but it can never reach signing/submission through this
-// registry — that boundary is enforced structurally (no "execute" tool
-// exists here at all), not by a runtime permission check that could be
-// misconfigured.
+// IMPORTANT SAFETY BOUNDARY
+// -------------------------
+// These tools deliberately contain NO execute-mode x402 tool.
+// The AI can discover and prepare a proposal, but signing/submission
+// remains exclusively behind the explicit Confirm & Pay UI flow.
+//
+// The actual AgentToolRuntime permission boundary remains unchanged.
 
 import { parseX402PaymentRequired } from "@/lib/x402/x402-parse";
 import { buildX402PaymentProposal } from "@/lib/x402/x402-proposal";
+import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 
 import type { AgentTool, AgentToolSchema } from "./agent-tool";
 import { getAgentToolRegistry } from "./agent-tool-registry-instance";
 import { toolError, toolSuccess } from "./agent-tool-result";
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const DISCOVERY_API_PATH = "/api/x402/discover";
+
+// =============================================================================
+// Shared helpers
+// =============================================================================
+
+function isHttpsUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Calls the app's same-origin discovery endpoint.
+ *
+ * The endpoint performs the actual third-party GET server-side.
+ * This intentionally keeps browser CORS out of the x402 discovery path.
+ *
+ * This helper never attaches payment credentials or wallet credentials.
+ */
+async function discoverResourceServerSide(
+  resourceUrl: string,
+): Promise<{
+  status: number;
+  body: unknown | null;
+  finalUrl: string;
+}> {
+  const response = await fetch(DISCOVERY_API_PATH, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ resourceUrl }),
+    cache: "no-store",
+  });
+
+  const payload = (await response.json().catch(() => null)) as
+    | {
+        status?: unknown;
+        body?: unknown;
+        finalUrl?: unknown;
+        error?: unknown;
+        code?: unknown;
+      }
+    | null;
+
+  if (!response.ok) {
+    throw new Error(
+      typeof payload?.error === "string"
+        ? payload.error
+        : "Could not reach that resource. This may be temporary.",
+    );
+  }
+
+  return {
+    status:
+      typeof payload?.status === "number"
+        ? payload.status
+        : 0,
+    body: payload?.body ?? null,
+    finalUrl:
+      typeof payload?.finalUrl === "string"
+        ? payload.finalUrl
+        : resourceUrl,
+  };
+}
 
 // =============================================================================
 // 1. x402_discover_resource
@@ -42,20 +116,12 @@ const discoverSchema: AgentToolSchema = {
   properties: {
     resourceUrl: {
       type: "string",
-      description: "The full https:// URL of the resource to check for an x402 payment requirement.",
+      description:
+        "The full https:// URL of the resource to check for an x402 payment requirement.",
     },
   },
   required: ["resourceUrl"],
 };
-
-function isHttpsUrl(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
-}
 
 export const x402DiscoverResourceTool: AgentTool = {
   id: "x402_discover_resource",
@@ -70,7 +136,9 @@ export const x402DiscoverResourceTool: AgentTool = {
   inputSchema: discoverSchema,
 
   async execute(input) {
-    const { resourceUrl } = (input ?? {}) as { resourceUrl?: unknown };
+    const { resourceUrl } = (input ?? {}) as {
+      resourceUrl?: unknown;
+    };
 
     if (!isHttpsUrl(resourceUrl)) {
       return toolError("x402_discover_resource", {
@@ -79,9 +147,49 @@ export const x402DiscoverResourceTool: AgentTool = {
       });
     }
 
-    let response: Response;
     try {
-      response = await fetch(resourceUrl, { method: "GET" });
+      const discovered = await discoverResourceServerSide(resourceUrl);
+
+      // A normal resource response means no x402 payment requirement.
+      if (discovered.status !== 402) {
+        return toolSuccess("x402_discover_resource", {
+          resourceUrl,
+          finalUrl: discovered.finalUrl,
+          paymentRequired: false,
+          status: discovered.status,
+        });
+      }
+
+      const parsed = parseX402PaymentRequired(discovered.body);
+
+      if (!parsed.ok) {
+        return toolError("x402_discover_resource", {
+          code: "DATA_UNAVAILABLE",
+          message: parsed.error.message,
+        });
+      }
+
+      return toolSuccess("x402_discover_resource", {
+        resourceUrl,
+        finalUrl: discovered.finalUrl,
+        paymentRequired: true,
+        x402Version: parsed.x402Version,
+        options: parsed.requirements.map((parsedRequirement, index) => {
+          const requirement = parsedRequirement.requirement;
+
+          return {
+            index,
+            scheme: requirement.scheme,
+            network: requirement.network,
+            asset: requirement.asset,
+            maxAmountRequired: requirement.maxAmountRequired,
+            payTo: requirement.payTo,
+            description: requirement.description,
+            mimeType: requirement.mimeType,
+            maxTimeoutSeconds: requirement.maxTimeoutSeconds,
+          };
+        }),
+      });
     } catch {
       return toolError("x402_discover_resource", {
         code: "PROVIDER_ERROR",
@@ -89,47 +197,6 @@ export const x402DiscoverResourceTool: AgentTool = {
         retryable: true,
       });
     }
-
-    if (response.status !== 402) {
-      return toolSuccess("x402_discover_resource", {
-        resourceUrl,
-        paymentRequired: false,
-        status: response.status,
-      });
-    }
-
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      return toolError("x402_discover_resource", {
-        code: "DATA_UNAVAILABLE",
-        message: "This resource returned 402 but its response body was not valid JSON.",
-      });
-    }
-
-    const parsed = parseX402PaymentRequired(body);
-    if (!parsed.ok) {
-      return toolError("x402_discover_resource", {
-        code: "DATA_UNAVAILABLE",
-        message: parsed.error.message,
-      });
-    }
-
-    return toolSuccess("x402_discover_resource", {
-      resourceUrl,
-      paymentRequired: true,
-      x402Version: parsed.x402Version,
-      options: parsed.requirements.map((r, index) => ({
-        index,
-        scheme: r.requirement.scheme,
-        network: r.requirement.network,
-        asset: r.requirement.asset,
-        maxAmountRequired: r.requirement.maxAmountRequired,
-        payTo: r.requirement.payTo,
-        description: r.requirement.description,
-      })),
-    });
   },
 };
 
@@ -142,11 +209,13 @@ const preparePaymentSchema: AgentToolSchema = {
   properties: {
     resourceUrl: {
       type: "string",
-      description: "The same https:// URL previously discovered with x402_discover_resource.",
+      description:
+        "The same https:// URL previously discovered with x402_discover_resource.",
     },
     optionIndex: {
       type: "number",
-      description: "Which of x402_discover_resource's returned `options[]` to prepare a payment for. Defaults to 0 if there is exactly one option.",
+      description:
+        "Which x402_discover_resource returned option to prepare a payment for. Defaults to 0 when omitted.",
     },
   },
   required: ["resourceUrl"],
@@ -165,7 +234,10 @@ export const x402PreparePaymentTool: AgentTool = {
   inputSchema: preparePaymentSchema,
 
   async execute(input) {
-    const { resourceUrl, optionIndex } = (input ?? {}) as { resourceUrl?: unknown; optionIndex?: unknown };
+    const { resourceUrl, optionIndex } = (input ?? {}) as {
+      resourceUrl?: unknown;
+      optionIndex?: unknown;
+    };
 
     if (!isHttpsUrl(resourceUrl)) {
       return toolError("x402_prepare_payment", {
@@ -173,16 +245,75 @@ export const x402PreparePaymentTool: AgentTool = {
         message: "resourceUrl must be a valid https:// URL.",
       });
     }
-    if (optionIndex !== undefined && (typeof optionIndex !== "number" || !Number.isInteger(optionIndex) || optionIndex < 0)) {
+
+    if (
+      optionIndex !== undefined &&
+      (
+        typeof optionIndex !== "number" ||
+        !Number.isInteger(optionIndex) ||
+        optionIndex < 0
+      )
+    ) {
       return toolError("x402_prepare_payment", {
         code: "INVALID_INPUT",
-        message: "optionIndex, if provided, must be a non-negative integer.",
+        message:
+          "optionIndex, if provided, must be a non-negative integer.",
       });
     }
 
-    let response: Response;
     try {
-      response = await fetch(resourceUrl, { method: "GET" });
+      const discovered = await discoverResourceServerSide(resourceUrl);
+
+      if (discovered.status !== 402) {
+        return toolError("x402_prepare_payment", {
+          code: "DATA_UNAVAILABLE",
+          message:
+            "This resource is not currently requesting payment — there is nothing to prepare.",
+        });
+      }
+
+      const parsed = parseX402PaymentRequired(discovered.body);
+
+      if (!parsed.ok) {
+        return toolError("x402_prepare_payment", {
+          code: "DATA_UNAVAILABLE",
+          message: parsed.error.message,
+        });
+      }
+
+      const index =
+        typeof optionIndex === "number"
+          ? optionIndex
+          : 0;
+
+      const chosen = parsed.requirements[index];
+
+      if (!chosen) {
+        return toolError("x402_prepare_payment", {
+          code: "INVALID_INPUT",
+          message:
+            `optionIndex ${index} is out of range — this resource offered ${parsed.requirements.length} option(s).`,
+        });
+      }
+
+      const proposalResult = buildX402PaymentProposal(
+        resourceUrl,
+        chosen,
+      );
+
+      if (!proposalResult.ok) {
+        return toolError("x402_prepare_payment", {
+          code: "DATA_UNAVAILABLE",
+          message: proposalResult.error.message,
+        });
+      }
+
+      const proposal: X402PaymentProposal =
+        proposalResult.proposal;
+
+      return toolSuccess("x402_prepare_payment", {
+        proposal,
+      });
     } catch {
       return toolError("x402_prepare_payment", {
         code: "PROVIDER_ERROR",
@@ -190,57 +321,19 @@ export const x402PreparePaymentTool: AgentTool = {
         retryable: true,
       });
     }
-
-    if (response.status !== 402) {
-      return toolError("x402_prepare_payment", {
-        code: "DATA_UNAVAILABLE",
-        message: "This resource is not currently requesting payment — there is nothing to prepare.",
-      });
-    }
-
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      return toolError("x402_prepare_payment", {
-        code: "DATA_UNAVAILABLE",
-        message: "This resource returned 402 but its response body was not valid JSON.",
-      });
-    }
-
-    const parsed = parseX402PaymentRequired(body);
-    if (!parsed.ok) {
-      return toolError("x402_prepare_payment", {
-        code: "DATA_UNAVAILABLE",
-        message: parsed.error.message,
-      });
-    }
-
-    const index = typeof optionIndex === "number" ? optionIndex : 0;
-    const chosen = parsed.requirements[index];
-    if (!chosen) {
-      return toolError("x402_prepare_payment", {
-        code: "INVALID_INPUT",
-        message: `optionIndex ${index} is out of range — this resource offered ${parsed.requirements.length} option(s).`,
-      });
-    }
-
-    const proposalResult = buildX402PaymentProposal(resourceUrl, chosen);
-    if (!proposalResult.ok) {
-      return toolError("x402_prepare_payment", {
-        code: "DATA_UNAVAILABLE",
-        message: proposalResult.error.message,
-      });
-    }
-
-    return toolSuccess("x402_prepare_payment", { proposal: proposalResult.proposal });
   },
 };
 
-// --- Registration --------------------------------------------------------
+// =============================================================================
+// Registration
+// =============================================================================
 
 const registry = getAgentToolRegistry();
-for (const tool of [x402DiscoverResourceTool, x402PreparePaymentTool]) {
+
+for (const tool of [
+  x402DiscoverResourceTool,
+  x402PreparePaymentTool,
+]) {
   if (!registry.has(tool.id)) {
     registry.register(tool);
   }
