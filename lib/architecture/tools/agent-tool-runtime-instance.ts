@@ -44,6 +44,11 @@ import "./p2-tool-definitions";
 // why signing/submission is never reachable through this registry.
 import "./x402-tool-definitions";
 
+// AgentKit addendum — registers the client-facing read wrappers for the
+// server-only Coinbase AgentKit onchain layer. Write/auto-pay AgentKit
+// actions are not registered here and are denied by the server allowlist.
+import "./agentkit-tool-definitions";
+
 export const agentToolRuntime = new AgentToolRuntime(
   getAgentToolRegistry(),
   agentEventBus,
