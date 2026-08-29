@@ -70,10 +70,13 @@ export class GeminiAIProvider implements AIProvider {
 // Gemini now receives native function declarations for the production
 // read/prepare tool catalog. The server-side Gemini route converts those
 // declarations into Google's generateContent request shape and converts
-// any native functionCall response back into the vendor-neutral
+// any native Gemini functionCall response back into the vendor-neutral
 // {"toolCall": ...} format expected by runToolCallingLoop.
 //
-// No Gemini API key is exposed here.
+// No Gemini API key is exposed here. A 429/empty-content from the
+// route is a controlled throw so FallbackAIProvider / the circuit
+// breaker can still catch it — this provider does not swallow those
+// errors itself.
 async function sendCompletion(
   systemPrompt: string,
   userPrompt: string,
@@ -98,8 +101,10 @@ async function sendCompletion(
     const errorBody = await res.json().catch(() => null);
 
     const message =
-      errorBody?.error ??
-      `Request to /api/agent/complete/gemini failed with ${res.status}`;
+      typeof errorBody?.error === "string" &&
+      errorBody.error.trim()
+        ? errorBody.error
+        : `Request to /api/agent/complete/gemini failed with ${res.status}`;
 
     throw new Error(message);
   }
@@ -141,9 +146,9 @@ function buildSystemPrompt(request: AIProviderRequest): string {
 
     "You have native tools available for looking up live facts and for discovering or preparing an x402-gated resource. Prefer calling an appropriate provided tool when the user's request genuinely requires live information or x402 resource access.",
 
-    "If the user's message already contains an https URL and they ask you to inspect, discover, access, or determine whether it is an x402-gated resource, call x402_discover_resource with that URL instead of asking the user to provide the URL again.",
+    'If the user\'s message already contains an https URL and they ask you to inspect, discover, access, or determine whether it is an x402-gated resource, call x402_discover_resource with arguments {"resourceUrl":"<that URL>"} instead of asking the user to provide the URL again. The argument name is resourceUrl — never url.',
 
-    "If an x402 resource has been discovered and the user explicitly wants to access/pay for it, use the available x402 preparation tool when appropriate. Preparing an x402 payment only creates a proposal for the user to review; it never signs or submits a payment.",
+    "If an x402 resource has been discovered and the user explicitly wants to access/pay for it, use x402_prepare_payment with arguments {\"resourceUrl\":\"<that URL>\"} when appropriate. Preparing an x402 payment only creates a proposal for the user to review; it never signs or submits a payment.",
 
     "When you are ready to answer the user, respond ONLY with a JSON object of the exact shape {\"intent\": string, \"reply\": string} — no markdown, no extra keys.",
 
