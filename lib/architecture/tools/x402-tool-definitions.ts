@@ -31,15 +31,7 @@ import type { AgentTool, AgentToolSchema } from "./agent-tool";
 import { getAgentToolRegistry } from "./agent-tool-registry-instance";
 import { toolError, toolSuccess } from "./agent-tool-result";
 
-// =============================================================================
-// Constants
-// =============================================================================
-
 const DISCOVERY_API_PATH = "/api/x402/discover";
-
-// =============================================================================
-// Shared helpers
-// =============================================================================
 
 function isHttpsUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -54,10 +46,22 @@ function isHttpsUrl(value: unknown): value is string {
 /**
  * Calls the app's same-origin discovery endpoint.
  *
- * The endpoint performs the actual third-party GET server-side.
- * This intentionally keeps browser CORS out of the x402 discovery path.
+ * The endpoint returns an HTTP response containing an envelope:
  *
- * This helper never attaches payment credentials or wallet credentials.
+ * {
+ *   status,
+ *   body,
+ *   finalUrl
+ * }
+ *
+ * `status` is the upstream resource status.
+ * Therefore an upstream x402 response is represented as:
+ *
+ * HTTP 200
+ * {
+ *   status: 402,
+ *   body: {...}
+ * }
  */
 async function discoverResourceServerSide(
   resourceUrl: string,
@@ -82,7 +86,6 @@ async function discoverResourceServerSide(
         body?: unknown;
         finalUrl?: unknown;
         error?: unknown;
-        code?: unknown;
       }
     | null;
 
@@ -95,21 +98,12 @@ async function discoverResourceServerSide(
   }
 
   return {
-    status:
-      typeof payload?.status === "number"
-        ? payload.status
-        : 0,
+    status: typeof payload?.status === "number" ? payload.status : 0,
     body: payload?.body ?? null,
     finalUrl:
-      typeof payload?.finalUrl === "string"
-        ? payload.finalUrl
-        : resourceUrl,
+      typeof payload?.finalUrl === "string" ? payload.finalUrl : resourceUrl,
   };
 }
-
-// =============================================================================
-// 1. x402_discover_resource
-// =============================================================================
 
 const discoverSchema: AgentToolSchema = {
   type: "object",
@@ -150,7 +144,9 @@ export const x402DiscoverResourceTool: AgentTool = {
     try {
       const discovered = await discoverResourceServerSide(resourceUrl);
 
-      // A normal resource response means no x402 payment requirement.
+      // IMPORTANT:
+      // Check the upstream status from the JSON envelope,
+      // NOT response.status from the discovery API.
       if (discovered.status !== 402) {
         return toolSuccess("x402_discover_resource", {
           resourceUrl,
@@ -200,10 +196,6 @@ export const x402DiscoverResourceTool: AgentTool = {
   },
 };
 
-// =============================================================================
-// 2. x402_prepare_payment
-// =============================================================================
-
 const preparePaymentSchema: AgentToolSchema = {
   type: "object",
   properties: {
@@ -248,16 +240,13 @@ export const x402PreparePaymentTool: AgentTool = {
 
     if (
       optionIndex !== undefined &&
-      (
-        typeof optionIndex !== "number" ||
+      (typeof optionIndex !== "number" ||
         !Number.isInteger(optionIndex) ||
-        optionIndex < 0
-      )
+        optionIndex < 0)
     ) {
       return toolError("x402_prepare_payment", {
         code: "INVALID_INPUT",
-        message:
-          "optionIndex, if provided, must be a non-negative integer.",
+        message: "optionIndex, if provided, must be a non-negative integer.",
       });
     }
 
@@ -282,17 +271,14 @@ export const x402PreparePaymentTool: AgentTool = {
       }
 
       const index =
-        typeof optionIndex === "number"
-          ? optionIndex
-          : 0;
+        typeof optionIndex === "number" ? optionIndex : 0;
 
       const chosen = parsed.requirements[index];
 
       if (!chosen) {
         return toolError("x402_prepare_payment", {
           code: "INVALID_INPUT",
-          message:
-            `optionIndex ${index} is out of range — this resource offered ${parsed.requirements.length} option(s).`,
+          message: `optionIndex ${index} is out of range — this resource offered ${parsed.requirements.length} option(s).`,
         });
       }
 
@@ -323,10 +309,6 @@ export const x402PreparePaymentTool: AgentTool = {
     }
   },
 };
-
-// =============================================================================
-// Registration
-// =============================================================================
 
 const registry = getAgentToolRegistry();
 
