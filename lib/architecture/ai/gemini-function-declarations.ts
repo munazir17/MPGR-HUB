@@ -24,6 +24,12 @@
 // Execute-mode tools are never advertised. Signing/submission remains
 // unreachable — this adapter does not add an execute tool, does not
 // change AgentToolRuntime, and does not bypass runRegisteredTool.
+//
+// P3 robustness addendum:
+// Gemini 2.5/3.5 thinking models may emit thought parts, mixed
+// text/functionCall parts, snake_case function_call, empty text, or
+// args vs arguments. A valid native functionCall always wins over
+// ordinary text so x402_discover_resource is not dropped.
 
 import type {
   AgentToolParameterSchema,
@@ -38,6 +44,11 @@ const GEMINI_SCHEMA_TYPES = {
   array: "ARRAY",
   object: "OBJECT",
 } as const;
+
+const X402_RESOURCE_URL_TOOL_IDS = new Set([
+  "x402_discover_resource",
+  "x402_prepare_payment",
+]);
 
 export interface GeminiFunctionDeclaration {
   name: string;
@@ -63,6 +74,20 @@ export interface GeminiParameterSchema {
 export interface GeminiFunctionCall {
   name: string;
   args?: unknown;
+}
+
+export interface GeminiResponseDiagnostics {
+  finishReason: string | null;
+  hasFunctionCall: boolean;
+  hasUsableText: boolean;
+  candidateCount: number;
+  blocked: boolean;
+}
+
+export interface GeminiUpstreamFailure {
+  httpStatus: number;
+  code: string;
+  error: string;
 }
 
 export function toGeminiFunctionDeclarations(
@@ -117,12 +142,53 @@ function toGeminiParameterSchema(schema: AgentToolParameterSchema): GeminiParame
 }
 
 export function serializeGeminiFunctionCall(functionCall: GeminiFunctionCall): string {
+  const rawArgs = normalizeFunctionCallArgs(functionCall.args);
+  const argumentsForTool = coerceX402ResourceUrlArgs(
+    functionCall.name,
+    rawArgs,
+  );
+
   return JSON.stringify({
     toolCall: {
       toolId: functionCall.name,
-      arguments: normalizeFunctionCallArgs(functionCall.args),
+      arguments: argumentsForTool,
     },
   });
+}
+
+function coerceX402ResourceUrlArgs(
+  toolId: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!X402_RESOURCE_URL_TOOL_IDS.has(toolId)) {
+    return args;
+  }
+
+  const resourceUrl = pickResourceUrl(args);
+  if (resourceUrl === null) {
+    return args;
+  }
+
+  const next: Record<string, unknown> = {
+    ...args,
+    resourceUrl,
+  };
+  delete next.url;
+  delete next.resource;
+  return next;
+}
+
+function pickResourceUrl(args: Record<string, unknown>): string | null {
+  if (typeof args.resourceUrl === "string" && args.resourceUrl.trim()) {
+    return args.resourceUrl.trim();
+  }
+  if (typeof args.url === "string" && args.url.trim()) {
+    return args.url.trim();
+  }
+  if (typeof args.resource === "string" && args.resource.trim()) {
+    return args.resource.trim();
+  }
+  return null;
 }
 
 function normalizeFunctionCallArgs(args: unknown): Record<string, unknown> {
@@ -149,35 +215,139 @@ export function unwrapPossiblyFencedJson(content: string): string {
   return fenced ? fenced[1].trim() : trimmed;
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readFunctionCall(value: unknown): GeminiFunctionCall | null {
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return readFunctionCall(parsed);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!isPlainRecord(value)) return null;
+
+  const name = value.name;
+  if (typeof name !== "string" || name.trim().length === 0) {
+    return null;
+  }
+
+  return {
+    name: name.trim(),
+    args: value.args ?? value.arguments,
+  };
+}
+
+function readFunctionCallFromPart(
+  part: Record<string, unknown>,
+): GeminiFunctionCall | null {
+  return (
+    readFunctionCall(part.functionCall) ??
+    readFunctionCall(part.function_call)
+  );
+}
+
+function collectCandidateParts(data: unknown): Array<Record<string, unknown>> {
+  if (!isPlainRecord(data)) return [];
+
+  const candidates = data.candidates;
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+
+  const parts: Array<Record<string, unknown>> = [];
+
+  for (const candidate of candidates) {
+    if (!isPlainRecord(candidate)) continue;
+    const content = candidate.content;
+    if (!isPlainRecord(content)) continue;
+    const rawParts = content.parts;
+    if (!Array.isArray(rawParts)) continue;
+    for (const part of rawParts) {
+      if (isPlainRecord(part)) parts.push(part);
+    }
+  }
+
+  return parts;
+}
+
+export function inspectGeminiResponse(data: unknown): GeminiResponseDiagnostics {
+  const parts = collectCandidateParts(data);
+  const record = isPlainRecord(data) ? data : null;
+  const candidates = Array.isArray(record?.candidates)
+    ? record.candidates
+    : [];
+  const firstCandidate = isPlainRecord(candidates[0]) ? candidates[0] : null;
+  const promptFeedback = isPlainRecord(record?.promptFeedback)
+    ? record.promptFeedback
+    : null;
+
+  const finishReason =
+    (typeof firstCandidate?.finishReason === "string" &&
+      firstCandidate.finishReason) ||
+    (typeof firstCandidate?.finish_reason === "string" &&
+      firstCandidate.finish_reason) ||
+    null;
+
+  const blockReason =
+    (typeof promptFeedback?.blockReason === "string" &&
+      promptFeedback.blockReason) ||
+    (typeof promptFeedback?.block_reason === "string" &&
+      promptFeedback.block_reason) ||
+    null;
+
+  let hasFunctionCall = false;
+  let hasUsableText = false;
+
+  for (const part of parts) {
+    if (readFunctionCallFromPart(part)) {
+      hasFunctionCall = true;
+    }
+    if (
+      part.thought !== true &&
+      typeof part.text === "string" &&
+      part.text.trim().length > 0
+    ) {
+      hasUsableText = true;
+    }
+  }
+
+  return {
+    finishReason,
+    hasFunctionCall,
+    hasUsableText,
+    candidateCount: candidates.length,
+    blocked:
+      Boolean(blockReason) ||
+      finishReason === "SAFETY" ||
+      finishReason === "BLOCKLIST" ||
+      finishReason === "PROHIBITED_CONTENT",
+  };
+}
+
 /**
  * Reads Gemini's generateContent response.
  *
  * A functionCall part (native tool selection) is preferred over text so
  * a thinking/thought part cannot hide the call. Text parts skip
- * `thought: true` entries used by Gemini 2.5/3.5 thinking models.
+ * `thought: true` entries and empty strings used by Gemini 2.5/3.5
+ * thinking models.
  */
 export function extractGeminiResponseContent(data: unknown): string | null {
-  const parts = (
-    data as {
-      candidates?: Array<{
-        content?: { parts?: Array<Record<string, unknown>> };
-      }>;
-    }
-  )?.candidates?.[0]?.content?.parts;
-
-  if (!Array.isArray(parts) || parts.length === 0) return null;
+  const parts = collectCandidateParts(data);
+  if (parts.length === 0) return null;
 
   for (const part of parts) {
-    if (!part || typeof part !== "object") continue;
-    const functionCall = part.functionCall as GeminiFunctionCall | undefined;
-    if (functionCall && typeof functionCall.name === "string" && functionCall.name.trim().length > 0) {
+    const functionCall = readFunctionCallFromPart(part);
+    if (functionCall) {
       return serializeGeminiFunctionCall(functionCall);
     }
   }
 
   const texts: string[] = [];
   for (const part of parts) {
-    if (!part || typeof part !== "object") continue;
     if (part.thought === true) continue;
     if (typeof part.text === "string" && part.text.trim().length > 0) {
       texts.push(part.text);
@@ -186,6 +356,48 @@ export function extractGeminiResponseContent(data: unknown): string | null {
 
   if (texts.length === 0) return null;
   return unwrapPossiblyFencedJson(texts.join(""));
+}
+
+export function classifyGeminiUpstreamFailure(
+  status: number,
+): GeminiUpstreamFailure {
+  if (status === 429) {
+    return {
+      httpStatus: 429,
+      code: "PROVIDER_RATE_LIMITED",
+      error: "Gemini is temporarily rate-limited. Please retry shortly.",
+    };
+  }
+
+  if (status === 401 || status === 403) {
+    return {
+      httpStatus: 502,
+      code: "PROVIDER_AUTH_ERROR",
+      error: "Gemini authentication failed.",
+    };
+  }
+
+  return {
+    httpStatus: 502,
+    code: "PROVIDER_ERROR",
+    error: "Gemini is temporarily unavailable. Please retry shortly.",
+  };
+}
+
+export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+
+/**
+ * GEMINI_MODEL is already configurable via env. Code cannot manufacture
+ * Google quota — a billed key or a model with remaining quota is still
+ * required in production.
+ */
+export function resolveGeminiModel(
+  model: string | undefined = process.env.GEMINI_MODEL,
+): string {
+  if (typeof model === "string" && model.trim().length > 0) {
+    return model.trim();
+  }
+  return DEFAULT_GEMINI_MODEL;
 }
 
 export function isGeminiFunctionDeclarationArray(
