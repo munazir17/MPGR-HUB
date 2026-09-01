@@ -147,6 +147,36 @@ export async function invokeAgentKitAction(
     }
 
     const raw = await action.invoke(args);
+
+    // TEMPORARY P3 diagnostic logging (server-side only, never returned
+    // to the client/agent). This is the exact boundary where this app's
+    // assumptions about AgentKit's make_http_request wire shape meet
+    // AgentKit's real return value for the first time. Logs only the
+    // action's own output, redacted of anything matching
+    // stripSecretsFromPayload's secret-key pattern — never args, never
+    // wallet/private-key material. Remove once the real runtime shape
+    // for this action is confirmed against a live invocation.
+    if (canonical === "make_http_request") {
+      try {
+        const rawForLog =
+          typeof raw === "string"
+            ? (() => {
+                try {
+                  return stripSecretsFromPayload(JSON.parse(raw));
+                } catch {
+                  return raw.slice(0, 500);
+                }
+              })()
+            : stripSecretsFromPayload(raw);
+        console.error("[P3 diagnostic] AgentKit make_http_request raw result", {
+          rawType: typeof raw,
+          raw: rawForLog,
+        });
+      } catch {
+        // Diagnostic logging must never break the real invocation.
+      }
+    }
+
     const result = stripSecretsFromPayload(parseAgentKitResult(raw));
 
     return {
@@ -162,6 +192,18 @@ export async function invokeAgentKitAction(
         error: PREPARE_ONLY_ERROR,
       };
     }
+
+    // TEMPORARY P3 diagnostic logging (server-side only). safeErrorMessage()
+    // below always collapses every non-prepare-only exception to the same
+    // generic string before it is returned — that flattening is intentional
+    // for what's returned to the caller, but it means the real error name/
+    // message has never been visible anywhere. Log it here, once, without
+    // altering the returned contract.
+    console.error("[P3 diagnostic] invokeAgentKitAction threw", {
+      actionName: canonical,
+      errorName: error instanceof Error ? error.name : typeof error,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
 
     return {
       ok: false,
