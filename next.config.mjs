@@ -11,7 +11,8 @@ const nextConfig = {
     "@coinbase/agentkit",
     "@coinbase/coinbase-sdk",
     "@coinbase/x402",
-  ],
+    "@coinbase/cdp-sdk",
+],
   webpack: (config, { isServer }) => {
     config.resolve.alias = {
       ...config.resolve.alias,
