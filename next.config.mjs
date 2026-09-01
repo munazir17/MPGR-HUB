@@ -9,7 +9,6 @@ const nextConfig = {
   // the x402 payment clients.
   serverExternalPackages: [
     "@coinbase/agentkit",
-    "@coinbase/cdp-sdk",
     "@coinbase/coinbase-sdk",
     "@coinbase/x402",
   ],
