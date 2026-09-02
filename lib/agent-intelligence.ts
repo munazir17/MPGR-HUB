@@ -181,14 +181,15 @@ const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
     "how much mpgr do i have",
   ],
   xp_status: [
-    "xp",
+    "how much xp",
+    "my xp",
+    "xp status",
     "experience point",
     "what level",
     "my level",
     "level am i",
     "show progress",
     "level progress",
-    "how much xp",
   ],
   holder_tier: [
     "holder tier",
@@ -290,6 +291,21 @@ function isGreeting(normalized: string): boolean {
   return wordCount <= 3 && GREETING_PATTERNS.some((g) => normalized === g || normalized.startsWith(`${g} `));
 }
 
+// Narrow read-only gate: payment/x402 prompts must never score as
+// xp_status (the old bare "xp" pattern matched inside "explicit").
+// This does not add an execute intent and never signs or pays.
+const X402_PAYMENT_PROMPT_MARKERS = [
+  "x402",
+  "payment proposal",
+  "payto",
+  "resourceurl",
+  "https://",
+] as const;
+
+function looksLikeX402PaymentPrompt(normalized: string): boolean {
+  return X402_PAYMENT_PROMPT_MARKERS.some((marker) => normalized.includes(marker));
+}
+
 // A short, connector-led message ("What about rewards?", "And staking?")
 // is treated as a follow-up to the previous topic rather than a fresh,
 // standalone question.
@@ -366,6 +382,10 @@ export function detectIntent(
     return { intent: "general_help", greeting: true };
   }
 
+  if (looksLikeX402PaymentPrompt(normalized)) {
+    return { intent: "general_help", greeting: false };
+  }
+
   const direct = bestIntent(normalized);
   const followUp = isFollowUp(normalized);
 
@@ -407,6 +427,9 @@ const GREETING_REPLY =
 const GENERAL_HELP_REPLY =
   "I can help with: Portfolio Summary, XP & Level Progress, Holder Tier, Premium Status, Claimable Rewards, Staking Summary, Locked Tokens, Season Progress, and Referral Overview. Just ask — for example, \"What's my Holder Tier?\" or \"How much XP do I have?\" I can also open a page for you directly — try \"open rewards\" or \"what should I do next?\"";
 
+const X402_PAYMENT_HELP_REPLY =
+  "This looks like an x402 paid-resource request. I will not sign or submit a payment from here. Include the https resource URL if you want it inspected — a proposal is only prepared for your explicit confirmation, and no funds move until you confirm.";
+
 function notAvailable(topic: string): string {
   return `Your ${topic} data isn't available yet — this usually means it's still loading. Give it a moment and ask again.`;
 }
@@ -428,7 +451,7 @@ function replyPortfolioSummary(ctx: AgentContext): string {
 function replyXPStatus(ctx: AgentContext): string {
   if (!ctx.xp) return notAvailable("XP");
   const { xp, level, nextLevel, xpIntoLevel, xpNeededForLevel, progress, streak } = ctx.xp;
-  return `You're Level ${level} with ${formatCompactNumber(xp)} XP total — ${xpIntoLevel}/${xpNeededForLevel} XP into this level (${progress}% of the way to Level ${nextLevel}). Current daily streak: ${streak} day${streak === 1 ? "" : "s"}.`;
+  return `You're Level ${level} with ${formatCompactNumber(xp)} XP total — \( {xpIntoLevel}/ \){xpNeededForLevel} XP into this level (${progress}% of the way to Level ${nextLevel}). Current daily streak: \( {streak} day \){streak === 1 ? "" : "s"}.`;
 }
 
 function replyHolderTier(ctx: AgentContext): string {
@@ -441,7 +464,7 @@ function replyHolderTier(ctx: AgentContext): string {
   }
 
   const nextNote = nextTierLabel
-    ? ` You need ${formatCompactNumber(amountToNextTier)} more MPGR to reach ${nextTierLabel} (${progressToNextTier}% of the way there).`
+    ? ` You need ${formatCompactNumber(amountToNextTier)} more MPGR to reach \( {nextTierLabel} ( \){progressToNextTier}% of the way there).`
     : " You've reached Diamond, the highest Holder Tier.";
 
   return `You're currently ${tierLabel} Holder Tier with a Holder Score of ${formatCompactNumber(
@@ -461,10 +484,10 @@ function replyPremiumStatus(ctx: AgentContext): string {
   }
 
   const nextNote = nextTierLabel
-    ? ` ${formatCompactNumber(amountToNextTier)} more locked MPGR gets you to ${nextTierLabel} (${progressToNextTier}% of the way there).`
+    ? ` ${formatCompactNumber(amountToNextTier)} more locked MPGR gets you to \( {nextTierLabel} ( \){progressToNextTier}% of the way there).`
     : " You're at the top Premium tier.";
 
-  return `You're on the ${tierLabel} Premium tier — ${xpMultiplier}× XP and ${rewardsMultiplier}× Rewards multiplier.${nextNote}`;
+  return `You're on the ${tierLabel} Premium tier — ${xpMultiplier}× XP and \( {rewardsMultiplier}× Rewards multiplier. \){nextNote}`;
 }
 
 function replyClaimableRewards(ctx: AgentContext): string {
@@ -486,7 +509,7 @@ function replyStakingSummary(ctx: AgentContext): string {
     return "You don't have any MPGR staked right now — head to the Staking page to start earning rewards.";
   }
   const aprNote = currentAPRPercent === null ? "" : ` at the current ${currentAPRPercent}% APR`;
-  return `You have ${formatCompactNumber(totalStaked)} MPGR staked${aprNote}, with ${formatCompactNumber(earnedRewards)} MPGR in staking rewards ready to claim.`;
+  return `You have \( {formatCompactNumber(totalStaked)} MPGR staked \){aprNote}, with ${formatCompactNumber(earnedRewards)} MPGR in staking rewards ready to claim.`;
 }
 
 function replyLockedTokens(ctx: AgentContext): string {
@@ -496,13 +519,13 @@ function replyLockedTokens(ctx: AgentContext): string {
     return "You don't have any active locks right now — locking MPGR also contributes to your Premium tier and Holder Score.";
   }
   const unlockNote = upcomingUnlockAt ? ` Your next unlock is on ${formatUpcomingDate(upcomingUnlockAt)}.` : "";
-  return `You have ${formatCompactNumber(totalLocked)} MPGR locked across ${activeLocksCount} active lock${activeLocksCount === 1 ? "" : "s"}.${unlockNote}`;
+  return `You have ${formatCompactNumber(totalLocked)} MPGR locked across \( {activeLocksCount} active lock \){activeLocksCount === 1 ? "" : "s"}.${unlockNote}`;
 }
 
 function replySeasonProgress(ctx: AgentContext): string {
   if (!ctx.season) return notAvailable("Season Pass");
   const { seasonNumber, seasonPoints, level, progress } = ctx.season;
-  return `Season ${seasonNumber}: you're at Level ${level} with ${formatCompactNumber(seasonPoints)} season points (${progress}% of the way to the next level).`;
+  return `Season ${seasonNumber}: you're at Level ${level} with \( {formatCompactNumber(seasonPoints)} season points ( \){progress}% of the way to the next level).`;
 }
 
 function replyReferralOverview(ctx: AgentContext): string {
@@ -511,7 +534,7 @@ function replyReferralOverview(ctx: AgentContext): string {
   if (referralCount === 0) {
     return "You haven't referred anyone yet — share your referral link from your Profile page to start earning referral XP.";
   }
-  return `You've referred ${referralCount} friend${referralCount === 1 ? "" : "s"} so far. Share your referral link from your Profile page to earn even more.`;
+  return `You've referred \( {referralCount} friend \){referralCount === 1 ? "" : "s"} so far. Share your referral link from your Profile page to earn even more.`;
 }
 
 // Phase 3D — Smart Actions reply handlers. Each is a short confirmation
@@ -689,6 +712,16 @@ export function generateIntelligentReply(
   }
 
   const { intent, greeting } = detectIntent(prompt, previousIntent, memoryContext);
+
+  if (looksLikeX402PaymentPrompt(normalize(prompt))) {
+    return {
+      intent: "general_help",
+      reply: X402_PAYMENT_HELP_REPLY,
+      actions: [],
+      highlights: [],
+      followUps: getFollowUpPrompts("general_help"),
+    };
+  }
 
   if (greeting) {
     const reply = buildGreetingReply(memoryContext);
