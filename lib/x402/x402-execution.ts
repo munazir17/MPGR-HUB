@@ -49,6 +49,7 @@ import type { X402PaymentProposal } from "./x402-proposal";
 import type { X402Error, X402ErrorCode, X402PaymentPayload, X402SettlementResponse } from "./x402-types";
 
 const X402_SUBMIT_API_PATH = "/api/x402/submit";
+const X402_REGISTER_API_PATH = "/api/x402/register";
 
 export const X402_EXECUTION_STATES = [
   "IDLE",
@@ -191,7 +192,75 @@ export async function executeX402Payment(
   try {
     onTransition({ state: "AWAITING_SIGNATURE", settlement: null, error: null });
 
-    const typedData = buildAuthorizationTypedData(proposal, {
+    let registrationId: string;
+    let eip712Name: string | undefined;
+    let eip712Version: string | undefined;
+    try {
+      const registerResponse = await fetch(X402_REGISTER_API_PATH, {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          requirement: {
+            resource: proposal.requirement.resource,
+            scheme: proposal.requirement.scheme,
+            network: proposal.requirement.network,
+            asset: proposal.requirement.asset,
+            maxAmountRequired: proposal.requirement.maxAmountRequired,
+            payTo: proposal.requirement.payTo,
+            maxTimeoutSeconds: proposal.requirement.maxTimeoutSeconds,
+          },
+        }),
+      });
+      const registerPayload = (await registerResponse.json().catch(() => null)) as
+        | {
+            registrationId?: unknown;
+            eip712Name?: unknown;
+            eip712Version?: unknown;
+            error?: unknown;
+            code?: unknown;
+          }
+        | null;
+      if (!registerResponse.ok || typeof registerPayload?.registrationId !== "string") {
+        const snapshot: X402ExecutionSnapshot = {
+          state: "ERROR",
+          settlement: null,
+          error: classifySubmitRouteError(registerResponse.status, registerPayload),
+        };
+        onTransition(snapshot);
+        return snapshot;
+      }
+      registrationId = registerPayload.registrationId;
+      eip712Name = typeof registerPayload.eip712Name === "string" ? registerPayload.eip712Name : undefined;
+      eip712Version = typeof registerPayload.eip712Version === "string" ? registerPayload.eip712Version : undefined;
+    } catch {
+      const snapshot: X402ExecutionSnapshot = {
+        state: "ERROR",
+        settlement: null,
+        error: {
+          code: "SUBMISSION_FAILED",
+          message: "Could not register this payment before signing. Nothing was signed.",
+        },
+      };
+      onTransition(snapshot);
+      return snapshot;
+    }
+
+    const proposalForSigning =
+      eip712Name && eip712Version
+        ? {
+            ...proposal,
+            eip712Domain: {
+              domain: { name: eip712Name, version: eip712Version },
+              source: "known-asset-registry" as const,
+            },
+          }
+        : proposal;
+
+    const typedData = buildAuthorizationTypedData(proposalForSigning, {
       payerAddress,
       chainId: X402_CHAIN_ID,
     });
@@ -245,15 +314,8 @@ export async function executeX402Payment(
           Accept: "application/json",
         },
         body: JSON.stringify({
+          registrationId,
           xPayment: xPaymentHeader,
-          requirement: {
-            resource: proposal.requirement.resource,
-            scheme: proposal.requirement.scheme,
-            network: proposal.requirement.network,
-            asset: proposal.requirement.asset,
-            maxAmountRequired: proposal.requirement.maxAmountRequired,
-            payTo: proposal.requirement.payTo,
-          },
         }),
       });
     } catch {
