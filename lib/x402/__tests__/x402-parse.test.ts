@@ -72,6 +72,45 @@ describe("parseX402PaymentRequired", () => {
     expect(result.ok).toBe(true);
   });
 
+  it('11. accepts network "base" + canonical Base USDC and stores eip155:8453', () => {
+    const result = parseX402PaymentRequired(validAccepts({ network: "base" }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.requirements).toHaveLength(1);
+      expect(result.requirements[0].requirement.network).toBe(X402_SUPPORTED_NETWORK);
+      expect(result.requirements[0].requirement.network).toBe("eip155:8453");
+      expect(result.requirements[0].requirement.asset.toLowerCase()).toBe(USDC.toLowerCase());
+    }
+  });
+
+  it('12. accepts network "base-mainnet" and stores eip155:8453', () => {
+    const result = parseX402PaymentRequired(validAccepts({ network: "base-mainnet" }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.requirements[0].requirement.network).toBe(X402_SUPPORTED_NETWORK);
+    }
+  });
+
+  it('13. accepts network "eip155:8453"', () => {
+    const result = parseX402PaymentRequired(validAccepts({ network: "eip155:8453" }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.requirements[0].requirement.network).toBe(X402_SUPPORTED_NETWORK);
+    }
+  });
+
+  it('14. rejects Base Sepolia alias "base-sepolia"', () => {
+    const result = parseX402PaymentRequired(validAccepts({ network: "base-sepolia" }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("NO_ACCEPTABLE_REQUIREMENT");
+  });
+
+  it('15. rejects Base Sepolia CAIP-2 "eip155:84532"', () => {
+    const result = parseX402PaymentRequired(validAccepts({ network: "eip155:84532" }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("NO_ACCEPTABLE_REQUIREMENT");
+  });
+
   it("6. rejects an invalid (zero) amount", () => {
     const result = parseX402PaymentRequired(validAccepts({ maxAmountRequired: "0" }));
     expect(result.ok).toBe(false);
