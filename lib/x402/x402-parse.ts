@@ -34,6 +34,7 @@ import { isAddress } from "viem";
 import {
   X402_SUPPORTED_NETWORK,
   X402_SUPPORTED_SCHEMES,
+  normalizeX402Network,
   resolveEip712Domain,
 } from "./x402-config";
 
@@ -241,10 +242,9 @@ function validateRequirement(
     return null;
   }
 
-  if (
-    typeof network !== "string" ||
-    network !== X402_SUPPORTED_NETWORK
-  ) {
+  const normalizedNetwork = normalizeX402Network(network);
+
+  if (normalizedNetwork !== X402_SUPPORTED_NETWORK) {
     return null;
   }
 
@@ -326,7 +326,7 @@ function validateRequirement(
     scheme:
       scheme as X402PaymentRequirements["scheme"],
 
-    network,
+    network: normalizedNetwork,
 
     /**
      * Internal compatibility field.
