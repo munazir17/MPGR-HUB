@@ -6,12 +6,14 @@
     "node": ">=22.12.0"
 },
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
-    "test": "vitest run"
-  },
+     "dev": "next dev",
+     "build": "next build",
+     "start": "next start",
+     "lint": "next lint",
+-    "test": "vitest run"
++    "test": "vitest run",
++    "postinstall": "node scripts/fix-cdp-jose-esm.cjs"
+   },
   "dependencies": {
     "next": "15.5.21",
     "react": "^18.3.1",
