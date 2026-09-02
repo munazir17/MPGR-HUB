@@ -33,7 +33,10 @@ export {
   parseAgentKitResult,
   isAgentKitHttp402,
   isAgentKitHttpSuccess,
+  isAgentKitRawX402,
   isAgentKitErrorPayload,
   agentKit402ToPaymentRequiredBody,
+  normalizeRawX402Body,
   normalizeBaseNetwork,
+  type AgentKitRawX402,
 } from "./map-x402";
