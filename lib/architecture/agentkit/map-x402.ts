@@ -93,6 +93,26 @@ export function isAgentKitHttp402(value: unknown): value is AgentKitHttp402 {
   return isRecord(value) && value.status === "error_402_payment_required";
 }
 
+/**
+ * Some AgentKit/CDP versions do not wrap a 402 in the
+ * `error_402_payment_required` envelope at all — they instead return the
+ * resource server's x402 body verbatim: `{ x402Version, accepts: [...] }`.
+ * This is a *successful* discovery, not an error and not "unreachable".
+ * Recognize it explicitly instead of falling through to status 0.
+ */
+export interface AgentKitRawX402 {
+  x402Version: number;
+  accepts: AgentKitPaymentOption[];
+}
+
+export function isAgentKitRawX402(value: unknown): value is AgentKitRawX402 {
+  return (
+    isRecord(value) &&
+    typeof value.x402Version === "number" &&
+    Array.isArray(value.accepts)
+  );
+}
+
 export function isAgentKitErrorPayload(
   value: unknown,
 ): value is { error: true; message?: string; details?: string } {
@@ -165,6 +185,29 @@ export function agentKit402ToPaymentRequiredBody(
   };
 }
 
+/**
+ * Normalizes network aliases inside an already-shaped raw x402 body
+ * (`{ x402Version, accepts }`) without altering any other field. Amount,
+ * asset, payTo, scheme, resource, etc. are passed through untouched —
+ * only the network identifier is rewritten onto the app's CAIP-2 form.
+ */
+export function normalizeRawX402Body(
+  payload: AgentKitRawX402,
+): Record<string, unknown> {
+  const accepts = payload.accepts.map((option) => {
+    if (!isRecord(option)) return option;
+    return {
+      ...option,
+      network: normalizeBaseNetwork(option.network),
+    };
+  });
+
+  return {
+    ...payload,
+    accepts,
+  };
+}
+
 export function mapAgentKitHttpResult(
   parsed: unknown,
   requestedUrl: string,
@@ -173,6 +216,15 @@ export function mapAgentKitHttpResult(
     return {
       status: 402,
       body: agentKit402ToPaymentRequiredBody(parsed, requestedUrl),
+      contentType: "application/json",
+      finalUrl: requestedUrl,
+    };
+  }
+
+  if (isAgentKitRawX402(parsed)) {
+    return {
+      status: 402,
+      body: normalizeRawX402Body(parsed),
       contentType: "application/json",
       finalUrl: requestedUrl,
     };
