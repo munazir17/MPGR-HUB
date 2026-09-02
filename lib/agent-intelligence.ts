@@ -306,6 +306,22 @@ function looksLikeX402PaymentPrompt(normalized: string): boolean {
   return X402_PAYMENT_PROMPT_MARKERS.some((marker) => normalized.includes(marker));
 }
 
+export function isX402PaymentPrompt(rawPrompt: string): boolean {
+  return looksLikeX402PaymentPrompt(normalize(rawPrompt));
+}
+
+export function extractX402ResourceUrl(rawPrompt: string): string | null {
+  const match = rawPrompt.match(/https:\/\/[^\s<>"'\]\)]+/i);
+  if (!match) return null;
+  try {
+    const url = new URL(match[0].replace(/[.,;]+$/g, ""));
+    if (url.protocol !== "https:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 // A short, connector-led message ("What about rewards?", "And staking?")
 // is treated as a follow-up to the previous topic rather than a fresh,
 // standalone question.
