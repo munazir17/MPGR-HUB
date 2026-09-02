@@ -14,6 +14,7 @@ import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 // x402 addendum — payment prompts still never sign or submit. When the
 // Gemini tool loop fails mid-flight, this provider runs the existing
 // read/prepare tools itself so a review-only proposal can still surface.
+// Prepare failures are returned as grounded diagnostics, not swallowed.
 
 export class DeterministicAIProvider implements AIProvider {
   readonly name = "deterministic";
@@ -21,8 +22,7 @@ export class DeterministicAIProvider implements AIProvider {
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
     if (isX402PaymentPrompt(request.prompt)) {
-      const prepared = await tryPrepareX402Proposal(request);
-      if (prepared) return prepared;
+      return prepareOrExplainX402(request);
     }
 
     return generateIntelligentReply(
@@ -34,11 +34,15 @@ export class DeterministicAIProvider implements AIProvider {
   }
 }
 
-async function tryPrepareX402Proposal(
+async function prepareOrExplainX402(
   request: AIProviderRequest,
-): Promise<AIProviderResponse | null> {
+): Promise<AIProviderResponse> {
   const resourceUrl = extractX402ResourceUrl(request.prompt);
-  if (!resourceUrl) return null;
+  if (!resourceUrl) {
+    return helpResponse(
+      "This looks like an x402 paid-resource request, but I could not find a valid https resource URL to inspect. Paste the full https:// URL — nothing will be signed or submitted.",
+    );
+  }
 
   const result = await runRegisteredTool(
     "x402_prepare_payment",
@@ -46,19 +50,38 @@ async function tryPrepareX402Proposal(
     request,
   );
 
-  if (!result.success) return null;
+  if (result.success) {
+    const proposal = (result.data as { proposal?: X402PaymentProposal } | undefined)
+      ?.proposal;
+    if (proposal) {
+      return {
+        intent: "general_help",
+        reply:
+          "I prepared an x402 payment proposal for your review. Nothing is signed or submitted until you explicitly confirm.",
+        actions: [],
+        highlights: [],
+        followUps: getFollowUpPrompts("general_help"),
+        x402Proposal: proposal,
+      };
+    }
+  }
 
-  const proposal = (result.data as { proposal?: X402PaymentProposal } | undefined)
-    ?.proposal;
-  if (!proposal) return null;
+  const detail =
+    typeof result.error?.message === "string" && result.error.message.trim()
+      ? result.error.message.trim()
+      : "The resource could not be prepared as a supported x402 payment.";
 
+  return helpResponse(
+    `I found the resource URL but could not prepare a payment proposal. ${detail} Nothing was signed or submitted.`,
+  );
+}
+
+function helpResponse(reply: string): AIProviderResponse {
   return {
     intent: "general_help",
-    reply:
-      "I prepared an x402 payment proposal for your review. Nothing is signed or submitted until you explicitly confirm.",
+    reply,
     actions: [],
     highlights: [],
     followUps: getFollowUpPrompts("general_help"),
-    x402Proposal: proposal,
   };
 }
