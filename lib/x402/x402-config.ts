@@ -35,6 +35,42 @@ import { TOOL_CHAIN_ID } from "@/lib/architecture/tools/tool-helpers";
 export const X402_SUPPORTED_NETWORK =
   `eip155:${TOOL_CHAIN_ID}` as const;
 
+/**
+ * Wire-format aliases that mean Base Mainnet and nothing else.
+ *
+ * Coinbase x402 resources commonly advertise `network: "base"` or
+ * `"base-mainnet"` instead of CAIP-2 `"eip155:8453"`. Those aliases
+ * are equivalent to the supported mainnet identifier.
+ *
+ * Base Sepolia (`base-sepolia`, `eip155:84532`) is intentionally
+ * absent. Production execution stays mainnet-only.
+ */
+const X402_BASE_MAINNET_ALIASES = new Set([
+  "base",
+  "base-mainnet",
+  "eip155:8453",
+  X402_SUPPORTED_NETWORK,
+]);
+
+/**
+ * Normalize an untrusted x402 `network` field onto the app's CAIP-2
+ * Base Mainnet identifier when it is a known mainnet alias.
+ *
+ * Unknown / testnet identifiers are returned unchanged so the parser
+ * can reject them. Non-strings become `""`.
+ */
+export function normalizeX402Network(network: unknown): string {
+  if (typeof network !== "string") return "";
+  const trimmed = network.trim();
+  if (
+    X402_BASE_MAINNET_ALIASES.has(trimmed) ||
+    X402_BASE_MAINNET_ALIASES.has(trimmed.toLowerCase())
+  ) {
+    return X402_SUPPORTED_NETWORK;
+  }
+  return trimmed;
+}
+
 // =============================================================================
 // Supported schemes
 // =============================================================================
