@@ -55,7 +55,7 @@ function resolveDiscoveryEndpoint(): string {
     originFromConfiguredHost(process.env.VERCEL_URL) ||
     CANONICAL_APP_ORIGIN;
 
-  return `\( {origin} \){DISCOVERY_API_PATH}`;
+  return `${origin}${DISCOVERY_API_PATH}`;
 }
 
 function isHttpsUrl(value: unknown): value is string {
