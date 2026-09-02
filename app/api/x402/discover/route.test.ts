@@ -18,9 +18,9 @@ vi.mock("@/lib/architecture/agentkit", async () => {
 });
 
 vi.mock("@/lib/x402/x402-discover", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/x402/x402-discover")>(
-    "@/lib/x402/x402-discover",
-  );
+  const actual = await vi.importActual<
+    typeof import("@/lib/x402/x402-discover")
+  >("@/lib/x402/x402-discover");
   return {
     ...actual,
     discoverX402Resource: (...args: unknown[]) => mockDiscover(...args),
@@ -85,6 +85,7 @@ describe("POST /api/x402/discover via AgentKit", () => {
     const res = await POST(
       jsonRequest({ resourceUrl: "https://localhost/paid" }),
     );
+
     expect(res.status).toBe(400);
     expect(mockInvoke).not.toHaveBeenCalled();
     expect(mockDiscover).not.toHaveBeenCalled();
@@ -96,6 +97,7 @@ describe("POST /api/x402/discover via AgentKit", () => {
       code: "PROVIDER_ERROR",
       error: "AgentKit provider failed",
     });
+
     mockDiscover.mockResolvedValue({
       status: 402,
       body: {
@@ -107,7 +109,8 @@ describe("POST /api/x402/discover via AgentKit", () => {
             asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
             maxAmountRequired: "1000",
             payTo: "0x021028695EAfDDe60E139D87000a8bd6cB65645e",
-            resource: "https://x402-demo-discovery-endpoint.vercel.app/protected/testnet",
+            resource:
+              "https://x402-demo-discovery-endpoint.vercel.app/protected/testnet",
             maxTimeoutSeconds: 300,
           },
         ],
@@ -127,13 +130,68 @@ describe("POST /api/x402/discover via AgentKit", () => {
 
     expect(mockDiscover).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
+
     const body = await res.json();
+
     expect(body.status).toBe(402);
+
     // Base Sepolia is reported as-is by the fallback path (native fetch
     // does not run mainnet normalization) — the app's payment/parse
     // layer, not discovery, is what enforces mainnet-only.
     expect(body.body.accepts[0].network).toBe("base-sepolia");
     expect(body.body.accepts[0].maxAmountRequired).toBe("1000");
+  });
+
+  it("falls back to a native GET when AgentKit throws ERR_REQUIRE_ESM, and still surfaces the real 402", async () => {
+    mockInvoke.mockRejectedValue(
+      Object.assign(
+        new Error(
+          "require() of ES Module /var/task/node_modules/jose/dist/webapi/index.js from /var/task/node_modules/@coinbase/cdp-sdk/_cjs/auth/utils/jwt.js not supported.",
+        ),
+        { code: "ERR_REQUIRE_ESM" },
+      ),
+    );
+
+    mockDiscover.mockResolvedValue({
+      status: 402,
+      body: {
+        x402Version: 1,
+        accepts: [
+          {
+            scheme: "exact",
+            network: "base",
+            asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            maxAmountRequired: "1000000",
+            payTo: "0x1111111111111111111111111111111111111111",
+            resource:
+              "https://x402-demo-discovery-endpoint.vercel.app/protected",
+            maxTimeoutSeconds: 300,
+          },
+        ],
+      },
+      contentType: "application/json",
+      finalUrl: "https://x402-demo-discovery-endpoint.vercel.app/protected",
+    });
+
+    const { POST } = await import("./route");
+    const res = await POST(
+      jsonRequest({
+        resourceUrl:
+          "https://x402-demo-discovery-endpoint.vercel.app/protected",
+      }),
+    );
+
+    expect(mockDiscover).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+
+    expect(body.status).toBe(402);
+    expect(body.body.accepts[0].network).toBe("base");
+    expect(body.body.accepts[0].maxAmountRequired).toBe("1000000");
+
+    expect(JSON.stringify(body)).not.toMatch(/X-PAYMENT/i);
+    expect(JSON.stringify(body)).not.toMatch(/make_http_request_with_x402/);
   });
 
   it("does not fall back on ACTION_DENIED — a policy block is returned directly", async () => {
@@ -158,6 +216,7 @@ describe("POST /api/x402/discover via AgentKit", () => {
       actionName: "make_http_request",
       result: { weird: "shape", nothing: "recognized" },
     });
+
     mockDiscover.mockResolvedValue({
       status: 500,
       body: null,
@@ -172,7 +231,9 @@ describe("POST /api/x402/discover via AgentKit", () => {
 
     expect(mockDiscover).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
+
     const body = await res.json();
+
     // A real HTTP 500 must be preserved as 500 — never silently
     // collapsed into "unreachable" or a fabricated success.
     expect(body.status).toBe(500);
@@ -185,7 +246,9 @@ describe("POST /api/x402/discover via AgentKit", () => {
       code: "PROVIDER_ERROR",
       error: "AgentKit provider failed",
     });
+
     const { X402DiscoveryError } = await import("@/lib/x402/x402-discover");
+
     mockDiscover.mockRejectedValue(
       new X402DiscoveryError("DNS lookup failed", "FETCH_FAILED"),
     );
@@ -196,7 +259,9 @@ describe("POST /api/x402/discover via AgentKit", () => {
     );
 
     expect(res.status).toBe(502);
+
     const body = await res.json();
+
     expect(body.code).toBe("FETCH_FAILED");
   });
 
@@ -220,10 +285,17 @@ describe("POST /api/x402/discover via AgentKit", () => {
     });
 
     const { POST } = await import("./route");
-    await POST(jsonRequest({ resourceUrl: "https://api.example.com/paid" }));
+
+    await POST(
+      jsonRequest({
+        resourceUrl: "https://api.example.com/paid",
+      }),
+    );
 
     for (const call of mockInvoke.mock.calls) {
-      expect(call[0]?.actionName).not.toBe("make_http_request_with_x402");
+      expect(call[0]?.actionName).not.toBe(
+        "make_http_request_with_x402",
+      );
     }
   });
 });
