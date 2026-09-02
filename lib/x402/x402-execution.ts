@@ -31,6 +31,11 @@
 // "execute"-mode tools regardless; this module isn't even reachable
 // through that path — see x402-tool-definitions.ts, which only
 // registers "read"/"prepare" tools).
+//
+// The signed X-PAYMENT header is submitted through same-origin
+// POST /api/x402/submit so the browser never issues a cross-origin
+// request that requires an Access-Control-Allow-Headers: x-payment
+// preflight on the resource server.
 
 import { isAddress, type Address } from "viem";
 import { signTypedData } from "wagmi/actions";
@@ -42,6 +47,8 @@ import { classifyX402ResourceResponse } from "./x402-verification";
 import type { X402ConfirmationState } from "./x402-confirmation";
 import type { X402PaymentProposal } from "./x402-proposal";
 import type { X402Error, X402ErrorCode, X402PaymentPayload, X402SettlementResponse } from "./x402-types";
+
+const X402_SUBMIT_API_PATH = "/api/x402/submit";
 
 export const X402_EXECUTION_STATES = [
   "IDLE",
@@ -105,6 +112,49 @@ function classifySignError(err: unknown): X402Error {
   return { code: "SIGNING_FAILED", message: "Your wallet was unable to sign this payment authorization." };
 }
 
+function looksLikeSecret(value: string): boolean {
+  const lower = value.toLowerCase();
+  return (
+    lower.includes("x-payment") ||
+    lower.includes("signature") ||
+    lower.includes("private key") ||
+    lower.includes("seed phrase") ||
+    lower.includes("mnemonic")
+  );
+}
+
+function classifySubmitRouteError(
+  status: number,
+  payload: { error?: unknown; code?: unknown } | null,
+): X402Error {
+  const code = typeof payload?.code === "string" ? payload.code : "";
+  if (code === "UNSUPPORTED_NETWORK") {
+    return { code: "UNSUPPORTED_NETWORK", message: "Only Base Mainnet payments can be submitted." };
+  }
+  if (code === "REQUIREMENT_CHANGED") {
+    return {
+      code: "REQUIREMENT_CHANGED",
+      message: "This payment no longer matches the confirmed requirement — nothing was submitted.",
+    };
+  }
+  if (code === "UNSUPPORTED_ASSET") {
+    return { code: "UNSUPPORTED_ASSET", message: "This payment asset is not recognized." };
+  }
+
+  const rawMessage = typeof payload?.error === "string" ? payload.error.trim() : "";
+  const safeMessage =
+    rawMessage.length > 0 &&
+    rawMessage.length <= 200 &&
+    !looksLikeSecret(rawMessage)
+      ? rawMessage
+      : "Could not submit this payment to the resource.";
+
+  return {
+    code: "SUBMISSION_FAILED",
+    message: status > 0 ? `${safeMessage} (HTTP ${status})` : safeMessage,
+  };
+}
+
 // Duplicate-execution protection, mirroring agent-action-execution.ts's
 // actionsInFlight — one proposal cannot reach signTypedData/fetch twice
 // concurrently, even from two separate callers/hooks.
@@ -113,8 +163,8 @@ const proposalsInFlight = new Set<string>();
 /**
  * Signs and submits an already-validated, already-confirmed
  * X402PaymentProposal. This function is the only place in the x402
- * stack allowed to call signTypedData or send the X-PAYMENT-bearing
- * fetch request.
+ * stack allowed to call signTypedData. The paid resource fetch is
+ * performed by same-origin /api/x402/submit.
  */
 export async function executeX402Payment(
   input: ExecuteX402PaymentInput,
@@ -187,20 +237,65 @@ export async function executeX402Payment(
 
     let response: Response;
     try {
-      response = await fetch(proposal.requirement.resource, {
-        headers: { "X-PAYMENT": xPaymentHeader },
+      response = await fetch(X402_SUBMIT_API_PATH, {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          xPayment: xPaymentHeader,
+          requirement: {
+            resource: proposal.requirement.resource,
+            scheme: proposal.requirement.scheme,
+            network: proposal.requirement.network,
+            asset: proposal.requirement.asset,
+            maxAmountRequired: proposal.requirement.maxAmountRequired,
+            payTo: proposal.requirement.payTo,
+          },
+        }),
       });
     } catch {
       const snapshot: X402ExecutionSnapshot = {
         state: "ERROR",
         settlement: null,
-        error: { code: "SUBMISSION_FAILED", message: "Could not reach the resource server to submit this payment." },
+        error: {
+          code: "SUBMISSION_FAILED",
+          message: "Could not reach the payment submission endpoint. This may be temporary.",
+        },
       };
       onTransition(snapshot);
       return snapshot;
     }
 
-    const outcome = classifyX402ResourceResponse(response.status, response.headers.get("X-PAYMENT-RESPONSE"));
+    const routePayload = (await response.json().catch(() => null)) as
+      | {
+          status?: unknown;
+          paymentResponse?: unknown;
+          error?: unknown;
+          code?: unknown;
+        }
+      | null;
+
+    if (!response.ok) {
+      const snapshot: X402ExecutionSnapshot = {
+        state: "ERROR",
+        settlement: null,
+        error: classifySubmitRouteError(response.status, routePayload),
+      };
+      onTransition(snapshot);
+      return snapshot;
+    }
+
+    const upstreamStatus =
+      typeof routePayload?.status === "number" ? routePayload.status : 0;
+    const paymentResponse =
+      typeof routePayload?.paymentResponse === "string"
+        ? routePayload.paymentResponse
+        : null;
+
+    const outcome = classifyX402ResourceResponse(upstreamStatus, paymentResponse);
     if (!outcome.ok) {
       const snapshot: X402ExecutionSnapshot = { state: "ERROR", settlement: null, error: outcome.error };
       onTransition(snapshot);
