@@ -1,22 +1,8 @@
 // app/api/x402/submit/route.ts
 //
-// Same-origin server-side x402 paid-resource submission.
-//
-// Browser path:
-//   wallet signs EIP-712 authorization
-//     → POST /api/x402/submit { xPayment, requirement }
-//     → this route attaches X-PAYMENT and GETs the bound resource
-//
-// This route:
-// - never signs
-// - never invents a payment
-// - never calls make_http_request_with_x402
-// - never logs the X-PAYMENT value
-// - rejects Base Sepolia and unbound/mismatched requirements
-//
-// It is not a generic URL proxy. The resource is taken only from the
-// confirmed requirement after scheme/network/asset/amount/payTo checks
-// against the signed header.
+// Same-origin paid submission.
+// Accepts only { registrationId, xPayment }.
+// Resource and payment terms are loaded from the Redis-confirmed record.
 
 import { NextResponse } from "next/server";
 
