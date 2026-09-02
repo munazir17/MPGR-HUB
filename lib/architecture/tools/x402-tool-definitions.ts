@@ -30,6 +30,33 @@ import { getAgentToolRegistry } from "./agent-tool-registry-instance";
 import { toolError, toolSuccess } from "./agent-tool-result";
 
 const DISCOVERY_API_PATH = "/api/x402/discover";
+const CANONICAL_APP_ORIGIN = "https://mpgrhub.xyz";
+
+function originFromConfiguredHost(value: string | undefined): string | null {
+  if (!value) return null;
+  const host = value.trim().replace(/^https?:\/\//i, "").replace(/\/$/, "");
+  if (!host) return null;
+  return `https://${host}`;
+}
+
+/**
+ * Same-deployment origin for /api/x402/discover.
+ *
+ * Tools run in the Next/Vercel server runtime as well as the browser.
+ * Never use window.location and never accept an origin from the model
+ * or request body. The resource URL stays a separate validated HTTPS
+ * input; this function only chooses this app's own discover route.
+ */
+function resolveDiscoveryEndpoint(): string {
+  const origin =
+    originFromConfiguredHost(process.env.NEXT_PUBLIC_APP_URL) ||
+    originFromConfiguredHost(process.env.NEXT_PUBLIC_SITE_URL) ||
+    originFromConfiguredHost(process.env.VERCEL_PROJECT_PRODUCTION_URL) ||
+    originFromConfiguredHost(process.env.VERCEL_URL) ||
+    CANONICAL_APP_ORIGIN;
+
+  return `\( {origin} \){DISCOVERY_API_PATH}`;
+}
 
 function isHttpsUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -50,7 +77,7 @@ async function discoverResourceServerSide(resourceUrl: string): Promise<{
   body: unknown | null;
   finalUrl: string;
 }> {
-  const response = await fetch(DISCOVERY_API_PATH, {
+  const response = await fetch(resolveDiscoveryEndpoint(), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -252,7 +279,10 @@ export const x402PreparePaymentTool: AgentTool = {
         });
       }
 
-      const proposalResult = buildX402PaymentProposal(resourceUrl, chosen);
+      const proposalResult = buildX402PaymentProposal(
+        chosen.requirement.resource,
+        chosen,
+      );
       if (!proposalResult.ok) {
         return toolError("x402_prepare_payment", {
           code: "DATA_UNAVAILABLE",
