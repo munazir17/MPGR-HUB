@@ -5,8 +5,10 @@ import { parseX402PaymentRequired } from "@/lib/x402/x402-parse";
 
 import {
   agentKit402ToPaymentRequiredBody,
+  isAgentKitRawX402,
   mapAgentKitHttpResult,
   normalizeBaseNetwork,
+  normalizeRawX402Body,
   parseAgentKitResult,
   type AgentKitHttp402,
   type AgentKitPaymentOption,
@@ -93,6 +95,78 @@ describe("AgentKit x402 mapping", () => {
     );
     expect(mapped.status).toBe(200);
     expect(mapped.body).toBeNull();
+  });
+
+  it("recognizes a raw x402 body (x402Version + accepts) as a distinct shape", () => {
+    expect(
+      isAgentKitRawX402({
+        x402Version: 1,
+        accepts: [{ scheme: "exact", network: "base-sepolia" }],
+      }),
+    ).toBe(true);
+
+    // Not raw x402 — must not be misdetected as this shape.
+    expect(isAgentKitRawX402({ success: true, status: 200 })).toBe(false);
+    expect(isAgentKitRawX402({ x402Version: 1 })).toBe(false);
+  });
+
+  it("maps a raw x402 AgentKit result (x402Version + accepts) to a 402, not status 0", () => {
+    const mapped = mapAgentKitHttpResult(
+      {
+        x402Version: 1,
+        accepts: [
+          {
+            scheme: "exact",
+            network: "base",
+            asset: USDC,
+            maxAmountRequired: "1000000",
+            payTo: PAY_TO,
+            resource: RESOURCE,
+          },
+        ],
+      },
+      RESOURCE,
+    );
+
+    expect(mapped.status).toBe(402);
+    const body = mapped.body as { accepts: Array<Record<string, unknown>> };
+    expect(body.accepts[0].network).toBe(X402_SUPPORTED_NETWORK);
+    expect(body.accepts[0].maxAmountRequired).toBe("1000000");
+    expect(body.accepts[0].payTo).toBe(PAY_TO);
+  });
+
+  it("normalizeRawX402Body only rewrites network — never invents amount/asset/payTo", () => {
+    const normalized = normalizeRawX402Body({
+      x402Version: 1,
+      accepts: [
+        {
+          scheme: "exact",
+          network: "base-sepolia",
+          asset: "0xSepoliaUSDC",
+          maxAmountRequired: "1000",
+          payTo: PAY_TO,
+          resource: RESOURCE,
+          maxTimeoutSeconds: 300,
+        },
+      ],
+    });
+
+    const option = (normalized.accepts as Array<Record<string, unknown>>)[0];
+    // Base Sepolia is not an alias of the supported mainnet network, so
+    // it passes through unchanged rather than being coerced onto 8453.
+    expect(option.network).toBe("base-sepolia");
+    expect(option.maxAmountRequired).toBe("1000");
+    expect(option.asset).toBe("0xSepoliaUSDC");
+    expect(option.maxTimeoutSeconds).toBe(300);
+  });
+
+  it("does not misclassify a raw x402 body as a plain HTTP success", () => {
+    const mapped = mapAgentKitHttpResult(
+      { x402Version: 1, accepts: [] },
+      RESOURCE,
+    );
+    expect(mapped.status).toBe(402);
+    expect(mapped.status).not.toBe(0);
   });
 
   it("keeps plaintext AgentKit results (wallet details) instead of marking them as errors", () => {
