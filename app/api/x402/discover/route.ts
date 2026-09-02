@@ -17,14 +17,16 @@
 // SSRF checks from x402-discover.ts still run before AgentKit is
 // invoked. The existing x402_discover_resource / x402_prepare_payment
 // tools keep this URL as their backend.
+//
+// AgentKit is loaded with a native dynamic import() INSIDE POST's
+// try/catch. A static import would evaluate @coinbase/agentkit →
+// @coinbase/cdp-sdk CJS jwt.js → require("jose") at module init,
+// which throws ERR_REQUIRE_ESM on Vercel before this handler (and
+// the native fallback) can run. The lazy import makes that failure
+// catchable and equivalent to PROVIDER_ERROR.
 
 import { NextResponse } from "next/server";
 
-import {
-  invokeAgentKitAction,
-  isAgentKitErrorPayload,
-  mapAgentKitHttpResult,
-} from "@/lib/architecture/agentkit";
 import {
   assertPublicHttpsUrl,
   discoverX402Resource,
@@ -119,6 +121,12 @@ export async function POST(request: Request) {
   try {
     assertPublicHttpsUrl(body.resourceUrl);
 
+    const {
+      invokeAgentKitAction,
+      isAgentKitErrorPayload,
+      mapAgentKitHttpResult,
+    } = await import("@/lib/architecture/agentkit");
+
     const invoked = await invokeAgentKitAction({
       actionName: "make_http_request",
       args: {
@@ -174,17 +182,10 @@ export async function POST(request: Request) {
       return discoveryErrorResponse(error);
     }
 
-    return NextResponse.json(
-      {
-        error: "Could not reach that resource. This may be temporary.",
-        code: "FETCH_FAILED",
-      },
-      {
-        status: 502,
-        headers: {
-          "Cache-Control": "no-store",
-        },
-      },
-    );
+    // Includes AgentKit/CDP module-load failures (ERR_REQUIRE_ESM
+    // from cdp-sdk CJS require("jose")) and any throw from
+    // invokeAgentKitAction. Same handling as PROVIDER_ERROR: a
+    // read-only native GET, never payment.
+    return fallbackNativeDiscovery(body.resourceUrl);
   }
 }
