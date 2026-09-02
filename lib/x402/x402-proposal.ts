@@ -126,7 +126,7 @@ function formatDisplayAmount(
       ? "USDC"
       : "token";
 
-  return `${whole}${fracStr} ${symbol}`;
+  return `\( {whole} \){fracStr} ${symbol}`;
 }
 
 /**
@@ -237,9 +237,15 @@ export function buildX402PaymentProposal(
  * Description, timestamps, and other freeform fields are intentionally
  * excluded so an LLM/resource-server text change cannot silently create
  * a different payment identity.
+ *
+ * This is an identifier, never a capability or secret. The server
+ * reconstructs it independently during registration.
  */
-function buildDeterministicId(
-  requirement: X402PaymentRequirements,
+export function buildDeterministicProposalId(
+  requirement: Pick<
+    X402PaymentRequirements,
+    "resource" | "asset" | "payTo" | "maxAmountRequired"
+  >,
 ): string {
   const raw =
     `x402:${requirement.resource}:` +
@@ -255,4 +261,10 @@ function buildDeterministicId(
   }
 
   return `x402_${(hash >>> 0).toString(16)}`;
+}
+
+function buildDeterministicId(
+  requirement: X402PaymentRequirements,
+): string {
+  return buildDeterministicProposalId(requirement);
 }
