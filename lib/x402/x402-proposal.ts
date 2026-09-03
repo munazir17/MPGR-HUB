@@ -126,7 +126,7 @@ function formatDisplayAmount(
       ? "USDC"
       : "token";
 
-  return `\( {whole} \){fracStr} ${symbol}`;
+  return `${whole}${fracStr} ${symbol}`;
 }
 
 /**
