@@ -52,7 +52,13 @@ export interface AgentEventMap {
   // lib/architecture/ai/fallback-ai-provider.ts when a primary AIProvider
   // throws and generation falls back to a secondary provider. Additive
   // only; every event above is untouched.
-  ai_provider_error: { address: string; provider: string; message: string };
+  // `code`, when present, identifies an EXPECTED provider-availability
+  // failure (e.g. "PROVIDER_RATE_LIMITED") that FallbackAIProvider has
+  // already recovered from by falling back — as opposed to an
+  // unexpected/programming error, which never carries one of these
+  // codes. Optional and additive: existing consumers that only read
+  // address/provider/message are unaffected.
+  ai_provider_error: { address: string; provider: string; message: string; code?: string };
   ai_provider_fallback: { address: string; from: string; to: string };
   // Phase 3C Part 5 — AI Provider circuit breaker. Emitted by
   // lib/architecture/ai/circuit-breaker-ai-provider.ts when a provider's
@@ -262,3 +268,4 @@ export interface TaskQueue {
   getTask(id: string): Task | undefined;
   getTasks(): Task[];
 }
+
