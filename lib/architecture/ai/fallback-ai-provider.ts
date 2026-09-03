@@ -50,14 +50,19 @@ export class FallbackAIProvider implements AIProvider {
       return await this.primary.generateReply(request);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const code =
+        err instanceof Error && typeof (err as { code?: unknown }).code === "string"
+          ? (err as { code: string }).code
+          : undefined;
       const address = request.address ?? "unknown";
 
       this.logger.error("AI provider failed, falling back", {
         provider: this.primary.name,
         fallback: this.fallback.name,
         message,
+        code,
       });
-      this.eventBus.emit("ai_provider_error", { address, provider: this.primary.name, message });
+      this.eventBus.emit("ai_provider_error", { address, provider: this.primary.name, message, code });
       this.eventBus.emit("ai_provider_fallback", { address, from: this.primary.name, to: this.fallback.name });
 
       return this.fallback.generateReply(request);
