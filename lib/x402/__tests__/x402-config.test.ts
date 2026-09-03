@@ -8,10 +8,37 @@ import {
 } from "../x402-config";
 
 describe("toX402WireNetwork", () => {
-  it("maps the canonical Base Mainnet identifier to the x402 wire alias 'base'", () => {
+  it("defaults modern / v2 payments to CAIP-2 eip155:8453 (PayAI, x402 v2 spec)", () => {
     expect(X402_SUPPORTED_NETWORK).toBe("eip155:8453");
-    expect(toX402WireNetwork(X402_SUPPORTED_NETWORK)).toBe("base");
-    expect(toX402WireNetwork(X402_SUPPORTED_NETWORK)).toBe(
+    expect(toX402WireNetwork(X402_SUPPORTED_NETWORK)).toBe("eip155:8453");
+    expect(toX402WireNetwork(X402_SUPPORTED_NETWORK, { x402Version: 2 })).toBe(
+      "eip155:8453",
+    );
+  });
+
+  it("echoes the resource's advertised network when it is a known Base Mainnet alias", () => {
+    expect(
+      toX402WireNetwork(X402_SUPPORTED_NETWORK, {
+        x402Version: 2,
+        originalNetwork: "eip155:8453",
+      }),
+    ).toBe("eip155:8453");
+    expect(
+      toX402WireNetwork(X402_SUPPORTED_NETWORK, {
+        x402Version: 1,
+        originalNetwork: "base",
+      }),
+    ).toBe("base");
+    expect(
+      toX402WireNetwork(X402_SUPPORTED_NETWORK, {
+        x402Version: 1,
+        originalNetwork: "base-mainnet",
+      }),
+    ).toBe("base-mainnet");
+  });
+
+  it("emits the v1 Coinbase alias 'base' only when x402Version is 1 and no original network was advertised", () => {
+    expect(toX402WireNetwork(X402_SUPPORTED_NETWORK, { x402Version: 1 })).toBe(
       X402_WIRE_NETWORK_BASE_MAINNET,
     );
   });
@@ -23,11 +50,9 @@ describe("toX402WireNetwork", () => {
   });
 
   it("round-trips through normalizeX402Network back to the same canonical identifier", () => {
-    // This is the exact property the fix depends on: the receiving
-    // side (verifyAgainstStoredRecord in x402-submit.ts) already
-    // treats "base" as an alias of eip155:8453, so emitting "base" on
-    // the wire does not change what network is considered valid.
-    const wire = toX402WireNetwork(X402_SUPPORTED_NETWORK);
-    expect(normalizeX402Network(wire)).toBe(X402_SUPPORTED_NETWORK);
+    const v2 = toX402WireNetwork(X402_SUPPORTED_NETWORK, { x402Version: 2 });
+    expect(normalizeX402Network(v2)).toBe(X402_SUPPORTED_NETWORK);
+    const v1 = toX402WireNetwork(X402_SUPPORTED_NETWORK, { x402Version: 1 });
+    expect(normalizeX402Network(v1)).toBe(X402_SUPPORTED_NETWORK);
   });
 });
