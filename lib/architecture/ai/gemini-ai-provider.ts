@@ -106,7 +106,20 @@ async function sendCompletion(
         ? errorBody.error
         : `Request to /api/agent/complete/gemini failed with ${res.status}`;
 
-    throw new Error(message);
+    // Preserve the route's classification code (e.g.
+    // "PROVIDER_RATE_LIMITED") on the thrown error so callers up the
+    // chain — FallbackAIProvider, then the UI — can tell an expected,
+    // already-recovered provider-availability failure apart from an
+    // unexpected one. A plain `throw new Error(message)` would discard
+    // this and every failure would look identical by the time it
+    // reaches the UI.
+    const code =
+      typeof errorBody?.code === "string" && errorBody.code.trim()
+        ? errorBody.code
+        : undefined;
+    const err = new Error(message) as Error & { code?: string };
+    if (code) err.code = code;
+    throw err;
   }
 
   const { content } = (await res.json()) as {
