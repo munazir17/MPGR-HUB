@@ -41,7 +41,7 @@ import { isAddress, type Address } from "viem";
 import { signTypedData } from "wagmi/actions";
 
 import { config } from "@/lib/wagmi";
-import { X402_CHAIN_ID } from "./x402-config";
+import { X402_CHAIN_ID, toX402WireNetwork } from "./x402-config";
 import { buildAuthorizationTypedData } from "./x402-authorization";
 import { classifyX402ResourceResponse } from "./x402-verification";
 import type { X402ConfirmationState } from "./x402-confirmation";
@@ -286,7 +286,13 @@ export async function executeX402Payment(
     const payload: X402PaymentPayload = {
       x402Version: 1,
       scheme: "exact",
-      network: proposal.requirement.network,
+      // Wire-format network for the resource server, NOT the internal
+      // canonical identifier. The canonical eip155:8453 is what's
+      // bound in Redis (see the /api/x402/register call above) and
+      // what /api/x402/submit's verifyAgainstStoredRecord() matches
+      // against — that is unchanged. Only the string actually sent to
+      // the resource server in X-PAYMENT changes here.
+      network: toX402WireNetwork(proposal.requirement.network),
       payload: {
         signature,
         authorization: {
