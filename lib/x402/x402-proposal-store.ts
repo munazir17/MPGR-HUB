@@ -81,7 +81,7 @@ function getRedis(): Redis {
 }
 
 export function confirmedProposalKey(registrationId: string): string {
-  return `\( {X402_CONFIRMED_KEY_PREFIX} \){registrationId}`;
+  return `${X402_CONFIRMED_KEY_PREFIX}${registrationId}`;
 }
 
 export function computeRegistrationTtlSeconds(
