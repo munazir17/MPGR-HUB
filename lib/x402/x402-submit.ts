@@ -18,7 +18,7 @@ import {
   verifyTypedData,
 } from "viem";
 
-import { X402_CHAIN_ID, X402_SUPPORTED_NETWORK, normalizeX402Network } from "./x402-config";
+import { X402_CHAIN_ID, X402_SUPPORTED_NETWORK, x402NetworksEquivalent } from "./x402-config";
 import { assertPublicHttpsUrl } from "./x402-discover";
 import {
   claimConfirmedProposal,
@@ -93,35 +93,6 @@ function fail(
   httpStatus = 400,
 ): X402SubmitFailure {
   return { ok: false, httpStatus, code, message };
-}
-
-// TEMPORARY DIAGNOSTIC LOGGING — verifyAgainstStoredRecord() only.
-//
-// Added to identify the exact first-failing check inside
-// verifyAgainstStoredRecord() for a live REQUIREMENT_CHANGED
-// investigation. Every value logged here is sanitized: check name,
-// pass/fail, normalized network strings, lowercase addresses, amount
-// strings, eip712 name/version, chainId, validAfter/validBefore vs
-// "now", and (only on success) the recovered signer address.
-//
-// NEVER logged: signature, X-PAYMENT, nonce, private keys, seed
-// phrases, or the complete authorization object.
-//
-// This does not change any validation logic, return value, error
-// code, or control flow anywhere in this file — it only observes.
-// Remove once the root cause is confirmed.
-function diagLog(
-  correlationId: string,
-  check: string,
-  pass: boolean,
-  extra?: Record<string, string | number | boolean | null>,
-): void {
-  console.error("[x402-submit-diag]", {
-    correlationId,
-    check,
-    pass,
-    ...extra,
-  });
 }
 
 export function decodeXPaymentHeader(raw: unknown): X402PaymentPayload | null {
@@ -204,51 +175,43 @@ export function parseSubmitBody(
   return { ok: true, registrationId, xPayment };
 }
 
-async function verifyAgainstStoredRecord(
+/**
+ * Re-checks a signed authorization against the Redis-confirmed record.
+ *
+ * Network comparison is alias-safe: `"base"`, `"base-mainnet"` and
+ * `"eip155:8453"` are the same Base Mainnet identifier. Comparing the
+ * raw signed wire string against the stored CAIP-2 value was the
+ * REQUIREMENT_CHANGED root cause (a v1 `"base"` payload failed even
+ * though both sides meant Base Mainnet).
+ *
+ * Exported for unit tests. Production callers go through
+ * submitBoundX402Payment().
+ */
+export async function verifyAgainstStoredRecord(
   stored: ConfirmedX402Proposal,
   authorization: X402ExactEvmAuthorization,
   signature: string,
   signedNetwork: string,
-  correlationId: string,
 ): Promise<X402SubmitFailure | { ok: true }> {
-  const normalizedSignedNetwork = normalizeX402Network(signedNetwork);
-  const networkMatches = normalizedSignedNetwork === stored.network;
-  diagLog(correlationId, "network", networkMatches, {
-    signedNetwork: normalizedSignedNetwork,
-    storedNetwork: stored.network,
-  });
-  if (!networkMatches) {
+  if (!x402NetworksEquivalent(signedNetwork, stored.network)) {
     return fail("REQUIREMENT_CHANGED", "The signed payment does not match the confirmed requirement.");
   }
 
   const payToMatches = addressesEqual(authorization.to, stored.payTo);
-  diagLog(correlationId, "payTo", payToMatches, {
-    authorizationTo: authorization.to.toLowerCase(),
-    storedPayTo: stored.payTo.toLowerCase(),
-  });
   if (!payToMatches) {
     return fail("REQUIREMENT_CHANGED", "The signed payment does not match the confirmed requirement.");
   }
 
   try {
     const amountMatches = BigInt(authorization.value) === BigInt(stored.maxAmountRequired);
-    diagLog(correlationId, "amount", amountMatches, {
-      authorizationValue: authorization.value,
-      storedMaxAmountRequired: stored.maxAmountRequired,
-    });
     if (!amountMatches) {
       return fail("REQUIREMENT_CHANGED", "The signed payment does not match the confirmed requirement.");
     }
   } catch {
-    diagLog(correlationId, "amount", false, { exception: "amount_not_parseable" });
     return fail("INVALID_AMOUNT", "The payment amount is not valid.");
   }
 
   if (!isSignatureHex(signature) || !isBytes32Hex(authorization.nonce)) {
-    diagLog(correlationId, "input_shape", false, {
-      signatureLooksLikeHex: isSignatureHex(signature),
-      nonceLooksLikeBytes32: isBytes32Hex(authorization.nonce),
-    });
     return fail("INVALID_INPUT", "The signed payment header is not usable.");
   }
 
@@ -260,24 +223,14 @@ async function verifyAgainstStoredRecord(
     validBefore = BigInt(authorization.validBefore);
     value = BigInt(authorization.value);
   } catch {
-    diagLog(correlationId, "expiry", false, { exception: "validAfter_or_validBefore_not_parseable" });
     return fail("INVALID_AMOUNT", "The payment amount is not valid.");
   }
 
   const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
-  const notYetValid = validAfter > nowSeconds;
-  const alreadyExpired = validBefore <= nowSeconds;
-  diagLog(correlationId, "expiry", !notYetValid && !alreadyExpired, {
-    validAfter: validAfter.toString(),
-    validBefore: validBefore.toString(),
-    nowSeconds: nowSeconds.toString(),
-    notYetValid,
-    alreadyExpired,
-  });
-  if (notYetValid) {
+  if (validAfter > nowSeconds) {
     return fail("INVALID_INPUT", "This payment authorization is not valid yet.");
   }
-  if (alreadyExpired) {
+  if (validBefore <= nowSeconds) {
     return fail("INVALID_INPUT", "This payment authorization has expired.");
   }
 
@@ -297,14 +250,6 @@ async function verifyAgainstStoredRecord(
     nonce: authorization.nonce as Hex,
   };
 
-  diagLog(correlationId, "eip712_domain", true, {
-    eip712Name: domain.name,
-    eip712Version: domain.version,
-    chainId: domain.chainId,
-    verifyingContract: domain.verifyingContract.toLowerCase(),
-    authorizationFrom: authorization.from.toLowerCase(),
-  });
-
   try {
     const matchesPayer = await verifyTypedData({
       address: payer,
@@ -313,9 +258,6 @@ async function verifyAgainstStoredRecord(
       primaryType: "TransferWithAuthorization",
       message,
       signature: signature as Hex,
-    });
-    diagLog(correlationId, "verify_typed_data", matchesPayer, {
-      authorizationFrom: authorization.from.toLowerCase(),
     });
     if (!matchesPayer) {
       return fail("REQUIREMENT_CHANGED", "The signed payment does not match the confirmed requirement.");
@@ -327,27 +269,17 @@ async function verifyAgainstStoredRecord(
       message,
       signature: signature as Hex,
     });
-    const recoveredMatches = addressesEqual(recovered, authorization.from);
-    diagLog(correlationId, "recovered_signer", recoveredMatches, {
-      recoveredSigner: recovered.toLowerCase(),
-      authorizationFrom: authorization.from.toLowerCase(),
-    });
-    if (!recoveredMatches) {
+    if (!addressesEqual(recovered, authorization.from)) {
       return fail("REQUIREMENT_CHANGED", "The signed payment does not match the confirmed requirement.");
     }
-  } catch (err) {
-    diagLog(correlationId, "eip712_verification_exception", false, {
-      exceptionMessage: err instanceof Error ? err.message.slice(0, 200) : "unknown",
-    });
+  } catch {
     return fail("REQUIREMENT_CHANGED", "The signed payment does not match the confirmed requirement.");
   }
 
-  if (stored.network !== X402_SUPPORTED_NETWORK) {
-    diagLog(correlationId, "supported_network", false, { storedNetwork: stored.network });
+  if (stored.network !== X402_SUPPORTED_NETWORK && !x402NetworksEquivalent(stored.network, X402_SUPPORTED_NETWORK)) {
     return fail("UNSUPPORTED_NETWORK", "Only Base Mainnet payments can be submitted.");
   }
 
-  diagLog(correlationId, "all_checks", true);
   return { ok: true };
 }
 
@@ -444,12 +376,6 @@ function mapStoreFailure(code: string, message: string): X402SubmitFailure {
 }
 
 export async function submitBoundX402Payment(rawBody: unknown): Promise<X402SubmitResult> {
-  // TEMPORARY DIAGNOSTIC — correlation ID for the [x402-submit-diag]
-  // log lines below, so one register→submit attempt can be followed
-  // in logs without any payment data. Not persisted, not returned to
-  // the client, not used in any validation decision.
-  const correlationId = crypto.randomUUID();
-
   const parsedBody = parseSubmitBody(rawBody);
   if (!parsedBody.ok) return parsedBody;
 
@@ -460,10 +386,8 @@ export async function submitBoundX402Payment(rawBody: unknown): Promise<X402Subm
 
   const claimed = await claimConfirmedProposal(parsedBody.registrationId);
   if (!claimed.ok) {
-    diagLog(correlationId, "claim", false, { code: claimed.code });
     return mapStoreFailure(claimed.code, claimed.message);
   }
-  diagLog(correlationId, "claim", true);
 
   const stored = claimed.record;
   const verified = await verifyAgainstStoredRecord(
@@ -471,7 +395,6 @@ export async function submitBoundX402Payment(rawBody: unknown): Promise<X402Subm
     decoded.payload.authorization,
     decoded.payload.signature,
     decoded.network,
-    correlationId,
   );
   if (!verified.ok) {
     return verified;
