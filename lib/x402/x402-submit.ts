@@ -382,6 +382,38 @@ async function readBoundedBody(response: Response): Promise<unknown | null> {
   }
 }
 
+function storedProtocolVersion(stored: ConfirmedX402Proposal): number {
+  if (typeof stored.x402Version === "number" && stored.x402Version >= 1) {
+    return stored.x402Version;
+  }
+  const wire = stored.wireNetwork ?? stored.network;
+  if (wire === "base" || wire === "base-mainnet") return 1;
+  return 2;
+}
+
+function paidRequestHeaders(stored: ConfirmedX402Proposal, xPayment: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+  };
+  if (storedProtocolVersion(stored) >= 2) {
+    // x402 v2 (PayAI, current Coinbase spec): PAYMENT-SIGNATURE.
+    // PayAI's 402 body is literally "PAYMENT-SIGNATURE header is required".
+    headers["PAYMENT-SIGNATURE"] = xPayment;
+  } else {
+    headers["X-PAYMENT"] = xPayment;
+  }
+  return headers;
+}
+
+function readSettlementHeader(response: Response): string | null {
+  return (
+    response.headers.get("PAYMENT-RESPONSE") ??
+    response.headers.get("payment-response") ??
+    response.headers.get("X-PAYMENT-RESPONSE") ??
+    response.headers.get("x-payment-response")
+  );
+}
+
 function paidGetTimeoutMs(): number {
   const leaseBudgetMs = Math.max(1_000, (X402_PROCESSING_LEASE_SECONDS - 5) * 1000);
   return Math.min(X402_PAID_GET_TIMEOUT_MS, leaseBudgetMs);
@@ -459,10 +491,7 @@ export async function submitBoundX402Payment(rawBody: unknown): Promise<X402Subm
       redirect: "manual",
       cache: "no-store",
       signal: paidGetSignal(),
-      headers: {
-        Accept: "application/json",
-        "X-PAYMENT": parsedBody.xPayment,
-      },
+      headers: paidRequestHeaders(stored, parsedBody.xPayment),
     });
   } catch (error) {
     console.error("x402 submit: upstream_fetch_failed", { host: resourceUrl.hostname });
@@ -495,14 +524,26 @@ export async function submitBoundX402Payment(rawBody: unknown): Promise<X402Subm
     );
   }
 
-  const paymentResponse =
-    response.headers.get("X-PAYMENT-RESPONSE") ?? response.headers.get("x-payment-response");
+  const paymentResponse = readSettlementHeader(response);
 
   let body: unknown | null = null;
   try {
     body = await readBoundedBody(response);
   } catch {
     body = null;
+  }
+
+  if (response.status === 402) {
+    const errField =
+      isPlainObject(body) && typeof body.error === "string"
+        ? body.error.slice(0, 200)
+        : null;
+    console.error("x402 submit: resource_rejected_payment", {
+      host: resourceUrl.hostname,
+      protocolVersion: storedProtocolVersion(stored),
+      wireNetwork: stored.wireNetwork ?? stored.network,
+      error: errField,
+    });
   }
 
   return {
