@@ -32,7 +32,7 @@ describe("parseX402PaymentRequired", () => {
     if (result.ok) {
       expect(result.requirements).toHaveLength(1);
       expect(result.requirements[0].requirement.asset.toLowerCase()).toBe(USDC.toLowerCase());
-      expect(result.requirements[0].eip712Domain?.domain.name).toBe("USDC");
+      expect(result.requirements[0].eip712Domain?.domain.name).toBe("USD Coin");
     }
   });
 
@@ -79,6 +79,7 @@ describe("parseX402PaymentRequired", () => {
       expect(result.requirements).toHaveLength(1);
       expect(result.requirements[0].requirement.network).toBe(X402_SUPPORTED_NETWORK);
       expect(result.requirements[0].requirement.network).toBe("eip155:8453");
+      expect(result.requirements[0].requirement.wireNetwork).toBe("base");
       expect(result.requirements[0].requirement.asset.toLowerCase()).toBe(USDC.toLowerCase());
     }
   });
@@ -150,5 +151,42 @@ describe("parseX402PaymentRequired", () => {
     const result = parseX402PaymentRequired(body);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.requirements).toHaveLength(1);
+  });
+
+  it("16. parses a live PayAI v2 402 (eip155:8453, amount, extra.name USD Coin)", () => {
+    const result = parseX402PaymentRequired({
+      x402Version: 2,
+      error: "PAYMENT-SIGNATURE header is required",
+      accepts: [
+        {
+          scheme: "exact",
+          network: "eip155:8453",
+          amount: "10000",
+          payTo: "0x2a835A505d4Ea32372Cc420d2663b885cE089453",
+          maxTimeoutSeconds: 300,
+          asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          extra: {
+            name: "USD Coin",
+            version: "2",
+            description: "Access to protected content on base mainnet",
+            mimeType: "application/json",
+            resource: "https://x402.payai.network/api/base/paid-content",
+          },
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.x402Version).toBe(2);
+      const parsed = result.requirements[0];
+      expect(parsed.requirement.network).toBe("eip155:8453");
+      expect(parsed.requirement.wireNetwork).toBe("eip155:8453");
+      expect(parsed.requirement.maxAmountRequired).toBe("10000");
+      expect(parsed.requirement.resource).toBe(
+        "https://x402.payai.network/api/base/paid-content",
+      );
+      expect(parsed.eip712Domain?.domain.name).toBe("USD Coin");
+      expect(parsed.eip712Domain?.source).toBe("requirement.extra");
+    }
   });
 });
