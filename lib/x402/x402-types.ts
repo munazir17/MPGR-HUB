@@ -27,6 +27,12 @@
 export interface X402PaymentRequirements {
   scheme: string;
   network: string;
+  /**
+   * Exact `network` string the resource advertised (e.g. `"base"` or
+   * `"eip155:8453"`). Echoed back in the signed payload so v1 Coinbase
+   * and v2 PayAI both receive the identifier they published.
+   */
+  wireNetwork?: string;
   maxAmountRequired: string;
   resource: string;
   description?: string;
@@ -61,11 +67,24 @@ export interface X402ExactEvmPayload {
   authorization: X402ExactEvmAuthorization;
 }
 
-/** The full X-PAYMENT header payload (base64-JSON-encoded on the wire). */
+/** The full payment header payload (base64-JSON-encoded on the wire). */
 export interface X402PaymentPayload {
   x402Version: number;
   scheme: "exact";
   network: string;
+  /**
+   * x402 v2: copy of the selected `accepts[]` entry. Required by PayAI
+   * and the v2 spec. Omitted on v1 payloads.
+   */
+  accepted?: {
+    scheme: "exact";
+    network: string;
+    amount: string;
+    asset: string;
+    payTo: string;
+    maxTimeoutSeconds?: number;
+    extra?: Record<string, unknown>;
+  };
   payload: X402ExactEvmPayload;
 }
 
