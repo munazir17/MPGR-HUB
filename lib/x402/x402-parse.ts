@@ -329,6 +329,16 @@ function validateRequirement(
     network: normalizedNetwork,
 
     /**
+     * Exact string the resource advertised. Used only when building
+     * the outgoing PAYMENT-SIGNATURE / X-PAYMENT payload so v2 PayAI
+     * (`eip155:8453`) and v1 Coinbase (`base`) both round-trip.
+     */
+    wireNetwork:
+      typeof network === "string" && network.trim().length > 0
+        ? network.trim()
+        : normalizedNetwork,
+
+    /**
      * Internal compatibility field.
      *
      * v1 maxAmountRequired and v2 amount both arrive here.
