@@ -72,6 +72,39 @@ export function normalizeX402Network(network: unknown): string {
 }
 
 /**
+ * Human-readable network label for confirmation UI only.
+ *
+ * Wire payloads still emit CAIP-2 `eip155:8453` (PayAI / x402 v2) or
+ * the resource's own alias (`base` for Coinbase v1). The payment modal
+ * must never show the CAIP-2 identifier — users expect "Base".
+ *
+ * Unknown / unsupported identifiers are returned unchanged so a
+ * developer-facing error can still name the actual value.
+ */
+export function formatX402NetworkDisplay(network: unknown): string {
+  if (normalizeX402Network(network) === X402_SUPPORTED_NETWORK) {
+    return "Base";
+  }
+  if (typeof network === "string" && network.trim().length > 0) {
+    return network.trim();
+  }
+  return "Unknown";
+}
+
+/**
+ * True when both values are Base Mainnet aliases of each other.
+ *
+ * Used by submit-time verification so a signed payload of `"base"`
+ * still matches a stored record of `"eip155:8453"` (and vice versa).
+ * That alias mismatch was the REQUIREMENT_CHANGED root cause.
+ */
+export function x402NetworksEquivalent(a: unknown, b: unknown): boolean {
+  const left = normalizeX402Network(a);
+  const right = normalizeX402Network(b);
+  return left.length > 0 && left === right;
+}
+
+/**
  * v1 Coinbase-style alias. Only emitted when the resource itself
  * advertised `network: "base"` (or `"base-mainnet"`) and x402Version
  * is 1. PayAI and every x402 v2 server advertise and require the
