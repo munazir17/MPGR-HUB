@@ -52,7 +52,7 @@ export class FallbackAIProvider implements AIProvider {
       const message = err instanceof Error ? err.message : String(err);
       const code =
         err instanceof Error && typeof (err as { code?: unknown }).code === "string"
-          ? (err as { code: string }).code
+          ? (err as unknown as { code: string }).code
           : undefined;
       const address = request.address ?? "unknown";
 
