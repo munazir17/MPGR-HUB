@@ -72,38 +72,64 @@ export function normalizeX402Network(network: unknown): string {
 }
 
 /**
- * The wire-format network string this app's x402 resource servers
- * expect inside an outgoing X-PAYMENT payload's `network` field.
- *
- * This is the ONLY place that reintroduces the alias "base" — every
- * other part of the x402 stack (Redis-bound proposal, EIP-712
- * verification, /api/x402/submit's stored-record matching) keeps
- * using X402_SUPPORTED_NETWORK ("eip155:8453") exactly as before.
- * normalizeX402Network() already accepts "base" back as an alias of
- * eip155:8453 on the receiving/verification side, so this does not
- * change what network is considered valid anywhere — it only changes
- * what string is written into the payload sent to the resource server.
+ * v1 Coinbase-style alias. Only emitted when the resource itself
+ * advertised `network: "base"` (or `"base-mainnet"`) and x402Version
+ * is 1. PayAI and every x402 v2 server advertise and require the
+ * CAIP-2 identifier `eip155:8453` — forcing `"base"` onto those
+ * servers is why payments were rejected with HTTP 402.
  */
 export const X402_WIRE_NETWORK_BASE_MAINNET = "base";
 
+export interface X402WireNetworkOptions {
+  /** Protocol version from the resource's 402 body. */
+  x402Version?: number;
+  /**
+   * The exact `network` string the resource advertised in `accepts[]`.
+   * When this is a known Base Mainnet alias, it is echoed back so the
+   * signed payload matches the requirement byte-for-byte.
+   */
+  originalNetwork?: string;
+}
+
 /**
  * Maps the app's canonical CAIP-2 network identifier onto the x402
- * wire-format network string for outgoing payments. Inverse of
- * normalizeX402Network(), used only at X-PAYMENT construction time —
- * never for storage, matching, or signing.
+ * wire-format network string for an outgoing payment payload.
  *
- * Anything other than the one supported mainnet network is returned
- * unchanged. In practice this function is only ever called with
- * X402_SUPPORTED_NETWORK, because executeX402Payment()'s own gates
- * already refuse to build a payment for any other network — this is
- * a defensive default, not a path that enables paying on another
- * chain.
+ * Priority:
+ *   1. Echo the resource's own advertised network when it is a known
+ *      Base Mainnet alias (`eip155:8453` / `base` / `base-mainnet`).
+ *   2. x402 v2 (and unspecified modern) → `eip155:8453`.
+ *   3. x402 v1 with no original network → `base`.
+ *
+ * Never invents a different chain. Unknown canonical values are
+ * returned unchanged.
  */
-export function toX402WireNetwork(canonicalNetwork: string): string {
-  if (canonicalNetwork === X402_SUPPORTED_NETWORK) {
+export function toX402WireNetwork(
+  canonicalNetwork: string,
+  options?: X402WireNetworkOptions,
+): string {
+  if (canonicalNetwork !== X402_SUPPORTED_NETWORK) {
+    return canonicalNetwork;
+  }
+
+  const original =
+    typeof options?.originalNetwork === "string"
+      ? options.originalNetwork.trim()
+      : "";
+  if (
+    original &&
+    (X402_BASE_MAINNET_ALIASES.has(original) ||
+      X402_BASE_MAINNET_ALIASES.has(original.toLowerCase()))
+  ) {
+    return original;
+  }
+
+  const version = options?.x402Version;
+  if (version === 1) {
     return X402_WIRE_NETWORK_BASE_MAINNET;
   }
-  return canonicalNetwork;
+
+  return X402_SUPPORTED_NETWORK;
 }
 
 // =============================================================================
@@ -155,7 +181,7 @@ export const KNOWN_X402_ASSET_DOMAINS: Record<
   Eip712AssetDomain
 > = {
   "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": {
-    name: "USDC",
+    name: "USD Coin",
     version: "2",
   },
 };
