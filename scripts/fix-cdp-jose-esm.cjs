@@ -63,6 +63,27 @@ function collectJsFiles(dir, out = []) {
 const REQUIRE_JOSE_RE = /(?:const|let|var)\s+(\w+)\s*=\s*require\((["'])jose\2\);?/g;
 const ASYNC_FN_RE = /async function\s+\w+\s*\([^)]*\)\s*{/g;
 
+// Broader, format-agnostic detection: any synchronous require("jose")
+// call anywhere in a file, regardless of what wraps it — a bare
+// assignment, a namespace-import helper like __importStar(...), an
+// inline call, or anything else. (__importStar is one example of a
+// wrapping shape a TypeScript-compiled CJS build can produce for a
+// namespace import; it has NOT been confirmed as the actual pattern in
+// the installed @coinbase/cdp-sdk — no network/install access was
+// available to check the real package when this was written. This
+// regex deliberately does not assume any specific wrapping shape, so
+// it does not matter which one turns out to be real.)
+// REQUIRE_JOSE_RE above only recognizes ONE specific wrapping shape
+// and is what this script uses to decide *how* to auto-rewrite a
+// match; this second, wider regex is what the verification pass below
+// uses to decide *whether any unsafe call remains at all* — those are
+// different questions, and conflating them (as an earlier version of
+// this script's verification did) is exactly how a cdp-sdk
+// output-format change could silently defeat detection: zero matches
+// for the narrow shape was being read as "nothing to patch," when it
+// can also mean "still there, just wrapped differently."
+const REQUIRE_JOSE_ANY_RE = /require\(\s*(["'])jose\1\s*\)/g;
+
 const allJsFiles = collectJsFiles(PKG_ROOT);
 const patchedFiles = [];
 const inspectedFiles = [];
@@ -124,12 +145,54 @@ for (const file of allJsFiles) {
 }
 
 // --- Verification pass: nothing synchronous should remain anywhere ---
+//
+// Uses REQUIRE_JOSE_ANY_RE (format-agnostic) rather than REQUIRE_JOSE_RE
+// (the narrow auto-rewrite shape). Scans the FULL text of every file —
+// including files this run already patched — and collects every
+// remaining match, not just the first.
+//
+// Two important corrections from an earlier version of this pass:
+//
+// 1. It no longer skips a whole file just because it contains MARKER.
+//    REQUIRE_JOSE_RE.exec() above only ever finds and rewrites the
+//    FIRST require("jose") in a file; a second, separate occurrence
+//    elsewhere in that same file (a different import site, a
+//    different function) would be left as a live synchronous require
+//    while the file now also contains MARKER from the first rewrite —
+//    skipping verification on MARKER's mere presence would let that
+//    second occurrence go completely undetected. Our own injected
+//    loader block never contains the literal text "require(" (it only
+//    ever calls `import("jose")`), so scanning a patched file's full
+//    text for REQUIRE_JOSE_ANY_RE cannot produce a false positive from
+//    our own rewrite — there is no reason to skip anything.
+//
+// 2. It records every match in a file (via a manual exec loop), not
+//    only the first, so a file with multiple remaining occurrences is
+//    fully reported instead of stopping at the first one found.
 const stillBroken = [];
 for (const file of collectJsFiles(PKG_ROOT)) {
   const src = fs.readFileSync(file, "utf8");
-  REQUIRE_JOSE_RE.lastIndex = 0;
-  if (REQUIRE_JOSE_RE.test(src)) {
-    stillBroken.push(path.relative(PKG_ROOT, file));
+  const lines = src.split("\n");
+
+  REQUIRE_JOSE_ANY_RE.lastIndex = 0;
+  let match;
+  while ((match = REQUIRE_JOSE_ANY_RE.exec(src)) !== null) {
+    const lineNumber = src.slice(0, match.index).split("\n").length;
+    const lineText = lines[lineNumber - 1]?.trim() ?? "";
+
+    stillBroken.push({
+      file: path.relative(PKG_ROOT, file),
+      line: lineNumber,
+      context: lineText.length > 200 ? lineText.slice(0, 200) + "…" : lineText,
+    });
+
+    // A zero-width-safe guard: REQUIRE_JOSE_ANY_RE always consumes at
+    // least the literal `require("jose")` text, so lastIndex always
+    // advances — this loop cannot spin forever — but keep the guard
+    // explicit rather than relying on that being true forever.
+    if (match.index === REQUIRE_JOSE_ANY_RE.lastIndex) {
+      REQUIRE_JOSE_ANY_RE.lastIndex += 1;
+    }
   }
 }
 
@@ -142,21 +205,26 @@ if (patchedFiles.length > 0) {
   console.log(
     "[fix-cdp-jose-esm] No changes needed (already patched or no matching files).",
   );
-} else {
-  console.warn(
-    "[fix-cdp-jose-esm] No require(\"jose\") found anywhere in @coinbase/cdp-sdk. " +
-      "Either cdp-sdk no longer needs this patch, or its output format changed " +
-      "enough that our regex no longer matches - treating as OK since there is " +
-      "nothing left to break, but worth a manual check if discovery breaks again.",
+} else if (stillBroken.length === 0) {
+  console.log(
+    "[fix-cdp-jose-esm] No require(\"jose\") found anywhere in @coinbase/cdp-sdk " +
+      "(checked with the format-agnostic detector, not just the narrow auto-rewrite " +
+      "shape). cdp-sdk genuinely does not need this patch right now.",
   );
 }
 
 if (stillBroken.length > 0) {
+  const details = stillBroken
+    .map((entry) => "  - " + entry.file + ":" + entry.line + "  " + entry.context)
+    .join("\n");
   console.error(
     "[fix-cdp-jose-esm] FATAL: synchronous require(\"jose\") still present after " +
-      "patching in: " + stillBroken.join(", ") +
+      "patching (found by the format-agnostic check — this app's narrow " +
+      "auto-rewriter did not recognize this exact wrapping shape and could not " +
+      "fix it automatically):\n" + details +
       "\nThis WILL throw ERR_REQUIRE_ESM in production on Vercel. Failing the build " +
-      "instead of deploying broken code.",
+      "instead of deploying code that would silently fall back to degraded " +
+      "discovery at runtime.",
   );
   process.exit(1);
 }
