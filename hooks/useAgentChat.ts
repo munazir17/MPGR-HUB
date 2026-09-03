@@ -54,6 +54,23 @@ const THINKING_DELAY_MAX_MS = 1400;
 
 const GENERATION_ERROR_MESSAGE = "Something went wrong generating a reply. Please try again.";
 
+// Codes classifyGeminiUpstreamFailure() (lib/architecture/ai/gemini-function-declarations.ts)
+// and gemini-ai-provider.ts's own empty-response/unreachable checks can
+// attach to a thrown provider error. All of these mean the PROVIDER was
+// unavailable — not that anything is broken in this app — and
+// FallbackAIProvider has already returned a working reply from the
+// deterministic fallback by the time this event fires. An error without
+// one of these codes is an unexpected/programming error and must still
+// surface to the user via the banner.
+const EXPECTED_PROVIDER_FAILURE_CODES = new Set([
+  "PROVIDER_RATE_LIMITED",
+  "PROVIDER_UNREACHABLE",
+  "PROVIDER_AUTH_ERROR",
+  "PROVIDER_ERROR",
+  "PROVIDER_INVALID_JSON",
+  "PROVIDER_EMPTY_RESPONSE",
+]);
+
 const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
   favoriteTopics: [],
   mostUsedCommands: [],
@@ -270,9 +287,21 @@ export function useAgentChat() {
   // wrong session. Reuses the existing `error` state — AgentErrorBanner
   // (already rendered in app/agent/page.tsx) picks this up exactly as it
   // does GENERATION_ERROR_MESSAGE below.
+  //
+  // Fix — do not bother the user with a banner for an EXPECTED
+  // provider-availability failure that FallbackAIProvider has already
+  // recovered from (the reply the user sees is the fallback's, which
+  // succeeded). `payload.code` only carries one of these known codes
+  // when the failure came from the classified Gemini route response
+  // (see lib/architecture/ai/gemini-ai-provider.ts); a genuine
+  // unexpected/programming error never sets it, so it still surfaces
+  // here exactly as before. Diagnostics for every failure — expected or
+  // not — are still logged internally by fallback-ai-provider.ts
+  // regardless of what the UI shows.
   useEffect(() => {
     const unsubscribe = agentEventBus.on("ai_provider_error", (payload) => {
       if (payload.address !== address) return;
+      if (payload.code && EXPECTED_PROVIDER_FAILURE_CODES.has(payload.code)) return;
       setError(`[${payload.provider}] ${payload.message}`);
     });
     return unsubscribe;
