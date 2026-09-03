@@ -32,13 +32,6 @@ import { toolError, toolSuccess } from "./agent-tool-result";
 const DISCOVERY_API_PATH = "/api/x402/discover";
 const CANONICAL_APP_ORIGIN = "https://mpgrhub.xyz";
 
-function originFromConfiguredHost(value: string | undefined): string | null {
-  if (!value) return null;
-  const host = value.trim().replace(/^https?:\/\//i, "").replace(/\/$/, "");
-  if (!host) return null;
-  return `https://${host}`;
-}
-
 /**
  * Same-deployment origin for /api/x402/discover.
  *
@@ -46,16 +39,13 @@ function originFromConfiguredHost(value: string | undefined): string | null {
  * Never use window.location and never accept an origin from the model
  * or request body. The resource URL stays a separate validated HTTPS
  * input; this function only chooses this app's own discover route.
+ *
+ * Always resolves to the canonical production origin — no
+ * environment/Vercel-derived fallback — so server-side self-fetches
+ * never depend on deployment-specific host env vars.
  */
 function resolveDiscoveryEndpoint(): string {
-  const origin =
-    originFromConfiguredHost(process.env.NEXT_PUBLIC_APP_URL) ||
-    originFromConfiguredHost(process.env.NEXT_PUBLIC_SITE_URL) ||
-    originFromConfiguredHost(process.env.VERCEL_PROJECT_PRODUCTION_URL) ||
-    originFromConfiguredHost(process.env.VERCEL_URL) ||
-    CANONICAL_APP_ORIGIN;
-
-  return `${origin}${DISCOVERY_API_PATH}`;
+  return `${CANONICAL_APP_ORIGIN}${DISCOVERY_API_PATH}`;
 }
 
 function isHttpsUrl(value: unknown): value is string {
