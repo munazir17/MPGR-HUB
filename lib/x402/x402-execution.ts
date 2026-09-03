@@ -195,6 +195,8 @@ export async function executeX402Payment(
     let registrationId: string;
     let eip712Name: string | undefined;
     let eip712Version: string | undefined;
+    let registeredX402Version: number | undefined;
+    let registeredWireNetwork: string | undefined;
     try {
       const registerResponse = await fetch(X402_REGISTER_API_PATH, {
         method: "POST",
@@ -220,6 +222,8 @@ export async function executeX402Payment(
             registrationId?: unknown;
             eip712Name?: unknown;
             eip712Version?: unknown;
+            x402Version?: unknown;
+            wireNetwork?: unknown;
             error?: unknown;
             code?: unknown;
           }
@@ -236,6 +240,10 @@ export async function executeX402Payment(
       registrationId = registerPayload.registrationId;
       eip712Name = typeof registerPayload.eip712Name === "string" ? registerPayload.eip712Name : undefined;
       eip712Version = typeof registerPayload.eip712Version === "string" ? registerPayload.eip712Version : undefined;
+      registeredX402Version =
+        typeof registerPayload.x402Version === "number" ? registerPayload.x402Version : undefined;
+      registeredWireNetwork =
+        typeof registerPayload.wireNetwork === "string" ? registerPayload.wireNetwork : undefined;
     } catch {
       const snapshot: X402ExecutionSnapshot = {
         state: "ERROR",
@@ -283,28 +291,54 @@ export async function executeX402Payment(
 
     onTransition({ state: "SIGNED", settlement: null, error: null });
 
-    const payload: X402PaymentPayload = {
-      x402Version: 1,
-      scheme: "exact",
-      // Wire-format network for the resource server, NOT the internal
-      // canonical identifier. The canonical eip155:8453 is what's
-      // bound in Redis (see the /api/x402/register call above) and
-      // what /api/x402/submit's verifyAgainstStoredRecord() matches
-      // against — that is unchanged. Only the string actually sent to
-      // the resource server in X-PAYMENT changes here.
-      network: toX402WireNetwork(proposal.requirement.network),
-      payload: {
-        signature,
-        authorization: {
-          from: typedData.message.from,
-          to: typedData.message.to,
-          value: typedData.message.value.toString(),
-          validAfter: typedData.message.validAfter.toString(),
-          validBefore: typedData.message.validBefore.toString(),
-          nonce: typedData.message.nonce,
-        },
-      },
+    const x402Version = registeredX402Version ?? 2;
+    const wireNetwork = toX402WireNetwork(proposal.requirement.network, {
+      x402Version,
+      originalNetwork: registeredWireNetwork ?? proposal.requirement.wireNetwork,
+    });
+
+    const authorization = {
+      from: typedData.message.from,
+      to: typedData.message.to,
+      value: typedData.message.value.toString(),
+      validAfter: typedData.message.validAfter.toString(),
+      validBefore: typedData.message.validBefore.toString(),
+      nonce: typedData.message.nonce,
     };
+
+    const payload: X402PaymentPayload =
+      x402Version >= 2
+        ? {
+            x402Version,
+            scheme: "exact",
+            network: wireNetwork,
+            accepted: {
+              scheme: "exact",
+              network: wireNetwork,
+              amount: proposal.requirement.maxAmountRequired,
+              asset: proposal.requirement.asset,
+              payTo: proposal.requirement.payTo,
+              ...(proposal.requirement.maxTimeoutSeconds !== undefined
+                ? { maxTimeoutSeconds: proposal.requirement.maxTimeoutSeconds }
+                : {}),
+              ...(proposal.requirement.extra
+                ? { extra: proposal.requirement.extra }
+                : {}),
+            },
+            payload: {
+              signature,
+              authorization,
+            },
+          }
+        : {
+            x402Version: 1,
+            scheme: "exact",
+            network: wireNetwork,
+            payload: {
+              signature,
+              authorization,
+            },
+          };
 
     const xPaymentHeader = base64EncodeJson(payload);
 
