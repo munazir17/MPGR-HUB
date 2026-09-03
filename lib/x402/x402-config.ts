@@ -71,6 +71,41 @@ export function normalizeX402Network(network: unknown): string {
   return trimmed;
 }
 
+/**
+ * The wire-format network string this app's x402 resource servers
+ * expect inside an outgoing X-PAYMENT payload's `network` field.
+ *
+ * This is the ONLY place that reintroduces the alias "base" — every
+ * other part of the x402 stack (Redis-bound proposal, EIP-712
+ * verification, /api/x402/submit's stored-record matching) keeps
+ * using X402_SUPPORTED_NETWORK ("eip155:8453") exactly as before.
+ * normalizeX402Network() already accepts "base" back as an alias of
+ * eip155:8453 on the receiving/verification side, so this does not
+ * change what network is considered valid anywhere — it only changes
+ * what string is written into the payload sent to the resource server.
+ */
+export const X402_WIRE_NETWORK_BASE_MAINNET = "base";
+
+/**
+ * Maps the app's canonical CAIP-2 network identifier onto the x402
+ * wire-format network string for outgoing payments. Inverse of
+ * normalizeX402Network(), used only at X-PAYMENT construction time —
+ * never for storage, matching, or signing.
+ *
+ * Anything other than the one supported mainnet network is returned
+ * unchanged. In practice this function is only ever called with
+ * X402_SUPPORTED_NETWORK, because executeX402Payment()'s own gates
+ * already refuse to build a payment for any other network — this is
+ * a defensive default, not a path that enables paying on another
+ * chain.
+ */
+export function toX402WireNetwork(canonicalNetwork: string): string {
+  if (canonicalNetwork === X402_SUPPORTED_NETWORK) {
+    return X402_WIRE_NETWORK_BASE_MAINNET;
+  }
+  return canonicalNetwork;
+}
+
 // =============================================================================
 // Supported schemes
 // =============================================================================
