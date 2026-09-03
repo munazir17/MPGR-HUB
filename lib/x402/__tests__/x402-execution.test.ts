@@ -60,6 +60,32 @@ function settlementHeader(payload: Record<string, unknown>): string {
   return Buffer.from(JSON.stringify(payload), "utf-8").toString("base64");
 }
 
+function mockRegisterThenSubmit(submitResponse: Response, registerOverrides: Record<string, unknown> = {}) {
+  const fetchMock = vi.fn().mockImplementation((url: string) => {
+    if (url === "/api/x402/register") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            registrationId: "reg_test_123",
+            eip712Name: "USD Coin",
+            eip712Version: "2",
+            x402Version: 2,
+            wireNetwork: "eip155:8453",
+            ...registerOverrides,
+          }),
+          { status: 200 },
+        ),
+      );
+    }
+    if (url === "/api/x402/submit") {
+      return Promise.resolve(submitResponse);
+    }
+    throw new Error(`unexpected fetch to ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 beforeEach(() => {
   mockSignTypedData.mockReset();
   vi.unstubAllGlobals();
@@ -90,6 +116,7 @@ describe("executeX402Payment — gating (blocked, no signature requested)", () =
 describe("executeX402Payment — signing boundary", () => {
   it("22. wallet rejection during signing is classified, never a raw exception message", async () => {
     mockSignTypedData.mockRejectedValueOnce(new Error("User rejected the request"));
+    mockRegisterThenSubmit(new Response("{}", { status: 200 }));
     const result = await executeX402Payment(baseInput(), () => {});
     expect(result.state).toBe("ERROR");
     expect(result.error?.code).toBe("WALLET_REJECTED");
@@ -98,15 +125,17 @@ describe("executeX402Payment — signing boundary", () => {
 });
 
 describe("executeX402Payment — submission & verification outcomes", () => {
-  it("23. successful payment: signs once, submits X-PAYMENT, verifies settlement", async () => {
+  it("23. successful payment: signs once, submits via /api/x402/submit, verifies settlement", async () => {
     mockSignTypedData.mockResolvedValueOnce(SIGNATURE);
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response("{}", {
-        status: 200,
-        headers: { "X-PAYMENT-RESPONSE": settlementHeader({ success: true, transaction: "0xabc", payer: ACCOUNT }) },
-      })
+    const fetchMock = mockRegisterThenSubmit(
+      new Response(
+        JSON.stringify({
+          status: 200,
+          paymentResponse: settlementHeader({ success: true, transaction: "0xabc", payer: ACCOUNT }),
+        }),
+        { status: 200 },
+      ),
     );
-    vi.stubGlobal("fetch", fetchMock);
 
     const transitions: string[] = [];
     const result = await executeX402Payment(baseInput(), (s) => transitions.push(s.state));
@@ -114,15 +143,15 @@ describe("executeX402Payment — submission & verification outcomes", () => {
     expect(result.state).toBe("SETTLED");
     expect(result.settlement?.success).toBe(true);
     expect(mockSignTypedData).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [, requestInit] = fetchMock.mock.calls[0];
-    expect(requestInit.headers["X-PAYMENT"]).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(transitions).toEqual(["AWAITING_SIGNATURE", "SIGNED", "SUBMITTING", "SETTLED"]);
   });
 
   it("24. rejected payment: resource returns 402 again", async () => {
     mockSignTypedData.mockResolvedValueOnce(SIGNATURE);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 402 })));
+    mockRegisterThenSubmit(
+      new Response(JSON.stringify({ status: 402, paymentResponse: null }), { status: 200 }),
+    );
 
     const result = await executeX402Payment(baseInput(), () => {});
     expect(result.state).toBe("ERROR");
@@ -131,14 +160,14 @@ describe("executeX402Payment — submission & verification outcomes", () => {
 
   it("25. failed payment: 200 with settlement.success === false", async () => {
     mockSignTypedData.mockResolvedValueOnce(SIGNATURE);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response("{}", {
+    mockRegisterThenSubmit(
+      new Response(
+        JSON.stringify({
           status: 200,
-          headers: { "X-PAYMENT-RESPONSE": settlementHeader({ success: false, errorReason: "insufficient_funds" }) },
-        })
-      )
+          paymentResponse: settlementHeader({ success: false, errorReason: "insufficient_funds" }),
+        }),
+        { status: 200 },
+      ),
     );
 
     const result = await executeX402Payment(baseInput(), () => {});
@@ -148,7 +177,9 @@ describe("executeX402Payment — submission & verification outcomes", () => {
 
   it("26. verification failure: 200 with no settlement header", async () => {
     mockSignTypedData.mockResolvedValueOnce(SIGNATURE);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 200 })));
+    mockRegisterThenSubmit(
+      new Response(JSON.stringify({ status: 200, paymentResponse: null }), { status: 200 }),
+    );
 
     const result = await executeX402Payment(baseInput(), () => {});
     expect(result.state).toBe("ERROR");
@@ -157,7 +188,9 @@ describe("executeX402Payment — submission & verification outcomes", () => {
 
   it("27. resource request failure: non-2xx, non-402 status", async () => {
     mockSignTypedData.mockResolvedValueOnce(SIGNATURE);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 500 })));
+    mockRegisterThenSubmit(
+      new Response(JSON.stringify({ status: 500, paymentResponse: null }), { status: 200 }),
+    );
 
     const result = await executeX402Payment(baseInput(), () => {});
     expect(result.state).toBe("ERROR");
@@ -166,7 +199,24 @@ describe("executeX402Payment — submission & verification outcomes", () => {
 
   it("28. network failure while submitting never leaks the raw fetch exception", async () => {
     mockSignTypedData.mockResolvedValueOnce(SIGNATURE);
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("getaddrinfo ENOTFOUND api.example.com")));
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/x402/register") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              registrationId: "reg_test_123",
+              eip712Name: "USD Coin",
+              eip712Version: "2",
+              x402Version: 2,
+              wireNetwork: "eip155:8453",
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.reject(new Error("getaddrinfo ENOTFOUND api.example.com"));
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const result = await executeX402Payment(baseInput(), () => {});
     expect(result.state).toBe("ERROR");
@@ -178,11 +228,14 @@ describe("executeX402Payment — submission & verification outcomes", () => {
 describe("executeX402Payment — idempotency / duplicate protection", () => {
   it("29. a second concurrent call for the same proposal is refused, not double-signed", async () => {
     mockSignTypedData.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(SIGNATURE), 20)));
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response("{}", { status: 200, headers: { "X-PAYMENT-RESPONSE": settlementHeader({ success: true }) } })
-      )
+    mockRegisterThenSubmit(
+      new Response(
+        JSON.stringify({
+          status: 200,
+          paymentResponse: settlementHeader({ success: true }),
+        }),
+        { status: 200 },
+      ),
     );
 
     const proposal = mustBuildProposal();
@@ -201,61 +254,68 @@ describe("executeX402Payment — idempotency / duplicate protection", () => {
   });
 });
 
-describe("executeX402Payment — X-PAYMENT wire network (Base Mainnet fix)", () => {
-  it("31. outgoing X-PAYMENT network is the x402 wire alias 'base', while the register call still binds the canonical eip155:8453", async () => {
+describe("executeX402Payment — wire payload (PayAI v2 / eip155:8453)", () => {
+  it("31. outgoing payment uses x402Version 2, CAIP-2 eip155:8453, and an `accepted` object — never the v1 alias 'base'", async () => {
     mockSignTypedData.mockResolvedValueOnce(SIGNATURE);
 
-    const fetchMock = vi.fn().mockImplementation((url: string, init: RequestInit) => {
-      if (url === "/api/x402/register") {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              registrationId: "reg_test_123",
-              eip712Name: "USDC",
-              eip712Version: "2",
-            }),
-            { status: 200 },
-          ),
-        );
-      }
-      if (url === "/api/x402/submit") {
-        return Promise.resolve(
-          new Response("{}", {
-            status: 200,
-            headers: {
-              "X-PAYMENT-RESPONSE": settlementHeader({ success: true, transaction: "0xabc", payer: ACCOUNT }),
-            },
-          }),
-        );
-      }
-      throw new Error(`unexpected fetch to ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    const fetchMock = mockRegisterThenSubmit(
+      new Response(
+        JSON.stringify({
+          status: 200,
+          paymentResponse: settlementHeader({ success: true, transaction: "0xabc", payer: ACCOUNT }),
+        }),
+        { status: 200 },
+      ),
+    );
 
     const result = await executeX402Payment(baseInput(), () => {});
     expect(result.state).toBe("SETTLED");
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
-    // The register call is the internal Redis-binding step — must
-    // stay on the canonical identifier, unchanged by this fix.
     const [, registerInit] = fetchMock.mock.calls.find(([url]) => url === "/api/x402/register")!;
-    const registerBody = JSON.parse(registerInit.body as string);
+    const registerBody = JSON.parse((registerInit as RequestInit).body as string);
     expect(registerBody.requirement.network).toBe(X402_SUPPORTED_NETWORK);
 
-    // The submit call carries the actual X-PAYMENT header forwarded
-    // verbatim to the upstream resource server — this is the one
-    // that must use the x402 wire alias, not eip155:8453.
     const [, submitInit] = fetchMock.mock.calls.find(([url]) => url === "/api/x402/submit")!;
-    const submitBody = JSON.parse(submitInit.body as string);
+    const submitBody = JSON.parse((submitInit as RequestInit).body as string);
     const decodedPayment = JSON.parse(Buffer.from(submitBody.xPayment, "base64").toString("utf-8"));
+    expect(decodedPayment.x402Version).toBe(2);
+    expect(decodedPayment.network).toBe("eip155:8453");
+    expect(decodedPayment.network).not.toBe("base");
+    expect(decodedPayment.accepted).toMatchObject({
+      scheme: "exact",
+      network: "eip155:8453",
+      amount: "1000000",
+      asset: USDC,
+      payTo: PAY_TO,
+    });
+    expect(decodedPayment.payload.signature).toBe(SIGNATURE);
+  });
+
+  it("31b. v1 Coinbase resources still emit network 'base' and omit `accepted`", async () => {
+    mockSignTypedData.mockResolvedValueOnce(SIGNATURE);
+    const fetchMock = mockRegisterThenSubmit(
+      new Response(
+        JSON.stringify({
+          status: 200,
+          paymentResponse: settlementHeader({ success: true, transaction: "0xabc", payer: ACCOUNT }),
+        }),
+        { status: 200 },
+      ),
+      { x402Version: 1, wireNetwork: "base", eip712Name: "USD Coin" },
+    );
+
+    const result = await executeX402Payment(baseInput(), () => {});
+    expect(result.state).toBe("SETTLED");
+    const [, submitInit] = fetchMock.mock.calls.find(([url]) => url === "/api/x402/submit")!;
+    const submitBody = JSON.parse((submitInit as RequestInit).body as string);
+    const decodedPayment = JSON.parse(Buffer.from(submitBody.xPayment, "base64").toString("utf-8"));
+    expect(decodedPayment.x402Version).toBe(1);
     expect(decodedPayment.network).toBe("base");
-    expect(decodedPayment.network).not.toBe(X402_SUPPORTED_NETWORK);
+    expect(decodedPayment.accepted).toBeUndefined();
   });
 
   it("32. Base Sepolia never reaches executeX402Payment in the first place — the chain gate already refuses it", async () => {
-    // Sepolia's chain ID (84532) is not X402_CHAIN_ID (8453), so the
-    // existing chain gate blocks it before any signing or fetch —
-    // this fix does not open a new path for testnet payments.
     const result = await executeX402Payment(baseInput({ currentChainId: 84532 }), () => {});
     expect(result.state).toBe("ERROR");
     expect(result.error?.code).toBe("UNSUPPORTED_NETWORK");
