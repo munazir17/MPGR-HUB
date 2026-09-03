@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, CheckCircle2, Loader2, ShieldCheck, X } from "lucide-react";
 
 import { formatAddress } from "@/lib/format";
+import { formatX402NetworkDisplay } from "@/lib/x402/x402-config";
 import type { X402ConfirmationState } from "@/lib/x402/x402-confirmation";
 import type { X402ExecutionState } from "@/lib/x402/x402-execution";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
@@ -105,7 +106,7 @@ export function AgentX402PaymentModal({
               </div>
               <div className="flex justify-between">
                 <dt className="text-zinc-500">Network</dt>
-                <dd className="text-white">{proposal.requirement.network}</dd>
+                <dd className="text-white">{formatX402NetworkDisplay(proposal.requirement.network)}</dd>
               </div>
             </dl>
 
