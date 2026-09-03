@@ -42,9 +42,17 @@ export interface ConfirmedX402Proposal {
   resource: string;
   scheme: "exact";
   network: string;
+  /** Protocol version from the resource's 402 body (1 or 2). */
+  x402Version: number;
+  /**
+   * Exact network string the resource advertised. Sent back in the
+   * payment header so PayAI (`eip155:8453`) is not rewritten to `base`.
+   */
+  wireNetwork: string;
   asset: string;
   maxAmountRequired: string;
   payTo: string;
+  maxTimeoutSeconds?: number;
   eip712Name: string;
   eip712Version: string;
   createdAt: string;
