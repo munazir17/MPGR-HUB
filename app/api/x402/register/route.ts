@@ -151,7 +151,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const domain = KNOWN_X402_ASSET_DOMAINS[observed.requirement.asset.toLowerCase()];
+  const domain = observed.eip712Domain;
   if (!domain) {
     return jsonError(400, "UNSUPPORTED_ASSET", "This payment asset is not recognized.");
   }
@@ -182,11 +182,15 @@ export async function POST(request: Request) {
     resource: storedResourceUrl.href,
     scheme: "exact",
     network: X402_SUPPORTED_NETWORK,
+    x402Version: parsed.x402Version,
+    wireNetwork:
+      observed.requirement.wireNetwork ?? X402_SUPPORTED_NETWORK,
     asset: observed.requirement.asset,
     maxAmountRequired: observed.requirement.maxAmountRequired,
     payTo: observed.requirement.payTo,
-    eip712Name: domain.name,
-    eip712Version: domain.version,
+    maxTimeoutSeconds: observed.requirement.maxTimeoutSeconds,
+    eip712Name: domain.domain.name,
+    eip712Version: domain.domain.version,
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
     status: "pending",
@@ -205,7 +209,10 @@ export async function POST(request: Request) {
       expiresAt: stored.record.expiresAt,
       eip712Name: stored.record.eip712Name,
       eip712Version: stored.record.eip712Version,
+      x402Version: stored.record.x402Version,
+      wireNetwork: stored.record.wireNetwork,
     },
     { status: 200, headers: NO_STORE },
   );
 }
+
