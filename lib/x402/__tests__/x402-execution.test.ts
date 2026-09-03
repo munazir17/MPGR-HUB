@@ -201,6 +201,68 @@ describe("executeX402Payment — idempotency / duplicate protection", () => {
   });
 });
 
+describe("executeX402Payment — X-PAYMENT wire network (Base Mainnet fix)", () => {
+  it("31. outgoing X-PAYMENT network is the x402 wire alias 'base', while the register call still binds the canonical eip155:8453", async () => {
+    mockSignTypedData.mockResolvedValueOnce(SIGNATURE);
+
+    const fetchMock = vi.fn().mockImplementation((url: string, init: RequestInit) => {
+      if (url === "/api/x402/register") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              registrationId: "reg_test_123",
+              eip712Name: "USDC",
+              eip712Version: "2",
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      if (url === "/api/x402/submit") {
+        return Promise.resolve(
+          new Response("{}", {
+            status: 200,
+            headers: {
+              "X-PAYMENT-RESPONSE": settlementHeader({ success: true, transaction: "0xabc", payer: ACCOUNT }),
+            },
+          }),
+        );
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeX402Payment(baseInput(), () => {});
+    expect(result.state).toBe("SETTLED");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // The register call is the internal Redis-binding step — must
+    // stay on the canonical identifier, unchanged by this fix.
+    const [, registerInit] = fetchMock.mock.calls.find(([url]) => url === "/api/x402/register")!;
+    const registerBody = JSON.parse(registerInit.body as string);
+    expect(registerBody.requirement.network).toBe(X402_SUPPORTED_NETWORK);
+
+    // The submit call carries the actual X-PAYMENT header forwarded
+    // verbatim to the upstream resource server — this is the one
+    // that must use the x402 wire alias, not eip155:8453.
+    const [, submitInit] = fetchMock.mock.calls.find(([url]) => url === "/api/x402/submit")!;
+    const submitBody = JSON.parse(submitInit.body as string);
+    const decodedPayment = JSON.parse(Buffer.from(submitBody.xPayment, "base64").toString("utf-8"));
+    expect(decodedPayment.network).toBe("base");
+    expect(decodedPayment.network).not.toBe(X402_SUPPORTED_NETWORK);
+  });
+
+  it("32. Base Sepolia never reaches executeX402Payment in the first place — the chain gate already refuses it", async () => {
+    // Sepolia's chain ID (84532) is not X402_CHAIN_ID (8453), so the
+    // existing chain gate blocks it before any signing or fetch —
+    // this fix does not open a new path for testnet payments.
+    const result = await executeX402Payment(baseInput({ currentChainId: 84532 }), () => {});
+    expect(result.state).toBe("ERROR");
+    expect(result.error?.code).toBe("UNSUPPORTED_NETWORK");
+    expect(mockSignTypedData).not.toHaveBeenCalled();
+  });
+});
+
 describe("idleX402ExecutionSnapshot", () => {
   it("30. starts IDLE with no settlement/error", () => {
     const snapshot = idleX402ExecutionSnapshot();
