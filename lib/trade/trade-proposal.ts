@@ -16,13 +16,14 @@ import {
 } from "./trade-config";
 import { formatAtomicAmount } from "./trade-format";
 import { buildSwapRiskFacts, riskToWarnings } from "./trade-risk";
-import { isTokenizedStockToken, type TradeTokenRef } from "./trade-tokens";
+import { isTokenizedStockToken } from "./trade-tokens";
 import type {
   CdpSwapIssues,
   CdpSwapQuote,
   TradeError,
   TradeKind,
   TradeProposal,
+  TradeTokenRef,
 } from "./trade-types";
 
 export type BuildTradeProposalResult =
@@ -130,7 +131,7 @@ export function buildTradeProposal(
       ];
 
   const description = executionAvailable
-    ? `Swap ${displayFrom} ${input.from.symbol} → ~${displayTo} ${input.to.symbol} on Base (min ${displayMin} ${input.to.symbol}).`
+    ? `Swap ${displayFrom} \( {input.from.symbol} → \~ \){displayTo} ${input.to.symbol} on Base (min ${displayMin} ${input.to.symbol}).`
     : `No executable Base swap is available for ${input.from.symbol} → ${input.to.symbol} right now.`;
 
   return {
@@ -168,7 +169,7 @@ export function buildTradeProposal(
       risk,
       warnings: riskToWarnings(risk),
       displayFromAmount: `${displayFrom} ${input.from.symbol}`,
-      displayToAmount: `~${displayTo} ${input.to.symbol}`,
+      displayToAmount: `\~${displayTo} ${input.to.symbol}`,
       displayMinToAmount: `${displayMin} ${input.to.symbol}`,
       description,
       postConfirmationSteps,
