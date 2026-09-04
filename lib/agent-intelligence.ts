@@ -306,6 +306,36 @@ function looksLikeX402PaymentPrompt(normalized: string): boolean {
   return X402_PAYMENT_PROMPT_MARKERS.some((marker) => normalized.includes(marker));
 }
 
+const TRADE_PROMPT_MARKERS = [
+  "tokenized stock",
+  "tokenized stocks",
+  "coinc",
+  "aaplc",
+  "tslac",
+  "nvdac",
+  "googlc",
+  "amznc",
+  "msftc",
+  "metac",
+  "crclc",
+  "intcc",
+  "mstrc",
+  "sndkc",
+  "spcxc",
+  "b20",
+  "swap quote",
+  "trade quote",
+  "prepare a swap",
+  "prepare a $",
+  "buy $",
+  "dex liquidity",
+  "coinbase tokenized",
+] as const;
+
+function looksLikeTradePrompt(normalized: string): boolean {
+  return TRADE_PROMPT_MARKERS.some((marker) => normalized.includes(marker));
+}
+
 export function isX402PaymentPrompt(rawPrompt: string): boolean {
   return looksLikeX402PaymentPrompt(normalize(rawPrompt));
 }
@@ -445,6 +475,9 @@ const GENERAL_HELP_REPLY =
 
 const X402_PAYMENT_HELP_REPLY =
   "This looks like an x402 paid-resource request. I will not sign or submit a payment from here. Include the https resource URL if you want it inspected — a proposal is only prepared for your explicit confirmation, and no funds move until you confirm.";
+
+const TRADE_HELP_REPLY =
+  "I can research Coinbase Tokenized Stocks on Base (B20) and prepare a Base swap quote for your review. Nothing is signed until you confirm in the app. Try \"Research COINc\" or \"Prepare a $10 USDC to COINc quote\".";
 
 function notAvailable(topic: string): string {
   return `Your ${topic} data isn't available yet — this usually means it's still loading. Give it a moment and ask again.`;
@@ -733,6 +766,16 @@ export function generateIntelligentReply(
     return {
       intent: "general_help",
       reply: X402_PAYMENT_HELP_REPLY,
+      actions: [],
+      highlights: [],
+      followUps: getFollowUpPrompts("general_help"),
+    };
+  }
+
+  if (looksLikeTradePrompt(normalize(prompt))) {
+    return {
+      intent: "general_help",
+      reply: TRADE_HELP_REPLY,
       actions: [],
       highlights: [],
       followUps: getFollowUpPrompts("general_help"),
