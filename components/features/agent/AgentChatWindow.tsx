@@ -7,6 +7,7 @@ import { AgentDateSeparator, getMessageDayKey } from "./AgentDateSeparator";
 import { AgentTypingIndicator } from "./AgentTypingIndicator";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
+import type { TradeProposal } from "@/lib/trade/trade-types";
 
 interface AgentChatWindowProps {
   messages: AgentMessage[];
@@ -22,6 +23,7 @@ interface AgentChatWindowProps {
   // P3 — optional, forwarded straight to AgentChatBubble. See that
   // component's own prop doc.
   onReviewX402Proposal?: (proposal: X402PaymentProposal) => void;
+  onReviewTradeProposal?: (proposal: TradeProposal) => void;
 }
 
 // Finds the last assistant message that actually has follow-up prompts to
@@ -59,6 +61,7 @@ export function AgentChatWindow({
   canRegenerate,
   streamingMessageId,
   onReviewX402Proposal,
+  onReviewTradeProposal,
 }: AgentChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -90,6 +93,7 @@ export function AgentChatWindow({
               disabled={thinking}
               isStreaming={message.id === streamingMessageId}
               onReviewX402Proposal={onReviewX402Proposal}
+              onReviewTradeProposal={onReviewTradeProposal}
             />
             {i === lastFollowUpIndex && (
               <AgentFollowUpChips followUps={message.followUps!} onSelect={onSelectPrompt} disabled={thinking} />
