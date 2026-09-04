@@ -6,10 +6,13 @@ import { clsx } from "clsx";
 import { AgentHighlightChips } from "./AgentHighlightChips";
 import { AgentActionCard } from "./AgentActionCard";
 import { AgentX402ProposalCard } from "./AgentX402ProposalCard";
+import { AgentTradeProposalCard } from "./AgentTradeProposalCard";
+import { AgentTokenizedStockCard } from "./AgentTokenizedStockCard";
 import { AgentMessageToolbar } from "./AgentMessageToolbar";
 import { useStreamingText } from "@/hooks/useStreamingText";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
+import type { TradeProposal } from "@/lib/trade/trade-types";
 
 interface AgentChatBubbleProps {
   message: AgentMessage;
@@ -25,6 +28,7 @@ interface AgentChatBubbleProps {
   // an explicit tap on AgentX402ProposalCard below — never
   // automatically.
   onReviewX402Proposal?: (proposal: X402PaymentProposal) => void;
+  onReviewTradeProposal?: (proposal: TradeProposal) => void;
 }
 
 function formatTime(iso: string): string {
@@ -48,6 +52,7 @@ export function AgentChatBubble({
   disabled,
   isStreaming,
   onReviewX402Proposal,
+  onReviewTradeProposal,
 }: AgentChatBubbleProps) {
   const isUser = message.role === "user";
   const { text: streamedContent, done: streamDone } = useStreamingText(message.content, !isUser && !!isStreaming);
@@ -57,6 +62,8 @@ export function AgentChatBubble({
   const hasHighlights = !isUser && revealComplete && !!message.highlights && message.highlights.length > 0;
   const hasActions = !isUser && revealComplete && !!message.actions && message.actions.length > 0;
   const hasX402Proposal = !isUser && revealComplete && !!message.x402Proposal && !!onReviewX402Proposal;
+  const hasTradeProposal = !isUser && revealComplete && !!message.tradeProposal && !!onReviewTradeProposal;
+  const hasStockReport = !isUser && revealComplete && !!message.tokenizedStockReport;
 
   return (
     <motion.div
@@ -105,6 +112,18 @@ export function AgentChatBubble({
         {hasX402Proposal && (
           <div className="flex w-full flex-col gap-1.5 pt-0.5">
             <AgentX402ProposalCard proposal={message.x402Proposal!} onReview={onReviewX402Proposal!} />
+          </div>
+        )}
+
+        {hasTradeProposal && (
+          <div className="flex w-full flex-col gap-1.5 pt-0.5">
+            <AgentTradeProposalCard proposal={message.tradeProposal!} onReview={onReviewTradeProposal!} />
+          </div>
+        )}
+
+        {hasStockReport && (
+          <div className="flex w-full flex-col gap-1.5 pt-0.5">
+            <AgentTokenizedStockCard report={message.tokenizedStockReport!} />
           </div>
         )}
 
