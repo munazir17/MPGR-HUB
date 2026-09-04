@@ -1,12 +1,17 @@
 import {
+  extractTradeHumanAmount,
+  extractTradeSymbol,
   extractX402ResourceUrl,
   generateIntelligentReply,
+  isTradePrompt,
+  isTradeQuotePrompt,
   isX402PaymentPrompt,
 } from "@/lib/agent-intelligence";
 import { getFollowUpPrompts } from "@/lib/agent-actions";
 import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-provider";
 import { runRegisteredTool } from "./agent-tool-calling";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
+import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 
 // Phase 3C Part 1 — wraps generateIntelligentReply as the always-available
 // local provider. FallbackAIProvider uses this class when Gemini throws.
@@ -14,7 +19,9 @@ import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 // x402 addendum — payment prompts still never sign or submit. When the
 // Gemini tool loop fails mid-flight, this provider runs the existing
 // read/prepare tools itself so a review-only proposal can still surface.
-// Prepare failures are returned as grounded diagnostics, not swallowed.
+//
+// P4 trade addendum — same pattern for tokenized-stock research and
+// Base swap quotes. Never signs. Never broadcasts.
 
 export class DeterministicAIProvider implements AIProvider {
   readonly name = "deterministic";
@@ -23,6 +30,10 @@ export class DeterministicAIProvider implements AIProvider {
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
     if (isX402PaymentPrompt(request.prompt)) {
       return prepareOrExplainX402(request);
+    }
+
+    if (isTradePrompt(request.prompt)) {
+      return prepareOrExplainTrade(request);
     }
 
     return generateIntelligentReply(
@@ -72,7 +83,88 @@ async function prepareOrExplainX402(
       : "The resource could not be prepared as a supported x402 payment.";
 
   return helpResponse(
-    `I found the resource URL but could not prepare a payment proposal. ${detail} Nothing was signed or submitted.`,
+    "I found the resource URL but could not prepare a payment proposal. " +
+      detail +
+      " Nothing was signed or submitted.",
+  );
+}
+
+async function prepareOrExplainTrade(
+  request: AIProviderRequest,
+): Promise<AIProviderResponse> {
+  const symbol = extractTradeSymbol(request.prompt);
+  const wantsQuote = isTradeQuotePrompt(request.prompt);
+
+  if (wantsQuote) {
+    const amount = extractTradeHumanAmount(request.prompt) ?? "10";
+    const toToken = symbol ?? "COINc";
+    const result = await runRegisteredTool(
+      "trade_prepare_swap",
+      {
+        fromToken: "USDC",
+        toToken: toToken,
+        amount: amount,
+      },
+      request,
+    );
+
+    if (result.success) {
+      const proposal = (result.data as { proposal?: TradeProposal } | undefined)?.proposal;
+      if (proposal) {
+        return {
+          intent: "general_help",
+          reply:
+            "A Base swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.",
+          actions: [],
+          highlights: [],
+          followUps: getFollowUpPrompts("general_help"),
+          tradeProposal: proposal,
+        };
+      }
+    }
+
+    const detail =
+      typeof result.error?.message === "string" && result.error.message.trim()
+        ? result.error.message.trim()
+        : "Coinbase CDP could not prepare a swap quote for this pair.";
+
+    return helpResponse(
+      "I tried to prepare a Base swap quote and it did not complete. " +
+        detail +
+        " Nothing was signed or submitted.",
+    );
+  }
+
+  const result = await runRegisteredTool(
+    "tokenized_stock_research",
+    symbol ? { symbol: symbol } : {},
+    request,
+  );
+
+  if (result.success) {
+    const report = (result.data as { report?: TokenizedStockReport } | undefined)?.report;
+    if (report) {
+      return {
+        intent: "general_help",
+        reply:
+          "Here is Coinbase tokenized-stock research on Base. This is research only — I will not sign or execute anything.",
+        actions: [],
+        highlights: [],
+        followUps: getFollowUpPrompts("general_help"),
+        tokenizedStockReport: report,
+      };
+    }
+  }
+
+  const detail =
+    typeof result.error?.message === "string" && result.error.message.trim()
+      ? result.error.message.trim()
+      : "Tokenized-stock research is unavailable right now.";
+
+  return helpResponse(
+    "I could not complete that Coinbase tokenized-stock lookup. " +
+      detail +
+      " Nothing was signed or submitted.",
   );
 }
 
