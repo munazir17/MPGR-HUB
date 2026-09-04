@@ -2,6 +2,7 @@ import { AGENT_INTENTS, type AgentIntent } from "@/lib/agent-intelligence";
 import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-provider";
 import type { Logger } from "@/lib/architecture/core/types";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
+import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 
 // Phase 3C Part 4 — AI Provider guardrails.
 //
@@ -72,6 +73,35 @@ function isPlausibleX402Proposal(value: unknown): value is X402PaymentProposal {
   );
 }
 
+function isPlausibleTradeProposal(value: unknown): value is TradeProposal {
+  if (!value || typeof value !== "object") return false;
+  const proposal = value as Record<string, unknown>;
+  if (typeof proposal.id !== "string" || !proposal.id) return false;
+  if (proposal.requiresConfirmation !== true) return false;
+  if (proposal.network !== "base") return false;
+  if (proposal.provider !== "cdp-trade-api") return false;
+  if (typeof proposal.fromAmount !== "string") return false;
+  const from = proposal.from as Record<string, unknown> | undefined;
+  const to = proposal.to as Record<string, unknown> | undefined;
+  return (
+    typeof from?.address === "string" &&
+    typeof to?.address === "string" &&
+    typeof proposal.taker === "string"
+  );
+}
+
+function isPlausibleTokenizedStockReport(value: unknown): value is TokenizedStockReport {
+  if (!value || typeof value !== "object") return false;
+  const report = value as Record<string, unknown>;
+  if (report.kind === "catalog") {
+    return Array.isArray(report.assets);
+  }
+  if (report.kind === "research") {
+    return !!report.report && typeof report.report === "object";
+  }
+  return false;
+}
+
 export class GuardrailAIProvider implements AIProvider {
   readonly name: string;
   readonly requiresNetwork: boolean;
@@ -124,6 +154,22 @@ export class GuardrailAIProvider implements AIProvider {
       });
     }
 
+    const tradeProposal = isPlausibleTradeProposal(response.tradeProposal) ? response.tradeProposal : undefined;
+    if (response.tradeProposal !== undefined && !tradeProposal) {
+      this.logger.warn("AI provider returned a malformed tradeProposal — dropped, not surfaced to the UI", {
+        provider: this.provider.name,
+      });
+    }
+
+    const tokenizedStockReport = isPlausibleTokenizedStockReport(response.tokenizedStockReport)
+      ? response.tokenizedStockReport
+      : undefined;
+    if (response.tokenizedStockReport !== undefined && !tokenizedStockReport) {
+      this.logger.warn("AI provider returned a malformed tokenizedStockReport — dropped, not surfaced to the UI", {
+        provider: this.provider.name,
+      });
+    }
+
     return {
       intent: response.intent,
       reply: sanitizedReply,
@@ -131,6 +177,8 @@ export class GuardrailAIProvider implements AIProvider {
       highlights,
       followUps,
       ...(x402Proposal ? { x402Proposal } : {}),
+      ...(tradeProposal ? { tradeProposal } : {}),
+      ...(tokenizedStockReport ? { tokenizedStockReport } : {}),
     };
   }
 }
