@@ -57,7 +57,9 @@ export function AgentTokenizedStockCard({ report }: AgentTokenizedStockCardProps
               ? "CDP reports liquidity"
               : liquidity.liquidityAvailable === false
                 ? "none reported"
-                : "not probed"}
+                : liquidity.checked
+                  ? "probe failed"
+                  : "not probed"}
           </dd>
         </div>
         <div className="flex justify-between gap-2">
