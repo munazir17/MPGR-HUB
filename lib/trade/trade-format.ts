@@ -3,7 +3,7 @@
 // Display-only amount formatting. Never changes atomic amounts used
 // for quotes or transactions.
 
-import { formatUnits } from "viem";
+import { formatUnits, parseUnits } from "viem";
 
 export function formatAtomicAmount(
   atomic: string,
@@ -28,6 +28,22 @@ export function parseAtomicAmount(value: unknown): bigint | null {
   try {
     const n = BigInt(raw);
     return n > 0n ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+// Parses a human-readable decimal amount (e.g. "1.5") into atomic
+// units (bigint) using the token's decimals. Inverse of
+// formatAtomicAmount. Returns null on invalid input or non-positive
+// amounts.
+export function parseHumanTokenAmount(value: unknown, decimals: number): bigint | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const raw = String(value).trim();
+  if (!raw || !/^\d+(\.\d+)?$/.test(raw)) return null;
+  try {
+    const atomic = parseUnits(raw, decimals);
+    return atomic > 0n ? atomic : null;
   } catch {
     return null;
   }
