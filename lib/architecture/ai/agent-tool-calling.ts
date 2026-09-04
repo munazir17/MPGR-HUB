@@ -60,17 +60,6 @@ function isValidIntent(value: unknown): value is AgentIntent {
   );
 }
 
-// ---------------------------------------------------------------------------
-// x402 argument normalization
-// ---------------------------------------------------------------------------
-
-/**
- * x402_discover_resource / x402_prepare_payment require `resourceUrl`.
- *
- * Models (and a few older tests) sometimes emit `url` or `resource`.
- * Those aliases are rewritten here so the real tool schema is satisfied
- * without advertising `url` on the declaration.
- */
 export function normalizeX402ToolArguments(
   toolId: string,
   args: Record<string, unknown>,
@@ -102,10 +91,6 @@ const TRADE_TAKER_TOOL_IDS = new Set([
   "tokenized_stock_research",
 ]);
 
-/**
- * CDP quotes are bound to `taker`. If the model omitted it, fill from
- * the connected wallet — never invent a different address.
- */
 export function normalizeTradeToolArguments(
   toolId: string,
   args: Record<string, unknown>,
@@ -147,10 +132,6 @@ function pickResourceUrl(
 
   return null;
 }
-
-// ---------------------------------------------------------------------------
-// Model directive parsing
-// ---------------------------------------------------------------------------
 
 export interface ToolCallDirective {
   kind: "tool_call";
@@ -250,32 +231,12 @@ export function parseModelDirective(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Tool catalog
-// ---------------------------------------------------------------------------
-
-/**
- * Existing P2 read-only catalog.
- *
- * Kept unchanged so existing callers/tests retain the original
- * read-only behavior.
- */
 export function getReadOnlyToolCatalog(): readonly AnyAgentTool[] {
   return getAgentToolRegistry()
     .list()
     .filter((tool) => tool.mode === "read");
 }
 
-/**
- * P3 catalog.
- *
- * Includes read tools and prepare tools.
- *
- * Prepare is intentionally different from execute:
- *   read    -> may inspect data
- *   prepare -> may construct a proposal
- *   execute -> never exposed to this model loop
- */
 export function getReadAndPrepareToolCatalog(): readonly AnyAgentTool[] {
   return getAgentToolRegistry()
     .list()
@@ -301,7 +262,7 @@ export function buildToolCatalogPromptBlock(
   );
 
   return [
-    "You have tools for looking up live on-chain/app facts you do not already know and for preparing an x402 payment proposal when the user's request genuinely requires paid resource access.",
+    "You have tools for looking up live on-chain/app facts you do not already know, for preparing an x402 payment proposal, for researching Coinbase Tokenized Stocks on Base, and for preparing a Base swap quote.",
     "Read tools may retrieve information.",
     "Prepare tools may construct a proposal only. They never sign, pay, submit, or execute anything.",
     "Execute tools are not available to you.",
@@ -314,12 +275,10 @@ export function buildToolCatalogPromptBlock(
     "Never invent a toolId.",
     'For x402_discover_resource and x402_prepare_payment the URL argument name is resourceUrl — never url.',
     "Never invent payment amount, asset, recipient, or any other payment field. If x402_prepare_payment succeeds, the app itself will display the structured proposal.",
+    'For buy/sell/swap/quote requests call trade_prepare_swap. Dollar buys: fromToken="USDC", amount="10" (human units). Omit taker — the connected wallet is filled automatically.',
+    "For Coinbase tokenized-stock research call tokenized_stock_research. Do not invent liquidity or quotes.",
   ].join("\n");
 }
-
-// ---------------------------------------------------------------------------
-// Tool execution
-// ---------------------------------------------------------------------------
 
 function safeStringify(value: unknown): string {
   return JSON.stringify(
@@ -329,11 +288,6 @@ function safeStringify(value: unknown): string {
   );
 }
 
-/**
- * Existing P2 read-only execution path.
- *
- * Kept intentionally read-only.
- */
 export async function runRegisteredReadTool(
   toolId: string,
   args: Record<string, unknown>,
@@ -377,13 +331,6 @@ export async function runRegisteredReadTool(
   }
 }
 
-/**
- * P3 execution path.
- *
- * Allows only registered read/prepare tools.
- *
- * Execute tools are rejected before reaching the runtime.
- */
 export async function runRegisteredTool(
   toolId: string,
   args: Record<string, unknown>,
@@ -430,10 +377,6 @@ export async function runRegisteredTool(
     });
   }
 }
-
-// ---------------------------------------------------------------------------
-// Tool-calling loop
-// ---------------------------------------------------------------------------
 
 export type SendCompletion = (
   systemPrompt: string,
@@ -511,11 +454,6 @@ function buildLoopResponse(
   };
 }
 
-/**
- * Last-resort reply when the model keeps requesting tools on its final
- * allowed turn. Grounded only in the structured tool result — never
- * invents payment amount / asset / payTo.
- */
 export function synthesizeFinalReplyFromToolResult(
   toolId: string,
   toolResult: AgentToolResult,
@@ -564,24 +502,6 @@ export function synthesizeFinalReplyFromToolResult(
   );
 }
 
-/**
- * Runs one provider turn with bounded client-side tool calling.
- *
- * P3 x402 behavior:
- *   1. Model requests x402_prepare_payment.
- *   2. Runtime executes the prepare tool.
- *   3. Structured X402PaymentProposal is extracted directly from tool data.
- *   4. Only a short non-sensitive confirmation message is sent back to the
- *      model.
- *   5. Final AIProviderResponse carries x402Proposal separately.
- *
- * The model never constructs the proposal.
- *
- * If the model requests another tool on the final allowed turn, the
- * loop still executes that last read/prepare tool (never execute-mode)
- * and returns a grounded final answer. It does not throw into
- * FallbackAIProvider after a valid tool result.
- */
 export async function runToolCallingLoop(
   request: AIProviderRequest,
   baseSystemPrompt: string,
@@ -593,7 +513,7 @@ export async function runToolCallingLoop(
     );
 
   const systemPrompt = catalogBlock
-    ? `${baseSystemPrompt}\n\n${catalogBlock}`
+    ? `\( {baseSystemPrompt}\n\n \){catalogBlock}`
     : baseSystemPrompt;
 
   let transcript = "";
@@ -617,7 +537,7 @@ export async function runToolCallingLoop(
       : systemPrompt;
 
     const userPrompt = transcript
-      ? `${request.prompt}\n\n${transcript}`
+      ? `\( {request.prompt}\n\n \){transcript}`
       : request.prompt;
 
     const content = await sendCompletion(
