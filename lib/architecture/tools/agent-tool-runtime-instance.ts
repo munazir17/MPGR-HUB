@@ -49,6 +49,11 @@ import "./x402-tool-definitions";
 // actions are not registered here and are denied by the server allowlist.
 import "./agentkit-tool-definitions";
 
+// P4 addendum — registers trade_get_price / trade_prepare_swap /
+// tokenized_stock_research. Read/prepare only; signing stays behind
+// the Confirm & Swap UI, same as x402.
+import "./trade-tool-definitions";
+
 export const agentToolRuntime = new AgentToolRuntime(
   getAgentToolRegistry(),
   agentEventBus,
