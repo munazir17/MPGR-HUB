@@ -8,7 +8,7 @@ import {
   TRADE_DEFAULT_SLIPPAGE_BPS,
   clampSlippageBps,
 } from "./trade-config";
-import { parseAtomicAmount } from "./trade-format";
+import { parseAtomicAmount, parseHumanTokenAmount } from "./trade-format";
 import { resolveTradeToken, type ResolveTradeTokenResult } from "./trade-tokens";
 import type { TradeError, TradeTokenRef } from "./trade-types";
 
@@ -26,6 +26,23 @@ export type ParseTradeSwapResult =
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resolveFromAmount(raw: Record<string, unknown>, decimals: number): bigint | null {
+  if (raw.amount != null && String(raw.amount).trim() !== "") {
+    return parseHumanTokenAmount(raw.amount, decimals);
+  }
+  const fromAmount = raw.fromAmount;
+  if (fromAmount == null) return null;
+  const text = String(fromAmount).trim();
+  if (/[.\( ]/.test(text) || text.startsWith(" \)")) {
+    return parseHumanTokenAmount(text, decimals);
+  }
+  const digits = text.replace(/,/g, "");
+  if (/^[0-9]+$/.test(digits) && digits.length < decimals) {
+    return parseHumanTokenAmount(digits, decimals);
+  }
+  return parseAtomicAmount(fromAmount);
 }
 
 export function parseTradeSwapRequest(
@@ -51,13 +68,13 @@ export function parseTradeSwapRequest(
     };
   }
 
-  const fromAmount = parseAtomicAmount(raw.fromAmount);
+  const fromAmount = resolveFromAmount(raw, from.token.decimals);
   if (fromAmount === null) {
     return {
       ok: false,
       error: {
         code: "INVALID_INPUT",
-        message: "fromAmount must be a positive integer string in atomic units (e.g. 1000000 for 1 USDC).",
+        message: "Provide amount in token units (e.g. \"10\" or \"$10\") or fromAmount as an atomic integer string.",
       },
     };
   }
