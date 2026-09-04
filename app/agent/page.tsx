@@ -13,8 +13,10 @@ import { AgentPromptSuggestions } from "@/components/features/agent/AgentPromptS
 import { AgentErrorBanner } from "@/components/features/agent/AgentErrorBanner";
 import { AgentErrorBoundary } from "@/components/features/agent/AgentErrorBoundary";
 import { AgentX402PaymentModal } from "@/components/features/agent/AgentX402PaymentModal";
+import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTradeConfirmationModal";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { useX402Payment } from "@/hooks/useX402Payment";
+import { useTradeQuote } from "@/hooks/useTradeQuote";
 import type { AgentStatusId } from "@/lib/agent-config";
 // Bug fix (post Phase 3C audit) — the footer disclaimer below used to be
 // a hardcoded string claiming "no external AI services are connected in
@@ -52,6 +54,7 @@ export default function AgentPage() {
   // header comment for why this lives here (not inside useAgentChat)
   // and exactly which call is the human-confirmation boundary.
   const x402Payment = useX402Payment();
+  const tradeQuote = useTradeQuote();
 
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking", "beta"] : ["online", "beta"];
   const hasMessages = messages.length > 0;
@@ -122,6 +125,7 @@ export default function AgentPage() {
                       canRegenerate={canRegenerate}
                       streamingMessageId={streamingMessageId}
                       onReviewX402Proposal={x402Payment.openProposal}
+                      onReviewTradeProposal={tradeQuote.openProposal}
                     />
                   ) : (
                     <AgentEmptyState onSelectPrompt={sendMessage} />
@@ -173,6 +177,19 @@ export default function AgentPage() {
         executionError={x402Payment.executionError}
         settlement={x402Payment.settlement}
         onConfirmAndPay={x402Payment.confirmAndPay}
+      />
+      <AgentTradeConfirmationModal
+        open={tradeQuote.open}
+        onClose={tradeQuote.close}
+        proposal={tradeQuote.proposal}
+        confirmationState={tradeQuote.confirmationState}
+        confirmationError={tradeQuote.confirmationError}
+        executionState={tradeQuote.executionState}
+        executionError={tradeQuote.executionError}
+        approvalHash={tradeQuote.approvalHash}
+        swapHash={tradeQuote.swapHash}
+        stepLabel={tradeQuote.stepLabel}
+        onConfirmAndSwap={tradeQuote.confirmAndSwap}
       />
     </>
   );
