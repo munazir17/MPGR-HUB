@@ -4,8 +4,8 @@ import "server-only";
 //
 // Server-only Coinbase CDP Trade API client (EVM Swaps on Base).
 //
-//   GET  /platform/v2/evm/swaps/quote  → getSwapPrice  (estimate, no reservation)
-//   POST /platform/v2/evm/swaps        → createSwapQuote (unsigned tx + Permit2)
+//   GET  /platform/v2/evm/swaps  → getSwapPrice  (estimate, no reservation)
+//   POST /platform/v2/evm/swaps  → createSwapQuote (unsigned tx + Permit2)
 //
 // Docs:
 //   https://docs.cdp.coinbase.com/trade-api/quickstart
@@ -18,10 +18,8 @@ import { isAddress } from "viem";
 
 import {
   CDP_TRADE_API_HOST,
-  CDP_TRADE_PRICE_PATH,
-  CDP_TRADE_PRICE_URL,
-  CDP_TRADE_QUOTE_PATH,
-  CDP_TRADE_QUOTE_URL,
+  CDP_TRADE_API_BASE_PATH,
+  CDP_TRADE_API_URL,
   TRADE_DEFAULT_SLIPPAGE_BPS,
   TRADE_NETWORK,
   TRADE_PRICE_TIMEOUT_MS,
@@ -215,7 +213,6 @@ function sanitizeCdpError(status: number, body: unknown): TradeError {
 
 async function cdpFetch(
   method: "GET" | "POST",
-  requestPath: string,
   url: string,
   timeoutMs: number,
   jsonBody?: unknown,
@@ -230,7 +227,7 @@ async function cdpFetch(
     apiKeySecret: creds.apiKeySecret,
     requestMethod: method,
     requestHost: CDP_TRADE_API_HOST,
-    requestPath,
+    requestPath: CDP_TRADE_API_BASE_PATH,
   });
 
   const controller = new AbortController();
@@ -274,8 +271,7 @@ export async function getCdpSwapPrice(
   try {
     const { status, body } = await cdpFetch(
       "GET",
-      CDP_TRADE_PRICE_PATH,
-      `\( {CDP_TRADE_PRICE_URL}? \){params.toString()}`,
+      `${CDP_TRADE_API_URL}?${params.toString()}`,
       TRADE_PRICE_TIMEOUT_MS,
     );
     if (status < 200 || status >= 300) {
@@ -336,8 +332,7 @@ export async function createCdpSwapQuote(
   try {
     const { status, body } = await cdpFetch(
       "POST",
-      CDP_TRADE_QUOTE_PATH,
-      CDP_TRADE_QUOTE_URL,
+      CDP_TRADE_API_URL,
       TRADE_QUOTE_TIMEOUT_MS,
       payload,
     );
