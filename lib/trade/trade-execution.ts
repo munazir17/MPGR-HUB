@@ -17,6 +17,7 @@ import {
   type Address,
   type Hash,
   type Hex,
+  type TypedDataDomain,
 } from "viem";
 import {
   sendTransaction,
