@@ -25,7 +25,6 @@ import type {
   TradeProposal,
   TradeTokenRef,
 } from "./trade-types";
-
 export type BuildTradeProposalResult =
   | { ok: true; proposal: TradeProposal }
   | { ok: false; error: TradeError };
