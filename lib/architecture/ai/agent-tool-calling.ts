@@ -16,6 +16,12 @@
 //   - Signing remains outside this loop and requires explicit human
 //     confirmation through the existing x402 confirmation/execution flow.
 //
+// P4 trade integration:
+//   - trade_prepare_swap is advertised as a prepare tool.
+//   - Structured TradeProposal is captured from the tool result.
+//   - The model is never trusted to invent amounts, tokens, or calldata.
+//   - Signing remains behind explicit Confirm & Swap.
+//
 // P3 robustness addendum:
 //   - x402 tool arguments are normalized to resourceUrl (never url).
 //   - A valid tool result on the final allowed turn is turned into a
@@ -38,6 +44,7 @@ import { toolError } from "@/lib/architecture/tools/agent-tool-result";
 import type { AgentToolResult } from "@/lib/architecture/tools/agent-tool-result";
 import type { AnyAgentTool } from "@/lib/architecture/tools/agent-tool";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
+import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 
 export const MAX_TOOL_CALL_ROUNDS = 3;
 
@@ -87,6 +94,31 @@ export function normalizeX402ToolArguments(
   delete next.resource;
 
   return next;
+}
+
+const TRADE_TAKER_TOOL_IDS = new Set([
+  "trade_get_price",
+  "trade_prepare_swap",
+  "tokenized_stock_research",
+]);
+
+/**
+ * CDP quotes are bound to `taker`. If the model omitted it, fill from
+ * the connected wallet — never invent a different address.
+ */
+export function normalizeTradeToolArguments(
+  toolId: string,
+  args: Record<string, unknown>,
+  walletAddress?: string,
+): Record<string, unknown> {
+  if (!TRADE_TAKER_TOOL_IDS.has(toolId)) return args;
+  if (typeof args.taker === "string" && args.taker.trim().length > 0) {
+    return args;
+  }
+  if (typeof walletAddress === "string" && walletAddress.trim().length > 0) {
+    return { ...args, taker: walletAddress.trim() };
+  }
+  return args;
 }
 
 function pickResourceUrl(
@@ -188,9 +220,9 @@ export function parseModelDirective(
       return {
         kind: "tool_call",
         toolId,
-        arguments: normalizeX402ToolArguments(
+        arguments: normalizeTradeToolArguments(
           toolId,
-          args,
+          normalizeX402ToolArguments(toolId, args),
         ),
       };
     }
@@ -319,7 +351,11 @@ export async function runRegisteredReadTool(
   try {
     return await agentToolRuntime.executeTool(
       toolId,
-      normalizeX402ToolArguments(toolId, args),
+      normalizeTradeToolArguments(
+        toolId,
+        normalizeX402ToolArguments(toolId, args),
+        request.address,
+      ),
       {
         appContext: request.agentContext,
         memoryContext: request.memoryContext,
@@ -369,7 +405,11 @@ export async function runRegisteredTool(
   try {
     return await agentToolRuntime.executeTool(
       toolId,
-      normalizeX402ToolArguments(toolId, args),
+      normalizeTradeToolArguments(
+        toolId,
+        normalizeX402ToolArguments(toolId, args),
+        request.address,
+      ),
       {
         appContext: request.agentContext,
         memoryContext: request.memoryContext,
@@ -421,11 +461,37 @@ function captureX402Proposal(
   return data?.proposal ?? current;
 }
 
+function captureTradeProposal(
+  toolId: string,
+  toolResult: AgentToolResult,
+  current: TradeProposal | undefined,
+): TradeProposal | undefined {
+  if (toolId !== "trade_prepare_swap" || !toolResult.success) {
+    return current;
+  }
+  const data = toolResult.data as { proposal?: TradeProposal } | undefined;
+  return data?.proposal ?? current;
+}
+
+function captureTokenizedStockReport(
+  toolId: string,
+  toolResult: AgentToolResult,
+  current: TokenizedStockReport | undefined,
+): TokenizedStockReport | undefined {
+  if (toolId !== "tokenized_stock_research" || !toolResult.success) {
+    return current;
+  }
+  const data = toolResult.data as { report?: TokenizedStockReport } | undefined;
+  return data?.report ?? current;
+}
+
 function buildLoopResponse(
   request: AIProviderRequest,
   intent: AgentIntent,
   reply: string,
   x402Proposal: X402PaymentProposal | undefined,
+  tradeProposal?: TradeProposal,
+  tokenizedStockReport?: TokenizedStockReport,
 ): AIProviderResponse {
   return {
     intent,
@@ -440,6 +506,8 @@ function buildLoopResponse(
     ),
     followUps: getFollowUpPrompts(intent),
     ...(x402Proposal ? { x402Proposal } : {}),
+    ...(tradeProposal ? { tradeProposal } : {}),
+    ...(tokenizedStockReport ? { tokenizedStockReport } : {}),
   };
 }
 
@@ -454,7 +522,14 @@ export function synthesizeFinalReplyFromToolResult(
   capturedX402Proposal:
     | X402PaymentProposal
     | undefined,
+  capturedTradeProposal?: TradeProposal,
 ): string {
+  if (capturedTradeProposal) {
+    return capturedTradeProposal.executionAvailable
+      ? "A Base swap proposal is ready for you to review in the app. I will not sign or submit anything until you explicitly confirm."
+      : "I looked up that pair on Coinbase CDP. No executable Base route is available right now — the research is on screen. I will not sign anything.";
+  }
+
   if (capturedX402Proposal) {
     return "A payment proposal is ready for you to review in the app. I will not sign or submit anything until you explicitly confirm.";
   }
@@ -526,6 +601,8 @@ export async function runToolCallingLoop(
   let capturedX402Proposal:
     | X402PaymentProposal
     | undefined;
+  let capturedTradeProposal: TradeProposal | undefined;
+  let capturedStockReport: TokenizedStockReport | undefined;
 
   for (
     let round = 1;
@@ -559,6 +636,8 @@ export async function runToolCallingLoop(
         directive.intent,
         directive.reply,
         capturedX402Proposal,
+        capturedTradeProposal,
+        capturedStockReport,
       );
     }
 
@@ -574,6 +653,16 @@ export async function runToolCallingLoop(
         toolResult,
         capturedX402Proposal,
       );
+    capturedTradeProposal = captureTradeProposal(
+      directive.toolId,
+      toolResult,
+      capturedTradeProposal,
+    );
+    capturedStockReport = captureTokenizedStockReport(
+      directive.toolId,
+      toolResult,
+      capturedStockReport,
+    );
 
     if (isFinalRound) {
       const intent =
@@ -586,19 +675,18 @@ export async function runToolCallingLoop(
           directive.toolId,
           toolResult,
           capturedX402Proposal,
+          capturedTradeProposal,
         ),
         capturedX402Proposal,
+        capturedTradeProposal,
+        capturedStockReport,
       );
     }
 
     const isX402Prepare =
       directive.toolId === "x402_prepare_payment";
-
-    // ---------------------------------------------------------------
-    // Feed a deliberately restricted x402 result back to the model.
-    // The payment fields themselves are NOT reintroduced into model
-    // text, preventing the model from paraphrasing/inventing them.
-    // ---------------------------------------------------------------
+    const isTradePrepare =
+      directive.toolId === "trade_prepare_swap";
 
     if (isX402Prepare) {
       transcript += [
@@ -613,7 +701,22 @@ export async function runToolCallingLoop(
               success: false,
               error: toolResult.error ?? null,
             }),
-        'Respond ONLY with the final JSON {"intent":"...","reply":"..."}. Keep the reply short. Do NOT restate the payment amount, asset, recipient address, or other payment fields; the app UI displays those directly from the structured proposal.',
+        'Respond ONLY with the final JSON {"intent":"...","reply":"..."}. Keep the reply short; do NOT restate the amount, asset, recipient, or other payment fields — the app UI displays those directly from the structured proposal.',
+      ].join("\n");
+    } else if (isTradePrepare) {
+      transcript += [
+        "",
+        `[Tool result: ${directive.toolId}]`,
+        toolResult.success
+          ? safeStringify({
+              success: true,
+              note: "A swap proposal was prepared and will be shown directly in the app UI for user review and explicit confirmation.",
+            })
+          : safeStringify({
+              success: false,
+              error: toolResult.error ?? null,
+            }),
+        'Respond ONLY with the final JSON {"intent":"...","reply":"..."}. Keep the reply short. Do NOT restate amounts, token addresses, calldata, or recipient fields; the app UI displays those directly from the structured proposal.',
       ].join("\n");
     } else {
       transcript += [
