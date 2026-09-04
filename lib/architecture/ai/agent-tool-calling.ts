@@ -295,13 +295,13 @@ export function buildToolCatalogPromptBlock(
 
   const lines = tools.map(
     (tool) =>
-      `- "${tool.id}": ${tool.description} Arguments JSON schema: ${JSON.stringify(
+      '- "' + tool.id + '": ' + tool.description + " Arguments JSON schema: " + JSON.stringify(
         tool.inputSchema,
-      )}`,
+      ),
   );
 
   return [
-    "You have tools for looking up live on-chain/app facts you do not already know and for preparing an x402 payment proposal when the user's request genuinely requires paid resource access.",
+    "You have tools for looking up live on-chain/app facts you do not already know, for preparing an x402 payment proposal, for researching Coinbase Tokenized Stocks on Base, and for preparing a Base swap quote.",
     "Read tools may retrieve information.",
     "Prepare tools may construct a proposal only. They never sign, pay, submit, or execute anything.",
     "Execute tools are not available to you.",
@@ -314,6 +314,8 @@ export function buildToolCatalogPromptBlock(
     "Never invent a toolId.",
     'For x402_discover_resource and x402_prepare_payment the URL argument name is resourceUrl — never url.',
     "Never invent payment amount, asset, recipient, or any other payment field. If x402_prepare_payment succeeds, the app itself will display the structured proposal.",
+    'For buy/sell/swap/quote requests call trade_prepare_swap. Dollar buys: fromToken=\"USDC\", amount=\"10\" (human units). Omit taker — the connected wallet is filled automatically.',
+    "For Coinbase tokenized-stock research call tokenized_stock_research. Do not invent liquidity or quotes.",
   ].join("\n");
 }
 
@@ -344,7 +346,7 @@ export async function runRegisteredReadTool(
   if (!tool || tool.mode !== "read") {
     return toolError(toolId, {
       code: "TOOL_NOT_FOUND",
-      message: `No read-only tool is registered with id "${toolId}".`,
+      message: 'No read-only tool is registered with id "' + toolId + '".',
     });
   }
 
@@ -398,7 +400,7 @@ export async function runRegisteredTool(
   ) {
     return toolError(toolId, {
       code: "TOOL_NOT_FOUND",
-      message: `No read or prepare tool is registered with id "${toolId}".`,
+      message: 'No read or prepare tool is registered with id "' + toolId + '".',
     });
   }
 
@@ -593,7 +595,7 @@ export async function runToolCallingLoop(
     );
 
   const systemPrompt = catalogBlock
-    ? `${baseSystemPrompt}\n\n${catalogBlock}`
+    ? baseSystemPrompt + "\n\n" + catalogBlock
     : baseSystemPrompt;
 
   let transcript = "";
@@ -613,11 +615,12 @@ export async function runToolCallingLoop(
       round === MAX_TOOL_CALL_ROUNDS;
 
     const roundSystemPrompt = isFinalRound
-      ? `${systemPrompt}\n\nThis is your final turn for this request. You MUST respond with the final answer JSON now. Do not request another tool.`
+      ? systemPrompt +
+        "\n\nThis is your final turn for this request. You MUST respond with the final answer JSON now. Do not request another tool."
       : systemPrompt;
 
     const userPrompt = transcript
-      ? `${request.prompt}\n\n${transcript}`
+      ? request.prompt + "\n\n" + transcript
       : request.prompt;
 
     const content = await sendCompletion(
@@ -691,7 +694,7 @@ export async function runToolCallingLoop(
     if (isX402Prepare) {
       transcript += [
         "",
-        `[Tool result: ${directive.toolId}]`,
+        "[Tool result: " + directive.toolId + "]",
         toolResult.success
           ? safeStringify({
               success: true,
@@ -706,7 +709,7 @@ export async function runToolCallingLoop(
     } else if (isTradePrepare) {
       transcript += [
         "",
-        `[Tool result: ${directive.toolId}]`,
+        "[Tool result: " + directive.toolId + "]",
         toolResult.success
           ? safeStringify({
               success: true,
@@ -721,7 +724,7 @@ export async function runToolCallingLoop(
     } else {
       transcript += [
         "",
-        `[Tool result: ${directive.toolId}]`,
+        "[Tool result: " + directive.toolId + "]",
         safeStringify({
           success: toolResult.success,
           data: toolResult.data ?? null,
