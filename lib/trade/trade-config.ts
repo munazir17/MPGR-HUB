@@ -6,8 +6,8 @@
 // on Base Mainnet only.
 //
 // Documented endpoints (do not invent others):
-//   GET  https://api.cdp.coinbase.com/platform/v2/evm/swaps   (getSwapPrice)
-//   POST https://api.cdp.coinbase.com/platform/v2/evm/swaps   (createSwapQuote)
+//   GET  https://api.cdp.coinbase.com/platform/v2/evm/swaps/quote  (getSwapPrice)
+//   POST https://api.cdp.coinbase.com/platform/v2/evm/swaps        (createSwapQuote)
 //
 // Auth: CDP Secret API Key JWT (CDP_API_KEY_ID + CDP_API_KEY_SECRET).
 // WALLET_SECRET is NOT required — this app uses the user's connected
@@ -53,9 +53,24 @@ export const BASE_USDC =
   "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as const;
 
 export const CDP_TRADE_API_HOST = "api.cdp.coinbase.com";
-export const CDP_TRADE_API_BASE_PATH = "/platform/v2/evm/swaps";
-export const CDP_TRADE_API_URL =
-  `https://${CDP_TRADE_API_HOST}${CDP_TRADE_API_BASE_PATH}` as const;
+/**
+ * Official CDP OpenAPI (from @coinbase/cdp-sdk):
+ *   GET  /v2/evm/swaps/quote  → getSwapPrice
+ *   POST /v2/evm/swaps        → createSwapQuote
+ * Hosted at https://api.cdp.coinbase.com/platform
+ *
+ * GET /platform/v2/evm/swaps is NOT allowed (HTTP 405). Price lives at
+ * /swaps/quote.
+ */
+export const CDP_TRADE_PRICE_PATH = "/platform/v2/evm/swaps/quote";
+export const CDP_TRADE_QUOTE_PATH = "/platform/v2/evm/swaps";
+export const CDP_TRADE_PRICE_URL =
+  `https://\( {CDP_TRADE_API_HOST} \){CDP_TRADE_PRICE_PATH}` as const;
+export const CDP_TRADE_QUOTE_URL =
+  `https://\( {CDP_TRADE_API_HOST} \){CDP_TRADE_QUOTE_PATH}` as const;
+/** @deprecated use CDP_TRADE_QUOTE_PATH — kept as the POST quote path. */
+export const CDP_TRADE_API_BASE_PATH = CDP_TRADE_QUOTE_PATH;
+export const CDP_TRADE_API_URL = CDP_TRADE_QUOTE_URL;
 
 export const CDP_TRADE_PROVIDER_ID = "cdp-trade-api" as const;
 export const CDP_TRADE_PROVIDER_LABEL = "Coinbase CDP Trade API";
