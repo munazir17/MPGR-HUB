@@ -138,14 +138,18 @@ function checkGates(input: ExecuteTradeInput): TradeError | null {
 }
 
 async function signPermit2(eip712: CdpPermit2Eip712, account: Address): Promise<Hex> {
+  // CDP returns Permit2 EIP-712 at runtime (PermitTransferFrom). viem/wagmi
+  // generics cannot infer that Record shape — casting individual fields
+  // `as never` makes the whole argument `never` and fails `next build`.
+  // Strip EIP712Domain (viem injects it), then pass the rest through.
   const types = stripEip712Domain(eip712.types);
   return signTypedData(config, {
     account,
-    domain: eip712.domain as never,
-    types: types as never,
-    primaryType: eip712.primaryType as never,
-    message: eip712.message as never,
-  });
+    domain: eip712.domain as TypedDataDomain,
+    types,
+    primaryType: eip712.primaryType,
+    message: eip712.message,
+  } as Parameters<typeof signTypedData>[1]);
 }
 
 export async function executeTrade(
@@ -160,7 +164,7 @@ export async function executeTrade(
   }
 
   const account = input.currentAccount as Address;
-  const key = `${account}:${input.proposal.id}`;
+  const key = `\( {account}: \){input.proposal.id}`;
   if (inFlight.has(key)) {
     const snapshot = fail("SEND_FAILED", "This swap is already executing.");
     onChange(snapshot);
