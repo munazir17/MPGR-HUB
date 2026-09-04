@@ -16,7 +16,7 @@ import { toolError, toolSuccess } from "./agent-tool-result";
 const CANONICAL_APP_ORIGIN = "https://mpgrhub.xyz";
 
 function tradeEndpoint(path: string): string {
-  return `\( {CANONICAL_APP_ORIGIN} \){path}`;
+  return `${CANONICAL_APP_ORIGIN}${path}`;
 }
 
 function toolFailureCode(code: unknown): "INVALID_INPUT" | "WALLET_NOT_CONNECTED" | "DATA_UNAVAILABLE" | "PROVIDER_ERROR" {
@@ -58,46 +58,33 @@ const priceSchema: AgentToolSchema = {
   properties: {
     fromToken: {
       type: "string",
-      description: "Sell token: ETH, WETH, USDC, MPGR, a Coinbase B20 ticker like COINc / AAPLc, or a 0x address on Base. For a $-denominated buy, use USDC.",
+      description: "Sell token: ETH, WETH, USDC, MPGR, a Coinbase B20 ticker like AAPLc, or a 0x address on Base.",
     },
     toToken: {
       type: "string",
       description: "Buy token: same format as fromToken.",
     },
-    amount: {
-      type: "string",
-      description: "Human sell amount in fromToken units, e.g. \"10\" for 10 USDC / $10. Prefer this over atomic fromAmount. Do not convert to wei.",
-    },
     fromAmount: {
       type: "string",
-      description: "Optional atomic-unit integer (e.g. 1000000 for 1 USDC). Use `amount` instead when the user said a dollar/token quantity like $10.",
+      description: "Atomic-unit integer string (e.g. 1000000 for 1 USDC, 10000000000000000 for 0.01 ETH).",
     },
     taker: {
       type: "string",
-      description: "Optional. Connected wallet is filled automatically — omit this.",
+      description: "Connected wallet address. Required by Coinbase CDP for a real quote.",
     },
     slippageBps: {
       type: "number",
       description: "Max slippage in basis points. Default 100 (1%). Allowed 1–500.",
     },
   },
-  required: ["fromToken", "toToken"],
+  required: ["fromToken", "toToken", "fromAmount", "taker"],
 };
-
-function withTaker(
-  body: Record<string, unknown>,
-  contextWallet?: string,
-): Record<string, unknown> {
-  if (isAddressLike(body.taker)) return body;
-  if (isAddressLike(contextWallet)) return { ...body, taker: contextWallet };
-  return body;
-}
 
 export const tradeGetPriceTool: AgentTool = {
   id: "trade_get_price",
   name: "Base Swap Price",
   description:
-    "Gets a live Base Mainnet swap price from the Coinbase CDP Trade API (getSwapPrice). Reports expected output, minimum output after slippage, fees, and whether liquidity exists. Does not sign, does not swap, does not invent a route. For a $N buy use fromToken=USDC, amount=\"N\". Omit taker — the connected wallet is filled automatically.",
+    "Gets a live Base Mainnet swap price from the Coinbase CDP Trade API (getSwapPrice). Reports expected output, minimum output after slippage, fees, and whether liquidity exists. Does not sign, does not swap, does not invent a route.",
   category: "market",
   mode: "read",
   riskLevel: "low",
@@ -105,12 +92,12 @@ export const tradeGetPriceTool: AgentTool = {
   requiresConfirmation: false,
   inputSchema: priceSchema,
 
-  async execute(input, context) {
-    const body = withTaker((input ?? {}) as Record<string, unknown>, context.walletAddress);
+  async execute(input) {
+    const body = (input ?? {}) as Record<string, unknown>;
     if (!isAddressLike(body.taker)) {
       return toolError("trade_get_price", {
         code: "WALLET_NOT_CONNECTED",
-        message: "A connected Base wallet is required for a Coinbase CDP price.",
+        message: "A connected Base wallet (taker) is required for a Coinbase CDP price.",
       });
     }
     try {
@@ -140,7 +127,7 @@ export const tradePrepareSwapTool: AgentTool = {
   id: "trade_prepare_swap",
   name: "Base Swap Proposal",
   description:
-    "Creates a structured Base swap proposal (amount, tokens, slippage, fees, risk, Permit2/approval steps) from a Coinbase CDP Trade API quote. Call this when the user asks to buy, sell, swap, or get a quote — including \"$10 of COINc\". Use fromToken=USDC and amount=\"10\" for dollar buys. Returns a proposal for explicit user confirmation. Never signs and never broadcasts. Omit taker.",
+    "Creates a structured Base swap proposal (amount, tokens, slippage, fees, risk, Permit2/approval steps) from a Coinbase CDP Trade API quote. Returns a proposal for explicit user confirmation. Never signs and never broadcasts.",
   category: "defi",
   mode: "prepare",
   riskLevel: "medium",
@@ -148,12 +135,12 @@ export const tradePrepareSwapTool: AgentTool = {
   requiresConfirmation: true,
   inputSchema: priceSchema,
 
-  async execute(input, context) {
-    const body = withTaker((input ?? {}) as Record<string, unknown>, context.walletAddress);
+  async execute(input) {
+    const body = (input ?? {}) as Record<string, unknown>;
     if (!isAddressLike(body.taker)) {
       return toolError("trade_prepare_swap", {
         code: "WALLET_NOT_CONNECTED",
-        message: "A connected Base wallet is required to prepare a swap.",
+        message: "A connected Base wallet (taker) is required to prepare a swap.",
       });
     }
     try {
@@ -222,7 +209,7 @@ export const tokenizedStockResearchTool: AgentTool = {
 
     try {
       const path = symbol
-        ? `/api/trade/stocks?symbol=\( {encodeURIComponent(symbol)} \){taker ? `&taker=${encodeURIComponent(taker)}` : ""}`
+        ? `/api/trade/stocks?symbol=${encodeURIComponent(symbol)}${taker ? `&taker=${encodeURIComponent(taker)}` : ""}`
         : "/api/trade/stocks";
       const { ok, payload } = await getJson(path);
       if (!ok || !payload) {
