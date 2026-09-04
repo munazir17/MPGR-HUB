@@ -5,6 +5,7 @@ import { getAIProvider } from "@/lib/architecture/ai/ai-provider-registry";
 import type { AgentContext } from "@/lib/agent-context";
 import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
+import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 
 // Phase 3A — local/mock persistence for MPGR Agent conversations.
 // Phase 3A.2 — replies come from lib/agent-intelligence.ts.
@@ -57,6 +58,15 @@ export interface AgentMessage {
    * persistence, or the agent engine signs or submits the payment.
    */
   x402Proposal?: X402PaymentProposal;
+  /**
+   * P4 — present only when this assistant turn prepared a CDP swap.
+   * Display/state only; signing stays outside this module.
+   */
+  tradeProposal?: TradeProposal;
+  /**
+   * P4 — present only when tokenized_stock_research succeeded.
+   */
+  tokenizedStockReport?: TokenizedStockReport;
 }
 
 export interface AgentState {
@@ -93,6 +103,8 @@ interface AssistantExtras {
   highlights?: AgentHighlight[];
   followUps?: string[];
   x402Proposal?: X402PaymentProposal;
+  tradeProposal?: TradeProposal;
+  tokenizedStockReport?: TokenizedStockReport;
 }
 
 function createMessage(
@@ -117,6 +129,12 @@ function createMessage(
       : {}),
     ...(extra?.x402Proposal
       ? { x402Proposal: extra.x402Proposal }
+      : {}),
+    ...(extra?.tradeProposal
+      ? { tradeProposal: extra.tradeProposal }
+      : {}),
+    ...(extra?.tokenizedStockReport
+      ? { tokenizedStockReport: extra.tokenizedStockReport }
       : {}),
   };
 }
@@ -165,6 +183,8 @@ export async function appendAssistantReply(
     highlights,
     followUps,
     x402Proposal,
+    tradeProposal,
+    tokenizedStockReport,
   } = await getAIProvider().generateReply({
     prompt: userPrompt,
     agentContext: promptContext.agent,
@@ -183,6 +203,8 @@ export async function appendAssistantReply(
         highlights,
         followUps,
         x402Proposal,
+        tradeProposal,
+        tokenizedStockReport,
       }),
     ],
   };
@@ -272,6 +294,8 @@ export async function regenerateLastReply(
     highlights,
     followUps,
     x402Proposal,
+    tradeProposal,
+    tokenizedStockReport,
   } = await getAIProvider().generateReply({
     prompt: userPrompt,
     agentContext: promptContext.agent,
@@ -290,6 +314,8 @@ export async function regenerateLastReply(
         highlights,
         followUps,
         x402Proposal,
+        tradeProposal,
+        tokenizedStockReport,
       }),
     ],
   };
