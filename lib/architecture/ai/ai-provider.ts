@@ -3,6 +3,7 @@ import type { AgentIntent } from "@/lib/agent-intelligence";
 import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 import type { ConversationMemoryContext } from "@/lib/architecture/memory/memory-context";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
+import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 
 // Phase 3C Part 1 — AIProvider abstraction. Mirrors
 // lib/architecture/memory/memory-provider.ts exactly: an interface, one
@@ -63,6 +64,16 @@ export interface AIProviderResponse {
    * every existing test) remains valid without change.
    */
   x402Proposal?: X402PaymentProposal;
+  /**
+   * P4 — set only when this turn's tool-calling loop ran
+   * trade_prepare_swap successfully. Taken from the tool result, never
+   * from model text. Optional/additive.
+   */
+  tradeProposal?: TradeProposal;
+  /**
+   * P4 — set only when tokenized_stock_research succeeded.
+   */
+  tokenizedStockReport?: TokenizedStockReport;
 }
 
 export interface AIProvider {
