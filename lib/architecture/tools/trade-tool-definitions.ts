@@ -12,11 +12,13 @@
 import type { AgentTool, AgentToolSchema } from "./agent-tool";
 import { getAgentToolRegistry } from "./agent-tool-registry-instance";
 import { toolError, toolSuccess } from "./agent-tool-result";
+import { parseTradeSwapRequest } from "@/lib/trade/trade-request";
+import { previewTokenizedStockOrder } from "@/lib/trade/tokenized-stock-order";
 
 const CANONICAL_APP_ORIGIN = "https://mpgrhub.xyz";
 
 function tradeEndpoint(path: string): string {
-  return `${CANONICAL_APP_ORIGIN}${path}`;
+  return CANONICAL_APP_ORIGIN + path;
 }
 
 function toolFailureCode(code: unknown): "INVALID_INPUT" | "WALLET_NOT_CONNECTED" | "DATA_UNAVAILABLE" | "PROVIDER_ERROR" {
@@ -58,19 +60,23 @@ const priceSchema: AgentToolSchema = {
   properties: {
     fromToken: {
       type: "string",
-      description: "Sell token: ETH, WETH, USDC, MPGR, a Coinbase B20 ticker like AAPLc, or a 0x address on Base.",
+      description: "Sell token: ETH, WETH, USDC, MPGR, a Coinbase B20 ticker like COINc / AAPLc, or a 0x address on Base. For a $-denominated buy, use USDC.",
     },
     toToken: {
       type: "string",
       description: "Buy token: same format as fromToken.",
     },
+    amount: {
+      type: "string",
+      description: "Human sell amount in fromToken units, e.g. \"10\" for 10 USDC / $10. Prefer this over atomic fromAmount. Do not convert to wei.",
+    },
     fromAmount: {
       type: "string",
-      description: "Atomic-unit integer string (e.g. 1000000 for 1 USDC, 10000000000000000 for 0.01 ETH).",
+      description: "Optional atomic-unit integer (e.g. 1000000 for 1 USDC). Use `amount` instead when the user said a dollar/token quantity like $10.",
     },
     taker: {
       type: "string",
-      description: "Connected wallet address. Required by Coinbase CDP for a real quote.",
+      description: "Optional. Connected wallet is filled automatically — omit this.",
     },
     slippageBps: {
       type: "number",
@@ -80,11 +86,50 @@ const priceSchema: AgentToolSchema = {
   required: ["fromToken", "toToken", "fromAmount", "taker"],
 };
 
+function withTaker(
+  body: Record<string, unknown>,
+  contextWallet?: string,
+): Record<string, unknown> {
+  if (isAddressLike(body.taker)) return body;
+  if (isAddressLike(contextWallet)) return { ...body, taker: contextWallet };
+  return body;
+}
+
+function toQuoteBody(input: Record<string, unknown>, walletAddress?: string): {
+  ok: true;
+  body: {
+    fromToken: string;
+    toToken: string;
+    fromAmount: string;
+    taker: string;
+    slippageBps: number;
+  };
+} | { ok: false; code: "INVALID_INPUT" | "WALLET_NOT_CONNECTED" | "DATA_UNAVAILABLE" | "PROVIDER_ERROR"; message: string } {
+  const parsed = parseTradeSwapRequest(withTaker(input, walletAddress), { requireTaker: true });
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      code: parsed.error.code === "WALLET_REQUIRED" ? "WALLET_NOT_CONNECTED" : toolFailureCode(parsed.error.code),
+      message: parsed.error.message,
+    };
+  }
+  return {
+    ok: true,
+    body: {
+      fromToken: parsed.value.from.address,
+      toToken: parsed.value.to.address,
+      fromAmount: parsed.value.fromAmount,
+      taker: parsed.value.taker,
+      slippageBps: parsed.value.slippageBps,
+    },
+  };
+}
+
 export const tradeGetPriceTool: AgentTool = {
   id: "trade_get_price",
   name: "Base Swap Price",
   description:
-    "Gets a live Base Mainnet swap price from the Coinbase CDP Trade API (getSwapPrice). Reports expected output, minimum output after slippage, fees, and whether liquidity exists. Does not sign, does not swap, does not invent a route.",
+    "Gets a live Base Mainnet swap price from the Coinbase CDP Trade API (getSwapPrice). Reports expected output, minimum output after slippage, fees, and whether liquidity exists. Does not sign, does not swap, does not invent a route. For a $N buy use fromToken=USDC, amount=\"N\". Omit taker — the connected wallet is filled automatically.",
   category: "market",
   mode: "read",
   riskLevel: "low",
@@ -92,16 +137,16 @@ export const tradeGetPriceTool: AgentTool = {
   requiresConfirmation: false,
   inputSchema: priceSchema,
 
-  async execute(input) {
-    const body = (input ?? {}) as Record<string, unknown>;
-    if (!isAddressLike(body.taker)) {
+  async execute(input, context) {
+    const normalized = toQuoteBody((input ?? {}) as Record<string, unknown>, context.walletAddress);
+    if (!normalized.ok) {
       return toolError("trade_get_price", {
-        code: "WALLET_NOT_CONNECTED",
-        message: "A connected Base wallet (taker) is required for a Coinbase CDP price.",
+        code: normalized.code,
+        message: normalized.message,
       });
     }
     try {
-      const { ok, payload } = await postJson("/api/trade/price", body);
+      const { ok, payload } = await postJson("/api/trade/price", normalized.body);
       if (!ok || !payload) {
         return toolError("trade_get_price", {
           code: toolFailureCode(payload?.code),
@@ -127,7 +172,7 @@ export const tradePrepareSwapTool: AgentTool = {
   id: "trade_prepare_swap",
   name: "Base Swap Proposal",
   description:
-    "Creates a structured Base swap proposal (amount, tokens, slippage, fees, risk, Permit2/approval steps) from a Coinbase CDP Trade API quote. Returns a proposal for explicit user confirmation. Never signs and never broadcasts.",
+    "Creates a structured Base swap proposal (amount, tokens, slippage, fees, risk, Permit2/approval steps) from a Coinbase CDP Trade API quote. Call this when the user asks to buy, sell, swap, or get a quote — including \"$10 of COINc\". Use fromToken=USDC and amount=\"10\" for dollar buys. Returns a proposal for explicit user confirmation. Never signs and never broadcasts. Omit taker.",
   category: "defi",
   mode: "prepare",
   riskLevel: "medium",
@@ -135,16 +180,16 @@ export const tradePrepareSwapTool: AgentTool = {
   requiresConfirmation: true,
   inputSchema: priceSchema,
 
-  async execute(input) {
-    const body = (input ?? {}) as Record<string, unknown>;
-    if (!isAddressLike(body.taker)) {
+  async execute(input, context) {
+    const normalized = toQuoteBody((input ?? {}) as Record<string, unknown>, context.walletAddress);
+    if (!normalized.ok) {
       return toolError("trade_prepare_swap", {
-        code: "WALLET_NOT_CONNECTED",
-        message: "A connected Base wallet (taker) is required to prepare a swap.",
+        code: normalized.code,
+        message: normalized.message,
       });
     }
     try {
-      const { ok, payload } = await postJson("/api/trade/quote", body);
+      const { ok, payload } = await postJson("/api/trade/quote", normalized.body);
       if (!ok || !payload) {
         return toolError("trade_prepare_swap", {
           code: toolFailureCode(payload?.code),
@@ -208,9 +253,13 @@ export const tokenizedStockResearchTool: AgentTool = {
         : context.walletAddress ?? "";
 
     try {
-      const path = symbol
-        ? `/api/trade/stocks?symbol=${encodeURIComponent(symbol)}${taker ? `&taker=${encodeURIComponent(taker)}` : ""}`
-        : "/api/trade/stocks";
+      let path = "/api/trade/stocks";
+      if (symbol) {
+        path = "/api/trade/stocks?symbol=" + encodeURIComponent(symbol);
+        if (taker) {
+          path = path + "&taker=" + encodeURIComponent(taker);
+        }
+      }
       const { ok, payload } = await getJson(path);
       if (!ok || !payload) {
         return toolError("tokenized_stock_research", {
@@ -236,8 +285,86 @@ export const tokenizedStockResearchTool: AgentTool = {
   },
 };
 
+const stockOrderSchema: AgentToolSchema = {
+  type: "object",
+  properties: {
+    symbol: {
+      type: "string",
+      description: "Coinbase B20 tokenized-stock ticker, e.g. AAPLc, COINc, TSLAc.",
+    },
+    side: {
+      type: "string",
+      description: "\"BUY\" or \"SELL\". Defaults to BUY.",
+    },
+    amount: {
+      type: "string",
+      description: "Human USDC amount, e.g. \"10\" for $10. Do not convert to atomic units.",
+    },
+  },
+  required: ["symbol", "amount"],
+};
+
+export const tokenizedStockPrepareOrderTool: AgentTool = {
+  id: "tokenized_stock_prepare_order",
+  name: "Tokenized Stock Order Preview",
+  description:
+    "Prepares a dry-run preview of a Coinbase B20 tokenized-stock order (AAPLc, COINc, TSLAc, ...) via Coinbase Advanced Trade — the officially supported equities path (docs.cdp.coinbase.com/coinbase-for-agents/overview), not an on-chain DEX swap. Call this when the user asks to buy or sell a tokenized stock, e.g. \"buy $10 of AAPLc\". Returns order total, commission, and estimated fill. Never creates a real order.",
+  category: "market",
+  mode: "prepare",
+  riskLevel: "medium",
+  requiresWallet: false,
+  requiresConfirmation: true,
+  inputSchema: stockOrderSchema,
+
+  async execute(input) {
+    const body = (input ?? {}) as { symbol?: unknown; side?: unknown; amount?: unknown };
+    const symbol = typeof body.symbol === "string" ? body.symbol.trim() : "";
+    const side = body.side === "SELL" ? "SELL" : "BUY";
+    const amount = typeof body.amount === "string" ? body.amount.trim() : "";
+
+    if (!symbol || !amount) {
+      return toolError("tokenized_stock_prepare_order", {
+        code: "INVALID_INPUT",
+        message: "symbol and amount are required.",
+      });
+    }
+
+    const result = await previewTokenizedStockOrder(symbol, side, amount);
+    if (!result.ok) {
+      return toolError("tokenized_stock_prepare_order", {
+        code: toolFailureCode(result.error.code),
+        message: result.error.message,
+      });
+    }
+
+    return toolSuccess(
+      "tokenized_stock_prepare_order",
+      {
+        preview: {
+          ticker: result.value.catalog.ticker,
+          productId: result.value.productId,
+          side: result.value.side,
+          quoteAmount: result.value.quoteAmount,
+          orderTotal: result.value.preview.orderTotal,
+          commissionTotal: result.value.preview.commissionTotal,
+          estimatedBaseSize: result.value.preview.baseSize,
+          averageFilledPrice: result.value.preview.averageFilledPrice,
+          warning: result.value.preview.warning,
+          executed: false,
+        },
+      },
+      { source: "coinbase-advanced-trade" },
+    );
+  },
+};
+
 const registry = getAgentToolRegistry();
-for (const tool of [tradeGetPriceTool, tradePrepareSwapTool, tokenizedStockResearchTool]) {
+for (const tool of [
+  tradeGetPriceTool,
+  tradePrepareSwapTool,
+  tokenizedStockResearchTool,
+  tokenizedStockPrepareOrderTool,
+]) {
   if (!registry.has(tool.id)) {
     registry.register(tool);
   }
