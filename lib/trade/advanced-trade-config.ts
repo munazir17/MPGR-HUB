@@ -34,8 +34,10 @@ export const ADVANCED_TRADE_REQUEST_TIMEOUT_MS = 15_000;
 
 /**
  * Which quote currency to trade tokenized-stock products against.
- * Advanced Trade lists both `<TICKER>-USD` and `<TICKER>-USDC` for
- * most equities; USDC keeps this consistent with the rest of the app
- * (which is USDC-denominated throughout).
+ * Confirmed live via Vercel runtime logs: Advanced Trade rejects
+ * `<TICKER>-USDC` for equities right now ("Product AAPL-USDC not
+ * supported", HTTP 404) — only `<TICKER>-USD` is currently listed.
+ * Do not change this back to USDC without re-checking a live
+ * GET /products/<TICKER>-USDC response first.
  */
-export const ADVANCED_TRADE_QUOTE_CURRENCY = "USDC" as const;
+export const ADVANCED_TRADE_QUOTE_CURRENCY = "USD" as const;
