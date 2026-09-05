@@ -45,6 +45,7 @@ import type { AgentToolResult } from "@/lib/architecture/tools/agent-tool-result
 import type { AnyAgentTool } from "@/lib/architecture/tools/agent-tool";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
+import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
 
 export const MAX_TOOL_CALL_ROUNDS = 3;
 
@@ -112,13 +113,14 @@ export function normalizeTradeToolArguments(
   walletAddress?: string,
 ): Record<string, unknown> {
   if (!TRADE_TAKER_TOOL_IDS.has(toolId)) return args;
-  if (typeof args.taker === "string" && args.taker.trim().length > 0) {
+  if (toolId === "tokenized_stock_research") {
+    if (typeof args.taker === "string" && args.taker.trim().length > 0) return args;
+    if (typeof walletAddress === "string" && walletAddress.trim().length > 0) {
+      return { ...args, taker: walletAddress.trim() };
+    }
     return args;
   }
-  if (typeof walletAddress === "string" && walletAddress.trim().length > 0) {
-    return { ...args, taker: walletAddress.trim() };
-  }
-  return args;
+  return hydrateTradeSwapArguments(args, walletAddress);
 }
 
 function pickResourceUrl(
