@@ -98,7 +98,26 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function safeLogBody(body: unknown): string {
+  try {
+    const text = typeof body === "string" ? body : JSON.stringify(body);
+    return (text ?? "").slice(0, 500);
+  } catch {
+    return "<unserializable body>";
+  }
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  try {
+    return JSON.stringify(error).slice(0, 300);
+  } catch {
+    return String(error);
+  }
+}
+
 function sanitizeAdvancedTradeError(status: number, body: unknown): TradeError {
+  console.error("[advanced-trade] upstream_error", { status, body: safeLogBody(body) });
   if (isPlainObject(body)) {
     const msg = asString(body.message) ?? asString(body.error) ?? asString(body.error_details);
     if (msg && msg.length < 220) {
@@ -163,6 +182,7 @@ export async function getAdvancedTradeProduct(
     }
     const product = parseProduct(body);
     if (!product) {
+      console.error("[advanced-trade] unparseable_product_payload", { status, body: safeLogBody(body) });
       return {
         ok: false,
         error: {
@@ -175,6 +195,7 @@ export async function getAdvancedTradeProduct(
   } catch (err) {
     const tradeError = (err as { tradeError?: TradeError }).tradeError;
     if (tradeError) return { ok: false, error: tradeError };
+    console.error("[advanced-trade] fetch_failed", { message: errorMessage(err) });
     return {
       ok: false,
       error: { code: "PROVIDER_ERROR", message: "Could not reach Coinbase Advanced Trade." },
@@ -236,6 +257,7 @@ export async function previewAdvancedTradeOrder(
     }
     const preview = parsePreview(body);
     if (!preview) {
+      console.error("[advanced-trade] unparseable_preview_payload", { status, body: safeLogBody(body) });
       return {
         ok: false,
         error: {
@@ -248,6 +270,7 @@ export async function previewAdvancedTradeOrder(
   } catch (err) {
     const tradeError = (err as { tradeError?: TradeError }).tradeError;
     if (tradeError) return { ok: false, error: tradeError };
+    console.error("[advanced-trade] fetch_failed", { message: errorMessage(err) });
     return {
       ok: false,
       error: { code: "PROVIDER_ERROR", message: "Could not reach Coinbase Advanced Trade." },
@@ -304,6 +327,7 @@ export async function createAdvancedTradeOrder(
     }
     const result = parseOrderResult(body);
     if (!result) {
+      console.error("[advanced-trade] unparseable_order_payload", { status, body: safeLogBody(body) });
       return {
         ok: false,
         error: {
@@ -325,6 +349,7 @@ export async function createAdvancedTradeOrder(
   } catch (err) {
     const tradeError = (err as { tradeError?: TradeError }).tradeError;
     if (tradeError) return { ok: false, error: tradeError };
+    console.error("[advanced-trade] fetch_failed", { message: errorMessage(err) });
     return {
       ok: false,
       error: { code: "PROVIDER_ERROR", message: "Could not reach Coinbase Advanced Trade." },
