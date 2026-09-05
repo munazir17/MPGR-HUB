@@ -244,16 +244,27 @@ const TRADE_SYMBOLS: { needle: string; ticker: string }[] = [
   { needle: "sndkc", ticker: "SNDKc" },
   { needle: "spcxc", ticker: "SPCXc" },
   { needle: "aapl", ticker: "AAPLc" },
+  { needle: "apple", ticker: "AAPLc" },
   { needle: "tsla", ticker: "TSLAc" },
+  { needle: "tesla", ticker: "TSLAc" },
   { needle: "nvda", ticker: "NVDAc" },
+  { needle: "nvidia", ticker: "NVDAc" },
   { needle: "googl", ticker: "GOOGLc" },
+  { needle: "google", ticker: "GOOGLc" },
   { needle: "amzn", ticker: "AMZNc" },
+  { needle: "amazon", ticker: "AMZNc" },
   { needle: "msft", ticker: "MSFTc" },
+  { needle: "microsoft", ticker: "MSFTc" },
   { needle: "crcl", ticker: "CRCLc" },
+  { needle: "circle", ticker: "CRCLc" },
   { needle: "intc", ticker: "INTCc" },
+  { needle: "intel", ticker: "INTCc" },
   { needle: "mstr", ticker: "MSTRc" },
+  { needle: "microstrategy", ticker: "MSTRc" },
   { needle: "sndk", ticker: "SNDKc" },
+  { needle: "sandisk", ticker: "SNDKc" },
   { needle: "spcx", ticker: "SPCXc" },
+  { needle: "spacex", ticker: "SPCXc" },
 ];
 
 function looksLikeTradePrompt(normalized: string): boolean {
@@ -280,11 +291,19 @@ export function extractTradeSymbol(rawPrompt: string): string | null {
   return null;
 }
 
+export function isTradeSellPrompt(rawPrompt: string): boolean {
+  return /\bsell\b/.test(normalize(rawPrompt));
+}
+
 export function extractTradeHumanAmount(rawPrompt: string): string | null {
   const dollar = rawPrompt.match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
   if (dollar) return dollar[1];
   const usdc = rawPrompt.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:usdc|usd)\b/i);
   if (usdc) return usdc[1];
+  const worth = rawPrompt.match(/\b([0-9]+(?:\.[0-9]+)?)\s+worth\b/i);
+  if (worth) return worth[1];
+  const units = rawPrompt.match(/\b([0-9]+(?:\.[0-9]+)?)\s+(?:shares?|tokens?|aaplc|coinc|tslac|nvdac)\b/i);
+  if (units) return units[1];
   return null;
 }
 
