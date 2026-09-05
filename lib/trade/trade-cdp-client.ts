@@ -4,8 +4,8 @@ import "server-only";
 //
 // Server-only Coinbase CDP Trade API client (EVM Swaps on Base).
 //
-//   GET  /platform/v2/evm/swaps  → getSwapPrice  (estimate, no reservation)
-//   POST /platform/v2/evm/swaps  → createSwapQuote (unsigned tx + Permit2)
+//   GET  /platform/v2/evm/swaps/quote  → getSwapPrice  (estimate, no reservation)
+//   POST /platform/v2/evm/swaps        → createSwapQuote (unsigned tx + Permit2)
 //
 // Docs:
 //   https://docs.cdp.coinbase.com/trade-api/quickstart
@@ -18,8 +18,10 @@ import { isAddress } from "viem";
 
 import {
   CDP_TRADE_API_HOST,
-  CDP_TRADE_API_BASE_PATH,
-  CDP_TRADE_API_URL,
+  CDP_TRADE_PRICE_PATH,
+  CDP_TRADE_PRICE_URL,
+  CDP_TRADE_QUOTE_PATH,
+  CDP_TRADE_QUOTE_URL,
   TRADE_DEFAULT_SLIPPAGE_BPS,
   TRADE_NETWORK,
   TRADE_PRICE_TIMEOUT_MS,
@@ -151,16 +153,34 @@ function parsePermit2(raw: unknown): CdpPermit2 | null {
 
 function parsePrice(body: unknown): CdpSwapPrice | null {
   if (!isPlainObject(body)) return null;
+  const liquidityAvailable = body.liquidityAvailable === true;
   const fromToken = asString(body.fromToken);
   const toToken = asString(body.toToken);
   const fromAmount = asString(body.fromAmount);
   const toAmount = asString(body.toAmount);
   const minToAmount = asString(body.minToAmount);
+  // CDP omits toAmount/minToAmount entirely when it reports no
+  // liquidity for the pair — that is a valid "no liquidity" response,
+  // not a malformed one. Only fromToken/fromAmount are guaranteed
+  // present in that case; default the rest instead of rejecting.
+  if (!liquidityAvailable) {
+    if (!fromToken || !toToken || !fromAmount) return null;
+    return {
+      liquidityAvailable: false,
+      fromToken,
+      toToken,
+      fromAmount,
+      toAmount: toAmount ?? "0",
+      minToAmount: minToAmount ?? "0",
+      fees: parseFees(body.fees),
+      issues: parseIssues(body.issues),
+    };
+  }
   if (!fromToken || !toToken || !fromAmount || !toAmount || !minToAmount) {
     return null;
   }
   return {
-    liquidityAvailable: body.liquidityAvailable === true,
+    liquidityAvailable: true,
     fromToken,
     toToken,
     fromAmount,
@@ -183,7 +203,35 @@ function parseQuote(body: unknown): CdpSwapQuote | null {
   };
 }
 
+// --- Diagnostic logging helpers -----------------------------------------
+// These never change what callers see (the returned TradeError is exactly
+// as before) — they only print to Vercel's server logs so a real failure
+// shows its actual upstream cause instead of a generic "PROVIDER_ERROR"
+// with no further detail.
+
+function safeLogBody(body: unknown): string {
+  try {
+    const text = typeof body === "string" ? body : JSON.stringify(body);
+    return (text ?? "").slice(0, 500);
+  } catch {
+    return "<unserializable body>";
+  }
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  try {
+    return JSON.stringify(error).slice(0, 300);
+  } catch {
+    return String(error);
+  }
+}
+
 function sanitizeCdpError(status: number, body: unknown): TradeError {
+  console.error("[cdp-trade] upstream_error", {
+    status,
+    body: safeLogBody(body),
+  });
   const messageFromBody =
     isPlainObject(body) && typeof body.errorMessage === "string"
       ? body.errorMessage
@@ -213,6 +261,7 @@ function sanitizeCdpError(status: number, body: unknown): TradeError {
 
 async function cdpFetch(
   method: "GET" | "POST",
+  requestPath: string,
   url: string,
   timeoutMs: number,
   jsonBody?: unknown,
@@ -227,7 +276,7 @@ async function cdpFetch(
     apiKeySecret: creds.apiKeySecret,
     requestMethod: method,
     requestHost: CDP_TRADE_API_HOST,
-    requestPath: CDP_TRADE_API_BASE_PATH,
+    requestPath,
   });
 
   const controller = new AbortController();
@@ -236,7 +285,7 @@ async function cdpFetch(
     const response = await fetch(url, {
       method,
       headers: {
-        Authorization: `Bearer ${jwt}`,
+        Authorization: "Bearer " + jwt,
         Accept: "application/json",
         ...(jsonBody ? { "Content-Type": "application/json" } : {}),
       },
@@ -271,7 +320,8 @@ export async function getCdpSwapPrice(
   try {
     const { status, body } = await cdpFetch(
       "GET",
-      `${CDP_TRADE_API_URL}?${params.toString()}`,
+      CDP_TRADE_PRICE_PATH,
+      CDP_TRADE_PRICE_URL + "?" + params.toString(),
       TRADE_PRICE_TIMEOUT_MS,
     );
     if (status < 200 || status >= 300) {
@@ -279,6 +329,7 @@ export async function getCdpSwapPrice(
     }
     const parsed = parsePrice(body);
     if (!parsed) {
+      console.error("[cdp-trade] unparseable_price_payload", { status, body: safeLogBody(body) });
       return {
         ok: false,
         error: {
@@ -294,6 +345,7 @@ export async function getCdpSwapPrice(
     }
     const name = error && typeof error === "object" && "name" in error ? String(error.name) : "";
     if (name === "AbortError" || name === "TimeoutError") {
+      console.error("[cdp-trade] price_timeout", { message: errorMessage(error) });
       return {
         ok: false,
         error: {
@@ -302,6 +354,7 @@ export async function getCdpSwapPrice(
         },
       };
     }
+    console.error("[cdp-trade] price_fetch_failed", { message: errorMessage(error) });
     return {
       ok: false,
       error: {
@@ -332,7 +385,8 @@ export async function createCdpSwapQuote(
   try {
     const { status, body } = await cdpFetch(
       "POST",
-      CDP_TRADE_API_URL,
+      CDP_TRADE_QUOTE_PATH,
+      CDP_TRADE_QUOTE_URL,
       TRADE_QUOTE_TIMEOUT_MS,
       payload,
     );
@@ -341,6 +395,7 @@ export async function createCdpSwapQuote(
     }
     const parsed = parseQuote(body);
     if (!parsed) {
+      console.error("[cdp-trade] unparseable_quote_payload", { status, body: safeLogBody(body) });
       return {
         ok: false,
         error: {
@@ -356,6 +411,7 @@ export async function createCdpSwapQuote(
     }
     const name = error && typeof error === "object" && "name" in error ? String(error.name) : "";
     if (name === "AbortError" || name === "TimeoutError") {
+      console.error("[cdp-trade] quote_timeout", { message: errorMessage(error) });
       return {
         ok: false,
         error: {
@@ -364,6 +420,7 @@ export async function createCdpSwapQuote(
         },
       };
     }
+    console.error("[cdp-trade] quote_fetch_failed", { message: errorMessage(error) });
     return {
       ok: false,
       error: {
