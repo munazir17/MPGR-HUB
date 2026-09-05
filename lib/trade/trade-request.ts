@@ -35,7 +35,7 @@ function resolveFromAmount(raw: Record<string, unknown>, decimals: number): bigi
   const fromAmount = raw.fromAmount;
   if (fromAmount == null) return null;
   const text = String(fromAmount).trim();
-  if (/[.\( ]/.test(text) || text.startsWith(" \)")) {
+  if (/[.$]/.test(text) || text.startsWith("$")) {
     return parseHumanTokenAmount(text, decimals);
   }
   const digits = text.replace(/,/g, "");
@@ -119,4 +119,29 @@ export function parseTradeSwapRequest(
 
 export function describeResolveFailure(result: Extract<ResolveTradeTokenResult, { ok: false }>): string {
   return result.message;
+}
+
+/**
+ * Canonical tool-argument hydration. Converts a human `amount` / "$10"
+ * into atomic `fromAmount` using the resolved from-token decimals, and
+ * fills `taker` from the connected wallet. Must run BEFORE schema
+ * validation so `fromAmount` is present when the tool requires it.
+ */
+export function hydrateTradeSwapArguments(
+  raw: Record<string, unknown>,
+  walletAddress?: string,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...raw };
+  if (!(typeof next.taker === "string" && next.taker.trim()) && typeof walletAddress === "string" && walletAddress.trim()) {
+    next.taker = walletAddress.trim();
+  }
+  const parsed = parseTradeSwapRequest(next, { requireTaker: false });
+  if (!parsed.ok) return next;
+  return {
+    fromToken: parsed.value.from.symbol,
+    toToken: parsed.value.to.symbol,
+    fromAmount: parsed.value.fromAmount,
+    taker: parsed.value.taker || next.taker,
+    slippageBps: parsed.value.slippageBps,
+  };
 }
