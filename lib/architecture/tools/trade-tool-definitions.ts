@@ -13,7 +13,6 @@ import type { AgentTool, AgentToolSchema } from "./agent-tool";
 import { getAgentToolRegistry } from "./agent-tool-registry-instance";
 import { toolError, toolSuccess } from "./agent-tool-result";
 import { parseTradeSwapRequest } from "@/lib/trade/trade-request";
-import { previewTokenizedStockOrder } from "@/lib/trade/tokenized-stock-order";
 
 const CANONICAL_APP_ORIGIN = "https://mpgrhub.xyz";
 
@@ -329,32 +328,36 @@ export const tokenizedStockPrepareOrderTool: AgentTool = {
       });
     }
 
-    const result = await previewTokenizedStockOrder(symbol, side, amount);
-    if (!result.ok) {
+    try {
+      const { ok, payload } = await postJson("/api/trade/stocks/quote", { symbol, side, amount });
+      if (!ok || !payload) {
+        return toolError("tokenized_stock_prepare_order", {
+          code: toolFailureCode(payload?.code),
+          message:
+            typeof payload?.error === "string"
+              ? payload.error
+              : "Could not prepare a Coinbase Advanced Trade order preview.",
+        });
+      }
+      const preview = payload.preview;
+      if (!preview || typeof preview !== "object") {
+        return toolError("tokenized_stock_prepare_order", {
+          code: "DATA_UNAVAILABLE",
+          message: "The stock quote endpoint did not return a preview.",
+        });
+      }
+      return toolSuccess(
+        "tokenized_stock_prepare_order",
+        { preview },
+        { source: "coinbase-advanced-trade" },
+      );
+    } catch {
       return toolError("tokenized_stock_prepare_order", {
-        code: toolFailureCode(result.error.code),
-        message: result.error.message,
+        code: "PROVIDER_ERROR",
+        message: "Could not reach the stock quote endpoint.",
+        retryable: true,
       });
     }
-
-    return toolSuccess(
-      "tokenized_stock_prepare_order",
-      {
-        preview: {
-          ticker: result.value.catalog.ticker,
-          productId: result.value.productId,
-          side: result.value.side,
-          quoteAmount: result.value.quoteAmount,
-          orderTotal: result.value.preview.orderTotal,
-          commissionTotal: result.value.preview.commissionTotal,
-          estimatedBaseSize: result.value.preview.baseSize,
-          averageFilledPrice: result.value.preview.averageFilledPrice,
-          warning: result.value.preview.warning,
-          executed: false,
-        },
-      },
-      { source: "coinbase-advanced-trade" },
-    );
   },
 };
 
