@@ -5,6 +5,7 @@ import {
   generateIntelligentReply,
   isTradePrompt,
   isTradeQuotePrompt,
+  isTradeSellPrompt,
   isX402PaymentPrompt,
 } from "@/lib/agent-intelligence";
 import { getFollowUpPrompts } from "@/lib/agent-actions";
@@ -12,6 +13,7 @@ import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-pro
 import { runRegisteredTool } from "./agent-tool-calling";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
+import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
 
 // Phase 3C Part 1 — wraps generateIntelligentReply as the always-available
 // local provider. FallbackAIProvider uses this class when Gemini throws.
@@ -96,15 +98,38 @@ async function prepareOrExplainTrade(
   const wantsQuote = isTradeQuotePrompt(request.prompt);
 
   if (wantsQuote) {
-    const amount = extractTradeHumanAmount(request.prompt) ?? "10";
-    const toToken = symbol ?? "COINc";
-    const result = await runRegisteredTool(
-      "trade_prepare_swap",
+    if (!symbol) {
+      return helpResponse(
+        "I cannot safely resolve that tokenized stock from the official Coinbase B20 catalog on Base. Name a catalog ticker such as AAPLc, COINc, or TSLAc. Nothing was signed or submitted.",
+      );
+    }
+
+    const amount = extractTradeHumanAmount(request.prompt);
+    if (!amount) {
+      return helpResponse(
+        "A dollar or token amount is required before I can prepare a Base swap quote (for example $10). I will not guess fromAmount. Nothing was signed or submitted.",
+      );
+    }
+
+    const selling = isTradeSellPrompt(request.prompt);
+    const hydrated = hydrateTradeSwapArguments(
       {
-        fromToken: "USDC",
-        toToken: toToken,
+        fromToken: selling ? symbol : "USDC",
+        toToken: selling ? "USDC" : symbol,
         amount: amount,
       },
+      request.address,
+    );
+
+    if (typeof hydrated.fromAmount !== "string" || !hydrated.fromAmount) {
+      return helpResponse(
+        "I could not convert that amount into a Base swap fromAmount using the token's catalog decimals. Nothing was signed or submitted.",
+      );
+    }
+
+    const result = await runRegisteredTool(
+      "trade_prepare_swap",
+      hydrated,
       request,
     );
 
