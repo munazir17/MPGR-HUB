@@ -53,6 +53,7 @@ import {
 } from "./agent-tool-result";
 
 import { validateAgainstSchema } from "./agent-tool-schema-validator";
+import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
 
 import type { AgentToolRegistry } from "./agent-tool-registry";
 import type { AgentToolMode } from "./agent-tool";
@@ -148,9 +149,22 @@ export class AgentToolRuntime {
       );
     }
 
+    let toolInput = input;
+    if (
+      (toolId === "trade_get_price" || toolId === "trade_prepare_swap") &&
+      toolInput !== null &&
+      typeof toolInput === "object" &&
+      !Array.isArray(toolInput)
+    ) {
+      toolInput = hydrateTradeSwapArguments(
+        toolInput as Record<string, unknown>,
+        fullContext.walletAddress,
+      );
+    }
+
     const validation =
       validateAgainstSchema(
-        input,
+        toolInput,
         tool.inputSchema,
       );
 
@@ -210,7 +224,7 @@ export class AgentToolRuntime {
           `tools.runtime.${toolId}`,
           () =>
             tool.execute(
-              input,
+              toolInput,
               fullContext,
             ),
         );
