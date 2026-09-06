@@ -316,8 +316,9 @@ export function buildToolCatalogPromptBlock(
     "Never invent a toolId.",
     'For x402_discover_resource and x402_prepare_payment the URL argument name is resourceUrl — never url.',
     "Never invent payment amount, asset, recipient, or any other payment field. If x402_prepare_payment succeeds, the app itself will display the structured proposal.",
-    'For buy/sell/swap/quote requests call trade_prepare_swap. Dollar buys: fromToken=\"USDC\", amount=\"10\" (human units). Omit taker — the connected wallet is filled automatically.',
-    "For Coinbase tokenized-stock research call tokenized_stock_research. Do not invent liquidity or quotes.",
+    'For buy/sell/swap/quote of any Base token (ETH, USDC, MPGR, a 0x address) call trade_prepare_swap. Dollar buys: fromToken="USDC", amount="10" (human units). Omit taker.',
+    "For Coinbase B20 tokenized stocks (AAPLc, SPCXc, COINc, TSLAc, …) call tokenized_stock_prepare_order with {symbol, amount} to buy/sell, or tokenized_stock_research to look up catalog/oracle data.",
+    "Never call tokenized_stock_research for ETH, USDC, WETH, or MPGR. Use trade_get_price for those prices.",
   ].join("\n");
 }
 
@@ -470,7 +471,10 @@ function captureTradeProposal(
   toolResult: AgentToolResult,
   current: TradeProposal | undefined,
 ): TradeProposal | undefined {
-  if (toolId !== "trade_prepare_swap" || !toolResult.success) {
+  if (
+    (toolId !== "trade_prepare_swap" && toolId !== "tokenized_stock_prepare_order") ||
+    !toolResult.success
+  ) {
     return current;
   }
   const data = toolResult.data as { proposal?: TradeProposal } | undefined;
@@ -691,7 +695,8 @@ export async function runToolCallingLoop(
     const isX402Prepare =
       directive.toolId === "x402_prepare_payment";
     const isTradePrepare =
-      directive.toolId === "trade_prepare_swap";
+      directive.toolId === "trade_prepare_swap" ||
+      directive.toolId === "tokenized_stock_prepare_order";
 
     if (isX402Prepare) {
       transcript += [
