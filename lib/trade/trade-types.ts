@@ -16,6 +16,9 @@ export const TRADE_PROPOSAL_PHASES = [
 ] as const;
 export type TradeProposalPhase = (typeof TRADE_PROPOSAL_PHASES)[number];
 
+export const TRADE_PROVIDERS = ["cdp-trade-api", "0x-swap-api"] as const;
+export type TradeProvider = (typeof TRADE_PROVIDERS)[number];
+
 export const TRADE_KINDS = ["swap", "tokenized-stock-swap"] as const;
 export type TradeKind = (typeof TRADE_KINDS)[number];
 
@@ -114,7 +117,7 @@ export interface TradeProposal {
   kind: TradeKind;
   network: "base";
   chainId: 8453;
-  provider: "cdp-trade-api";
+  provider: TradeProvider;
   providerLabel: string;
   from: TradeTokenRef;
   to: TradeTokenRef;
@@ -207,7 +210,7 @@ export interface TokenizedStockResearch {
   };
   execution: {
     available: boolean;
-    method: "cdp-trade-api-swap" | "none";
+    method: "cdp-trade-api-swap" | "0x-swap-api" | "none";
     reason: string;
   };
   risk: readonly TradeRiskFact[];
