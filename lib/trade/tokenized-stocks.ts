@@ -222,9 +222,9 @@ export const TOKENIZED_STOCK_CATALOG_NOTES = [
   "Each token is a beneficial claim on a real share held in regulated custody. It is not a traditional stock certificate.",
   "Apply the on-chain multiplier: 1 token is not permanently equal to 1 share (dividends/splits).",
   "Holding and DEX trading is permissionless. Mint/redeem of the underlying is Authorized Participant only — this app has no issuer mint API.",
-  "Buy/sell here, when offered, is a Base DEX swap via the Coinbase CDP Trade API if that API reports liquidity. No liquidity = research only.",
+  "Buy/sell here is a Base DEX swap (Coinbase CDP Trade API, then 0x Swap API if CDP rejects the token). Tokens land in the connected wallet.",
   "Chainlink feeds report traditional-market equity prices (24/5) and freeze during corporate actions. Weekend values are last close.",
-  "Coinbase for Agents / Advanced Trade equities (AAPL-USD) are a different custodial product and are not wired here.",
+  "Coinbase for Agents / Advanced Trade equities (AAPL-USD) are a different custodial S&P 500 product. They do not deliver B20 tokens to a Base wallet and are not used for public MPGR Agent fills.",
 ] as const;
 
 export function findTokenizedStock(input: string): TokenizedStockCatalogEntry | null {
