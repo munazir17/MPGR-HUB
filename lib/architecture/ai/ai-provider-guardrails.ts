@@ -79,7 +79,7 @@ function isPlausibleTradeProposal(value: unknown): value is TradeProposal {
   if (typeof proposal.id !== "string" || !proposal.id) return false;
   if (proposal.requiresConfirmation !== true) return false;
   if (proposal.network !== "base") return false;
-  if (proposal.provider !== "cdp-trade-api") return false;
+  if (proposal.provider !== "cdp-trade-api" && proposal.provider !== "0x-swap-api") return false;
   if (typeof proposal.fromAmount !== "string") return false;
   const from = proposal.from as Record<string, unknown> | undefined;
   const to = proposal.to as Record<string, unknown> | undefined;
