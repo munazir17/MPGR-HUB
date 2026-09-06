@@ -8,11 +8,12 @@ import { getAddress, isAddress, type Address } from "viem";
 
 import {
   CDP_TRADE_PROVIDER_ID,
-  CDP_TRADE_PROVIDER_LABEL,
   PERMIT2_ADDRESS,
   TRADE_CHAIN_ID,
   TRADE_NETWORK,
   TRADE_QUOTE_MAX_AGE_MS,
+  ZERO_EX_PROVIDER_ID,
+  tradeProviderLabel,
 } from "./trade-config";
 import { formatAtomicAmount } from "./trade-format";
 import { buildSwapRiskFacts, riskToWarnings } from "./trade-risk";
@@ -23,6 +24,7 @@ import type {
   TradeError,
   TradeKind,
   TradeProposal,
+  TradeProvider,
   TradeTokenRef,
 } from "./trade-types";
 export type BuildTradeProposalResult =
@@ -36,6 +38,7 @@ export interface BuildTradeProposalInput {
   slippageBps: number;
   taker: string;
   quotedAt?: Date;
+  provider?: TradeProvider;
 }
 
 function checksum(address: string): Address {
@@ -107,22 +110,38 @@ export function buildTradeProposal(
   const displayTo = formatAtomicAmount(input.quote.toAmount, input.to.decimals);
   const displayMin = formatAtomicAmount(input.quote.minToAmount, input.to.decimals);
 
-  const needsPermit2Approval = issues.allowance !== null;
+  // Terminology depends on which flow actually happened, not on the
+  // presence of an allowance issue alone: CDP Trade API uses Permit2
+  // (a signed EIP-712 authorization, no on-chain approve tx), while
+  // the 0x Swap API AllowanceHolder route uses a plain ERC-20
+  // approve() to the AllowanceHolder contract — calling that
+  // "Permit2" is factually wrong and was flagged in review. Only the
+  // presence of `input.quote.permit2` means an actual Permit2 flow is
+  // happening; an allowance issue with no permit2 object means a
+  // standard token-spending approval instead.
+  const provider = input.provider ?? CDP_TRADE_PROVIDER_ID;
+  const isZeroExAllowanceHolder = provider === ZERO_EX_PROVIDER_ID;
+  const needsAllowanceApproval = issues.allowance !== null;
+  const hasPermit2Flow = input.quote.permit2 !== null;
   const permit2Spender = issues.allowance?.spender
     ? checksum(issues.allowance.spender)
-    : needsPermit2Approval
+    : needsAllowanceApproval
       ? PERMIT2_ADDRESS
       : null;
 
   const postConfirmationSteps = executionAvailable
     ? [
-        ...(needsPermit2Approval
-          ? ["Your wallet will first approve Permit2 to spend the sell token."]
+        ...(needsAllowanceApproval && !hasPermit2Flow
+          ? [
+              isZeroExAllowanceHolder
+                ? "Your wallet will first approve token spending for the 0x AllowanceHolder contract."
+                : "Your wallet will first approve token spending for this swap.",
+            ]
           : []),
-        ...(input.quote.permit2
+        ...(hasPermit2Flow
           ? ["Your wallet will sign a one-time Permit2 authorization for this swap only."]
           : []),
-        "Your wallet will sign the Coinbase CDP swap transaction on Base.",
+        "Your wallet will sign the swap transaction on Base.",
         "Nothing broadcasts until you approve each wallet prompt.",
       ]
     : [
@@ -130,7 +149,7 @@ export function buildTradeProposal(
       ];
 
   const description = executionAvailable
-    ? `Swap ${displayFrom} \( {input.from.symbol} → \~ \){displayTo} ${input.to.symbol} on Base (min ${displayMin} ${input.to.symbol}).`
+    ? `Swap ${displayFrom} ${input.from.symbol} → ~${displayTo} ${input.to.symbol} on Base (min ${displayMin} ${input.to.symbol}).`
     : `No executable Base swap is available for ${input.from.symbol} → ${input.to.symbol} right now.`;
 
   return {
@@ -146,8 +165,8 @@ export function buildTradeProposal(
       kind,
       network: TRADE_NETWORK,
       chainId: TRADE_CHAIN_ID as 8453,
-      provider: CDP_TRADE_PROVIDER_ID,
-      providerLabel: CDP_TRADE_PROVIDER_LABEL,
+      provider: input.provider ?? CDP_TRADE_PROVIDER_ID,
+      providerLabel: tradeProviderLabel(input.provider ?? CDP_TRADE_PROVIDER_ID),
       from: input.from,
       to: input.to,
       fromAmount: input.quote.fromAmount,
@@ -163,7 +182,10 @@ export function buildTradeProposal(
       issues,
       transaction: input.quote.transaction,
       permit2: input.quote.permit2,
-      needsPermit2Approval,
+      // Field name kept for API/type stability (TradeProposal.needsPermit2Approval
+      // is the existing wire contract); the VALUE and the user-facing wording
+      // above are what actually needed fixing for 0x/AllowanceHolder swaps.
+      needsPermit2Approval: needsAllowanceApproval,
       permit2Spender,
       risk,
       warnings: riskToWarnings(risk),
