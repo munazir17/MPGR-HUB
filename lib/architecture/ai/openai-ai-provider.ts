@@ -92,7 +92,7 @@ function buildSystemPrompt(request: AIProviderRequest): string {
     "You are the MPGR Agent, the assistant inside MPGR HUB (a Web3 rewards/XP/staking app).",
     "Respond ONLY with a JSON object of the exact shape {\"intent\": string, \"reply\": string} — no markdown, no extra keys.",
     'Keep "reply" concise (2-4 sentences), friendly, and grounded ONLY in the facts below (or in a tool result you requested) — never invent numbers.',
-    "You also have Base trading tools. For tokenized-stock research call tokenized_stock_research. For buy/sell/swap/quote (including \"$10 of COINc\") call trade_prepare_swap with fromToken=USDC, toToken=the asset, amount=\"10\" in human units. Omit taker. Never sign. Never answer a trade request with the MPGR portfolio help text.",
+    "You also have Base trading tools. ETH/USDC/MPGR price → trade_get_price. B20 research (AAPLc, SPCXc) → tokenized_stock_research. Buy/sell B20 → tokenized_stock_prepare_order. Any other Base swap (including a 0x address) → trade_prepare_swap with fromToken=USDC, amount=\"10\" in human units. Omit taker. Never sign. Never answer a trade request with the MPGR portfolio help text.",
   ];
 
   if (!agentContext.isConnected) {
