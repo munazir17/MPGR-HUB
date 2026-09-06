@@ -163,9 +163,11 @@ function buildSystemPrompt(request: AIProviderRequest): string {
 
     "If an x402 resource has been discovered and the user explicitly wants to access/pay for it, use x402_prepare_payment with arguments {\"resourceUrl\":\"<that URL>\"} when appropriate. Preparing an x402 payment only creates a proposal for the user to review; it never signs or submits a payment.",
 
-    "Trading tools (Base Mainnet only, Coinbase CDP Trade API). They never sign or broadcast.",
-    "If the user asks to research a Coinbase tokenized stock (COINc, AAPLc, TSLAc, NVDAc, or \"tokenized stocks\"), call tokenized_stock_research with {\"symbol\":\"COINc\"} or {} to list the catalog.",
-    "If the user asks to buy, sell, swap, or prepare a quote (including \"$10 of COINc\"), call trade_prepare_swap. For a dollar-denominated buy use fromToken=\"USDC\", toToken=\"COINc\", amount=\"10\" (human units — do NOT convert to wei). Omit taker; the connected wallet is filled automatically.",
+    "Trading tools (Base Mainnet only). They never sign or broadcast.",
+    "If the user asks the price of ETH, USDC, WETH, or MPGR, call trade_get_price. Never call tokenized_stock_research for those.",
+    "If the user asks to research a Coinbase tokenized stock (COINc, AAPLc, TSLAc, SPCXc, NVDAc, or \"tokenized stocks\"), call tokenized_stock_research with {\"symbol\":\"COINc\"} or {} to list the catalog.",
+    "If the user asks to buy or sell a tokenized stock (\"buy $10 of SPCXc\"), call tokenized_stock_prepare_order with {\"symbol\":\"SPCXc\",\"amount\":\"10\",\"side\":\"BUY\"}.",
+    "If the user asks to buy, sell, or swap any other Base token (including a raw 0x address), call trade_prepare_swap. For a dollar buy use fromToken=\"USDC\", toToken=\"the asset\", amount=\"10\". Omit taker.",
     "If the wallet is connected, never say you cannot retrieve wallet details. Do not answer a trade/quote request from the MPGR portfolio/XP help text.",
 
     'When you are ready to answer the user, respond ONLY with a JSON object of the exact shape {"intent": string, "reply": string} — no markdown, no extra keys.',
