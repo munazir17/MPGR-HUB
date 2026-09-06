@@ -6,7 +6,8 @@ import "server-only";
 // Liquidity is an optional CDP getSwapPrice against USDC — never faked.
 
 import { BASE_USDC } from "./trade-config";
-import { getCdpSwapPrice, hasTradeApiCredentials } from "./trade-cdp-client";
+import { hasTradeApiCredentials } from "./trade-cdp-client";
+import { getRoutedSwapPrice } from "./trade-swap-router";
 import {
   B20_ORACLE_REGISTRY,
   COINBASE_B20_TOKENIZED_STOCKS,
@@ -55,6 +56,7 @@ export async function researchTokenizedStock(
   let liquidityAvailable: boolean | null = null;
   let liquidityReason: string;
   let liquidityChecked = false;
+  let providerUsed: "cdp-trade-api" | "0x-swap-api" | null = null;
 
   if (!hasTradeApiCredentials()) {
     liquidityReason =
@@ -64,7 +66,7 @@ export async function researchTokenizedStock(
       "Connect a wallet to probe Coinbase CDP for secondary-market (DEX) liquidity against USDC.";
   } else {
     liquidityChecked = true;
-    const price = await getCdpSwapPrice({
+    const price = await getRoutedSwapPrice({
       fromToken: BASE_USDC,
       toToken: catalog.address,
       fromAmount: RESEARCH_PROBE_USDC,
@@ -75,13 +77,24 @@ export async function researchTokenizedStock(
       liquidityReason = price.error.message;
     } else {
       liquidityAvailable = price.value.liquidityAvailable;
+      providerUsed = price.provider;
       liquidityReason = price.value.liquidityAvailable
-        ? "Coinbase CDP Trade API reported liquidity for USDC → this token on Base. A swap can be prepared for explicit confirmation."
-        : "Coinbase CDP Trade API reported no liquidity for USDC → this token. Buy/sell stays research-only.";
+        ? `${price.provider === "0x-swap-api" ? "0x Swap API" : "Coinbase CDP Trade API"} reported liquidity for USDC → this token on Base. A swap can be prepared for explicit confirmation.`
+        : "No aggregator reported liquidity for USDC → this token on Base. Buy/sell stays research-only.";
     }
   }
 
-  const executionAvailable = liquidityAvailable === true;
+  // A paused B20 token cannot execute a real transfer on-chain even
+  // if a DEX quote/route exists — this must override liquidity-based
+  // availability, not just be reported alongside it.
+  const isPaused = onchain.paused === true;
+  const executionAvailable = liquidityAvailable === true && !isPaused;
+
+  const executionMethod: "cdp-trade-api-swap" | "0x-swap-api" | "none" = !executionAvailable
+    ? "none"
+    : providerUsed === "0x-swap-api"
+      ? "0x-swap-api"
+      : "cdp-trade-api-swap";
 
   const report: TokenizedStockResearch = {
     catalog,
@@ -94,10 +107,12 @@ export async function researchTokenizedStock(
     },
     execution: {
       available: executionAvailable,
-      method: executionAvailable ? "cdp-trade-api-swap" : "none",
-      reason: executionAvailable
-        ? "Secondary-market swap via Coinbase CDP Trade API (user wallet signs). Not an issuer mint."
-        : "No verified programmatic issuer mint/redeem API exists for retail. Without CDP liquidity, execution is disabled.",
+      method: executionMethod,
+      reason: isPaused
+        ? `${catalog.ticker} transfers are currently paused on-chain — execution is disabled regardless of DEX liquidity.`
+        : executionAvailable
+          ? `Secondary-market swap on Base via ${providerUsed === "0x-swap-api" ? "0x Swap API" : "CDP Trade API"} (user wallet signs). Not an issuer mint and not Coinbase Advanced Trade.`
+          : "No verified programmatic issuer mint/redeem API exists for retail. Without DEX liquidity, execution is disabled.",
     },
     risk: tokenizedStockResearchRisk(catalog),
     sources: [
