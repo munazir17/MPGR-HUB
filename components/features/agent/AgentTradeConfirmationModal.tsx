@@ -114,7 +114,13 @@ export function AgentTradeConfirmationModal({
               {proposal.needsPermit2Approval && (
                 <div className="flex justify-between gap-3">
                   <dt className="text-zinc-500">Steps</dt>
-                  <dd className="text-white">Approve Permit2, then swap</dd>
+                  <dd className="text-white">
+                    {proposal.permit2
+                      ? "Sign Permit2, then swap"
+                      : proposal.provider === "0x-swap-api"
+                        ? "Approve AllowanceHolder, then swap"
+                        : "Approve token spending, then swap"}
+                  </dd>
                 </div>
               )}
             </dl>
