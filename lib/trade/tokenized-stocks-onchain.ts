@@ -25,6 +25,28 @@ async function readOptional<T>(fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
+/**
+ * Lightweight, single-purpose on-chain decimals read for a B20 token.
+ * Used by the swap-amount conversion path (trade-request.ts), which
+ * needs only this one value and must not assume a catalog default —
+ * a wrong decimals value here is a real-funds unit error. Returns
+ * null if the read fails; callers must fail closed on null, not
+ * fall back to a guess.
+ */
+export async function readB20Decimals(address: `0x${string}`): Promise<number | null> {
+  const client = getTradePublicClient();
+  return readOptional(async () => {
+    const decimals = await client.readContract({
+      address,
+      abi: B20_TOKEN_ABI,
+      functionName: "decimals",
+    });
+    const n = Number(decimals);
+    if (!Number.isInteger(n) || n < 0 || n > 255) return Promise.reject(new Error("invalid decimals"));
+    return n;
+  });
+}
+
 function formatUsdFromChainlink(answer: bigint, decimals: number): string {
   const negative = answer < 0n;
   const abs = negative ? -answer : answer;
