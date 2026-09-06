@@ -50,8 +50,8 @@ export function revalidateTradeProposal(
   if (proposal.network !== TRADE_NETWORK || proposal.chainId !== TRADE_CHAIN_ID) {
     return fail("UNSUPPORTED_NETWORK", "Only Base Mainnet swaps can be confirmed.");
   }
-  if (proposal.provider !== "cdp-trade-api") {
-    return fail("PROVIDER_ERROR", "This proposal was not built from the Coinbase CDP Trade API.");
+  if (proposal.provider !== "cdp-trade-api" && proposal.provider !== "0x-swap-api") {
+    return fail("PROVIDER_ERROR", "This proposal was not built from a supported Base swap provider.");
   }
   if (!isAddress(proposal.taker) || !isAddress(proposal.from.address) || !isAddress(proposal.to.address)) {
     return fail("INVALID_INPUT", "This proposal's addresses are no longer valid.");
@@ -72,7 +72,7 @@ export function revalidateTradeProposal(
   if (!proposal.liquidityAvailable || !proposal.executionAvailable || !proposal.transaction) {
     return fail(
       "EXECUTION_UNAVAILABLE",
-      "Coinbase CDP did not return an executable swap for this pair. Research only — nothing will be signed.",
+      "No executable swap was returned for this pair on Base. Research only — nothing will be signed.",
     );
   }
   if (account && account.toLowerCase() !== proposal.taker.toLowerCase()) {
