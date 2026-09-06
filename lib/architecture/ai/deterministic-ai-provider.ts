@@ -121,7 +121,17 @@ async function prepareOrExplainTrade(
       request.address,
     );
 
-    if (typeof hydrated.fromAmount !== "string" || !hydrated.fromAmount) {
+    // A B20 tokenized-stock leg deliberately has no pre-computed
+    // fromAmount here — hydrateTradeSwapArguments defers that
+    // conversion to the real (async, on-chain-decimals-verified) API
+    // route rather than guessing decimals synchronously. Accept
+    // either a computed fromAmount (ordinary crypto) or a
+    // still-present human amount (B20 leg) as "enough to proceed";
+    // the route rejects it cleanly if it's genuinely unusable.
+    const hasUsableAmount =
+      (typeof hydrated.fromAmount === "string" && hydrated.fromAmount.length > 0) ||
+      (typeof hydrated.amount === "string" && hydrated.amount.length > 0);
+    if (!hasUsableAmount) {
       return helpResponse(
         "I could not convert that amount into a Base swap fromAmount using the token's catalog decimals. Nothing was signed or submitted.",
       );
