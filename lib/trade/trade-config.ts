@@ -74,6 +74,16 @@ export const CDP_TRADE_API_URL = CDP_TRADE_QUOTE_URL;
 
 export const CDP_TRADE_PROVIDER_ID = "cdp-trade-api" as const;
 export const CDP_TRADE_PROVIDER_LABEL = "Coinbase CDP Trade API";
+export const ZERO_EX_PROVIDER_ID = "0x-swap-api" as const;
+export const ZERO_EX_PROVIDER_LABEL = "0x Swap API (Base)";
+export const ZERO_EX_API_HOST = "api.0x.org";
+export const ZERO_EX_PRICE_PATH = "/swap/allowance-holder/price";
+export const ZERO_EX_QUOTE_PATH = "/swap/allowance-holder/quote";
+export const ZERO_EX_REQUEST_TIMEOUT_MS = 15_000;
+
+export function tradeProviderLabel(provider: "cdp-trade-api" | "0x-swap-api"): string {
+  return provider === "0x-swap-api" ? ZERO_EX_PROVIDER_LABEL : CDP_TRADE_PROVIDER_LABEL;
+}
 
 /** Default slippage: 100 bps = 1%, matching CDP docs examples. */
 export const TRADE_DEFAULT_SLIPPAGE_BPS = 100;
