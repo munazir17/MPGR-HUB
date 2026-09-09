@@ -10,6 +10,7 @@ import {
 import type {
   CdpSwapQuote,
   TradeKind,
+  TradeProvider,
   TradeRiskFact,
   TradeTokenRef,
   TokenizedStockCatalogEntry,
@@ -21,6 +22,7 @@ export function buildSwapRiskFacts(input: {
   to: TradeTokenRef;
   quote: Pick<CdpSwapQuote, "liquidityAvailable" | "issues" | "fees" | "minToAmount" | "toAmount">;
   slippageBps: number;
+  provider?: TradeProvider;
 }): TradeRiskFact[] {
   const facts: TradeRiskFact[] = [];
 
@@ -49,7 +51,9 @@ export function buildSwapRiskFacts(input: {
       severity: "critical",
       title: "No liquidity",
       detail:
-        "Coinbase CDP Trade API reported no available liquidity for this pair on Base. Nothing will be signed.",
+        input.provider === "aerodrome-slipstream"
+          ? "Aerodrome Slipstream reported no USDC pool liquidity for this B20 token on Base. Nothing will be signed."
+          : "Coinbase CDP Trade API reported no available liquidity for this pair on Base. Nothing will be signed.",
     });
   }
 
@@ -64,13 +68,23 @@ export function buildSwapRiskFacts(input: {
   }
 
   if (input.quote.issues?.allowance) {
-    facts.push({
-      id: "permit2-approval",
-      severity: "warning",
-      title: "Permit2 approval required",
-      detail:
-        "Your wallet must first approve the canonical Permit2 contract so the swap can pull the sell token. Approval is a separate Base transaction you will sign.",
-    });
+    facts.push(
+      input.provider === "aerodrome-slipstream"
+        ? {
+            id: "router-approval",
+            severity: "warning",
+            title: "Aerodrome router approval required",
+            detail:
+              "Your wallet must first approve the Aerodrome Slipstream SwapRouter so the swap can pull the sell token. Approval is a separate Base transaction you will sign.",
+          }
+        : {
+            id: "permit2-approval",
+            severity: "warning",
+            title: "Permit2 approval required",
+            detail:
+              "Your wallet must first approve the canonical Permit2 contract so the swap can pull the sell token. Approval is a separate Base transaction you will sign.",
+          },
+    );
   }
 
   if (input.slippageBps > TRADE_DEFAULT_SLIPPAGE_BPS) {
@@ -100,13 +114,23 @@ export function buildSwapRiskFacts(input: {
     detail: "MPGR will not quote or execute this swap on any network other than Base.",
   });
 
-  facts.push({
-    id: "provider",
-    severity: "info",
-    title: "Route via Coinbase CDP Trade API",
-    detail:
-      "Price, route, and calldata come from Coinbase's documented EVM Swap API. This app does not pick a DEX pool itself and does not invent a router address.",
-  });
+  facts.push(
+    input.provider === "aerodrome-slipstream"
+      ? {
+          id: "provider",
+          severity: "info",
+          title: "Route via Aerodrome Slipstream",
+          detail:
+            "Coinbase B20 tokenized stocks are quoted against USDC in Aerodrome concentrated-liquidity pools. Coinbase CDP Trade API and 0x Swap API reject these tokens. You sign unsigned SwapRouter calldata from your connected Base wallet — MPGR does not custody or broadcast.",
+        }
+      : {
+          id: "provider",
+          severity: "info",
+          title: "Route via Coinbase CDP Trade API",
+          detail:
+            "Price, route, and calldata come from Coinbase's documented EVM Swap API. This app does not pick a DEX pool itself and does not invent a router address.",
+        },
+  );
 
   return facts;
 }
@@ -133,7 +157,7 @@ export function tokenizedStockResearchRisk(
       severity: "warning",
       title: "No issuer mint/redeem in this app",
       detail:
-        "Primary mint and redeem are Authorized Participant only. MPGR will not call a fake mint API. Secondary buy/sell is a Base DEX swap when CDP reports liquidity.",
+        "Primary mint and redeem are Authorized Participant only. MPGR will not call a fake mint API. Secondary buy/sell is a Base DEX swap on Aerodrome Slipstream when a USDC pool has liquidity.",
     },
     {
       id: "oracle-hours",
