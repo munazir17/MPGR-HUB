@@ -92,6 +92,35 @@ export interface ExecuteTradeInput {
   refreshQuote?: (proposal: TradeProposal) => Promise<TradeProposal>;
 }
 
+function refreshQuoteLabel(provider: TradeProposal["provider"]): string {
+  if (provider === "aerodrome-slipstream") return "Refreshing Aerodrome quote…";
+  if (provider === "0x-swap-api") return "Refreshing 0x quote…";
+  return "Refreshing Coinbase CDP quote…";
+}
+
+function refreshQuoteFailedMessage(provider: TradeProposal["provider"]): string {
+  if (provider === "aerodrome-slipstream") return "Could not refresh the Aerodrome quote.";
+  if (provider === "0x-swap-api") return "Could not refresh the 0x quote.";
+  return "Could not refresh the Coinbase CDP quote.";
+}
+
+function approvalStepLabel(proposal: TradeProposal): string {
+  if (proposal.provider === "aerodrome-slipstream") {
+    return "Approve Aerodrome SwapRouter in your wallet…";
+  }
+  if (proposal.provider === "0x-swap-api" && !proposal.permit2) {
+    return "Approve 0x AllowanceHolder in your wallet…";
+  }
+  return "Approve Permit2 in your wallet…";
+}
+
+function approvalFailedMessage(proposal: TradeProposal): string {
+  if (proposal.provider === "aerodrome-slipstream") {
+    return "Aerodrome SwapRouter approval transaction failed on Base.";
+  }
+  return "Permit2 approval transaction failed on Base.";
+}
+
 const inFlight = new Set<string>();
 
 function classifyWalletError(err: unknown, fallback: TradeError["code"]): TradeError {
@@ -180,7 +209,7 @@ export async function executeTrade(
       if (!input.refreshQuote) {
         const snapshot = fail(
           "QUOTE_EXPIRED",
-          `This quote is older than ${TRADE_QUOTE_MAX_AGE_MS / 1000}s. Re-open it to fetch a fresh Coinbase route.`,
+          `This quote is older than ${TRADE_QUOTE_MAX_AGE_MS / 1000}s. Re-open it to fetch a fresh route.`,
         );
         onChange(snapshot);
         return snapshot;
@@ -190,13 +219,13 @@ export async function executeTrade(
         approvalHash: null,
         swapHash: null,
         error: null,
-        stepLabel: "Refreshing Coinbase CDP quote…",
+        stepLabel: refreshQuoteLabel(proposal.provider),
       });
       let fresh: TradeProposal;
       try {
         fresh = await input.refreshQuote(proposal);
       } catch {
-        const snapshot = fail("PROVIDER_ERROR", "Could not refresh the Coinbase CDP quote.");
+        const snapshot = fail("PROVIDER_ERROR", refreshQuoteFailedMessage(proposal.provider));
         onChange(snapshot);
         return snapshot;
       }
@@ -211,7 +240,7 @@ export async function executeTrade(
         return snapshot;
       }
       if (!fresh.executionAvailable || !fresh.transaction) {
-        const snapshot = fail("LIQUIDITY_UNAVAILABLE", "Coinbase CDP no longer reports an executable route.");
+        const snapshot = fail("LIQUIDITY_UNAVAILABLE", "No executable Base route is available for this pair anymore.");
         onChange(snapshot);
         return snapshot;
       }
@@ -245,7 +274,7 @@ export async function executeTrade(
         approvalHash: null,
         swapHash: null,
         error: null,
-        stepLabel: "Approve Permit2 in your wallet…",
+        stepLabel: approvalStepLabel(proposal),
       });
       try {
         const data = encodeFunctionData({
@@ -262,7 +291,7 @@ export async function executeTrade(
         });
         const receipt = await waitForTransactionReceipt(config, { hash: approvalHash });
         if (receipt.status !== "success") {
-          const snapshot = fail("APPROVAL_FAILED", "Permit2 approval transaction failed on Base.");
+          const snapshot = fail("APPROVAL_FAILED", approvalFailedMessage(proposal));
           onChange({ ...snapshot, approvalHash });
           return { ...snapshot, approvalHash };
         }
