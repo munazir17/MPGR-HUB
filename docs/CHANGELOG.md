@@ -6,6 +6,19 @@ The project follows a milestone-based development roadmap.
 
 ---
 
+# Version 0.6.0
+
+## Tokenized-stock execution
+
+### Changed
+
+- Coinbase B20 buy/sell now routes through Aerodrome Slipstream USDC pools (Gauges V3 factory / QuoterV2 / SwapRouter). Coinbase CDP Trade API and 0x Swap API legally reject these tokens and are not used as a fallback.
+- Regular ERC-20 swaps (ETH, USDC, MPGR, …) are unchanged: CDP Trade API, then 0x AllowanceHolder.
+- Tokenized-stock research probes Aerodrome directly and no longer requires CDP credentials.
+- ETH/WETH ↔ B20 is rejected with a convert-to-USDC-first message (no direct pool in v1).
+
+---
+
 # Version 0.1.0
 
 ## Foundation
