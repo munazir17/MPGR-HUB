@@ -535,7 +535,7 @@ export function synthesizeFinalReplyFromToolResult(
   if (capturedTradeProposal) {
     return capturedTradeProposal.executionAvailable
       ? "A Base swap proposal is ready for you to review in the app. I will not sign or submit anything until you explicitly confirm."
-      : "I looked up that pair on Coinbase CDP. No executable Base route is available right now — the research is on screen. I will not sign anything.";
+      : "I looked up that pair on Base. No executable route is available right now — the research is on screen. I will not sign anything.";
   }
 
   if (capturedX402Proposal) {
@@ -748,3 +748,4 @@ export async function runToolCallingLoop(
     "Tool-calling loop ended without a final answer.",
   );
 }
+
