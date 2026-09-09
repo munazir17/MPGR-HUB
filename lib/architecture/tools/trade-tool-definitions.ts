@@ -117,7 +117,7 @@ export const tradeGetPriceTool: AgentTool = {
   id: "trade_get_price",
   name: "Base Swap Price",
   description:
-    "Gets a live Base Mainnet swap price (Coinbase CDP Trade API, then 0x Swap API if CDP rejects the token). Use for ETH, USDC, MPGR, any Base 0x address, or Coinbase B20 tokenized stocks. Does not sign. For a $N buy use fromToken=USDC, amount=\"N\". Omit taker. Never use this for ETH/USDC price research via tokenized_stock_research.",
+    "Gets a live Base Mainnet swap price. Regular tokens use Coinbase CDP Trade API, then 0x. Coinbase B20 tokenized stocks (AAPLc, TSLAc, …) use Aerodrome Slipstream USDC pools — not CDP/0x. For a $N B20 buy use fromToken=USDC, toToken=AAPLc, amount=\"N\". Does not sign. Omit taker. Never use this for ETH/USDC price research via tokenized_stock_research.",
   category: "market",
   mode: "read",
   riskLevel: "low",
@@ -155,7 +155,7 @@ export const tradePrepareSwapTool: AgentTool = {
   id: "trade_prepare_swap",
   name: "Base Swap Proposal",
   description:
-    "Creates a structured Base swap proposal for explicit user confirmation. Works for ETH/WETH/USDC/MPGR, any Base ERC-20 0x address, and Coinbase B20 tokenized stocks (AAPLc, SPCXc, COINc, TSLAc, …). For \"$10 of AAPLc\" use fromToken=USDC, toToken=AAPLc, amount=\"10\". Never signs. Omit taker. Do not call this for a plain ETH price question — use trade_get_price.",
+    "Creates a structured Base swap proposal for explicit user confirmation. Works for ETH/WETH/USDC/MPGR and any Base ERC-20 0x address via CDP/0x. Coinbase B20 tokenized stocks (AAPLc, SPCXc, TSLAc, …) route through Aerodrome Slipstream USDC pools. For \"$10 of AAPLc\" use fromToken=USDC, toToken=AAPLc, amount=\"10\". Never signs. Omit taker. Do not call this for a plain ETH price question — use trade_get_price.",
   category: "defi",
   mode: "prepare",
   riskLevel: "medium",
@@ -173,10 +173,11 @@ export const tradePrepareSwapTool: AgentTool = {
           message: typeof payload?.error === "string" ? payload.error : "Could not prepare a Base swap quote.",
         });
       }
+      const proposal = payload.proposal as { provider?: string } | undefined;
       return toolSuccess(
         "trade_prepare_swap",
         { proposal: payload.proposal },
-        { source: "cdp-trade-api", chainId: 8453 },
+        { source: proposal?.provider ?? "cdp-trade-api", chainId: 8453 },
       );
     } catch {
       return toolError("trade_prepare_swap", {
@@ -207,7 +208,7 @@ export const tokenizedStockResearchTool: AgentTool = {
   id: "tokenized_stock_research",
   name: "Tokenized Stock Research",
   description:
-    "Researches Coinbase Tokenized Stocks on Base (B20): official 13-asset catalog, contract, Chainlink equity oracle, on-chain multiplier, and whether CDP/0x report DEX liquidity. Use ONLY for B20 names (AAPLc, SPCXc, COINc, tokenized stocks). Never call this for ETH, USDC, WETH, or MPGR prices.",
+    "Researches Coinbase Tokenized Stocks on Base (B20): official 13-asset catalog, contract, Chainlink equity oracle, on-chain multiplier, and whether Aerodrome Slipstream has USDC pool liquidity. Use ONLY for B20 names (AAPLc, SPCXc, COINc, tokenized stocks). Never call this for ETH, USDC, WETH, or MPGR prices.",
   category: "research",
   mode: "read",
   riskLevel: "low",
@@ -273,7 +274,7 @@ export const tokenizedStockPrepareOrderTool: AgentTool = {
   id: "tokenized_stock_prepare_order",
   name: "Tokenized Stock Swap Preview",
   description:
-    "Prepares an on-chain Base swap proposal to buy or sell a Coinbase B20 tokenized stock (AAPLc, SPCXc, …) using the connected wallet. BUY $10 of AAPLc = sell 10 USDC for AAPLc. This is a Base DEX swap, not Coinbase Advanced Trade (AAPL-USD). Returns a proposal for explicit confirmation. Never signs.",
+    "Prepares an on-chain Base swap proposal to buy or sell a Coinbase B20 tokenized stock (AAPLc, SPCXc, …) using the connected wallet. BUY $10 of AAPLc = sell 10 USDC for AAPLc on Aerodrome Slipstream. This is a Base DEX swap, not Coinbase Advanced Trade (AAPL-USD). Returns a proposal for explicit confirmation. Never signs.",
   category: "market",
   mode: "prepare",
   riskLevel: "medium",
