@@ -15,7 +15,7 @@ import {
   TRADE_MIN_SLIPPAGE_BPS,
   TRADE_NETWORK,
 } from "./trade-config";
-import type { TradeError, TradeProposal } from "./trade-types";
+import { isSupportedTradeProvider, type TradeError, type TradeProposal } from "./trade-types";
 
 export const TRADE_CONFIRMATION_STATES = [
   "IDLE",
@@ -50,7 +50,7 @@ export function revalidateTradeProposal(
   if (proposal.network !== TRADE_NETWORK || proposal.chainId !== TRADE_CHAIN_ID) {
     return fail("UNSUPPORTED_NETWORK", "Only Base Mainnet swaps can be confirmed.");
   }
-  if (proposal.provider !== "cdp-trade-api" && proposal.provider !== "0x-swap-api") {
+  if (!isSupportedTradeProvider(proposal.provider)) {
     return fail("PROVIDER_ERROR", "This proposal was not built from a supported Base swap provider.");
   }
   if (!isAddress(proposal.taker) || !isAddress(proposal.from.address) || !isAddress(proposal.to.address)) {
