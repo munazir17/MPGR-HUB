@@ -117,6 +117,8 @@ export function AgentTradeConfirmationModal({
                   <dd className="text-white">
                     {proposal.permit2
                       ? "Sign Permit2, then swap"
+                      : proposal.provider === "aerodrome-slipstream"
+                        ? "Approve Aerodrome SwapRouter, then swap"
                       : proposal.provider === "0x-swap-api"
                         ? "Approve AllowanceHolder, then swap"
                         : "Approve token spending, then swap"}
