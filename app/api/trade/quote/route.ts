@@ -1,8 +1,8 @@
 // app/api/trade/quote/route.ts
 //
 // POST /api/trade/quote
-// Server-side Coinbase CDP createSwapQuote. Returns unsigned calldata
-// bound to `taker`. Never broadcasts.
+// Server-side Base swap quote. Regular tokens: Coinbase CDP then 0x.
+// Coinbase B20 tokenized stocks: Aerodrome Slipstream. Never broadcasts.
 
 import { NextResponse } from "next/server";
 
