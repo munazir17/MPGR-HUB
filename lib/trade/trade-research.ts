@@ -3,10 +3,12 @@ import "server-only";
 // lib/trade/trade-research.ts
 //
 // Assembles a tokenized-stock catalog or single-asset research report.
-// Liquidity is an optional CDP getSwapPrice against USDC — never faked.
+// Liquidity is an Aerodrome Slipstream USDC quote — never faked, and
+// never sent through CDP/0x (those APIs reject B20).
+
+import { isAddress } from "viem";
 
 import { BASE_USDC } from "./trade-config";
-import { hasTradeApiCredentials } from "./trade-cdp-client";
 import { getRoutedSwapPrice } from "./trade-swap-router";
 import {
   B20_ORACLE_REGISTRY,
@@ -16,7 +18,7 @@ import {
 } from "./tokenized-stocks";
 import { readTokenizedStockOnchain } from "./tokenized-stocks-onchain";
 import { tokenizedStockResearchRisk } from "./trade-risk";
-import type { TokenizedStockReport, TokenizedStockResearch, TradeError } from "./trade-types";
+import type { TokenizedStockReport, TokenizedStockResearch, TradeError, TradeProvider } from "./trade-types";
 
 export type TradeResearchResult =
   | { ok: true; report: TokenizedStockReport }
@@ -56,32 +58,26 @@ export async function researchTokenizedStock(
   let liquidityAvailable: boolean | null = null;
   let liquidityReason: string;
   let liquidityChecked = false;
-  let providerUsed: "cdp-trade-api" | "0x-swap-api" | null = null;
+  let providerUsed: TradeProvider | null = null;
 
-  if (!hasTradeApiCredentials()) {
-    liquidityReason =
-      "CDP Trade API credentials are not configured, so DEX liquidity was not probed. On-chain oracle data is still shown.";
-  } else if (!taker) {
-    liquidityReason =
-      "Connect a wallet to probe Coinbase CDP for secondary-market (DEX) liquidity against USDC.";
+  const probeTaker =
+    taker && isAddress(taker) ? taker : "0x000000000000000000000000000000000000dEaD";
+  liquidityChecked = true;
+  const price = await getRoutedSwapPrice({
+    fromToken: BASE_USDC,
+    toToken: catalog.address,
+    fromAmount: RESEARCH_PROBE_USDC,
+    taker: probeTaker,
+  });
+  if (!price.ok) {
+    liquidityAvailable = null;
+    liquidityReason = price.error.message;
   } else {
-    liquidityChecked = true;
-    const price = await getRoutedSwapPrice({
-      fromToken: BASE_USDC,
-      toToken: catalog.address,
-      fromAmount: RESEARCH_PROBE_USDC,
-      taker,
-    });
-    if (!price.ok) {
-      liquidityAvailable = null;
-      liquidityReason = price.error.message;
-    } else {
-      liquidityAvailable = price.value.liquidityAvailable;
-      providerUsed = price.provider;
-      liquidityReason = price.value.liquidityAvailable
-        ? `${price.provider === "0x-swap-api" ? "0x Swap API" : "Coinbase CDP Trade API"} reported liquidity for USDC → this token on Base. A swap can be prepared for explicit confirmation.`
-        : "No aggregator reported liquidity for USDC → this token on Base. Buy/sell stays research-only.";
-    }
+    liquidityAvailable = price.value.liquidityAvailable;
+    providerUsed = price.provider;
+    liquidityReason = price.value.liquidityAvailable
+      ? "Aerodrome Slipstream reported liquidity for USDC → this token on Base. A swap can be prepared for explicit confirmation."
+      : "Aerodrome Slipstream reported no USDC pool liquidity for this token on Base. Buy/sell stays research-only.";
   }
 
   // A paused B20 token cannot execute a real transfer on-chain even
@@ -90,11 +86,13 @@ export async function researchTokenizedStock(
   const isPaused = onchain.paused === true;
   const executionAvailable = liquidityAvailable === true && !isPaused;
 
-  const executionMethod: "cdp-trade-api-swap" | "0x-swap-api" | "none" = !executionAvailable
+  const executionMethod: TokenizedStockResearch["execution"]["method"] = !executionAvailable
     ? "none"
-    : providerUsed === "0x-swap-api"
-      ? "0x-swap-api"
-      : "cdp-trade-api-swap";
+    : providerUsed === "aerodrome-slipstream"
+      ? "aerodrome-slipstream"
+      : providerUsed === "0x-swap-api"
+        ? "0x-swap-api"
+        : "cdp-trade-api-swap";
 
   const report: TokenizedStockResearch = {
     catalog,
@@ -111,14 +109,14 @@ export async function researchTokenizedStock(
       reason: isPaused
         ? `${catalog.ticker} transfers are currently paused on-chain — execution is disabled regardless of DEX liquidity.`
         : executionAvailable
-          ? `Secondary-market swap on Base via ${providerUsed === "0x-swap-api" ? "0x Swap API" : "CDP Trade API"} (user wallet signs). Not an issuer mint and not Coinbase Advanced Trade.`
-          : "No verified programmatic issuer mint/redeem API exists for retail. Without DEX liquidity, execution is disabled.",
+          ? "Secondary-market swap on Base via Aerodrome Slipstream (user wallet signs). Not an issuer mint and not Coinbase Advanced Trade."
+          : "No verified programmatic issuer mint/redeem API exists for retail. Without Aerodrome USDC pool liquidity, execution is disabled.",
     },
     risk: tokenizedStockResearchRisk(catalog),
     sources: [
       "https://docs.base.org/specifications/b20/tokenized-stocks-on-base",
       "https://www.coinbase.com/tokenize",
-      "https://docs.cdp.coinbase.com/trade-api/quickstart",
+      "https://docs.aerodrome.finance/",
     ],
   };
 
