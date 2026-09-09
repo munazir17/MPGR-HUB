@@ -7,6 +7,7 @@
 import { getAddress, isAddress, type Address } from "viem";
 
 import {
+  AERODROME_SLIPSTREAM_PROVIDER_ID,
   CDP_TRADE_PROVIDER_ID,
   PERMIT2_ADDRESS,
   TRADE_CHAIN_ID,
@@ -97,6 +98,7 @@ export function buildTradeProposal(
   const liquidityAvailable = input.quote.liquidityAvailable === true;
   const executionAvailable =
     liquidityAvailable && input.quote.transaction !== null;
+  const provider = input.provider ?? CDP_TRADE_PROVIDER_ID;
 
   const risk = buildSwapRiskFacts({
     kind,
@@ -104,6 +106,7 @@ export function buildTradeProposal(
     to: input.to,
     quote: input.quote,
     slippageBps: input.slippageBps,
+    provider,
   });
 
   const displayFrom = formatAtomicAmount(input.quote.fromAmount, input.from.decimals);
@@ -119,8 +122,8 @@ export function buildTradeProposal(
   // presence of `input.quote.permit2` means an actual Permit2 flow is
   // happening; an allowance issue with no permit2 object means a
   // standard token-spending approval instead.
-  const provider = input.provider ?? CDP_TRADE_PROVIDER_ID;
   const isZeroExAllowanceHolder = provider === ZERO_EX_PROVIDER_ID;
+  const isAerodrome = provider === AERODROME_SLIPSTREAM_PROVIDER_ID;
   const needsAllowanceApproval = issues.allowance !== null;
   const hasPermit2Flow = input.quote.permit2 !== null;
   const permit2Spender = issues.allowance?.spender
@@ -129,15 +132,15 @@ export function buildTradeProposal(
       ? PERMIT2_ADDRESS
       : null;
 
+  const approvalStep = isAerodrome
+    ? "Your wallet will first approve token spending for the Aerodrome Slipstream SwapRouter."
+    : isZeroExAllowanceHolder
+      ? "Your wallet will first approve token spending for the 0x AllowanceHolder contract."
+      : "Your wallet will first approve token spending for this swap.";
+
   const postConfirmationSteps = executionAvailable
     ? [
-        ...(needsAllowanceApproval && !hasPermit2Flow
-          ? [
-              isZeroExAllowanceHolder
-                ? "Your wallet will first approve token spending for the 0x AllowanceHolder contract."
-                : "Your wallet will first approve token spending for this swap.",
-            ]
-          : []),
+        ...(needsAllowanceApproval && !hasPermit2Flow ? [approvalStep] : []),
         ...(hasPermit2Flow
           ? ["Your wallet will sign a one-time Permit2 authorization for this swap only."]
           : []),
@@ -165,8 +168,8 @@ export function buildTradeProposal(
       kind,
       network: TRADE_NETWORK,
       chainId: TRADE_CHAIN_ID as 8453,
-      provider: input.provider ?? CDP_TRADE_PROVIDER_ID,
-      providerLabel: tradeProviderLabel(input.provider ?? CDP_TRADE_PROVIDER_ID),
+      provider,
+      providerLabel: tradeProviderLabel(provider),
       from: input.from,
       to: input.to,
       fromAmount: input.quote.fromAmount,
