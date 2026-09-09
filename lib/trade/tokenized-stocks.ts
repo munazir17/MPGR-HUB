@@ -14,8 +14,10 @@
 //   - Mint/redeem of the underlying share is Authorized Participant only.
 //     There is no public Coinbase retail mint/redeem API, so this app
 //     never fakes a "buy share from issuer" call.
-//   - Secondary buy/sell, when liquidity exists, is an ordinary Base
-//     ERC-20/B20 swap through the CDP Trade API — same path as any token.
+//   - Secondary buy/sell is an ordinary Base ERC-20/B20 swap. Coinbase
+//     CDP Trade API and 0x Swap API reject B20 (`NOT_AUTHORIZED_FOR_TRADE`),
+//     so this app routes USDC ↔ B20 through Aerodrome Slipstream CL pools.
+//     Regular (non-B20) swaps still use CDP → 0x.
 //   - Chainlink equity feeds (8 decimals) × on-chain multiplier = token
 //     reference price. DEX price is a different number and is NOT the
 //     oracle source.
@@ -222,7 +224,7 @@ export const TOKENIZED_STOCK_CATALOG_NOTES = [
   "Each token is a beneficial claim on a real share held in regulated custody. It is not a traditional stock certificate.",
   "Apply the on-chain multiplier: 1 token is not permanently equal to 1 share (dividends/splits).",
   "Holding and DEX trading is permissionless. Mint/redeem of the underlying is Authorized Participant only — this app has no issuer mint API.",
-  "Buy/sell here is a Base DEX swap (Coinbase CDP Trade API, then 0x Swap API if CDP rejects the token). Tokens land in the connected wallet.",
+  "Buy/sell here is a Base DEX swap on Aerodrome Slipstream (USDC pairs). Coinbase CDP / 0x cannot legally quote B20 tokens. Tokens land in the connected wallet.",
   "Chainlink feeds report traditional-market equity prices (24/5) and freeze during corporate actions. Weekend values are last close.",
   "Coinbase for Agents / Advanced Trade equities (AAPL-USD) are a different custodial S&P 500 product. They do not deliver B20 tokens to a Base wallet and are not used for public MPGR Agent fills.",
 ] as const;
@@ -240,4 +242,8 @@ export function findTokenizedStock(input: string): TokenizedStockCatalogEntry | 
       );
     }) ?? null
   );
+}
+
+export function involvesCoinbaseB20(fromToken: string, toToken: string): boolean {
+  return findTokenizedStock(fromToken) !== null || findTokenizedStock(toToken) !== null;
 }
