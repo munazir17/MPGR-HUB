@@ -16,8 +16,12 @@ export const TRADE_PROPOSAL_PHASES = [
 ] as const;
 export type TradeProposalPhase = (typeof TRADE_PROPOSAL_PHASES)[number];
 
-export const TRADE_PROVIDERS = ["cdp-trade-api", "0x-swap-api"] as const;
+export const TRADE_PROVIDERS = ["cdp-trade-api", "0x-swap-api", "aerodrome-slipstream"] as const;
 export type TradeProvider = (typeof TRADE_PROVIDERS)[number];
+
+export function isSupportedTradeProvider(value: unknown): value is TradeProvider {
+  return typeof value === "string" && (TRADE_PROVIDERS as readonly string[]).includes(value);
+}
 
 export const TRADE_KINDS = ["swap", "tokenized-stock-swap"] as const;
 export type TradeKind = (typeof TRADE_KINDS)[number];
@@ -210,7 +214,7 @@ export interface TokenizedStockResearch {
   };
   execution: {
     available: boolean;
-    method: "cdp-trade-api-swap" | "0x-swap-api" | "none";
+    method: "cdp-trade-api-swap" | "0x-swap-api" | "aerodrome-slipstream" | "none";
     reason: string;
   };
   risk: readonly TradeRiskFact[];
