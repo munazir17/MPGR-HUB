@@ -2,7 +2,8 @@
 //
 // POST /api/trade/stocks/quote
 // Prepares an on-chain Base swap proposal for a Coinbase B20 tokenized
-// stock (USDC ↔ AAPLc, etc.). Never signs. Never uses Advanced Trade.
+// stock (USDC ↔ AAPLc, etc.) via Aerodrome Slipstream. Never signs.
+// Never uses Advanced Trade, CDP Trade API, or 0x for B20.
 
 import { NextResponse } from "next/server";
 import { isAddress } from "viem";
