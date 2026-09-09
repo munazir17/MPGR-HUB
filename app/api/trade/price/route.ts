@@ -1,7 +1,8 @@
 // app/api/trade/price/route.ts
 //
 // POST /api/trade/price
-// Server-side Coinbase CDP getSwapPrice. Never signs.
+// Server-side Base swap price. Regular tokens: Coinbase CDP then 0x.
+// Coinbase B20 tokenized stocks: Aerodrome Slipstream. Never signs.
 
 import { NextResponse } from "next/server";
 
