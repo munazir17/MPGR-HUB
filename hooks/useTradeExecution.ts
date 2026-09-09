@@ -27,7 +27,7 @@ async function refreshQuote(proposal: TradeProposal): Promise<TradeProposal> {
     | { proposal?: TradeProposal; error?: string }
     | null;
   if (!response.ok || !payload?.proposal) {
-    throw new Error(payload?.error || "Could not refresh the Coinbase CDP quote.");
+    throw new Error(payload?.error || "Could not refresh the swap quote.");
   }
   return payload.proposal;
 }
