@@ -121,4 +121,69 @@ describe("executeTrade", () => {
     const typed = mockSign.mock.calls[0][1] as { types: Record<string, unknown> };
     expect(typed.types.EIP712Domain).toBeUndefined();
   });
+
+  it("approve SwapRouter then swap for Aerodrome B20 — never signs Permit2", async () => {
+    const { AERODROME_SLIPSTREAM_SWAP_ROUTER, AERODROME_SLIPSTREAM_PROVIDER_ID } =
+      await import("../trade-config");
+    const { COINBASE_B20_TOKENIZED_STOCKS } = await import("../tokenized-stocks");
+    const aapl = COINBASE_B20_TOKENIZED_STOCKS[0].address;
+    const built = buildTradeProposal({
+      from: {
+        address: BASE_USDC,
+        symbol: "USDC",
+        name: "USD Coin",
+        decimals: 6,
+        kind: "erc20",
+        verified: true,
+      },
+      to: {
+        address: aapl,
+        symbol: "AAPLc",
+        name: "Apple Tokenized Stock (Coinbase)",
+        decimals: 8,
+        kind: "b20-tokenized-stock",
+        verified: true,
+      },
+      quote: {
+        liquidityAvailable: true,
+        fromToken: BASE_USDC,
+        toToken: aapl,
+        fromAmount: "1000000",
+        toAmount: "318834",
+        minToAmount: "315645",
+        issues: {
+          allowance: { currentAllowance: "0", spender: AERODROME_SLIPSTREAM_SWAP_ROUTER },
+          balance: null,
+          simulationIncomplete: false,
+        },
+        transaction: { to: AERODROME_SLIPSTREAM_SWAP_ROUTER, data: "0xabcd", value: "0" },
+        permit2: null,
+      },
+      slippageBps: 100,
+      taker: TAKER,
+      provider: AERODROME_SLIPSTREAM_PROVIDER_ID,
+    });
+    if (!built.ok) throw new Error("setup");
+
+    mockSend.mockResolvedValueOnce("0xapprove").mockResolvedValueOnce("0xswap");
+    mockWait.mockResolvedValue({ status: "success" });
+
+    const result = await executeTrade(
+      {
+        proposal: built.proposal,
+        confirmationState: "READY_FOR_CONFIRMATION",
+        currentAccount: TAKER,
+        currentChainId: 8453,
+      },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.approvalHash).toBe("0xapprove");
+    expect(result.swapHash).toBe("0xswap");
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSign).not.toHaveBeenCalled();
+    const swapTx = mockSend.mock.calls[1][1] as { to: string };
+    expect(swapTx.to.toLowerCase()).toBe(AERODROME_SLIPSTREAM_SWAP_ROUTER.toLowerCase());
+  });
 });
