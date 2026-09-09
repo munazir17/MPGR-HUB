@@ -1,10 +1,10 @@
 // app/api/trade/stocks/route.ts
 //
 // GET /api/trade/stocks              → official B20 catalog
-// GET /api/trade/stocks?symbol=AAPLc → on-chain + optional CDP liquidity
+// GET /api/trade/stocks?symbol=AAPLc → on-chain + Aerodrome USDC liquidity
 //
-// No issuer mint/redeem. Execution stays research-only unless CDP
-// reports secondary-market liquidity.
+// No issuer mint/redeem. Execution stays research-only unless Aerodrome
+// Slipstream reports a live USDC pool quote.
 
 import { NextResponse } from "next/server";
 
