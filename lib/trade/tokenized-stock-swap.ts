@@ -3,13 +3,15 @@ import "server-only";
 // lib/trade/tokenized-stock-swap.ts
 //
 // Public MPGR Agent path for Coinbase Tokenized Stocks on Base (B20).
-// Buy/sell is an on-chain Base swap into the user's connected wallet.
+// Buy/sell is an on-chain Base swap into the user's connected wallet,
+// routed through Aerodrome Slipstream USDC pools (see trade-swap-router).
 //
 // This is NOT Coinbase for Agents / Advanced Trade. That product trades
 // custodial S&P 500 cash equities (AAPL-USD) in a Coinbase brokerage
 // account and does not mint or transfer B20 tokens (AAPLc) on Base.
 // Base docs: holding + secondary-market DEX trading is permissionless;
 // issuer mint/redeem is Authorized Participant only.
+// CDP Trade API / 0x reject B20 — they are not used on this path.
 
 import { BASE_USDC } from "./trade-config";
 import { parseHumanTokenAmount } from "./trade-format";
