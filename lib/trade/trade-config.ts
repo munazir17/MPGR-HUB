@@ -52,6 +52,26 @@ export const BASE_WETH =
 export const BASE_USDC =
   "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as const;
 
+/**
+ * Aerodrome Slipstream (Gauges V3) contracts used by Coinbase B20
+ * USDC pools on Base. These are NOT the legacy factory
+ * `0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A` that the public
+ * Aerodrome docs Quoter is bound to — that quoter reverts on B20 pools.
+ *
+ * Verified on-chain:
+ *   SwapRouter.factory() === CLFactory
+ *   CLFactory.getPool(USDC, AAPLc, 10) is a live pool
+ *   QuoterV2.quoteExactInputSingle(struct) returns a USDC→AAPLc quote
+ */
+export const AERODROME_SLIPSTREAM_FACTORY =
+  "0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef" as const;
+export const AERODROME_SLIPSTREAM_SWAP_ROUTER =
+  "0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F" as const;
+export const AERODROME_SLIPSTREAM_QUOTER_V2 =
+  "0x514c8B5f54112481E28028F1166Bd78501089259" as const;
+/** B20/USDC Slipstream pools are tickSpacing 10 (0.05% fee). */
+export const AERODROME_B20_TICK_SPACING = 10;
+
 export const CDP_TRADE_API_HOST = "api.cdp.coinbase.com";
 /**
  * Official CDP OpenAPI (from @coinbase/cdp-sdk):
@@ -76,13 +96,19 @@ export const CDP_TRADE_PROVIDER_ID = "cdp-trade-api" as const;
 export const CDP_TRADE_PROVIDER_LABEL = "Coinbase CDP Trade API";
 export const ZERO_EX_PROVIDER_ID = "0x-swap-api" as const;
 export const ZERO_EX_PROVIDER_LABEL = "0x Swap API (Base)";
+export const AERODROME_SLIPSTREAM_PROVIDER_ID = "aerodrome-slipstream" as const;
+export const AERODROME_SLIPSTREAM_PROVIDER_LABEL = "Aerodrome Slipstream (Base)";
 export const ZERO_EX_API_HOST = "api.0x.org";
 export const ZERO_EX_PRICE_PATH = "/swap/allowance-holder/price";
 export const ZERO_EX_QUOTE_PATH = "/swap/allowance-holder/quote";
 export const ZERO_EX_REQUEST_TIMEOUT_MS = 15_000;
 
-export function tradeProviderLabel(provider: "cdp-trade-api" | "0x-swap-api"): string {
-  return provider === "0x-swap-api" ? ZERO_EX_PROVIDER_LABEL : CDP_TRADE_PROVIDER_LABEL;
+export function tradeProviderLabel(
+  provider: "cdp-trade-api" | "0x-swap-api" | "aerodrome-slipstream",
+): string {
+  if (provider === "aerodrome-slipstream") return AERODROME_SLIPSTREAM_PROVIDER_LABEL;
+  if (provider === "0x-swap-api") return ZERO_EX_PROVIDER_LABEL;
+  return CDP_TRADE_PROVIDER_LABEL;
 }
 
 /** Default slippage: 100 bps = 1%, matching CDP docs examples. */
