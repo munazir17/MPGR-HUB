@@ -161,7 +161,7 @@ async function prepareOrExplainTrade(
     const detail =
       typeof result.error?.message === "string" && result.error.message.trim()
         ? result.error.message.trim()
-        : "Coinbase CDP could not prepare a swap quote for this pair.";
+        : "No Base swap quote could be prepared for this pair.";
 
     return helpResponse(
       "I tried to prepare a Base swap quote and it did not complete. " +
