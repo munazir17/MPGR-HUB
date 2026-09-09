@@ -2,7 +2,7 @@ import { AGENT_INTENTS, type AgentIntent } from "@/lib/agent-intelligence";
 import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-provider";
 import type { Logger } from "@/lib/architecture/core/types";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
-import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
+import { isSupportedTradeProvider, type TokenizedStockReport, type TradeProposal } from "@/lib/trade/trade-types";
 
 // Phase 3C Part 4 — AI Provider guardrails.
 //
@@ -79,7 +79,7 @@ function isPlausibleTradeProposal(value: unknown): value is TradeProposal {
   if (typeof proposal.id !== "string" || !proposal.id) return false;
   if (proposal.requiresConfirmation !== true) return false;
   if (proposal.network !== "base") return false;
-  if (proposal.provider !== "cdp-trade-api" && proposal.provider !== "0x-swap-api") return false;
+  if (!isSupportedTradeProvider(proposal.provider)) return false;
   if (typeof proposal.fromAmount !== "string") return false;
   const from = proposal.from as Record<string, unknown> | undefined;
   const to = proposal.to as Record<string, unknown> | undefined;
