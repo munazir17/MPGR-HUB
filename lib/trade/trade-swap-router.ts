@@ -5,7 +5,11 @@ import "server-only";
 // Single entry for Base swap price/quote used by API routes and agent tools.
 //
 // Order:
-//   1. Coinbase CDP Trade API (existing crypto path — unchanged client)
+//   0. If either token is a Coinbase B20 tokenized stock → Aerodrome
+//      Slipstream USDC pool. CDP and 0x legally reject B20
+//      (`BUY/SELL_TOKEN_NOT_AUTHORIZED_FOR_TRADE`) and must not be
+//      tried as a fallback — that path cannot succeed.
+//   1. Otherwise Coinbase CDP Trade API (existing crypto path)
 //   2. If CDP rejects the token (allowlist) or reports no liquidity,
 //      0x Swap API v2 on Base (AllowanceHolder)
 //
@@ -13,8 +17,10 @@ import "server-only";
 // places custodial S&P 500 orders in a Coinbase brokerage account and
 // does not deliver B20 tokens to the user's Base wallet.
 
+import { createAerodromeSlipstreamQuote, getAerodromeSlipstreamPrice } from "./aerodrome-slipstream";
 import { createCdpSwapQuote, getCdpSwapPrice } from "./trade-cdp-client";
 import { createZeroExSwapQuote, getZeroExSwapPrice, hasZeroExApiKey } from "./trade-0x-client";
+import { involvesCoinbaseB20 } from "./tokenized-stocks";
 import type { CdpSwapPrice, CdpSwapQuote, TradeError, TradeProvider } from "./trade-types";
 
 export interface RoutedSwapRequest {
@@ -54,9 +60,17 @@ function shouldFallbackToZeroEx(result: { ok: true; value: CdpSwapPrice } | { ok
   return result.value.liquidityAvailable !== true;
 }
 
+function isB20Swap(request: RoutedSwapRequest): boolean {
+  return involvesCoinbaseB20(request.fromToken, request.toToken);
+}
+
 export async function getRoutedSwapPrice(
   request: RoutedSwapRequest,
 ): Promise<RoutedSwapResult<CdpSwapPrice>> {
+  if (isB20Swap(request)) {
+    return getAerodromeSlipstreamPrice(request);
+  }
+
   const cdp = await getCdpSwapPrice(request);
   if (cdp.ok && cdp.value.liquidityAvailable) {
     return { ok: true, value: cdp.value, provider: "cdp-trade-api" };
@@ -88,6 +102,10 @@ export async function getRoutedSwapPrice(
 export async function createRoutedSwapQuote(
   request: RoutedSwapRequest,
 ): Promise<RoutedSwapResult<CdpSwapQuote>> {
+  if (isB20Swap(request)) {
+    return createAerodromeSlipstreamQuote(request);
+  }
+
   const cdp = await createCdpSwapQuote(request);
   if (cdp.ok && cdp.value.liquidityAvailable && cdp.value.transaction) {
     return { ok: true, value: cdp.value, provider: "cdp-trade-api" };
