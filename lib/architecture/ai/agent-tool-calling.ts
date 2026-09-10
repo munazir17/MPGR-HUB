@@ -123,6 +123,26 @@ export function normalizeTradeToolArguments(
   return hydrateTradeSwapArguments(args, walletAddress);
 }
 
+function hasNegativeTradeAmount(prompt: string): boolean {
+  if (typeof prompt !== "string" || !prompt.trim()) return false;
+
+  const lower = prompt.toLowerCase();
+
+  // Only activate for an actual trade-like request.
+  const hasTradeVerb =
+    /\b(buy|sell|swap|trade|purchase)\b/.test(lower);
+
+  if (!hasTradeVerb) return false;
+
+  // Catch common signed-dollar/number forms before the LLM can
+  // normalize "-$2" / "$-2" / "-2" into a positive value.
+  return (
+    /-\s*\$\s*\d+(?:\.\d+)?/.test(lower) ||
+    /\$\s*-\s*\d+(?:\.\d+)?/.test(lower) ||
+    /(?:^|\s)-\s*\d+(?:\.\d+)?(?:\s|$)/.test(lower)
+  );
+}
+
 function pickResourceUrl(
   args: Record<string, unknown>,
 ): string | null {
@@ -644,6 +664,20 @@ export async function runToolCallingLoop(
     const userPrompt = transcript
       ? request.prompt + "\n\n" + transcript
       : request.prompt;
+
+    // SECURITY: reject negative trade amounts from the ORIGINAL user
+    // prompt before the model can normalize them into a positive tool
+    // argument. This is intentionally before sendCompletion().
+    if (hasNegativeTradeAmount(request.prompt)) {
+      return buildLoopResponse(
+        request,
+        request.previousIntent ?? "general_help",
+        "I cannot prepare that trade because the amount must be a positive dollar amount. Nothing was signed or submitted.",
+        undefined,
+        undefined,
+        undefined,
+      );
+    }
 
     const content = await sendCompletion(
       roundSystemPrompt,
