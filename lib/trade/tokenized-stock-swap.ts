@@ -97,6 +97,16 @@ export async function prepareTokenizedStockSwap(input: {
       },
     };
   }
+
+  if (onchain.totalSupply === "0") {
+    return {
+      ok: false,
+      error: {
+        code: "LIQUIDITY_UNAVAILABLE",
+        message: `${catalog.ticker} has not been issued on Base yet, so no executable secondary-market trade is available.`,
+      },
+    };
+  }
   const verifiedStockToken = { ...stock.token, decimals: onchain.decimals };
 
   let from = usdc.token;
