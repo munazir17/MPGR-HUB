@@ -92,7 +92,13 @@ contract MPGRStakingTest is Test {
         vm.prank(alice);
         feeToken.approve(address(feeStaking), type(uint256).max);
 
-        vm.expectRevert(IMPGRStaking.FeeOnTransferTokenUnsupported.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IMPGRStaking.FeeOnTransferTokenUnsupported.selector,
+                500e18,
+                495e18
+            )
+        );
         vm.prank(alice);
         feeStaking.stake(500e18);
     }
@@ -135,7 +141,14 @@ contract MPGRStakingTest is Test {
 
     function testExtendScheduleCannotShrinkExistingFinish() public {
         (, uint256 finish,,) = staking.rewardState();
-        vm.expectRevert(IMPGRStaking.RewardScheduleWouldShrink.selector);
+        uint256 attemptedFinish = block.timestamp + 1 days;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IMPGRStaking.RewardScheduleWouldShrink.selector,
+                attemptedFinish,
+                finish
+            )
+        );
         vm.prank(owner);
         staking.extendRewardSchedule(1e18, 1 days);
         (, uint256 afterFinish,,) = staking.rewardState();
