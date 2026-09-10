@@ -18,14 +18,13 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - run: npm audit --audit-level=high
+      - run: npm run audit:high
   contracts:
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('contracts/**/*.sol', 'test/**/*.sol', 'foundry.toml') != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
-      - run: mkdir -p contracts/lib
-      - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git contracts/lib/openzeppelin-contracts
-      - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git contracts/lib/forge-std
+      - run: mkdir -p .forge-deps
+      - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+      - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
       - run: forge test -vvv

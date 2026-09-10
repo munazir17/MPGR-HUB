@@ -22,24 +22,9 @@
 //
 // Same env vars as lib/reward-allocation/kv-allocation-store.ts.
 
-import { Redis } from "@upstash/redis";
+import { getRedis } from "@/lib/api/redis";
 
-const redisUrl =
-  process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-
-const redisToken =
-  process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
-
-if (!redisUrl || !redisToken) {
-  throw new Error(
-    "Upstash Redis environment variables are missing. Expected UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN."
-  );
-}
-
-const kv = new Redis({
-  url: redisUrl,
-  token: redisToken,
-});
+const kv = () => getRedis();
 
 function referralsSetKey(referrer: string) {
   return `mpgrhub:referral:referrals:${referrer}`;
@@ -96,14 +81,14 @@ export const referralStore = {
     // before. This is the operation that makes the whole flow
     // idempotent — reconnecting the same wallet, or re-visiting the
     // referral link, can never change or duplicate the attribution.
-    const setResult = await kv.eval(
+    const setResult = await kv().eval(
       REGISTER_REFERRAL_SCRIPT,
       [referredByKey(referred), referralsSetKey(referrer)],
       [referrer, referred],
     );
 
     if (Number(setResult) !== 1) {
-      const existing = await kv.get<string>(referredByKey(referred));
+      const existing = await kv().get<string>(referredByKey(referred));
       return {
         status: "already-attributed",
         referrer: existing ?? referrer,
@@ -115,12 +100,12 @@ export const referralStore = {
 
   async getReferralCount(walletInput: string): Promise<number> {
     const wallet = normalize(walletInput);
-    return kv.scard(referralsSetKey(wallet));
+    return kv().scard(referralsSetKey(wallet));
   },
 
   async getReferrer(walletInput: string): Promise<string | null> {
     const wallet = normalize(walletInput);
-    const referrer = await kv.get<string>(referredByKey(wallet));
+    const referrer = await kv().get<string>(referredByKey(wallet));
     return referrer ?? null;
   },
 };

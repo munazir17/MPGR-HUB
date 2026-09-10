@@ -37,7 +37,8 @@ contract MPGRStakingFuzzTest is Test {
         if (earned > 0) {
             vm.prank(user);
             staking.claimRewards();
-            assertLe(before - staking.rewardPoolBalance(), before);
+            assertEq(staking.rewardPoolBalance(), before - earned);
+            assertGe(token.balanceOf(address(staking)), staking.totalStaked() + staking.rewardPoolBalance());
         }
     }
 }

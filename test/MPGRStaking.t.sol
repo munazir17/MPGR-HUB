@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {MPGRStaking} from "../contracts/MPGRStaking.sol";
+import {IMPGRStaking} from "../contracts/interfaces/IMPGRStaking.sol";
 
 contract MockMPGR is ERC20 {
     constructor() ERC20("MPGR", "MPGR") {}
@@ -91,7 +92,13 @@ contract MPGRStakingTest is Test {
         vm.prank(alice);
         feeToken.approve(address(feeStaking), type(uint256).max);
 
-        vm.expectRevert(IMPGRStaking.FeeOnTransferTokenUnsupported.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IMPGRStaking.FeeOnTransferTokenUnsupported.selector,
+                500e18,
+                495e18
+            )
+        );
         vm.prank(alice);
         feeStaking.stake(500e18);
     }
@@ -124,6 +131,28 @@ contract MPGRStakingTest is Test {
 
         assertEq(afterBalance, before + 1_000_000e18);
         assertGe(afterFinish, beforeFinish);
+    }
+
+    function testCannotRecoverStakingToken() public {
+        vm.expectRevert(IMPGRStaking.CannotRecoverStakingToken.selector);
+        vm.prank(owner);
+        staking.recoverERC20(address(token), 1e18);
+    }
+
+    function testExtendScheduleCannotShrinkExistingFinish() public {
+        (, uint256 finish,,) = staking.rewardState();
+        uint256 attemptedFinish = block.timestamp + 1 days;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IMPGRStaking.RewardScheduleWouldShrink.selector,
+                attemptedFinish,
+                finish
+            )
+        );
+        vm.prank(owner);
+        staking.extendRewardSchedule(1e18, 1 days);
+        (, uint256 afterFinish,,) = staking.rewardState();
+        assertEq(afterFinish, finish);
     }
 
     function testOnlyOwnerCanPauseAndChangeAPR() public {

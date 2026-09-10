@@ -17,7 +17,7 @@
 //      settlement week (validRunCount, bestScore, eligibility)
 //   6. returns an honest status — never a reward amount, weight, or rank
 //
-// Runs on Node (not Edge) since it uses @vercel/kv.
+// Runs on Node (not Edge) since it uses server-side Upstash Redis.
 
 import { NextResponse } from "next/server";
 import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/request-guard";
@@ -28,6 +28,8 @@ import { computeRunScore } from "@/lib/games/mpgr-run/run-score";
 import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { getServerGameSession } from "@/lib/games/mpgr-run/server-session";
+import { verifyAuthoritativeRun } from "@/lib/games/mpgr-run/authoritative-verifier";
+import { gameRewardsAreOperatorEnabled, MIN_VALID_RUNS_FOR_ELIGIBILITY } from "@/lib/games/games-reward-config";
 import { awardServerXP, getSeasonPoints as getServerSeasonPoints } from "@/lib/rewards/xp-ledger";
 import type { PlayerWeekRecord, RunRecord } from "@/lib/reward-allocation/allocation-types";
 import { getWeekKey, resolveEligibility } from "@/lib/reward-allocation/settlement-engine";
@@ -79,7 +81,7 @@ export async function POST(request: Request) {
   if (guard.error) return guard.error;
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
   const parsedBody = await readJsonBody(request);
-  if (!parsedBody.ok) return parsedBody.response;
+  if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
   const body: unknown = parsedBody.value;
 
   if (!isValidShape(body)) {
@@ -116,13 +118,36 @@ export async function POST(request: Request) {
     return json({ accepted: false, duplicate: false, valid: false, reasons: ["Run duration does not fit the server-issued game session window."] });
   }
 
+  // Financial settlement requires an independent authoritative attestation.
+  // Client-side plausibility checks are never sufficient for real value.
+  const authoritative = gameRewardsAreOperatorEnabled()
+    ? await verifyAuthoritativeRun({
+        sessionId,
+        wallet,
+        result: resultForValidation,
+        sessionCreatedAt: gameSession.createdAt,
+        sessionExpiresAt: gameSession.expiresAt,
+      })
+    : { verified: false as const, reason: "Financial game rewards are disabled." };
+
+  if (process.env.GAME_REWARDS_ENABLED === "true" && !authoritative.verified) {
+    return json({
+      accepted: false,
+      duplicate: false,
+      valid: false,
+      reasons: [authoritative.reason ?? "Authoritative game verification failed."],
+    }, { status: 503 });
+  }
+
   const weekKey = getWeekKey(new Date());
   const runRecord: RunRecord = {
     sessionId,
     wallet,
     weekKey,
     submittedAt: new Date().toISOString(),
-    serverValidated: validation.valid,
+    serverValidated: validation.valid && authoritative.verified,
+    authoritativeProofId: authoritative.verified ? authoritative.proofId : undefined,
+    verificationVersion: authoritative.verified ? "authoritative-v1" : undefined,
     result: resultForValidation,
   };
 
@@ -154,46 +179,25 @@ export async function POST(request: Request) {
 
   let playerWeek: PlayerWeekRecord | null = null;
 
-  if (weekIsOpenForContributions) {
-    const existing = await kvAllocationStore.getPlayerWeekRecord(wallet, weekKey);
+  if (weekIsOpenForContributions && process.env.GAME_REWARDS_ENABLED === "true" && authoritative.verified) {
     const serverSeasonPoints = await getServerSeasonPoints(wallet);
-    const base: PlayerWeekRecord = existing ?? {
+    // This is one atomic Redis operation: two simultaneous valid runs can
+    // never both read the same validRunCount and overwrite each other.
+    playerWeek = await kvAllocationStore.recordValidatedRun(
       wallet,
-      seasonId: null,
       weekKey,
-      validRunCount: 0,
-      bestScore: 0,
-      seasonPointsEarnedThisWeek: serverSeasonPoints,
-      lastRunAt: null,
-      eligibilityStatus: "pending",
-      weight: null,
-      allocatedAmountRaw: null,
-      rewardId: null,
-      allocationTxHash: null,
-      allocationStatus: "none",
-    };
-
-    const updated: PlayerWeekRecord = {
-      ...base,
-      seasonPointsEarnedThisWeek: serverSeasonPoints,
-      validRunCount: base.validRunCount + 1,
-      bestScore: Math.max(base.bestScore, resultForValidation.score),
-      lastRunAt: new Date().toISOString(),
-    };
-    updated.eligibilityStatus = resolveEligibility(updated.validRunCount);
-
-    // expectedStatus "none" guards against writing over a record a
-    // settlement has already advanced past — if this races a settlement
-    // that just closed the week, the CAS no-ops and the run stays
-    // recorded (above) without corrupting settlement state.
-    playerWeek = await kvAllocationStore.upsertPlayerWeekRecord(
-      updated,
-      base.allocationStatus === "none" ? "none" : base.allocationStatus
+      resultForValidation.score,
+      serverSeasonPoints,
+      new Date().toISOString(),
+      MIN_VALID_RUNS_FOR_ELIGIBILITY,
     );
-    // Server-authoritative XP: one fixed award per accepted session.
-    try { await awardServerXP(wallet, "GAME_MPGR_RUN_COMPLETE", `game:${sessionId}`); }
-    catch (error) { console.error("Game XP ledger update failed", error); }
+
   }
+
+  // Server-authoritative XP remains available even while financial game
+  // rewards are disabled; it is independently idempotent by session ID.
+  try { await awardServerXP(wallet, "GAME_MPGR_RUN_COMPLETE", `game:${sessionId}`); }
+  catch (error) { console.error("Game XP ledger update failed", error); }
 
   return json({
     accepted: true,

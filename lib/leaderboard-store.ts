@@ -15,29 +15,14 @@
 //   UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
 //   (falls back to KV_REST_API_URL / KV_REST_API_TOKEN for back-compat)
 
-import { Redis } from "@upstash/redis";
+import { getRedis } from "@/lib/api/redis";
 
 // ---------------------------------------------------------------------------
 // Redis client — reuses the same env vars already configured for the
 // games reward module. No new infrastructure/dependency introduced.
 // ---------------------------------------------------------------------------
 
-const redisUrl =
-  process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-
-const redisToken =
-  process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
-
-if (!redisUrl || !redisToken) {
-  throw new Error(
-    "Upstash Redis environment variables are missing. Expected UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN."
-  );
-}
-
-const kv = new Redis({
-  url: redisUrl,
-  token: redisToken,
-});
+const kv = () => getRedis();
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -207,7 +192,7 @@ export const leaderboardStore = {
   ): Promise<void> {
     const wallet = normalizeWallet(walletInput);
 
-    const existing = await kv.get<LeaderboardMeta>(metaKey(wallet));
+    const existing = await kv().get<LeaderboardMeta>(metaKey(wallet));
     const existingMeta = parseMeta(existing);
 
     if (existingMeta) {
@@ -240,23 +225,23 @@ export const leaderboardStore = {
     };
 
     await Promise.all([
-      kv.zadd(SCORE_ZSET_KEY, { score, member: wallet }),
+      kv().zadd(SCORE_ZSET_KEY, { score, member: wallet }),
       // JSON SET — same pattern as lib/reward-allocation/kv-allocation-store.ts.
       // Avoids Upstash hset's Record<string, unknown> type mismatch.
-      kv.set(metaKey(wallet), meta),
+      kv().set(metaKey(wallet), meta),
     ]);
   },
 
   // Top N wallets, highest score first, 1-indexed rank.
   async getTopN(n: number): Promise<LeaderboardEntry[]> {
-    const members = await kv.zrange<string[]>(SCORE_ZSET_KEY, 0, n - 1, {
+    const members = await kv().zrange<string[]>(SCORE_ZSET_KEY, 0, n - 1, {
       rev: true,
     });
 
     if (!members || members.length === 0) return [];
 
     const metas = await Promise.all(
-      members.map((wallet) => kv.get<LeaderboardMeta>(metaKey(wallet)))
+      members.map((wallet) => kv().get<LeaderboardMeta>(metaKey(wallet)))
     );
 
     return members
@@ -277,8 +262,8 @@ export const leaderboardStore = {
     const wallet = normalizeWallet(walletInput);
 
     const [zRank, meta] = await Promise.all([
-      kv.zrevrank(SCORE_ZSET_KEY, wallet),
-      kv.get<LeaderboardMeta>(metaKey(wallet)),
+      kv().zrevrank(SCORE_ZSET_KEY, wallet),
+      kv().get<LeaderboardMeta>(metaKey(wallet)),
     ]);
 
     const parsedMeta = parseMeta(meta);
@@ -288,6 +273,6 @@ export const leaderboardStore = {
   },
 
   async getTotalRankedWallets(): Promise<number> {
-    return kv.zcard(SCORE_ZSET_KEY);
+    return kv().zcard(SCORE_ZSET_KEY);
   },
 };

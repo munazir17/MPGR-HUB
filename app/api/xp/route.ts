@@ -18,7 +18,7 @@ export async function POST(request: Request) {
   if (guard.error) return guard.error;
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
   const parsedBody = await readJsonBody(request);
-  if (!parsedBody.ok) return parsedBody.response;
+  if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
   const body: unknown = parsedBody.value;
   if (!body || typeof body !== "object") return json({ error: "Invalid request" }, { status: 400 });
   const value = body as Record<string, unknown>;

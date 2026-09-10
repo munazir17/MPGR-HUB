@@ -5,7 +5,7 @@ optimizer_runs = 200
 src = "contracts"
 test = "test"
 out = "out"
-libs = ["contracts/lib"]
+libs = [".forge-deps"]
 remappings = ["@openzeppelin/contracts/=contracts/lib/openzeppelin-contracts/contracts/"]
 
 [fmt]

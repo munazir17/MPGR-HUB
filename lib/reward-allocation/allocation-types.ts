@@ -1,11 +1,8 @@
 // lib/reward-allocation/allocation-types.ts
 //
-// Game Rewards Module — shared types for the (not-yet-implemented) weekly
-// competitive MPGR settlement described in the Game Rewards architecture
-// audit. This file defines shape only: no persistence, no calculation, no
-// on-chain calls. Nothing here is wired into any running code path yet —
-// app/api/games/mpgr-run/reward/route.ts continues to return 501 and does
-// not import from this module.
+// Game Rewards Module — shared types for the weekly competitive MPGR
+// settlement. Persistence is implemented by the server-side AllocationStore;
+// this file contains the durable record shapes only.
 //
 // Deliberately server-side-only in spirit (these records hold per-wallet
 // competitive/allocation state that should never be assembled or trusted
@@ -89,8 +86,12 @@ export interface RunRecord {
   weekKey: string;
   /** Server clock time the run was received/recorded, ISO 8601. */
   submittedAt: string;
-  /** True only if lib/games/mpgr-run/run-validation.ts's validateRunResult() (re-run server-side) accepted this run. An unvalidated/rejected run may still be recorded for audit purposes with this set to false, but must never contribute to eligibility/weighting. */
+  /** True only for a run that passed server validation and, when financial rewards are enabled, the independent authoritative verifier. */
   serverValidated: boolean;
+  /** Independent verifier attestation id; required for financial-game eligibility. */
+  authoritativeProofId?: string;
+  /** Versioned proof contract used to make this run eligible for financial settlement. */
+  verificationVersion?: "authoritative-v1";
   /** Full submitted result, kept for audit/dispute purposes only. Never re-trusted as authorization for an amount by itself — see the anti-cheat limitations already noted in the architecture audit (validateRunResult proves internal consistency, not that a run was genuinely played). */
   result: RunResult;
 }
@@ -127,6 +128,12 @@ export interface PlayerWeekRecord {
 
   /** ISO 8601 timestamp of the most recent valid run counted this week. */
   lastRunAt: string | null;
+
+  /** Verification protocol version for financially eligible runs. */
+  verificationVersion?: string | null;
+
+  /** Server-issued authoritative verification proof ID. */
+  authoritativeProofId?: string | null;
 
   eligibilityStatus: EligibilityStatus;
 
