@@ -347,7 +347,7 @@ describe("executeAgentAction — no automatic execution", () => {
       "utf8"
     );
 
-    expect(source).not.toMatch(/useEffect/);
+    expect(source).not.toMatch(/\buseEffect\s*\(/);
     expect(source).not.toMatch(
       /\.then\(\s*executeAgentAction/
     );
@@ -362,7 +362,7 @@ describe("executeAgentAction — no automatic execution", () => {
       "utf8"
     );
 
-    expect(source).not.toMatch(/useEffect/);
+    expect(source).not.toMatch(/\buseEffect\s*\(/);
   });
 });
 

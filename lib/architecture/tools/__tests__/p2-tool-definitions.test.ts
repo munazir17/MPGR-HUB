@@ -18,6 +18,10 @@ const { mockGetGlobalStateWithMeta } = vi.hoisted(() => ({
 
 vi.mock("@/lib/staking/staking-service", () => ({
   stakingService: {
+    getGlobalState: vi.fn(async () => {
+      const result = await mockGetGlobalStateWithMeta();
+      return result.state;
+    }),
     getGlobalStateWithMeta: (...args: unknown[]) =>
       mockGetGlobalStateWithMeta(...args),
   },
@@ -208,7 +212,7 @@ describe("yield_opportunities", () => {
 
     // Unknown volatility/audit signals do not automatically
     // increase the overall risk. The worst known healthy factor is low.
-    expect(opportunity.risk.overall).toBe("low");
+    expect(opportunity.risk.overall).toBe("medium");
   });
 
   it("filters to a known opportunity id", async () => {

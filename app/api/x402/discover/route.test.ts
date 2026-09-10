@@ -8,12 +8,14 @@ const { mockInvoke, mockDiscover } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/architecture/agentkit", async () => {
-  const actual = await vi.importActual<
-    typeof import("@/lib/architecture/agentkit")
-  >("@/lib/architecture/agentkit");
+  const mapX402 = await vi.importActual<
+    typeof import("@/lib/architecture/agentkit/map-x402")
+  >("@/lib/architecture/agentkit/map-x402");
+
   return {
-    ...actual,
     invokeAgentKitAction: (...args: unknown[]) => mockInvoke(...args),
+    isAgentKitErrorPayload: mapX402.isAgentKitErrorPayload,
+    mapAgentKitHttpResult: mapX402.mapAgentKitHttpResult,
   };
 });
 

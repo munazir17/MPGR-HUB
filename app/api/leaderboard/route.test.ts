@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-const getRankedWallets = vi.fn(async () => []);
+const getRankedWallets = vi.fn(async (): Promise<Array<{ wallet: string; xp: number; seasonPoints: number }>> => []);
 const getServerWalletStanding = vi.fn(async () => null);
 const getRankedWalletCount = vi.fn(async () => 1);
 vi.mock("@/lib/rewards/xp-ledger", () => ({ getRankedWallets, getServerWalletStanding, getRankedWalletCount }));

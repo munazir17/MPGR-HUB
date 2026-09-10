@@ -103,7 +103,7 @@ export default function LeaderboardPage() {
 
               {isConnected && !me && (
                 <p className="mt-4 text-center text-xs text-muted">
-                  You're not ranked yet — earn XP to join the global leaderboard.
+                  You&apos;re not ranked yet — earn XP to join the global leaderboard.
                 </p>
               )}
             </div>

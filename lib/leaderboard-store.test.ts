@@ -22,7 +22,7 @@ const zrevrank = vi.fn(async () => null as number | null);
 const zcard = vi.fn(async () => 0);
 
 vi.mock("@upstash/redis", () => ({
-  Redis: vi.fn().mockImplementation(() => ({ zadd, set, get, zrange, zrevrank, zcard })),
+  Redis: vi.fn(function () { return { zadd, set, get, zrange, zrevrank, zcard }; }),
 }));
 
 // leaderboard-store.ts throws at import time if these are missing.

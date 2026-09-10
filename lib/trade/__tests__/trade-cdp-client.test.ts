@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const { mockJwt } = vi.hoisted(() => ({ mockJwt: vi.fn(() => "header.payload.sig") }));
 
 vi.mock("../trade-jwt", () => ({
-  generateCdpJwt: (...args: unknown[]) => mockJwt(...args),
+  generateCdpJwt: (...args: Parameters<typeof mockJwt>) => mockJwt(...args),
 }));
 
 const { getCdpSwapPrice, createCdpSwapQuote, hasTradeApiCredentials } = await import(
@@ -60,7 +60,7 @@ describe("trade-cdp-client", () => {
     expect(result.ok).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("https://api.cdp.coinbase.com/platform/v2/evm/swaps?");
+    expect(url).toContain("https://api.cdp.coinbase.com/platform/v2/evm/swaps/quote?");
     expect(url).toContain("network=base");
     expect(init.method).toBe("GET");
     expect(new Headers(init.headers).get("Authorization")).toBe("Bearer header.payload.sig");
@@ -68,7 +68,7 @@ describe("trade-cdp-client", () => {
       expect.objectContaining({
         requestMethod: "GET",
         requestHost: "api.cdp.coinbase.com",
-        requestPath: "/platform/v2/evm/swaps",
+        requestPath: "/platform/v2/evm/swaps/quote",
       }),
     );
   });

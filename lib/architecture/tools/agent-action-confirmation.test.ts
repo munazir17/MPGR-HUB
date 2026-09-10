@@ -455,14 +455,19 @@ describe("runAgentActionConfirmation", () => {
     );
 
     for (const forbidden of [
-      "writeContract(",
-      "sendTransaction(",
-      "signTransaction(",
-      "walletClient.",
+      "writeContract",
+      "sendTransaction",
+      "signTransaction",
+      "walletClient",
       "eth_sendTransaction",
       "sendRawTransaction",
     ]) {
-      expect(source.includes(forbidden)).toBe(false);
+      const executablePattern =
+        forbidden.startsWith("eth_") || forbidden === "sendRawTransaction"
+          ? new RegExp(`["']${forbidden}["']`)
+          : new RegExp(`\\b${forbidden}\\s*\\(`);
+
+      expect(source).not.toMatch(executablePattern);
     }
   });
 

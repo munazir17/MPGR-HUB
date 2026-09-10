@@ -26,7 +26,9 @@ describe("PrepareOnlyEvmWalletProvider", () => {
   it("throws the prepare-only error on every sign/send/transfer/signer path", async () => {
     const wallet = createPrepareOnlyWallet();
     const hash =
-      "0x1111111111111111111111111111111111111111111111111111111111111111" as const;
+      "0x1111111111111111111111111111111111111111111111111111111111111111" as Parameters<
+        typeof wallet.sign
+      >[0];
 
     await expect(wallet.nativeTransfer("0x1", "1")).rejects.toThrow(
       PREPARE_ONLY_ERROR,

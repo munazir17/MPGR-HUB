@@ -34,7 +34,6 @@ function asAddress(value: string | undefined): Address {
  */
 export class PrepareOnlyEvmWalletProvider extends EvmWalletProvider {
   private readonly address: Address;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly publicClient: any;
 
   constructor(address?: string) {
@@ -73,7 +72,7 @@ export class PrepareOnlyEvmWalletProvider extends EvmWalletProvider {
     throw new Error(PREPARE_ONLY_ERROR);
   }
 
-  async sign(_hash: `0x\( {string}`): Promise<`0x \){string}`> {
+  async sign(_hash: `0x${string}`): Promise<`0x${string}`> {
     throw new Error(PREPARE_ONLY_ERROR);
   }
 
@@ -81,17 +80,14 @@ export class PrepareOnlyEvmWalletProvider extends EvmWalletProvider {
     throw new Error(PREPARE_ONLY_ERROR);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async signTypedData(_typedData: any): Promise<`0x${string}`> {
     throw new Error(PREPARE_ONLY_ERROR);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async signTransaction(_transaction: any): Promise<`0x${string}`> {
     throw new Error(PREPARE_ONLY_ERROR);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async sendTransaction(_transaction: any): Promise<`0x${string}`> {
     throw new Error(PREPARE_ONLY_ERROR);
   }
@@ -100,12 +96,10 @@ export class PrepareOnlyEvmWalletProvider extends EvmWalletProvider {
     throw new Error(PREPARE_ONLY_ERROR);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async readContract(params: any): Promise<any> {
     return this.publicClient.readContract(params);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getPublicClient(): any {
     return this.publicClient;
   }

@@ -310,8 +310,15 @@ describe("runToolCallingLoop", () => {
       .fn()
       .mockResolvedValue(JSON.stringify({ toolCall: { toolId: "yield_opportunities", arguments: {} } }));
 
-    await expect(runToolCallingLoop(makeRequest(), "base prompt", sendCompletion)).rejects.toThrow();
+    const response = await runToolCallingLoop(
+      makeRequest(),
+      "base prompt",
+      sendCompletion,
+    );
+
     expect(sendCompletion).toHaveBeenCalledTimes(MAX_TOOL_CALL_ROUNDS);
+    expect(response.reply).toContain("I finished that lookup.");
+    expect(response.reply).toContain("I will not sign or submit any transaction.");
   });
 
   it("never leaks a raw provider error message into the transcript sent back to the model", async () => {

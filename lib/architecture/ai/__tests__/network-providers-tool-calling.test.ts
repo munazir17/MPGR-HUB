@@ -103,7 +103,7 @@ describe("OpenAIAIProvider — production tool-calling flow", () => {
       expect.objectContaining({
         permissions: {
           canRead: true,
-          canPrepare: false,
+          canPrepare: true,
           canExecute: false,
         },
       }),
@@ -307,7 +307,7 @@ describe("GeminiAIProvider — production tool-calling flow", () => {
     expect(executeToolSpy).toHaveBeenCalledWith(
       "x402_discover_resource",
       {
-        url: resourceUrl,
+        resourceUrl,
       },
       expect.objectContaining({
         permissions: {
@@ -382,7 +382,7 @@ describe("GeminiAIProvider — production tool-calling flow", () => {
     expect(executeToolSpy).toHaveBeenCalledWith(
       "x402_prepare_payment",
       {
-        resource:
+        resourceUrl:
           "https://example.com/paid-resource",
       },
       expect.objectContaining({
@@ -420,18 +420,26 @@ describe("GeminiAIProvider — production tool-calling flow", () => {
             },
           }),
         }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          content: JSON.stringify({
+            intent: "general_help",
+            reply: "No read or prepare tool is registered for execution.",
+          }),
+        }),
       );
 
     vi.stubGlobal("fetch", fetchMock);
 
     const provider = new GeminiAIProvider();
+    const response = await provider.generateReply(
+      makeRequest("Execute a transaction for me."),
+    );
 
-    await expect(
-      provider.generateReply(
-        makeRequest("Execute a transaction for me."),
-      ),
-    ).rejects.toThrow(/No read or prepare tool is registered/);
-
+    expect(response.reply).toContain(
+      "No read or prepare tool is registered",
+    );
     expect(executeToolSpy).not.toHaveBeenCalled();
   });
 });

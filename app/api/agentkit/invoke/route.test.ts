@@ -4,28 +4,34 @@ const { mockInvoke } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
 }));
 
-vi.mock("@/lib/architecture/agentkit", async () => {
-  const actual = await vi.importActual<
-    typeof import("@/lib/architecture/agentkit")
-  >("@/lib/architecture/agentkit");
+vi.mock("@/lib/api/request-guard", () => ({
+  protectApiRequest: vi.fn(async () => ({
+    requestId: "test-request-id",
+    error: null,
+  })),
+  readJsonBody: vi.fn(),
+  withRequestId: vi.fn((response: Response) => response),
+}));
 
-  return {
-    ...actual,
-    invokeAgentKitAction: (...args: unknown[]) => mockInvoke(...args),
-    isAgentKitErrorPayload: (value: unknown) =>
-      Boolean(
-        value &&
-          typeof value === "object" &&
-          (value as { error?: unknown }).error === true,
-      ),
-    mapAgentKitHttpResult: (parsed: unknown, url: string) => ({
-      status: 402,
-      body: parsed,
-      contentType: "application/json",
-      finalUrl: url,
-    }),
-  };
-});
+vi.mock("@/lib/architecture/agentkit", () => ({
+  invokeAgentKitAction: (...args: unknown[]) => mockInvoke(...args),
+  canonicalizeAgentKitActionName: (value: string) =>
+    value === "X402ActionProvider_make_http_request"
+      ? "make_http_request"
+      : value,
+  isAgentKitErrorPayload: (value: unknown) =>
+    Boolean(
+      value &&
+        typeof value === "object" &&
+        (value as { error?: unknown }).error === true,
+    ),
+  mapAgentKitHttpResult: (parsed: unknown, url: string) => ({
+    status: 402,
+    body: parsed,
+    contentType: "application/json",
+    finalUrl: url,
+  }),
+}));
 
 function jsonRequest(body: unknown): Request {
   return new Request("http://localhost/api/agentkit/invoke", {

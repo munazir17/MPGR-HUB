@@ -79,7 +79,7 @@ export function StakingCard({
             <p className="text-sm font-semibold text-white">Your Staking Position</p>
           </div>
           <p className="mt-2 text-xs leading-relaxed text-muted">
-            Stake MPGR at any time and claim or unstake whenever you like — there's no lock period on
+            Stake MPGR at any time and claim or unstake whenever you like — there&apos;s no lock period on
             this pool.
           </p>
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">

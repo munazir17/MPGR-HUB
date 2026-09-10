@@ -32,7 +32,7 @@ const SOME_ACCOUNT =
   "0x1111111111111111111111111111111111111111" as const;
 
 const ATTACKER =
-  "0xBADBEEF0BADBEEF0BADBEEF0BADBEEF0BADBEEF0" as const;
+  "0xbadbeef0badbeef0badbeef0badbeef0badbeef0" as const;
 
 function mustBuild(
   input: Parameters<typeof buildAgentActionContract>[0],
@@ -751,7 +751,7 @@ describe("simulateAgentAction — read-only simulation (26-28)", () => {
 
   it("28b. P0.4 source contains no execution/broadcast API", () => {
     const source = fs.readFileSync(
-      path.join(__dirname, "..", "agent-action-simulation.ts"),
+      path.join(__dirname, "agent-action-simulation.ts"),
       "utf8",
     );
 

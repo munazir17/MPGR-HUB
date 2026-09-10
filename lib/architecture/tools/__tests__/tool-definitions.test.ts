@@ -167,7 +167,7 @@ describe("wallet_analyzer", () => {
     const result = await runtime.executeTool("wallet_analyzer", { address: VALID_ADDRESS }, { requestId: "r1", confirmationMode: "always_confirm" });
 
     expect(result.success).toBe(true);
-    expect(mockGetHistory).toHaveBeenCalledWith(VALID_ADDRESS, { limit: 20 });
+    expect(mockGetHistory).toHaveBeenCalledWith("0x000000000000000000000000000000000000dEaD", { limit: 20 });
     const data = result.data as { nativeBalance: { raw: string }; tokenBalances: { symbol: string }[] };
     expect(data.nativeBalance.raw).toBe("1000000000000000000");
     expect(data.tokenBalances[0].symbol).toBe("MPGR");

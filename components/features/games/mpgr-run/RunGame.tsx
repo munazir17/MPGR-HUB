@@ -1648,7 +1648,7 @@ void submitRunToServer(address, ended.sessionId, result);
 
                 {!outcome.valid ? (
                   <p className="mt-1 max-w-xs text-[11px] text-muted">
-                    This run couldn't be validated, so no XP was awarded. {outcome.validationReasons[0]}
+                    This run couldn&apos;t be validated, so no XP was awarded. {outcome.validationReasons[0]}
                   </p>
                 ) : outcome.xpAwarded > 0 ? (
                   <p className="mt-1 text-xs font-medium text-primary-glow">+{outcome.xpAwarded} XP earned</p>
