@@ -47,6 +47,8 @@ export default function AgentPage() {
     commandPalette,
     selectPaletteCommand,
     streamingMessageId,
+    appendTradeExecutionResult,
+    stopGeneration,
   } = useAgentChat();
 
   // P3 — the one adapter connecting an x402 proposal surfaced on a chat
@@ -54,7 +56,7 @@ export default function AgentPage() {
   // header comment for why this lives here (not inside useAgentChat)
   // and exactly which call is the human-confirmation boundary.
   const x402Payment = useX402Payment();
-  const tradeQuote = useTradeQuote();
+  const tradeQuote = useTradeQuote(appendTradeExecutionResult);
 
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking", "beta"] : ["online", "beta"];
   const hasMessages = messages.length > 0;
@@ -147,6 +149,7 @@ export default function AgentPage() {
                     <AgentInput
                       onSend={sendMessage}
                       disabled={thinking}
+                      onStop={stopGeneration}
                       commandPalette={commandPalette}
                       onSelectCommand={selectPaletteCommand}
                     />

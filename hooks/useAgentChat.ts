@@ -171,6 +171,18 @@ export function useAgentChat() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadTokenRef = useRef(0);
 
+  const stopGeneration = useCallback(() => {
+    loadTokenRef.current += 1;
+
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+
+    setThinking(false);
+    setStreamingMessageId(null);
+  }, []);
+
   const commandPalette = useCommandPalette(personalization.mostUsedCommands);
 
   const totalStaked = useMemo(
@@ -579,6 +591,7 @@ export function useAgentChat() {
     clearHistory,
     streamingMessageId,
     appendTradeExecutionResult,
+    stopGeneration,
     // Phase 3B Part 3 addition
     personalization,
   };

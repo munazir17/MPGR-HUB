@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { motion } from "framer-motion";
-import { Send } from "lucide-react";
+import { Send, Square } from "lucide-react";
 import { AgentCommandPalette } from "./AgentCommandPalette";
 import type { useCommandPalette } from "@/hooks/useCommandPalette";
 import type { SlashCommand } from "@/lib/agent-commands/types";
@@ -10,6 +10,7 @@ import type { SlashCommand } from "@/lib/agent-commands/types";
 interface AgentInputProps {
   onSend: (content: string) => void;
   disabled?: boolean;
+  onStop?: () => void;
   // Phase 3A.6 — optional so this component still works standalone
   // (matches AgentChatBubble's onFeedback/onRegenerate optionality
   // precedent from 3A.4) when no palette is wired behind it.
@@ -28,7 +29,13 @@ const MAX_HEIGHT_PX = 112;
 // textarea's keydown only while the palette is open; normal typing and
 // the existing Enter-to-send / Shift+Enter-newline behavior are
 // otherwise untouched.
-export function AgentInput({ onSend, disabled, commandPalette, onSelectCommand }: AgentInputProps) {
+export function AgentInput({
+  onSend,
+  disabled,
+  onStop,
+  commandPalette,
+  onSelectCommand,
+}: AgentInputProps) {
   const [value, setValue] = useState("");
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -121,14 +128,19 @@ export function AgentInput({ onSend, disabled, commandPalette, onSelectCommand }
         />
         <motion.button
           type="button"
-          onClick={handleSend}
-          disabled={disabled || !value.trim()}
-          whileHover={{ scale: disabled || !value.trim() ? 1 : 1.05 }}
-          whileTap={{ scale: disabled || !value.trim() ? 1 : 0.95 }}
-          aria-label="Send message"
+          onClick={disabled && onStop ? onStop : handleSend}
+          disabled={disabled ? !onStop : !value.trim()}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          aria-label={disabled ? "Stop generating" : "Send message"}
+          title={disabled ? "Stop generating" : "Send message"}
           className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-premium text-white shadow-glow-gold transition-opacity duration-200 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <Send className="h-4 w-4" aria-hidden="true" />
+          {disabled ? (
+            <Square className="h-4 w-4" aria-hidden="true" />
+          ) : (
+            <Send className="h-4 w-4" aria-hidden="true" />
+          )}
         </motion.button>
       </div>
     </div>

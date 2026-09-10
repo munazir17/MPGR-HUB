@@ -1,12 +1,18 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useTradeConfirmation } from "./useTradeConfirmation";
 import { useTradeExecution } from "./useTradeExecution";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 
-export function useTradeQuote() {
+export function useTradeQuote(
+  onSwapSuccess?: (
+    proposal: TradeProposal,
+    swapHash: `0x${string}`,
+    approvalHash: `0x${string}` | null,
+  ) => void,
+) {
   const [proposal, setProposal] = useState<TradeProposal | null>(null);
 
   const {
@@ -40,6 +46,11 @@ export function useTradeQuote() {
     if (confirmationState !== "READY_FOR_CONFIRMATION") return;
     execute(proposal, confirmationState);
   }, [proposal, confirmationState, execute]);
+
+  useEffect(() => {
+    if (executionState !== "SUCCESS" || !proposal || !swapHash) return;
+    onSwapSuccess?.(proposal, swapHash, approvalHash);
+  }, [executionState, proposal, swapHash, approvalHash, onSwapSuccess]);
 
   const close = useCallback(() => {
     setProposal(null);
