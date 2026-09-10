@@ -39,6 +39,27 @@ export async function prepareTokenizedStockSwap(input: {
   taker: string;
   slippageBps?: number;
 }): Promise<TokenizedStockSwapOutcome> {
+  // SECURITY: reject signed/negative dollar amounts before any
+  // catalog lookup, quote generation, or execution preparation.
+  // The raw tool input must preserve the user's original sign;
+  // never allow an LLM normalization such as "-$2" -> "$2" to
+  // become a valid trade.
+  const rawAmount = input.amountHuman.trim();
+  const normalizedAmount = rawAmount.replace(/,/g, "").replace(/^\$/, "");
+  if (
+    /^-/.test(normalizedAmount) ||
+    /^\$-/.test(rawAmount) ||
+    /^\+/.test(normalizedAmount)
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_INPUT",
+        message: "Trade amount must be a positive dollar amount.",
+      },
+    };
+  }
+
   const catalog = findTokenizedStock(input.symbol);
   if (!catalog) {
     return {
