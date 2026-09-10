@@ -590,15 +590,31 @@ export function synthesizeFinalReplyFromToolResult(
  * and returns a grounded final answer. It does not throw into
  * FallbackAIProvider after a valid tool result.
  */
+function buildCompactToolCatalogPromptBlock(
+  tools: readonly AnyAgentTool[],
+): string {
+  if (tools.length === 0) {
+    return "";
+  }
+
+  return [
+    "Native function tools are available. Use them when they are the correct way to answer the user's request.",
+    "Available tool IDs:",
+    ...tools.map((tool) => `- "${tool.id}"`),
+    "Use the native function/tool interface and follow the declared argument schema exactly.",
+  ].join("\n");
+}
+
 export async function runToolCallingLoop(
   request: AIProviderRequest,
   baseSystemPrompt: string,
   sendCompletion: SendCompletion,
+  options: { compactToolCatalog?: boolean } = {},
 ): Promise<AIProviderResponse> {
-  const catalogBlock =
-    buildToolCatalogPromptBlock(
-      getReadAndPrepareToolCatalog(),
-    );
+  const toolCatalog = getReadAndPrepareToolCatalog();
+  const catalogBlock = options.compactToolCatalog
+    ? buildCompactToolCatalogPromptBlock(toolCatalog)
+    : buildToolCatalogPromptBlock(toolCatalog);
 
   const systemPrompt = catalogBlock
     ? baseSystemPrompt + "\n\n" + catalogBlock

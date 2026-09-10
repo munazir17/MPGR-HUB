@@ -60,6 +60,7 @@ export class GeminiAIProvider implements AIProvider {
       request,
       baseSystemPrompt,
       sendCompletion,
+      { compactToolCatalog: true },
     );
   }
 }

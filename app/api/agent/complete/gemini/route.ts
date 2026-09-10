@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody } from "@/lib/api/request-guard";
-import { SERVER_AI_POLICY, buildTrustedUserPrompt, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
+import { AI_PROMPT_LIMITS, SERVER_AI_POLICY, buildTrustedUserPrompt, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
 import {
   buildGeminiGenerateContentRequest,
   classifyGeminiUpstreamFailure,
@@ -107,17 +107,50 @@ export async function POST(request: Request) {
   }
 
   if (!isCompleteRequestBody(body)) {
+    console.error("[gemini-complete] request_invalid", {
+      requestId,
+      bodyType: typeof body,
+      hasSystemPrompt:
+        typeof (body as Record<string, unknown> | null)?.systemPrompt === "string",
+      hasUserPrompt:
+        typeof (body as Record<string, unknown> | null)?.userPrompt === "string",
+      hasFunctionDeclarations: Array.isArray(
+        (body as Record<string, unknown> | null)?.functionDeclarations,
+      ),
+      functionDeclarationCount: Array.isArray(
+        (body as Record<string, unknown> | null)?.functionDeclarations,
+      )
+        ? ((body as Record<string, unknown>).functionDeclarations as unknown[]).length
+        : 0,
+    });
+
     return respond(
       {
         error:
           "Request body must include systemPrompt and userPrompt strings, with an optional valid functionDeclarations array.",
+        code: "INVALID_REQUEST_BODY",
+        requestId,
       },
       { status: 400 },
     );
   }
 
   const promptError = validatePromptInputs(body.systemPrompt, body.userPrompt);
-  if (promptError) return respond({ error: promptError }, { status: 400 });
+  if (promptError) {
+    console.error("[gemini-complete] prompt_invalid", {
+      requestId,
+      errorType: "PROMPT_VALIDATION",
+      systemChars: body.systemPrompt.length,
+      userChars: body.userPrompt.length,
+      systemLimit: AI_PROMPT_LIMITS.systemChars,
+      userLimit: AI_PROMPT_LIMITS.userChars,
+    });
+
+    return respond(
+      { error: promptError, code: "INVALID_PROMPT", requestId },
+      { status: 400 },
+    );
+  }
 
   const functionDeclarations =
     body.functionDeclarations ?? [];
@@ -161,6 +194,12 @@ export async function POST(request: Request) {
   }
 
   if (!upstream.ok) {
+    logGeminiEvent("upstream_status", {
+      requestId,
+      status: upstream.status,
+      model,
+    });
+
     // Drain the body so the socket is not left hanging, but never
     // forward the raw Google payload (quota JSON, keys, request ids)
     // to the browser.

@@ -12,3 +12,5 @@ build/
 contracts/lib/
 out/
 cache/
+.vercel
+.env*
