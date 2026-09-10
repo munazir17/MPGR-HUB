@@ -46,7 +46,11 @@ import { getPersonalizationSnapshot, runMemoryCleanup, type PersonalizationSnaps
 // navigates directly via its own CommandResult "navigate" kind, exactly
 // as it did before Phase 3D.
 import { executeSmartAction } from "@/lib/architecture/ai/smart-action-engine";
-import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
+import {
+  appendAssistantMessage,
+  type AgentFeedback,
+  type AgentMessage,
+} from "@/lib/agent-engine";
 import type { SlashCommand } from "@/lib/agent-commands/types";
 
 const THINKING_DELAY_MIN_MS = 600;
@@ -531,6 +535,30 @@ export function useAgentChat() {
 
   const canRegenerate = !thinking && messages.length > 0 && messages[messages.length - 1]?.role === "assistant";
 
+  const appendTradeExecutionResult = useCallback(
+    async (proposal: import("@/lib/trade/trade-types").TradeProposal, swapHash: `0x${string}`, approvalHash: `0x${string}` | null) => {
+      if (!address) return;
+
+      const explorerUrl = `https://basescan.org/tx/${swapHash}`;
+      const approvalLine = approvalHash
+        ? `\nApproval transaction: ${approvalHash}`
+        : "";
+
+      const content =
+        `✅ Swap successful\n\n` +
+        `${proposal.displayFromAmount} → ${proposal.displayToAmount}\n` +
+        `Status: Confirmed on Base\n` +
+        `Transaction: ${swapHash}` +
+        approvalLine +
+        `\nView on BaseScan: ${explorerUrl}`;
+
+      const state = await appendAssistantMessage(address, content);
+      setMessages(state.messages);
+      setStreamingMessageId(state.messages[state.messages.length - 1]?.id ?? null);
+    },
+    [address],
+  );
+
   return {
     messages,
     thinking,
@@ -549,7 +577,7 @@ export function useAgentChat() {
     selectPaletteCommand,
     actionHistory,
     clearHistory,
-    streamingMessageId,
+    streamingMessageId,\n    appendTradeExecutionResult,
     // Phase 3B Part 3 addition
     personalization,
   };
