@@ -577,7 +577,8 @@ export function useAgentChat() {
     selectPaletteCommand,
     actionHistory,
     clearHistory,
-    streamingMessageId,\n    appendTradeExecutionResult,
+    streamingMessageId,
+    appendTradeExecutionResult,
     // Phase 3B Part 3 addition
     personalization,
   };
