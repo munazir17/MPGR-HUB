@@ -22,10 +22,11 @@ function randomId(): string {
 
 export function startSession(
   gameId: GameId,
-  walletAddress: string | null
+  walletAddress: string | null,
+  sessionId?: string
 ): GameSessionMeta {
   return {
-    sessionId: randomId(),
+    sessionId: sessionId ?? randomId(),
     gameId,
     walletAddress: walletAddress ? walletAddress.toLowerCase() : null,
     startedAt: new Date().toISOString(),

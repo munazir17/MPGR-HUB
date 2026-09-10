@@ -28,6 +28,9 @@ import {
 } from "@/lib/reward-allocation/settlement-engine";
 import { vaultSeasonLookup } from "@/lib/reward-allocation/reward-vault-season-mapping";
 import { rewardVaultAdminClient } from "@/lib/reward-vault/reward-vault-admin-client";
+import { reconcileSettlement } from "@/lib/reward-allocation/settlement-reconciliation";
+import { withSettlementLock } from "@/lib/reward-allocation/settlement-lock";
+import { gameRewardsAreOperatorEnabled } from "@/lib/games/games-reward-config";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -39,7 +42,10 @@ function isAuthorized(request: Request): boolean {
   return auth === `Bearer ${secret}`;
 }
 
-async function runSettlement(weekKeyOverride?: string) {
+async function runSettlementUnlocked(weekKeyOverride?: string) {
+  if (!gameRewardsAreOperatorEnabled()) {
+    return { weekKey: weekKeyOverride ?? getPreviousWeekKey(new Date()), status: "aborted", alreadyDone: false, reason: "Real-value game rewards are disabled until both the economic gate and authoritative game-verification gate are enabled." };
+  }
   const weekKey = weekKeyOverride ?? getPreviousWeekKey(new Date());
   const { weekStart, weekEnd } = getWeekBounds(weekKey);
 
@@ -48,16 +54,10 @@ async function runSettlement(weekKeyOverride?: string) {
   if (existing && (existing.status === "finalized" || existing.status === "aborted")) {
     return { weekKey, status: existing.status, alreadyDone: true, settlement: existing };
   }
-  if (existing && (existing.status === "allocating")) {
-    // A previous invocation is (or was) mid-flight. Do not attempt a
-    // second on-chain call — see the "Known limitation" note below.
-    return {
-      weekKey,
-      status: existing.status,
-      alreadyDone: false,
-      settlement: existing,
-      note: "Settlement is already in the 'allocating' state. Manually verify on-chain state via getUserRewardIds before retrying, to avoid a possible double allocation.",
-    };
+  if (existing && existing.status === "allocating") {
+    const reconciliation = await reconcileSettlement(weekKey);
+    const refreshed = await kvAllocationStore.getWeeklySettlement(weekKey);
+    return { weekKey, status: refreshed?.status ?? "allocating", alreadyDone: false, settlement: refreshed ?? existing, reconciliation };
   }
 
   // --- 1/2. identify + freeze the week --------------------------------
@@ -224,17 +224,16 @@ async function runSettlement(weekKeyOverride?: string) {
   try {
     allocateResult = await rewardVaultAdminClient.allocateRewardsBatch(seasonId, users, amounts, rewardTypes);
   } catch (err) {
-    // Leave status "allocating" — see the Known limitation note. Do NOT
-    // mark aborted (a partial/unknown on-chain outcome must never be
-    // silently discarded), do NOT retry automatically within this
-    // invocation.
+    console.error("Settlement allocation confirmation failed", { weekKey, error: err });
+    // Leave status "allocating" so reconciliation can inspect on-chain state.
+    // Never return provider/RPC/signer details to the HTTP caller.
     return {
       weekKey,
       status: "allocating",
       alreadyDone: false,
       settlement,
-      error: err instanceof Error ? err.message : String(err),
-      note: "allocateRewardsBatch did not confirm successfully. Manually verify on-chain state before the next cron run retries.",
+      error: "Allocation confirmation failed; reconciliation is required before retrying.",
+      note: "Verify on-chain state before any retry.",
     };
   }
 
@@ -256,7 +255,7 @@ async function runSettlement(weekKeyOverride?: string) {
     )
   );
 
-  await kvAllocationStore.recordTreasuryLedgerEntry("GAME", totalAllocatedRaw);
+  await kvAllocationStore.recordTreasuryLedgerEntryOnce("GAME", weekKey, totalAllocatedRaw);
 
   const finalized = await kvAllocationStore.upsertWeeklySettlement(
     {
@@ -272,6 +271,11 @@ async function runSettlement(weekKeyOverride?: string) {
   return { weekKey, status: "finalized", alreadyDone: false, settlement: finalized };
 }
 
+async function runSettlement(weekKeyOverride?: string) {
+  const weekKey = weekKeyOverride ?? getPreviousWeekKey(new Date());
+  return withSettlementLock(weekKey, () => runSettlementUnlocked(weekKey));
+}
+
 export async function GET(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
@@ -283,7 +287,7 @@ export async function GET(request: Request) {
     return NextResponse.json(serializable(outcome));
   } catch (err) {
     console.error("Weekly settlement failed", err);
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    return NextResponse.json({ error: "Weekly settlement failed. Check server logs for details." }, { status: 500 });
   }
 }
 

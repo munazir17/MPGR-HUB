@@ -84,6 +84,18 @@ function ledgerKey(rewardType: "GAME") {
   return `mpgrhub:games:ledger:${rewardType}`;
 }
 
+function ledgerEntryKey(rewardType: "GAME", settlementKeyValue: string) {
+  return `mpgrhub:games:ledger-entry:${rewardType}:${settlementKeyValue}`;
+}
+
+
+const RECORD_LEDGER_ONCE_SCRIPT = `
+local created = redis.call("SET", KEYS[1], "1", "NX")
+if not created then return 0 end
+redis.call("INCRBY", KEYS[2], ARGV[1])
+return 1
+`;
+
 // ---------------------------------------------------------------------------
 // BigInt-safe JSON serialization
 // ---------------------------------------------------------------------------
@@ -492,6 +504,21 @@ export const kvAllocationStore: AllocationStore = {
     throw new Error(
       `Invalid treasury ledger value for ${rewardType}`
     );
+  },
+
+  async recordTreasuryLedgerEntryOnce(
+    rewardType: "GAME",
+    settlementKeyValue: string,
+    amountRaw: bigint,
+  ): Promise<boolean> {
+    if (!settlementKeyValue || amountRaw <= 0n) return false;
+    const units = (amountRaw + LEDGER_SCALE - 1n) / LEDGER_SCALE;
+    const result = await kv.eval(
+      RECORD_LEDGER_ONCE_SCRIPT,
+      [ledgerEntryKey(rewardType, settlementKeyValue), ledgerKey(rewardType)],
+      [units.toString()],
+    );
+    return Number(result) === 1;
   },
 
   async recordTreasuryLedgerEntry(

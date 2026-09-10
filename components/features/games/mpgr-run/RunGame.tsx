@@ -1218,7 +1218,7 @@ void submitRunToServer(address, ended.sessionId, result);
     }, 120);
   }, [buildStats]);
 
-  const beginCountdown = useCallback(() => {
+  const beginCountdown = useCallback(async () => {
     // Rapid Start / Try Again taps must not spawn duplicate sessions or
     // duplicate countdown intervals. Countdown and running are already
     // in-flight; ignore. Idle / paused / game_over may start a new run.
@@ -1230,7 +1230,15 @@ void submitRunToServer(address, ended.sessionId, result);
     }
     stopLoop();
     worldRef.current = freshWorld();
-    sessionRef.current = startSession(MPGR_RUN_GAME_ID, address);
+    const serverSession = await fetch("/api/games/mpgr-run/session", { method: "POST" }).then(async (res) => {
+      if (!res.ok) throw new Error("Unable to start secure game session");
+      return await res.json() as { sessionId: string };
+    }).catch(() => null);
+    if (!serverSession) {
+      goToPhase("idle");
+      return;
+    }
+    sessionRef.current = startSession(MPGR_RUN_GAME_ID, address, serverSession.sessionId);
     setRunResult(null);
     setOutcome(null);
     setHud({

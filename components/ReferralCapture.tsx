@@ -85,18 +85,16 @@ export function ReferralCapture() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ referrer: pendingRef, referred: address }),
     })
-      .catch(() => {
-        // Best-effort — a failed request just means this wallet won't
-        // be attributed this time; it does not affect any other
-        // functionality.
-      })
-      .finally(() => {
+      .then((res) => {
+        if (!res.ok) throw new Error("Referral registration failed");
         try {
           window.sessionStorage.removeItem(PENDING_REF_KEY);
           window.localStorage.setItem(submittedFlagKey(address), "1");
-        } catch {
-          // ignore
-        }
+        } catch { /* ignore storage errors */ }
+      })
+      .catch(() => {
+        // Keep the pending referral on transient/auth failure so the
+        // authenticated wallet can retry on the next render.
       });
   }, [address, isConnected]);
 

@@ -425,6 +425,7 @@ export function buildGeminiGenerateContentRequest(input: {
 }): Record<string, unknown> {
   const generationConfig: Record<string, unknown> = {
     temperature: 0.4,
+    maxOutputTokens: 700,
   };
 
   const payload: Record<string, unknown> = {

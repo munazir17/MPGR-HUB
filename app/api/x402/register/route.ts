@@ -12,6 +12,7 @@
 
 import { isAddress } from "viem";
 import { NextResponse } from "next/server";
+import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/request-guard";
 
 import {
   KNOWN_X402_ASSET_DOMAINS,
@@ -54,6 +55,10 @@ function addressesEqual(a: string, b: string): boolean {
 }
 
 export async function POST(request: Request) {
+  const guard = await protectApiRequest(request, "x402-register", 10, 60);
+  const requestId = guard.requestId;
+  if (guard.error) return guard.error;
+  const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
   let body: unknown;
   try {
     body = await request.json();
@@ -202,7 +207,7 @@ export async function POST(request: Request) {
     return jsonError(status, stored.code, stored.message);
   }
 
-  return NextResponse.json(
+  return json(
     {
       registrationId: stored.record.registrationId,
       proposalId: stored.record.proposalId,

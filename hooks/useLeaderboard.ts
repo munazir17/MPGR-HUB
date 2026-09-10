@@ -30,7 +30,11 @@ export function useLeaderboard() {
     setError(null);
     try {
       const qs = address ? `?wallet=${address.toLowerCase()}` : "";
-      const res = await fetch(`/api/leaderboard${qs}`, { cache: "no-store" });
+      let res = await fetch(`/api/leaderboard${qs}`, { cache: "no-store" });
+      if (res.status === 401 && address) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        res = await fetch(`/api/leaderboard${qs}`, { cache: "no-store" });
+      }
       if (!res.ok) throw new Error("Failed to load leaderboard");
       const data: LeaderboardResponse = await res.json();
       setTop(data.top ?? []);

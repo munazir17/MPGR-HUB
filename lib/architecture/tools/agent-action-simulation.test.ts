@@ -3,7 +3,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeFunctionData, type Address, type Hex } from "viem";
 
-import { buildAgentActionContract, type AgentActionContract } from "../agent-action-contract";
+import { buildAgentActionContract, type AgentActionContract } from "./agent-action-contract";
 import { erc20Abi } from "@/lib/erc20-abi";
 import { TOKEN_LOCK_ABI } from "@/lib/token-lock/token-lock-abi";
 import { MPGR_TOKEN_LOCK_CONFIG } from "@/lib/token-lock/token-lock-config";
@@ -24,7 +24,7 @@ vi.mock("@/lib/wagmi", () => ({
 }));
 
 const { verifyAgentAction, simulateAgentAction } =
-  await import("../agent-action-simulation");
+  await import("./agent-action-simulation");
 
 const future = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30;
 

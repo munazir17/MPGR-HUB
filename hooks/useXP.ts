@@ -34,36 +34,13 @@ interface XPEvent {
 // same canonical lib/season-points.ts logic getSeasonPoints() uses for
 // this wallet's own local display. A client can no longer influence
 // its Season Points by sending a bigger number directly.
-function syncLeaderboard(record: UserXPRecord) {
-  try {
-    fetch("/api/leaderboard", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        wallet: record.address,
-        xp: record.xp,
-        history: record.history,
-      }),
-      // `keepalive` lets this request finish even if the user
-      // immediately navigates away (e.g. straight to /leaderboard)
-      // right after connecting — without it, some mobile/webview
-      // environments can abort the in-flight fetch on navigation,
-      // which would silently prevent the sync from ever landing.
-      keepalive: true,
-    })
-      .then((res) => {
-        if (!res.ok) {
-          // Previously fully silent — now at least visible in the
-          // browser console / Vercel function logs, so a failed sync
-          // in production is diagnosable instead of invisible.
-          console.error("Leaderboard sync failed:", res.status, res.statusText);
-        }
-      })
-      .catch((err) => {
-        console.error("Leaderboard sync request failed:", err);
-      });
-  } catch (err) {
-    console.error("Leaderboard sync threw synchronously:", err);
+async function syncServerXP(action: "WALLET_CONNECTED" | "DAILY_CHECK_IN") {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      const res = await fetch("/api/xp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }), keepalive: true });
+      if (res.ok || res.status === 400) return;
+    } catch { /* retry */ }
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 
@@ -80,7 +57,7 @@ export function useXP() {
     }
     const result = awardXP(address, "WALLET_CONNECTED");
     setRecord(result.record);
-    syncLeaderboard(result.record);
+    void syncServerXP("WALLET_CONNECTED");
     if (result.xpGained > 0) {
       setLastEvent({ amount: result.xpGained, id: Date.now() });
     }
@@ -91,7 +68,7 @@ export function useXP() {
     if (!address) return null;
     const result = performDailyCheckIn(address);
     setRecord(result.record);
-    syncLeaderboard(result.record);
+    void syncServerXP("DAILY_CHECK_IN");
     if (result.xpGained > 0) setLastEvent({ amount: result.xpGained, id: Date.now() });
     if (result.leveledUp) setLeveledUp(result.newLevel);
     return result;
@@ -102,7 +79,6 @@ export function useXP() {
       if (!address) return;
       const updated = claimAchievement(address, achievementId, gameStats);
       setRecord(updated);
-      syncLeaderboard(updated);
     },
     [address]
   );

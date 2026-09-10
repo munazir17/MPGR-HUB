@@ -6,4 +6,9 @@ dist/
 build/
 .DS_Store
 *.log
-.vercel
+.vercel*.tsbuildinfo
+
+# Foundry dependencies and build artifacts
+contracts/lib/
+out/
+cache/

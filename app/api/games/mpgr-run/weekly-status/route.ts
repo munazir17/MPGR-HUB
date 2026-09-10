@@ -10,6 +10,7 @@
 
 import { NextResponse } from "next/server";
 import type { Address } from "viem";
+import { getSessionFromRequest } from "@/lib/auth/session";
 import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
 import { getWeekKey } from "@/lib/reward-allocation/settlement-engine";
 
@@ -23,6 +24,10 @@ export async function GET(request: Request) {
 
   if (!wallet || !ADDRESS_RE.test(wallet)) {
     return NextResponse.json({ error: "Query param 'wallet' must be a valid 0x address." }, { status: 400 });
+  }
+  const session = getSessionFromRequest(request);
+  if (!session || session.wallet.toLowerCase() !== wallet.toLowerCase()) {
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   }
 
   const weekKey = getWeekKey(new Date());

@@ -111,8 +111,11 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
         stakingToken = IERC20(_mpgrToken);
         rewardsToken = IERC20(_mpgrToken);
 
-        uint256 rewardRate = REWARD_POOL / REWARDS_DURATION;
-        uint256 periodFinish = block.timestamp + REWARDS_DURATION;
+        // Deployment never pulls tokens from the owner, so an emission
+        // schedule must not begin against an unfunded balance. The first
+        // deposit activates a fully-funded schedule.
+        uint256 rewardRate = 0;
+        uint256 periodFinish = block.timestamp;
 
         rewardState = RewardState({
             rewardRate: rewardRate,
@@ -121,7 +124,7 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
             rewardPerTokenStored: 0
         });
 
-        emit RewardAdded(REWARD_POOL, rewardRate, periodFinish);
+        emit RewardAdded(0, rewardRate, periodFinish);
     }
 
     // --- Modifiers (Milestone 1A — unchanged) ---------------------------------
@@ -187,12 +190,32 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
         if (amount == 0) revert ZeroAmount();
         if (amount < MINIMUM_STAKE) revert BelowMinimumStake(amount, MINIMUM_STAKE);
 
-        unchecked {
-            totalStaked += amount;
-            balanceOf[msg.sender] += amount;
-        }
-
+        uint256 balanceBefore = stakingToken.balanceOf(address(this));
         stakingToken.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = stakingToken.balanceOf(address(this)) - balanceBefore;
+        if (received != amount) revert FeeOnTransferTokenUnsupported(amount, received);
+
+        totalStaked += amount;
+        balanceOf[msg.sender] += amount;
+
+        // If the owner configured an APR while no one was staked, the
+        // reward rate was intentionally zero because there was no accrual.
+        // The first subsequent stake must activate that configured APR
+        // against the still-open, funded schedule; otherwise setAPR() would
+        // silently leave the pool at zero emissions forever.
+        if (
+            rewardState.rewardRate == 0 &&
+            currentAPRBps > 0 &&
+            block.timestamp < rewardState.periodFinish
+        ) {
+            uint256 activatedRate = (totalStaked * currentAPRBps) / 10_000 / 365 days;
+            uint256 remaining = rewardState.periodFinish - block.timestamp;
+            if (activatedRate == 0) revert ZeroRewardRate();
+            if (activatedRate * remaining > rewardPoolBalance) {
+                revert InsufficientFundedRewards(activatedRate * remaining, rewardPoolBalance);
+            }
+            rewardState.rewardRate = activatedRate;
+        }
 
         emit Staked(msg.sender, amount);
     }
@@ -234,6 +257,17 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
 
         _pullRewardTokens(amount);
 
+        // A deployment starts unfunded and therefore emits nothing. The
+        // first funding call activates the default two-year schedule.
+        if (rewardState.rewardRate == 0 || block.timestamp >= rewardState.periodFinish) {
+            rewardState.rewardRate = amount / REWARDS_DURATION;
+            if (rewardState.rewardRate == 0) revert ZeroRewardRate();
+            rewardState.periodFinish = block.timestamp + REWARDS_DURATION;
+            rewardState.lastUpdateTime = block.timestamp;
+            currentAPRBps = INITIAL_APR_BPS;
+            emit RewardAdded(amount, rewardState.rewardRate, rewardState.periodFinish);
+        }
+
         emit RewardsDeposited(msg.sender, amount);
     }
 
@@ -258,6 +292,10 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
         // accrual whenever totalStaked is 0, so a 0 rate here is inert,
         // not corrupting).
         uint256 newRewardRate = (totalStaked * newAPRBps) / 10_000 / 365 days;
+        uint256 remaining = rewardState.periodFinish > block.timestamp ? rewardState.periodFinish - block.timestamp : 0;
+        if (remaining > 0 && newRewardRate * remaining > rewardPoolBalance) {
+            revert InsufficientFundedRewards(newRewardRate * remaining, rewardPoolBalance);
+        }
 
         currentAPRBps = newAPRBps;
         rewardState.rewardRate = newRewardRate;
@@ -299,6 +337,11 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
         uint256 newPeriodFinish = block.timestamp + additionalDuration;
         if (newPeriodFinish < currentPeriodFinish) {
             revert RewardScheduleWouldShrink(newPeriodFinish, currentPeriodFinish);
+        }
+
+        uint256 fundedAfterDeposit = rewardPoolBalance + additionalReward;
+        if (newRewardRate * additionalDuration > fundedAfterDeposit) {
+            revert InsufficientFundedRewards(newRewardRate * additionalDuration, fundedAfterDeposit);
         }
 
         rewardState.rewardRate = newRewardRate;
@@ -375,8 +418,11 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
     ///      own event emission, since the two callers emit different,
     ///      semantically distinct events.
     function _pullRewardTokens(uint256 amount) private {
-        rewardPoolBalance += amount;
+        uint256 balanceBefore = rewardsToken.balanceOf(address(this));
         rewardsToken.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = rewardsToken.balanceOf(address(this)) - balanceBefore;
+        if (received != amount) revert FeeOnTransferTokenUnsupported(amount, received);
+        rewardPoolBalance += received;
     }
 
     // --- Owner controls (Milestone 1A — unchanged) ------------------------

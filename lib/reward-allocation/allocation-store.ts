@@ -118,4 +118,11 @@ export interface AllocationStore {
    * atomic increment rather than read-then-write.
    */
   recordTreasuryLedgerEntry(rewardType: "GAME", amountRaw: bigint): Promise<void>;
+
+  /** Atomically records a settlement's ledger contribution exactly once. */
+  recordTreasuryLedgerEntryOnce(
+    rewardType: "GAME",
+    settlementKey: string,
+    amountRaw: bigint,
+  ): Promise<boolean>;
 }

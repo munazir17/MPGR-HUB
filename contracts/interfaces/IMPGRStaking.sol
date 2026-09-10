@@ -71,6 +71,10 @@ interface IMPGRStaking {
 
     /// @notice Thrown when the contract does not hold enough reward-pool MPGR to cover a payout.
     error InsufficientRewardBalance(uint256 requested, uint256 available);
+    /// @notice Thrown when a configured reward rate would require more funded rewards than remain.
+    error InsufficientFundedRewards(uint256 required, uint256 available);
+    /// @notice Thrown when the staking/reward token transfers fewer units than requested.
+    error FeeOnTransferTokenUnsupported(uint256 requested, uint256 received);
 
     /// @notice Thrown when an action requiring the current reward period to be over is attempted early.
     error RewardPeriodNotFinished(uint256 periodFinish);

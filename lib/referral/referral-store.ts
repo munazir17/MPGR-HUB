@@ -61,6 +61,14 @@ export type RegisterReferralResult =
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 
+const REGISTER_REFERRAL_SCRIPT = `
+local created = redis.call("SET", KEYS[1], ARGV[1], "NX")
+if not created then return 0 end
+redis.call("SADD", KEYS[2], ARGV[2])
+return 1
+`;
+
+
 export const referralStore = {
   // Permanently associates `referred` -> referred by `referrer`, the
   // FIRST time it happens for this wallet, and only that time.
@@ -88,22 +96,19 @@ export const referralStore = {
     // before. This is the operation that makes the whole flow
     // idempotent — reconnecting the same wallet, or re-visiting the
     // referral link, can never change or duplicate the attribution.
-    const setResult = await kv.set(referredByKey(referred), referrer, {
-      nx: true,
-    });
+    const setResult = await kv.eval(
+      REGISTER_REFERRAL_SCRIPT,
+      [referredByKey(referred), referralsSetKey(referrer)],
+      [referrer, referred],
+    );
 
-    if (setResult === null) {
-      // Already attributed (to this referrer or a different one).
+    if (Number(setResult) !== 1) {
       const existing = await kv.get<string>(referredByKey(referred));
       return {
         status: "already-attributed",
         referrer: existing ?? referrer,
       };
     }
-
-    // SADD is idempotent by nature — safe even under a race with the
-    // SETNX above, and safe if ever called twice for the same pair.
-    await kv.sadd(referralsSetKey(referrer), referred);
 
     return { status: "registered", referrer };
   },

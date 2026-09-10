@@ -1,0 +1,31 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm install
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --audit-level=high
+  contracts:
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('contracts/**/*.sol', 'test/**/*.sol', 'foundry.toml') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: mkdir -p contracts/lib
+      - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git contracts/lib/openzeppelin-contracts
+      - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git contracts/lib/forge-std
+      - run: forge test -vvv

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/request-guard";
 
 import {
   canonicalizeAgentKitActionName,
@@ -22,19 +23,23 @@ function readWalletAddress(value: unknown): string | undefined {
 }
 
 export async function POST(request: Request) {
+  const guard = await protectApiRequest(request, "agentkit-invoke", 30, 60);
+  const requestId = guard.requestId;
+  if (guard.error) return guard.error;
+  const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
   let body: unknown;
 
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json(
+    return json(
       { error: "Invalid JSON body." },
       { status: 400 },
     );
   }
 
   if (!isRecord(body) || typeof body.actionName !== "string") {
-    return NextResponse.json(
+    return json(
       { error: "actionName must be a string." },
       { status: 400 },
     );
@@ -48,7 +53,7 @@ export async function POST(request: Request) {
     try {
       assertPublicHttpsUrl(url);
     } catch (error) {
-      return NextResponse.json(
+      return json(
         {
           error:
             error instanceof Error
@@ -77,7 +82,7 @@ export async function POST(request: Request) {
             ? 404
             : 502;
 
-    return NextResponse.json(
+    return json(
       {
         error: invoked.error,
         code: invoked.code,
@@ -90,7 +95,7 @@ export async function POST(request: Request) {
   }
 
   if (isAgentKitErrorPayload(invoked.result)) {
-    return NextResponse.json(
+    return json(
       {
         error:
           typeof invoked.result.message === "string"
@@ -111,7 +116,7 @@ export async function POST(request: Request) {
       ? mapAgentKitHttpResult(invoked.result, args.url)
       : null;
 
-  return NextResponse.json(
+  return json(
     {
       actionName: invoked.actionName,
       result: invoked.result,

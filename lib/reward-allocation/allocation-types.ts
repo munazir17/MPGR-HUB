@@ -81,7 +81,7 @@ export type SettlementStatus =
  * weighting inputs only; no RunRecord is ever itself "worth" MPGR.
  */
 export interface RunRecord {
-  /** Client-generated session id from lib/games/game-session.ts's startSession(). Unique per run; the idempotency key for this record. */
+  /** Server-issued session id from the authenticated game-session endpoint; the idempotency key for this record. */
   sessionId: string;
   /** Lowercased wallet address the run is attributed to. */
   wallet: Address;

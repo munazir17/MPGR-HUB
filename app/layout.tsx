@@ -4,6 +4,7 @@ import { Providers } from "@/components/providers";
 import { MiniAppAutoConnect } from "@/components/MiniAppAutoConnect";
 import { RecentPageTracker } from "@/components/RecentPageTracker";
 import { ReferralCapture } from "@/components/ReferralCapture";
+import { WalletAuthBootstrap } from "@/components/WalletAuthBootstrap";
 import { BottomNav } from "@/components/BottomNav";
 
 export const metadata: Metadata = {
@@ -37,6 +38,7 @@ export default function RootLayout({
           <MiniAppAutoConnect />
           <RecentPageTracker />
           <ReferralCapture />
+          <WalletAuthBootstrap />
           {children}
           <BottomNav />
         </Providers>

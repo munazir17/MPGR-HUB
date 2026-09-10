@@ -20,11 +20,15 @@
 // Runs on Node (not Edge) since it uses @vercel/kv.
 
 import { NextResponse } from "next/server";
+import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/request-guard";
 import type { Address } from "viem";
 import { validateRunResult } from "@/lib/games/mpgr-run/run-validation";
 import type { RunResult, RunStats } from "@/lib/games/mpgr-run/run-score";
 import { computeRunScore } from "@/lib/games/mpgr-run/run-score";
 import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
+import { getSessionFromRequest } from "@/lib/auth/session";
+import { getServerGameSession } from "@/lib/games/mpgr-run/server-session";
+import { awardServerXP, getSeasonPoints as getServerSeasonPoints } from "@/lib/rewards/xp-ledger";
 import type { PlayerWeekRecord, RunRecord } from "@/lib/reward-allocation/allocation-types";
 import { getWeekKey, resolveEligibility } from "@/lib/reward-allocation/settlement-engine";
 
@@ -50,7 +54,6 @@ const NUMERIC_RUN_FIELDS: (keyof RunStats)[] = [
 
 interface RewardRequestBody {
   sessionId: string;
-  walletAddress: string;
   result: RunResult;
 }
 
@@ -58,7 +61,6 @@ function isValidShape(value: unknown): value is RewardRequestBody {
   if (!value || typeof value !== "object") return false;
   const body = value as Record<string, unknown>;
   if (typeof body.sessionId !== "string" || body.sessionId.length < 8 || body.sessionId.length > 128) return false;
-  if (typeof body.walletAddress !== "string" || !ADDRESS_RE.test(body.walletAddress)) return false;
   const result = body.result;
   if (!result || typeof result !== "object") return false;
   const r = result as Record<string, unknown>;
@@ -72,22 +74,30 @@ function isValidShape(value: unknown): value is RewardRequestBody {
 }
 
 export async function POST(request: Request) {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
-  }
+  const guard = await protectApiRequest(request, "game-reward", 10, 60);
+  const requestId = guard.requestId;
+  if (guard.error) return guard.error;
+  const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
+  const parsedBody = await readJsonBody(request);
+  if (!parsedBody.ok) return parsedBody.response;
+  const body: unknown = parsedBody.value;
 
   if (!isValidShape(body)) {
-    return NextResponse.json(
-      { error: "Request must include sessionId (string), walletAddress (0x address), and a full RunResult." },
+    return json(
+      { error: "Request must include sessionId and a full RunResult." },
       { status: 400 }
     );
   }
 
-  const wallet = body.walletAddress.toLowerCase() as Address;
+  const auth = getSessionFromRequest(request);
+  if (!auth) return json({ error: "Authentication required" }, { status: 401 });
+  const wallet = auth.wallet as Address;
   const sessionId = body.sessionId;
+  if (sessionId.length > 128) return json({ error: "Invalid game session" }, { status: 400 });
+  const gameSession = await getServerGameSession(sessionId);
+  if (!gameSession || gameSession.wallet.toLowerCase() !== wallet.toLowerCase() || gameSession.gameId !== "mpgr-run") {
+    return json({ error: "Invalid or expired game session" }, { status: 401 });
+  }
 
   // Server re-derives the score rather than trusting the submitted one —
   // the client-side validateRunResult() already checks
@@ -101,6 +111,10 @@ export async function POST(request: Request) {
   // empty list into the pure validator here and rely on the atomic KV
   // insert as the actual duplicate-rejection mechanism.
   const validation = validateRunResult(resultForValidation, sessionId, []);
+  const sessionAgeMs = Date.now() - Date.parse(gameSession.createdAt);
+  if (!Number.isFinite(sessionAgeMs) || resultForValidation.durationMs > sessionAgeMs + 2_000 || sessionAgeMs > 15 * 60 * 1000) {
+    return json({ accepted: false, duplicate: false, valid: false, reasons: ["Run duration does not fit the server-issued game session window."] });
+  }
 
   const weekKey = getWeekKey(new Date());
   const runRecord: RunRecord = {
@@ -115,7 +129,7 @@ export async function POST(request: Request) {
   const insertResult = await kvAllocationStore.putRunRecordIfAbsent(runRecord);
 
   if (!insertResult.inserted) {
-    return NextResponse.json({
+    return json({
       accepted: false,
       duplicate: true,
       message: "This run was already recorded.",
@@ -123,7 +137,7 @@ export async function POST(request: Request) {
   }
 
   if (!validation.valid) {
-    return NextResponse.json({
+    return json({
       accepted: false,
       duplicate: false,
       valid: false,
@@ -142,13 +156,14 @@ export async function POST(request: Request) {
 
   if (weekIsOpenForContributions) {
     const existing = await kvAllocationStore.getPlayerWeekRecord(wallet, weekKey);
+    const serverSeasonPoints = await getServerSeasonPoints(wallet);
     const base: PlayerWeekRecord = existing ?? {
       wallet,
       seasonId: null,
       weekKey,
       validRunCount: 0,
       bestScore: 0,
-      seasonPointsEarnedThisWeek: 0, // see games-reward-config.ts — no server-side XP source yet
+      seasonPointsEarnedThisWeek: serverSeasonPoints,
       lastRunAt: null,
       eligibilityStatus: "pending",
       weight: null,
@@ -160,6 +175,7 @@ export async function POST(request: Request) {
 
     const updated: PlayerWeekRecord = {
       ...base,
+      seasonPointsEarnedThisWeek: serverSeasonPoints,
       validRunCount: base.validRunCount + 1,
       bestScore: Math.max(base.bestScore, resultForValidation.score),
       lastRunAt: new Date().toISOString(),
@@ -174,9 +190,12 @@ export async function POST(request: Request) {
       updated,
       base.allocationStatus === "none" ? "none" : base.allocationStatus
     );
+    // Server-authoritative XP: one fixed award per accepted session.
+    try { await awardServerXP(wallet, "GAME_MPGR_RUN_COMPLETE", `game:${sessionId}`); }
+    catch (error) { console.error("Game XP ledger update failed", error); }
   }
 
-  return NextResponse.json({
+  return json({
     accepted: true,
     duplicate: false,
     valid: true,

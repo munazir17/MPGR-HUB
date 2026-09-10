@@ -115,6 +115,27 @@ export const rewardVaultAdminClient = {
     }) as Promise<boolean>;
   },
 
+  async getReward(rewardId: bigint): Promise<{ rewardId: bigint; seasonId: bigint; user: Address; amount: bigint; rewardType: number; status: number }> {
+    return getPublicClient().readContract({ ...VAULT_CONTRACT, functionName: "getReward", args: [rewardId] }) as Promise<{ rewardId: bigint; seasonId: bigint; user: Address; amount: bigint; rewardType: number; status: number }>;
+  },
+
+  async findRewardAllocationTxHash(rewardId: bigint): Promise<Hash | null> {
+    const logs = await getPublicClient().getLogs({
+      address: MPGR_REWARD_VAULT_CONFIG.address,
+      event: { type: "event", name: "RewardAllocated", inputs: [
+        { name: "rewardId", type: "uint256", indexed: true },
+        { name: "seasonId", type: "uint256", indexed: true },
+        { name: "user", type: "address", indexed: true },
+        { name: "amount", type: "uint256", indexed: false },
+        { name: "rewardType", type: "uint8", indexed: false },
+      ] },
+      args: { rewardId },
+      fromBlock: "earliest",
+      toBlock: "latest",
+    });
+    return logs.length ? logs[0].transactionHash : null;
+  },
+
   async getSeason(seasonId: bigint): Promise<VaultSeasonAdminView> {
     const raw = (await getPublicClient().readContract({
       ...VAULT_CONTRACT,

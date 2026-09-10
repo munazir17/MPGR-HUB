@@ -36,7 +36,7 @@ export async function submitRunToServer(
     const res = await fetch("/api/games/mpgr-run/reward", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, walletAddress: address, result }),
+      body: JSON.stringify({ sessionId, result }),
     });
     if (!res.ok) return null;
     return (await res.json()) as ServerRewardSubmission;

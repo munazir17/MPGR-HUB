@@ -69,20 +69,10 @@ export const MIN_VALID_RUNS_FOR_ELIGIBILITY = 5;
 // same short run 500 times caps out at RUN_COUNT_NORMALIZATION_CAP just
 // like running it 30 times).
 //
-// IMPORTANT — Season Points gap: the master prompt's architecture calls
-// for a seasonPointsEarnedThisWeek contribution read directly from
-// lib/xp-engine.ts's getSeasonPoints(). That function's entire storage
-// layer is client-side localStorage (see xp-engine.ts's own header
-// comment) — there is no server-side source of truth for a wallet's XP
-// history today, and building one is a full XP-system migration that
-// section 3 of the master prompt explicitly puts out of scope ("EXISTING
-// XP — DO NOT CHANGE"). Rather than trust a client-submitted season-point
-// number as a weighting input (which the security section explicitly
-// forbids trusting for anything economic), SEASON_POINTS_WEIGHT is set to
-// 0 so the term is always 0 and the formula degrades to using only
-// server-verified inputs (validRunCount, bestScore). The field stays in
-// PlayerWeekRecord and the code path stays wired so flipping this one
-// constant is the only change needed once XP has a server-side store.
+// IMPORTANT — Season Points are read from the server-owned XP ledger.
+// The weighting contribution remains disabled until product economics
+// explicitly approve a non-zero weight, so the economic formula currently
+// depends only on server-recorded run facts.
 export const RUN_COUNT_WEIGHT = 55; // max points contributed by validRunCount
 export const BEST_SCORE_WEIGHT = 45; // max points contributed by bestScore
 export const SEASON_POINTS_WEIGHT = 0; // disabled — see note above
@@ -126,3 +116,16 @@ export const GAMES_REWARD_CONFIG = {
 } as const;
 
 export type GamesRewardConfig = typeof GAMES_REWARD_CONFIG;
+
+
+/**
+ * Real-value game rewards require two independent operator gates:
+ * GAME_REWARDS_ENABLED enables the economic pipeline, while
+ * GAME_AUTHORITATIVE_VERIFICATION_ENABLED asserts that a trusted server-side
+ * verifier is deployed. The latter defaults to false and is intentionally
+ * not inferred from client-side sanity checks.
+ */
+export function gameRewardsAreOperatorEnabled(): boolean {
+  return process.env.GAME_REWARDS_ENABLED === "true" &&
+    process.env.GAME_AUTHORITATIVE_VERIFICATION_ENABLED === "true";
+}

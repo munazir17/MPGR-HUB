@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server";
+import { getSessionFromRequest } from "@/lib/auth/session";
+import { enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody } from "@/lib/api/request-guard";
+import { SERVER_AI_POLICY, buildTrustedUserPrompt, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
 import {
   buildGeminiGenerateContentRequest,
   classifyGeminiUpstreamFailure,
@@ -75,10 +78,16 @@ function logGeminiEvent(
 }
 
 export async function POST(request: Request) {
+  const requestId = requestIdFromRequest(request);
+  const respond = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), requestId);
+  const auth = getSessionFromRequest(request);
+  if (!auth) return respond({ error: "Authentication required" }, { status: 401 });
+  const rateError = await enforceRateLimit(request, "ai", 20, 60);
+  if (rateError) return withRequestId(rateError, requestId);
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
-    return NextResponse.json(
+    return respond(
       {
         error: "GEMINI_API_KEY is not configured on the server.",
       },
@@ -91,14 +100,14 @@ export async function POST(request: Request) {
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json(
+    return respond(
       { error: "Invalid JSON body." },
       { status: 400 },
     );
   }
 
   if (!isCompleteRequestBody(body)) {
-    return NextResponse.json(
+    return respond(
       {
         error:
           "Request body must include systemPrompt and userPrompt strings, with an optional valid functionDeclarations array.",
@@ -106,6 +115,9 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+
+  const promptError = validatePromptInputs(body.systemPrompt, body.userPrompt);
+  if (promptError) return respond({ error: promptError }, { status: 400 });
 
   const functionDeclarations =
     body.functionDeclarations ?? [];
@@ -116,8 +128,8 @@ export async function POST(request: Request) {
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const geminiPayload = buildGeminiGenerateContentRequest({
-    systemPrompt: body.systemPrompt,
-    userPrompt: body.userPrompt,
+    systemPrompt: SERVER_AI_POLICY,
+    userPrompt: buildTrustedUserPrompt(body.systemPrompt, body.userPrompt),
     functionDeclarations,
   });
 
@@ -130,6 +142,7 @@ export async function POST(request: Request) {
         "Content-Type": "application/json",
         "x-goog-api-key": apiKey,
       },
+      signal: AbortSignal.timeout(20_000),
       body: JSON.stringify(geminiPayload),
     });
   } catch {
@@ -137,7 +150,7 @@ export async function POST(request: Request) {
       code: "PROVIDER_UNREACHABLE",
     });
 
-    return NextResponse.json(
+    return respond(
       {
         error:
           "Gemini is temporarily unavailable. Please retry shortly.",
@@ -160,7 +173,7 @@ export async function POST(request: Request) {
       upstreamStatus: upstream.status,
     });
 
-    return NextResponse.json(
+    return respond(
       {
         error: classified.error,
         code: classified.code,
@@ -178,7 +191,7 @@ export async function POST(request: Request) {
       code: "PROVIDER_INVALID_JSON",
     });
 
-    return NextResponse.json(
+    return respond(
       {
         error:
           "Gemini response was temporarily unavailable. Please retry shortly.",
@@ -211,7 +224,7 @@ export async function POST(request: Request) {
       blocked: diagnostics.blocked,
     });
 
-    return NextResponse.json(
+    return respond(
       {
         error:
           "Gemini response contained no usable text or function call.",
@@ -226,5 +239,15 @@ export async function POST(request: Request) {
     );
   }
 
-  return NextResponse.json({ content });
+  const usage = (data as { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } }).usageMetadata;
+  logGeminiEvent("success", {
+    requestId,
+    wallet: auth.wallet,
+    model,
+    promptChars: body.userPrompt.length,
+    promptTokens: usage?.promptTokenCount ?? null,
+    completionTokens: usage?.candidatesTokenCount ?? null,
+    totalTokens: usage?.totalTokenCount ?? null,
+  });
+  return respond({ content });
 }

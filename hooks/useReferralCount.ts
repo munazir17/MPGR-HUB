@@ -20,7 +20,15 @@ export function useReferralCount(address: string | undefined) {
     let cancelled = false;
     setLoading(true);
     fetch(`/api/referral?wallet=${address.toLowerCase()}`, { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("failed"))))
+      .then(async (res) => {
+        if (res.status === 401) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          const retry = await fetch(`/api/referral?wallet=${address.toLowerCase()}`, { cache: "no-store" });
+          if (!retry.ok) throw new Error("failed");
+          return retry.json();
+        }
+        return res.ok ? res.json() : Promise.reject(new Error("failed"));
+      })
       .then((data: { count: number }) => {
         if (!cancelled) setCount(data.count);
       })

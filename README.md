@@ -1,7 +1,7 @@
 # MPGR HUB
 AI-powered Onchain Operating System on Base
 
-[![Build Status](https://github.com/munazir17/MPGR-HUB/actions/workflows/ci.yml/badge.svg)](https://github.com/munazir17/MPGR-HUB/actions) [![License](https://img.shields.io/github/license/munazir17/MPGR-HUB)](https://github.com/munazir17/MPGR-HUB/blob/main/LICENSE) [![Repo size](https://img.shields.io/github/repo-size/munazir17/MPGR-HUB)](https://github.com/munazir17/MPGR-HUB) [![Top Language](https://img.shields.io/github/languages/top/munazir17/MPGR-HUB?logo=typescript)](https://github.com/munazir17/MPGR-HUB) [![Last Commit](https://img.shields.io/github/last-commit/munazir17/MPGR-HUB)](https://github.com/munazir17/MPGR-HUB/commits/main) [![GitHub Stars](https://img.shields.io/github/stars/munazir17/MPGR-HUB?style=social)](https://github.com/munazir17/MPGR-HUB/stargazers)
+[![Build Status](https://github.com/munazir17/MPGR-HUB/actions/workflows/ci.yml/badge.svg)](https://github.com/munazir17/MPGR-HUB/actions) [![Repo size](https://img.shields.io/github/repo-size/munazir17/MPGR-HUB)](https://github.com/munazir17/MPGR-HUB) [![Top Language](https://img.shields.io/github/languages/top/munazir17/MPGR-HUB?logo=typescript)](https://github.com/munazir17/MPGR-HUB) [![Last Commit](https://img.shields.io/github/last-commit/munazir17/MPGR-HUB)](https://github.com/munazir17/MPGR-HUB/commits/main) [![GitHub Stars](https://img.shields.io/github/stars/munazir17/MPGR-HUB?style=social)](https://github.com/munazir17/MPGR-HUB/stargazers)
 
 ---
 
@@ -207,7 +207,7 @@ Governance & Audits
 - Keep audit reports and remediation in /security or /audits directory
 
 Licensing
-- See LICENSE file in repository root for license details.
+- No software license is declared in this repository yet.
 
 Acknowledgements
 - Base Network & developer community
@@ -223,3 +223,8 @@ Maintainer
 - Organization / Owner: munazir17
 
 Thank you for building with MPGR HUB — an AI-first, onchain operating system for Base.
+## Security status
+
+The repository includes the August 2026 security remediation foundation: signed wallet sessions, server-owned XP ranking, authenticated referrals, server-issued game sessions, settlement locking/reconciliation, bounded AI proxy routes, and contract test scaffolding. See `docs/SECURITY_REMEDIATION.md` and `docs/GAME_REWARDS_RUNBOOK.md`.
+
+Financial game rewards remain disabled by default (`GAME_REWARDS_ENABLED=false` and `GAME_AUTHORITATIVE_VERIFICATION_ENABLED=false`) until an authoritative game verifier is deployed and an independent contract audit has been completed. This is an intentional safety gate, not a claim that client-side game statistics are anti-cheat.
