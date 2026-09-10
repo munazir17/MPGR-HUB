@@ -1,10 +1,7 @@
-import { Redis } from "@upstash/redis";
+import { getRedis } from "@/lib/api/redis";
 import { randomUUID } from "node:crypto";
 
-const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
-if (!url || !token) throw new Error("Upstash Redis environment variables are missing.");
-const redis = new Redis({ url, token });
+const redis = () => getRedis();
 
 // Settlement consumes one shared on-chain reward-vault balance and one shared
 // GAME treasury budget. Therefore the mutex must be global, not week-scoped:
@@ -18,14 +15,14 @@ export async function withSettlementLock<T>(
   fn: () => Promise<T>,
 ): Promise<T | { locked: true; weekKey: string }> {
   const value = randomUUID();
-  const acquired = await redis.set(LOCK_KEY, value, { nx: true, ex: LOCK_TTL_SECONDS });
+  const acquired = await redis().set(LOCK_KEY, value, { nx: true, ex: LOCK_TTL_SECONDS });
   if (acquired === null) return { locked: true, weekKey };
 
   try {
     return await fn();
   } finally {
-    await redis.eval(
-      `if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end`,
+    await redis().eval(
+      `if redis().call("GET", KEYS[1]) == ARGV[1] then return redis().call("DEL", KEYS[1]) else return 0 end`,
       [LOCK_KEY],
       [value],
     );

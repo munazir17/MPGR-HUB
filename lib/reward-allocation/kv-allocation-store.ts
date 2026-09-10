@@ -1,3 +1,4 @@
+import { Redis } from "@upstash/redis";
 // lib/reward-allocation/kv-allocation-store.ts
 //
 // SERVER-ONLY.
@@ -17,7 +18,7 @@
 //   KV_REST_API_URL
 //   KV_REST_API_TOKEN
 
-import { Redis } from "@upstash/redis";
+import { getRedis } from "@/lib/api/redis";
 import type { Address } from "viem";
 
 import type {
@@ -36,24 +37,20 @@ import type {
 // Redis client
 // ---------------------------------------------------------------------------
 
-const redisUrl =
-  process.env.UPSTASH_REDIS_REST_URL ??
-  process.env.KV_REST_API_URL;
+const kv = () => {
+  const url =
+    process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  const token =
+    process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
 
-const redisToken =
-  process.env.UPSTASH_REDIS_REST_TOKEN ??
-  process.env.KV_REST_API_TOKEN;
+  if (!url || !token) {
+    throw new Error(
+      "Upstash Redis environment variables are missing. Expected UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.",
+    );
+  }
 
-if (!redisUrl || !redisToken) {
-  throw new Error(
-    "Upstash Redis environment variables are missing. Expected UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN."
-  );
-}
-
-const kv = new Redis({
-  url: redisUrl,
-  token: redisToken,
-});
+  return new Redis({ url, token });
+};
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -251,7 +248,7 @@ export const kvAllocationStore: AllocationStore = {
   // -------------------------------------------------------------------------
 
   async getRunRecord(sessionId) {
-    const raw = await kv.get<unknown>(
+    const raw = await kv().get<unknown>(
       runKey(sessionId)
     );
 
@@ -264,7 +261,7 @@ export const kvAllocationStore: AllocationStore = {
     const key = runKey(record.sessionId);
     const payload = serialize(record);
 
-    const result = await kv.set(
+    const result = await kv().set(
       key,
       payload,
       {
@@ -273,7 +270,7 @@ export const kvAllocationStore: AllocationStore = {
     );
 
     if (result === null) {
-      const existingRaw = await kv.get<unknown>(
+      const existingRaw = await kv().get<unknown>(
         key
       );
 
@@ -287,7 +284,7 @@ export const kvAllocationStore: AllocationStore = {
         // the key disappeared between failed NX
         // and GET.
 
-        const retry = await kv.set(
+        const retry = await kv().set(
           key,
           payload,
           {
@@ -297,7 +294,7 @@ export const kvAllocationStore: AllocationStore = {
 
         if (retry === null) {
           const existing2Raw =
-            await kv.get<unknown>(key);
+            await kv().get<unknown>(key);
 
           const existing2 =
             normalizeRedisValue<RunRecord>(
@@ -342,7 +339,7 @@ export const kvAllocationStore: AllocationStore = {
     wallet,
     weekKey
   ) {
-    const raw = await kv.get<unknown>(
+    const raw = await kv().get<unknown>(
       playerWeekKey(wallet, weekKey)
     );
 
@@ -362,7 +359,7 @@ export const kvAllocationStore: AllocationStore = {
 
     const payload = serialize(record);
 
-    const result = await kv.eval(
+    const result = await kv().eval(
       CAS_UPSERT_SCRIPT,
       [key],
       [
@@ -395,7 +392,7 @@ export const kvAllocationStore: AllocationStore = {
     //
     // This avoids unsafe Redis KEYS scans during settlement.
 
-    await kv.sadd(
+    await kv().sadd(
       playerWeekIndexKey(record.weekKey),
       record.wallet.toLowerCase()
     );
@@ -430,21 +427,21 @@ export const kvAllocationStore: AllocationStore = {
       allocationTxHash: null,
       allocationStatus: "none",
     };
-    const result = await kv.eval(
+    const result = await kv().eval(
       RECORD_VALIDATED_RUN_SCRIPT,
       [playerWeekKey(wallet, weekKey)],
       [serialize(record), String(score), String(seasonPointsEarnedThisWeek), lastRunAt, String(minValidRunsForEligibility)],
     );
     const stored = normalizeRedisValue<PlayerWeekRecord>(result);
     if (!stored) throw new Error(`recordValidatedRun: unable to decode result for ${wallet}/${weekKey}`);
-    await kv.sadd(playerWeekIndexKey(weekKey), wallet.toLowerCase());
+    await kv().sadd(playerWeekIndexKey(weekKey), wallet.toLowerCase());
     return stored;
   },
 
   async listEligiblePlayersForWeek(
     weekKey: string
   ): Promise<PlayerWeekRecord[]> {
-    const wallets = await kv.smembers(
+    const wallets = await kv().smembers(
       playerWeekIndexKey(weekKey)
     );
 
@@ -459,7 +456,7 @@ export const kvAllocationStore: AllocationStore = {
       await Promise.all(
         wallets.map(async (wallet) => {
           const raw =
-            await kv.get<unknown>(
+            await kv().get<unknown>(
               playerWeekKey(
                 wallet as Address,
                 weekKey
@@ -493,7 +490,7 @@ export const kvAllocationStore: AllocationStore = {
   async getWeeklySettlement(
     weekKey
   ) {
-    const raw = await kv.get<unknown>(
+    const raw = await kv().get<unknown>(
       settlementKey(weekKey)
     );
 
@@ -512,7 +509,7 @@ export const kvAllocationStore: AllocationStore = {
 
     const payload = serialize(settlement);
 
-    const result = await kv.eval(
+    const result = await kv().eval(
       CAS_UPSERT_SETTLEMENT_SCRIPT,
       [key],
       [
@@ -552,7 +549,7 @@ export const kvAllocationStore: AllocationStore = {
     rewardType: "GAME"
   ): Promise<bigint> {
     const units =
-      await kv.get<unknown>(
+      await kv().get<unknown>(
         ledgerKey(rewardType)
       );
 
@@ -585,7 +582,7 @@ export const kvAllocationStore: AllocationStore = {
   ): Promise<boolean> {
     if (!settlementKeyValue || amountRaw <= 0n) return false;
     const units = (amountRaw + LEDGER_SCALE - 1n) / LEDGER_SCALE;
-    const result = await kv.eval(
+    const result = await kv().eval(
       RECORD_LEDGER_ONCE_SCRIPT,
       [ledgerEntryKey(rewardType, settlementKeyValue), ledgerKey(rewardType)],
       [units.toString()],
@@ -612,7 +609,7 @@ export const kvAllocationStore: AllocationStore = {
       ) /
       LEDGER_SCALE;
 
-    await kv.incrby(
+    await kv().incrby(
       ledgerKey(rewardType),
       Number(units)
     );
