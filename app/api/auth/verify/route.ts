@@ -17,7 +17,7 @@ export async function POST(request: Request) {
   const rateError = await enforceRateLimit(request, "auth-verify", 10, 60);
   if (rateError) return withRequestId(rateError, requestId);
   const parsedBody = await readJsonBody(request);
-  if (!parsedBody.ok) return parsedBody.response;
+  if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
   const body: unknown = parsedBody.value;
   if (!body || typeof body !== "object") return json({ error: "Invalid request" }, { status: 400 });
   const value = body as Record<string, unknown>;

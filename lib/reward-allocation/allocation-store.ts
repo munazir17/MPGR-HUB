@@ -13,7 +13,7 @@
 // the gap instead of surfacing it. See the architecture audit in chat
 // history for the full reasoning. Nothing in this repo currently
 // implements AllocationStore; app/api/games/mpgr-run/reward/route.ts does
-// NOT import this file and continues to return 501.
+// The production reward route uses the concrete AllocationStore implementation.
 //
 // Concurrency contract every real implementation MUST satisfy — this is
 // the whole point of the interface, not an incidental detail:
@@ -84,6 +84,16 @@ export interface AllocationStore {
   upsertPlayerWeekRecord(
     record: PlayerWeekRecord,
     expectedStatus?: AllocationStatus
+  ): Promise<PlayerWeekRecord>;
+
+  /** Atomically records one already-validated run without a read/modify/write race. */
+  recordValidatedRun(
+    wallet: Address,
+    weekKey: string,
+    score: number,
+    seasonPointsEarnedThisWeek: number,
+    lastRunAt: string,
+    minValidRunsForEligibility: number,
   ): Promise<PlayerWeekRecord>;
 
   /** Every PlayerWeekRecord with eligibilityStatus === "eligible" for a given week, for the settlement job to weight/pool over. */

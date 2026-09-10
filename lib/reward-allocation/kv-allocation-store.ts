@@ -207,6 +207,40 @@ redis.call("SET", KEYS[1], ARGV[1])
 return ARGV[1]
 `;
 
+
+const RECORD_VALIDATED_RUN_SCRIPT = `
+local current = redis.call("GET", KEYS[1])
+local record
+if current == false then
+  local ok, decoded = pcall(cjson.decode, ARGV[1])
+  if not ok then return {err = "INVALID_BASE_RECORD"} end
+  record = decoded
+else
+  local ok, decoded = pcall(cjson.decode, current)
+  if not ok then return {err = "INVALID_PLAYER_RECORD"} end
+  record = decoded
+  if record.allocationStatus ~= nil and record.allocationStatus ~= "none" then
+    return current
+  end
+end
+
+record.validRunCount = (record.validRunCount or 0) + 1
+local score = tonumber(ARGV[2]) or 0
+local previous = tonumber(record.bestScore) or 0
+if score > previous then record.bestScore = score end
+record.seasonPointsEarnedThisWeek = tonumber(ARGV[3]) or 0
+record.lastRunAt = ARGV[4]
+if record.validRunCount >= tonumber(ARGV[5]) then
+  record.eligibilityStatus = "eligible"
+else
+  record.eligibilityStatus = "pending"
+end
+
+local encoded = cjson.encode(record)
+redis.call("SET", KEYS[1], encoded)
+return encoded
+`;
+
 // ---------------------------------------------------------------------------
 // Allocation store
 // ---------------------------------------------------------------------------
@@ -366,6 +400,44 @@ export const kvAllocationStore: AllocationStore = {
       record.wallet.toLowerCase()
     );
 
+    return stored;
+  },
+
+  async recordValidatedRun(
+    wallet,
+    weekKey,
+    score,
+    seasonPointsEarnedThisWeek,
+    lastRunAt,
+    minValidRunsForEligibility,
+  ) {
+    if (!Number.isFinite(score) || score < 0) throw new Error("Invalid run score.");
+    if (!Number.isFinite(seasonPointsEarnedThisWeek) || seasonPointsEarnedThisWeek < 0) throw new Error("Invalid season points.");
+    if (!Number.isInteger(minValidRunsForEligibility) || minValidRunsForEligibility < 1) throw new Error("Invalid eligibility threshold.");
+
+    const record: PlayerWeekRecord = {
+      wallet,
+      seasonId: null,
+      weekKey,
+      validRunCount: 0,
+      bestScore: 0,
+      seasonPointsEarnedThisWeek,
+      lastRunAt: null,
+      eligibilityStatus: "pending",
+      weight: null,
+      allocatedAmountRaw: null,
+      rewardId: null,
+      allocationTxHash: null,
+      allocationStatus: "none",
+    };
+    const result = await kv.eval(
+      RECORD_VALIDATED_RUN_SCRIPT,
+      [playerWeekKey(wallet, weekKey)],
+      [serialize(record), String(score), String(seasonPointsEarnedThisWeek), lastRunAt, String(minValidRunsForEligibility)],
+    );
+    const stored = normalizeRedisValue<PlayerWeekRecord>(result);
+    if (!stored) throw new Error(`recordValidatedRun: unable to decode result for ${wallet}/${weekKey}`);
+    await kv.sadd(playerWeekIndexKey(weekKey), wallet.toLowerCase());
     return stored;
   },
 

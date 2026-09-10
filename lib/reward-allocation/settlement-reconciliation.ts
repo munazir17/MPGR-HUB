@@ -6,7 +6,7 @@ import type { Address } from "viem";
 export async function reconcileSettlement(weekKey: string) {
   const settlement = await kvAllocationStore.getWeeklySettlement(weekKey);
   if (!settlement || settlement.status !== "allocating") return { status: settlement?.status ?? "missing", reconciled: false };
-  const players = await kvAllocationStore.listEligiblePlayersForWeek(weekKey);
+  const players = (await kvAllocationStore.listEligiblePlayersForWeek(weekKey)).filter((player) => player.verificationVersion === "authoritative-v1" && !!player.authoritativeProofId);
   const payable = players.filter((p) => (p.allocatedAmountRaw ?? 0n) > 0n);
   let confirmed = 0;
   for (const player of payable) {

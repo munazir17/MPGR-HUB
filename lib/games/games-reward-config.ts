@@ -125,7 +125,12 @@ export type GamesRewardConfig = typeof GAMES_REWARD_CONFIG;
  * verifier is deployed. The latter defaults to false and is intentionally
  * not inferred from client-side sanity checks.
  */
+export function authoritativeGameVerifierIsConfigured(): boolean {
+  return Boolean(process.env.GAME_RUN_VERIFIER_URL?.trim() && process.env.GAME_RUN_VERIFIER_SECRET?.trim());
+}
+
 export function gameRewardsAreOperatorEnabled(): boolean {
   return process.env.GAME_REWARDS_ENABLED === "true" &&
-    process.env.GAME_AUTHORITATIVE_VERIFICATION_ENABLED === "true";
+    process.env.GAME_AUTHORITATIVE_VERIFICATION_ENABLED === "true" &&
+    authoritativeGameVerifierIsConfigured();
 }

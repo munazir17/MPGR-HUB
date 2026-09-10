@@ -95,16 +95,9 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: unknown;
-
-  try {
-    body = await request.json();
-  } catch {
-    return respond(
-      { error: "Invalid JSON body." },
-      { status: 400 },
-    );
-  }
+  const parsedBody = await readJsonBody<unknown>(request);
+  if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
+  const body: unknown = parsedBody.value;
 
   if (!isCompleteRequestBody(body)) {
     console.error("[gemini-complete] request_invalid", {

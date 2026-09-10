@@ -19,13 +19,13 @@ export interface XPLedgerEntry { wallet: Address; action: XPAction; xp: number; 
 function monthId(date = new Date()) { return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`; }
 
 const AWARD_XP_SCRIPT = `
-local created = redis.call("SET", KEYS[1], "1", "NX", "EX", ARGV[7])
+local created = redis.call("SET", KEYS[1], "1", "NX")
 if not created then return 0 end
 redis.call("INCRBY", KEYS[2], ARGV[1])
 redis.call("INCRBY", KEYS[3], ARGV[1])
 redis.call("ZINCRBY", KEYS[4], ARGV[1], ARGV[2])
 redis.call("SADD", KEYS[5], ARGV[2])
-redis.call("SET", KEYS[6], ARGV[6], "EX", ARGV[7])
+redis.call("SET", KEYS[6], ARGV[6], "NX")
 return 1
 `;
 

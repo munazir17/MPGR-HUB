@@ -126,6 +126,21 @@ contract MPGRStakingTest is Test {
         assertGe(afterFinish, beforeFinish);
     }
 
+    function testCannotRecoverStakingToken() public {
+        vm.expectRevert(IMPGRStaking.CannotRecoverStakingToken.selector);
+        vm.prank(owner);
+        staking.recoverERC20(address(token), 1e18);
+    }
+
+    function testExtendScheduleCannotShrinkExistingFinish() public {
+        (, uint256 finish,,) = staking.rewardState();
+        vm.expectRevert(IMPGRStaking.RewardScheduleWouldShrink.selector);
+        vm.prank(owner);
+        staking.extendRewardSchedule(1e18, 1 days);
+        (, uint256 afterFinish,,) = staking.rewardState();
+        assertEq(afterFinish, finish);
+    }
+
     function testOnlyOwnerCanPauseAndChangeAPR() public {
         vm.expectRevert();
         vm.prank(alice);

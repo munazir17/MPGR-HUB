@@ -93,7 +93,7 @@ async function runSettlementUnlocked(weekKeyOverride?: string) {
   }
 
   // --- 4. load eligible players ------------------------------------------
-  const eligiblePlayers = await kvAllocationStore.listEligiblePlayersForWeek(weekKey);
+  const eligiblePlayers = (await kvAllocationStore.listEligiblePlayersForWeek(weekKey)).filter((player) => player.verificationVersion === "authoritative-v1" && !!player.authoritativeProofId);
 
   if (eligiblePlayers.length === 0) {
     const finalized = await kvAllocationStore.upsertWeeklySettlement(

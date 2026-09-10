@@ -4,13 +4,12 @@ This document covers the one-time setup required before the weekly
 competitive MPGR settlement can run for real, plus what to check if a
 settlement needs manual recovery.
 
-## 1. Install the new dependency
+## 1. Install and verify dependencies
 
-`@vercel/kv` was added to `package.json`. Run:
-npm install
-(This could not be run inside the sandbox that produced this change — no
-network access — so it has not been verified to resolve/build. Run it,
-then `npm run build`, before deploying.)
+This remediation does not add `@vercel/kv`; the game reward persistence uses
+`@upstash/redis`, already declared by `package.json`. Use the repository's
+locked install once `package-lock.json` is present, then run the full web checks
+listed in `AGENTS.md`.
 
 ## 2. Provision Vercel KV
 
@@ -20,6 +19,19 @@ project. This populates `KV_REST_API_URL` / `KV_REST_API_TOKEN` /
 manual value entry needed on Vercel; for local dev, copy the values from
 the dashboard into `.env.local`.
 
+## 3. Deploy the authoritative game verifier (REQUIRED before financial rewards)
+
+Deploy an independent verifier implementing `docs/GAME_RUN_VERIFIER_PROTOCOL.md`
+and configure these server-only variables:
+
+- `GAME_RUN_VERIFIER_URL`
+- `GAME_RUN_VERIFIER_SECRET`
+- `GAME_AUTHORITATIVE_VERIFICATION_ENABLED=true`
+- `GAME_REWARDS_ENABLED=true` only after the verifier has been reviewed
+
+The application fails closed if the verifier is missing, times out, rejects the
+run, or returns no proof ID. Client-side run validation is never a substitute.
+
 ## 3. Generate a reward-manager signer key
 
 Generate a **new, dedicated** wallet (do not reuse an existing hot
@@ -27,7 +39,7 @@ wallet). Set its private key as `REWARD_MANAGER_PRIVATE_KEY` in Vercel's
 environment variables (production + any preview environments that will
 run settlement). Never prefix this variable with `NEXT_PUBLIC_`.
 
-## 4. One-time on-chain owner actions (REQUIRED — not yet performed)
+## 5. One-time on-chain owner actions (REQUIRED — not yet performed)
 
 These must be executed by the current owner of
 `0xbe4B0e8692670229129562a50A62f5173E30937C` (Base Mainnet). Nothing in
@@ -57,7 +69,7 @@ itself.
 less (down to zero) than the weekly pool if the vault is short, it
 never over-allocates.
 
-## 5. Configure `CRON_SECRET` and the cron schedule
+## 6. Configure `CRON_SECRET` and the cron schedule
 
 Set `CRON_SECRET` (e.g. `openssl rand -hex 32`) in Vercel's environment
 variables. `vercel.json` already schedules
@@ -68,7 +80,7 @@ rejects any request without it, including an unconfigured secret (fails
 closed, not open).
 
 You can also trigger a settlement manually (e.g. to backfill a missed
-week) with:curl -X GET "https:///api/games/mpgr-run/settlement?weekKey=2026-W34" 
+week) with:curl -X GET "https://<your-domain>/api/games/mpgr-run/settlement?weekKey=2026-W34"
 -H "Authorization: Bearer $CRON_SECRET"
 ## Architecture summary
 
@@ -124,9 +136,7 @@ week) with:curl -X GET "https:///api/games/mpgr-run/settlement?weekKey=2026-W34"
    mark the settlement `"finalized"` or reset it to `"computed"` before
    the next cron run).
 
-3. **`npm install` / `npm run build` / `npm run lint` could not be run**
-   in the environment this change was produced in (no network access to
-   install `@vercel/kv` or any package). Run all three, and fix any
-   TypeScript errors surfaced, before deploying — see the final
-   implementation report for what to double-check first (BigInt JSON
-   handling, viem return types from `simulateContract`).
+3. **Full dependency-backed checks are required before deployment.**
+   Run `npm ci`, `npm run lint`, `npm run typecheck`, `npm test`,
+   `npm run build`, and `npm audit --audit-level=high` in a networked
+   environment. Also run `forge test -vvv` for contract changes.
