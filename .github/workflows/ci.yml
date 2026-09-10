@@ -21,7 +21,6 @@ jobs:
       - run: npm audit --audit-level=high
   contracts:
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('contracts/**/*.sol', 'test/**/*.sol', 'foundry.toml') != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
