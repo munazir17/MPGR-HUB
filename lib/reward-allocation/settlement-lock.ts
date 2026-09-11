@@ -22,7 +22,7 @@ export async function withSettlementLock<T>(
     return await fn();
   } finally {
     await redis().eval(
-      `if redis().call("GET", KEYS[1]) == ARGV[1] then return redis().call("DEL", KEYS[1]) else return 0 end`,
+      `if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end`,
       [LOCK_KEY],
       [value],
     );
