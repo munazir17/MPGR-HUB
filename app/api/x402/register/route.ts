@@ -13,6 +13,7 @@
 import { isAddress } from "viem";
 import { NextResponse } from "next/server";
 import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/request-guard";
+import { getSessionFromRequest } from "@/lib/auth/session";
 
 import {
   KNOWN_X402_ASSET_DOMAINS,
@@ -38,10 +39,6 @@ export const dynamic = "force-dynamic";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
-function jsonError(status: number, code: string, error: string) {
-  return NextResponse.json({ error, code }, { status, headers: NO_STORE });
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -59,12 +56,11 @@ export async function POST(request: Request) {
   const requestId = guard.requestId;
   if (guard.error) return guard.error;
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonError(400, "INVALID_INPUT", "Invalid JSON request body.");
-  }
+  const jsonError = (status: number, code: string, error: string) => json({ error, code }, { status, headers: NO_STORE });
+  if (!getSessionFromRequest(request)) return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: NO_STORE });
+  const parsedBody = await readJsonBody(request);
+  if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
+  const body: unknown = parsedBody.value;
 
   if (!isPlainObject(body) || !isPlainObject(body.requirement)) {
     return jsonError(400, "INVALID_INPUT", "A payment requirement is required.");

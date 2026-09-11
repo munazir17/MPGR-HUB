@@ -1,6 +1,5 @@
 // lib/reward-vault/reward-vault-config.ts
-import { base } from "wagmi/chains";
-import type { Address } from "viem";
+import { CHAIN, CHAIN_ID, MPGR_REWARD_VAULT_ADDRESS, MPGR_TOKEN_ADDRESS } from "@/lib/chain/base";
 
 // Reward Vault Integration — real deployed MPGRRewardVault contract.
 //
@@ -12,15 +11,15 @@ import type { Address } from "viem";
 
 export const MPGR_REWARD_VAULT_CONFIG = {
   // Base Mainnet address for the deployed MPGRRewardVault contract.
-  address: "0xbe4B0e8692670229129562a50A62f5173E30937C" as Address,
+  address: MPGR_REWARD_VAULT_ADDRESS,
 
   // Chain the vault lives on. Base only — claim()/claimMultiple() must
   // never be sent on any other network.
-  chain: base,
-  chainId: base.id as 8453,
+  chain: CHAIN,
+  chainId: CHAIN_ID,
 
   // MPGR token address (same token used by staking/token-lock).
-  tokenAddress: "0xB2000000000000000000008d204203177a78AF01" as Address,
+  tokenAddress: MPGR_TOKEN_ADDRESS,
 
   // MPGR uses 18 decimals.
   decimals: 18,

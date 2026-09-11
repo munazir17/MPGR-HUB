@@ -1,4 +1,6 @@
-export const SUPPORTED_CHAIN_ID = 8453;
+import { CHAIN_ID } from "@/lib/chain/base";
+
+export const SUPPORTED_CHAIN_ID = CHAIN_ID;
 export const SESSION_COOKIE = "mpgr_session";
 export const NONCE_COOKIE = "mpgr_auth_nonce";
 export const SESSION_TTL_SECONDS = 60 * 60 * 8;

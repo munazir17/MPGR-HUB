@@ -22,7 +22,7 @@ import { formatCompactNumber } from "@/lib/format";
 import { startSession, endSession, type GameSessionMeta } from "@/lib/games/game-session";
 import { finalizeRun, type RunResult, type RunStats } from "@/lib/games/mpgr-run/run-score";
 import { processRunResult, type ProcessRunResultOutcome } from "@/lib/games/mpgr-run/run-rewards";
-import { submitRunToServer } from "@/lib/games/mpgr-run/submit-server-reward";
+import { submitRunToServer, pingGameHeartbeat } from "@/lib/games/mpgr-run/submit-server-reward";
 import { getGameStats } from "@/lib/games/game-storage";
 import { resolveDifficulty } from "@/lib/games/mpgr-run/difficulty";
 import {
@@ -77,6 +77,7 @@ import {
   POWERUP_TYPES,
   type PowerupType,
 } from "@/lib/games/mpgr-run/run-config";
+import { clamp, laneBaselineScreenY, verticalOverlap } from "@/lib/games/mpgr-run/run-physics";
 
 type Phase = "idle" | "countdown" | "running" | "paused" | "game_over";
 
@@ -179,25 +180,6 @@ function freshWorld(): World {
     hitFlashUntilMs: -Infinity,
     gameOver: false,
   };
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-function laneBaselineScreenY(canvasHeight: number, lane: number): number {
-  return canvasHeight * LANE_CENTER_Y + (lane - 1) * LANE_GAP_PX;
-}
-
-/** Vertical hazard-band overlap. tnt/barrier have no vertical escape — only a lane switch avoids them. */
-function verticalOverlap(o: ObstacleEntity, p: PlayerState): boolean {
-  if (o.type === "tnt" || o.type === "barrier") return true;
-  const playerHeight = p.sliding ? PLAYER_SIZE * SLIDE_HITBOX_SCALE : PLAYER_SIZE;
-  const playerBottom = p.playerY;
-  const playerTop = playerBottom + playerHeight;
-  const obstacleBottom = o.groundHeight;
-  const obstacleTop = o.groundHeight + o.height;
-  return playerTop > obstacleBottom && playerBottom < obstacleTop;
 }
 
 /**
@@ -305,6 +287,7 @@ export function RunGame({ address }: RunGameProps) {
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
   const hudIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sizeRef = useRef({ width: 0, height: 0 });
   const resizeRef = useRef<(() => void) | null>(null);
@@ -1141,6 +1124,8 @@ export function RunGame({ address }: RunGameProps) {
     rafRef.current = null;
     if (hudIntervalRef.current != null) clearInterval(hudIntervalRef.current);
     hudIntervalRef.current = null;
+    if (heartbeatIntervalRef.current != null) clearInterval(heartbeatIntervalRef.current);
+    heartbeatIntervalRef.current = null;
   }, []);
 
   const buildStats = useCallback((world: World): RunStats => {
@@ -1321,6 +1306,12 @@ void submitRunToServer(address, ended.sessionId, result);
     if (phase !== "running") return;
     lastTimeRef.current = 0;
     startHudSync();
+    const ping = () => {
+      const sessionId = sessionRef.current?.sessionId;
+      if (sessionId) void pingGameHeartbeat(sessionId);
+    };
+    ping();
+    heartbeatIntervalRef.current = setInterval(ping, 8_000);
     rafRef.current = requestAnimationFrame(loop);
     return stopLoop;
   }, [phase, loop, startHudSync, stopLoop]);

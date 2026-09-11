@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { listAllowedAgentKitActions } from "@/lib/architecture/agentkit";
+import { CHAIN_ID } from "@/lib/chain/base";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +13,7 @@ export async function GET() {
     return NextResponse.json(
       {
         network: "base-mainnet",
-        chainId: 8453,
+        chainId: CHAIN_ID,
         signing: "user-wallet-only",
         actions,
       },

@@ -1,6 +1,5 @@
 // lib/token/token-config.ts
-import { base } from "wagmi/chains";
-import type { Address } from "viem";
+import { CHAIN, CHAIN_ID, MPGR_TOKEN_ADDRESS } from "@/lib/chain/base";
 
 // Phase 3E Part 1 — B20 Foundation & Live Token Integration.
 //
@@ -12,10 +11,10 @@ import type { Address } from "viem";
 
 export const MPGR_TOKEN_CONFIG = {
   // Base Mainnet address for MPGR token.
-  address: "0xb2000000000000000000008d204203177a78af01" as Address,
+  address: MPGR_TOKEN_ADDRESS,
   // Chain where MPGR lives.
-  chain: base,
-  chainId: base.id as 8453,
+  chain: CHAIN,
+  chainId: CHAIN_ID,
   // Token symbol — "MPGR".
   symbol: "MPGR",
   // Token name — the full product name.

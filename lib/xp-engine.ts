@@ -176,6 +176,23 @@ export function performDailyCheckIn(address: string): AwardResult & { alreadyChe
 // server-authoritative calculation in app/api/leaderboard/route.ts, so
 // this file, the leaderboard POST, and any future recompute/migration
 // tooling can never drift into competing answers for the same wallet.
+export function cacheServerXPTotals(
+  address: string,
+  xp: number,
+  referralCount?: number,
+): UserXPRecord {
+  const record = getUserRecord(address);
+  if (Number.isFinite(xp) && xp >= 0) {
+    record.xp = Math.floor(xp);
+  }
+  if (typeof referralCount === "number" && Number.isFinite(referralCount) && referralCount >= 0) {
+    record.referralCount = Math.floor(referralCount);
+  }
+  record.lastKnownLevel = Math.max(record.lastKnownLevel, getLevelProgress(record.xp).level);
+  saveUserRecord(record);
+  return record;
+}
+
 export function getSeasonPoints(record: UserXPRecord): number {
   return calculateSeasonPoints(record.xp, record.history).seasonPoints;
 }

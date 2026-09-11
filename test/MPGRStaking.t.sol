@@ -164,4 +164,23 @@ contract MPGRStakingTest is Test {
         vm.prank(alice);
         staking.setAPR(1_500);
     }
+
+    function testStakeBelowMinimumReverts() public {
+        vm.expectRevert();
+        vm.prank(alice);
+        staking.stake(99e18);
+        assertEq(staking.totalStaked(), 0);
+        assertEq(token.balanceOf(alice), 1_000e18);
+    }
+
+    function testUnstakeWhilePausedStillReturnsPrincipal() public {
+        vm.prank(alice);
+        staking.stake(500e18);
+        vm.prank(owner);
+        staking.pause();
+        vm.prank(alice);
+        staking.unstake(200e18);
+        assertEq(staking.balanceOf(alice), 300e18);
+        assertEq(token.balanceOf(alice), 700e18);
+    }
 }

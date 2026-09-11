@@ -1,6 +1,5 @@
 // lib/staking/staking-config.ts
-import { base } from "wagmi/chains";
-import type { Address } from "viem";
+import { CHAIN, CHAIN_ID, MPGR_STAKING_ADDRESS, MPGR_TOKEN_ADDRESS } from "@/lib/chain/base";
 
 // Phase 3E Part 3 — Live Staking & Rewards Integration.
 //
@@ -16,15 +15,15 @@ import type { Address } from "viem";
 
 export const MPGR_STAKING_CONFIG = {
   // Base Mainnet address for the deployed MPGRStaking contract.
-  address: "0x1690C7b6d312284e30434d93498e56eE09fFa12c" as Address,
+  address: MPGR_STAKING_ADDRESS,
 
   // Chain the staking contract lives on. Base only — this app does not
   // support any other network for staking.
-  chain: base,
-  chainId: base.id as 8453,
+  chain: CHAIN,
+  chainId: CHAIN_ID,
 
   // MPGR token address.
-  stakingTokenAddress: "0xB2000000000000000000008d204203177a78AF01" as Address,
+  stakingTokenAddress: MPGR_TOKEN_ADDRESS,
 
   // Cache TTL for staking read data.
   stakingReadCacheTtl: 12 * 1000,

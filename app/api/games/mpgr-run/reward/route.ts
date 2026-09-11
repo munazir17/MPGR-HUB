@@ -27,10 +27,10 @@ import type { RunResult, RunStats } from "@/lib/games/mpgr-run/run-score";
 import { computeRunScore } from "@/lib/games/mpgr-run/run-score";
 import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import { getServerGameSession } from "@/lib/games/mpgr-run/server-session";
+import { getServerGameSession, heartbeatsCoverDuration } from "@/lib/games/mpgr-run/server-session";
 import { verifyAuthoritativeRun } from "@/lib/games/mpgr-run/authoritative-verifier";
 import { gameRewardsAreOperatorEnabled, MIN_VALID_RUNS_FOR_ELIGIBILITY } from "@/lib/games/games-reward-config";
-import { awardServerXP, getSeasonPoints as getServerSeasonPoints } from "@/lib/rewards/xp-ledger";
+import { awardCappedGameXP, getSeasonPoints as getServerSeasonPoints } from "@/lib/rewards/xp-ledger";
 import type { PlayerWeekRecord, RunRecord } from "@/lib/reward-allocation/allocation-types";
 import { getWeekKey, resolveEligibility } from "@/lib/reward-allocation/settlement-engine";
 
@@ -117,6 +117,9 @@ export async function POST(request: Request) {
   if (!Number.isFinite(sessionAgeMs) || resultForValidation.durationMs > sessionAgeMs + 2_000 || sessionAgeMs > 15 * 60 * 1000) {
     return json({ accepted: false, duplicate: false, valid: false, reasons: ["Run duration does not fit the server-issued game session window."] });
   }
+  if (!heartbeatsCoverDuration(gameSession, resultForValidation.durationMs)) {
+    return json({ accepted: false, duplicate: false, valid: false, reasons: ["Run is missing live session heartbeats spanning the claimed duration."] });
+  }
 
   // Financial settlement requires an independent authoritative attestation.
   // Client-side plausibility checks are never sufficient for real value.
@@ -196,7 +199,7 @@ export async function POST(request: Request) {
 
   // Server-authoritative XP remains available even while financial game
   // rewards are disabled; it is independently idempotent by session ID.
-  try { await awardServerXP(wallet, "GAME_MPGR_RUN_COMPLETE", `game:${sessionId}`); }
+  try { await awardCappedGameXP(wallet, sessionId); }
   catch (error) { console.error("Game XP ledger update failed", error); }
 
   return json({

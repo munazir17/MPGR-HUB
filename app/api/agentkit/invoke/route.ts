@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/request-guard";
+import { getSessionFromRequest } from "@/lib/auth/session";
 
 import {
   canonicalizeAgentKitActionName,
@@ -16,27 +17,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readWalletAddress(value: unknown): string | undefined {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value)
-    ? value
-    : undefined;
-}
-
 export async function POST(request: Request) {
   const guard = await protectApiRequest(request, "agentkit-invoke", 30, 60);
   const requestId = guard.requestId;
   if (guard.error) return guard.error;
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
-  let body: unknown;
-
-  try {
-    body = await request.json();
-  } catch {
-    return json(
-      { error: "Invalid JSON body." },
-      { status: 400 },
-    );
-  }
+  const session = getSessionFromRequest(request);
+  if (!session) return json({ error: "Authentication required" }, { status: 401 });
+  const parsedBody = await readJsonBody(request);
+  if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
+  const body: unknown = parsedBody.value;
 
   if (!isRecord(body) || typeof body.actionName !== "string") {
     return json(
@@ -69,7 +59,7 @@ export async function POST(request: Request) {
   const invoked = await invokeAgentKitAction({
     actionName,
     args,
-    walletAddress: readWalletAddress(body.walletAddress),
+    walletAddress: session.wallet,
   });
 
   if (!invoked.ok) {

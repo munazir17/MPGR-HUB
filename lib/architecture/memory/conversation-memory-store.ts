@@ -5,21 +5,17 @@
 // This store only holds the *derived* summaries produced by
 // memory-compression.ts, under its own namespaced key.
 
-import { getMemoryProvider } from "./memory-provider-registry";
+import { clearMemory, readMigratedMemory, writeMemory } from "./memory-keys";
 import type { ConversationMemory, ConversationSummary } from "./memory-types";
 
 const MAX_SUMMARIES = 10;
-
-function storageKey(address: string): string {
-  return `mpgr-hub:conversation-memory:${address.toLowerCase()}`;
-}
 
 function emptyMemory(address: string): ConversationMemory {
   return { address, summaries: [] };
 }
 
 export async function getConversationMemory(address: string): Promise<ConversationMemory> {
-  return getMemoryProvider().get<ConversationMemory>(storageKey(address), emptyMemory(address));
+  return readMigratedMemory("conversation-memory", address, emptyMemory(address));
 }
 
 export async function appendConversationSummary(
@@ -29,12 +25,13 @@ export async function appendConversationSummary(
   const memory = await getConversationMemory(address);
   const summaries = [...memory.summaries, summary].slice(-MAX_SUMMARIES);
   const updated: ConversationMemory = { ...memory, summaries };
-  await getMemoryProvider().set(storageKey(address), updated);
+  await writeMemory("conversation-memory", address, updated);
   return updated;
 }
 
 export async function clearConversationMemory(address: string): Promise<ConversationMemory> {
+  await clearMemory("conversation-memory", address);
   const cleared = emptyMemory(address);
-  await getMemoryProvider().set(storageKey(address), cleared);
+  await writeMemory("conversation-memory", address, cleared);
   return cleared;
 }

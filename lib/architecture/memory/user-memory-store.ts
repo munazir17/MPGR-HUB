@@ -11,17 +11,13 @@
 // recordResponseFeedback + mostUsedCommands. Every existing function's
 // behavior and signature is unchanged.
 
-import { getMemoryProvider } from "./memory-provider-registry";
+import { clearMemory, readMigratedMemory, writeMemory } from "./memory-keys";
 import type { AgentIntent } from "@/lib/agent-intelligence";
 import type { RecentCommandUse, RecentPageVisit, UserMemory } from "./memory-types";
 
 const MAX_RECENT_PAGES = 15;
 const MAX_RECENT_COMMANDS = 15;
 const DEFAULT_TOKEN = "MPGR";
-
-function storageKey(address: string): string {
-  return `mpgr-hub:user-memory:${address.toLowerCase()}`;
-}
 
 function emptyUserMemory(address: string): UserMemory {
   const now = new Date().toISOString();
@@ -40,11 +36,11 @@ function emptyUserMemory(address: string): UserMemory {
 }
 
 export async function getUserMemory(address: string): Promise<UserMemory> {
-  return getMemoryProvider().get<UserMemory>(storageKey(address), emptyUserMemory(address));
+  return readMigratedMemory("user-memory", address, emptyUserMemory(address));
 }
 
 async function saveUserMemory(memory: UserMemory): Promise<UserMemory> {
-  await getMemoryProvider().set(storageKey(memory.address), memory);
+  await writeMemory("user-memory", memory.address, memory);
   return memory;
 }
 
@@ -129,5 +125,6 @@ export function mostUsedCommands(memory: UserMemory, limit = 5): string[] {
 }
 
 export async function clearUserMemory(address: string): Promise<UserMemory> {
+  await clearMemory("user-memory", address);
   return saveUserMemory(emptyUserMemory(address));
 }

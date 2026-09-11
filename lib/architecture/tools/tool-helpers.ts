@@ -6,14 +6,11 @@
 // duplicate the same five lines.
 
 import { getAddress, type Address } from "viem";
-import { base } from "wagmi/chains";
 import { tokenUtils } from "@/lib/token/token-utils";
 import type { AgentToolError } from "./agent-tool-result";
+import { CHAIN_ID } from "@/lib/chain/base";
 
-// Every P0.2 tool is Base-Mainnet-only — this app's wagmi config
-// (lib/wagmi.ts) only ever configures `chains: [base]`, so this is the
-// only chain any of these tools' RPC calls can ever legitimately target.
-export const TOOL_CHAIN_ID = base.id;
+export const TOOL_CHAIN_ID = CHAIN_ID;
 
 export type AddressValidationResult =
   | { ok: true; address: Address }

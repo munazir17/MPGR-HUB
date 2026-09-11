@@ -6,6 +6,25 @@ The project follows a milestone-based development roadmap.
 
 ---
 
+# Version 0.6.1
+
+## Remaining August 2026 audit closeout
+
+### Fixed
+
+- XP ledger Lua uses `redis.call` with event TTLs and an atomic daily game-XP cap.
+- `useXP` displays server-ledger totals; local storage is a cache.
+- Trade price keeps its original `{ from, to, slippageBps, price, provider, network }` body and binds taker to the session. Tokenized-stock quotes do the same.
+- MPGR Run records live heartbeats and rejects uncovered durations; physics helpers are shared.
+- Foundry remappings match CI `.forge-deps` clones. CI uses `npm ci`, a 4 GB heap, and Foundry `stable`.
+- README no longer claims Docker, pnpm, BullMQ, Prometheus, or production-ready financial rewards.
+
+### Still open (honest)
+
+- Independent contract audit, real replay anti-cheat, referral sybil, vault settlement idempotency, full 204MB art conversion, `RunGame.tsx` split.
+
+---
+
 # Version 0.6.0
 
 ## Tokenized-stock execution
