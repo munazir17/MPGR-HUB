@@ -1108,7 +1108,7 @@ export function RunGame({ address }: RunGameProps) {
         hooks.onCheckpoint();
       }
     },
-    [nextId, spawnBurst, collectItem, collectPowerup]
+    [nextId, spawnBurst, spawnSpriteBurst, collectItem, collectPowerup]
   );
 
   // --- Game loop --------------------------------------------------------
