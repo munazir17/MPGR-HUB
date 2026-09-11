@@ -1,0 +1,65 @@
+MPGR HUB — Split Licensing Notice
+
+This repository uses split licensing. Two different terms apply,
+depending on which part of the repository you are looking at.
+
+────────────────────────────────────────────────────────────────────
+
+1. MIT License — applies ONLY to the Solidity smart-contract source
+   and test files under:
+
+     /contracts/
+     /test/
+
+   This matches the `SPDX-License-Identifier: MIT` header already
+   present at the top of each of those files.
+
+2. All Rights Reserved — applies to everything else in this
+   repository, including but not limited to: the Next.js application
+   (the `app/` directory), API routes, frontend components and hooks,
+   libraries under `lib/`, build and utility scripts, configuration
+   files, documentation, and static assets. No license is granted to
+   use, copy, modify, merge, publish, distribute, sublicense, or sell
+   any of this content. All rights are reserved by the copyright
+   holder unless a separate license is granted in writing.
+
+────────────────────────────────────────────────────────────────────
+
+MIT License
+
+(Applies only to the files under /contracts/ and /test/ described
+above; referred to below as "the Software.")
+
+Copyright (c) 2026 Munazir Raza
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of the Software and associated documentation files covering it, to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+────────────────────────────────────────────────────────────────────
+
+All Rights Reserved
+
+(Applies to everything in this repository NOT covered by the MIT
+grant above.)
+
+Copyright (c) 2026 Munazir Raza. All rights reserved.
+
+No part of this content may be reproduced, distributed, or
+transmitted in any form or by any means, or used to build derivative
+works, without the prior written permission of the copyright holder,
+except as may be expressly permitted by a separate written agreement.

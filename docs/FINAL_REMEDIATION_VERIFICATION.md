@@ -15,7 +15,7 @@ This archive is a standalone security-remediation snapshot based on the August 2
 | P1-7 Settlement exactly-once | IMPROVED / PARTIAL | Durable settlement state, lock, reconciliation, and exactly-once treasury-ledger marker; external vault semantics still require real on-chain verification |
 | P1-8 Dependencies | PARTIAL | Target versions are pinned/selected in package.json, but no package-lock is present and `npm audit` cannot be run in this environment |
 | P1-9 API boundary policy | IMPROVED | Shared request guard applied to high-risk public JSON writes and AI; endpoint-specific protections remain for some read-only/cron routes |
-| P2-10 Documentation | IMPROVED | README claims/gates reconciled; repository intentionally does not declare a software license |
+| P2-10 Documentation | IMPROVED | README claims/gates reconciled; repository now declares split licensing — MIT for `/contracts/` and `/test/`, All Rights Reserved for everything else (see root `LICENSE`) |
 | P2-11 Large files | OPEN | RunGame.tsx remains large; refactoring was not performed because it is behavior-sensitive |
 | P2-12 Duplication | IMPROVED | Shared AI policy/prompt validation added; provider-specific request construction remains intentionally separate |
 | P2-13 Assets | IMPROVED | Several PNGs were losslessly optimized; full 204MB asset migration was not performed because broad conversion could change runtime references/behavior |

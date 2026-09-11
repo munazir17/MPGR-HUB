@@ -207,7 +207,9 @@ Governance & Audits
 - Keep audit reports and remediation in /security or /audits directory
 
 Licensing
-- No software license is declared in this repository yet.
+- This repository uses split licensing. See the root `LICENSE` file for the full text.
+  - MIT License — applies only to the Solidity smart-contract source and tests under `/contracts/` and `/test/` (matches the existing `SPDX-License-Identifier: MIT` headers in those files).
+  - All Rights Reserved — applies to everything else in this repository (application code, API routes, frontend, scripts, documentation, assets). No license is granted to use, copy, modify, or distribute this content without written permission.
 
 Acknowledgements
 - Base Network & developer community
