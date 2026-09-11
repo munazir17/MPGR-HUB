@@ -3,6 +3,10 @@
     {
       "path": "/api/games/mpgr-run/settlement",
       "schedule": "10 0 * * 1"
+    },
+    {
+      "path": "/api/games/mpgr-run/settlement/reconcile",
+      "schedule": "15 6 * * *"
     }
   ]
 }
