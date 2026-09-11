@@ -1,8 +1,14 @@
-import { Redis } from "@upstash/redis";
+import { getRedis } from "@/lib/api/redis";
 import { getSessionFromRequest } from "@/lib/auth/session";
-const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
-const redis = url && token ? new Redis({ url, token }) : null;
+
+function tryRedis() {
+  try {
+    return getRedis();
+  } catch {
+    return null;
+  }
+}
+
 export async function assertJsonBodyLimit(request: Request, maxBytes = 16 * 1024): Promise<Response | null> {
   const length = request.headers.get("content-length");
   if (length) {
@@ -33,8 +39,12 @@ export async function readJsonBody<T = unknown>(request: Request, maxBytes = 16 
     return { ok: false, response: new Response(JSON.stringify({ error: "Invalid JSON body" }), { status: 400, headers: { "Content-Type": "application/json" } }) };
   }
 }
+
 export async function enforceRateLimit(request: Request, bucket: string, limit: number, windowSeconds: number): Promise<Response | null> {
-  if (!redis) return new Response(JSON.stringify({ error: "Rate limiting is not configured" }), { status: 503, headers: { "Content-Type": "application/json" } });
+  const redis = tryRedis();
+  if (!redis) {
+    return new Response(JSON.stringify({ error: "Rate limiting is not configured" }), { status: 503, headers: { "Content-Type": "application/json" } });
+  }
   const session = getSessionFromRequest(request);
   const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
   const subject = session?.wallet.toLowerCase() ?? forwarded;
@@ -42,7 +52,12 @@ export async function enforceRateLimit(request: Request, bucket: string, limit: 
   const key = `mpgrhub:ratelimit:${bucket}:${window}:${subject}`;
   const count = await redis.incr(key);
   if (count === 1) await redis.expire(key, windowSeconds + 5);
-  if (count > limit) return new Response(JSON.stringify({ error: "Rate limit exceeded" }), { status: 429, headers: { "Content-Type": "application/json", "Retry-After": String(windowSeconds) } });
+  if (count > limit) {
+    return new Response(JSON.stringify({ error: "Rate limit exceeded" }), {
+      status: 429,
+      headers: { "Content-Type": "application/json", "Retry-After": String(windowSeconds) },
+    });
+  }
   return null;
 }
 

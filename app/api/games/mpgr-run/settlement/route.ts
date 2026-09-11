@@ -31,6 +31,7 @@ import { rewardVaultAdminClient } from "@/lib/reward-vault/reward-vault-admin-cl
 import { reconcileSettlement } from "@/lib/reward-allocation/settlement-reconciliation";
 import { withSettlementLock } from "@/lib/reward-allocation/settlement-lock";
 import { gameRewardsAreOperatorEnabled } from "@/lib/games/games-reward-config";
+import { requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -277,17 +278,19 @@ async function runSettlement(weekKeyOverride?: string) {
 }
 
 export async function GET(request: Request) {
+  const requestId = requestIdFromRequest(request);
+  const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), requestId);
   if (!isAuthorized(request)) {
-    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+    return json({ error: "Unauthorized." }, { status: 401 });
   }
   const url = new URL(request.url);
   const weekKeyOverride = url.searchParams.get("weekKey") ?? undefined;
   try {
     const outcome = await runSettlement(weekKeyOverride);
-    return NextResponse.json(serializable(outcome));
+    return json(serializable(outcome), { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     console.error("Weekly settlement failed", err);
-    return NextResponse.json({ error: "Weekly settlement failed. Check server logs for details." }, { status: 500 });
+    return json({ error: "Weekly settlement failed. Check server logs for details." }, { status: 500 });
   }
 }
 

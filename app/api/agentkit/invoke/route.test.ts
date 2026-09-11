@@ -9,8 +9,21 @@ vi.mock("@/lib/api/request-guard", () => ({
     requestId: "test-request-id",
     error: null,
   })),
-  readJsonBody: vi.fn(),
+  readJsonBody: vi.fn(async (request: Request) => ({
+    ok: true as const,
+    value: await request.json(),
+  })),
   withRequestId: vi.fn((response: Response) => response),
+}));
+
+vi.mock("@/lib/auth/session", () => ({
+  getSessionFromRequest: vi.fn(() => ({
+    wallet: "0x00000000000000000000000000000000000000aa",
+    chainId: 8453,
+    issuedAt: 1,
+    expiresAt: 9_999_999_999,
+    sessionId: "test-session",
+  })),
 }));
 
 vi.mock("@/lib/architecture/agentkit", () => ({
@@ -69,7 +82,10 @@ describe("POST /api/agentkit/invoke", () => {
     expect(JSON.stringify(body)).not.toContain("must-not-be-used");
     expect(JSON.stringify(body)).not.toMatch(/CDP_/i);
     expect(mockInvoke).toHaveBeenCalledWith(
-      expect.objectContaining({ actionName: "native_transfer" }),
+      expect.objectContaining({
+        actionName: "native_transfer",
+        walletAddress: "0x00000000000000000000000000000000000000aa",
+      }),
     );
     expect(mockInvoke.mock.calls[0][0]).not.toHaveProperty("cdpApiKeyId");
   });

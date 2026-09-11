@@ -1,6 +1,5 @@
 // lib/token-lock/token-lock-config.ts
-import { base } from "wagmi/chains";
-import type { Address } from "viem";
+import { CHAIN, CHAIN_ID, MPGR_TOKEN_ADDRESS, MPGR_TOKEN_LOCK_ADDRESS } from "@/lib/chain/base";
 
 // Wiring config for the already-deployed, immutable MPGRTokenLock V1
 // contract on Base Mainnet. Mirrors the shape of
@@ -11,23 +10,16 @@ import type { Address } from "viem";
 
 export const MPGR_TOKEN_LOCK_CONFIG = {
   // Deployed MPGRTokenLock V1 address on Base Mainnet. Immutable — never
-  // redeploy against this key without renaming it. Lowercase (not
-  // EIP-55 checksummed) — viem's getAddress() rejected the prior mixed
-  // -case literal because its capitalization didn't match the checksum
-  // for these bytes. Same 20 bytes, just written in the case viem
-  // accepts without checksum validation.
-  address: "0x0cb910b19b9d0ab772375a0b2e49b84ccdd51550" as Address,
+  // redeploy against this key without renaming it.
+  address: MPGR_TOKEN_LOCK_ADDRESS,
 
   // MPGR (B20) token address — the asset createLock()/withdraw()/
-  // earlyUnlock() move. Same address as MPGR_TOKEN_CONFIG.address /
-  // MPGR_STAKING_CONFIG.stakingTokenAddress; duplicated here (not
-  // imported) so this module has no cross-domain dependency, matching
-  // how lib/staking/staking-config.ts is self-contained.
-  mpgrTokenAddress: "0xB2000000000000000000008d204203177a78AF01" as Address,
+  // earlyUnlock() move.
+  mpgrTokenAddress: MPGR_TOKEN_ADDRESS,
 
   // Chain the Token Lock contract lives on. Base only.
-  chain: base,
-  chainId: base.id as 8453,
+  chain: CHAIN,
+  chainId: CHAIN_ID,
 
   // MPGR uses 18 decimals (see lib/token/token-config.ts).
   decimals: 18,

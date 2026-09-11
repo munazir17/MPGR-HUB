@@ -85,7 +85,14 @@ contract MPGRStakingInvariantTest is StdInvariant, Test {
         );
     }
 
-    function invariant_rewardPoolNeverExceedsFundedPrincipal() public view {
-        assertGe(staking.rewardPoolBalance(), 0);
+    function invariant_stakedPrincipalIsCoveredByContractBalance() public view {
+        assertGe(token.balanceOf(address(staking)), staking.totalStaked());
+    }
+
+    function invariant_rewardRateIsZeroWhenNobodyIsStaked() public view {
+        (uint256 rate,,,) = staking.rewardState();
+        if (staking.totalStaked() == 0) {
+            assertEq(rate, 0);
+        }
     }
 }

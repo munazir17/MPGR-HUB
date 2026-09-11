@@ -1,4 +1,4 @@
-import { getMemoryProvider } from "@/lib/architecture/memory/memory-provider-registry";
+import { clearMemory, readMigratedMemory, writeMemory } from "@/lib/architecture/memory/memory-keys";
 import type { CommandResult } from "./types";
 
 // Phase 3A.6 — Action History.
@@ -55,16 +55,12 @@ export interface RecordActionMeta {
 
 const MAX_ENTRIES = 50;
 
-function historyKey(address: string): string {
-  return `mpgr-hub:agent-action-history:${address.toLowerCase()}`;
-}
-
 function emptyState(address: string): ActionHistoryState {
   return { address, entries: [] };
 }
 
 export async function getActionHistory(address: string): Promise<ActionHistoryEntry[]> {
-  const state = await getMemoryProvider().get<ActionHistoryState>(historyKey(address), emptyState(address));
+  const state = await readMigratedMemory("agent-action-history", address, emptyState(address));
   return state.entries;
 }
 
@@ -92,7 +88,7 @@ export async function recordAction(
   result: CommandResult,
   meta?: RecordActionMeta
 ): Promise<ActionHistoryEntry[]> {
-  const state = await getMemoryProvider().get<ActionHistoryState>(historyKey(address), emptyState(address));
+  const state = await readMigratedMemory("agent-action-history", address, emptyState(address));
   const entry: ActionHistoryEntry = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
     commandName,
@@ -104,10 +100,11 @@ export async function recordAction(
     category: meta?.category ?? defaultCategory(result.kind),
   };
   const entries = [...state.entries, entry].slice(-MAX_ENTRIES);
-  await getMemoryProvider().set(historyKey(address), { address, entries });
+  await writeMemory("agent-action-history", address, { address, entries });
   return entries;
 }
 
 export async function clearActionHistory(address: string): Promise<void> {
-  await getMemoryProvider().set(historyKey(address), emptyState(address));
+  await clearMemory("agent-action-history", address);
+  await writeMemory("agent-action-history", address, emptyState(address));
 }

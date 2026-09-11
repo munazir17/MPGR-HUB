@@ -1,40 +1,37 @@
-# Final Remediation Verification — 2026-09-10
+# Final Remediation Verification — remaining-gap closeout
 
-This archive is a standalone security-remediation snapshot based on the August 2026 engineering/security audit.
+This is an engineering closeout of remaining August 2026 audit gaps. It is **not** a formal smart-contract audit, penetration test, or anti-cheat certification.
 
 ## Status matrix
 
 | Finding | Status | Evidence / limitation |
 |---|---|---|
-| P0-1 Wallet ownership | FIXED | SIWE nonce/session; protected writes derive wallet from session |
-| P0-2 Browser-owned XP | FIXED | Server XP ledger with fixed action policy and idempotent server events |
-| P0-3 Game result authority | PARTIAL | Server session, server score recomputation, timing/rate/idempotency gates; client gameplay statistics are still not cryptographically authoritative. Real-value settlement has an independent operator gate and remains disabled by default |
-| P0-4 Contract tests/audit | PARTIAL | Foundry layout fixed and test coverage expanded; actual `forge test` and external audit still require an environment with dependencies/Foundry |
-| P1-5 AI proxy | FIXED at code-policy level | Auth, limits, timeout, output cap, request IDs, shared server policy and usage logging |
-| P1-6 Referral attribution | PARTIAL | Authenticated referred wallet, first-write-wins, self-referral/duplication controls; sybil identity remains an operational risk |
-| P1-7 Settlement exactly-once | IMPROVED / PARTIAL | Durable settlement state, lock, reconciliation, and exactly-once treasury-ledger marker; external vault semantics still require real on-chain verification |
-| P1-8 Dependencies | PARTIAL | Target versions are pinned/selected in package.json, but no package-lock is present and `npm audit` cannot be run in this environment |
-| P1-9 API boundary policy | IMPROVED | Shared request guard applied to high-risk public JSON writes and AI; endpoint-specific protections remain for some read-only/cron routes |
-| P2-10 Documentation | IMPROVED | README claims/gates reconciled; repository now declares split licensing — MIT for `/contracts/` and `/test/`, All Rights Reserved for everything else (see root `LICENSE`) |
-| P2-11 Large files | OPEN | RunGame.tsx remains large; refactoring was not performed because it is behavior-sensitive |
-| P2-12 Duplication | IMPROVED | Shared AI policy/prompt validation added; provider-specific request construction remains intentionally separate |
-| P2-13 Assets | IMPROVED | Several PNGs were losslessly optimized; full 204MB asset migration was not performed because broad conversion could change runtime references/behavior |
-| P2-14 Test coverage | IMPROVED | Additional validation, settlement, fuzz and invariant coverage added; full runtime execution remains environment-dependent |
+| P0-1 Wallet ownership | FIXED | SIWE nonce/session; protected writes derive wallet from the session. Cookie parse uses a shared decoder. |
+| P0-2 Browser-owned XP | FIXED at ledger + client overlay | Server XP ledger (Lua `redis.call`, event TTL, daily game cap in Redis). `useXP` posts to `/api/xp` and caches server totals. Local storage remains a UI cache, not ranking truth. |
+| P0-3 Game result authority | PARTIAL | Server session, server score recomputation, heartbeat coverage, timing/rate/idempotency gates. Client gameplay statistics are still not cryptographically authoritative. Financial settlement remains fail-closed. |
+| P0-4 Contract tests/audit | PARTIAL | Foundry remappings match CI `.forge-deps` clones; unit/fuzz/invariant tests expanded. External audit is still required. |
+| P1-5 AI proxy | FIXED at code-policy level | Auth, body/prompt limits, timeout, output cap, request IDs, shared server policy. |
+| P1-6 Referral attribution | PARTIAL | Authenticated referred wallet, first-write-wins, click TTL, self-referral controls. Sybil identity remains an operational risk. |
+| P1-7 Settlement exactly-once | IMPROVED / PARTIAL | Durable settlement state, lock, reconciliation, treasury-ledger marker, request IDs on cron routes. Vault `allocateRewardsBatch` still has no idempotency key. |
+| P1-8 Dependencies | PARTIAL | `package-lock.json` exists; CI uses `npm ci`; `npm run audit:high` runs in CI. Residual advisories still need dedicated upgrade PRs. |
+| P1-9 API boundary policy | IMPROVED | Shared request guard, bounded `readJsonBody`, lazy Redis rate-limit client. Trade price/quote/stock-quote, XP, referral, game, x402, AgentKit writes are session-bound. |
+| P2-10 Documentation | IMPROVED | README matches the repo: npm not pnpm, no Docker/BullMQ/Prometheus, financial rewards not production-ready. |
+| P2-11 Large files | OPEN | `RunGame.tsx` still large. Shared physics helpers and heartbeat pings were extracted/wired; a full split was not done because it is behavior-sensitive. |
+| P2-12 Duplication | IMPROVED | Shared AI policy, chain registry, memory key helper. Provider-specific request construction remains separate on purpose. |
+| P2-13 Assets | IMPROVED | Lossless PNG work only. Full 204MB WebP/AVIF migration was not performed. |
+| P2-14 Test coverage | IMPROVED | XP Lua, physics, heartbeat coverage, cookies, chain registry, request-guard, extra staking unit/invariant tests. |
 
-## Execution limits
+## Still not claimable
 
-This environment does not have network access and does not have Foundry installed. Therefore the following cannot honestly be marked PASS here:
+Do not mark these PASS without independent evidence:
 
-- `npm install`
-- `npm run lint`
-- `npm run typecheck` with real dependencies
-- `npm test`
-- `npm run build`
-- `npm audit`
-- `forge test`
-
-A global TypeScript sanity run was performed only to catch syntax/configuration issues; its remaining diagnostics are dominated by unavailable dependency/type packages.
+- Independent smart-contract audit and production funding
+- Real replay / anti-cheat (heartbeats are liveness, not proof of play)
+- Referral sybil resistance
+- Vault-level settlement idempotency
+- Complete game-art conversion
+- `forge test` / `npm run build` in an environment that has not actually run them
 
 ## Financial reward safety
 
-`GAME_REWARDS_ENABLED` and `GAME_AUTHORITATIVE_VERIFICATION_ENABLED` default to disabled. This repository must not be described as production-ready for financial game rewards until an authoritative game verifier is integrated and verified, contract tests pass in a real environment, recovery procedures are tested, and an independent smart-contract audit is completed.
+`GAME_REWARDS_ENABLED` and `GAME_AUTHORITATIVE_VERIFICATION_ENABLED` default to disabled (fail-closed). This repository must not be described as production-ready for financial game rewards until an authoritative game verifier is integrated and verified, contract tests pass in a real environment, recovery procedures are tested, and an independent smart-contract audit is completed.

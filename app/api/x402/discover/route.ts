@@ -26,6 +26,7 @@
 // catchable and equivalent to PROVIDER_ERROR.
 
 import { NextResponse } from "next/server";
+import { readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 
 import {
   assertPublicHttpsUrl,
@@ -34,28 +35,34 @@ import {
   type X402DiscoveryResult,
 } from "@/lib/x402/x402-discover";
 
-function discoveryResponse(result: X402DiscoveryResult) {
-  return NextResponse.json(
-    {
-      status: result.status,
-      body: result.body,
-      contentType: result.contentType,
-      finalUrl: result.finalUrl,
-    },
-    {
-      status: 200,
-      headers: { "Cache-Control": "no-store" },
-    },
+function discoveryResponse(result: X402DiscoveryResult, requestId: string) {
+  return withRequestId(
+    NextResponse.json(
+      {
+        status: result.status,
+        body: result.body,
+        contentType: result.contentType,
+        finalUrl: result.finalUrl,
+      },
+      {
+        status: 200,
+        headers: { "Cache-Control": "no-store" },
+      },
+    ),
+    requestId,
   );
 }
 
-function discoveryErrorResponse(error: X402DiscoveryError) {
+function discoveryErrorResponse(error: X402DiscoveryError, requestId: string) {
   const status =
     error.code === "INVALID_URL" || error.code === "BLOCKED_HOST" ? 400 : 502;
 
-  return NextResponse.json(
-    { error: error.message, code: error.code },
-    { status, headers: { "Cache-Control": "no-store" } },
+  return withRequestId(
+    NextResponse.json(
+      { error: error.message, code: error.code },
+      { status, headers: { "Cache-Control": "no-store" } },
+    ),
+    requestId,
   );
 }
 
@@ -70,20 +77,23 @@ function discoveryErrorResponse(error: X402DiscoveryError) {
  * AgentKit wire-shape gap does not get reported to the user as
  * "resource unreachable" when the resource is, in fact, reachable.
  */
-async function fallbackNativeDiscovery(resourceUrl: string) {
+async function fallbackNativeDiscovery(resourceUrl: string, requestId: string) {
   try {
     const result = await discoverX402Resource(resourceUrl);
-    return discoveryResponse(result);
+    return discoveryResponse(result, requestId);
   } catch (error) {
     if (error instanceof X402DiscoveryError) {
-      return discoveryErrorResponse(error);
+      return discoveryErrorResponse(error, requestId);
     }
-    return NextResponse.json(
-      {
-        error: "Could not reach that resource. This may be temporary.",
-        code: "FETCH_FAILED",
-      },
-      { status: 502, headers: { "Cache-Control": "no-store" } },
+    return withRequestId(
+      NextResponse.json(
+        {
+          error: "Could not reach that resource. This may be temporary.",
+          code: "FETCH_FAILED",
+        },
+        { status: 502, headers: { "Cache-Control": "no-store" } },
+      ),
+      requestId,
     );
   }
 }
@@ -96,25 +106,20 @@ interface DiscoverRequestBody {
 }
 
 export async function POST(request: Request) {
-  let body: DiscoverRequestBody;
-
-  try {
-    body = (await request.json()) as DiscoverRequestBody;
-  } catch {
-    return NextResponse.json(
-      {
-        error: "Invalid JSON request body.",
-      },
-      { status: 400 },
-    );
-  }
+  const requestId = requestIdFromRequest(request);
+  const parsedBody = await readJsonBody(request);
+  if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
+  const body = parsedBody.value as DiscoverRequestBody;
 
   if (typeof body.resourceUrl !== "string") {
-    return NextResponse.json(
-      {
-        error: "resourceUrl must be a string.",
-      },
-      { status: 400 },
+    return withRequestId(
+      NextResponse.json(
+        {
+          error: "resourceUrl must be a string.",
+        },
+        { status: 400 },
+      ),
+      requestId,
     );
   }
 
@@ -151,13 +156,16 @@ export async function POST(request: Request) {
             : invoked.code === "ACTION_DENIED"
               ? 403
               : 502;
-        return NextResponse.json(
-          { error: invoked.error, code: invoked.code },
-          { status, headers: { "Cache-Control": "no-store" } },
+        return withRequestId(
+          NextResponse.json(
+            { error: invoked.error, code: invoked.code },
+            { status, headers: { "Cache-Control": "no-store" } },
+          ),
+          requestId,
         );
       }
 
-      return fallbackNativeDiscovery(body.resourceUrl);
+      return fallbackNativeDiscovery(body.resourceUrl, requestId);
     }
 
     if (isAgentKitErrorPayload(invoked.result)) {
@@ -165,7 +173,7 @@ export async function POST(request: Request) {
       // still ambiguous between "resource is actually down" and
       // "AgentKit couldn't represent this response" — fall back to a
       // direct read-only GET rather than reporting unreachable.
-      return fallbackNativeDiscovery(body.resourceUrl);
+      return fallbackNativeDiscovery(body.resourceUrl, requestId);
     }
 
     const mapped = mapAgentKitHttpResult(invoked.result, body.resourceUrl);
@@ -173,19 +181,19 @@ export async function POST(request: Request) {
     if (mapped.status === 0) {
       // Neither a recognized success nor a recognized 402 shape.
       // Confirm directly instead of assuming the resource is down.
-      return fallbackNativeDiscovery(body.resourceUrl);
+      return fallbackNativeDiscovery(body.resourceUrl, requestId);
     }
 
-    return discoveryResponse(mapped);
+    return discoveryResponse(mapped, requestId);
   } catch (error) {
     if (error instanceof X402DiscoveryError) {
-      return discoveryErrorResponse(error);
+      return discoveryErrorResponse(error, requestId);
     }
 
     // Includes AgentKit/CDP module-load failures (ERR_REQUIRE_ESM
     // from cdp-sdk CJS require("jose")) and any throw from
     // invokeAgentKitAction. Same handling as PROVIDER_ERROR: a
     // read-only native GET, never payment.
-    return fallbackNativeDiscovery(body.resourceUrl);
+    return fallbackNativeDiscovery(body.resourceUrl, requestId);
   }
 }

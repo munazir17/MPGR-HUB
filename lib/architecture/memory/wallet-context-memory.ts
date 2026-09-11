@@ -6,15 +6,11 @@
 // lib/agent-context.ts. Persisted through getMemoryProvider(), same as
 // every other store in this layer.
 
-import { getMemoryProvider } from "./memory-provider-registry";
+import { readMigratedMemory, writeMemory } from "./memory-keys";
 import type { AgentContext } from "@/lib/agent-context";
 import type { WalletContextMemory, WalletContextSnapshot } from "./memory-types";
 
 const MAX_SNAPSHOTS = 20;
-
-function storageKey(address: string): string {
-  return `mpgr-hub:wallet-memory:${address.toLowerCase()}`;
-}
 
 function emptyMemory(address: string): WalletContextMemory {
   return { address, snapshots: [] };
@@ -34,7 +30,7 @@ function toSnapshot(context: AgentContext): WalletContextSnapshot {
 }
 
 export async function getWalletContextMemory(address: string): Promise<WalletContextMemory> {
-  return getMemoryProvider().get<WalletContextMemory>(storageKey(address), emptyMemory(address));
+  return readMigratedMemory("wallet-memory", address, emptyMemory(address));
 }
 
 /**
@@ -62,7 +58,7 @@ export async function captureWalletSnapshot(address: string, context: AgentConte
 
   const snapshots = [...memory.snapshots, next].slice(-MAX_SNAPSHOTS);
   const updated: WalletContextMemory = { ...memory, snapshots };
-  await getMemoryProvider().set(storageKey(address), updated);
+  await writeMemory("wallet-memory", address, updated);
   return updated;
 }
 

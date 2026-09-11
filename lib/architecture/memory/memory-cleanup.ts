@@ -7,16 +7,13 @@
 // background task; a future recurring job can call the same function).
 
 import { getMemoryProvider } from "./memory-provider-registry";
+import { memoryKey } from "./memory-keys";
 import { getUserMemory } from "./user-memory-store";
 import { getWalletContextMemory } from "./wallet-context-memory";
 import { getConversationMemory } from "./conversation-memory-store";
 
 const MAX_PAGE_AGE_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 const MAX_COMMAND_AGE_MS = 1000 * 60 * 60 * 24 * 30;
-
-function userMemoryKey(address: string): string {
-  return `mpgr-hub:user-memory:${address.toLowerCase()}`;
-}
 
 /**
  * Drops stale, low-value entries (old page visits / command uses) that
@@ -41,7 +38,7 @@ export async function cleanupUserMemory(address: string): Promise<void> {
 
   await provider.beginTransaction();
   try {
-    await provider.set(userMemoryKey(address), { ...memory, recentPages, recentCommands });
+    await provider.set(memoryKey("user-memory", address), { ...memory, recentPages, recentCommands });
     await provider.commit();
   } catch (err) {
     await provider.rollback();

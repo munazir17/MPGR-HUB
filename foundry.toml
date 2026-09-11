@@ -6,7 +6,12 @@ src = "contracts"
 test = "test"
 out = "out"
 libs = [".forge-deps"]
-remappings = ["@openzeppelin/contracts/=contracts/lib/openzeppelin-contracts/contracts/"]
+remappings = [
+  "@openzeppelin/contracts/=.forge-deps/openzeppelin-contracts/contracts/",
+  "forge-std/=.forge-deps/forge-std/src/",
+]
+fuzz = { runs = 256 }
+invariant = { runs = 64, depth = 32 }
 
 [fmt]
 line_length = 120

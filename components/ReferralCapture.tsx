@@ -3,73 +3,69 @@
 import { useEffect, useRef } from "react";
 import { useAccount } from "wagmi";
 
-// Bug fix — persistent referral attribution.
-//
-// Step 1 (this component, on every page load): if the URL carries
-// ?ref=0x..., stash the referrer address in sessionStorage. This is
-// just a short-lived carrier across the landing click -> wallet
-// connect flow — it is NOT the source of truth (that's Redis, via
-// /api/referral — see lib/referral/referral-store.ts).
-//
-// Step 2 (this component, once a wallet connects): if a pending
-// referrer is stashed, POST it once to /api/referral so the server can
-// permanently attribute "this wallet -> referred by that wallet". The
-// server enforces idempotency (a wallet can only ever be attributed
-// once) and rejects self-referrals — this component just needs to make
-// the one call; it never fabricates or increments a count itself.
-//
-// Mounted once at the app root (app/layout.tsx), same pattern as
-// components/MiniAppAutoConnect.tsx / components/RecentPageTracker.tsx:
-// a side-effect-only component with no rendered output.
-
-const PENDING_REF_KEY = "mpgr_pending_ref_v1";
+const PENDING_REF_KEY = "mpgr_pending_ref_v2";
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const REFERRAL_CLICK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function submittedFlagKey(address: string) {
   return `mpgr_ref_submitted_v1_${address.toLowerCase()}`;
+}
+
+interface PendingReferral {
+  referrer: string;
+  capturedAt: number;
+}
+
+function readPending(): PendingReferral | null {
+  try {
+    const raw = window.sessionStorage.getItem(PENDING_REF_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PendingReferral;
+    if (!parsed || !ADDRESS_RE.test(parsed.referrer) || typeof parsed.capturedAt !== "number") return null;
+    if (Date.now() - parsed.capturedAt > REFERRAL_CLICK_TTL_MS) {
+      window.sessionStorage.removeItem(PENDING_REF_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 export function ReferralCapture() {
   const { address, isConnected } = useAccount();
   const attemptedRef = useRef<string | null>(null);
 
-  // Step 1 — capture ?ref= from the URL, once, on first load.
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const ref = params.get("ref");
       if (ref && ADDRESS_RE.test(ref)) {
-        window.sessionStorage.setItem(PENDING_REF_KEY, ref.toLowerCase());
+        const pending: PendingReferral = { referrer: ref.toLowerCase(), capturedAt: Date.now() };
+        window.sessionStorage.setItem(PENDING_REF_KEY, JSON.stringify(pending));
       }
     } catch {
-      // sessionStorage unavailable (private mode, etc.) — referral
-      // capture is best-effort and never blocks the rest of the app.
+      // sessionStorage unavailable — referral capture is best-effort.
     }
   }, []);
 
-  // Step 2 — once the referred wallet connects, register the referral.
   useEffect(() => {
     if (!isConnected || !address) return;
 
     const dedupeKey = address.toLowerCase();
     if (attemptedRef.current === dedupeKey) return;
 
-    let pendingRef: string | null = null;
+    let pending = readPending();
     try {
-      pendingRef = window.sessionStorage.getItem(PENDING_REF_KEY);
-      // Already submitted for this wallet in a prior session/visit —
-      // skip the network call entirely (the server would no-op this
-      // anyway via SETNX, this just avoids the redundant request).
       if (window.localStorage.getItem(submittedFlagKey(address))) {
-        pendingRef = null;
+        pending = null;
       }
     } catch {
-      pendingRef = null;
+      pending = null;
     }
 
-    if (!pendingRef || !ADDRESS_RE.test(pendingRef)) return;
-    if (pendingRef === address.toLowerCase()) {
-      // Self-referral — nothing to submit, just clear it.
+    if (!pending) return;
+    if (pending.referrer === address.toLowerCase()) {
       try {
         window.sessionStorage.removeItem(PENDING_REF_KEY);
       } catch {
@@ -83,18 +79,19 @@ export function ReferralCapture() {
     fetch("/api/referral", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ referrer: pendingRef, referred: address }),
+      body: JSON.stringify({ referrer: pending.referrer }),
     })
       .then((res) => {
         if (!res.ok) throw new Error("Referral registration failed");
         try {
           window.sessionStorage.removeItem(PENDING_REF_KEY);
           window.localStorage.setItem(submittedFlagKey(address), "1");
-        } catch { /* ignore storage errors */ }
+        } catch {
+          /* ignore storage errors */
+        }
       })
       .catch(() => {
-        // Keep the pending referral on transient/auth failure so the
-        // authenticated wallet can retry on the next render.
+        attemptedRef.current = null;
       });
   }, [address, isConnected]);
 

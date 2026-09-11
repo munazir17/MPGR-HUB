@@ -328,7 +328,7 @@ export async function executeAgentAction(
    * already-validated Base literal here. This does NOT bypass the runtime
    * gate above; it only satisfies wagmi's compile-time chain narrowing.
    */
-  const baseChainId = 8453 as const;
+  const baseChainId = TOOL_CHAIN_ID;
 
   actionsInFlight.add(action.id);
 

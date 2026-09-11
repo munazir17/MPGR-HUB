@@ -38,6 +38,7 @@ import { captureWalletSnapshot, getWalletContextMemory, latestSnapshot, previous
 import { compressOldestChunk } from "./memory-compression";
 import { appendConversationSummary, clearConversationMemory, getConversationMemory } from "./conversation-memory-store";
 import { topRelevantMessages } from "./memory-ranking";
+import { clearMemory } from "./memory-keys";
 import { cleanupMemory } from "./memory-cleanup";
 import type { SessionMemory, UserMemory, WalletContextMemory, ConversationSummary } from "./memory-types";
 
@@ -180,5 +181,11 @@ export async function runMemoryCleanup(address: string): Promise<void> {
 /** Mirrors lib/agent-engine.ts's clearAgentState — wipes derived memory too. */
 export async function clearAllMemory(address: string): Promise<void> {
   resetSessionMemory(address);
-  await Promise.all([clearUserMemory(address), clearConversationMemory(address)]);
+  await Promise.all([
+    clearUserMemory(address),
+    clearConversationMemory(address),
+    clearMemory("wallet-memory", address),
+    clearMemory("agent", address),
+    clearMemory("agent-action-history", address),
+  ]);
 }

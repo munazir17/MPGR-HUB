@@ -1,38 +1,39 @@
-// app/api/trade/quote/route.ts
-//
-// POST /api/trade/quote
-// Server-side Base swap quote. Regular tokens: Coinbase CDP then 0x.
-// Coinbase B20 tokenized stocks: Aerodrome Slipstream. Never broadcasts.
-
 import { NextResponse } from "next/server";
 
 import { createRoutedSwapQuote } from "@/lib/trade/trade-swap-router";
 import { buildTradeProposal } from "@/lib/trade/trade-proposal";
 import { parseTradeSwapRequest } from "@/lib/trade/trade-request";
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
+import { readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
+import { getSessionFromRequest } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const RATE_LIMIT = 15; // requests
-const RATE_WINDOW_MS = 60_000; // per minute — quote creation is heavier than price
+const RATE_LIMIT = 15;
+const RATE_WINDOW_MS = 60_000;
 
 export async function POST(request: Request) {
-  const rate = checkRateLimit(`${clientIpFromRequest(request)}:trade-quote`, RATE_LIMIT, RATE_WINDOW_MS);
+  const requestId = requestIdFromRequest(request);
+  const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), requestId);
+  const session = getSessionFromRequest(request);
+  if (!session) return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: { "Cache-Control": "no-store" } });
+  const rate = checkRateLimit(`${session.wallet.toLowerCase()}:trade-quote`, RATE_LIMIT, RATE_WINDOW_MS);
   if (!rate.allowed) {
-    return NextResponse.json(
+    return json(
       { error: "Too many requests. Please slow down.", code: "RATE_LIMITED" },
-      {
-        status: 429,
-        headers: { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) },
-      },
+      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) } },
     );
   }
+  const parsedBody = await readJsonBody(request);
+  if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
+  const body = parsedBody.value && typeof parsedBody.value === "object"
+    ? { ...(parsedBody.value as Record<string, unknown>), taker: session.wallet }
+    : parsedBody.value;
 
-  const body = await request.json().catch(() => null);
   const parsed = await parseTradeSwapRequest(body, { requireTaker: true });
   if (!parsed.ok) {
-    return NextResponse.json(
+    return json(
       { error: parsed.error.message, code: parsed.error.code },
       { status: parsed.error.code === "WALLET_REQUIRED" ? 401 : 400, headers: { "Cache-Control": "no-store" } },
     );
@@ -42,7 +43,7 @@ export async function POST(request: Request) {
     fromToken: parsed.value.from.address,
     toToken: parsed.value.to.address,
     fromAmount: parsed.value.fromAmount,
-    taker: parsed.value.taker,
+    taker: session.wallet,
     slippageBps: parsed.value.slippageBps,
   });
 
@@ -53,7 +54,7 @@ export async function POST(request: Request) {
         : result.error.code === "WALLET_REQUIRED"
           ? 401
           : 502;
-    return NextResponse.json(
+    return json(
       { error: result.error.message, code: result.error.code },
       { status, headers: { "Cache-Control": "no-store" } },
     );
@@ -64,18 +65,18 @@ export async function POST(request: Request) {
     to: parsed.value.to,
     quote: result.value,
     slippageBps: parsed.value.slippageBps,
-    taker: parsed.value.taker,
+    taker: session.wallet,
     provider: result.provider,
   });
 
   if (!proposal.ok) {
-    return NextResponse.json(
+    return json(
       { error: proposal.error.message, code: proposal.error.code },
       { status: 400, headers: { "Cache-Control": "no-store" } },
     );
   }
 
-  return NextResponse.json(
+  return json(
     { proposal: proposal.proposal },
     { status: 200, headers: { "Cache-Control": "no-store" } },
   );

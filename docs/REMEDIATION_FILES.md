@@ -1,6 +1,6 @@
 # Remediation File Map
 
-This archive contains the full repository plus the files changed or added for the August 2026 review remediation.
+This archive contains the full repository plus the files changed or added for the August 2026 review remaining-gap closeout.
 
 ## Authentication
 
@@ -9,6 +9,7 @@ This archive contains the full repository plus the files changed or added for th
 - `lib/auth/nonce.ts`
 - `lib/auth/session.ts`
 - `lib/auth/siwe.ts`
+- `lib/api/cookies.ts`
 - `app/api/auth/nonce/route.ts`
 - `app/api/auth/verify/route.ts`
 - `app/api/auth/logout/route.ts`
@@ -18,7 +19,9 @@ This archive contains the full repository plus the files changed or added for th
 ## Server-owned rewards / leaderboard
 
 - `lib/rewards/xp-ledger.ts`
+- `lib/rewards/xp-ledger.test.ts`
 - `app/api/xp/route.ts`
+- `hooks/useXP.ts`
 - `app/api/leaderboard/route.ts`
 - `app/api/leaderboard/route.test.ts`
 - `app/api/referral/route.ts`
@@ -28,7 +31,11 @@ This archive contains the full repository plus the files changed or added for th
 
 - `lib/games/game-session.ts`
 - `lib/games/mpgr-run/server-session.ts`
+- `lib/games/mpgr-run/server-session.test.ts`
+- `lib/games/mpgr-run/run-physics.ts`
+- `lib/games/mpgr-run/run-physics.test.ts`
 - `app/api/games/mpgr-run/session/route.ts`
+- `app/api/games/mpgr-run/checkpoint/route.ts`
 - `app/api/games/mpgr-run/reward/route.ts`
 - `app/api/games/mpgr-run/weekly-status/route.ts`
 - `lib/games/mpgr-run/submit-server-reward.ts`
@@ -41,13 +48,34 @@ This archive contains the full repository plus the files changed or added for th
 - `app/api/games/mpgr-run/settlement/reconcile/route.ts`
 - `lib/reward-vault/reward-vault-admin-client.ts`
 
-## AI/API boundaries
+## AI/API boundaries / trade
 
 - `lib/api/request-guard.ts`
+- `lib/api/request-guard.test.ts`
 - `lib/architecture/ai/server-policy.ts`
 - `app/api/agent/complete/route.ts`
 - `app/api/agent/complete/gemini/route.ts`
 - `lib/architecture/agentkit/invoke.ts`
+- `app/api/agentkit/invoke/route.ts`
+- `app/api/x402/register/route.ts`
+- `app/api/x402/submit/route.ts`
+- `app/api/x402/discover/route.ts`
+- `app/api/trade/price/route.ts`
+- `app/api/trade/quote/route.ts`
+- `app/api/trade/stocks/quote/route.ts`
+
+## Chain / memory
+
+- `lib/chain/base.ts`
+- `lib/chain/base.test.ts`
+- `lib/architecture/memory/memory-keys.ts`
+- `lib/architecture/memory/memory-keys.test.ts`
+- `lib/architecture/memory/user-memory-store.ts`
+- `lib/architecture/memory/wallet-context-memory.ts`
+- `lib/architecture/memory/conversation-memory-store.ts`
+- `lib/architecture/memory/memory-engine.ts`
+- `lib/agent-engine.ts`
+- `lib/agent-commands/action-history.ts`
 
 ## Contracts / delivery
 
@@ -58,8 +86,6 @@ This archive contains the full repository plus the files changed or added for th
 - `test/MPGRStakingFuzz.t.sol`
 - `test/MPGRStakingInvariant.t.sol`
 - `test/RewardMath.t.sol`
-- `lib/games/mpgr-run/run-validation.test.ts`
-- `lib/reward-allocation/settlement-engine.test.ts`
 - `.github/workflows/ci.yml`
 - `.github/workflows/debug-build.yml`
 - `.github/dependabot.yml`
@@ -77,4 +103,5 @@ This archive contains the full repository plus the files changed or added for th
 - `docs/SECURITY_REMEDIATION.md`
 - `docs/GAME_REWARDS_RUNBOOK.md`
 - `docs/REMEDIATION_FILES.md`
+- `docs/FINAL_REMEDIATION_VERIFICATION.md`
 - `README.md`

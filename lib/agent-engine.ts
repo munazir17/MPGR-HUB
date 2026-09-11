@@ -1,4 +1,4 @@
-import { getMemoryProvider } from "@/lib/architecture/memory/memory-provider-registry";
+import { clearMemory, readMigratedMemory, writeMemory } from "@/lib/architecture/memory/memory-keys";
 import type { AgentIntent } from "@/lib/agent-intelligence";
 import { buildAgentPromptContext } from "@/lib/agent-prompt-context";
 import { getAIProvider } from "@/lib/architecture/ai/ai-provider-registry";
@@ -74,10 +74,6 @@ export interface AgentState {
   messages: AgentMessage[];
 }
 
-function storageKey(address: string): string {
-  return `mpgr-hub:agent:${address.toLowerCase()}`;
-}
-
 function emptyState(address: string): AgentState {
   return {
     address,
@@ -86,14 +82,11 @@ function emptyState(address: string): AgentState {
 }
 
 export async function getAgentState(address: string): Promise<AgentState> {
-  return getMemoryProvider().get<AgentState>(
-    storageKey(address),
-    emptyState(address),
-  );
+  return readMigratedMemory("agent", address, emptyState(address));
 }
 
 async function saveAgentState(state: AgentState): Promise<AgentState> {
-  await getMemoryProvider().set(storageKey(state.address), state);
+  await writeMemory("agent", state.address, state);
   return state;
 }
 
@@ -351,5 +344,6 @@ export async function setMessageFeedback(
 export async function clearAgentState(
   address: string,
 ): Promise<AgentState> {
+  await clearMemory("agent", address);
   return saveAgentState(emptyState(address));
 }

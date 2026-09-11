@@ -1,6 +1,11 @@
 # Financial/security-sensitive code requires explicit owner review.
 /contracts/ @munazir17
+/test/ @munazir17
 /lib/reward-allocation/ @munazir17
 /lib/reward-vault/ @munazir17
+/lib/rewards/ @munazir17
+/lib/auth/ @munazir17
 /app/api/games/mpgr-run/ @munazir17
 /app/api/auth/ @munazir17
+/app/api/xp/ @munazir17
+/app/api/referral/ @munazir17
