@@ -89,10 +89,10 @@ contract MPGRStakingInvariantTest is StdInvariant, Test {
         assertGe(token.balanceOf(address(staking)), staking.totalStaked());
     }
 
-    function invariant_rewardRateIsZeroWhenNobodyIsStaked() public view {
-        (uint256 rate,,,) = staking.rewardState();
+    function invariant_rewardAccrualFreezesWhenNobodyIsStaked() public view {
         if (staking.totalStaked() == 0) {
-            assertEq(rate, 0);
+            (,,, uint256 storedRewardPerToken) = staking.rewardState();
+            assertEq(staking.rewardPerToken(), storedRewardPerToken);
         }
     }
 }
