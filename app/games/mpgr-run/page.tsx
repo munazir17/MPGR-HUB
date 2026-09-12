@@ -18,20 +18,9 @@ export default function MPGRRunPage() {
 
   return (
     <>
-      {/*
-        Mobile UX (below sm/640px only): pin the page to exactly the
-        viewport height left after the sticky Navbar and the fixed
-        BottomNav (5rem = BottomNav's own height + safe-area), so the
-        game viewport below can flex-grow to fill nearly the entire
-        screen instead of sitting in a small vh-capped card inside a
-        centered, padded page. At sm (640px) and up this reverts to the
-        original desktop layout — mx-auto max-w-2xl px-4 py-6, natural
-        height, page-level scroll — nothing about desktop changes. Same
-        pattern already used by app/agent/page.tsx.
-      */}
-      <div className="flex min-h-[calc(100dvh-5rem)] flex-col lg:min-h-[100dvh]">
+      <div className="flex h-[100dvh] max-h-[100dvh] flex-col overflow-hidden">
         <Navbar />
-        <main className="flex min-h-0 flex-1 flex-col px-3 pb-2 pt-2 sm:px-4 lg:mx-auto lg:w-full lg:max-w-5xl lg:pb-6">
+        <main className="flex min-h-0 flex-1 flex-col px-2 pb-[5.75rem] pt-1 sm:px-4 sm:pb-4 lg:mx-auto lg:w-full lg:max-w-6xl">
           {!mounted ? (
             <SkeletonCard lines={6} />
           ) : !isConnected || !address ? (
@@ -42,11 +31,13 @@ export default function MPGRRunPage() {
             />
           ) : (
             <motion.div
-              initial={{ opacity: 0, y: 10 }}
+              initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="flex min-h-0 flex-1 flex-col"
+              className="flex min-h-0 flex-1 flex-col gap-1"
             >
-              <RunGame address={address} />
+              <div className="flex min-h-0 flex-1 flex-col">
+                <RunGame address={address} />
+              </div>
               <WeeklyGameRewardsPanel address={address} />
             </motion.div>
           )}

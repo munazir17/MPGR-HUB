@@ -1545,7 +1545,7 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 lg:min-h-[calc(100dvh-6.5rem)]">
+    <div className="flex min-h-0 flex-1 flex-col gap-1">
       <div className="flex shrink-0 items-center justify-between">
         {/* BottomNav already has a Games tab on mobile, so this link is
             redundant there and only wastes header space — kept for
@@ -1573,7 +1573,7 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
           ref={containerRef}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
-          className="relative min-h-[58dvh] w-full flex-1 select-none touch-none sm:min-h-[72dvh] lg:min-h-[calc(100dvh-8.5rem)]"
+          className="relative min-h-0 w-full flex-1 select-none touch-none"
           style={{ touchAction: "none" }}
         >
           <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
