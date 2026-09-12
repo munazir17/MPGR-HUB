@@ -3,6 +3,7 @@ import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/reques
 import type { Address } from "viem";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { recordGameHeartbeat } from "@/lib/games/mpgr-run/server-session";
+import { MPGR_RUN_GAME_ID } from "@/lib/games/mpgr-run/run-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,7 +21,7 @@ export async function POST(request: Request) {
   if (typeof sessionId !== "string" || sessionId.length < 8 || sessionId.length > 128) {
     return json({ error: "Invalid game session" }, { status: 400 });
   }
-  const session = await recordGameHeartbeat(sessionId, auth.wallet as Address);
+  const session = await recordGameHeartbeat(sessionId, auth.wallet as Address, MPGR_RUN_GAME_ID);
   if (!session) return json({ error: "Invalid or expired game session" }, { status: 401 });
   return json({ ok: true, expiresAt: session.expiresAt }, { headers: { "Cache-Control": "no-store" } });
 }

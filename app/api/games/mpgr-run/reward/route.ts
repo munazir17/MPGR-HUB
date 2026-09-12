@@ -27,9 +27,10 @@ import type { RunResult, RunStats } from "@/lib/games/mpgr-run/run-score";
 import { computeRunScore } from "@/lib/games/mpgr-run/run-score";
 import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import { getServerGameSession, heartbeatsCoverDuration } from "@/lib/games/mpgr-run/server-session";
+import { consumeGameSession, getServerGameSession, heartbeatsCoverDuration } from "@/lib/games/mpgr-run/server-session";
 import { verifyAuthoritativeRun } from "@/lib/games/mpgr-run/authoritative-verifier";
 import { gameRewardsAreOperatorEnabled, MIN_VALID_RUNS_FOR_ELIGIBILITY } from "@/lib/games/games-reward-config";
+import { MPGR_RUN_GAME_ID } from "@/lib/games/mpgr-run/run-config";
 import { awardCappedGameXP, getSeasonPoints as getServerSeasonPoints } from "@/lib/rewards/xp-ledger";
 import type { PlayerWeekRecord, RunRecord } from "@/lib/reward-allocation/allocation-types";
 import { getWeekKey, resolveEligibility } from "@/lib/reward-allocation/settlement-engine";
@@ -97,7 +98,12 @@ export async function POST(request: Request) {
   const sessionId = body.sessionId;
   if (sessionId.length > 128) return json({ error: "Invalid game session" }, { status: 400 });
   const gameSession = await getServerGameSession(sessionId);
-  if (!gameSession || gameSession.wallet.toLowerCase() !== wallet.toLowerCase() || gameSession.gameId !== "mpgr-run") {
+  if (
+    !gameSession ||
+    gameSession.wallet.toLowerCase() !== wallet.toLowerCase() ||
+    gameSession.gameId !== MPGR_RUN_GAME_ID ||
+    gameSession.consumedAt
+  ) {
     return json({ error: "Invalid or expired game session" }, { status: 401 });
   }
 
@@ -155,6 +161,15 @@ export async function POST(request: Request) {
   };
 
   const insertResult = await kvAllocationStore.putRunRecordIfAbsent(runRecord);
+
+  // A session backs at most one reward decision. Consuming it here (rather
+  // than waiting for its natural TTL) prevents any further heartbeat or
+  // reward attempt from reusing it, and frees the wallet's concurrent-
+  // session slot immediately. This is defense-in-depth on top of the
+  // sessionId idempotency key above, which is the primary duplicate guard.
+  await consumeGameSession(gameSession).catch((error) => {
+    console.error("Failed to mark game session as consumed", error);
+  });
 
   if (!insertResult.inserted) {
     return json({
