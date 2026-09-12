@@ -44,7 +44,6 @@ export function appendRunInputEvent(
   trace: RunInputTrace,
   event: RunInputEvent,
 ): void {
-  event = { ...event, atMs: snapToSimulationTick(event.atMs) };
   if (!Number.isFinite(event.atMs) || event.atMs < 0) {
     throw new Error("Input event timestamp must be a non-negative finite number");
   }

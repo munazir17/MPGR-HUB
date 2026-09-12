@@ -439,14 +439,13 @@ export function replayAuthoritativeRun(input: {
     const tick = Math.round(event.atMs / MPGR_RUN_FIXED_DT_MS);
     if (
       tick < 0 ||
-      Math.abs(tick * MPGR_RUN_FIXED_DT_MS - event.atMs) > MPGR_RUN_FIXED_DT_MS / 2
+      Math.abs(tick * MPGR_RUN_FIXED_DT_MS - event.atMs) > 1e-9
     ) {
       return {
         verified: false,
         reason: "Input timestamp is not aligned to the fixed simulation clock.",
       };
     }
-    event.atMs = tick * MPGR_RUN_FIXED_DT_MS;
 
     previousMs = event.atMs;
   }
@@ -455,17 +454,18 @@ export function replayAuthoritativeRun(input: {
     return { verified: false, reason: "Invalid run duration." };
   }
 
-  const durationMs = Math.round(input.result.durationMs);
-  if (!Number.isInteger(durationMs)) {
+  if (!Number.isInteger(input.result.durationMs)) {
     return { verified: false, reason: "Run duration must be an integer number of milliseconds." };
   }
 
-  const ticks = Math.round(durationMs / MPGR_RUN_FIXED_DT_MS);
+  const ticks = Math.round(input.result.durationMs / MPGR_RUN_FIXED_DT_MS);
 
-  if (ticks < 1) {
+  if (
+    ticks < 1 ||
+    Math.round(ticks * MPGR_RUN_FIXED_DT_MS) !== input.result.durationMs
+  ) {
     return { verified: false, reason: "Duration is not aligned to the fixed simulation clock." };
   }
-  input.result = { ...input.result, durationMs };
 
   if (events.some((event) => event.atMs > input.result.durationMs)) {
     return { verified: false, reason: "Input occurs after the submitted run ended." };

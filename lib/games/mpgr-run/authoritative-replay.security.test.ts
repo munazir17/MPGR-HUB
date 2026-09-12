@@ -49,7 +49,7 @@ describe("authoritative replay security validation", () => {
         events: [
           {
             type: "jump",
-            atMs: 10,
+            atMs: 1,
           },
         ],
       },
