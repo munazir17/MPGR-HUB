@@ -312,6 +312,10 @@ export function RunGame({ address }: RunGameProps) {
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const finishRunRef = useRef<() => void>(() => {});
   const finishingRef = useRef(false);
+  // Synchronous guard for the async session-creation request. React state
+  // remains "idle" while fetch() is pending, so phaseRef alone cannot prevent
+  // rapid Start/Retry taps from minting multiple server sessions.
+  const startSessionInFlightRef = useRef(false);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [countdownValue, setCountdownValue] = useState(COUNTDOWN_SECONDS);
@@ -1243,75 +1247,87 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
   }, [buildStats]);
 
   const beginCountdown = useCallback(async () => {
-    // Rapid Start / Try Again taps must not spawn duplicate sessions or
-    // duplicate countdown intervals. Countdown and running are already
-    // in-flight; ignore. Idle / paused / game_over may start a new run.
+    // Phase alone is insufficient here because React stays in "idle" while
+    // the async session request is pending. Lock synchronously before fetch()
+    // so rapid Start/Retry taps can never mint multiple server sessions.
+    if (startSessionInFlightRef.current) return;
     if (phaseRef.current === "countdown" || phaseRef.current === "running" || phaseRef.current === "paused") return;
-    finishingRef.current = false;
-    if (countdownTimerRef.current != null) {
-      clearInterval(countdownTimerRef.current);
-      countdownTimerRef.current = null;
-    }
-    stopLoop();
-    fixedStepAccumulatorRef.current = 0;
-    inputTraceRef.current = createRunInputTrace();
-    worldRef.current = freshWorld();
-    const serverSession = await fetch("/api/games/mpgr-run/session", { method: "POST" }).then(async (res) => {
-      if (!res.ok) throw new Error("Unable to start secure game session");
-      return await res.json() as {
-        sessionId: string;
-        expiresAt: string;
-        seed: string;
-        protocolVersion: number;
-      };
-    }).catch(() => null);
-    if (!serverSession) {
-      goToPhase("idle");
-      return;
-    }
-    if (!/^[0-9a-f]{64}$/.test(serverSession.seed)) {
-      throw new Error("Invalid game session seed");
-    }
 
-    if (serverSession.protocolVersion !== 1) {
-      throw new Error("Unsupported MPGR Run protocol version");
-    }
-
-    runRngRef.current = createDeterministicRng(serverSession.seed);
-
-    sessionRef.current = startSession(MPGR_RUN_GAME_ID, address, serverSession.sessionId);
-    setRunResult(null);
-    setOutcome(null);
-    setHud({
-      distance: 0,
-      score: 0,
-      coins: 0,
-      gems: 0,
-      hp: STARTING_HP,
-      speedTier: 0,
-      activePowerups: [],
-      checkpointFlash: false,
-    });
-    setCountdownValue(COUNTDOWN_SECONDS);
-    goToPhase("countdown");
-
-    let remaining = COUNTDOWN_SECONDS;
-    countdownTimerRef.current = setInterval(() => {
-      remaining -= 1;
-      if (remaining <= 0) {
-        if (countdownTimerRef.current != null) {
-          clearInterval(countdownTimerRef.current);
-          countdownTimerRef.current = null;
-        }
-        // Enter PLAYING here; the effect below owns rAF start. Starting the
-        // loop from this interval previously raced phaseRef (still "countdown"
-        // until React committed), so the first frame bailed and never
-        // rescheduled — UI visible, world frozen.
-        goToPhase("running");
-      } else {
-        setCountdownValue(remaining);
+    startSessionInFlightRef.current = true;
+    try {
+      finishingRef.current = false;
+      if (countdownTimerRef.current != null) {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
       }
-    }, 700);
+      stopLoop();
+      fixedStepAccumulatorRef.current = 0;
+      inputTraceRef.current = createRunInputTrace();
+      worldRef.current = freshWorld();
+
+      const serverSession = await fetch("/api/games/mpgr-run/session", { method: "POST" }).then(async (res) => {
+        if (!res.ok) throw new Error("Unable to start secure game session");
+        return await res.json() as {
+          sessionId: string;
+          expiresAt: string;
+          seed: string;
+          protocolVersion: number;
+        };
+      }).catch(() => null);
+
+      if (!serverSession) {
+        goToPhase("idle");
+        return;
+      }
+
+      if (!/^[0-9a-f]{64}$/.test(serverSession.seed)) {
+        throw new Error("Invalid game session seed");
+      }
+
+      if (serverSession.protocolVersion !== 1) {
+        throw new Error("Unsupported MPGR Run protocol version");
+      }
+
+      runRngRef.current = createDeterministicRng(serverSession.seed);
+
+      sessionRef.current = startSession(MPGR_RUN_GAME_ID, address, serverSession.sessionId);
+      setRunResult(null);
+      setOutcome(null);
+      setHud({
+        distance: 0,
+        score: 0,
+        coins: 0,
+        gems: 0,
+        hp: STARTING_HP,
+        speedTier: 0,
+        activePowerups: [],
+        checkpointFlash: false,
+      });
+      setCountdownValue(COUNTDOWN_SECONDS);
+      goToPhase("countdown");
+
+      let remaining = COUNTDOWN_SECONDS;
+      countdownTimerRef.current = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          if (countdownTimerRef.current != null) {
+            clearInterval(countdownTimerRef.current);
+            countdownTimerRef.current = null;
+          }
+          // Enter PLAYING here; the effect below owns rAF start. Starting the
+          // loop from this interval previously raced phaseRef (still "countdown"
+          // until React committed), so the first frame bailed and never
+          // rescheduled — UI visible, world frozen.
+          goToPhase("running");
+        } else {
+          setCountdownValue(remaining);
+        }
+      }, 700);
+    } finally {
+      // Once the server session has either failed or successfully entered
+      // countdown, phaseRef is sufficient to block another start.
+      startSessionInFlightRef.current = false;
+    }
   }, [address, goToPhase, stopLoop]);
 
   // --- Input actions ------------------------------------------------------
