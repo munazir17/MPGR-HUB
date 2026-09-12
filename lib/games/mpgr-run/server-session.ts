@@ -61,7 +61,14 @@ export async function createServerGameSession(wallet: Address, gameId: string, s
   const normalizedWallet = wallet.toLowerCase() as Address;
   const activeKey = activeSessionsKey(normalizedWallet);
 
-  const activeCount = await redis().scard(activeKey).catch(() => 0);
+  const nowMs = Date.now();
+
+  // Active sessions are tracked in a sorted set by their individual
+  // expiry time. This prevents an abandoned session from keeping the
+  // wallet locked merely because another session refreshed the set TTL.
+  await redis().zremrangebyscore(activeKey, 0, nowMs).catch(() => undefined);
+
+  const activeCount = await redis().zcard(activeKey).catch(() => 0);
   if (activeCount >= MAX_CONCURRENT_SESSIONS_PER_WALLET) {
     throw new TooManyActiveSessionsError();
   }
@@ -81,7 +88,10 @@ export async function createServerGameSession(wallet: Address, gameId: string, s
   const result = await redis().set(key(sessionId), session, { nx: true, ex: TTL });
   if (result === null) throw new Error("Game session collision");
 
-  await redis().sadd(activeKey, sessionId);
+  await redis().zadd(activeKey, {
+    score: Date.parse(session.expiresAt),
+    member: sessionId,
+  });
   await redis().expire(activeKey, TTL);
 
   return session;
@@ -128,7 +138,7 @@ export async function consumeGameSession(session: ServerGameSession): Promise<vo
   if (session.consumedAt) return;
   const consumed: ServerGameSession = { ...session, consumedAt: new Date().toISOString() };
   await redis().set(key(session.sessionId), consumed, { ex: remainingTtlSeconds(session) });
-  await redis().srem(activeSessionsKey(session.wallet), session.sessionId).catch(() => undefined);
+  await redis().zrem(activeSessionsKey(session.wallet), session.sessionId).catch(() => undefined);
 }
 
 export function heartbeatsCoverDuration(session: ServerGameSession, durationMs: number): boolean {

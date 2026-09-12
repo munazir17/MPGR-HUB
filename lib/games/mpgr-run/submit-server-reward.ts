@@ -40,7 +40,14 @@ export async function submitRunToServer(
       body: JSON.stringify({ sessionId, result, inputTrace }),
     });
     if (!res.ok) return null;
-    return (await res.json()) as ServerRewardSubmission;
+
+    const submission = (await res.json()) as ServerRewardSubmission;
+
+    if (submission.accepted && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("mpgr-run:weekly-stats-updated"));
+    }
+
+    return submission;
   } catch (err) {
     console.warn("submitRunToServer failed (gameplay UI is local-only)", err);
     return null;

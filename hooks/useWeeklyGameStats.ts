@@ -51,7 +51,17 @@ export function useWeeklyGameStats(address: string | undefined) {
     }
     void refetch();
     const interval = setInterval(() => void refetch(), POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
+
+    const onRunAccepted = () => {
+      void refetch();
+    };
+
+    window.addEventListener("mpgr-run:weekly-stats-updated", onRunAccepted);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("mpgr-run:weekly-stats-updated", onRunAccepted);
+    };
   }, [address, refetch]);
 
   return { stats, isLoading, error, refetch };

@@ -30,7 +30,7 @@ import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { consumeGameSession, getServerGameSession, heartbeatsCoverDuration } from "@/lib/games/mpgr-run/server-session";
 import { verifyAuthoritativeRun } from "@/lib/games/mpgr-run/authoritative-verifier";
-import { gameRewardsAreOperatorEnabled, MIN_VALID_RUNS_FOR_ELIGIBILITY } from "@/lib/games/games-reward-config";
+import { MIN_VALID_RUNS_FOR_ELIGIBILITY } from "@/lib/games/games-reward-config";
 import { MPGR_RUN_GAME_ID } from "@/lib/games/mpgr-run/run-config";
 import { awardCappedGameXP, getSeasonPoints as getServerSeasonPoints } from "@/lib/rewards/xp-ledger";
 import type { PlayerWeekRecord, RunRecord } from "@/lib/reward-allocation/allocation-types";
@@ -138,18 +138,19 @@ export async function POST(request: Request) {
 
   // Financial settlement requires an independent authoritative attestation.
   // Client-side plausibility checks are never sufficient for real value.
-  const authoritative = gameRewardsAreOperatorEnabled()
-    ? await verifyAuthoritativeRun({
-        sessionId,
-        wallet,
-        result: resultForValidation,
-        inputTrace: body.inputTrace,
-        seed: gameSession.seed,
-        protocolVersion: gameSession.protocolVersion,
-        sessionCreatedAt: gameSession.createdAt,
-        sessionExpiresAt: gameSession.expiresAt,
-      })
-    : { verified: false as const, reason: "Financial game rewards are disabled." };
+  // Always perform the server-side authoritative replay verification.
+  // Financial rewards may be disabled, but verified gameplay facts still
+  // need to reach the weekly stats ledger and remain auditable.
+  const authoritative = await verifyAuthoritativeRun({
+    sessionId,
+    wallet,
+    result: resultForValidation,
+    inputTrace: body.inputTrace,
+    seed: gameSession.seed,
+    protocolVersion: gameSession.protocolVersion,
+    sessionCreatedAt: gameSession.createdAt,
+    sessionExpiresAt: gameSession.expiresAt,
+  });
 
   if (process.env.GAME_REWARDS_ENABLED === "true" && !authoritative.verified) {
     return json({
@@ -209,7 +210,7 @@ export async function POST(request: Request) {
 
   let playerWeek: PlayerWeekRecord | null = null;
 
-  if (weekIsOpenForContributions && process.env.GAME_REWARDS_ENABLED === "true" && authoritative.verified) {
+  if (weekIsOpenForContributions && authoritative.verified) {
     const serverSeasonPoints = await getServerSeasonPoints(wallet);
     // This is one atomic Redis operation: two simultaneous valid runs can
     // never both read the same validRunCount and overwrite each other.

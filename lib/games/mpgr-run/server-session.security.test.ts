@@ -11,7 +11,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const store = new Map<string, unknown>();
-const sets = new Map<string, Set<string>>();
+const zsets = new Map<string, Map<string, number>>();
 
 const redisMock = {
   get: vi.fn(async (key: string) => (store.has(key) ? store.get(key) : null)),
@@ -20,16 +20,28 @@ const redisMock = {
     store.set(key, value);
     return "OK";
   }),
-  scard: vi.fn(async (key: string) => sets.get(key)?.size ?? 0),
-  sadd: vi.fn(async (key: string, member: string) => {
-    const set = sets.get(key) ?? new Set<string>();
-    set.add(member);
-    sets.set(key, set);
-    return 1;
+  zremrangebyscore: vi.fn(async (key: string, min: number, max: number) => {
+    const set = zsets.get(key);
+    if (!set) return 0;
+    let removed = 0;
+    for (const [member, score] of set) {
+      if (score >= min && score <= max) {
+        set.delete(member);
+        removed += 1;
+      }
+    }
+    return removed;
   }),
-  srem: vi.fn(async (key: string, member: string) => {
-    sets.get(key)?.delete(member);
-    return 1;
+  zcard: vi.fn(async (key: string) => zsets.get(key)?.size ?? 0),
+  zadd: vi.fn(async (key: string, entry: { score: number; member: string }) => {
+    const set = zsets.get(key) ?? new Map<string, number>();
+    const existed = set.has(entry.member);
+    set.set(entry.member, entry.score);
+    zsets.set(key, set);
+    return existed ? 0 : 1;
+  }),
+  zrem: vi.fn(async (key: string, member: string) => {
+    return zsets.get(key)?.delete(member) ? 1 : 0;
   }),
   expire: vi.fn(async () => 1),
 };
@@ -48,7 +60,7 @@ const WALLET = "0x2222222222222222222222222222222222222222" as `0x${string}`;
 describe("server game session security properties", () => {
   beforeEach(() => {
     store.clear();
-    sets.clear();
+    zsets.clear();
     vi.clearAllMocks();
   });
 

@@ -35,7 +35,11 @@ vi.mock("@/lib/games/mpgr-run/server-session", () => ({
   heartbeatsCoverDuration: (...args: unknown[]) => heartbeatsCoverDuration(...(args as [])),
 }));
 
-const verifyAuthoritativeRun = vi.fn(async () => ({ verified: false, reason: "not configured" }));
+const verifyAuthoritativeRun = vi.fn(async (): Promise<{
+  verified: boolean;
+  reason?: string;
+  proofId?: string;
+}> => ({ verified: false, reason: "not configured" }));
 vi.mock("@/lib/games/mpgr-run/authoritative-verifier", () => ({
   verifyAuthoritativeRun,
 }));
@@ -48,7 +52,11 @@ vi.mock("@/lib/games/games-reward-config", () => ({
 
 const putRunRecordIfAbsent = vi.fn(async () => ({ inserted: true }));
 const getWeeklySettlement = vi.fn(async () => null);
-const recordValidatedRun = vi.fn(async () => null);
+const recordValidatedRun = vi.fn(async (): Promise<{
+  validRunCount: number;
+  bestScore: number;
+  eligibilityStatus: "pending" | "eligible" | "ineligible";
+} | null> => null);
 vi.mock("@/lib/reward-allocation/kv-allocation-store", () => ({
   kvAllocationStore: {
     putRunRecordIfAbsent,
@@ -142,6 +150,37 @@ describe("POST /api/games/mpgr-run/reward", () => {
     const body = await response.json();
     expect(body.accepted).toBe(true);
     expect(consumeGameSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a verified weekly run even while financial rewards are disabled", async () => {
+    const originalEnv = process.env.GAME_REWARDS_ENABLED;
+    delete process.env.GAME_REWARDS_ENABLED;
+
+    getServerGameSession.mockResolvedValue(baseSession());
+    verifyAuthoritativeRun.mockResolvedValue({ verified: true, proofId: "proof-123" });
+    recordValidatedRun.mockResolvedValue({
+      validRunCount: 1,
+      bestScore: 123,
+      eligibilityStatus: "pending",
+    });
+
+    try {
+      const { POST } = await import("./route");
+      const response = await POST(postReward("session-1234567890"));
+      expect(response.status).toBe(200);
+
+      const body = await response.json();
+      expect(body.accepted).toBe(true);
+      expect(recordValidatedRun).toHaveBeenCalledTimes(1);
+      expect(body.weeklyStats).toEqual({
+        validRunCount: 1,
+        bestScore: 123,
+        eligibilityStatus: "pending",
+      });
+    } finally {
+      if (originalEnv === undefined) delete process.env.GAME_REWARDS_ENABLED;
+      else process.env.GAME_REWARDS_ENABLED = originalEnv;
+    }
   });
 
   it("stays fail-closed: enabling GAME_REWARDS_ENABLED without a passing authoritative verification never allocates", async () => {
