@@ -1,0 +1,21 @@
+MPGR HUB — Game / XP / Weekly / Season fix
+==========================================
+
+Termux se upload:
+1. Is zip ko project root pe extract karo (files overwrite hongi).
+2. git add -A && git commit -m "fix: MPGR Run start, weekly stats, season XP, fullscreen"
+3. git push origin main
+4. Vercel auto-deploy ho jayega.
+
+Kya fix hua:
+- Game kabhi start / kabhi nahi: session 401 pe wallet sign-in retry, error dikhega, Start lock.
+- Physics mobile canvas width pe toot raha tha; ab 960 sim space pe consistent hai.
+- Weekly rewards play ke baad 0 reh jaate the: server ab valid run record karta hai, UI turant update.
+- XP / Level games page pe stale: server ledger se sync + play ke baad refresh.
+- Season har page pe alag number: ab server month ledger use hota hai.
+- Game screen badi, weekly panel chhoti; PC pe Start Run fullscreen try karega.
+
+Security audit:
+- Wallet session cookie ab bhi required hai writes ke liye.
+- GAME_REWARDS_ENABLED=true hone par unverified run reject.
+- Client score financial payout ka source nahi.

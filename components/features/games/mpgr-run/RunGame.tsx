@@ -2,8 +2,9 @@
 
 import { MPGR_RUN_SIMULATION_WIDTH } from "@/lib/games/mpgr-run/authoritative-replay";
 
-import { appendRunInputEvent, createRunInputTrace } from "@/lib/games/mpgr-run/input-trace";
+import { appendRunInputEvent, createRunInputTrace, snapDurationToSimulationTicks } from "@/lib/games/mpgr-run/input-trace";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useWalletAuth } from "@/hooks/useWalletAuth";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -285,6 +286,7 @@ interface RunGameProps {
 }
 
 export function RunGame({ address }: RunGameProps) {
+  const { authenticate, authenticating } = useWalletAuth();
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const worldRef = useRef<World>(freshWorld());
@@ -318,6 +320,8 @@ export function RunGame({ address }: RunGameProps) {
   const startSessionInFlightRef = useRef(false);
 
   const [phase, setPhase] = useState<Phase>("idle");
+  const [startError, setStartError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   const [countdownValue, setCountdownValue] = useState(COUNTDOWN_SECONDS);
   const [hud, setHud] = useState<HudSnapshot>({
     distance: 0,
@@ -956,9 +960,7 @@ export function RunGame({ address }: RunGameProps) {
   const step = useCallback(
     (dt: number, canvasHeight: number) => {
       const world = worldRef.current;
-      const { width } = sizeRef.current;
-      if (width === 0) return;
-      const playerScreenX = width * PLAYER_X;
+      const playerScreenX = MPGR_RUN_SIMULATION_WIDTH * PLAYER_X;
       const p = world.player;
       const hooks = getRunAudioHooks();
 
@@ -1077,14 +1079,14 @@ export function RunGame({ address }: RunGameProps) {
       for (const c of world.collectibles) {
         if (c.collected) continue;
         const sameLane = c.lane === p.lane;
-        const dx = c.x - (playerScreenX + PLAYER_SIZE / 2);
+        const dx = Math.abs(c.x - playerScreenX);
 
-        if (magnetActive && Math.abs(dx) < MAGNET_RANGE_PX) {
+        if (magnetActive && dx < MAGNET_RANGE_PX) {
           if (c.magnetizedAtMs === undefined) c.magnetizedAtMs = world.elapsedMs;
           if (world.elapsedMs - c.magnetizedAtMs >= MAGNET_ATTRACT_MS) {
             collectItem(world, c, canvasHeight);
           }
-        } else if (sameLane && Math.abs(dx) < c.radius + PLAYER_SIZE / 2) {
+        } else if (sameLane && dx < c.radius + 15) {
           collectItem(world, c, canvasHeight);
         }
       }
@@ -1093,15 +1095,15 @@ export function RunGame({ address }: RunGameProps) {
       for (const pu of world.powerups) {
         if (pu.collected) continue;
         const sameLane = pu.lane === p.lane;
-        const overlapX = playerScreenX + PLAYER_SIZE > pu.x - pu.radius && playerScreenX < pu.x + pu.radius;
-        if (sameLane && overlapX) {
+        const dx = Math.abs(pu.x - playerScreenX);
+        if (sameLane && dx < pu.radius + PLAYER_SIZE / 2) {
           collectPowerup(world, pu, canvasHeight);
         }
       }
 
       // Checkpoints.
       const distanceMeters = world.traveledPx / PX_PER_METER;
-      if (distanceMeters >= world.nextCheckpointM) {
+      while (distanceMeters >= world.nextCheckpointM) {
         world.stats.checkpoints += 1;
         world.nextCheckpointM += CHECKPOINT_INTERVAL_M;
         p.invulnerableUntilMs = Math.max(p.invulnerableUntilMs, world.elapsedMs + CHECKPOINT_GRACE_MS);
@@ -1174,7 +1176,7 @@ export function RunGame({ address }: RunGameProps) {
   const buildStats = useCallback((world: World): RunStats => {
     return {
       distanceMeters: world.traveledPx / PX_PER_METER,
-      durationMs: Math.round(world.elapsedMs),
+      durationMs: snapDurationToSimulationTicks(world.elapsedMs),
       coinsCollected: world.stats.coins,
       gemsCollected: world.stats.gems,
       xpOrbsCollected: world.stats.xpOrbs,
@@ -1254,6 +1256,8 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
     if (phaseRef.current === "countdown" || phaseRef.current === "running" || phaseRef.current === "paused") return;
 
     startSessionInFlightRef.current = true;
+    setStarting(true);
+    setStartError(null);
     try {
       finishingRef.current = false;
       if (countdownTimerRef.current != null) {
@@ -1265,17 +1269,63 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
       inputTraceRef.current = createRunInputTrace();
       worldRef.current = freshWorld();
 
-      const serverSession = await fetch("/api/games/mpgr-run/session", { method: "POST" }).then(async (res) => {
-        if (!res.ok) throw new Error("Unable to start secure game session");
+      const requestSession = async () => {
+        const res = await fetch("/api/games/mpgr-run/session", {
+          method: "POST",
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (res.status === 401) {
+          const signedIn = await authenticate();
+          if (!signedIn) {
+            throw new Error("Wallet signature required to start a run");
+          }
+          const retry = await fetch("/api/games/mpgr-run/session", {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+          });
+          if (!retry.ok) {
+            throw new Error(retry.status === 429
+              ? "Too many active runs. Wait a moment and try again."
+              : "Unable to start secure game session");
+          }
+          return await retry.json() as {
+            sessionId: string;
+            expiresAt: string;
+            seed: string;
+            protocolVersion: number;
+          };
+        }
+        if (!res.ok) {
+          throw new Error(res.status === 429
+            ? "Too many active runs. Wait a moment and try again."
+            : "Unable to start secure game session");
+        }
         return await res.json() as {
           sessionId: string;
           expiresAt: string;
           seed: string;
           protocolVersion: number;
         };
-      }).catch(() => null);
+      };
+
+      let serverSession: {
+        sessionId: string;
+        expiresAt: string;
+        seed: string;
+        protocolVersion: number;
+      } | null = null;
+      try {
+        serverSession = await requestSession();
+      } catch (error) {
+        setStartError(error instanceof Error ? error.message : "Unable to start game");
+        goToPhase("idle");
+        return;
+      }
 
       if (!serverSession) {
+        setStartError("Unable to start game. Check your connection and try again.");
         goToPhase("idle");
         return;
       }
@@ -1323,12 +1373,16 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
           setCountdownValue(remaining);
         }
       }, 700);
+    } catch (error) {
+      setStartError(error instanceof Error ? error.message : "Unable to start game");
+      goToPhase("idle");
     } finally {
       // Once the server session has either failed or successfully entered
       // countdown, phaseRef is sufficient to block another start.
       startSessionInFlightRef.current = false;
+      setStarting(false);
     }
-  }, [address, goToPhase, stopLoop]);
+  }, [address, authenticate, goToPhase, stopLoop]);
 
   // --- Input actions ------------------------------------------------------
   const jump = useCallback(() => {
@@ -1491,7 +1545,7 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 sm:block sm:flex-none sm:space-y-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-2 lg:min-h-[calc(100dvh-6.5rem)]">
       <div className="flex shrink-0 items-center justify-between">
         {/* BottomNav already has a Games tab on mobile, so this link is
             redundant there and only wastes header space — kept for
@@ -1514,12 +1568,12 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
         )}
       </div>
 
-      <GlassCard className="relative flex min-h-0 flex-1 flex-col overflow-hidden p-0 sm:flex-none">
+      <GlassCard className="relative flex min-h-0 flex-1 flex-col overflow-hidden p-0">
         <div
           ref={containerRef}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
-          className="relative min-h-[360px] w-full flex-1 select-none touch-none sm:relative sm:inset-auto sm:h-[62vh] sm:max-h-[560px] sm:w-full sm:flex-none"
+          className="relative min-h-[58dvh] w-full flex-1 select-none touch-none sm:min-h-[72dvh] lg:min-h-[calc(100dvh-8.5rem)]"
           style={{ touchAction: "none" }}
         >
           <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
@@ -1630,12 +1684,21 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
                   </p>
                 </div>
                 <button
-                  onClick={beginCountdown}
-                  className="flex min-h-[44px] items-center gap-2 rounded-xl bg-gradient-premium px-6 py-2.5 text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95"
+                  onClick={() => {
+                    if (containerRef.current && typeof containerRef.current.requestFullscreen === "function" && window.matchMedia("(min-width: 1024px)").matches) {
+                      void containerRef.current.requestFullscreen().catch(() => undefined);
+                    }
+                    void beginCountdown();
+                  }}
+                  disabled={starting || authenticating}
+                  className="flex min-h-[44px] items-center gap-2 rounded-xl bg-gradient-premium px-6 py-2.5 text-sm font-semibold text-white shadow-glow-gold transition-transform active:scale-95 disabled:opacity-60"
                 >
                   <Play className="h-4 w-4" aria-hidden="true" />
-                  Start Run
+                  {starting || authenticating ? "Starting..." : "Start Run"}
                 </button>
+                {startError && (
+                  <p className="max-w-xs text-xs text-rose-300">{startError}</p>
+                )}
                 {personalBest > 0 && (
                   <p className="flex items-center gap-1.5 text-xs text-gold">
                     <Trophy className="h-3.5 w-3.5" aria-hidden="true" />

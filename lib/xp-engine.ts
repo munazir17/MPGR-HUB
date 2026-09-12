@@ -39,6 +39,8 @@ export interface UserXPRecord {
   claimedAchievements: string[];
   lastKnownLevel: number;
   history: XPHistoryEntry[];
+  serverSeasonPoints?: number;
+  serverSeasonMonth?: string;
 }
 
 const STORAGE_PREFIX = "mpgr_xp_v1_";
@@ -176,10 +178,15 @@ export function performDailyCheckIn(address: string): AwardResult & { alreadyChe
 // server-authoritative calculation in app/api/leaderboard/route.ts, so
 // this file, the leaderboard POST, and any future recompute/migration
 // tooling can never drift into competing answers for the same wallet.
+function utcMonthId(date = new Date()): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
 export function cacheServerXPTotals(
   address: string,
   xp: number,
   referralCount?: number,
+  seasonPoints?: number,
 ): UserXPRecord {
   const record = getUserRecord(address);
   if (Number.isFinite(xp) && xp >= 0) {
@@ -188,12 +195,22 @@ export function cacheServerXPTotals(
   if (typeof referralCount === "number" && Number.isFinite(referralCount) && referralCount >= 0) {
     record.referralCount = Math.floor(referralCount);
   }
+  if (typeof seasonPoints === "number" && Number.isFinite(seasonPoints) && seasonPoints >= 0) {
+    record.serverSeasonPoints = Math.floor(seasonPoints);
+    record.serverSeasonMonth = utcMonthId();
+  }
   record.lastKnownLevel = Math.max(record.lastKnownLevel, getLevelProgress(record.xp).level);
   saveUserRecord(record);
   return record;
 }
 
 export function getSeasonPoints(record: UserXPRecord): number {
+  if (
+    typeof record.serverSeasonPoints === "number" &&
+    record.serverSeasonMonth === utcMonthId()
+  ) {
+    return record.serverSeasonPoints;
+  }
   return calculateSeasonPoints(record.xp, record.history).seasonPoints;
 }
 

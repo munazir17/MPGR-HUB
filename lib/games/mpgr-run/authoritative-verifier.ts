@@ -10,6 +10,7 @@ export interface AuthoritativeVerificationResult {
   verified: boolean;
   proofId?: string;
   reason?: string;
+  computedResult?: RunResult;
 }
 
 export function verifyAuthoritativeRun(input: {
@@ -34,6 +35,8 @@ export function verifyAuthoritativeRun(input: {
 
   if (!replay.verified) return replay;
 
+  const result = replay.computedResult ?? input.result;
+
   const proofMaterial = JSON.stringify({
     version: 1,
     sessionId: input.sessionId,
@@ -53,5 +56,6 @@ export function verifyAuthoritativeRun(input: {
   return {
     verified: true,
     proofId,
+    computedResult: result,
   };
 }

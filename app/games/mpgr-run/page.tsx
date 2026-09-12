@@ -29,9 +29,9 @@ export default function MPGRRunPage() {
         height, page-level scroll — nothing about desktop changes. Same
         pattern already used by app/agent/page.tsx.
       */}
-      <div className="flex min-h-[calc(100dvh-5rem)] flex-col sm:min-h-[100dvh] sm:block sm:min-h-0">
+      <div className="flex min-h-[calc(100dvh-5rem)] flex-col lg:min-h-[100dvh]">
         <Navbar />
-        <main className="flex flex-1 min-h-0 flex-col px-3 pb-2 pt-2 sm:mx-auto sm:block sm:max-w-2xl sm:flex-none sm:px-4 sm:py-6">
+        <main className="flex min-h-0 flex-1 flex-col px-3 pb-2 pt-2 sm:px-4 lg:mx-auto lg:w-full lg:max-w-5xl lg:pb-6">
           {!mounted ? (
             <SkeletonCard lines={6} />
           ) : !isConnected || !address ? (
@@ -44,7 +44,7 @@ export default function MPGRRunPage() {
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="flex min-h-0 flex-1 flex-col sm:block sm:flex-none"
+              className="flex min-h-0 flex-1 flex-col"
             >
               <RunGame address={address} />
               <WeeklyGameRewardsPanel address={address} />

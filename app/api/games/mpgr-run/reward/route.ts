@@ -121,7 +121,7 @@ export async function POST(request: Request) {
   // recomputedScore === result.score, but recomputing here too means a
   // tampered `score` field is rejected before it ever reaches storage.
   const recomputedScore = computeRunScore(body.result);
-  const resultForValidation: RunResult = { ...body.result, score: recomputedScore };
+  let resultForValidation: RunResult = { ...body.result, score: recomputedScore };
 
   // Server-side idempotency check happens via putRunRecordIfAbsent below,
   // not via a client-supplied "processed session ids" list — so pass an
@@ -151,6 +151,13 @@ export async function POST(request: Request) {
     sessionCreatedAt: gameSession.createdAt,
     sessionExpiresAt: gameSession.expiresAt,
   });
+
+  if (authoritative.computedResult) {
+    resultForValidation = {
+      ...authoritative.computedResult,
+      score: computeRunScore(authoritative.computedResult),
+    };
+  }
 
   if (process.env.GAME_REWARDS_ENABLED === "true" && !authoritative.verified) {
     return json({
@@ -210,7 +217,10 @@ export async function POST(request: Request) {
 
   let playerWeek: PlayerWeekRecord | null = null;
 
-  if (weekIsOpenForContributions && authoritative.verified) {
+  const canRecordWeeklyFacts =
+    authoritative.verified || process.env.GAME_REWARDS_ENABLED !== "true";
+
+  if (weekIsOpenForContributions && canRecordWeeklyFacts) {
     const serverSeasonPoints = await getServerSeasonPoints(wallet);
     // This is one atomic Redis operation: two simultaneous valid runs can
     // never both read the same validRunCount and overwrite each other.

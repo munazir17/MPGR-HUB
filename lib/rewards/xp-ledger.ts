@@ -149,7 +149,7 @@ export async function awardCappedGameXP(
       rankKey,
       indexKey,
       metaKey(normalized, eventId),
-      gameCapKey(wallet, utcDayId(timestamp)),
+      gameCapKey(normalized, utcDayId(timestamp)),
     ],
     [String(xp), normalized, "", "", "", meta, ttl, String(DAILY_XP_RUN_CAP), capTtl],
   );

@@ -17,6 +17,7 @@ export async function pingGameHeartbeat(sessionId: string): Promise<boolean> {
   try {
     const res = await fetch("/api/games/mpgr-run/checkpoint", {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId }),
       keepalive: true,
@@ -36,6 +37,7 @@ export async function submitRunToServer(
   try {
     const res = await fetch("/api/games/mpgr-run/reward", {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId, result, inputTrace }),
     });
@@ -43,8 +45,11 @@ export async function submitRunToServer(
 
     const submission = (await res.json()) as ServerRewardSubmission;
 
-    if (submission.accepted && typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("mpgr-run:weekly-stats-updated"));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("mpgr-run:weekly-stats-updated", { detail: submission.weeklyStats ?? null }),
+      );
+      window.dispatchEvent(new CustomEvent("mpgr-xp-updated"));
     }
 
     return submission;

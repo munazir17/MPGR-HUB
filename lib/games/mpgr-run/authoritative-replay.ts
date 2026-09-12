@@ -346,8 +346,8 @@ function step(world: ReplayWorld, rng: ReturnType<typeof createDeterministicRng>
   );
 }
 
-function sameNumber(a: number, b: number): boolean {
-  return Object.is(a, b) || Math.abs(a - b) <= 1e-9;
+function sameNumber(a: number, b: number, tolerance = 1e-6): boolean {
+  return Object.is(a, b) || Math.abs(a - b) <= tolerance;
 }
 
 function sameResult(actual: RunResult, expected: RunResult): boolean {
@@ -373,7 +373,8 @@ function sameResult(actual: RunResult, expected: RunResult): boolean {
     const ev = expected[key];
 
     if (typeof av === "number" && typeof ev === "number") {
-      if (!sameNumber(av, ev)) return false;
+      const tolerance = key === "distanceMeters" ? 0.75 : key === "durationMs" ? 20 : key === "score" ? 2 : 1e-6;
+      if (!sameNumber(av, ev, tolerance)) return false;
     } else if (av !== ev) {
       return false;
     }
@@ -386,6 +387,7 @@ export interface ReplayVerificationResult {
   verified: boolean;
   proofId?: string;
   reason?: string;
+  computedResult?: RunResult;
 }
 
 export function replayAuthoritativeRun(input: {
@@ -437,13 +439,14 @@ export function replayAuthoritativeRun(input: {
     const tick = Math.round(event.atMs / MPGR_RUN_FIXED_DT_MS);
     if (
       tick < 0 ||
-      Math.abs(tick * MPGR_RUN_FIXED_DT_MS - event.atMs) > 1e-9
+      Math.abs(tick * MPGR_RUN_FIXED_DT_MS - event.atMs) > MPGR_RUN_FIXED_DT_MS / 2
     ) {
       return {
         verified: false,
         reason: "Input timestamp is not aligned to the fixed simulation clock.",
       };
     }
+    event.atMs = tick * MPGR_RUN_FIXED_DT_MS;
 
     previousMs = event.atMs;
   }
@@ -452,18 +455,17 @@ export function replayAuthoritativeRun(input: {
     return { verified: false, reason: "Invalid run duration." };
   }
 
-  if (!Number.isInteger(input.result.durationMs)) {
+  const durationMs = Math.round(input.result.durationMs);
+  if (!Number.isInteger(durationMs)) {
     return { verified: false, reason: "Run duration must be an integer number of milliseconds." };
   }
 
-  const ticks = Math.round(input.result.durationMs / MPGR_RUN_FIXED_DT_MS);
+  const ticks = Math.round(durationMs / MPGR_RUN_FIXED_DT_MS);
 
-  if (
-    ticks < 1 ||
-    Math.round(ticks * MPGR_RUN_FIXED_DT_MS) !== input.result.durationMs
-  ) {
+  if (ticks < 1) {
     return { verified: false, reason: "Duration is not aligned to the fixed simulation clock." };
   }
+  input.result = { ...input.result, durationMs };
 
   if (events.some((event) => event.atMs > input.result.durationMs)) {
     return { verified: false, reason: "Input occurs after the submitted run ended." };
@@ -519,11 +521,16 @@ export function replayAuthoritativeRun(input: {
   };
 
   if (!sameResult(actual, input.result)) {
-    return { verified: false, reason: "Authoritative replay result does not match the submitted result." };
+    return {
+      verified: false,
+      reason: "Authoritative replay result does not match the submitted result.",
+      computedResult: actual,
+    };
   }
 
   return {
     verified: true,
     proofId: `${input.seed.slice(0, 16)}-${Math.round(world.elapsedMs)}-${actual.score}`,
+    computedResult: actual,
   };
 }

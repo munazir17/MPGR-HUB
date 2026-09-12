@@ -27,10 +27,24 @@ export function createRunInputTrace(): RunInputTrace {
   };
 }
 
+export const MPGR_RUN_FIXED_DT_MS = 1000 / 60;
+
+export function snapToSimulationTick(ms: number): number {
+  if (!Number.isFinite(ms) || ms < 0) return 0;
+  const tick = Math.round(ms / MPGR_RUN_FIXED_DT_MS);
+  return tick * MPGR_RUN_FIXED_DT_MS;
+}
+
+export function snapDurationToSimulationTicks(ms: number): number {
+  const snapped = snapToSimulationTick(ms);
+  return Math.round(snapped);
+}
+
 export function appendRunInputEvent(
   trace: RunInputTrace,
   event: RunInputEvent,
 ): void {
+  event = { ...event, atMs: snapToSimulationTick(event.atMs) };
   if (!Number.isFinite(event.atMs) || event.atMs < 0) {
     throw new Error("Input event timestamp must be a non-negative finite number");
   }

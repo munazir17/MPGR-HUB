@@ -26,7 +26,7 @@ interface ServerStanding {
 
 async function fetchServerStanding(): Promise<ServerStanding | null> {
   try {
-    const res = await fetch("/api/xp", { method: "GET", cache: "no-store" });
+    const res = await fetch("/api/xp", { method: "GET", cache: "no-store", credentials: "include" });
     if (!res.ok) return null;
     const body = (await res.json()) as Partial<ServerStanding> & { source?: string };
     if (typeof body.xp !== "number" || !Number.isFinite(body.xp)) return null;
@@ -45,6 +45,7 @@ async function postServerXP(action: "WALLET_CONNECTED" | "DAILY_CHECK_IN"): Prom
   try {
     const res = await fetch("/api/xp", {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action }),
       keepalive: true,
@@ -70,7 +71,7 @@ async function postServerXP(action: "WALLET_CONNECTED" | "DAILY_CHECK_IN"): Prom
 
 function applyStanding(address: string, standing: ServerStanding | null): UserXPRecord {
   if (!standing) return getUserRecord(address);
-  return cacheServerXPTotals(address, standing.xp, standing.referrals);
+  return cacheServerXPTotals(address, standing.xp, standing.referrals, standing.seasonPoints);
 }
 
 export function useXP() {
@@ -87,6 +88,14 @@ export function useXP() {
       return;
     }
     setRecord(getUserRecord(address));
+    const onXpUpdated = () => {
+      setRecord(getUserRecord(address));
+      void fetchServerStanding().then((standing) => {
+        setRecord(applyStanding(address, standing));
+        if (standing) setSource("server-ledger");
+      });
+    };
+    window.addEventListener("mpgr-xp-updated", onXpUpdated);
     let cancelled = false;
     void (async () => {
       const standing = await postServerXP("WALLET_CONNECTED");
@@ -105,6 +114,7 @@ export function useXP() {
     })();
     return () => {
       cancelled = true;
+      window.removeEventListener("mpgr-xp-updated", onXpUpdated);
     };
   }, [address, isConnected]);
 

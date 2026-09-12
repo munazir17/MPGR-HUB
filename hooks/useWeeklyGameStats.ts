@@ -32,7 +32,22 @@ export function useWeeklyGameStats(address: string | undefined) {
     if (!address) return;
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/games/mpgr-run/weekly-status?wallet=${address}`);
+      const res = await fetch(`/api/games/mpgr-run/weekly-status?wallet=${address}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (res.status === 401) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const retry = await fetch(`/api/games/mpgr-run/weekly-status?wallet=${address}`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (!retry.ok) throw new Error(`Request failed (${retry.status})`);
+        const retryData = (await retry.json()) as WeeklyGameStats;
+        setStats(retryData);
+        setError(null);
+        return;
+      }
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
       const data = (await res.json()) as WeeklyGameStats;
       setStats(data);
@@ -52,7 +67,20 @@ export function useWeeklyGameStats(address: string | undefined) {
     void refetch();
     const interval = setInterval(() => void refetch(), POLL_INTERVAL_MS);
 
-    const onRunAccepted = () => {
+    const onRunAccepted = (event: Event) => {
+      const detail = (event as CustomEvent).detail as WeeklyGameStats | null | undefined;
+      if (detail && typeof detail.validRunCount === "number") {
+        setStats((prev) => ({
+          weekKey: prev?.weekKey ?? "",
+          validRunCount: detail.validRunCount,
+          bestScore: detail.bestScore,
+          eligibilityStatus: detail.eligibilityStatus,
+          allocationStatus: prev?.allocationStatus ?? "none",
+          allocatedAmountRaw: prev?.allocatedAmountRaw ?? null,
+          rewardId: prev?.rewardId ?? null,
+          allocationTxHash: prev?.allocationTxHash ?? null,
+        }));
+      }
       void refetch();
     };
 

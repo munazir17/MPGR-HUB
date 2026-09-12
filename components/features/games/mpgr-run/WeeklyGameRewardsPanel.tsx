@@ -26,7 +26,7 @@ export function WeeklyGameRewardsPanel({ address }: { address: string }) {
 
   if (isLoading && !stats) {
     return (
-      <GlassCard className="mt-4 p-4">
+      <GlassCard className="mt-2 shrink-0 p-3 sm:p-4">
         <div className="h-16 animate-pulse rounded-lg bg-white/5" />
       </GlassCard>
     );
