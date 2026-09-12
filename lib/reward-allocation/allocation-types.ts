@@ -192,6 +192,17 @@ export interface WeeklySettlement {
   /** Populated once status reaches "allocating"/"finalized": every rewardId this settlement produced, for audit cross-checking against the vault's getSeasonRewardIds(). */
   rewardIds: bigint[];
 
+  /**
+   * Set exactly once, at the moment status transitions "computed" ->
+   * "allocating" (see the settlement route's CAS write). Lets that
+   * caller verify it actually won the CAS — not just that the resulting
+   * status is "allocating" — before calling allocateRewardsBatch, since
+   * a lost race also returns a record with status "allocating" (the
+   * winner's). Not meaningful outside that one check; unset/null before
+   * "allocating" is ever reached.
+   */
+  allocationAttemptId?: string | null;
+
   /** Batch or per-tx hash(es) this settlement submitted. */
   allocationTxHashes: Hash[];
 

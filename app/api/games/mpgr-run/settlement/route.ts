@@ -15,6 +15,7 @@
 // persisting its result).
 
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import type { Address } from "viem";
 import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
 import type { PlayerWeekRecord, WeeklySettlement } from "@/lib/reward-allocation/allocation-types";
@@ -34,7 +35,18 @@ import { gameRewardsAreOperatorEnabled } from "@/lib/games/games-reward-config";
 import { requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+// Must stay >= reward-vault-config's transactionConfirmationTimeoutMs (90s)
+// plus headroom for simulateContract + writeContract + KV round-trips.
+// Previously 60s < the 90s on-chain confirmation timeout, which meant the
+// platform would kill this function *before* allocateRewardsBatch's own
+// timeout could fire — turning an ordinary slow confirmation into the
+// exact "crash after broadcast, before persistence" case the settlement
+// state machine has to recover from via reconcileSettlement(). Raising
+// this doesn't remove that recovery path's necessity (a hard crash can
+// still happen for other reasons) but removes the self-inflicted,
+// routine cause of it. Confirm this value is within your Vercel plan's
+// configured function-duration limit before deploying.
+export const maxDuration = 120;
 
 function isAuthorized(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
@@ -212,10 +224,41 @@ async function runSettlementUnlocked(weekKeyOverride?: string) {
   }
 
   // --- 12/13. allocate on-chain --------------------------------------------
+  //
+  // upsertWeeklySettlement's CAS script returns the *current* stored
+  // record on both a win and a loss (on a loss, it returns whatever the
+  // actual winner wrote, which also has status "allocating" — the two
+  // outcomes are NOT distinguishable by status alone). Previously this
+  // return value was assigned to `settlement` and used unconditionally,
+  // so a lost race would still fall through into allocateRewardsBatch
+  // below. That window only opens if two invocations are inside this
+  // function at the same time (the global withSettlementLock is the
+  // normal guard against that — see settlement-lock.ts), but a lock TTL
+  // expiry mid-run is exactly the scenario this audit item is about, so
+  // this must not be the only thing standing between us and a second
+  // on-chain batch. A per-attempt token makes "did I actually win the
+  // CAS" checkable, and we hard-abort (no chain call) if not.
+  const allocationAttemptId = randomUUID();
   settlement = await kvAllocationStore.upsertWeeklySettlement(
-    { ...settlement, status: "allocating", updatedAt: new Date().toISOString() },
+    { ...settlement, status: "allocating", allocationAttemptId, updatedAt: new Date().toISOString() },
     "computed"
   );
+
+  if (settlement.allocationAttemptId !== allocationAttemptId) {
+    // Another invocation already claimed this week's allocating
+    // transition (or has moved it further along). Do NOT call
+    // allocateRewardsBatch — that would risk a second on-chain batch for
+    // the same week. Let the existing/other attempt run to completion;
+    // reconcileSettlement (called on the next invocation that sees
+    // "allocating") is what confirms/finalizes it.
+    return {
+      weekKey,
+      status: settlement.status,
+      alreadyDone: false,
+      settlement,
+      reason: "Another settlement attempt already claimed this week's allocation step; not submitting a second on-chain batch.",
+    };
+  }
 
   const users = payable.map((a) => a.wallet as Address);
   const amounts = payable.map((a) => a.amountRaw);
@@ -308,10 +351,20 @@ function serializable<T>(value: T): unknown {
 // Between "allocating" being persisted and allocateRewardsBatch's
 // receipt being confirmed, a hard crash / function timeout can leave a
 // settlement stuck in "allocating" with an unknown real-world outcome
-// (transaction may have landed, may not have). This route deliberately
-// does NOT auto-retry an "allocating" settlement (see the check at the
-// top of runSettlement) — auto-retrying here risks a double allocation,
-// which is strictly worse than a paused settlement. Recovery is a manual
+// (transaction may have landed, may not have). Fixed alongside this
+// note: (1) maxDuration was raised so the platform no longer kills the
+// function before the vault client's own 90s confirmation timeout does,
+// removing the routine, self-inflicted cause of this; (2) the
+// computed->allocating CAS write is now verified (allocationAttemptId)
+// before allocateRewardsBatch is ever called, so a lost race (e.g. lock
+// TTL expiry) aborts instead of silently proceeding. Neither closes the
+// gap for an arbitrary crash (host failure, network partition, etc.) —
+// that still requires a durable transactional outbox or on-chain replay
+// protection the vault contract doesn't have, which is out of scope
+// here. This route still deliberately does NOT auto-retry an
+// "allocating" settlement (see the check at the top of runSettlement) —
+// auto-retrying here risks a double allocation, which is strictly worse
+// than a paused settlement. Recovery is a manual
 // step: check getUserRewardIds(wallet) / getReward(rewardId) for the
 // affected wallets against what PlayerWeekRecord.allocatedAmountRaw
 // expected, then either mark the settlement "finalized" (if the batch
