@@ -1,65 +1,107 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import type { Address } from "viem";
+import type { RunInputTrace } from "./input-trace";
+import type { RunResult } from "./run-score";
 import { verifyAuthoritativeRun } from "./authoritative-verifier";
-import { createRunInputTrace } from "./input-trace";
 
-const originalUrl = process.env.GAME_RUN_VERIFIER_URL;
-const originalSecret = process.env.GAME_RUN_VERIFIER_SECRET;
+const wallet = "0x0000000000000000000000000000000000000001" as Address;
+const seed = "0000000000000000000000000000000000000000000000000000000000000001";
 
-const input = {
-  sessionId: "12345678-1234-1234-1234-123456789012",
-  wallet: "0x1111111111111111111111111111111111111111" as `0x${string}`,
-  sessionCreatedAt: "2026-09-10T12:00:00.000Z",
-  sessionExpiresAt: "2026-09-10T12:15:00.000Z",
-  inputTrace: createRunInputTrace(),
-  seed: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  protocolVersion: 1,
-  result: {
-    distanceMeters: 100,
-    durationMs: 10_000,
-    coinsCollected: 1,
-    gemsCollected: 0,
-    xpOrbsCollected: 0,
-    keysCollected: 0,
-    chestsCollected: 0,
-    powerupsCollected: 0,
-    obstaclesPassed: 1,
-    checkpointsReached: 0,
-    bonusScore: 0,
-    hitsTaken: 0,
-    collided: false,
-    maxSpeedTierReached: 1,
-    score: 116,
-  },
+const trace: RunInputTrace = {
+  version: 1,
+  events: [],
 };
 
-afterEach(() => {
-  vi.restoreAllMocks();
-  if (originalUrl === undefined) delete process.env.GAME_RUN_VERIFIER_URL;
-  else process.env.GAME_RUN_VERIFIER_URL = originalUrl;
-  if (originalSecret === undefined) delete process.env.GAME_RUN_VERIFIER_SECRET;
-  else process.env.GAME_RUN_VERIFIER_SECRET = originalSecret;
-});
+const result: RunResult = {
+  distanceMeters: 0,
+  durationMs: 1000,
+  coinsCollected: 0,
+  gemsCollected: 0,
+  xpOrbsCollected: 0,
+  keysCollected: 0,
+  chestsCollected: 0,
+  powerupsCollected: 0,
+  obstaclesPassed: 0,
+  checkpointsReached: 0,
+  bonusScore: 0,
+  hitsTaken: 0,
+  collided: false,
+  maxSpeedTierReached: 0,
+  score: 1,
+};
+
+function makeInput(overrides: Partial<Parameters<typeof verifyAuthoritativeRun>[0]> = {}) {
+  return {
+    sessionId: "test-session",
+    wallet,
+    result,
+    inputTrace: trace,
+    seed,
+    protocolVersion: 1,
+    sessionCreatedAt: "2026-09-12T00:00:00.000Z",
+    sessionExpiresAt: "2026-09-12T01:00:00.000Z",
+    ...overrides,
+  };
+}
 
 describe("authoritative game verifier", () => {
-  it("fails closed when configuration is missing", async () => {
-    delete process.env.GAME_RUN_VERIFIER_URL;
-    delete process.env.GAME_RUN_VERIFIER_SECRET;
-    await expect(verifyAuthoritativeRun(input)).resolves.toMatchObject({ verified: false });
+  it("accepts a genuine deterministic terminal replay", () => {
+    const verification = verifyAuthoritativeRun(
+      makeInput({
+        result: {
+          distanceMeters: 361.9763888888887,
+          durationMs: 14333,
+          coinsCollected: 8,
+          gemsCollected: 1,
+          xpOrbsCollected: 1,
+          keysCollected: 0,
+          chestsCollected: 1,
+          powerupsCollected: 1,
+          obstaclesPassed: 8,
+          checkpointsReached: 0,
+          bonusScore: 0,
+          hitsTaken: 3,
+          collided: true,
+          maxSpeedTierReached: 1,
+          score: 726,
+        },
+      }),
+    );
+
+    expect(verification.verified).toBe(true);
+    expect(verification.proofId).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("requires a valid proof id from the verifier", async () => {
-    process.env.GAME_RUN_VERIFIER_URL = "https://verifier.example.test/run";
-    process.env.GAME_RUN_VERIFIER_SECRET = "secret";
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ verified: true }), { status: 200 })));
-    await expect(verifyAuthoritativeRun(input)).resolves.toMatchObject({ verified: false });
+  it("rejects an unsupported protocol version", () => {
+    const verification = verifyAuthoritativeRun(
+      makeInput({ protocolVersion: 999 }),
+    );
+
+    expect(verification.verified).toBe(false);
+    expect(verification.reason).toContain("Unsupported");
   });
 
-  it("accepts only a positive attestation with a proof id", async () => {
-    process.env.GAME_RUN_VERIFIER_URL = "https://verifier.example.test/run";
-    process.env.GAME_RUN_VERIFIER_SECRET = "secret";
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ verified: true, proofId: "proof-12345678" }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    await expect(verifyAuthoritativeRun(input)).resolves.toEqual({ verified: true, proofId: "proof-12345678" });
-    expect(fetchMock).toHaveBeenCalledOnce();
+  it("rejects an invalid server seed", () => {
+    const verification = verifyAuthoritativeRun(
+      makeInput({ seed: "not-a-valid-seed" }),
+    );
+
+    expect(verification.verified).toBe(false);
+    expect(verification.reason).toContain("Invalid");
+  });
+
+  it("fails closed when the submitted result cannot be reproduced", () => {
+    const verification = verifyAuthoritativeRun(
+      makeInput({
+        result: {
+          ...result,
+          durationMs: 1000,
+          score: 999999,
+        },
+      }),
+    );
+
+    expect(verification.verified).toBe(false);
+    expect(verification.reason).toContain("authoritative");
   });
 });

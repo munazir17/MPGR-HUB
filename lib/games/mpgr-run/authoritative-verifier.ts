@@ -1,6 +1,10 @@
+import { createHash } from "node:crypto";
 import type { Address } from "viem";
 import type { RunResult } from "./run-score";
 import type { RunInputTrace } from "./input-trace";
+import {
+  replayAuthoritativeRun,
+} from "./authoritative-replay";
 
 export interface AuthoritativeVerificationResult {
   verified: boolean;
@@ -8,87 +12,46 @@ export interface AuthoritativeVerificationResult {
   reason?: string;
 }
 
-const VERIFIER_TIMEOUT_MS = 5_000;
-
-function getVerifierUrl(): string | null {
-  const value = process.env.GAME_RUN_VERIFIER_URL?.trim();
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" && process.env.NODE_ENV === "production") return null;
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The competitive game is client-rendered, so the application server cannot
- * independently reconstruct every frame/input. Real-value rewards therefore
- * require an independent verifier to attest to the submitted run.
- *
- * Fail-closed: missing verifier configuration, verifier errors, malformed
- * responses, or a negative attestation never become a valid run.
- */
-export async function verifyAuthoritativeRun(input: {
+export function verifyAuthoritativeRun(input: {
   sessionId: string;
   wallet: Address;
   result: RunResult;
-    inputTrace: RunInputTrace;
-    seed: string;
-    protocolVersion: number;
+  inputTrace: RunInputTrace;
+  seed: string;
+  protocolVersion: number;
   sessionCreatedAt: string;
   sessionExpiresAt: string;
-}): Promise<AuthoritativeVerificationResult> {
-  const url = getVerifierUrl();
-  const secret = process.env.GAME_RUN_VERIFIER_SECRET?.trim();
-  if (!url || !secret) {
-    return { verified: false, reason: "Authoritative game verifier is not configured." };
+}): AuthoritativeVerificationResult {
+  if (input.protocolVersion !== 1) {
+    return { verified: false, reason: "Unsupported game protocol version." };
   }
 
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${secret}`,
-      },
-      cache: "no-store",
-      signal: AbortSignal.timeout(VERIFIER_TIMEOUT_MS),
-      body: JSON.stringify({
-        version: 1,
-        sessionId: input.sessionId,
-        wallet: input.wallet,
-        sessionCreatedAt: input.sessionCreatedAt,
-        sessionExpiresAt: input.sessionExpiresAt,
-          seed: input.seed,
-          protocolVersion: input.protocolVersion,
-          inputTrace: input.inputTrace,
-        result: input.result,
-      }),
-    });
+  const replay = replayAuthoritativeRun({
+    seed: input.seed,
+    inputTrace: input.inputTrace,
+    result: input.result,
+  });
 
-    if (!response.ok) {
-      await response.text().catch(() => "");
-      return { verified: false, reason: "Authoritative verifier rejected the request." };
-    }
+  if (!replay.verified) return replay;
 
-    const body: unknown = await response.json();
-    if (!body || typeof body !== "object") {
-      return { verified: false, reason: "Authoritative verifier returned an invalid response." };
-    }
+  const proofMaterial = JSON.stringify({
+    version: 1,
+    sessionId: input.sessionId,
+    wallet: input.wallet.toLowerCase(),
+    seed: input.seed.toLowerCase(),
+    protocolVersion: input.protocolVersion,
+    sessionCreatedAt: input.sessionCreatedAt,
+    sessionExpiresAt: input.sessionExpiresAt,
+    inputTrace: input.inputTrace,
+    result: input.result,
+  });
 
-    const record = body as Record<string, unknown>;
-    if (record.verified !== true) {
-      return { verified: false, reason: "Run was not authoritatively verified." };
-    }
+  const proofId = createHash("sha256")
+    .update(proofMaterial)
+    .digest("hex");
 
-    if (typeof record.proofId !== "string" || record.proofId.length < 8 || record.proofId.length > 256) {
-      return { verified: false, reason: "Authoritative verifier returned no valid proof identifier." };
-    }
-
-    return { verified: true, proofId: record.proofId };
-  } catch {
-    return { verified: false, reason: "Authoritative verifier is unavailable." };
-  }
+  return {
+    verified: true,
+    proofId,
+  };
 }

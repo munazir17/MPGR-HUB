@@ -1,6 +1,8 @@
 "use client";
 
-import { createRunInputTrace } from "@/lib/games/mpgr-run/input-trace";
+import { MPGR_RUN_SIMULATION_WIDTH } from "@/lib/games/mpgr-run/authoritative-replay";
+
+import { appendRunInputEvent, createRunInputTrace } from "@/lib/games/mpgr-run/input-trace";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
@@ -295,6 +297,7 @@ export function RunGame({ address }: RunGameProps) {
   const inputTraceRef = useRef(createRunInputTrace());
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
+  const fixedStepAccumulatorRef = useRef(0);
   const hudIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -497,14 +500,16 @@ export function RunGame({ address }: RunGameProps) {
       ctxRef.current = ctx;
     }
     if (!ctx) return;
-    const { width, height } = sizeRef.current;
-    if (width === 0 || height === 0) return;
+    const { width: viewportWidth, height } = sizeRef.current;
+    const width = MPGR_RUN_SIMULATION_WIDTH;
+    if (viewportWidth === 0 || height === 0) return;
 
     const world = worldRef.current;
     const p = world.player;
     const playerScreenX = width * PLAYER_X;
 
     ctx.save();
+    ctx.scale(viewportWidth / width, 1);
     if (world.screenShake > 0.5) {
       ctx.translate((Math.random() - 0.5) * world.screenShake, (Math.random() - 0.5) * world.screenShake);
     }
@@ -1010,11 +1015,11 @@ export function RunGame({ address }: RunGameProps) {
       world.screenShake = Math.max(0, world.screenShake - dt * 40);
 
       // Spawn.
-      const newObstacles = maybeSpawnObstacles(world.obstacles, width, band, nextId, runRngRef.current);
+      const newObstacles = maybeSpawnObstacles(world.obstacles, MPGR_RUN_SIMULATION_WIDTH, band, nextId, runRngRef.current);
       if (newObstacles.length) world.obstacles.push(...newObstacles);
-      const newCollectible = maybeSpawnCollectible(world.collectibles, width, band, nextId, runRngRef.current);
+      const newCollectible = maybeSpawnCollectible(world.collectibles, MPGR_RUN_SIMULATION_WIDTH, band, nextId, runRngRef.current);
       if (newCollectible) world.collectibles.push(newCollectible);
-      const newPowerup = maybeSpawnPowerup(world.powerups, width, band, nextId, runRngRef.current);
+      const newPowerup = maybeSpawnPowerup(world.powerups, MPGR_RUN_SIMULATION_WIDTH, band, nextId, runRngRef.current);
       if (newPowerup) world.powerups.push(newPowerup);
 
       // Expire power-ups.
@@ -1111,10 +1116,35 @@ export function RunGame({ address }: RunGameProps) {
         return;
       }
       const last = lastTimeRef.current || now;
-      const dt = Math.min((now - last) / 1000, 0.05);
+      const frameDt = Math.min((now - last) / 1000, 0.25);
       lastTimeRef.current = now;
 
-      step(dt, sizeRef.current.height);
+      // Gameplay advances in deterministic 60 Hz simulation ticks.
+      // Rendering may run at any refresh rate, but authoritative gameplay
+      // state is never dependent on the device's frame rate.
+      const FIXED_DT = 1 / 60;
+      const MAX_STEPS_PER_FRAME = 8;
+      fixedStepAccumulatorRef.current += frameDt;
+
+      let steps = 0;
+      while (
+        fixedStepAccumulatorRef.current >= FIXED_DT &&
+        steps < MAX_STEPS_PER_FRAME &&
+        !worldRef.current.gameOver
+      ) {
+        step(FIXED_DT, sizeRef.current.height);
+        fixedStepAccumulatorRef.current -= FIXED_DT;
+        steps += 1;
+      }
+
+      // Never let a long tab/background stall create an unbounded catch-up.
+      if (steps === MAX_STEPS_PER_FRAME) {
+        fixedStepAccumulatorRef.current = Math.min(
+          fixedStepAccumulatorRef.current,
+          FIXED_DT,
+        );
+      }
+
       draw();
 
       if (worldRef.current.gameOver) {
@@ -1223,6 +1253,8 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
       countdownTimerRef.current = null;
     }
     stopLoop();
+    fixedStepAccumulatorRef.current = 0;
+    inputTraceRef.current = createRunInputTrace();
     worldRef.current = freshWorld();
     const serverSession = await fetch("/api/games/mpgr-run/session", { method: "POST" }).then(async (res) => {
       if (!res.ok) throw new Error("Unable to start secure game session");
@@ -1289,6 +1321,10 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
     const p = world.player;
     if (world.activePowerups.jetpack) return;
     if (p.playerY <= 0 && !p.sliding) {
+      appendRunInputEvent(inputTraceRef.current, {
+        type: "jump",
+        atMs: world.elapsedMs,
+      });
       p.velocityY = JUMP_VELOCITY;
       getRunAudioHooks().onJump();
     }
@@ -1300,6 +1336,10 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
     const p = world.player;
     if (world.activePowerups.jetpack) return;
     if (p.playerY <= 0) {
+      appendRunInputEvent(inputTraceRef.current, {
+        type: "slide",
+        atMs: world.elapsedMs,
+      });
       p.sliding = true;
       p.slideUntilMs = world.elapsedMs + SLIDE_DURATION_MS;
       getRunAudioHooks().onSlide();
@@ -1309,7 +1349,16 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
   const switchLane = useCallback((dir: -1 | 1) => {
     if (phaseRef.current !== "running") return;
     const world = worldRef.current;
-    world.player.lane = clamp(world.player.lane + dir, 0, LANE_COUNT - 1);
+    const previousLane = world.player.lane;
+    const nextLane = clamp(previousLane + dir, 0, LANE_COUNT - 1);
+    if (nextLane !== previousLane) {
+      appendRunInputEvent(inputTraceRef.current, {
+        type: "lane",
+        atMs: world.elapsedMs,
+        dir,
+      });
+      world.player.lane = nextLane;
+    }
   }, []);
 
   const togglePause = useCallback(() => {
