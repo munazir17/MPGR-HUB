@@ -364,12 +364,12 @@ function serializable<T>(value: T): unknown {
 // here. This route still deliberately does NOT auto-retry an
 // "allocating" settlement (see the check at the top of runSettlement) —
 // auto-retrying here risks a double allocation, which is strictly worse
-// than a paused settlement. Recovery is a manual
-// step: check getUserRewardIds(wallet) / getReward(rewardId) for the
-// affected wallets against what PlayerWeekRecord.allocatedAmountRaw
-// expected, then either mark the settlement "finalized" (if the batch
-// did land) or reset it to "computed" (if it did not) before the next
-// cron invocation. This is a genuine, disclosed gap — true exactly-once
+// than a paused settlement. Recovery is a manual step — see
+// docs/SETTLEMENT_RECOVERY_RUNBOOK.md for the exact procedure. The
+// daily reconcile cron now flags a settlement that's been "allocating"
+// too long (see reconcile/route.ts's SETTLEMENT_STUCK_ALLOCATING log
+// line / `alert` field) so this doesn't rely on someone noticing.
+// This is a genuine, disclosed gap — true exactly-once
 // delivery across an arbitrary crash requires either a durable
 // transactional outbox or idempotent on-chain replay protection the
 // vault contract itself doesn't provide (allocateRewardsBatch has no
