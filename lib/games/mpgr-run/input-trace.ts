@@ -1,0 +1,56 @@
+export const MPGR_RUN_TRACE_VERSION = 1;
+
+export type RunInputEvent =
+  | {
+      type: "jump";
+      atMs: number;
+    }
+  | {
+      type: "slide";
+      atMs: number;
+    }
+  | {
+      type: "lane";
+      atMs: number;
+      dir: -1 | 1;
+    };
+
+export interface RunInputTrace {
+  version: number;
+  events: RunInputEvent[];
+}
+
+export function createRunInputTrace(): RunInputTrace {
+  return {
+    version: MPGR_RUN_TRACE_VERSION,
+    events: [],
+  };
+}
+
+export function appendRunInputEvent(
+  trace: RunInputTrace,
+  event: RunInputEvent,
+): void {
+  if (!Number.isFinite(event.atMs) || event.atMs < 0) {
+    throw new Error("Input event timestamp must be a non-negative finite number");
+  }
+
+  if (event.type === "lane" && event.dir !== -1 && event.dir !== 1) {
+    throw new Error("Lane direction must be -1 or 1");
+  }
+
+  const previous = trace.events[trace.events.length - 1];
+
+  if (previous && event.atMs < previous.atMs) {
+    throw new Error("Input events must be ordered by timestamp");
+  }
+
+  trace.events.push(event);
+}
+
+export function cloneRunInputTrace(trace: RunInputTrace): RunInputTrace {
+  return {
+    version: trace.version,
+    events: trace.events.map((event) => ({ ...event })),
+  };
+}

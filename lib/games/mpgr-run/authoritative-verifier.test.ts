@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyAuthoritativeRun } from "./authoritative-verifier";
+import { createRunInputTrace } from "./input-trace";
 
 const originalUrl = process.env.GAME_RUN_VERIFIER_URL;
 const originalSecret = process.env.GAME_RUN_VERIFIER_SECRET;
@@ -9,6 +10,9 @@ const input = {
   wallet: "0x1111111111111111111111111111111111111111" as `0x${string}`,
   sessionCreatedAt: "2026-09-10T12:00:00.000Z",
   sessionExpiresAt: "2026-09-10T12:15:00.000Z",
+  inputTrace: createRunInputTrace(),
+  seed: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  protocolVersion: 1,
   result: {
     distanceMeters: 100,
     durationMs: 10_000,

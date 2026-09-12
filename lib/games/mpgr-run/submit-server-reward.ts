@@ -1,4 +1,5 @@
 import type { RunResult } from "./run-score";
+import type { RunInputTrace } from "./input-trace";
 
 export interface ServerRewardSubmission {
   accepted: boolean;
@@ -30,12 +31,13 @@ export async function submitRunToServer(
   _address: string,
   sessionId: string,
   result: RunResult,
+  inputTrace: RunInputTrace,
 ): Promise<ServerRewardSubmission | null> {
   try {
     const res = await fetch("/api/games/mpgr-run/reward", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, result }),
+      body: JSON.stringify({ sessionId, result, inputTrace }),
     });
     if (!res.ok) return null;
     return (await res.json()) as ServerRewardSubmission;

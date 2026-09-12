@@ -1,5 +1,6 @@
 import type { Address } from "viem";
 import type { RunResult } from "./run-score";
+import type { RunInputTrace } from "./input-trace";
 
 export interface AuthoritativeVerificationResult {
   verified: boolean;
@@ -33,6 +34,9 @@ export async function verifyAuthoritativeRun(input: {
   sessionId: string;
   wallet: Address;
   result: RunResult;
+    inputTrace: RunInputTrace;
+    seed: string;
+    protocolVersion: number;
   sessionCreatedAt: string;
   sessionExpiresAt: string;
 }): Promise<AuthoritativeVerificationResult> {
@@ -57,6 +61,9 @@ export async function verifyAuthoritativeRun(input: {
         wallet: input.wallet,
         sessionCreatedAt: input.sessionCreatedAt,
         sessionExpiresAt: input.sessionExpiresAt,
+          seed: input.seed,
+          protocolVersion: input.protocolVersion,
+          inputTrace: input.inputTrace,
         result: input.result,
       }),
     });

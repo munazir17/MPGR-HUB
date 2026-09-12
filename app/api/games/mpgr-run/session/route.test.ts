@@ -43,12 +43,19 @@ describe("POST /api/games/mpgr-run/session", () => {
 
   it("issues a session for an authenticated wallet", async () => {
     getSessionFromRequest.mockReturnValue({ wallet: "0x1111111111111111111111111111111111111111" });
-    createServerGameSession.mockResolvedValue({ sessionId: "abc123", expiresAt: "2026-01-01T00:00:00.000Z" });
+    createServerGameSession.mockResolvedValue({
+      sessionId: "abc123",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+      seed: "ab".repeat(32),
+      protocolVersion: 1,
+    });
     const { POST } = await import("./route");
     const response = await POST(new Request("http://localhost/api/games/mpgr-run/session", { method: "POST" }));
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.sessionId).toBe("abc123");
+    expect(body.seed).toBe("ab".repeat(32));
+    expect(body.protocolVersion).toBe(1);
   });
 
   it("fails closed with 429 (not a silently-issued session) once the wallet is at its concurrency cap", async () => {

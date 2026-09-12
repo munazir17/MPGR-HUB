@@ -24,6 +24,7 @@ import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/reques
 import type { Address } from "viem";
 import { validateRunResult } from "@/lib/games/mpgr-run/run-validation";
 import type { RunResult, RunStats } from "@/lib/games/mpgr-run/run-score";
+import { MPGR_RUN_TRACE_VERSION } from "@/lib/games/mpgr-run/input-trace";
 import { computeRunScore } from "@/lib/games/mpgr-run/run-score";
 import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
 import { getSessionFromRequest } from "@/lib/auth/session";
@@ -58,6 +59,14 @@ const NUMERIC_RUN_FIELDS: (keyof RunStats)[] = [
 interface RewardRequestBody {
   sessionId: string;
   result: RunResult;
+  inputTrace: {
+    version: number;
+    events: Array<
+      | { type: "jump"; atMs: number }
+      | { type: "slide"; atMs: number }
+      | { type: "lane"; atMs: number; dir: -1 | 1 }
+    >;
+  };
 }
 
 function isValidShape(value: unknown): value is RewardRequestBody {
@@ -134,6 +143,9 @@ export async function POST(request: Request) {
         sessionId,
         wallet,
         result: resultForValidation,
+        inputTrace: body.inputTrace,
+        seed: gameSession.seed,
+        protocolVersion: gameSession.protocolVersion,
         sessionCreatedAt: gameSession.createdAt,
         sessionExpiresAt: gameSession.expiresAt,
       })

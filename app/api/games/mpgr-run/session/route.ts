@@ -17,7 +17,12 @@ export async function POST(request: Request) {
   const sessionId = randomUUID();
   try {
     const session = await createServerGameSession(auth.wallet as Address, MPGR_RUN_GAME_ID, sessionId);
-    return json({ sessionId: session.sessionId, expiresAt: session.expiresAt }, { headers: { "Cache-Control": "no-store" } });
+    return json({
+      sessionId: session.sessionId,
+      expiresAt: session.expiresAt,
+      seed: session.seed,
+      protocolVersion: session.protocolVersion,
+    }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof TooManyActiveSessionsError) {
       return json({ error: "Too many active game sessions. Finish or let an existing run expire first." }, { status: 429 });

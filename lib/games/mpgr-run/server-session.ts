@@ -1,5 +1,6 @@
 import { getRedis } from "@/lib/api/redis";
 import type { Address } from "viem";
+import { randomBytes } from "node:crypto";
 
 const redis = () => getRedis();
 const key = (id: string) => `mpgrhub:games:session:${id}`;
@@ -8,6 +9,8 @@ const TTL = 15 * 60;
 const HEARTBEAT_MIN_INTERVAL_MS = 3_000;
 const HEARTBEAT_MAX_GAP_MS = 25_000;
 const SHORT_RUN_GRACE_MS = 8_000;
+
+export const MPGR_RUN_PROTOCOL_VERSION = 1;
 
 // A wallet can only have this many *live* (not yet consumed, not yet
 // expired) server-issued game sessions at once. This is not anti-cheat by
@@ -27,6 +30,8 @@ export interface ServerGameSession {
   sessionId: string;
   wallet: Address;
   gameId: string;
+  protocolVersion: number;
+  seed: string;
   createdAt: string;
   expiresAt: string;
   heartbeats: number[];
@@ -62,10 +67,13 @@ export async function createServerGameSession(wallet: Address, gameId: string, s
   }
 
   const now = new Date();
+  const seed = randomBytes(32).toString("hex");
   const session: ServerGameSession = {
     sessionId,
     wallet: normalizedWallet,
     gameId,
+    protocolVersion: MPGR_RUN_PROTOCOL_VERSION,
+    seed,
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + TTL * 1000).toISOString(),
     heartbeats: [now.getTime()],

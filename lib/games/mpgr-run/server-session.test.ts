@@ -11,6 +11,8 @@ function session(overrides: Partial<ServerGameSession> = {}): ServerGameSession 
     sessionId: "session-1",
     wallet: "0x1111111111111111111111111111111111111111",
     gameId: "mpgr-run",
+    protocolVersion: 1,
+    seed: "00".repeat(32),
     createdAt: new Date(created).toISOString(),
     expiresAt: new Date(created + 15 * 60 * 1000).toISOString(),
     heartbeats: [created],

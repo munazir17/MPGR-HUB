@@ -52,6 +52,63 @@ describe("server game session security properties", () => {
     vi.clearAllMocks();
   });
 
+  it("issues a cryptographically-sized seed and locks protocol version", async () => {
+    const {
+      createServerGameSession,
+      MPGR_RUN_PROTOCOL_VERSION,
+    } = await import("./server-session");
+
+    const session = await createServerGameSession(
+      WALLET,
+      "mpgr-run",
+      "session-seed-a",
+    );
+
+    expect(session.protocolVersion).toBe(MPGR_RUN_PROTOCOL_VERSION);
+    expect(session.protocolVersion).toBe(1);
+    expect(session.seed).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("generates different seeds for separate sessions", async () => {
+    const { createServerGameSession } = await import("./server-session");
+
+    const first = await createServerGameSession(
+      WALLET,
+      "mpgr-run",
+      "session-seed-b",
+    );
+    const second = await createServerGameSession(
+      WALLET,
+      "mpgr-run",
+      "session-seed-c",
+    );
+
+    expect(first.seed).not.toBe(second.seed);
+  });
+
+  it("binds the issued seed and protocol version to the stored session", async () => {
+    const {
+      createServerGameSession,
+      getServerGameSession,
+      MPGR_RUN_PROTOCOL_VERSION,
+    } = await import("./server-session");
+
+    const created = await createServerGameSession(
+      WALLET,
+      "mpgr-run",
+      "session-seed-d",
+    );
+    const stored = await getServerGameSession(created.sessionId);
+
+    expect(stored).toMatchObject({
+      sessionId: created.sessionId,
+      wallet: WALLET.toLowerCase(),
+      gameId: "mpgr-run",
+      seed: created.seed,
+      protocolVersion: MPGR_RUN_PROTOCOL_VERSION,
+    });
+  });
+
   it("rejects a heartbeat whose session was issued for a different game id", async () => {
     const { createServerGameSession, recordGameHeartbeat } = await import("./server-session");
     const session = await createServerGameSession(WALLET, "some-other-game", "session-a");

@@ -1,5 +1,6 @@
 "use client";
 
+import { createRunInputTrace } from "@/lib/games/mpgr-run/input-trace";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
@@ -26,6 +27,7 @@ import { processRunResult, type ProcessRunResultOutcome } from "@/lib/games/mpgr
 import { submitRunToServer, pingGameHeartbeat } from "@/lib/games/mpgr-run/submit-server-reward";
 import { getGameStats } from "@/lib/games/game-storage";
 import { resolveDifficulty } from "@/lib/games/mpgr-run/difficulty";
+import { createDeterministicRng } from "@/lib/games/mpgr-run/deterministic-rng";
 import {
   maybeSpawnObstacles,
   maybeSpawnCollectible,
@@ -285,6 +287,12 @@ export function RunGame({ address }: RunGameProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const worldRef = useRef<World>(freshWorld());
   const sessionRef = useRef<GameSessionMeta | null>(null);
+
+  // Temporary deterministic RNG wiring.
+  // The final authoritative version will initialize this from the
+  // server-issued run seed.
+  const runRngRef = useRef(createDeterministicRng(0));
+  const inputTraceRef = useRef(createRunInputTrace());
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
   const hudIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1002,11 +1010,11 @@ export function RunGame({ address }: RunGameProps) {
       world.screenShake = Math.max(0, world.screenShake - dt * 40);
 
       // Spawn.
-      const newObstacles = maybeSpawnObstacles(world.obstacles, width, band, nextId);
+      const newObstacles = maybeSpawnObstacles(world.obstacles, width, band, nextId, runRngRef.current);
       if (newObstacles.length) world.obstacles.push(...newObstacles);
-      const newCollectible = maybeSpawnCollectible(world.collectibles, width, band, nextId);
+      const newCollectible = maybeSpawnCollectible(world.collectibles, width, band, nextId, runRngRef.current);
       if (newCollectible) world.collectibles.push(newCollectible);
-      const newPowerup = maybeSpawnPowerup(world.powerups, width, band, nextId);
+      const newPowerup = maybeSpawnPowerup(world.powerups, width, band, nextId, runRngRef.current);
       if (newPowerup) world.powerups.push(newPowerup);
 
       // Expire power-ups.
@@ -1177,7 +1185,7 @@ refreshPersonalBest();
 // amount is ever received or displayed from this response — only
 // this week's validRunCount/bestScore/eligibilityStatus, see
 // WeeklyGameRewardsPanel-style consumers of useWeeklyGameStats.
-void submitRunToServer(address, ended.sessionId, result);
+void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
 }, [address, stopLoop, refreshPersonalBest, buildStats, goToPhase]);
 
   finishRunRef.current = finishRun;
@@ -1218,12 +1226,27 @@ void submitRunToServer(address, ended.sessionId, result);
     worldRef.current = freshWorld();
     const serverSession = await fetch("/api/games/mpgr-run/session", { method: "POST" }).then(async (res) => {
       if (!res.ok) throw new Error("Unable to start secure game session");
-      return await res.json() as { sessionId: string };
+      return await res.json() as {
+        sessionId: string;
+        expiresAt: string;
+        seed: string;
+        protocolVersion: number;
+      };
     }).catch(() => null);
     if (!serverSession) {
       goToPhase("idle");
       return;
     }
+    if (!/^[0-9a-f]{64}$/.test(serverSession.seed)) {
+      throw new Error("Invalid game session seed");
+    }
+
+    if (serverSession.protocolVersion !== 1) {
+      throw new Error("Unsupported MPGR Run protocol version");
+    }
+
+    runRngRef.current = createDeterministicRng(serverSession.seed);
+
     sessionRef.current = startSession(MPGR_RUN_GAME_ID, address, serverSession.sessionId);
     setRunResult(null);
     setOutcome(null);
