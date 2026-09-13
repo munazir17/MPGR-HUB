@@ -21,7 +21,7 @@
 
 import "server-only";
 
-import { createPublicClient, http, isAddress, getAddress, zeroAddress, type Address } from "viem";
+import { createPublicClient, fallback, http, isAddress, getAddress, zeroAddress, type Address } from "viem";
 import { mainnet } from "viem/chains";
 import { normalize } from "viem/ens";
 
@@ -31,8 +31,8 @@ function mainnetRpcUrls(): string[] {
   const urls = [
     process.env.MAINNET_RPC_URL?.trim(),
     process.env.NEXT_PUBLIC_MAINNET_RPC_URL?.trim(),
-    "https://eth.llamarpc.com",
-    "https://cloudflare-eth.com",
+    "https://ethereum.publicnode.com",
+    "https://1rpc.io/eth",
   ].filter((url): url is string => !!url && url.length > 0);
   return [...new Set(urls)];
 }
@@ -42,12 +42,13 @@ let cachedClient: ReturnType<typeof createPublicClient> | null = null;
 /** Server-safe viem Mainnet client, used ONLY for ENS/Basename resolution — never for balances or transactions, which stay on Base. */
 export function getMainnetEnsClient() {
   if (cachedClient) return cachedClient;
-  const [primary, ...fallbacks] = mainnetRpcUrls();
+  const urls = mainnetRpcUrls();
   cachedClient = createPublicClient({
     chain: mainnet,
-    transport: http(primary, { timeout: 12_000 }),
+    transport: fallback(
+      urls.map((url) => http(url, { timeout: 12_000 }))
+    ),
   });
-  void fallbacks; // single-endpoint client today; documented for a future fallback() upgrade if this RPC proves unreliable in production.
   return cachedClient;
 }
 
