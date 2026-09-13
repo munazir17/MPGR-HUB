@@ -311,6 +311,40 @@ export function isX402PaymentPrompt(rawPrompt: string): boolean {
   return looksLikeX402PaymentPrompt(normalize(rawPrompt));
 }
 
+const TRANSFER_PROMPT_MARKERS = [
+  "send ",
+  "transfer ",
+  "pay ",
+  "base transfer",
+  "plan a base transfer",
+  "send eth",
+  "send usdc",
+  "send mpgr",
+] as const;
+
+const TRANSFER_PARSE_RE =
+  /\b(?:send|transfer|pay)\s+([0-9]+(?:\.[0-9]+)?)\s+([a-z0-9.]{2,12}|0x[0-9a-f]{40})\s+to\s+(0x[0-9a-fA-F]{40}|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.base\.eth)/i;
+
+export function isTransferPrompt(rawPrompt: string): boolean {
+  const normalized = normalize(rawPrompt);
+  if (TRANSFER_PROMPT_MARKERS.some((marker) => normalized.includes(marker))) return true;
+  return TRANSFER_PARSE_RE.test(rawPrompt);
+}
+
+export function extractTransferRequest(rawPrompt: string): {
+  token: string;
+  amount: string;
+  recipient: string;
+} | null {
+  const match = rawPrompt.match(TRANSFER_PARSE_RE);
+  if (!match) return null;
+  const amount = match[1]?.trim();
+  const token = match[2]?.trim();
+  const recipient = match[3]?.trim();
+  if (!amount || !token || !recipient) return null;
+  return { token, amount, recipient };
+}
+
 export function extractX402ResourceUrl(rawPrompt: string): string | null {
   const match = rawPrompt.match(/https:\/\/[^\s<>"'\]\)]+/i);
   if (!match) return null;

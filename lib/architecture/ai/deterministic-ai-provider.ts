@@ -1,11 +1,13 @@
 import {
   extractTradeHumanAmount,
   extractTradeSymbol,
+  extractTransferRequest,
   extractX402ResourceUrl,
   generateIntelligentReply,
   isTradePrompt,
   isTradeQuotePrompt,
   isTradeSellPrompt,
+  isTransferPrompt,
   isX402PaymentPrompt,
 } from "@/lib/agent-intelligence";
 import { getFollowUpPrompts } from "@/lib/agent-actions";
@@ -13,6 +15,7 @@ import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-pro
 import { runRegisteredTool } from "./agent-tool-calling";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
+import type { TransferProposal } from "@/lib/trade/transfer-types";
 import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
 
 // Phase 3C Part 1 — wraps generateIntelligentReply as the always-available
@@ -34,6 +37,10 @@ export class DeterministicAIProvider implements AIProvider {
       return prepareOrExplainX402(request);
     }
 
+    if (isTransferPrompt(request.prompt)) {
+      return prepareOrExplainTransfer(request);
+    }
+
     if (isTradePrompt(request.prompt)) {
       return prepareOrExplainTrade(request);
     }
@@ -45,6 +52,45 @@ export class DeterministicAIProvider implements AIProvider {
       request.memoryContext
     );
   }
+}
+
+async function prepareOrExplainTransfer(
+  request: AIProviderRequest,
+): Promise<AIProviderResponse> {
+  const parsed = extractTransferRequest(request.prompt);
+  if (!parsed) {
+    return helpResponse(
+      "I can prepare a Base send for your review, but I need token, amount, and recipient. Example: \"Send 0.000001 ETH to jesse.base.eth\" or use the 0x address directly. Nothing will be signed until you confirm.",
+    );
+  }
+
+  const result = await runRegisteredTool(
+    "transfer_prepare_send",
+    parsed,
+    request,
+  );
+
+  if (result.success) {
+    const proposal = (result.data as { proposal?: TransferProposal } | undefined)?.proposal;
+    if (proposal) {
+      return {
+        intent: "general_help",
+        reply:
+          "I prepared a Base transfer proposal for your review. Nothing is signed or submitted until you explicitly confirm.",
+        actions: [],
+        highlights: [],
+        followUps: getFollowUpPrompts("general_help"),
+        transferProposal: proposal,
+      };
+    }
+  }
+
+  const detail =
+    typeof result.error?.message === "string" && result.error.message.trim()
+      ? result.error.message.trim()
+      : "The Base transfer could not be prepared.";
+
+  return helpResponse(detail);
 }
 
 async function prepareOrExplainX402(

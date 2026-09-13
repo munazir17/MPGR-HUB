@@ -1,21 +1,37 @@
-MPGR HUB — Game / XP / Weekly / Season fix
-==========================================
+MPGR HUB — Agent send / Basename fix
+====================================
 
 Termux se upload:
 1. Is zip ko project root pe extract karo (files overwrite hongi).
-2. git add -A && git commit -m "fix: MPGR Run start, weekly stats, season XP, fullscreen"
+2. git add -A && git commit -m "fix: resolve Basenames on Base L2 and handle send on Gemini fallback"
 3. git push origin main
-4. Vercel auto-deploy ho jayega.
+4. Vercel auto-deploy.
+
+Vercel env (Production + Preview) check karo:
+- GEMINI_API_KEY = billed Google AI Studio / Vertex key
+  Free-tier gemini-3.5-flash ~20 requests/day. Iske baad agent
+  "I can help with: Portfolio Summary..." wala canned reply deta hai.
+- BASE_RPC_URL = paid Base RPC (Alchemy paid / Infura / QuickNode)
+  Free Alchemy CU khatam hone par reads fail ho sakte hain.
+- MAINNET_RPC_URL optional. Ab Basename pehle Base L2 resolver se
+  resolve hota hai, isliye Ethereum public RPC ki zaroorat nahi.
+
+Kya issue tha:
+1. "Basename resolution failed for jesse.base.eth"
+   Code Ethereum mainnet pe CCIP-Read karta tha
+   (publicnode / 1rpc). Yeh public RPCs Basename gateway fail karte
+   hain. Gemini/Alchemy free tier is error ka direct cause nahi —
+   galat chain + public ENS RPC hai. jesse.base.eth VALID hai
+   (0x2211d1D0020DAEA8039E46Cf1367962070d77DA9).
+
+2. 0x address se retry pe generic help
+   Pehli call ke baad Gemini free-tier 429. Fallback deterministic
+   provider send/transfer ko samajhta hi nahi tha, isliye portfolio
+   FAQ dump aa jati thi.
 
 Kya fix hua:
-- Game kabhi start / kabhi nahi: session 401 pe wallet sign-in retry, error dikhega, Start lock.
-- Physics mobile canvas width pe toot raha tha; ab 960 sim space pe consistent hai.
-- Weekly rewards play ke baad 0 reh jaate the: server ab valid run record karta hai, UI turant update.
-- XP / Level games page pe stale: server ledger se sync + play ke baad refresh.
-- Season har page pe alag number: ab server month ledger use hota hai.
-- Game screen badi, weekly panel chhoti; PC pe Start Run fullscreen try karega.
-
-Security audit:
-- Wallet session cookie ab bhi required hai writes ke liye.
-- GAME_REWARDS_ENABLED=true hone par unverified run reject.
-- Client score financial payout ka source nahi.
+- Basename pehle Base L2 Resolver (0xC6d566...) se resolve.
+- Mainnet ENS sirf fallback.
+- 40-hex bina 0x bhi address maana jata hai.
+- Gemini down ho to bhi "Send 0.000001 ETH to ..." transfer_prepare_send
+  tool chalata hai, FAQ nahi.
