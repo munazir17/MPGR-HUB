@@ -1,5 +1,6 @@
 import { getRedis } from "@/lib/api/redis";
 import { getSessionFromRequest } from "@/lib/auth/session";
+import { getAppOrigin } from "@/lib/auth/config";
 
 function tryRedis() {
   try {
@@ -72,6 +73,69 @@ export function withRequestId(response: Response, requestId: string): Response {
   return response;
 }
 
+// CSRF defense for routes that authenticate a state-changing request
+// purely from the `mpgr_session` cookie (see getSessionFromRequest).
+//
+// The session/nonce cookies are `SameSite=None; Secure` in production
+// (lib/auth/config.ts getAuthCookieAttributes) so the app keeps working
+// when loaded inside the Farcaster/Base Mini App webview — a
+// third-party/embedded context where `SameSite=Lax` cookies are never
+// sent at all. `SameSite=None` removes the browser's own cross-site
+// cookie block, so any route that trusts the session cookie alone for
+// a state-changing (non-GET/HEAD/OPTIONS) request must verify the
+// request actually came from this app itself.
+//
+// This uses the standard, sufficient Origin-header check for
+// cookie+fetch JSON APIs: a real browser always sets `Origin` (falling
+// back to `Referer` when a browser omits it) on POST/PUT/PATCH/DELETE
+// requests, same-origin or not, and a cross-site page cannot forge it.
+// It does not touch the SIWE nonce/signature flow itself (that flow is
+// separately, cryptographically bound to the app's origin inside the
+// signed SIWE message and needs no additional check here).
+export function verifyTrustedOrigin(request: Request): Response | null {
+  if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return null;
+
+  let appOrigin: string;
+  try {
+    appOrigin = getAppOrigin(request.url);
+  } catch {
+    // APP_ORIGIN misconfiguration is a deploy problem surfaced loudly
+    // elsewhere by getAppOrigin() — fail closed rather than allow an
+    // unverifiable cross-origin request through.
+    return new Response(JSON.stringify({ error: "Origin verification is not configured" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const candidate = request.headers.get("origin") ?? request.headers.get("referer");
+  if (!candidate) {
+    return new Response(JSON.stringify({ error: "Missing Origin header" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  let candidateOrigin: string;
+  try {
+    candidateOrigin = new URL(candidate).origin;
+  } catch {
+    return new Response(JSON.stringify({ error: "Invalid Origin header" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  if (candidateOrigin !== appOrigin) {
+    return new Response(JSON.stringify({ error: "Cross-site request rejected" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  return null;
+}
+
 export async function protectApiRequest(
   request: Request,
   bucket: string,
@@ -80,6 +144,8 @@ export async function protectApiRequest(
   maxBytes = 16 * 1024,
 ): Promise<{ requestId: string; error: Response | null }> {
   const requestId = requestIdFromRequest(request);
+  const originError = verifyTrustedOrigin(request);
+  if (originError) return { requestId, error: withRequestId(originError, requestId) };
   const sizeError = await assertJsonBodyLimit(request, maxBytes);
   if (sizeError) return { requestId, error: withRequestId(sizeError, requestId) };
   const rateError = await enforceRateLimit(request, bucket, limit, windowSeconds);

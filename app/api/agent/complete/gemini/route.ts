@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import { enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody } from "@/lib/api/request-guard";
+import { enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody, verifyTrustedOrigin } from "@/lib/api/request-guard";
 import { AI_PROMPT_LIMITS, SERVER_AI_POLICY, buildTrustedUserPrompt, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
 import {
   buildGeminiGenerateContentRequest,
@@ -80,6 +80,8 @@ function logGeminiEvent(
 export async function POST(request: Request) {
   const requestId = requestIdFromRequest(request);
   const respond = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), requestId);
+  const originError = verifyTrustedOrigin(request);
+  if (originError) return withRequestId(originError, requestId);
   const auth = getSessionFromRequest(request);
   if (!auth) return respond({ error: "Authentication required" }, { status: 401 });
   const rateError = await enforceRateLimit(request, "ai", 20, 60);

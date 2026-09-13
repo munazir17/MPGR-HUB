@@ -10,7 +10,7 @@ import { NextResponse } from "next/server";
 
 import { prepareTokenizedStockSwap } from "@/lib/trade/tokenized-stock-swap";
 import { checkRateLimit } from "@/lib/trade/trade-rate-limit";
-import { readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
+import { readJsonBody, requestIdFromRequest, withRequestId, verifyTrustedOrigin } from "@/lib/api/request-guard";
 import { getSessionFromRequest } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
@@ -30,6 +30,8 @@ function statusFor(code: string): number {
 export async function POST(request: Request) {
   const requestId = requestIdFromRequest(request);
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), requestId);
+  const originError = verifyTrustedOrigin(request);
+  if (originError) return withRequestId(originError, requestId);
   const session = getSessionFromRequest(request);
   if (!session) {
     return json(

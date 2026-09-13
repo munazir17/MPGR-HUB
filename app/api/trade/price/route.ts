@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getRoutedSwapPrice } from "@/lib/trade/trade-swap-router";
 import { parseTradeSwapRequest } from "@/lib/trade/trade-request";
 import { checkRateLimit } from "@/lib/trade/trade-rate-limit";
-import { readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
+import { readJsonBody, requestIdFromRequest, withRequestId, verifyTrustedOrigin } from "@/lib/api/request-guard";
 import { getSessionFromRequest } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
@@ -15,6 +15,8 @@ const RATE_WINDOW_MS = 60_000;
 export async function POST(request: Request) {
   const requestId = requestIdFromRequest(request);
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), requestId);
+  const originError = verifyTrustedOrigin(request);
+  if (originError) return withRequestId(originError, requestId);
   const session = getSessionFromRequest(request);
   if (!session) {
     return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: { "Cache-Control": "no-store" } });
