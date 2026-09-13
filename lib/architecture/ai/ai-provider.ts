@@ -4,6 +4,7 @@ import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 import type { ConversationMemoryContext } from "@/lib/architecture/memory/memory-context";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
+import type { TransferProposal } from "@/lib/trade/transfer-types";
 
 // Phase 3C Part 1 — AIProvider abstraction. Mirrors
 // lib/architecture/memory/memory-provider.ts exactly: an interface, one
@@ -74,6 +75,13 @@ export interface AIProviderResponse {
    * P4 — set only when tokenized_stock_research succeeded.
    */
   tokenizedStockReport?: TokenizedStockReport;
+  /**
+   * Agent send/transfer addendum — set only when this turn's
+   * tool-calling loop ran transfer_prepare_send successfully. Taken
+   * from the tool result, never from model text. Optional/additive,
+   * same pattern as tradeProposal above.
+   */
+  transferProposal?: TransferProposal;
 }
 
 export interface AIProvider {

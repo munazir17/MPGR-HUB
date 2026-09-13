@@ -14,9 +14,11 @@ import { AgentErrorBanner } from "@/components/features/agent/AgentErrorBanner";
 import { AgentErrorBoundary } from "@/components/features/agent/AgentErrorBoundary";
 import { AgentX402PaymentModal } from "@/components/features/agent/AgentX402PaymentModal";
 import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTradeConfirmationModal";
+import { AgentTransferConfirmationModal } from "@/components/features/agent/AgentTransferConfirmationModal";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { useX402Payment } from "@/hooks/useX402Payment";
 import { useTradeQuote } from "@/hooks/useTradeQuote";
+import { useTransferQuote } from "@/hooks/useTransferQuote";
 import type { AgentStatusId } from "@/lib/agent-config";
 // Bug fix (post Phase 3C audit) — the footer disclaimer below used to be
 // a hardcoded string claiming "no external AI services are connected in
@@ -48,6 +50,7 @@ export default function AgentPage() {
     selectPaletteCommand,
     streamingMessageId,
     appendTradeExecutionResult,
+    appendTransferExecutionResult,
     stopGeneration,
   } = useAgentChat();
 
@@ -57,6 +60,7 @@ export default function AgentPage() {
   // and exactly which call is the human-confirmation boundary.
   const x402Payment = useX402Payment();
   const tradeQuote = useTradeQuote(appendTradeExecutionResult);
+  const transferQuote = useTransferQuote(appendTransferExecutionResult);
 
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking", "beta"] : ["online", "beta"];
   const hasMessages = messages.length > 0;
@@ -128,6 +132,7 @@ export default function AgentPage() {
                       streamingMessageId={streamingMessageId}
                       onReviewX402Proposal={x402Payment.openProposal}
                       onReviewTradeProposal={tradeQuote.openProposal}
+                      onReviewTransferProposal={transferQuote.openProposal}
                     />
                   ) : (
                     <AgentEmptyState onSelectPrompt={sendMessage} />
@@ -193,6 +198,18 @@ export default function AgentPage() {
         swapHash={tradeQuote.swapHash}
         stepLabel={tradeQuote.stepLabel}
         onConfirmAndSwap={tradeQuote.confirmAndSwap}
+      />
+      <AgentTransferConfirmationModal
+        open={transferQuote.open}
+        onClose={transferQuote.close}
+        proposal={transferQuote.proposal}
+        confirmationState={transferQuote.confirmationState}
+        confirmationError={transferQuote.confirmationError}
+        executionState={transferQuote.executionState}
+        executionError={transferQuote.executionError}
+        txHash={transferQuote.txHash}
+        stepLabel={transferQuote.stepLabel}
+        onConfirmAndSend={transferQuote.confirmAndSend}
       />
     </>
   );

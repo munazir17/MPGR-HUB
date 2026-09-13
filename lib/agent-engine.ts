@@ -6,6 +6,7 @@ import type { AgentContext } from "@/lib/agent-context";
 import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
+import type { TransferProposal } from "@/lib/trade/transfer-types";
 
 // Phase 3A — local/mock persistence for MPGR Agent conversations.
 // Phase 3A.2 — replies come from lib/agent-intelligence.ts.
@@ -67,6 +68,11 @@ export interface AgentMessage {
    * P4 — present only when tokenized_stock_research succeeded.
    */
   tokenizedStockReport?: TokenizedStockReport;
+  /**
+   * Present only when this assistant turn prepared a send/transfer.
+   * Display/state only; signing stays outside this module.
+   */
+  transferProposal?: TransferProposal;
 }
 
 export interface AgentState {
@@ -98,6 +104,7 @@ interface AssistantExtras {
   x402Proposal?: X402PaymentProposal;
   tradeProposal?: TradeProposal;
   tokenizedStockReport?: TokenizedStockReport;
+  transferProposal?: TransferProposal;
 }
 
 function createMessage(
@@ -128,6 +135,9 @@ function createMessage(
       : {}),
     ...(extra?.tokenizedStockReport
       ? { tokenizedStockReport: extra.tokenizedStockReport }
+      : {}),
+    ...(extra?.transferProposal
+      ? { transferProposal: extra.transferProposal }
       : {}),
   };
 }
@@ -178,6 +188,7 @@ export async function appendAssistantReply(
     x402Proposal,
     tradeProposal,
     tokenizedStockReport,
+    transferProposal,
   } = await getAIProvider().generateReply({
     prompt: userPrompt,
     agentContext: promptContext.agent,
@@ -198,6 +209,7 @@ export async function appendAssistantReply(
         x402Proposal,
         tradeProposal,
         tokenizedStockReport,
+        transferProposal,
       }),
     ],
   };
@@ -289,6 +301,7 @@ export async function regenerateLastReply(
     x402Proposal,
     tradeProposal,
     tokenizedStockReport,
+    transferProposal,
   } = await getAIProvider().generateReply({
     prompt: userPrompt,
     agentContext: promptContext.agent,
@@ -309,6 +322,7 @@ export async function regenerateLastReply(
         x402Proposal,
         tradeProposal,
         tokenizedStockReport,
+        transferProposal,
       }),
     ],
   };

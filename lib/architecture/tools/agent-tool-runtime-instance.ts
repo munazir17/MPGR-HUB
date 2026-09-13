@@ -54,6 +54,12 @@ import "./agentkit-tool-definitions";
 // the Confirm & Swap UI, same as x402.
 import "./trade-tool-definitions";
 
+// Agent send/transfer addendum — registers transfer_prepare_send
+// (lib/architecture/tools/transfer-tool-definitions.ts) into this exact
+// same production registry instance. Prepare-only; signing stays behind
+// the Confirm & Send UI, same boundary as trade/x402 above.
+import "./transfer-tool-definitions";
+
 export const agentToolRuntime = new AgentToolRuntime(
   getAgentToolRegistry(),
   agentEventBus,

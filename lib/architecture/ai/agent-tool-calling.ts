@@ -22,6 +22,14 @@
 //   - The model is never trusted to invent amounts, tokens, or calldata.
 //   - Signing remains behind explicit Confirm & Swap.
 //
+// Agent send/transfer integration:
+//   - transfer_prepare_send is advertised as a prepare tool.
+//   - Structured TransferProposal is captured from the tool result.
+//   - The model is never trusted to invent a recipient, token, or amount —
+//     recipient/Basename resolution and balance checks all happen server
+//     side (lib/trade/transfer-request.ts / transfer-proposal.ts).
+//   - Signing remains behind explicit Confirm & Send.
+//
 // P3 robustness addendum:
 //   - x402 tool arguments are normalized to resourceUrl (never url).
 //   - A valid tool result on the final allowed turn is turned into a
@@ -46,6 +54,7 @@ import type { AnyAgentTool } from "@/lib/architecture/tools/agent-tool";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
+import type { TransferProposal } from "@/lib/trade/transfer-types";
 
 export const MAX_TOOL_CALL_ROUNDS = 3;
 
@@ -128,9 +137,12 @@ function hasNegativeTradeAmount(prompt: string): boolean {
 
   const lower = prompt.toLowerCase();
 
-  // Only activate for an actual trade-like request.
+  // Only activate for an actual trade- or transfer-like request. Send/
+  // transfer verbs are included here too — "send -10 USDC to 0x..." is
+  // the same signed-amount trick against transfer_prepare_send that
+  // this check already exists to catch for trade_prepare_swap.
   const hasTradeVerb =
-    /\b(buy|sell|swap|trade|purchase)\b/.test(lower);
+    /\b(buy|sell|swap|trade|purchase|send|transfer)\b/.test(lower);
 
   if (!hasTradeVerb) return false;
 
@@ -339,6 +351,7 @@ export function buildToolCatalogPromptBlock(
     'For buy/sell/swap/quote of any Base token (ETH, USDC, MPGR, a 0x address) call trade_prepare_swap. Dollar buys: fromToken="USDC", amount="10" (human units). Omit taker.',
     "For Coinbase B20 tokenized stocks (AAPLc, SPCXc, COINc, TSLAc, …) call tokenized_stock_prepare_order with {symbol, amount} to buy/sell, or tokenized_stock_research to look up catalog/oracle data.",
     "Never call tokenized_stock_research for ETH, USDC, WETH, or MPGR. Use trade_get_price for those prices.",
+    'To send/transfer ETH or any Base token to someone, call transfer_prepare_send with {token, amount, recipient}. recipient is a 0x address or a Basename (name.base.eth) the user actually gave you — never invent, guess, or reuse an address from earlier in the conversation for a different request. If the user has not given a recipient, ask for one instead of calling this tool.',
   ].join("\n");
 }
 
@@ -513,6 +526,18 @@ function captureTokenizedStockReport(
   return data?.report ?? current;
 }
 
+function captureTransferProposal(
+  toolId: string,
+  toolResult: AgentToolResult,
+  current: TransferProposal | undefined,
+): TransferProposal | undefined {
+  if (toolId !== "transfer_prepare_send" || !toolResult.success) {
+    return current;
+  }
+  const data = toolResult.data as { proposal?: TransferProposal } | undefined;
+  return data?.proposal ?? current;
+}
+
 function buildLoopResponse(
   request: AIProviderRequest,
   intent: AgentIntent,
@@ -520,6 +545,7 @@ function buildLoopResponse(
   x402Proposal: X402PaymentProposal | undefined,
   tradeProposal?: TradeProposal,
   tokenizedStockReport?: TokenizedStockReport,
+  transferProposal?: TransferProposal,
 ): AIProviderResponse {
   return {
     intent,
@@ -536,6 +562,7 @@ function buildLoopResponse(
     ...(x402Proposal ? { x402Proposal } : {}),
     ...(tradeProposal ? { tradeProposal } : {}),
     ...(tokenizedStockReport ? { tokenizedStockReport } : {}),
+    ...(transferProposal ? { transferProposal } : {}),
   };
 }
 
@@ -551,7 +578,12 @@ export function synthesizeFinalReplyFromToolResult(
     | X402PaymentProposal
     | undefined,
   capturedTradeProposal?: TradeProposal,
+  capturedTransferProposal?: TransferProposal,
 ): string {
+  if (capturedTransferProposal) {
+    return "A Base transfer proposal is ready for you to review in the app. I will not sign or send anything until you explicitly confirm.";
+  }
+
   if (capturedTradeProposal) {
     return capturedTradeProposal.executionAvailable
       ? "A Base swap proposal is ready for you to review in the app. I will not sign or submit anything until you explicitly confirm."
@@ -647,6 +679,7 @@ export async function runToolCallingLoop(
     | undefined;
   let capturedTradeProposal: TradeProposal | undefined;
   let capturedStockReport: TokenizedStockReport | undefined;
+  let capturedTransferProposal: TransferProposal | undefined;
 
   for (
     let round = 1;
@@ -672,7 +705,8 @@ export async function runToolCallingLoop(
       return buildLoopResponse(
         request,
         request.previousIntent ?? "general_help",
-        "I cannot prepare that trade because the amount must be a positive dollar amount. Nothing was signed or submitted.",
+        "I cannot prepare that because the amount must be a positive value. Nothing was signed or submitted.",
+        undefined,
         undefined,
         undefined,
         undefined,
@@ -697,6 +731,7 @@ export async function runToolCallingLoop(
         capturedX402Proposal,
         capturedTradeProposal,
         capturedStockReport,
+        capturedTransferProposal,
       );
     }
 
@@ -722,6 +757,11 @@ export async function runToolCallingLoop(
       toolResult,
       capturedStockReport,
     );
+    capturedTransferProposal = captureTransferProposal(
+      directive.toolId,
+      toolResult,
+      capturedTransferProposal,
+    );
 
     if (isFinalRound) {
       const intent =
@@ -735,10 +775,12 @@ export async function runToolCallingLoop(
           toolResult,
           capturedX402Proposal,
           capturedTradeProposal,
+          capturedTransferProposal,
         ),
         capturedX402Proposal,
         capturedTradeProposal,
         capturedStockReport,
+        capturedTransferProposal,
       );
     }
 
@@ -747,6 +789,8 @@ export async function runToolCallingLoop(
     const isTradePrepare =
       directive.toolId === "trade_prepare_swap" ||
       directive.toolId === "tokenized_stock_prepare_order";
+    const isTransferPrepare =
+      directive.toolId === "transfer_prepare_send";
 
     if (isX402Prepare) {
       transcript += [
@@ -777,6 +821,21 @@ export async function runToolCallingLoop(
               error: toolResult.error ?? null,
             }),
         'Respond ONLY with the final JSON {"intent":"...","reply":"..."}. Keep the reply short. Do NOT restate amounts, token addresses, calldata, or recipient fields; the app UI displays those directly from the structured proposal.',
+      ].join("\n");
+    } else if (isTransferPrepare) {
+      transcript += [
+        "",
+        "[Tool result: " + directive.toolId + "]",
+        toolResult.success
+          ? safeStringify({
+              success: true,
+              note: "A transfer proposal was prepared and will be shown directly in the app UI for user review and explicit confirmation.",
+            })
+          : safeStringify({
+              success: false,
+              error: toolResult.error ?? null,
+            }),
+        'Respond ONLY with the final JSON {"intent":"...","reply":"..."}. Keep the reply short. Do NOT restate the amount, token, or recipient address/Basename; the app UI displays those directly from the structured proposal.',
       ].join("\n");
     } else {
       transcript += [

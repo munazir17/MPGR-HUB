@@ -7,12 +7,14 @@ import { AgentHighlightChips } from "./AgentHighlightChips";
 import { AgentActionCard } from "./AgentActionCard";
 import { AgentX402ProposalCard } from "./AgentX402ProposalCard";
 import { AgentTradeProposalCard } from "./AgentTradeProposalCard";
+import { AgentTransferProposalCard } from "./AgentTransferProposalCard";
 import { AgentTokenizedStockCard } from "./AgentTokenizedStockCard";
 import { AgentMessageToolbar } from "./AgentMessageToolbar";
 import { useStreamingText } from "@/hooks/useStreamingText";
 import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TradeProposal } from "@/lib/trade/trade-types";
+import type { TransferProposal } from "@/lib/trade/transfer-types";
 
 interface AgentChatBubbleProps {
   message: AgentMessage;
@@ -29,6 +31,7 @@ interface AgentChatBubbleProps {
   // automatically.
   onReviewX402Proposal?: (proposal: X402PaymentProposal) => void;
   onReviewTradeProposal?: (proposal: TradeProposal) => void;
+  onReviewTransferProposal?: (proposal: TransferProposal) => void;
 }
 
 function formatTime(iso: string): string {
@@ -53,6 +56,7 @@ export function AgentChatBubble({
   isStreaming,
   onReviewX402Proposal,
   onReviewTradeProposal,
+  onReviewTransferProposal,
 }: AgentChatBubbleProps) {
   const isUser = message.role === "user";
   const { text: streamedContent, done: streamDone } = useStreamingText(message.content, !isUser && !!isStreaming);
@@ -63,6 +67,7 @@ export function AgentChatBubble({
   const hasActions = !isUser && revealComplete && !!message.actions && message.actions.length > 0;
   const hasX402Proposal = !isUser && revealComplete && !!message.x402Proposal && !!onReviewX402Proposal;
   const hasTradeProposal = !isUser && revealComplete && !!message.tradeProposal && !!onReviewTradeProposal;
+  const hasTransferProposal = !isUser && revealComplete && !!message.transferProposal && !!onReviewTransferProposal;
   const hasStockReport = !isUser && revealComplete && !!message.tokenizedStockReport;
 
   return (
@@ -118,6 +123,12 @@ export function AgentChatBubble({
         {hasTradeProposal && (
           <div className="flex w-full flex-col gap-1.5 pt-0.5">
             <AgentTradeProposalCard proposal={message.tradeProposal!} onReview={onReviewTradeProposal!} />
+          </div>
+        )}
+
+        {hasTransferProposal && (
+          <div className="flex w-full flex-col gap-1.5 pt-0.5">
+            <AgentTransferProposalCard proposal={message.transferProposal!} onReview={onReviewTransferProposal!} />
           </div>
         )}
 

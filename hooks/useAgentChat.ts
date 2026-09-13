@@ -571,6 +571,29 @@ export function useAgentChat() {
     [address],
   );
 
+  const appendTransferExecutionResult = useCallback(
+    async (proposal: import("@/lib/trade/transfer-types").TransferProposal, txHash: `0x${string}`) => {
+      if (!address) return;
+
+      const explorerUrl = `https://basescan.org/tx/${txHash}`;
+      const destinationLabel = proposal.recipient.basename
+        ? `${proposal.recipient.basename} (${proposal.recipient.address})`
+        : proposal.recipient.address;
+
+      const content =
+        `✅ Transfer successful\n\n` +
+        `Sent ${proposal.displayAmount} to ${destinationLabel}\n` +
+        `Status: Confirmed on Base\n` +
+        `Transaction: ${txHash}` +
+        `\nView on BaseScan: ${explorerUrl}`;
+
+      const state = await appendAssistantMessage(address, content);
+      setMessages(state.messages);
+      setStreamingMessageId(state.messages[state.messages.length - 1]?.id ?? null);
+    },
+    [address],
+  );
+
   return {
     messages,
     thinking,
@@ -591,6 +614,7 @@ export function useAgentChat() {
     clearHistory,
     streamingMessageId,
     appendTradeExecutionResult,
+    appendTransferExecutionResult,
     stopGeneration,
     // Phase 3B Part 3 addition
     personalization,

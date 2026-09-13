@@ -44,4 +44,19 @@ export const erc20Abi = [
     ],
     outputs: [{ name: "", type: "uint256" }],
   },
+  // --- Agent send/transfer addition ---------------------------------------
+  // Needed to build calldata for an ERC-20 "send 10 USDC to 0x..." transfer
+  // proposal (lib/trade/transfer-proposal.ts). The proposal only ever
+  // ENCODES this call for the user's own wallet to sign — nothing here
+  // calls it server-side.
+  {
+    type: "function",
+    name: "transfer",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
 ] as const;

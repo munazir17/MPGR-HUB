@@ -3,6 +3,7 @@ import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-pro
 import type { Logger } from "@/lib/architecture/core/types";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import { isSupportedTradeProvider, type TokenizedStockReport, type TradeProposal } from "@/lib/trade/trade-types";
+import type { TransferProposal } from "@/lib/trade/transfer-types";
 
 // Phase 3C Part 4 — AI Provider guardrails.
 //
@@ -90,6 +91,27 @@ function isPlausibleTradeProposal(value: unknown): value is TradeProposal {
   );
 }
 
+/**
+ * Same cheap defensive shape check as isPlausibleTradeProposal above —
+ * NOT a re-validation of trust. The real trust boundary for a
+ * transfer's recipient/token/amount is
+ * lib/trade/transfer-confirmation.ts's revalidateTransferProposal(),
+ * which hooks/useTransferQuote.ts always re-runs before anything can be
+ * signed.
+ */
+function isPlausibleTransferProposal(value: unknown): value is TransferProposal {
+  if (!value || typeof value !== "object") return false;
+  const proposal = value as Record<string, unknown>;
+  if (typeof proposal.id !== "string" || !proposal.id) return false;
+  if (proposal.requiresConfirmation !== true) return false;
+  if (proposal.network !== "base") return false;
+  if (typeof proposal.amount !== "string") return false;
+  if (typeof proposal.sender !== "string") return false;
+  const asset = proposal.asset as Record<string, unknown> | undefined;
+  const recipient = proposal.recipient as Record<string, unknown> | undefined;
+  return typeof asset?.address === "string" && typeof recipient?.address === "string";
+}
+
 function isPlausibleTokenizedStockReport(value: unknown): value is TokenizedStockReport {
   if (!value || typeof value !== "object") return false;
   const report = value as Record<string, unknown>;
@@ -170,6 +192,13 @@ export class GuardrailAIProvider implements AIProvider {
       });
     }
 
+    const transferProposal = isPlausibleTransferProposal(response.transferProposal) ? response.transferProposal : undefined;
+    if (response.transferProposal !== undefined && !transferProposal) {
+      this.logger.warn("AI provider returned a malformed transferProposal — dropped, not surfaced to the UI", {
+        provider: this.provider.name,
+      });
+    }
+
     return {
       intent: response.intent,
       reply: sanitizedReply,
@@ -179,6 +208,7 @@ export class GuardrailAIProvider implements AIProvider {
       ...(x402Proposal ? { x402Proposal } : {}),
       ...(tradeProposal ? { tradeProposal } : {}),
       ...(tokenizedStockReport ? { tokenizedStockReport } : {}),
+      ...(transferProposal ? { transferProposal } : {}),
     };
   }
 }
