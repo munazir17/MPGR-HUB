@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Coins, Gauge, Crown, PieChart, Award, Flame } from "lucide-react";
+import { PieChart, Send, Compass, Search, Gift, TrendingUp } from "lucide-react";
 
 // Phase 3A — MPGR Agent frontend foundation. Everything here is local/mock:
 // no OpenAI, Claude, Gemini, or backend calls.
@@ -58,41 +58,50 @@ export interface AgentPromptSuggestion {
   icon: LucideIcon;
 }
 
+// Capability-focused, action-oriented suggestions. This list intentionally
+// does NOT read like an XP/Premium/Holder Tier FAQ — each prompt maps to a
+// real tool the Agent can actually reach (see lib/architecture/tools/
+// tool-definitions.ts, trade-tool-definitions.ts, transfer-tool-definitions.ts):
+// portfolio -> portfolio_analyzer, transfer -> transfer_prepare_send,
+// next-steps -> wallet_analyzer/holder tier reasoning, research ->
+// token_analyzer/base_research, rewards -> yield_opportunities /
+// reward vault, opportunities -> yield_opportunities/market_intelligence.
+// Do not add these back to a long FAQ-style list — keep this set small.
 export const AGENT_PROMPT_SUGGESTIONS: AgentPromptSuggestion[] = [
   {
-    id: "xp",
-    label: "Check my XP progress",
-    prompt: "How is my XP and level progress looking?",
-    icon: Flame,
-  },
-  {
-    id: "staking",
-    label: "How do I stake MPGR?",
-    prompt: "How do I stake MPGR and what are the lock options?",
-    icon: Coins,
-  },
-  {
-    id: "holder-tier",
-    label: "What's my Holder Tier?",
-    prompt: "What is my current Holder Tier and how do I level it up?",
-    icon: Gauge,
-  },
-  {
-    id: "premium",
-    label: "Explain Premium benefits",
-    prompt: "What benefits do I get from MPGR Premium?",
-    icon: Crown,
-  },
-  {
     id: "portfolio",
-    label: "Show my portfolio summary",
-    prompt: "Give me a summary of my MPGR portfolio.",
+    label: "Analyze my portfolio",
+    prompt: "Analyze my MPGR HUB portfolio and tell me what stands out.",
     icon: PieChart,
   },
   {
-    id: "season-pass",
-    label: "Season Pass rewards?",
-    prompt: "How do Season Pass rewards and levels work?",
-    icon: Award,
+    id: "transfer",
+    label: "Plan a Base transfer",
+    prompt: "I want to send a token on Base — walk me through it.",
+    icon: Send,
+  },
+  {
+    id: "next-steps",
+    label: "What should I do next?",
+    prompt: "Based on my current position, what should I do next?",
+    icon: Compass,
+  },
+  {
+    id: "research",
+    label: "Research $MPGR",
+    prompt: "Give me a research briefing on $MPGR.",
+    icon: Search,
+  },
+  {
+    id: "rewards",
+    label: "Check my rewards",
+    prompt: "What rewards do I currently have available to claim?",
+    icon: Gift,
+  },
+  {
+    id: "opportunities",
+    label: "Explore Base opportunities",
+    prompt: "What Base-native opportunities should I be looking at right now?",
+    icon: TrendingUp,
   },
 ];

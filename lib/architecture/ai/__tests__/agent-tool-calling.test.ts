@@ -24,8 +24,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { agentToolRuntime } from "@/lib/architecture/tools/agent-tool-runtime-instance";
 import { getAgentToolRegistry } from "@/lib/architecture/tools/agent-tool-registry-instance";
-import { toolSuccess } from "@/lib/architecture/tools/agent-tool-result";
+import { toolError, toolSuccess } from "@/lib/architecture/tools/agent-tool-result";
 import type { AnyAgentTool } from "@/lib/architecture/tools/agent-tool";
+import type { TransferProposal } from "@/lib/trade/transfer-types";
 import type { AIProviderRequest } from "../ai-provider";
 
 import {
@@ -337,5 +338,198 @@ describe("runToolCallingLoop", () => {
 
     const secondCallUserPrompt = sendCompletion.mock.calls[1][1] as string;
     expect(secondCallUserPrompt).not.toContain("SUPER_SECRET_INTERNAL_DETAIL");
+  });
+});
+
+// Regression coverage for the MASTER TASK Part 1 fix: a failed
+// transfer_prepare_send must never fall through to generic
+// assistant/help text ("I can help with: Portfolio Summary...").
+// See agent-tool-calling.ts's early-return checks right after
+// captureTransferProposal in runToolCallingLoop.
+describe("runToolCallingLoop — transfer_prepare_send error handling", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function makeTransferProposal(overrides: Partial<TransferProposal> = {}): TransferProposal {
+    return {
+      id: "transfer-test-1",
+      kind: "erc20-transfer",
+      network: "base",
+      chainId: 8453,
+      asset: {
+        address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        symbol: "USDC",
+        name: "USD Coin",
+        decimals: 6,
+        kind: "erc20",
+        verified: true,
+      },
+      amount: "5000000",
+      sender: "0x1111111111111111111111111111111111111111" as TransferProposal["sender"],
+      recipient: {
+        input: "0x2222222222222222222222222222222222222222",
+        inputKind: "address",
+        address: "0x2222222222222222222222222222222222222222" as TransferProposal["recipient"]["address"],
+        basename: null,
+      },
+      senderBalance: "1000000",
+      sufficientBalance: false,
+      transaction: { to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as TransferProposal["transaction"]["to"], data: "0x", value: "0" },
+      quotedAt: new Date().toISOString(),
+      risk: [],
+      warnings: [],
+      displayAmount: "5 USDC",
+      description: "Send 5 USDC on Base to 0x2222222222222222222222222222222222222222.",
+      requiresConfirmation: true,
+      phase: "idle",
+      ...overrides,
+    };
+  }
+
+  it("returns the grounded tool error directly instead of asking the model for a free-form reply", async () => {
+    vi.spyOn(agentToolRuntime, "executeTool").mockResolvedValue(
+      toolError("transfer_prepare_send", {
+        code: "INVALID_INPUT",
+        message: "Invalid recipient address. Nothing was sent.",
+      }),
+    );
+
+    const sendCompletion = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          toolCall: {
+            toolId: "transfer_prepare_send",
+            arguments: { token: "USDC", amount: "5", recipient: "not-an-address" },
+          },
+        }),
+      );
+
+    const response = await runToolCallingLoop(makeRequest({ prompt: "send 5 usdc to not-an-address" }), "base prompt", sendCompletion);
+
+    // The model is never given a second turn to paraphrase or replace
+    // the grounded error with generic help text.
+    expect(sendCompletion).toHaveBeenCalledTimes(1);
+    expect(response.reply).toBe("Invalid recipient address. Nothing was sent.");
+    expect(response.reply).not.toContain("I can help with");
+    expect(response.transferProposal).toBeUndefined();
+  });
+
+  it("appends 'Nothing was sent.' when the underlying tool error doesn't already say so", async () => {
+    vi.spyOn(agentToolRuntime, "executeTool").mockResolvedValue(
+      toolError("transfer_prepare_send", {
+        code: "DATA_UNAVAILABLE",
+        message: "Could not verify USDC's on-chain decimals — refusing to guess for a real-funds transfer.",
+      }),
+    );
+
+    const sendCompletion = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          toolCall: { toolId: "transfer_prepare_send", arguments: { token: "USDC", amount: "5", recipient: "jesse.base.eth" } },
+        }),
+      );
+
+    const response = await runToolCallingLoop(makeRequest(), "base prompt", sendCompletion);
+
+    expect(response.reply).toBe(
+      "Could not verify USDC's on-chain decimals — refusing to guess for a real-funds transfer. Nothing was sent.",
+    );
+  });
+
+  it("falls back to a generic grounded message when the tool error has no message", async () => {
+    vi.spyOn(agentToolRuntime, "executeTool").mockResolvedValue(
+      toolError("transfer_prepare_send", { code: "PROVIDER_ERROR", message: "" }),
+    );
+
+    const sendCompletion = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({ toolCall: { toolId: "transfer_prepare_send", arguments: { token: "ETH", amount: "0.01", recipient: "0x2222222222222222222222222222222222222222" } } }),
+      );
+
+    const response = await runToolCallingLoop(makeRequest(), "base prompt", sendCompletion);
+
+    expect(response.reply).toBe("Could not prepare that Base transfer. Nothing was sent. Please try again.");
+  });
+
+  it("surfaces a deterministic insufficient-balance reply and still returns the proposal for the UI card", async () => {
+    const proposal = makeTransferProposal();
+    vi.spyOn(agentToolRuntime, "executeTool").mockResolvedValue(
+      toolSuccess("transfer_prepare_send", { proposal }, { source: "base-erc20-transfer", chainId: 8453 }),
+    );
+
+    const sendCompletion = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          toolCall: { toolId: "transfer_prepare_send", arguments: { token: "USDC", amount: "5", recipient: "0x2222222222222222222222222222222222222222" } },
+        }),
+      );
+
+    const response = await runToolCallingLoop(makeRequest(), "base prompt", sendCompletion);
+
+    expect(sendCompletion).toHaveBeenCalledTimes(1);
+    expect(response.reply).toBe("Insufficient USDC balance. You have 1 USDC, but you're trying to send 5 USDC. Nothing was sent.");
+    expect(response.reply).not.toContain("ready to review");
+    expect(response.transferProposal).toEqual(proposal);
+  });
+
+  it("surfaces a deterministic insufficient-ETH reply for native transfers", async () => {
+    const proposal = makeTransferProposal({
+      kind: "native-transfer",
+      asset: {
+        address: "0x0000000000000000000000000000000000EeEe" as TransferProposal["asset"]["address"],
+        symbol: "ETH",
+        name: "Ether",
+        decimals: 18,
+        kind: "native",
+        verified: true,
+      },
+      amount: "10000000000000000",
+      senderBalance: "1000000000000000",
+      displayAmount: "0.01 ETH",
+    });
+    vi.spyOn(agentToolRuntime, "executeTool").mockResolvedValue(
+      toolSuccess("transfer_prepare_send", { proposal }, { source: "base-native-transfer", chainId: 8453 }),
+    );
+
+    const sendCompletion = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          toolCall: { toolId: "transfer_prepare_send", arguments: { token: "ETH", amount: "0.01", recipient: "0x2222222222222222222222222222222222222222" } },
+        }),
+      );
+
+    const response = await runToolCallingLoop(makeRequest(), "base prompt", sendCompletion);
+
+    expect(response.reply).toContain("Insufficient ETH balance.");
+    expect(response.reply).toContain("network fees");
+    expect(response.transferProposal).toEqual(proposal);
+  });
+
+  it("still lets the model give the final reply when the transfer proposal has sufficient balance", async () => {
+    const proposal = makeTransferProposal({ sufficientBalance: true, senderBalance: "50000000" });
+    vi.spyOn(agentToolRuntime, "executeTool").mockResolvedValue(
+      toolSuccess("transfer_prepare_send", { proposal }, { source: "base-erc20-transfer", chainId: 8453 }),
+    );
+
+    const sendCompletion = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          toolCall: { toolId: "transfer_prepare_send", arguments: { token: "USDC", amount: "5", recipient: "0x2222222222222222222222222222222222222222" } },
+        }),
+      )
+      .mockResolvedValueOnce(JSON.stringify({ intent: "general_help", reply: "Review the proposal and confirm to send." }));
+
+    const response = await runToolCallingLoop(makeRequest(), "base prompt", sendCompletion);
+
+    expect(sendCompletion).toHaveBeenCalledTimes(2);
+    expect(response.reply).toBe("Review the proposal and confirm to send.");
+    expect(response.transferProposal).toEqual(proposal);
   });
 });

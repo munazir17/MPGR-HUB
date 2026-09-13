@@ -69,8 +69,8 @@ export function AgentHero({ statuses }: AgentHeroProps) {
           transition={{ delay: 0.18, duration: 0.4 }}
           className="mt-0.5 line-clamp-2 max-w-md text-[11px] leading-snug text-muted md:mt-2 md:line-clamp-none md:text-base md:leading-relaxed"
         >
-          Your AI companion for MPGR HUB — ask about XP, staking, Holder Tier, Premium, and your
-          portfolio, all in one place.
+          A Base-native AI agent — it researches, reasons, and can safely prepare onchain actions
+          for your explicit confirmation. Nothing signs or sends without you.
         </motion.p>
 
         <motion.div

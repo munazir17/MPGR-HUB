@@ -54,6 +54,7 @@ import type { AnyAgentTool } from "@/lib/architecture/tools/agent-tool";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
+import { formatAtomicAmount } from "@/lib/trade/trade-format";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
 
 export const MAX_TOOL_CALL_ROUNDS = 3;
@@ -538,6 +539,48 @@ function captureTransferProposal(
   return data?.proposal ?? current;
 }
 
+/**
+ * Deterministic, grounded reply for a failed transfer_prepare_send call.
+ *
+ * transfer_prepare_send failures already carry a specific, user-facing
+ * message from lib/trade/transfer-request.ts / transfer-basename.ts /
+ * transfer-proposal.ts / transfer-tool-definitions.ts (invalid
+ * recipient, unresolved Basename, resolver failure, provider error,
+ * etc). The model must never be given a free turn to paraphrase or
+ * replace that message with generic assistant/help text — this is
+ * returned directly instead of being folded back into the transcript.
+ */
+function formatTransferPrepareFailureReply(
+  toolResult: AgentToolResult,
+): string {
+  const message = toolResult.error?.message?.trim();
+  return message
+    ? `${message}${/nothing (was|will be) sent/i.test(message) ? "" : " Nothing was sent."}`
+    : "Could not prepare that Base transfer. Nothing was sent. Please try again.";
+}
+
+/**
+ * Deterministic, grounded reply when transfer_prepare_send succeeds but
+ * the live on-chain balance check came back short. This is not a tool
+ * failure (buildTransferProposal returns ok:true with
+ * sufficientBalance:false so the UI can still show why nothing is
+ * signable — see transfer-proposal.ts's header comment), but the chat
+ * reply must be just as deterministic as an outright failure: never
+ * generic "ready to review" text.
+ */
+function formatInsufficientBalanceReply(
+  proposal: TransferProposal,
+): string {
+  const available = formatAtomicAmount(
+    proposal.senderBalance,
+    proposal.asset.decimals,
+  );
+  if (proposal.kind === "native-transfer") {
+    return `Insufficient ETH balance. You have ${available} ETH, which isn't enough to cover ${proposal.displayAmount} plus network fees. Nothing was sent.`;
+  }
+  return `Insufficient ${proposal.asset.symbol} balance. You have ${available} ${proposal.asset.symbol}, but you're trying to send ${proposal.displayAmount}. Nothing was sent.`;
+}
+
 function buildLoopResponse(
   request: AIProviderRequest,
   intent: AgentIntent,
@@ -762,6 +805,50 @@ export async function runToolCallingLoop(
       toolResult,
       capturedTransferProposal,
     );
+
+    // FIX (Part 1): a failed transfer_prepare_send must never be
+    // handed back to the model for a free-form next turn — that is
+    // exactly how a grounded server error ("Invalid recipient
+    // address...") gets silently swapped out for generic
+    // "I can help with: Portfolio Summary, XP & Level Progress..."
+    // assistant text. Return the real tool error deterministically,
+    // right here, before another sendCompletion() call can happen.
+    if (
+      directive.toolId === "transfer_prepare_send" &&
+      !toolResult.success
+    ) {
+      return buildLoopResponse(
+        request,
+        request.previousIntent ?? "general_help",
+        formatTransferPrepareFailureReply(toolResult),
+        capturedX402Proposal,
+        capturedTradeProposal,
+        capturedStockReport,
+        capturedTransferProposal,
+      );
+    }
+
+    // Same determinism guarantee for the "prepared fine, but the live
+    // balance check came back short" case (Part 3): the proposal
+    // still renders (capturedTransferProposal above), but the chat
+    // reply is grounded in sufficientBalance rather than left to the
+    // model's next free-form turn.
+    if (
+      directive.toolId === "transfer_prepare_send" &&
+      toolResult.success &&
+      capturedTransferProposal &&
+      capturedTransferProposal.sufficientBalance === false
+    ) {
+      return buildLoopResponse(
+        request,
+        request.previousIntent ?? "general_help",
+        formatInsufficientBalanceReply(capturedTransferProposal),
+        capturedX402Proposal,
+        capturedTradeProposal,
+        capturedStockReport,
+        capturedTransferProposal,
+      );
+    }
 
     if (isFinalRound) {
       const intent =
