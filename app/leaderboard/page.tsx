@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { usePremium } from "@/hooks/usePremium";
 import { useLeaderboard } from "@/hooks/useLeaderboard";
+import { getSeasonNumber } from "@/lib/xp-engine";
 
 // Bug fix — global leaderboard.
 //
@@ -36,16 +37,29 @@ export default function LeaderboardPage() {
 
   const showSkeleton = !mounted || loading;
   const meInTop = me ? top.some((entry) => entry.wallet === me.wallet) : false;
+  const seasonNumber = getSeasonNumber();
 
   return (
     <>
       <Navbar />
       <main className="mx-auto max-w-2xl px-4 py-10">
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          <SectionHeader
-            title="Leaderboard"
-            subtitle="Global rankings across every MPGR HUB wallet"
-          />
+          {/* XP, Season, and Season Points are three distinct values (see
+              lib/xp-engine.ts). Each LeaderboardRow already shows a
+              wallet's XP and Season Points separately (correction: the
+              Season Points figure used to be mislabeled just "season",
+              which read as if Season itself were derived from XP). The
+              current SEASON NUMBER is global — the same for every row —
+              so it doesn't belong repeated on each row; it's shown once,
+              here, as its own badge, following the same
+              `Season ${seasonNumber}` convention already used on
+              app/season/page.tsx. */}
+          <div className="flex items-start justify-between gap-3">
+            <SectionHeader title="Leaderboard" subtitle="Global rankings across every MPGR HUB wallet" />
+            <span className="mt-0.5 inline-flex shrink-0 items-center rounded-full bg-white/5 px-2.5 py-1 text-xs font-semibold text-gold">
+              Season {seasonNumber}
+            </span>
+          </div>
 
           {showSkeleton ? (
             <div className="space-y-3">

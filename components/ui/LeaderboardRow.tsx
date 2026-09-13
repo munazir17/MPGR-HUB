@@ -67,7 +67,15 @@ export function LeaderboardRow({
       </div>
       <div className="text-right">
         <p className="text-sm font-semibold text-white">{formatCompactNumber(xp)} XP</p>
-        <p className="text-[11px] font-medium text-gradient-gold">{formatCompactNumber(seasonPoints)} season</p>
+        {/* This is `seasonPoints` (a distinct, server-tracked metric — see
+            lib/xp-engine.ts getSeasonPoints), never the season NUMBER and
+            never XP. It previously rendered as a bare "150 season" with no
+            "points"/"pts" qualifier, which reads as if Season itself were
+            being set to the XP value whenever the two numbers happened to
+            match (e.g. for a wallet whose full XP total was earned this
+            season). The value was already correct; only the label was
+            ambiguous. */}
+        <p className="text-[11px] font-medium text-gradient-gold">{formatCompactNumber(seasonPoints)} season pts</p>
       </div>
     </motion.div>
   );

@@ -896,11 +896,18 @@ export function RunGame({ address }: RunGameProps) {
 
     ctx.restore();
   }, [getSprite]);
-    useEffect(() => {
-    if (phase === "running") {
-      resizeRef.current?.();
-      draw();
-    }
+  // Paint a frame on every phase change, not just when "running" starts.
+  // The authoritative rAF loop below only calls draw() while running, so
+  // previously the canvas was never painted during "idle"/"countdown"/
+  // "paused"/"game_over" — it just showed whatever was last drawn (often
+  // nothing), which is why the countdown appeared over a blank/dark
+  // container instead of the actual scene. This only ever calls draw()
+  // (pure rendering, reads worldRef/sizeRef but never mutates them and
+  // never calls step()) — it cannot affect physics, scoring, or
+  // collisions.
+  useEffect(() => {
+    resizeRef.current?.();
+    draw();
   }, [phase, draw]);
 
   // --- Collect helpers ---------------------------------------------------
@@ -1547,12 +1554,15 @@ void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1">
       <div className="flex shrink-0 items-center justify-between">
-        {/* BottomNav already has a Games tab on mobile, so this link is
-            redundant there and only wastes header space — kept for
-            desktop, where there's no bottom nav. */}
+        {/* The full site chrome (Navbar/BottomNav) is intentionally hidden
+            on this page so the game gets the full viewport — see
+            app/games/mpgr-run/page.tsx and components/BottomNav.tsx. That
+            removed the mobile bottom nav's "Games" tab as a way back, so
+            this compact link is now shown at every breakpoint instead of
+            only on desktop. */}
         <Link
           href="/games"
-          className="hidden items-center gap-1.5 text-xs font-medium text-muted transition-colors hover:text-white sm:flex"
+          className="flex items-center gap-1.5 text-xs font-medium text-muted transition-colors hover:text-white"
         >
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
           Back to Games

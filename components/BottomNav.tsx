@@ -14,8 +14,18 @@ const TABS = [
   { href: "/profile", label: "Profile", icon: User },
 ];
 
+// Routes that want the full available viewport for a game and render
+// their own compact back/pause controls instead (see RunGame.tsx) — the
+// site's 5-tab bottom nav would otherwise eat into that space and is
+// redundant with the in-game "Back to Games" link.
+const IMMERSIVE_ROUTES = ["/games/mpgr-run"];
+
 export function BottomNav() {
   const pathname = usePathname();
+
+  if (IMMERSIVE_ROUTES.some((route) => pathname?.startsWith(route))) {
+    return null;
+  }
 
   return (
     <nav

@@ -24,7 +24,7 @@ export function SeasonProgressCard({ levelProgress, seasonPoints }: SeasonProgre
         <p className="text-xs text-muted">Season Level</p>
         <span className="flex items-center gap-1 text-xs text-muted">
           <TrendingUp className="h-3 w-3" aria-hidden="true" />
-          {formatCompactNumber(seasonPoints)} Season XP
+          {formatCompactNumber(seasonPoints)} Season Points
         </span>
       </div>
 
@@ -39,10 +39,15 @@ export function SeasonProgressCard({ levelProgress, seasonPoints }: SeasonProgre
 
       <div className="relative mt-4">
         <ProgressBar progress={levelProgress.progress} />
+        {/* getSeasonLevelProgress() (lib/season-engine.ts) computes this
+            entirely from seasonPoints, never from account XP — labeling
+            it "XP" here was the same XP/Season Points conflation this
+            pass exists to fix, just one level down from the top-line
+            stat above. */}
         <p className="mt-1 text-[11px] text-muted">
           {levelProgress.isMaxLevel
             ? "Max level reached this season"
-            : `${levelProgress.pointsIntoLevel}/${levelProgress.pointsNeededForLevel} XP to Level ${levelProgress.level + 1}`}
+            : `${levelProgress.pointsIntoLevel}/${levelProgress.pointsNeededForLevel} pts to Level ${levelProgress.level + 1}`}
         </p>
       </div>
     </GlassCard>
