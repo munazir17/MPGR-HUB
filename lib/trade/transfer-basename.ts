@@ -26,7 +26,6 @@ import {
   type Address,
 } from "viem";
 import { mainnet } from "viem/chains";
-import { normalize } from "viem/ens";
 
 import { getTradePublicClient } from "./trade-public-client";
 
@@ -159,12 +158,7 @@ export async function resolveRecipient(input: unknown): Promise<ResolveRecipient
     };
   }
 
-  let normalized: string;
-  try {
-    normalized = normalize(trimmed.toLowerCase());
-  } catch {
-    return { ok: false, message: `"${trimmed}" is not a validly formatted Basename.` };
-  }
+  const normalized = trimmed.toLowerCase();
 
   const fromBase = await resolveOnBaseL2(normalized);
   if (fromBase) {
