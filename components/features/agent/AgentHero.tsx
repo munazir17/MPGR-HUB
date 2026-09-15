@@ -1,56 +1,62 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { Bot } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AgentOrb } from "./AgentOrb";
 import { AgentStatusBadge } from "./AgentStatusBadge";
 import type { AgentStatusId } from "@/lib/agent-config";
 
 interface AgentHeroProps {
   statuses: AgentStatusId[];
+  compact?: boolean;
 }
 
-export function AgentHero({ statuses }: AgentHeroProps) {
-  return (
-    <div className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3 md:p-8">
-      <div className="relative flex flex-col items-center text-center">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.92 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.35, ease: "easeOut" }}
-          className="relative flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] md:h-16 md:w-16"
-        >
-          <Bot className="h-4 w-4 text-white md:h-7 md:w-7" aria-hidden="true" />
-        </motion.div>
+function greetingForHour(hour: number): string {
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
 
-        <motion.h1
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.08, duration: 0.35 }}
-          className="mt-1 text-sm font-semibold tracking-tight text-white md:mt-4 md:text-3xl"
-        >
-          MPGR Agent
-        </motion.h1>
+export function AgentHero({ statuses, compact }: AgentHeroProps) {
+  const [greeting, setGreeting] = useState("Welcome");
+  const thinking = statuses.includes("thinking");
 
-        <motion.p
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.14, duration: 0.35 }}
-          className="mt-0.5 line-clamp-2 max-w-md text-[11px] leading-snug text-muted md:mt-2 md:line-clamp-none md:text-base md:leading-relaxed"
-        >
-          A Base-native AI agent — it researches, reasons, and can safely prepare onchain actions
-          for your explicit confirmation. Nothing signs or sends without you.
-        </motion.p>
+  useEffect(() => {
+    setGreeting(greetingForHour(new Date().getHours()));
+  }, []);
 
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2, duration: 0.35 }}
-          className="mt-1.5 flex flex-wrap items-center justify-center gap-1.5 md:mt-4 md:gap-2"
-        >
+  if (compact) {
+    return (
+      <div className="flex items-center gap-3 rounded-2xl border border-white/[0.07] bg-surface px-3 py-2.5">
+        <AgentOrb size="sm" thinking={thinking} />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-white">MPGR Agent</p>
+          <p className="text-[11px] text-muted">Your AI command center</p>
+        </div>
+        <div className="flex flex-wrap justify-end gap-1.5">
           {statuses.map((status) => (
             <AgentStatusBadge key={status} status={status} />
           ))}
-        </motion.div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-center px-2 pb-1 pt-3 text-center md:pt-6">
+      <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted">
+        MPGR Agent
+      </p>
+      <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white md:text-4xl">
+        {greeting}
+      </h1>
+      <p className="mt-1.5 text-sm text-muted">Your AI agent is ready.</p>
+      <div className="mt-5">
+        <AgentOrb thinking={thinking} />
+      </div>
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5">
+        {statuses.map((status) => (
+          <AgentStatusBadge key={status} status={status} />
+        ))}
       </div>
     </div>
   );

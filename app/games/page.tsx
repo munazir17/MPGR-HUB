@@ -14,7 +14,7 @@ import { GameCard } from "@/components/features/games/GameCard";
 import { FeaturedGameBanner } from "@/components/features/games/FeaturedGameBanner";
 import { useXP } from "@/hooks/useXP";
 import { getLevelProgress, getAchievements, getSeasonPoints } from "@/lib/xp-engine";
-import { GAME_REGISTRY, getFeaturedGame } from "@/lib/games/game-registry";
+import { getFeaturedGame, getPlayableGames } from "@/lib/games/game-registry";
 import { getGameStats } from "@/lib/games/game-storage";
 import { toGameAchievementStats } from "@/lib/games/mpgr-run/run-rewards";
 import { MPGR_RUN_GAME_ID } from "@/lib/games/mpgr-run/run-config";
@@ -68,9 +68,9 @@ export default function GamesPage() {
             </div>
 
             <div>
-              <SectionHeader title="All Games" subtitle="MPGR Run is live — the rest of the roadmap is on the way" />
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                {GAME_REGISTRY.map((game) => (
+              <SectionHeader title="Play" subtitle="MPGR Run is the live flagship game" />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {getPlayableGames().map((game) => (
                   <GameCard
                     key={game.id}
                     game={game}

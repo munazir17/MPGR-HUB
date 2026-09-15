@@ -18,7 +18,7 @@ export function GlassCard({
     <motion.div
       transition={{ type: "spring", stiffness: 300, damping: 24 }}
       className={clsx(
-        "group relative overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03]",
+        "group relative overflow-hidden rounded-2xl border border-white/[0.07] bg-surface",
         "shadow-soft",
         className
       )}

@@ -10,8 +10,8 @@ html {
 
 body {
   position: relative;
-  background-color: #0a0b0d;
-  color: #f3f4f6;
+  background-color: #070b14;
+  color: #f4f7fb;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -26,8 +26,8 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 50% 32% at 12% -8%, rgba(59, 130, 246, 0.07), transparent 62%),
-    radial-gradient(ellipse 40% 28% at 100% 0%, rgba(240, 185, 11, 0.04), transparent 58%);
+    radial-gradient(ellipse 58% 36% at 12% -10%, rgba(56, 189, 248, 0.12), transparent 64%),
+    radial-gradient(ellipse 46% 30% at 100% 0%, rgba(37, 99, 235, 0.08), transparent 60%);
 }
 
 img {
@@ -36,7 +36,7 @@ img {
 }
 
 ::selection {
-  background-color: rgba(59, 130, 246, 0.28);
+  background-color: rgba(56, 189, 248, 0.28);
   color: #ffffff;
 }
 
@@ -44,11 +44,11 @@ img {
   width: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e2128;
+  background: #1c2a42;
   border-radius: 8px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #2a2e38;
+  background: #243652;
 }
 
 button,
@@ -58,20 +58,20 @@ a[role="button"],
 }
 
 :focus-visible {
-  outline: 2px solid #3b82f6;
+  outline: 2px solid #38bdf8;
   outline-offset: 2px;
   border-radius: 6px;
 }
 
 .text-gradient-gold {
-  background: linear-gradient(135deg, #fcd34d 0%, #f0b90b 100%);
+  background: linear-gradient(135deg, #f5d78a 0%, #e8c36a 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 
 .text-gradient-premium {
-  background: linear-gradient(135deg, #93c5fd 0%, #3b82f6 100%);
+  background: linear-gradient(135deg, #7dd3fc 0%, #38bdf8 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

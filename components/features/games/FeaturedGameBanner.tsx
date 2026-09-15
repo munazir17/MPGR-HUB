@@ -1,9 +1,7 @@
 "use client";
 
-import { motion } from "framer-motion";
 import Link from "next/link";
 import { ArrowRight, Trophy } from "lucide-react";
-import { GlassCard } from "@/components/ui/GlassCard";
 import { formatCompactNumber } from "@/lib/format";
 import type { GameDefinition } from "@/lib/games/game-types";
 
@@ -17,53 +15,56 @@ export function FeaturedGameBanner({
   bestScore,
 }: FeaturedGameBannerProps) {
   return (
-    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-      <Link href={game.route} aria-label={`Play ${game.name}`}>
-        <GlassCard className="relative overflow-hidden p-6">
-          <div className="relative flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-gold">
-            <span className="h-1.5 w-1.5 rounded-full bg-gold" aria-hidden="true" />
-            Featured Game
-          </div>
+    <Link
+      href={game.route}
+      aria-label={`Play ${game.name}`}
+      className="relative block overflow-hidden rounded-3xl border border-white/[0.08] bg-surface"
+    >
+      <div
+        className="pointer-events-none absolute inset-0 opacity-80"
+        style={{
+          background:
+            "radial-gradient(ellipse 70% 90% at 88% 50%, rgba(56,189,248,0.22), transparent 55%), linear-gradient(90deg, rgba(14,22,40,0.2) 40%, rgba(37,99,235,0.18) 100%)",
+        }}
+      />
 
-          <div className="relative mt-3 flex items-center gap-4">
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white/[0.04] text-4xl ring-1 ring-white/10">
-              {game.iconImage ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={game.iconImage} alt={game.name} className="h-12 w-12 object-contain" />
-              ) : (
-                <span role="img" aria-label={game.name}>
-                  {game.icon}
-                </span>
-              )}
-            </div>
+      <div className="relative flex min-h-[168px] items-center gap-4 p-5 sm:min-h-[196px] sm:p-6">
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
+            Flagship game
+          </p>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+            {game.name}
+          </h2>
+          <p className="mt-1 max-w-xs text-sm text-muted">
+            Play. Improve. Climb the ranks.
+          </p>
 
-            <div className="min-w-0">
-              <p className="text-xl font-bold tracking-tight text-white">
-                {game.name}
-              </p>
-              <p className="mt-0.5 text-sm text-muted">{game.tagline}</p>
-            </div>
-          </div>
-
-          <div className="relative mt-5 flex items-center justify-between gap-3">
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <span className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-semibold text-background">
+              Play Now
+              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+            </span>
             {bestScore != null && bestScore > 0 ? (
-              <span className="flex items-center gap-1.5 text-xs font-medium text-gold">
-                <Trophy className="h-3.5 w-3.5" aria-hidden="true" />
-                Personal best: {formatCompactNumber(bestScore)}
+              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted">
+                <Trophy className="h-3.5 w-3.5 text-gold" aria-hidden="true" />
+                Best {formatCompactNumber(bestScore)}
               </span>
             ) : (
-              <span className="text-xs text-muted">
-                No runs yet — set your first score
-              </span>
+              <span className="text-xs text-muted">Earn XP as you run</span>
             )}
-
-            <span className="flex shrink-0 items-center gap-1.5 rounded-xl bg-primary px-5 py-2.5 text-xs font-semibold text-white transition-transform active:scale-95">
-              Play Now
-              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-            </span>
           </div>
-        </GlassCard>
-      </Link>
-    </motion.div>
+        </div>
+
+        <div className="relative h-28 w-24 shrink-0 sm:h-36 sm:w-32">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/games/mpgr-run/character/mpgr-runner-run.png"
+            alt=""
+            className="h-full w-full object-contain object-right drop-shadow-[0_12px_24px_rgba(56,189,248,0.25)]"
+          />
+        </div>
+      </div>
+    </Link>
   );
 }

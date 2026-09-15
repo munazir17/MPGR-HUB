@@ -112,7 +112,7 @@ export function AgentInput({
           onSelect={handleSelectCommand}
         />
       )}
-      <div className="flex items-end gap-2 border-t border-white/[0.08] bg-white/[0.02] p-2.5 sm:p-3 md:p-4">
+      <div className="flex items-end gap-2 rounded-2xl border border-white/[0.08] bg-surface p-2 sm:p-2.5">
         <textarea
           ref={textareaRef}
           value={value}
@@ -122,9 +122,9 @@ export function AgentInput({
           onCompositionEnd={() => setIsComposing(false)}
           disabled={disabled}
           rows={1}
-          placeholder="Ask MPGR Agent anything... (try /help)"
+          placeholder="Ask anything..."
           aria-label="Message MPGR Agent"
-          className="max-h-28 min-h-[44px] flex-1 resize-none overflow-y-auto rounded-xl border border-white/10 bg-background/50 px-3.5 py-2.5 text-sm text-white placeholder:text-muted focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60"
+          className="max-h-28 min-h-[44px] flex-1 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-3.5 py-2.5 text-sm text-white placeholder:text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
         />
         <motion.button
           type="button"
@@ -134,7 +134,7 @@ export function AgentInput({
           whileTap={{ scale: 0.95 }}
           aria-label={disabled ? "Stop generating" : "Send message"}
           title={disabled ? "Stop generating" : "Send message"}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-premium text-white shadow-glow-gold transition-opacity duration-200 disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-background shadow-glow transition-opacity duration-200 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {disabled ? (
             <Square className="h-4 w-4" aria-hidden="true" />

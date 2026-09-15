@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAccount } from "wagmi";
 import { motion } from "framer-motion";
-import { Gift, Trophy, HelpCircle, AlertCircle, X, Gamepad2, Medal, Star, Flame, Award } from "lucide-react";
+import { Gift, Trophy, HelpCircle, AlertCircle, X, Medal, Star, Flame, Award } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { StatCard } from "@/components/ui/StatCard";
@@ -19,14 +19,13 @@ import { CountdownCard } from "@/components/ui/CountdownCard";
 import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
 import { AchievementCard } from "@/components/ui/AchievementCard";
 import { FeaturedGameBanner } from "@/components/features/games/FeaturedGameBanner";
-import { GameCard } from "@/components/features/games/GameCard";
 import { SeasonRewardsPreview } from "@/components/features/season-pass/SeasonRewardsPreview";
 import { useRewardHub } from "@/hooks/useRewardHub";
 import { useXP } from "@/hooks/useXP";
 import { useSeasonPass } from "@/hooks/useSeasonPass";
 import { getLevelProgress, getSeasonEnd, getSeasonNumber, getSeasonPoints, getAchievements } from "@/lib/xp-engine";
-import { formatCompactNumber } from "@/lib/format";
-import { GAME_REGISTRY, getFeaturedGame } from "@/lib/games/game-registry";
+import { formatCompactNumber, formatTokenBalance } from "@/lib/format";
+import { getFeaturedGame } from "@/lib/games/game-registry";
 import { getGameStats } from "@/lib/games/game-storage";
 import { toGameAchievementStats } from "@/lib/games/mpgr-run/run-rewards";
 import { MPGR_RUN_GAME_ID } from "@/lib/games/mpgr-run/run-config";
@@ -67,36 +66,36 @@ export default function RewardsPage() {
   const levelInfo = record ? getLevelProgress(record.xp) : null;
   const gameAchievementStats = gameStats ? toGameAchievementStats(gameStats) : undefined;
   const achievements = record ? getAchievements(record, gameAchievementStats) : [];
+  const claimableCount = rewardHubSummary?.categories.filter((c) => c.isActive && c.claimableRaw > 0n).length ?? 0;
 
   return (
     <>
       <Navbar />
 
-      <main className="mx-auto max-w-4xl px-4 py-10">
+      <main className="mx-auto max-w-4xl px-4 py-8 md:py-10">
         {!mounted ? null : (
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-            <SectionHeader
-              title="Rewards"
-              subtitle="Play, earn XP, follow seasons, and claim on-chain rewards"
-            />
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-7">
+            <div>
+              <h1 className="text-3xl font-semibold tracking-tight text-white">Rewards</h1>
+              <p className="mt-1 text-sm text-muted">Play. Progress. Get rewarded.</p>
+            </div>
 
             <div className="flex flex-wrap gap-2">
               <Link
-                href="/games/mpgr-run"
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3.5 text-xs font-medium text-white hover:bg-white/[0.06]"
-              >
-                <Gamepad2 className="h-3.5 w-3.5" aria-hidden="true" />
-                MPGR Run
-              </Link>
-              <Link
                 href="/season"
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3.5 text-xs font-medium text-white hover:bg-white/[0.06]"
+                className="inline-flex min-h-[40px] items-center rounded-full border border-white/10 bg-surface px-3.5 text-xs font-medium text-white hover:bg-surface-2"
               >
                 Season {seasonNumber}
               </Link>
               <Link
+                href="/season-pass"
+                className="inline-flex min-h-[40px] items-center rounded-full border border-white/10 bg-surface px-3.5 text-xs font-medium text-white hover:bg-surface-2"
+              >
+                Season Pass
+              </Link>
+              <Link
                 href="/leaderboard"
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3.5 text-xs font-medium text-white hover:bg-white/[0.06]"
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-full border border-white/10 bg-surface px-3.5 text-xs font-medium text-white hover:bg-surface-2"
               >
                 <Medal className="h-3.5 w-3.5" aria-hidden="true" />
                 Leaderboard
@@ -111,32 +110,22 @@ export default function RewardsPage() {
               />
             )}
 
+            <FeaturedGameBanner game={featuredGame} bestScore={gameStats?.bestScore} />
+
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <StatCard label="Level" value={String(levelInfo?.level ?? 1)} icon={Star} />
-              <StatCard label="XP" value={formatCompactNumber(record?.xp ?? 0)} icon={Trophy} accent="gold" />
+              <StatCard label="Total XP" value={formatCompactNumber(record?.xp ?? 0)} icon={Trophy} accent="gold" />
               <StatCard label="Streak" value={`${record?.streak ?? 0}d`} icon={Flame} />
-              <StatCard label="Season Points" value={formatCompactNumber(seasonPoints)} icon={Award} accent="gold" />
+              <StatCard
+                label="$MPGR Rewards"
+                value={formatTokenBalance(rewardHubSummary?.totalClaimableRaw, 18)}
+                icon={Award}
+                accent="gold"
+              />
             </div>
-
-            <div>
-              <SectionHeader title="Play" subtitle="MPGR Run and the arcade" />
-              <FeaturedGameBanner game={featuredGame} bestScore={gameStats?.bestScore} />
-              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {GAME_REGISTRY.filter((game) => game.id !== featuredGame.id).slice(0, 3).map((game) => (
-                  <GameCard
-                    key={game.id}
-                    game={game}
-                    bestScore={game.id === MPGR_RUN_GAME_ID ? gameStats?.bestScore : undefined}
-                  />
-                ))}
-              </div>
-              <Link
-                href="/games"
-                className="mt-3 flex min-h-[40px] w-full items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-xs font-semibold text-white transition-colors duration-200 hover:bg-white/[0.06]"
-              >
-                View all games
-              </Link>
-            </div>
+            {claimableCount > 0 && (
+              <p className="text-xs text-gold">{claimableCount} claimable reward categor{claimableCount === 1 ? "y" : "ies"}</p>
+            )}
 
             {rewardHubSummaryError && !dismissedRewardHubError && (
               <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}>
@@ -170,20 +159,20 @@ export default function RewardsPage() {
             <OnChainRewardsSection />
 
             <div>
-              <SectionHeader title="Season Progress" subtitle={`Season ${seasonNumber} milestones`} />
+              <SectionHeader title="Season Progress" subtitle={`Season ${seasonNumber} · Level ${levelInfo?.level ?? 1}`} />
               <div className="grid gap-4 sm:grid-cols-2">
                 <GlassCard className="p-5">
-                  <div className="flex items-center gap-2">
-                    <Trophy className="h-4 w-4 text-gold" aria-hidden="true" />
-                    <p className="text-xs text-muted">Season Points</p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted">Level {levelInfo?.level ?? 1}</p>
+                    <p className="text-xs text-muted">{seasonProgress}%</p>
                   </div>
-                  <p className="mt-2 text-2xl font-bold text-white">{formatCompactNumber(seasonPoints)}</p>
+                  <p className="mt-2 text-2xl font-bold text-white">{formatCompactNumber(seasonPoints)} pts</p>
                   <div className="mt-3">
                     <ProgressBar progress={seasonProgress} label="Progress to 1,000 pts" />
                   </div>
                   {nextSeasonMilestone && (
                     <p className="mt-2 text-[11px] text-muted">
-                      {formatCompactNumber(nextSeasonMilestone - seasonPoints)} points to next milestone
+                      Next reward at {formatCompactNumber(nextSeasonMilestone)} pts
                     </p>
                   )}
                 </GlassCard>
@@ -236,7 +225,7 @@ export default function RewardsPage() {
 
             {record && record.history.length > 0 && (
               <div>
-                <SectionHeader title="Game & reward activity" />
+                <SectionHeader title="Recent activity" />
                 <ActivityTimeline entries={record.history} limit={8} />
               </div>
             )}

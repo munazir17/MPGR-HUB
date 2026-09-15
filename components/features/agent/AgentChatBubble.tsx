@@ -82,7 +82,7 @@ export function AgentChatBubble({
           "flex h-7 w-7 shrink-0 items-center justify-center rounded-full ring-1",
           isUser
             ? "bg-white/[0.06] ring-white/10"
-            : "bg-gradient-premium shadow-glow-gold ring-white/10"
+            : "bg-primary/15 ring-primary/20"
         )}
       >
         {isUser ? (
@@ -99,8 +99,8 @@ export function AgentChatBubble({
           className={clsx(
             "rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
             isUser
-              ? "rounded-br-sm bg-gradient-premium text-white shadow-glow-gold"
-              : "rounded-bl-sm border border-white/[0.08] bg-white/[0.04] text-white backdrop-blur-xl"
+              ? "rounded-br-sm bg-primary text-background"
+              : "rounded-bl-sm border border-white/[0.08] bg-surface-2 text-white"
           )}
         >
           {displayContent}

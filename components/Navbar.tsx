@@ -23,7 +23,7 @@ export function Navbar() {
 
   return (
     <header
-      className="sticky top-0 z-50 border-b border-white/[0.08] bg-background/90 backdrop-blur-md"
+      className="sticky top-0 z-50 border-b border-white/[0.07] bg-background/90 backdrop-blur-md"
       style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-4 py-3">
