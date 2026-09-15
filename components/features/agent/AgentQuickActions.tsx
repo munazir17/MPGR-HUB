@@ -43,7 +43,7 @@ export function AgentQuickActions({ onSelectPrompt, disabled }: AgentQuickAction
             type="button"
             disabled={disabled}
             onClick={() => onSelectPrompt(action.prompt)}
-            className="flex min-h-[72px] flex-col items-center justify-center gap-1 rounded-2xl border border-white/[0.07] bg-surface px-1.5 py-2.5 text-center transition-colors hover:border-primary/25 hover:bg-surface-2 disabled:opacity-50"
+            className="flex min-h-[72px] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-white/[0.07] bg-surface px-1.5 py-2.5 text-center transition-colors hover:border-primary/25 hover:bg-surface-2 active:scale-[0.98] disabled:opacity-50"
           >
             <Icon className="h-4 w-4 text-primary" aria-hidden="true" />
             <span className="text-[11px] font-semibold text-white">{action.label}</span>
@@ -53,7 +53,7 @@ export function AgentQuickActions({ onSelectPrompt, disabled }: AgentQuickAction
       })}
       <Link
         href="/rewards"
-        className="flex min-h-[72px] flex-col items-center justify-center gap-1 rounded-2xl border border-white/[0.07] bg-surface px-1.5 py-2.5 text-center transition-colors hover:border-primary/25 hover:bg-surface-2"
+        className="flex min-h-[72px] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-white/[0.07] bg-surface px-1.5 py-2.5 text-center transition-colors hover:border-primary/25 hover:bg-surface-2 active:scale-[0.98]"
       >
         <Gift className="h-4 w-4 text-primary" aria-hidden="true" />
         <span className="text-[11px] font-semibold text-white">Rewards</span>

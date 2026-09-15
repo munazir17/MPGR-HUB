@@ -1,9 +1,10 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { RotateCcw, Wallet } from "lucide-react";
-import { EmptyState } from "@/components/ui/EmptyState";
+import { RotateCcw } from "lucide-react";
 import { AgentHero } from "@/components/features/agent/AgentHero";
+import { AgentCapabilities } from "@/components/features/agent/AgentCapabilities";
+import { MpgrMarketTicker } from "@/components/features/market/MpgrMarketTicker";
 import { AgentChatWindow } from "@/components/features/agent/AgentChatWindow";
 import { AgentEmptyState } from "@/components/features/agent/AgentEmptyState";
 import { AgentInput } from "@/components/features/agent/AgentInput";
@@ -66,11 +67,22 @@ export function AgentExperience() {
           </div>
 
           {!isConnected ? (
-            <EmptyState
-              icon={Wallet}
-              title="Connect your wallet"
-              description="Connect to start a conversation with the MPGR Agent."
-            />
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="mt-3">
+                <MpgrMarketTicker compact />
+              </div>
+              <AgentCapabilities
+                connected={false}
+                onSelectPrompt={sendMessage}
+                onNeedWallet={() => {
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+              />
+              <p className="mt-3 text-center text-xs text-muted">
+                Connect a wallet in the header to chat. Research is explained above;
+                onchain actions still require your signature.
+              </p>
+            </div>
           ) : !hasLoaded ? (
             <div className="flex flex-1 items-center justify-center p-6">
               <p className="text-sm text-muted">Loading conversation...</p>
