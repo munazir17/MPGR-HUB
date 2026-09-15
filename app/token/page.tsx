@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { LegalPage } from "@/components/layout/LegalPage";
 import { MpgrMarketTicker } from "@/components/features/market/MpgrMarketTicker";
-import { OFFICIAL_X_TOKEN_ARTICLE, TOKEN_CONTRACT } from "@/lib/content/official";
+import { TOKEN_CONTRACT } from "@/lib/content/official";
 import {
   INITIAL_DISTRIBUTION,
   TOKEN_FACTS,
@@ -90,31 +90,6 @@ export default function TokenPage() {
           <li key={item}>{item}</li>
         ))}
       </ul>
-
-      <h2 className="pt-2 text-base font-semibold text-white">Official X article</h2>
-      {OFFICIAL_X_TOKEN_ARTICLE.url ? (
-        <a
-          href={OFFICIAL_X_TOKEN_ARTICLE.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-white underline-offset-2 hover:underline"
-        >
-          {OFFICIAL_X_TOKEN_ARTICLE.title}
-        </a>
-      ) : (
-        <p>
-          Official article URL is not confirmed in the repository.{" "}
-          <a
-            href="https://x.com/Moneypaiger"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-white underline-offset-2 hover:underline"
-          >
-            @Moneypaiger
-          </a>{" "}
-          is the official account. Supply the article URL to replace this placeholder.
-        </p>
-      )}
 
       <p className="flex flex-wrap gap-x-3">
         <Link href="/roadmap" className="text-white underline-offset-2 hover:underline">
