@@ -3,7 +3,7 @@ export function SectionHeader({ title, subtitle }: { title: string; subtitle?: s
     <div className="mb-4 flex items-center gap-2.5">
       <span
         aria-hidden="true"
-        className="h-4 w-1 shrink-0 rounded-full bg-gradient-premium"
+        className="h-4 w-1 shrink-0 rounded-full bg-primary"
       />
       <div>
         <h2 className="text-base font-semibold tracking-tight text-white">{title}</h2>

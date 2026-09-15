@@ -4,12 +4,12 @@ import { useEffect, useState } from "react";
 import { useAccount } from "wagmi";
 import { motion } from "framer-motion";
 import { Gamepad2 } from "lucide-react";
-import Link from "next/link";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonCard } from "@/components/ui/SkeletonCard";
 import { RunGame } from "@/components/features/games/mpgr-run/RunGame";
 import { WeeklyGameRewardsPanel } from "@/components/features/games/mpgr-run/WeeklyGameRewardsPanel";
+import { BrandMark } from "@/components/brand/BrandMark";
 
 export default function MPGRRunPage() {
   const [mounted, setMounted] = useState(false);
@@ -31,9 +31,7 @@ export default function MPGRRunPage() {
         className="flex shrink-0 items-center justify-between gap-2 px-2 sm:px-4"
         style={{ paddingTop: "max(0.5rem, env(safe-area-inset-top))" }}
       >
-        <Link href="/" className="text-sm font-bold tracking-tight text-white">
-          MPGR <span className="text-gradient-premium">HUB</span>
-        </Link>
+        <BrandMark />
         <ConnectButton showBalance={false} />
       </div>
       <main className="flex min-h-0 flex-1 flex-col px-2 pb-2 pt-1 sm:px-4 sm:pb-4">

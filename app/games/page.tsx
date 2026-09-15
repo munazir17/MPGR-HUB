@@ -43,7 +43,7 @@ export default function GamesPage() {
         {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-8">
             <SectionHeader
-              title="🎮 MPGR HUB Games"
+              title="MPGR HUB Games"
               subtitle="Play, earn XP and Season Points, and unlock achievements across the arcade"
             />
 

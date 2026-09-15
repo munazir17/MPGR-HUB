@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useAccount } from "wagmi";
 import { motion } from "framer-motion";
-import { Gift, Trophy, HelpCircle, AlertCircle, X } from "lucide-react";
+import { Gift, Trophy, HelpCircle, AlertCircle, X, Gamepad2, Medal, Star, Flame, Award } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { GlassCard } from "@/components/ui/GlassCard";
+import { StatCard } from "@/components/ui/StatCard";
 import { OnChainRewardsSection } from "@/components/ui/OnChainRewardsSection";
 import { RewardHubSummaryCards } from "@/components/ui/RewardHubSummaryCards";
 import { RewardCategoryGrid } from "@/components/ui/RewardCategoryGrid";
@@ -15,58 +17,26 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { CountdownCard } from "@/components/ui/CountdownCard";
 import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
-import { PremiumBadge } from "@/components/ui/PremiumBadge";
+import { AchievementCard } from "@/components/ui/AchievementCard";
+import { FeaturedGameBanner } from "@/components/features/games/FeaturedGameBanner";
+import { GameCard } from "@/components/features/games/GameCard";
 import { SeasonRewardsPreview } from "@/components/features/season-pass/SeasonRewardsPreview";
 import { useRewardHub } from "@/hooks/useRewardHub";
 import { useXP } from "@/hooks/useXP";
-import { usePremium } from "@/hooks/usePremium";
 import { useSeasonPass } from "@/hooks/useSeasonPass";
-import { getSeasonEnd, getSeasonNumber, getSeasonPoints } from "@/lib/xp-engine";
+import { getLevelProgress, getSeasonEnd, getSeasonNumber, getSeasonPoints, getAchievements } from "@/lib/xp-engine";
 import { formatCompactNumber } from "@/lib/format";
-
-// Reward Vault Integration — Rewards page.
-//
-// This page has two data sources:
-//
-// 1. useRewardHub() — read-only aggregation across every reward category
-//    (currently just "staking", real and read-only via
-//    lib/rewards/providers/staking-rewards-provider.ts). Powers the
-//    summary cards, the category grid, and the claim history list.
-//    Claiming a staking reward still only ever happens on /staking via
-//    hooks/useStaking.ts's claimRewards() — this page's category grid
-//    links there instead of duplicating that transaction.
-//
-// 2. <OnChainRewardsSection /> (hooks/useRewardClaim.ts) — a fully
-//    isolated section that reads and claims real MPGR rewards from the
-//    deployed MPGRRewardVault contract on Base Mainnet. It shares no
-//    state, cache, or claim path with #1, so it carries zero risk to the
-//    read-only aggregator.
-//
-// Reward Vault cleanup — this page used to have a third data source:
-// hooks/useRewards.ts, a local/mock claim system (check-in streaks,
-// level milestones, referral and season milestones, all with hardcoded
-// MPGR amounts, claimed via lib/storage.ts rather than any blockchain
-// call). That entire local claim grid, its "Claim All" button, and its
-// weekly local-claims chart have been removed — real MPGR reward
-// claiming on this page now happens exclusively through
-// <OnChainRewardsSection /> above. hooks/useRewards.ts and its
-// mock-claim exports in lib/rewards-engine.ts were deleted outright
-// (see repo-wide dependency scan before this change); lib/rewards-
-// engine.ts's getRewardState()/RewardState were kept because
-// lib/staking-engine.ts, lib/burn-engine.ts, and lib/token-lock-
-// engine.ts still read getRewardState(address).totalClaimed for their
-// own, unrelated "available balance" math.
-//
-// Season Points below is unrelated XP/gameplay progression (not an MPGR
-// claim) and was intentionally left untouched.
+import { GAME_REGISTRY, getFeaturedGame } from "@/lib/games/game-registry";
+import { getGameStats } from "@/lib/games/game-storage";
+import { toGameAchievementStats } from "@/lib/games/mpgr-run/run-rewards";
+import { MPGR_RUN_GAME_ID } from "@/lib/games/mpgr-run/run-config";
 
 const SEASON_MILESTONES = [250, 500, 1000];
 
 export default function RewardsPage() {
   const [mounted, setMounted] = useState(false);
   const { isConnected } = useAccount();
-  const { record } = useXP();
-  const { status: premiumStatus } = usePremium();
+  const { record, claim } = useXP();
   const { status: seasonPassStatus, track: seasonTrack } = useSeasonPass();
 
   const {
@@ -85,11 +55,6 @@ export default function RewardsPage() {
   const [dismissedRewardHubError, setDismissedRewardHubError] = useState(false);
 
   useEffect(() => setMounted(true), []);
-  // Phase 3I — Reward Hub loading fix. Summary and History now have
-  // independent error states (see hooks/useRewardHub.ts); this banner
-  // covers the Summary/Category section specifically. History has its
-  // own error/retry UI inside RewardClaimHistoryList below, so a history
-  // failure doesn't also need to (re-)trigger this banner.
   useEffect(() => setDismissedRewardHubError(false), [rewardHubSummaryError]);
 
   const seasonPoints = record ? getSeasonPoints(record) : 0;
@@ -97,6 +62,11 @@ export default function RewardsPage() {
   const seasonEnd = getSeasonEnd();
   const seasonProgress = Math.min(100, Math.round((seasonPoints / 1000) * 100));
   const nextSeasonMilestone = SEASON_MILESTONES.find((m) => seasonPoints < m) ?? null;
+  const featuredGame = getFeaturedGame();
+  const gameStats = record ? getGameStats(MPGR_RUN_GAME_ID, record.address) : null;
+  const levelInfo = record ? getLevelProgress(record.xp) : null;
+  const gameAchievementStats = gameStats ? toGameAchievementStats(gameStats) : undefined;
+  const achievements = record ? getAchievements(record, gameAchievementStats) : [];
 
   return (
     <>
@@ -106,9 +76,32 @@ export default function RewardsPage() {
         {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <SectionHeader
-              title="Reward Hub"
-              subtitle="Everything you've earned across staking and on-chain rewards"
+              title="Rewards"
+              subtitle="Play, earn XP, follow seasons, and claim on-chain rewards"
             />
+
+            <div className="flex flex-wrap gap-2">
+              <Link
+                href="/games/mpgr-run"
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3.5 text-xs font-medium text-white hover:bg-white/[0.06]"
+              >
+                <Gamepad2 className="h-3.5 w-3.5" aria-hidden="true" />
+                MPGR Run
+              </Link>
+              <Link
+                href="/season"
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3.5 text-xs font-medium text-white hover:bg-white/[0.06]"
+              >
+                Season {seasonNumber}
+              </Link>
+              <Link
+                href="/leaderboard"
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3.5 text-xs font-medium text-white hover:bg-white/[0.06]"
+              >
+                <Medal className="h-3.5 w-3.5" aria-hidden="true" />
+                Leaderboard
+              </Link>
+            </div>
 
             {!isConnected && (
               <EmptyState
@@ -118,9 +111,36 @@ export default function RewardsPage() {
               />
             )}
 
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <StatCard label="Level" value={String(levelInfo?.level ?? 1)} icon={Star} />
+              <StatCard label="XP" value={formatCompactNumber(record?.xp ?? 0)} icon={Trophy} accent="gold" />
+              <StatCard label="Streak" value={`${record?.streak ?? 0}d`} icon={Flame} />
+              <StatCard label="Season Points" value={formatCompactNumber(seasonPoints)} icon={Award} accent="gold" />
+            </div>
+
+            <div>
+              <SectionHeader title="Play" subtitle="MPGR Run and the arcade" />
+              <FeaturedGameBanner game={featuredGame} bestScore={gameStats?.bestScore} />
+              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {GAME_REGISTRY.filter((game) => game.id !== featuredGame.id).slice(0, 3).map((game) => (
+                  <GameCard
+                    key={game.id}
+                    game={game}
+                    bestScore={game.id === MPGR_RUN_GAME_ID ? gameStats?.bestScore : undefined}
+                  />
+                ))}
+              </div>
+              <Link
+                href="/games"
+                className="mt-3 flex min-h-[40px] w-full items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-xs font-semibold text-white transition-colors duration-200 hover:bg-white/[0.06]"
+              >
+                View all games
+              </Link>
+            </div>
+
             {rewardHubSummaryError && !dismissedRewardHubError && (
               <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}>
-                <div className="flex items-center justify-between gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-3.5 backdrop-blur-xl">
+                <div className="flex items-center justify-between gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-3.5">
                   <span className="flex items-center gap-2 text-xs text-red-400">
                     <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
                     {rewardHubSummaryError}
@@ -138,24 +158,12 @@ export default function RewardsPage() {
 
             <RewardHubSummaryCards summary={rewardHubSummary} loading={rewardHubSummaryLoading} />
 
-            {premiumStatus?.isPremium && (
-              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-gold/20 bg-gold/[0.05] px-4 py-3">
-                <PremiumBadge tier={premiumStatus.tier} size="sm" />
-                <p className="text-xs text-muted">
-                  Your {premiumStatus.currentTierDef?.label} tier unlocks a{" "}
-                  <span className="font-semibold text-gold">{premiumStatus.xpMultiplier}× XP</span> and{" "}
-                  <span className="font-semibold text-gold">{premiumStatus.rewardsMultiplier}× rewards</span>{" "}
-                  multiplier — applied automatically once multiplier payouts go live.
-                </p>
-              </div>
-            )}
-
             {seasonPassStatus && (
               <SeasonRewardsPreview track={seasonTrack} currentLevel={seasonPassStatus.levelProgress.level} />
             )}
 
             <div>
-              <SectionHeader title="Reward Categories" subtitle="Earned across every active reward system" />
+              <SectionHeader title="$MPGR Rewards" subtitle="Earned across every active reward system" />
               <RewardCategoryGrid categories={rewardHubSummary?.categories ?? null} loading={rewardHubSummaryLoading} />
             </div>
 
@@ -184,6 +192,23 @@ export default function RewardsPage() {
             </div>
 
             <div>
+              <SectionHeader title="Achievements" />
+              {achievements.length === 0 ? (
+                <EmptyState icon={Award} title="No achievements yet" description="Play and earn XP to unlock achievements." />
+              ) : (
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  {achievements.map((achievement) => (
+                    <AchievementCard
+                      key={achievement.id}
+                      achievement={achievement}
+                      onClaim={() => claim(achievement.id, gameAchievementStats)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
               <SectionHeader title="Claim History" subtitle="Every claim across every active category" />
               <RewardClaimHistoryList
                 entries={rewardHubHistory}
@@ -202,6 +227,7 @@ export default function RewardsPage() {
                 <p className="text-sm font-medium text-white">How Rewards Work</p>
               </div>
               <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-muted">
+                <li>• Play MPGR Run and complete Hub actions to earn XP and season points</li>
                 <li>• On-chain rewards are allocated to your wallet in the Reward Vault and claimed directly from Base Mainnet</li>
                 <li>• Staking rewards accrue continuously — claim them from the Staking page</li>
                 <li>• Season points and milestones reset every calendar month</li>
@@ -210,7 +236,7 @@ export default function RewardsPage() {
 
             {record && record.history.length > 0 && (
               <div>
-                <SectionHeader title="Recent XP Activity" />
+                <SectionHeader title="Game & reward activity" />
                 <ActivityTimeline entries={record.history} limit={8} />
               </div>
             )}

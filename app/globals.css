@@ -16,9 +16,9 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-tap-highlight-color: transparent;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-/* Ambient premium background glow — fixed, behind all content */
 body::before {
   content: "";
   position: fixed;
@@ -26,9 +26,8 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 60% 40% at 15% -5%, rgba(59, 130, 246, 0.16), transparent 60%),
-    radial-gradient(ellipse 55% 40% at 100% 0%, rgba(240, 185, 11, 0.10), transparent 60%),
-    radial-gradient(ellipse 70% 50% at 50% 110%, rgba(59, 130, 246, 0.08), transparent 60%);
+    radial-gradient(ellipse 50% 32% at 12% -8%, rgba(59, 130, 246, 0.07), transparent 62%),
+    radial-gradient(ellipse 40% 28% at 100% 0%, rgba(240, 185, 11, 0.04), transparent 58%);
 }
 
 img {
@@ -37,7 +36,7 @@ img {
 }
 
 ::selection {
-  background-color: rgba(59, 130, 246, 0.35);
+  background-color: rgba(59, 130, 246, 0.28);
   color: #ffffff;
 }
 
@@ -64,7 +63,6 @@ a[role="button"],
   border-radius: 6px;
 }
 
-/* Reusable premium text treatment for numeric/gold highlights */
 .text-gradient-gold {
   background: linear-gradient(135deg, #fcd34d 0%, #f0b90b 100%);
   -webkit-background-clip: text;
@@ -73,7 +71,7 @@ a[role="button"],
 }
 
 .text-gradient-premium {
-  background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 45%, #f0b90b 100%);
+  background: linear-gradient(135deg, #93c5fd 0%, #3b82f6 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

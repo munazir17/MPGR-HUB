@@ -8,6 +8,9 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+      },
       colors: {
         background: "#0A0B0D",
         surface: "#111318",
@@ -24,15 +27,15 @@ const config: Config = {
         "gradient-gold": "linear-gradient(135deg, #FCD34D 0%, #F0B90B 100%)",
         "gradient-radial": "radial-gradient(circle at center, var(--tw-gradient-stops))",
         "gradient-mesh":
-          "radial-gradient(ellipse 80% 60% at 20% -10%, rgba(59,130,246,0.20), transparent 60%), radial-gradient(ellipse 70% 50% at 100% 0%, rgba(240,185,11,0.14), transparent 60%)",
+          "radial-gradient(ellipse 80% 60% at 20% -10%, rgba(59,130,246,0.10), transparent 60%), radial-gradient(ellipse 70% 50% at 100% 0%, rgba(240,185,11,0.06), transparent 60%)",
         "gradient-shine":
           "linear-gradient(115deg, transparent 20%, rgba(255,255,255,0.10) 40%, rgba(255,255,255,0.16) 50%, rgba(255,255,255,0.10) 60%, transparent 80%)",
       },
       boxShadow: {
-        glow: "0 0 40px rgba(59, 130, 246, 0.25)",
-        "glow-gold": "0 0 40px rgba(240, 185, 11, 0.2)",
-        "glow-lg": "0 8px 32px rgba(0, 0, 0, 0.35), 0 0 60px rgba(59, 130, 246, 0.18)",
-        "glow-gold-lg": "0 8px 32px rgba(0, 0, 0, 0.35), 0 0 60px rgba(240, 185, 11, 0.22)",
+        glow: "0 0 24px rgba(59, 130, 246, 0.10)",
+        "glow-gold": "0 0 24px rgba(240, 185, 11, 0.08)",
+        "glow-lg": "0 8px 28px rgba(0, 0, 0, 0.32)",
+        "glow-gold-lg": "0 8px 28px rgba(0, 0, 0, 0.32)",
         soft: "0 4px 24px rgba(0, 0, 0, 0.28)",
         "inner-top": "inset 0 1px 0 0 rgba(255,255,255,0.06)",
       },

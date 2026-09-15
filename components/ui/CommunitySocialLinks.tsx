@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { Send, Github, MessageCircle, Coins } from "lucide-react";
 import { GlassCard } from "@/components/ui/GlassCard";
+import { BUY_MPGR_URL, SOCIALS } from "@/lib/site";
 
 function XIcon() {
   return (
@@ -15,34 +16,28 @@ function XIcon() {
   );
 }
 
-// Home Social + Buy MPGR — Requirement 8.
-// Fixed external destinations. Do not alter these URLs without an explicit
-// product request — they are the canonical MPGR HUB community/trade links.
 const SOCIAL_LINKS = [
   {
     label: "Telegram",
-    href: "https://t.me/+K3HMNmx1PpQ3MjY1",
+    href: SOCIALS.telegram,
     icon: Send,
   },
   {
     label: "X",
-    href: "https://x.com/Moneypaiger",
+    href: SOCIALS.x,
     icon: XIcon,
   },
   {
     label: "Discord",
-    href: "https://discord.gg/gxpv5vTE",
+    href: SOCIALS.discord,
     icon: MessageCircle,
   },
   {
     label: "GitHub",
-    href: "https://github.com/munazir17",
+    href: SOCIALS.github,
     icon: Github,
   },
 ];
-
-const BUY_MPGR_URL =
-  "https://launch.o1.exchange/token/0xB2000000000000000000008d204203177a78AF01?chain=8453&ref=0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e";
 
 export function CommunitySocialLinks() {
   return (
@@ -62,7 +57,7 @@ export function CommunitySocialLinks() {
               whileTap={{ scale: 0.96 }}
               className="flex min-h-[44px] flex-col items-center justify-center gap-2 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4 text-center transition-colors duration-200 hover:border-primary/25 hover:bg-white/[0.06]"
             >
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-primary-glow/25 to-primary/10 ring-1 ring-primary/25">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/[0.04] ring-1 ring-white/10">
                 <Icon className="h-4.5 w-4.5 text-primary" aria-hidden="true" />
               </div>
               <p className="text-xs font-semibold text-white">{link.label}</p>
@@ -77,7 +72,7 @@ export function CommunitySocialLinks() {
         rel="noopener noreferrer"
         whileHover={{ scale: 1.01 }}
         whileTap={{ scale: 0.97 }}
-        className="mt-3 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold px-5 py-3 text-sm font-semibold text-background shadow-glow-gold transition-transform"
+        className="mt-3 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gold px-5 py-3 text-sm font-semibold text-background"
       >
         <Coins className="h-4 w-4" aria-hidden="true" />
         Buy MPGR
