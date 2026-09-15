@@ -7,6 +7,6 @@ export const BUY_MPGR_URL =
 export const SOCIALS = {
   x: "https://x.com/Moneypaiger",
   telegram: "https://t.me/+K3HMNmx1PpQ3MjY1",
-  discord: "https://discord.gg/gxpv5vTE",
+  discord: "https://discord.gg/TBNQfavxu",
   github: "https://github.com/munazir17",
 } as const;
