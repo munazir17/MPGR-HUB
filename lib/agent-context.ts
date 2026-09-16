@@ -35,6 +35,10 @@ export interface AgentPortfolioContext {
   lockedBalance: number;
   totalHoldings: number;
   claimableRewards: number;
+  /** Native ETH on Base, formatted if a live read succeeded. */
+  nativeEth?: string | null;
+  /** USDC on Base, formatted if a live read succeeded. */
+  usdc?: string | null;
 }
 
 export interface AgentPremiumContext {
@@ -118,10 +122,12 @@ export interface BuildAgentContextInput {
     claimableTotal: number;
     totalClaimed: number;
   };
+  nativeEth?: string | null;
+  usdc?: string | null;
 }
 
 export function buildAgentContext(input: BuildAgentContextInput): AgentContext {
-  const { isConnected, xpRecord, premiumStatus, holderTierStatus, seasonStatus, staking, tokenLock, rewards } =
+  const { isConnected, xpRecord, premiumStatus, holderTierStatus, seasonStatus, staking, tokenLock, rewards, nativeEth, usdc } =
     input;
 
   const xp: AgentXPContext | null = xpRecord
@@ -152,6 +158,8 @@ export function buildAgentContext(input: BuildAgentContextInput): AgentContext {
         lockedBalance: holderTierStatus.score.lockedBalance,
         totalHoldings: holderTierStatus.score.totalScore,
         claimableRewards: rewards.claimableTotal,
+        nativeEth: nativeEth ?? null,
+        usdc: usdc ?? null,
       }
     : null;
 
