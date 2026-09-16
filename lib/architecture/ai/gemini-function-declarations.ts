@@ -90,6 +90,49 @@ export interface GeminiUpstreamFailure {
   error: string;
 }
 
+const SAFETY_OR_ROUTING_PHRASE =
+  /never\s+signs?|never\s+broadcast|never\s+submit|never\s+pay|explicit\s+confirm|resourceUrl|recipient|Base(?:\s+Mainnet)?|never\s+call\s+tokenized|ETH\/USDC|supported\s+asset|prepare\s+only|does\s+not\s+sign|will\s+not\s+sign|omit\s+taker|fromToken|toToken/i;
+
+function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function isSafetyOrRoutingSentence(sentence: string): boolean {
+  return SAFETY_OR_ROUTING_PHRASE.test(sentence);
+}
+
+/**
+ * Shorten Gemini tool prose without dropping security or routing constraints.
+ * Never mid-sentence truncates; never strips resourceUrl / never-sign rules.
+ */
+export function compactToolDescription(text: string): string {
+  const raw = text.replace(/\s+/g, " ").trim();
+  if (!raw) return raw;
+
+  const sentences = splitSentences(raw);
+  if (sentences.length === 0) return raw;
+
+  const kept: string[] = [];
+  for (let i = 0; i < sentences.length; i += 1) {
+    const sentence = sentences[i];
+    if (i === 0 || isSafetyOrRoutingSentence(sentence)) {
+      kept.push(sentence);
+    }
+  }
+
+  if (!kept.some(isSafetyOrRoutingSentence)) {
+    const extras = sentences.filter(isSafetyOrRoutingSentence);
+    for (const extra of extras) {
+      if (!kept.includes(extra)) kept.push(extra);
+    }
+  }
+
+  return kept.join(" ");
+}
+
 export function toGeminiFunctionDeclarations(
   tools: readonly AnyAgentTool[],
 ): GeminiFunctionDeclaration[] {
@@ -97,7 +140,7 @@ export function toGeminiFunctionDeclarations(
     .filter((tool) => tool.mode === "read" || tool.mode === "prepare")
     .map((tool) => ({
       name: tool.id,
-      description: tool.description,
+      description: compactToolDescription(tool.description),
       parameters: toGeminiObjectSchema(tool.inputSchema),
     }));
 }
@@ -456,4 +499,25 @@ export function buildGeminiGenerateContentRequest(input: {
   }
 
   return payload;
+}
+
+/** Exact UTF-8 byte sizes of the Gemini generateContent body parts. */
+export function measureGeminiGenerateContentPayload(payload: Record<string, unknown>): {
+  totalBytes: number;
+  systemChars: number;
+  userChars: number;
+  toolsJsonBytes: number;
+} {
+  const raw = JSON.stringify(payload);
+  const system =
+    (((payload.systemInstruction as { parts?: { text?: string }[] } | undefined)?.parts?.[0]?.text) ?? "");
+  const user =
+    ((((payload.contents as { parts?: { text?: string }[] }[] | undefined)?.[0]?.parts?.[0]?.text) ?? ""));
+  const toolsJson = payload.tools ? JSON.stringify(payload.tools) : "";
+  return {
+    totalBytes: Buffer.byteLength(raw, "utf8"),
+    systemChars: system.length,
+    userChars: user.length,
+    toolsJsonBytes: Buffer.byteLength(toolsJson, "utf8"),
+  };
 }

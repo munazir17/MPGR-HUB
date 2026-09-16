@@ -102,13 +102,13 @@ function buildSystemPrompt(request: AIProviderRequest): string {
   const { agentContext, memoryContext } = request;
 
   const lines: string[] = [
-    "You are the MPGR Agent, the assistant inside MPGR HUB (a Web3 rewards/XP/staking app).",
+    "You are the MPGR Agent for MPGR HUB on Base. Focus on research, markets, portfolio/wallet, swaps, tokenized stocks, and x402. XP and reward claims belong on the Rewards page.",
     "Respond ONLY with a JSON object of the exact shape {\"intent\": string, \"reply\": string} — no markdown, no extra keys.",
     'Keep "reply" concise (2-4 sentences), friendly, and grounded ONLY in the facts below (or in a tool result you requested) — never invent numbers.',
     "You also have Base trading tools. ETH/USDC/MPGR price → trade_get_price. B20 research (AAPLc, SPCXc) → tokenized_stock_research. Buy/sell B20 → tokenized_stock_prepare_order. Any other Base swap (including a 0x address) → trade_prepare_swap with fromToken=USDC, amount=\"10\" in human units. Omit taker. Never sign. Never answer a trade request with the MPGR portfolio help text.",
-    "If the user asks what MPGR HUB is, what $MPGR does, how it fits on Base, x402, or tokenized stocks, set intent to research_query. Do not answer those with portfolio, XP, or rewards capability text.",
+    "If the user asks what MPGR HUB is, what $MPGR does, how it fits on Base, x402, or tokenized stocks, set intent to research_query. Do not answer those with portfolio capability text.",
     "If the user asks what is moving in the market, ETH/BTC price, or crypto markets, set intent to market_overview. Call trade_get_price or market_intelligence when those tools can answer. Never invent a price.",
-    "Portfolio means the whole wallet (ETH, $MPGR, USDC when known, plus staked/locked MPGR). XP, Holder Tier, Season, and referrals are separate account progress.",
+    "Portfolio means the whole wallet (ETH, $MPGR, USDC when known, plus staked/locked MPGR positions).",
   ];
 
   if (!agentContext.isConnected) {
@@ -126,34 +126,7 @@ function buildSystemPrompt(request: AIProviderRequest): string {
           agentContext.portfolio.stakedBalance +
           " staked, " +
           agentContext.portfolio.lockedBalance +
-          " locked, " +
-          agentContext.portfolio.totalHoldings +
-          " total Holder Score, " +
-          agentContext.portfolio.claimableRewards +
-          " claimable rewards."
-      );
-    }
-    if (agentContext.xp) {
-      lines.push(
-        "- XP: Level " +
-          agentContext.xp.level +
-          ", " +
-          agentContext.xp.xp +
-          " XP total, " +
-          agentContext.xp.progress +
-          "% into next level, " +
-          agentContext.xp.streak +
-          "-day streak."
-      );
-    }
-    if (agentContext.holderTier) {
-      lines.push("- Holder Tier: " + (agentContext.holderTier.tierLabel ?? "none yet") + ".");
-    }
-    if (agentContext.premium) {
-      lines.push(
-        "- Premium: " +
-          (agentContext.premium.isPremium ? agentContext.premium.tierLabel : "not on a Premium tier") +
-          "."
+          " locked."
       );
     }
     if (agentContext.staking) {
@@ -161,15 +134,7 @@ function buildSystemPrompt(request: AIProviderRequest): string {
         agentContext.staking.currentAPRPercent !== null
           ? ", " + agentContext.staking.currentAPRPercent + "% APR"
           : "";
-      lines.push(
-        "- Staking: " +
-          agentContext.staking.totalStaked +
-          " staked, " +
-          agentContext.staking.earnedRewards +
-          " claimable" +
-          aprPart +
-          "."
-      );
+      lines.push("- Staking position: " + agentContext.staking.totalStaked + " MPGR staked" + aprPart + ".");
     }
     if (agentContext.tokenLock) {
       lines.push(
@@ -178,17 +143,6 @@ function buildSystemPrompt(request: AIProviderRequest): string {
           " locked across " +
           agentContext.tokenLock.activeLocksCount +
           " locks."
-      );
-    }
-    if (agentContext.season) {
-      lines.push(
-        "- Season Pass: Season " +
-          agentContext.season.seasonNumber +
-          ", Level " +
-          agentContext.season.level +
-          ", " +
-          agentContext.season.seasonPoints +
-          " points."
       );
     }
   }

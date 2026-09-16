@@ -704,12 +704,14 @@ export async function runToolCallingLoop(
   request: AIProviderRequest,
   baseSystemPrompt: string,
   sendCompletion: SendCompletion,
-  options: { compactToolCatalog?: boolean } = {},
+  options: { compactToolCatalog?: boolean; omitToolCatalog?: boolean } = {},
 ): Promise<AIProviderResponse> {
   const toolCatalog = getReadAndPrepareToolCatalog();
-  const catalogBlock = options.compactToolCatalog
-    ? buildCompactToolCatalogPromptBlock(toolCatalog)
-    : buildToolCatalogPromptBlock(toolCatalog);
+  const catalogBlock = options.omitToolCatalog
+    ? ""
+    : options.compactToolCatalog
+      ? buildCompactToolCatalogPromptBlock(toolCatalog)
+      : buildToolCatalogPromptBlock(toolCatalog);
 
   const systemPrompt = catalogBlock
     ? baseSystemPrompt + "\n\n" + catalogBlock

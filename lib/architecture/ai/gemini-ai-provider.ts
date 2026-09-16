@@ -60,7 +60,7 @@ export class GeminiAIProvider implements AIProvider {
       request,
       baseSystemPrompt,
       sendCompletion,
-      { compactToolCatalog: true },
+      { omitToolCatalog: true },
     );
   }
 }
@@ -156,23 +156,13 @@ function buildSystemPrompt(request: AIProviderRequest): string {
   const { agentContext, memoryContext } = request;
 
   const lines: string[] = [
-    "You are the MPGR Agent, the assistant inside MPGR HUB (a Web3 rewards/XP/staking app).",
-
-    "You have native tools available for looking up live facts, discovering or preparing an x402-gated resource, researching Coinbase Tokenized Stocks on Base, and preparing a Base swap quote. Prefer calling an appropriate provided tool when the user's request genuinely requires live information, a swap/quote, tokenized-stock research, or x402 resource access.",
-
-    'If the user\'s message already contains an https URL and they ask you to inspect, discover, access, or determine whether it is an x402-gated resource, call x402_discover_resource with arguments {"resourceUrl":"<that URL>"} instead of asking the user to provide the URL again. The argument name is resourceUrl — never url.',
-
-    "If an x402 resource has been discovered and the user explicitly wants to access/pay for it, use x402_prepare_payment with arguments {\"resourceUrl\":\"<that URL>\"} when appropriate. Preparing an x402 payment only creates a proposal for the user to review; it never signs or submits a payment.",
-
-    "Trading tools (Base Mainnet only). They never sign or broadcast.",
-    "If the user asks the price of ETH, USDC, WETH, or MPGR, call trade_get_price. Never call tokenized_stock_research for those.",
-    "If the user asks to research a Coinbase tokenized stock (COINc, AAPLc, TSLAc, SPCXc, NVDAc, or \"tokenized stocks\"), call tokenized_stock_research with {\"symbol\":\"COINc\"} or {} to list the catalog.",
-    "If the user asks to buy or sell a tokenized stock (\"buy $10 of SPCXc\"), call tokenized_stock_prepare_order with {\"symbol\":\"SPCXc\",\"amount\":\"10\",\"side\":\"BUY\"}.",
-    "If the user asks to buy, sell, or swap any other Base token (including a raw 0x address), call trade_prepare_swap. For a dollar buy use fromToken=\"USDC\", toToken=\"the asset\", amount=\"10\". Omit taker.",
-    "If the wallet is connected, never say you cannot retrieve wallet details. Do not answer a trade/quote request from the MPGR portfolio/XP help text.",
-    "What-is / explain / research questions about MPGR HUB, $MPGR, Base, x402, or tokenized stocks use intent research_query — never portfolio_summary or claimable_rewards.",
-    "Market questions (what's moving, ETH, BTC) use intent market_overview. Call trade_get_price or market_intelligence when useful. Never invent prices.",
-    "Portfolio is the whole wallet plus staked/locked MPGR. XP, Holder Tier, and Season are account progress, not the wallet book.",
+    "You are the MPGR Agent for MPGR HUB on Base. Focus on research, markets, portfolio/wallet, swaps, tokenized stocks, and x402. XP, seasons, streaks, achievements, and reward claims belong on the Rewards page.",
+    "Native tools are already declared — call them by name and schema. Never invent tool results. Never sign or broadcast.",
+    "x402_discover_resource / x402_prepare_payment use resourceUrl (never url). Prepare only; user confirms.",
+    "ETH/USDC/WETH/MPGR price → trade_get_price. Other Base swaps → trade_prepare_swap. B20 names (AAPLc, COINc, …) → tokenized_stock_research / tokenized_stock_prepare_order. Never use B20 research for ETH/USDC/MPGR.",
+    "What-is / research questions about MPGR HUB, $MPGR, Base, x402, or tokenized stocks use intent research_query.",
+    "Market questions use intent market_overview. Never invent prices.",
+    "Portfolio is ETH, USDC, $MPGR wallet + staked/locked positions.",
 
     'When you are ready to answer the user, respond ONLY with a JSON object of the exact shape {"intent": string, "reply": string} — no markdown, no extra keys.',
 
@@ -197,41 +187,7 @@ function buildSystemPrompt(request: AIProviderRequest): string {
           agentContext.portfolio.stakedBalance +
           " staked, " +
           agentContext.portfolio.lockedBalance +
-          " locked, " +
-          agentContext.portfolio.totalHoldings +
-          " total Holder Score, " +
-          agentContext.portfolio.claimableRewards +
-          " claimable rewards.",
-      );
-    }
-
-    if (agentContext.xp) {
-      lines.push(
-        "- XP: Level " +
-          agentContext.xp.level +
-          ", " +
-          agentContext.xp.xp +
-          " XP total, " +
-          agentContext.xp.progress +
-          "% into next level, " +
-          agentContext.xp.streak +
-          "-day streak.",
-      );
-    }
-
-    if (agentContext.holderTier) {
-      lines.push(
-        "- Holder Tier: " + (agentContext.holderTier.tierLabel ?? "none yet") + ".",
-      );
-    }
-
-    if (agentContext.premium) {
-      lines.push(
-        "- Premium: " +
-          (agentContext.premium.isPremium
-            ? agentContext.premium.tierLabel
-            : "not on a Premium tier") +
-          ".",
+          " locked.",
       );
     }
 
@@ -241,11 +197,9 @@ function buildSystemPrompt(request: AIProviderRequest): string {
           ? ", " + agentContext.staking.currentAPRPercent + "% APR"
           : "";
       lines.push(
-        "- Staking: " +
+        "- Staking position: " +
           agentContext.staking.totalStaked +
-          " staked, " +
-          agentContext.staking.earnedRewards +
-          " claimable" +
+          " MPGR staked" +
           aprPart +
           ".",
       );
@@ -261,17 +215,6 @@ function buildSystemPrompt(request: AIProviderRequest): string {
       );
     }
 
-    if (agentContext.season) {
-      lines.push(
-        "- Season Pass: Season " +
-          agentContext.season.seasonNumber +
-          ", Level " +
-          agentContext.season.level +
-          ", " +
-          agentContext.season.seasonPoints +
-          " points.",
-      );
-    }
   }
 
   if (memoryContext.isReturningUser) {
@@ -281,10 +224,20 @@ function buildSystemPrompt(request: AIProviderRequest): string {
         " past interactions).",
     );
 
-    if (memoryContext.favoriteTopics.length > 0) {
-      lines.push(
-        "They usually ask about: " + memoryContext.favoriteTopics.join(", ") + ".",
-      );
+    const topics = memoryContext.favoriteTopics.filter(
+      (topic) =>
+        topic !== "xp_status" &&
+        topic !== "season_progress" &&
+        topic !== "claimable_rewards" &&
+        topic !== "holder_tier" &&
+        topic !== "referral_overview" &&
+        topic !== "premium_status" &&
+        topic !== "open_rewards" &&
+        topic !== "open_games" &&
+        topic !== "open_leaderboard",
+    );
+    if (topics.length > 0) {
+      lines.push("They usually ask about: " + topics.join(", ") + ".");
     }
   }
 
