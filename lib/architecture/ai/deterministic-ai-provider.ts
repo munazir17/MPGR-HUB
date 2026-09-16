@@ -1,9 +1,12 @@
 import {
+  extractCryptoSwapAmount,
+  extractCryptoSwapPair,
   extractTradeHumanAmount,
   extractTradeSymbol,
   extractTransferRequest,
   extractX402ResourceUrl,
   generateIntelligentReply,
+  isCryptoSwapQuotePrompt,
   isTradePrompt,
   isTradeQuotePrompt,
   isTradeSellPrompt,
@@ -33,16 +36,20 @@ export class DeterministicAIProvider implements AIProvider {
   readonly requiresNetwork = false;
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
-    if (isX402PaymentPrompt(request.prompt)) {
-      return prepareOrExplainX402(request);
-    }
-
     if (isTransferPrompt(request.prompt)) {
       return prepareOrExplainTransfer(request);
     }
 
+    if (isCryptoSwapQuotePrompt(request.prompt)) {
+      return quoteOrPrepareCryptoSwap(request);
+    }
+
     if (isTradePrompt(request.prompt)) {
       return prepareOrExplainTrade(request);
+    }
+
+    if (isX402PaymentPrompt(request.prompt)) {
+      return prepareOrExplainX402(request);
     }
 
     return generateIntelligentReply(
@@ -134,6 +141,86 @@ async function prepareOrExplainX402(
     "I found the resource URL but could not prepare a payment proposal. " +
       detail +
       " Nothing was signed or submitted.",
+  );
+}
+
+async function quoteOrPrepareCryptoSwap(
+  request: AIProviderRequest,
+): Promise<AIProviderResponse> {
+  const pair = extractCryptoSwapPair(request.prompt);
+  if (!pair) {
+    return helpResponse(
+      "I can quote ETH, WETH, USDC, or MPGR on Base. Name the pair (for example ETH to USDC). I will not invent a price.",
+    );
+  }
+
+  const amount = extractTradeHumanAmount(request.prompt) ?? extractCryptoSwapAmount(request.prompt);
+  const wantsPrepare = /\bprepare\b|\bswap proposal\b/.test(request.prompt.toLowerCase());
+
+  if (wantsPrepare && amount) {
+    const hydrated = hydrateTradeSwapArguments(
+      { fromToken: pair.fromToken, toToken: pair.toToken, amount },
+      request.address,
+    );
+    const result = await runRegisteredTool("trade_prepare_swap", hydrated, request);
+    if (result.success) {
+      const proposal = (result.data as { proposal?: TradeProposal } | undefined)?.proposal;
+      if (proposal) {
+        return {
+          intent: "general_help",
+          reply:
+            "A Base swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.",
+          actions: [],
+          highlights: [],
+          followUps: getFollowUpPrompts("general_help"),
+          tradeProposal: proposal,
+        };
+      }
+    }
+    const detail =
+      typeof result.error?.message === "string" && result.error.message.trim()
+        ? result.error.message.trim()
+        : "No live Base swap quote is available for that pair right now.";
+    return helpResponse(detail + " Nothing was signed or submitted.");
+  }
+
+  const result = await runRegisteredTool(
+    "trade_get_price",
+    amount
+      ? { fromToken: pair.fromToken, toToken: pair.toToken, amount }
+      : { fromToken: pair.fromToken, toToken: pair.toToken },
+    request,
+  );
+
+  if (result.success) {
+    const price = (result.data as { price?: unknown; provider?: string } | undefined)?.price;
+    return {
+      intent: "general_help",
+      reply:
+        "Live Base quote for " +
+        pair.fromToken +
+        " → " +
+        pair.toToken +
+        (price ? ": " + JSON.stringify(price) : " is ready from the trade price path") +
+        ". This is a quote only — nothing is signed or submitted.",
+      actions: [],
+      highlights: [],
+      followUps: getFollowUpPrompts("general_help"),
+    };
+  }
+
+  const detail =
+    typeof result.error?.message === "string" && result.error.message.trim()
+      ? result.error.message.trim()
+      : "Live Base quote tools are not available right now.";
+  return helpResponse(
+    "I could not fetch a live " +
+      pair.fromToken +
+      " → " +
+      pair.toToken +
+      " quote. " +
+      detail +
+      " I will not invent a price. Nothing was signed or submitted.",
   );
 }
 

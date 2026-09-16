@@ -32,3 +32,41 @@ export function validatePromptInputs(systemPrompt: string, userPrompt: string): 
   if (userPrompt.trim().length === 0) return "User prompt cannot be empty";
   return null;
 }
+
+export function isPromptLimitError(message: string): boolean {
+  const text = message.toLowerCase();
+  return text.includes("prompt exceeds server limits") || text.includes("context_length_exceeded") || text.includes("maximum context length");
+}
+
+function truncateHead(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const suffix = "\n…[truncated]";
+  const keep = Math.max(0, maxChars - suffix.length);
+  return (text.slice(0, keep) + suffix).slice(0, maxChars);
+}
+
+function truncateKeepTail(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const prefix = "…[earlier messages truncated]\n";
+  const keep = Math.max(0, maxChars - prefix.length);
+  return (prefix + text.slice(-keep)).slice(0, maxChars);
+}
+
+/**
+ * Bounds system/user payloads to AI_PROMPT_LIMITS without dropping the
+ * leading safety/policy lines. History and tool transcripts are trimmed
+ * from the tail-kept user prompt.
+ */
+export function compactPromptInputs(
+  systemPrompt: string,
+  userPrompt: string,
+  limits: { systemChars: number; userChars: number } = AI_PROMPT_LIMITS,
+): { systemPrompt: string; userPrompt: string; compacted: boolean } {
+  const nextSystem = truncateHead(systemPrompt, limits.systemChars);
+  const nextUser = truncateKeepTail(userPrompt, limits.userChars);
+  return {
+    systemPrompt: nextSystem,
+    userPrompt: nextUser,
+    compacted: nextSystem !== systemPrompt || nextUser !== userPrompt,
+  };
+}

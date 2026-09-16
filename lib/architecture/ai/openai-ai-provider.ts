@@ -3,6 +3,7 @@
 import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-provider";
 import { runToolCallingLoop } from "./agent-tool-calling";
 import { AGENT_INTENTS } from "@/lib/agent-intelligence";
+import { compactPromptInputs, isPromptLimitError } from "./server-policy";
 
 // Phase 3C Part 6 — the first real network AIProvider. Talks ONLY to this
 // app's own /api/agent/complete Route Handler (app/api/agent/complete/route.ts)
@@ -51,7 +52,7 @@ export class OpenAIAIProvider implements AIProvider {
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
     const baseSystemPrompt = buildSystemPrompt(request);
-    return runToolCallingLoop(request, baseSystemPrompt, sendCompletion);
+    return runToolCallingLoop(request, baseSystemPrompt, sendCompletion, { compactToolCatalog: true });
   }
 }
 
@@ -60,16 +61,28 @@ export class OpenAIAIProvider implements AIProvider {
 // get back { content }. runToolCallingLoop calls this once per model turn
 // (up to its bounded max) — it has no knowledge of OpenAI, this route, or
 // fetch at all.
-async function sendCompletion(systemPrompt: string, userPrompt: string): Promise<string> {
+export async function sendCompletion(systemPrompt: string, userPrompt: string): Promise<string> {
+  return postComplete(systemPrompt, userPrompt, true);
+}
+
+async function postComplete(systemPrompt: string, userPrompt: string, allowCompactRetry: boolean): Promise<string> {
+  const sized = compactPromptInputs(systemPrompt, userPrompt);
   const res = await fetch("/api/agent/complete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ systemPrompt, userPrompt }),
+    body: JSON.stringify({ systemPrompt: sized.systemPrompt, userPrompt: sized.userPrompt }),
   });
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);
     const message = errorBody?.error ?? ("Request to /api/agent/complete failed with " + String(res.status));
+    if (allowCompactRetry && isPromptLimitError(String(message))) {
+      const retry = compactPromptInputs(sized.systemPrompt, sized.userPrompt, {
+        systemChars: 6_000,
+        userChars: 2_000,
+      });
+      return postComplete(retry.systemPrompt, retry.userPrompt, false);
+    }
     throw new Error(message);
   }
 
