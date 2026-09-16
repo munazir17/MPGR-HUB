@@ -198,8 +198,6 @@ const INTENT_PRIORITY: AgentIntent[] = [
   "open_premium",
   "open_leaderboard",
   "suggest_next_action",
-  "research_query",
-  "market_overview",
   "portfolio_summary",
   "holder_tier",
   "premium_status",
@@ -209,6 +207,8 @@ const INTENT_PRIORITY: AgentIntent[] = [
   "claimable_rewards",
   "xp_status",
   "referral_overview",
+  "research_query",
+  "market_overview",
   "general_help",
 ];
 
@@ -219,16 +219,32 @@ function isGreeting(normalized: string): boolean {
   return wordCount <= 3 && GREETING_PATTERNS.some((g) => normalized === g || normalized.startsWith(g + " "));
 }
 
-const X402_PAYMENT_PROMPT_MARKERS = [
-  "x402",
+const X402_PAYMENT_ACTION_MARKERS = [
   "payment proposal",
   "payto",
   "resourceurl",
-  "https://",
+  "prepare a payment",
+  "prepare payment",
+  "pay this resource",
+  "x402 resource",
 ] as const;
 
+const X402_INFO_MARKERS = [
+  "explain x402",
+  "what is x402",
+  "how x402",
+  "how does x402",
+  "x402 and how",
+];
+
+function looksLikeX402InformationalPrompt(normalized: string): boolean {
+  return X402_INFO_MARKERS.some((marker) => normalized.includes(marker)) && !normalized.includes("https://");
+}
+
 function looksLikeX402PaymentPrompt(normalized: string): boolean {
-  return X402_PAYMENT_PROMPT_MARKERS.some((marker) => normalized.includes(marker));
+  if (looksLikeX402InformationalPrompt(normalized)) return false;
+  if (normalized.includes("https://") && normalized.includes("x402")) return true;
+  return X402_PAYMENT_ACTION_MARKERS.some((marker) => normalized.includes(marker));
 }
 
 const TRADE_PROMPT_MARKERS = [
@@ -263,8 +279,6 @@ const TRADE_PROMPT_MARKERS = [
   "buy $",
   "dex liquidity",
   "coinbase tokenized",
-  "current price",
-  "price of",
   "secondary-market",
   "secondary market",
 ] as const;
@@ -336,6 +350,63 @@ export function isTradeQuotePrompt(rawPrompt: string): boolean {
   return looksLikeTradeQuotePrompt(normalize(rawPrompt));
 }
 
+function normalizeSwapToken(raw: string): string {
+  const t = raw.replace(/^\$/, "").toLowerCase();
+  if (t === "eth" || t === "weth") return t === "weth" ? "WETH" : "ETH";
+  if (t === "usdc") return "USDC";
+  if (t === "mpgr") return "MPGR";
+  return raw.toUpperCase();
+}
+
+export function extractCryptoSwapPair(rawPrompt: string): { fromToken: string; toToken: string } | null {
+  const text = rawPrompt.toLowerCase();
+  const token = "(?:\\$)?(eth|weth|usdc|mpgr)";
+
+  const howMuch = text.match(
+    new RegExp("how much\\s+" + token + "[\\s\\w,]{0,48}?\\b(?:for|from)\\s+(?:[0-9]+(?:\\.[0-9]+)?)?\\s*" + token, "i"),
+  );
+  if (howMuch) {
+    const toToken = normalizeSwapToken(howMuch[1]);
+    const fromToken = normalizeSwapToken(howMuch[2]);
+    if (fromToken !== toToken) return { fromToken, toToken };
+  }
+
+  const priceIn = text.match(
+    new RegExp("\\b" + token + "\\b(?:\\s+price)?\\s+in\\s+" + token, "i"),
+  );
+  if (priceIn) {
+    const fromToken = normalizeSwapToken(priceIn[1]);
+    const toToken = normalizeSwapToken(priceIn[2]);
+    if (fromToken !== toToken) return { fromToken, toToken };
+  }
+
+  const pairRe = new RegExp(token + "\\s*(?:to|->|/)\\s*" + token, "i");
+  const match = text.match(pairRe);
+  if (!match) return null;
+  const fromToken = normalizeSwapToken(match[1]);
+  const toToken = normalizeSwapToken(match[2]);
+  if (fromToken === toToken) return null;
+  return { fromToken, toToken };
+}
+
+export function extractCryptoSwapAmount(rawPrompt: string): string | null {
+  const match = rawPrompt.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:eth|weth|usdc|mpgr)\b/i);
+  return match?.[1] ?? null;
+}
+
+export function isCryptoSwapQuotePrompt(rawPrompt: string): boolean {
+  const pair = extractCryptoSwapPair(rawPrompt);
+  if (!pair) return false;
+  const normalized = normalize(rawPrompt);
+  return (
+    normalized.includes("quote") ||
+    normalized.includes("swap") ||
+    normalized.includes("price") ||
+    normalized.includes("how much") ||
+    normalized.includes("what can i get")
+  );
+}
+
 export function extractTradeSymbol(rawPrompt: string): string | null {
   const normalized = normalize(rawPrompt);
   for (const entry of TRADE_SYMBOLS) {
@@ -376,7 +447,7 @@ const TRANSFER_PROMPT_MARKERS = [
 ] as const;
 
 const TRANSFER_PARSE_RE =
-  /\b(?:send|transfer|pay)\s+([0-9]+(?:\.[0-9]+)?)\s+([a-z0-9.]{2,12}|0x[0-9a-f]{40})\s+to\s+(0x[0-9a-fA-F]{40}|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.base\.eth)/i;
+  /\b(?:send|transfer|sending|pay)\s+(?:of\s+)?([0-9]+(?:\.[0-9]+)?)\s+([a-z0-9.]{2,12}|0x[0-9a-f]{40})\s+to\s+(0x[0-9a-fA-F]{40}|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.base\.eth)/i;
 
 export function isTransferPrompt(rawPrompt: string): boolean {
   const normalized = normalize(rawPrompt);
@@ -476,6 +547,10 @@ export function detectIntent(
 
   if (isGreeting(normalized)) {
     return { intent: "general_help", greeting: true };
+  }
+
+  if (looksLikeX402InformationalPrompt(normalized)) {
+    return { intent: "research_query", greeting: false };
   }
 
   if (looksLikeX402PaymentPrompt(normalized)) {
@@ -935,7 +1010,18 @@ export function generateIntelligentReply(
     };
   }
 
-  if (looksLikeTradePrompt(normalize(prompt))) {
+  if (isCryptoSwapQuotePrompt(prompt)) {
+    return {
+      intent: "general_help",
+      reply:
+        "I can fetch a live Base swap quote for ETH/WETH/USDC/MPGR via the existing trade price path. Nothing is signed until you confirm a prepared swap.",
+      actions: [],
+      highlights: [],
+      followUps: getFollowUpPrompts("general_help"),
+    };
+  }
+
+  if (looksLikeTradePrompt(normalize(prompt)) && extractTradeSymbol(prompt)) {
     return {
       intent: "general_help",
       reply: TRADE_HELP_REPLY,

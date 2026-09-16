@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody, verifyTrustedOrigin } from "@/lib/api/request-guard";
-import { SERVER_AI_POLICY, buildTrustedUserPrompt, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
+import { SERVER_AI_POLICY, buildTrustedUserPrompt, compactPromptInputs, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
 
 // Phase 3C Part 6 — server-side Route Handler for the OpenAI provider.
 //
@@ -69,7 +69,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const promptError = validatePromptInputs(body.systemPrompt, body.userPrompt);
+  const bounded = compactPromptInputs(body.systemPrompt, body.userPrompt);
+  const promptError = validatePromptInputs(bounded.systemPrompt, bounded.userPrompt);
   if (promptError) return respond({ error: promptError }, { status: 400 });
 
   const model = process.env.OPENAI_MODEL || DEFAULT_MODEL;
@@ -90,7 +91,7 @@ export async function POST(request: Request) {
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: SERVER_AI_POLICY },
-          { role: "user", content: buildTrustedUserPrompt(body.systemPrompt, body.userPrompt) },
+          { role: "user", content: buildTrustedUserPrompt(bounded.systemPrompt, bounded.userPrompt) },
         ],
       }),
     });
