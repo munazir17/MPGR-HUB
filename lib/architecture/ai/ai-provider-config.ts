@@ -32,6 +32,9 @@ const ALL_PROVIDER_KINDS: readonly AIProviderKind[] = ["deterministic", "openai"
 // actually usable right now" has a single, obvious source of truth.
 const IMPLEMENTED_PROVIDER_KINDS: readonly AIProviderKind[] = ["deterministic", "openai", "gemini"];
 
+/** Network providers that already have a client + server route. Anthropic/Ollama stay declared-only. */
+export const IMPLEMENTED_NETWORK_PROVIDER_KINDS: readonly AIProviderKind[] = ["gemini", "openai"];
+
 function isKnownProviderKind(value: string): value is AIProviderKind {
   return (ALL_PROVIDER_KINDS as readonly string[]).includes(value);
 }
