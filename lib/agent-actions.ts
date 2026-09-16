@@ -466,6 +466,8 @@ const ACTION_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentAction[]>
   open_premium: actionsOpenPremium,
   open_leaderboard: actionsOpenLeaderboard,
   suggest_next_action: actionsSuggestNextAction,
+  research_query: () => [],
+  market_overview: () => [],
 };
 
 export function getAgentActions(intent: AgentIntent, ctx: AgentContext): AgentAction[] {
@@ -574,6 +576,8 @@ const HIGHLIGHT_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentHighli
   open_premium: () => [],
   open_leaderboard: () => [],
   suggest_next_action: () => [],
+  research_query: () => [],
+  market_overview: () => [],
 };
 
 export function getAgentHighlights(intent: AgentIntent, ctx: AgentContext): AgentHighlight[] {
@@ -603,6 +607,8 @@ const FOLLOW_UP_PROMPTS: Record<AgentIntent, string[]> = {
   open_premium: ["What's my Holder Tier?", "Show my portfolio summary"],
   open_leaderboard: ["How much XP do I have?", "Show my portfolio summary"],
   suggest_next_action: ["Show my portfolio summary", "What's my Holder Tier?", "Any rewards to claim?"],
+  research_query: ["What does $MPGR do?", "Explain x402", "What are tokenized stocks?"],
+  market_overview: ["What's moving in the market?", "Analyze ETH", "Research $MPGR"],
 };
 
 export function getFollowUpPrompts(intent: AgentIntent): string[] {

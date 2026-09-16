@@ -24,7 +24,9 @@ export type AgentIntent =
   | "open_staking"
   | "open_premium"
   | "open_leaderboard"
-  | "suggest_next_action";
+  | "suggest_next_action"
+  | "research_query"
+  | "market_overview";
 
 export const AGENT_INTENTS: readonly AgentIntent[] = [
   "portfolio_summary",
@@ -44,6 +46,8 @@ export const AGENT_INTENTS: readonly AgentIntent[] = [
   "open_premium",
   "open_leaderboard",
   "suggest_next_action",
+  "research_query",
+  "market_overview",
 ];
 
 export interface AgentIntelligenceResult {
@@ -64,7 +68,10 @@ function normalize(raw: string): string {
 
 const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
   portfolio_summary: [
-    "portfolio",
+    "analyze my portfolio",
+    "my portfolio",
+    "show my portfolio",
+    "portfolio summary",
     "my balance",
     "total holdings",
     "everything i have",
@@ -72,6 +79,11 @@ const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
     "overview of my",
     "summary of my mpgr",
     "how much mpgr do i have",
+    "how much mpgr",
+    "show my wallet",
+    "whats in my wallet",
+    "what's in my wallet",
+    "my wallet",
   ],
   xp_status: [
     "how much xp",
@@ -102,7 +114,17 @@ const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
     "compare premium",
     "premium tiers",
   ],
-  claimable_rewards: ["claimable", "claim my reward", "reward", "rewards page", "what can i claim"],
+  claimable_rewards: [
+    "claimable",
+    "claim my reward",
+    "show my rewards",
+    "what rewards",
+    "rewards can i claim",
+    "do i have any claimable",
+    "staking rewards",
+    "rewards page",
+    "what can i claim",
+  ],
   staking_summary: ["stak", "staking position", "staking reward"],
   locked_tokens: ["locked", "token lock", "my lock", "unlock", "lock period"],
   season_progress: ["season pass", "season point", "season level", "season"],
@@ -137,6 +159,35 @@ const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
     "next step",
     "what next",
   ],
+  research_query: [
+    "what is mpgr hub",
+    "what is mpgr",
+    "what does mpgr",
+    "explain mpgr",
+    "explain $mpgr",
+    "explain x402",
+    "what is x402",
+    "tokenized stock",
+    "tokenized stocks",
+    "base ecosystem",
+    "how does mpgr hub",
+    "how mpgr hub fits",
+    "research the current base",
+    "research base",
+    "research $mpgr",
+    "research mpgr",
+  ],
+  market_overview: [
+    "whats moving in the market",
+    "what's moving in the market",
+    "moving in the market",
+    "crypto markets",
+    "analyze eth",
+    "eth price",
+    "btc price",
+    "bitcoin",
+    "market today",
+  ],
 };
 
 const INTENT_PRIORITY: AgentIntent[] = [
@@ -147,6 +198,8 @@ const INTENT_PRIORITY: AgentIntent[] = [
   "open_premium",
   "open_leaderboard",
   "suggest_next_action",
+  "research_query",
+  "market_overview",
   "portfolio_summary",
   "holder_tier",
   "premium_status",
@@ -362,7 +415,24 @@ const FOLLOW_UP_PATTERNS = [/^what about\b/, /^and\b/, /^also\b/, /^what else\b/
 const PRONOUN_REFERENCE_PATTERN = /\b(it|that|those|them)\b/;
 
 function isFollowUp(normalized: string): boolean {
-  return FOLLOW_UP_PATTERNS.some((re) => re.test(normalized)) || PRONOUN_REFERENCE_PATTERN.test(normalized);
+  if (FOLLOW_UP_PATTERNS.some((re) => re.test(normalized))) return true;
+  const words = normalized.split(" ").filter(Boolean);
+  // Long standalone questions that happen to contain "it" ("how MPGR HUB fits into it")
+  // are not conversational follow-ups.
+  if (words.length > 8) return false;
+  return words.length <= 6 && PRONOUN_REFERENCE_PATTERN.test(normalized);
+}
+
+function looksLikeStandaloneResearch(normalized: string): boolean {
+  return (
+    normalized.includes("what is") ||
+    normalized.includes("what does") ||
+    normalized.includes("explain") ||
+    normalized.includes("research") ||
+    normalized.includes("how does") ||
+    normalized.includes("tokenized stock") ||
+    normalized.includes("base ecosystem")
+  );
 }
 
 const RELATED_TOPICS: Partial<Record<AgentIntent, AgentIntent[]>> = {
@@ -414,19 +484,31 @@ export function detectIntent(
 
   const direct = bestIntent(normalized);
   const followUp = isFollowUp(normalized);
+  const standaloneResearch = looksLikeStandaloneResearch(normalized);
 
   if (direct) {
-    if (followUp && previousIntent && previousIntent !== direct && RELATED_TOPICS[previousIntent]?.includes(direct)) {
+    if (
+      !standaloneResearch &&
+      followUp &&
+      previousIntent &&
+      previousIntent !== direct &&
+      RELATED_TOPICS[previousIntent]?.includes(direct)
+    ) {
       return { intent: previousIntent, greeting: false };
     }
     return { intent: direct, greeting: false };
+  }
+
+  if (standaloneResearch) {
+    return { intent: "research_query", greeting: false };
   }
 
   if (previousIntent && followUp) {
     return { intent: previousIntent, greeting: false };
   }
 
-  if (memoryContext && memoryContext.dominantRecentIntent) {
+  // Memory carry-over is only for short follow-ups, never for a new question.
+  if (memoryContext && memoryContext.dominantRecentIntent && followUp) {
     return { intent: memoryContext.dominantRecentIntent, greeting: false };
   }
 
@@ -454,22 +536,40 @@ function notAvailable(topic: string): string {
 
 function replyPortfolioSummary(ctx: AgentContext): string {
   if (!ctx.portfolio) return notAvailable("portfolio");
-  const { walletBalance, stakedBalance, lockedBalance, totalHoldings, claimableRewards } = ctx.portfolio;
-  const claimableNote =
-    claimableRewards > 0
-      ? " You also have " + formatCompactNumber(claimableRewards) + " MPGR in claimable rewards waiting to be collected."
-      : "";
+  const { walletBalance, stakedBalance, lockedBalance, totalHoldings } = ctx.portfolio;
+  const eth = ctx.portfolio.nativeEth;
+  const usdc = ctx.portfolio.usdc;
+  const parts = [
+    eth ? eth + " ETH" : null,
+    formatCompactNumber(walletBalance) + " MPGR in wallet",
+    usdc ? usdc + " USDC" : null,
+    formatCompactNumber(stakedBalance) + " MPGR staked",
+    formatCompactNumber(lockedBalance) + " MPGR locked",
+  ].filter((part): part is string => Boolean(part));
+  const exposure = formatCompactNumber(walletBalance + stakedBalance + lockedBalance);
+  const progressHint =
+    " XP, Holder Tier, Season Points, and referrals are account progress — ask separately if you want those.";
   return (
-    "Here's your portfolio: " +
-    formatCompactNumber(walletBalance) +
-    " MPGR in your wallet, " +
-    formatCompactNumber(stakedBalance) +
-    " staked, and " +
-    formatCompactNumber(lockedBalance) +
-    " locked — " +
+    "Wallet / portfolio on Base: " +
+    parts.join(", ") +
+    ". Total $MPGR exposure (wallet + staked + locked): " +
+    exposure +
+    " MPGR. Holder Score from those MPGR positions: " +
     formatCompactNumber(totalHoldings) +
-    " MPGR total Holder Score." +
-    claimableNote
+    "." +
+    progressHint
+  );
+}
+
+function replyResearchQuery(): string {
+  return (
+    "MPGR HUB is a Base-native app around MoneyPaiger ($MPGR): an AI agent that can research and prepare onchain actions, MPGR Run, XP/seasons, staking, token lock, and a reward vault. $MPGR is a fixed-supply utility token on Base mainnet (1,000,000,000 max, no inflation). The Agent prepares transfers, swaps, tokenized-stock paths, and x402 payments — you confirm and sign. Base is the only production chain. This is product documentation, not financial advice."
+  );
+}
+
+function replyMarketOverview(): string {
+  return (
+    "For live prices I only report feeds that are actually wired. $MPGR market data can be read from the Hub market ticker / market tool when available. ETH and BTC do not have a first-class news feed in this app — I will not invent a price or headline. Ask for a Base swap quote or trade_get_price for ETH/USDC/MPGR if you want a live quote path."
   );
 }
 
@@ -721,6 +821,8 @@ const INTENT_HANDLERS: Record<AgentIntent, (ctx: AgentContext) => string> = {
   open_premium: replyOpenPremium,
   open_leaderboard: replyOpenLeaderboard,
   suggest_next_action: replySuggestNextAction,
+  research_query: replyResearchQuery,
+  market_overview: replyMarketOverview,
 };
 
 const INTENT_LABELS: Record<AgentIntent, string> = {
@@ -741,6 +843,8 @@ const INTENT_LABELS: Record<AgentIntent, string> = {
   open_premium: "Premium",
   open_leaderboard: "the Leaderboard",
   suggest_next_action: "what to do next",
+  research_query: "MPGR HUB research",
+  market_overview: "markets",
 };
 
 function buildGreetingReply(memoryContext?: ConversationMemoryContext): string {
@@ -815,11 +919,11 @@ export function generateIntelligentReply(
   previousIntent: AgentIntent | null,
   memoryContext?: ConversationMemoryContext
 ): AgentIntelligenceResult {
-  if (!context.isConnected) {
+  const { intent, greeting } = detectIntent(prompt, previousIntent, memoryContext);
+
+  if (!context.isConnected && intent !== "research_query" && intent !== "market_overview" && intent !== "general_help") {
     return { intent: "general_help", reply: NOT_CONNECTED_REPLY, actions: [], highlights: [], followUps: [] };
   }
-
-  const { intent, greeting } = detectIntent(prompt, previousIntent, memoryContext);
 
   if (looksLikeX402PaymentPrompt(normalize(prompt))) {
     return {

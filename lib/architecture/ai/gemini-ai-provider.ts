@@ -170,6 +170,9 @@ function buildSystemPrompt(request: AIProviderRequest): string {
     "If the user asks to buy or sell a tokenized stock (\"buy $10 of SPCXc\"), call tokenized_stock_prepare_order with {\"symbol\":\"SPCXc\",\"amount\":\"10\",\"side\":\"BUY\"}.",
     "If the user asks to buy, sell, or swap any other Base token (including a raw 0x address), call trade_prepare_swap. For a dollar buy use fromToken=\"USDC\", toToken=\"the asset\", amount=\"10\". Omit taker.",
     "If the wallet is connected, never say you cannot retrieve wallet details. Do not answer a trade/quote request from the MPGR portfolio/XP help text.",
+    "What-is / explain / research questions about MPGR HUB, $MPGR, Base, x402, or tokenized stocks use intent research_query — never portfolio_summary or claimable_rewards.",
+    "Market questions (what's moving, ETH, BTC) use intent market_overview. Call trade_get_price or market_intelligence when useful. Never invent prices.",
+    "Portfolio is the whole wallet plus staked/locked MPGR. XP, Holder Tier, and Season are account progress, not the wallet book.",
 
     'When you are ready to answer the user, respond ONLY with a JSON object of the exact shape {"intent": string, "reply": string} — no markdown, no extra keys.',
 

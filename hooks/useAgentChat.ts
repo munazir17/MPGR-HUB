@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useAccount } from "wagmi";
+import { useAccount, useBalance } from "wagmi";
+import { BASE_USDC } from "@/lib/trade/trade-config";
 import { formatUnits } from "viem";
 import { useXP } from "@/hooks/useXP";
 import { useRewardClaim } from "@/hooks/useRewardClaim";
@@ -143,6 +144,15 @@ const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
 //      failed command execution left no trace in Action History at all.
 export function useAgentChat() {
   const { address, isConnected } = useAccount();
+  const { data: ethBalance } = useBalance({
+    address,
+    query: { enabled: Boolean(address) },
+  });
+  const { data: usdcBalance } = useBalance({
+    address,
+    token: BASE_USDC,
+    query: { enabled: Boolean(address) },
+  });
   const router = useRouter();
   const { record: xpRecord } = useXP();
   const { claimableAmount: claimableTotal, claimedRewards, decimals: rewardVaultDecimals } = useRewardClaim();
@@ -205,6 +215,8 @@ export function useAgentChat() {
         staking: { totalStaked, earnedRewards, currentAPRPercent },
         tokenLock: { totalLocked, activeLocksCount, upcomingUnlockAt },
         rewards: { claimableTotal, totalClaimed },
+        nativeEth: ethBalance?.formatted ?? null,
+        usdc: usdcBalance?.formatted ?? null,
       }),
     [
       isConnected,
@@ -220,6 +232,8 @@ export function useAgentChat() {
       upcomingUnlockAt,
       claimableTotal,
       totalClaimed,
+      ethBalance?.formatted,
+      usdcBalance?.formatted,
     ]
   );
 

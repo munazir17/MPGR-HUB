@@ -535,7 +535,7 @@ export const marketIntelligenceTool: AgentTool = {
   id: "market_intelligence",
   name: "Market Intelligence",
   description:
-    "Would surface priceUsd/volume24h/liquidityUsd/priceChange24h from an existing market-data provider. No such provider (DexScreener, CoinGecko, etc.) is currently wired into this codebase, so this tool always reports the data as unavailable rather than inventing a quote.",
+    "Reads live $MPGR market data from /api/market/mpgr when available. ETH/BTC are not fabricated if no feed is wired.",
   category: "market",
   mode: "read",
   riskLevel: "low",
@@ -551,21 +551,62 @@ export const marketIntelligenceTool: AgentTool = {
     const addrResult = normalizeAddressInput(rawAddress);
     if (!addrResult.ok) return toolError("market_intelligence", addrResult.error, { chainId: TOOL_CHAIN_ID });
 
-    // Confirmed by repo-wide inspection before implementing P0.2: no
-    // DexScreener/CoinGecko/CoinMarketCap/GeckoTerminal (or any other
-    // market-data vendor) client exists anywhere in this codebase. Per
-    // the P0.2 spec, this session does not add one — so there is no
-    // real priceUsd/volume24h/liquidityUsd/priceChange24h to return.
-    return toolError(
-      "market_intelligence",
-      {
-        code: "DATA_UNAVAILABLE",
-        message:
-          "No market-data provider is wired into this codebase — priceUsd, volume24h, liquidityUsd, and priceChange24h cannot be read without inventing a value.",
-        retryable: false,
-      },
-      { chainId: TOOL_CHAIN_ID, source: "none — no market-data provider exists in this codebase" }
-    );
+    try {
+      const res = await fetch("/api/market/mpgr", { cache: "no-store" });
+      if (!res.ok) {
+        return toolError(
+          "market_intelligence",
+          {
+            code: "DATA_UNAVAILABLE",
+            message: "Live $MPGR market data is unavailable right now. ETH/BTC do not have a separate wired news feed.",
+            retryable: true,
+          },
+          { chainId: TOOL_CHAIN_ID, source: "app/api/market/mpgr" },
+        );
+      }
+      const data = (await res.json()) as {
+        priceUsd?: number;
+        change24h?: number | null;
+        marketCap?: number | null;
+        source?: string;
+      };
+      if (typeof data.priceUsd !== "number") {
+        return toolError(
+          "market_intelligence",
+          {
+            code: "DATA_UNAVAILABLE",
+            message: "Market payload did not include a $MPGR price. No ETH/BTC quote is invented.",
+            retryable: true,
+          },
+          { chainId: TOOL_CHAIN_ID, source: "app/api/market/mpgr" },
+        );
+      }
+      return toolSuccess(
+        "market_intelligence",
+        {
+          mpgr: {
+            priceUsd: data.priceUsd,
+            change24h: data.change24h ?? null,
+            marketCap: data.marketCap ?? null,
+          },
+          eth: null,
+          btc: null,
+          note: "Only $MPGR is wired through /api/market/mpgr. ETH/BTC prices are not fabricated.",
+          source: data.source ?? "DexScreener",
+        },
+        { chainId: TOOL_CHAIN_ID, source: "app/api/market/mpgr" },
+      );
+    } catch {
+      return toolError(
+        "market_intelligence",
+        {
+          code: "DATA_UNAVAILABLE",
+          message: "Market fetch failed. No prices are invented.",
+          retryable: true,
+        },
+        { chainId: TOOL_CHAIN_ID, source: "app/api/market/mpgr" },
+      );
+    }
   },
 };
 

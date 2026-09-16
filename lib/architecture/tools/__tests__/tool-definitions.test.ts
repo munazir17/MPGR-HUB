@@ -419,12 +419,32 @@ describe("provider errors never leak internal exception details", () => {
 });
 
 describe("market_intelligence", () => {
-  it("never invents a price — always reports DATA_UNAVAILABLE since no provider is wired", async () => {
+  it("does not invent ETH/BTC and reports unavailable when the $MPGR feed fails", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
     const runtime = makeRuntime();
     const result = await runtime.executeTool("market_intelligence", { address: VALID_ADDRESS }, { requestId: "r1", confirmationMode: "always_confirm" });
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe("DATA_UNAVAILABLE");
     expect(result.data).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
+  it("returns wired $MPGR data without inventing ETH/BTC", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ priceUsd: 0.001, change24h: 2, marketCap: 1000, source: "DexScreener" }),
+      }),
+    );
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool("market_intelligence", { address: VALID_ADDRESS }, { requestId: "r1", confirmationMode: "always_confirm" });
+    expect(result.success).toBe(true);
+    const data = result.data as { mpgr: { priceUsd: number }; eth: null; btc: null };
+    expect(data.mpgr.priceUsd).toBe(0.001);
+    expect(data.eth).toBeNull();
+    expect(data.btc).toBeNull();
+    vi.unstubAllGlobals();
   });
 
   it("still validates address input before reporting unavailability", async () => {
