@@ -350,7 +350,7 @@ export function buildToolCatalogPromptBlock(
     'For x402_discover_resource and x402_prepare_payment the URL argument name is resourceUrl — never url.',
     "Never invent payment amount, asset, recipient, or any other payment field. If x402_prepare_payment succeeds, the app itself will display the structured proposal.",
     'For buy/sell/swap/quote of any Base token (ETH, USDC, MPGR, a 0x address) call trade_prepare_swap. Dollar buys: fromToken="USDC", amount="10" (human units). Omit taker.',
-    "For Coinbase B20 tokenized stocks (AAPLc, SPCXc, COINc, TSLAc, …) call tokenized_stock_prepare_order with {symbol, amount} to buy/sell, or tokenized_stock_research to look up catalog/oracle data.",
+    "For Coinbase B20 tokenized stocks (AAPL, AAPLc, SPCXc, COINc, TSLAc, …) ALWAYS call tokenized_stock_prepare_order with {symbol, amount} to buy/sell, or tokenized_stock_research to look up catalog/oracle data. Never call trade_prepare_swap for a B20 ticker.",
     "Never call tokenized_stock_research for ETH, USDC, WETH, or MPGR. Use trade_get_price for those prices.",
     'To send/transfer ETH or any Base token to someone, call transfer_prepare_send with {token, amount, recipient}. recipient is a 0x address or a Basename (name.base.eth) the user actually gave you — never invent, guess, or reuse an address from earlier in the conversation for a different request. If the user has not given a recipient, ask for one instead of calling this tool.',
   ].join("\n");
@@ -704,14 +704,12 @@ export async function runToolCallingLoop(
   request: AIProviderRequest,
   baseSystemPrompt: string,
   sendCompletion: SendCompletion,
-  options: { compactToolCatalog?: boolean; omitToolCatalog?: boolean } = {},
+  options: { compactToolCatalog?: boolean } = {},
 ): Promise<AIProviderResponse> {
   const toolCatalog = getReadAndPrepareToolCatalog();
-  const catalogBlock = options.omitToolCatalog
-    ? ""
-    : options.compactToolCatalog
-      ? buildCompactToolCatalogPromptBlock(toolCatalog)
-      : buildToolCatalogPromptBlock(toolCatalog);
+  const catalogBlock = options.compactToolCatalog
+    ? buildCompactToolCatalogPromptBlock(toolCatalog)
+    : buildToolCatalogPromptBlock(toolCatalog);
 
   const systemPrompt = catalogBlock
     ? baseSystemPrompt + "\n\n" + catalogBlock

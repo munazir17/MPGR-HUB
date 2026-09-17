@@ -3,7 +3,7 @@
 // Agent-facing trade / tokenized-stock tools.
 //
 //   trade_get_price                 (read)
-//   trade_prepare_swap              (prepare) — any Base token + B20
+//   trade_prepare_swap              (prepare) — ETH/USDC/MPGR + Base ERC-20
 //   tokenized_stock_research        (read)
 //   tokenized_stock_prepare_order   (prepare) — B20 on-chain swap
 //
@@ -30,16 +30,11 @@ import type { AgentTool, AgentToolSchema } from "./agent-tool";
 import { getAgentToolRegistry } from "./agent-tool-registry-instance";
 import { toolError, toolSuccess } from "./agent-tool-result";
 
-const CANONICAL_APP_ORIGIN = "https://mpgrhub.xyz";
-
 function tradeEndpoint(path: string): string {
-  // Browser calls stay same-origin so the authenticated mpgr_session
-  // cookie is sent naturally. Server-side callers use the canonical origin.
-  if (typeof window !== "undefined") {
-    return path;
-  }
-
-  return CANONICAL_APP_ORIGIN + path;
+  // Same-origin relative URL. Browser fetch sends the real Origin and
+  // session cookie. Hardcoding production broke Vercel Preview because
+  // Preview POSTs either missed Origin or failed CSRF against APP_ORIGIN.
+  return path;
 }
 
 function toolFailureCode(code: unknown): "INVALID_INPUT" | "WALLET_NOT_CONNECTED" | "DATA_UNAVAILABLE" | "PROVIDER_ERROR" {
@@ -161,7 +156,7 @@ export const tradePrepareSwapTool: AgentTool = {
   id: "trade_prepare_swap",
   name: "Base Swap Proposal",
   description:
-    "Creates a structured Base swap proposal for explicit user confirmation. Works for ETH/WETH/USDC/MPGR and any Base ERC-20 0x address via CDP/0x. Coinbase B20 tokenized stocks (AAPLc, SPCXc, TSLAc, …) route through Aerodrome Slipstream USDC pools. For \"$10 of AAPLc\" use fromToken=USDC, toToken=AAPLc, amount=\"10\". Never signs. Omit taker. Do not call this for a plain ETH price question — use trade_get_price.",
+    "Creates a structured Base swap proposal for explicit user confirmation. Works for ETH/WETH/USDC/MPGR and any Base ERC-20 0x address via CDP/0x. Do not use this for Coinbase B20 tokenized stocks (AAPLc, SPCXc, TSLAc, AAPL, …) — call tokenized_stock_prepare_order instead. Never signs. Omit taker. Do not call this for a plain ETH price question — use trade_get_price.",
   category: "defi",
   mode: "prepare",
   riskLevel: "medium",

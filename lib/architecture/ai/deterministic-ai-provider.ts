@@ -40,6 +40,13 @@ export class DeterministicAIProvider implements AIProvider {
       return prepareOrExplainTransfer(request);
     }
 
+    // Catalog-backed B20 names (AAPL → AAPLc, etc.) win over the
+    // generic ETH/USDC/MPGR swap classifier so a tokenized-stock
+    // prepare cannot fall into trade_prepare_swap.
+    if (isTradePrompt(request.prompt) && extractTradeSymbol(request.prompt)) {
+      return prepareOrExplainTrade(request);
+    }
+
     if (isCryptoSwapQuotePrompt(request.prompt)) {
       return quoteOrPrepareCryptoSwap(request);
     }
@@ -240,39 +247,18 @@ async function prepareOrExplainTrade(
     const amount = extractTradeHumanAmount(request.prompt);
     if (!amount) {
       return helpResponse(
-        "A dollar or token amount is required before I can prepare a Base swap quote (for example $10). I will not guess fromAmount. Nothing was signed or submitted.",
+        "A dollar or token amount is required before I can prepare a tokenized-stock swap (for example $10). I will not guess fromAmount. Nothing was signed or submitted.",
       );
     }
 
     const selling = isTradeSellPrompt(request.prompt);
-    const hydrated = hydrateTradeSwapArguments(
-      {
-        fromToken: selling ? symbol : "USDC",
-        toToken: selling ? "USDC" : symbol,
-        amount: amount,
-      },
-      request.address,
-    );
-
-    // A B20 tokenized-stock leg deliberately has no pre-computed
-    // fromAmount here — hydrateTradeSwapArguments defers that
-    // conversion to the real (async, on-chain-decimals-verified) API
-    // route rather than guessing decimals synchronously. Accept
-    // either a computed fromAmount (ordinary crypto) or a
-    // still-present human amount (B20 leg) as "enough to proceed";
-    // the route rejects it cleanly if it's genuinely unusable.
-    const hasUsableAmount =
-      (typeof hydrated.fromAmount === "string" && hydrated.fromAmount.length > 0) ||
-      (typeof hydrated.amount === "string" && hydrated.amount.length > 0);
-    if (!hasUsableAmount) {
-      return helpResponse(
-        "I could not convert that amount into a Base swap fromAmount using the token's catalog decimals. Nothing was signed or submitted.",
-      );
-    }
-
     const result = await runRegisteredTool(
-      "trade_prepare_swap",
-      hydrated,
+      "tokenized_stock_prepare_order",
+      {
+        symbol,
+        amount,
+        side: selling ? "SELL" : "BUY",
+      },
       request,
     );
 
@@ -282,7 +268,7 @@ async function prepareOrExplainTrade(
         return {
           intent: "general_help",
           reply:
-            "A Base swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.",
+            "A tokenized-stock swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.",
           actions: [],
           highlights: [],
           followUps: getFollowUpPrompts("general_help"),
@@ -294,10 +280,10 @@ async function prepareOrExplainTrade(
     const detail =
       typeof result.error?.message === "string" && result.error.message.trim()
         ? result.error.message.trim()
-        : "No Base swap quote could be prepared for this pair.";
+        : "No tokenized-stock swap could be prepared for this catalog asset.";
 
     return helpResponse(
-      "I tried to prepare a Base swap quote and it did not complete. " +
+      "I tried to prepare a Coinbase B20 tokenized-stock swap and it did not complete. " +
         detail +
         " Nothing was signed or submitted.",
     );

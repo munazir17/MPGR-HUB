@@ -4,9 +4,12 @@ import { AgentToolRegistry } from "../agent-tool-registry";
 import { AgentToolRuntime } from "../agent-tool-runtime";
 import type { EventBus, Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
 
-const { tradeGetPriceTool, tradePrepareSwapTool, tokenizedStockResearchTool } = await import(
-  "../trade-tool-definitions"
-);
+const {
+  tradeGetPriceTool,
+  tradePrepareSwapTool,
+  tokenizedStockResearchTool,
+  tokenizedStockPrepareOrderTool,
+} = await import("../trade-tool-definitions");
 
 function makeDeps() {
   const eventBus: EventBus = { on: () => () => {}, off: () => {}, emit: () => {}, use: () => () => {} };
@@ -22,7 +25,12 @@ function makeDeps() {
 
 function makeRuntime() {
   const registry = new AgentToolRegistry();
-  for (const tool of [tradeGetPriceTool, tradePrepareSwapTool, tokenizedStockResearchTool]) {
+  for (const tool of [
+    tradeGetPriceTool,
+    tradePrepareSwapTool,
+    tokenizedStockResearchTool,
+    tokenizedStockPrepareOrderTool,
+  ]) {
     registry.register(tool);
   }
   const { eventBus, logger, performanceMonitor } = makeDeps();
@@ -34,7 +42,9 @@ describe("P4 trade tools", () => {
     expect(tradeGetPriceTool.mode).toBe("read");
     expect(tradePrepareSwapTool.mode).toBe("prepare");
     expect(tokenizedStockResearchTool.mode).toBe("read");
+    expect(tokenizedStockPrepareOrderTool.mode).toBe("prepare");
     expect(tradePrepareSwapTool.requiresConfirmation).toBe(true);
+    expect(tokenizedStockPrepareOrderTool.requiresConfirmation).toBe(true);
   });
 
   it("trade_prepare_swap captures a structured proposal from /api/trade/quote", async () => {
@@ -68,6 +78,80 @@ describe("P4 trade tools", () => {
     );
     expect(result.success).toBe(true);
     expect((result.data as { proposal: { id: string } }).proposal.id).toBe("trade_x");
+    const called = vi.mocked(fetch).mock.calls[0];
+    expect(String(called?.[0])).toBe("/api/trade/quote");
+    expect(String(called?.[0])).not.toContain("mpgrhub.xyz");
+    vi.unstubAllGlobals();
+  });
+
+  it("tokenized_stock_prepare_order posts to the dedicated stocks quote path", async () => {
+    const proposal = {
+      id: "b20_x",
+      requiresConfirmation: true,
+      network: "base",
+      provider: "aerodrome-slipstream",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(JSON.stringify({ proposal }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "tokenized_stock_prepare_order",
+      { symbol: "AAPL", amount: "50", side: "BUY" },
+      {
+        confirmationMode: "always_confirm",
+        requestId: "t-b20",
+        walletAddress: "0x2222222222222222222222222222222222222222",
+      },
+    );
+    expect(result.success).toBe(true);
+    expect((result.data as { proposal: { id: string; requiresConfirmation: boolean } }).proposal.requiresConfirmation).toBe(
+      true,
+    );
+    const called = vi.mocked(fetch).mock.calls[0];
+    expect(String(called?.[0])).toBe("/api/trade/stocks/quote");
+    const body = JSON.parse(String((called?.[1] as RequestInit | undefined)?.body));
+    expect(body.symbol).toBe("AAPLc");
+    expect(body.amount).toBe("50");
+    vi.unstubAllGlobals();
+  });
+
+  it("rewrites a generic AAPLc swap prepare onto tokenized_stock_prepare_order", async () => {
+    const proposal = { id: "rewritten", requiresConfirmation: true };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(JSON.stringify({ proposal }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "trade_prepare_swap",
+      {
+        fromToken: "USDC",
+        toToken: "AAPLc",
+        amount: "50",
+        taker: "0x2222222222222222222222222222222222222222",
+      },
+      {
+        confirmationMode: "always_confirm",
+        requestId: "t-rewrite",
+        walletAddress: "0x2222222222222222222222222222222222222222",
+      },
+    );
+    expect(result.success).toBe(true);
+    const called = vi.mocked(fetch).mock.calls[0];
+    expect(String(called?.[0])).toBe("/api/trade/stocks/quote");
+    expect(String(called?.[0])).not.toBe("/api/trade/quote");
     vi.unstubAllGlobals();
   });
 

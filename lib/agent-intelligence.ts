@@ -274,6 +274,7 @@ const TRADE_PROMPT_MARKERS = [
   "trade quote",
   "buy quote",
   "prepare a swap",
+  "prepare a trade",
   "prepare a $",
   "prepare a quote",
   "buy $",
@@ -288,6 +289,7 @@ const TRADE_QUOTE_MARKERS = [
   "swap quote",
   "trade quote",
   "prepare a swap",
+  "prepare a trade",
   "prepare a $",
   "prepare a quote",
   "buy $",
@@ -591,13 +593,13 @@ export function detectIntent(
 }
 
 const NOT_CONNECTED_REPLY =
-  "Connect your wallet first so I can read your Base wallet and $MPGR positions.";
+  "Connect your wallet first so I can read your MPGR HUB data — XP, staking, Holder Tier, Premium, and more.";
 
 const GREETING_REPLY =
-  "Hey! I'm the MPGR Agent. Ask me to research $MPGR or Base, check your wallet/portfolio, prepare a swap or transfer, or inspect an x402 URL. XP, seasons, streaks, and claims live on the Rewards page.";
+  "Hey! I'm the MPGR Agent. Ask me about your XP, staking, Holder Tier, Premium status, locked tokens, Season Pass, or claimable rewards.";
 
 const GENERAL_HELP_REPLY =
-  "I can help with research, markets, wallet/portfolio (ETH, USDC, $MPGR including staked/locked), Base swaps, tokenized stocks, and x402 prepare-only payments. XP, seasons, streaks, achievements, and claims are on the Rewards page.";
+  "I can help with: Portfolio Summary, XP & Level Progress, Holder Tier, Premium Status, Claimable Rewards, Staking Summary, Locked Tokens, Season Progress, and Referral Overview. Just ask — for example, \"What's my Holder Tier?\" or \"How much XP do I have?\" I can also open a page for you directly — try \"open rewards\" or \"what should I do next?\"";
 
 const X402_PAYMENT_HELP_REPLY =
   "This looks like an x402 paid-resource request. I will not sign or submit a payment from here. Include the https resource URL if you want it inspected — a proposal is only prepared for your explicit confirmation, and no funds move until you confirm.";
@@ -623,7 +625,7 @@ function replyPortfolioSummary(ctx: AgentContext): string {
   ].filter((part): part is string => Boolean(part));
   const exposure = formatCompactNumber(walletBalance + stakedBalance + lockedBalance);
   const progressHint =
-    " XP, seasons, streaks, and claims are on the Rewards page — not part of this wallet summary.";
+    " XP, Holder Tier, Season Points, and referrals are account progress — ask separately if you want those. Rewards details are available on the Rewards page.";
   return (
     "Wallet / portfolio on Base: " +
     parts.join(", ") +
@@ -638,7 +640,7 @@ function replyPortfolioSummary(ctx: AgentContext): string {
 
 function replyResearchQuery(): string {
   return (
-    "MPGR HUB is a Base-native app around MoneyPaiger ($MPGR). The Agent researches Base and $MPGR, reads wallet/portfolio balances, and prepares transfers, swaps, tokenized-stock paths, and x402 payments — you confirm and sign. $MPGR is a fixed-supply utility token on Base mainnet (1,000,000,000 max, no inflation). Games and XP live on the Rewards page. This is product documentation, not financial advice."
+    "MPGR HUB is a Base-native app around MoneyPaiger ($MPGR): an AI agent that can research and prepare onchain actions, MPGR Run, XP/seasons, staking, token lock, and a reward vault. $MPGR is a fixed-supply utility token on Base mainnet (1,000,000,000 max, no inflation). The Agent prepares transfers, swaps, tokenized-stock paths, and x402 payments — you confirm and sign. Base is the only production chain. This is product documentation, not financial advice."
   );
 }
 
@@ -648,20 +650,118 @@ function replyMarketOverview(): string {
   );
 }
 
-function replyXPStatus(_ctx: AgentContext): string {
-  return "XP, levels, and streaks are on the Rewards page — I do not track that here. Open Rewards to see your progress.";
+function replyXPStatus(ctx: AgentContext): string {
+  if (!ctx.xp) return notAvailable("XP");
+  const { xp, level, nextLevel, xpIntoLevel, xpNeededForLevel, progress, streak } = ctx.xp;
+  return (
+    "You're Level " +
+    level +
+    " with " +
+    formatCompactNumber(xp) +
+    " XP total — " +
+    xpIntoLevel +
+    "/" +
+    xpNeededForLevel +
+    " XP into this level (" +
+    progress +
+    "% of the way to Level " +
+    nextLevel +
+    "). Current daily streak: " +
+    streak +
+    " day" +
+    (streak === 1 ? "" : "s") +
+    "."
+  );
 }
 
-function replyHolderTier(_ctx: AgentContext): string {
-  return "Holder Tier and reputation live on Profile / Rewards. I can show wallet $MPGR, staked, and locked balances here.";
+function replyHolderTier(ctx: AgentContext): string {
+  if (!ctx.holderTier) return notAvailable("Holder Tier");
+  const { tierLabel, totalScore, nextTierLabel, progressToNextTier, amountToNextTier, votingWeight, reputationScore } =
+    ctx.holderTier;
+
+  if (!tierLabel) {
+    return "You haven't reached a Holder Tier yet — hold, stake, or lock MPGR to start climbing toward Bronze, the first tier.";
+  }
+
+  const nextNote = nextTierLabel
+    ? " You need " +
+      formatCompactNumber(amountToNextTier) +
+      " more MPGR to reach " +
+      nextTierLabel +
+      " (" +
+      progressToNextTier +
+      "% of the way there)."
+    : " You've reached Diamond, the highest Holder Tier.";
+
+  return (
+    "You're currently " +
+    tierLabel +
+    " Holder Tier with a Holder Score of " +
+    formatCompactNumber(totalScore) +
+    "." +
+    nextNote +
+    " Your governance voting weight is " +
+    formatCompactNumber(votingWeight) +
+    " and community reputation is " +
+    formatCompactNumber(reputationScore) +
+    "."
+  );
 }
 
-function replyPremiumStatus(_ctx: AgentContext): string {
-  return "Premium tiers and XP multipliers are on the Premium / Rewards pages. Ask me about locked $MPGR or a token-lock prepare flow if you want an on-chain action.";
+function replyPremiumStatus(ctx: AgentContext): string {
+  if (!ctx.premium) return notAvailable("Premium");
+  const { isPremium, tierLabel, xpMultiplier, rewardsMultiplier, nextTierLabel, progressToNextTier, amountToNextTier } =
+    ctx.premium;
+
+  if (!isPremium) {
+    return nextTierLabel
+      ? "You're not on a Premium tier yet — lock " +
+          formatCompactNumber(amountToNextTier) +
+          " more MPGR to unlock " +
+          nextTierLabel +
+          " and boost your XP and Rewards multipliers."
+      : "You're not on a Premium tier yet — lock MPGR in Token Lock to unlock a Premium tier and boost your XP and Rewards multipliers.";
+  }
+
+  const nextNote = nextTierLabel
+    ? " " +
+      formatCompactNumber(amountToNextTier) +
+      " more locked MPGR gets you to " +
+      nextTierLabel +
+      " (" +
+      progressToNextTier +
+      "% of the way there)."
+    : " You're at the top Premium tier.";
+
+  return (
+    "You're on the " +
+    tierLabel +
+    " Premium tier — " +
+    xpMultiplier +
+    "× XP and " +
+    rewardsMultiplier +
+    "× Rewards multiplier." +
+    nextNote
+  );
 }
 
-function replyClaimableRewards(_ctx: AgentContext): string {
-  return "Claimable MPGR rewards and the reward vault are on the Rewards page. I will not claim anything from chat.";
+function replyClaimableRewards(ctx: AgentContext): string {
+  if (!ctx.rewards) return notAvailable("rewards");
+  const { claimableTotal, totalClaimed } = ctx.rewards;
+  const stakingNote =
+    ctx.staking && ctx.staking.earnedRewards > 0
+      ? " That's separate from the " +
+        formatCompactNumber(ctx.staking.earnedRewards) +
+        " MPGR in staking rewards also ready to claim."
+      : "";
+  return (
+    "You have " +
+    formatCompactNumber(claimableTotal) +
+    " MPGR claimable right now on the Rewards page, and " +
+    formatCompactNumber(totalClaimed) +
+    " MPGR claimed lifetime." +
+    stakingNote
+  );
 }
 
 function replyStakingSummary(ctx: AgentContext): string {
@@ -686,7 +786,7 @@ function replyLockedTokens(ctx: AgentContext): string {
   if (!ctx.tokenLock) return notAvailable("Token Lock");
   const { totalLocked, activeLocksCount, upcomingUnlockAt } = ctx.tokenLock;
   if (activeLocksCount === 0) {
-    return "You don't have any active locks right now. I can help prepare a token-lock transaction if you want one.";
+    return "You don't have any active locks right now — locking MPGR also contributes to your Premium tier and Holder Score.";
   }
   const unlockNote = upcomingUnlockAt
     ? " Your next unlock is on " + formatUpcomingDate(upcomingUnlockAt) + "."
@@ -703,22 +803,45 @@ function replyLockedTokens(ctx: AgentContext): string {
   );
 }
 
-function replySeasonProgress(_ctx: AgentContext): string {
-  return "Season points live on the Rewards page. I can help with wallet, $MPGR, swaps, or research instead.";
+function replySeasonProgress(ctx: AgentContext): string {
+  if (!ctx.season) return notAvailable("Season Pass");
+  const { seasonNumber, seasonPoints, level, progress } = ctx.season;
+  return (
+    "Season " +
+    seasonNumber +
+    ": you're at Level " +
+    level +
+    " with " +
+    formatCompactNumber(seasonPoints) +
+    " season points (" +
+    progress +
+    "% of the way to the next level)."
+  );
 }
 
-function replyReferralOverview(_ctx: AgentContext): string {
-  return "Referral stats are on your Profile / Rewards pages, not in this Agent briefing.";
+function replyReferralOverview(ctx: AgentContext): string {
+  if (!ctx.xp) return notAvailable("referral");
+  const { referralCount } = ctx.xp;
+  if (referralCount === 0) {
+    return "You haven't referred anyone yet — share your referral link from your Profile page to start earning referral XP.";
+  }
+  return (
+    "You've referred " +
+    referralCount +
+    " friend" +
+    (referralCount === 1 ? "" : "s") +
+    " so far. Share your referral link from your Profile page to earn even more."
+  );
 }
 
 function replyOpenRewards(): string {
-  return "Opening the Rewards page.";
+  return "Opening Rewards for you — here's your claimable balance and claim history.";
 }
 function replyOpenGames(): string {
   return "Opening Games — check out what's available to play right now.";
 }
 function replyOpenProfile(): string {
-  return "Opening your Profile.";
+  return "Opening your Profile — XP, Holder Tier, Premium, and Season Pass all in one place.";
 }
 function replyOpenStaking(): string {
   return "Opening Staking — manage your staked MPGR and claim staking rewards.";
@@ -727,11 +850,34 @@ function replyOpenPremium(): string {
   return "Opening Premium — compare every tier and see what each one unlocks.";
 }
 function replyOpenLeaderboard(): string {
-  return "Opening the Leaderboard page.";
+  return "Opening the Leaderboard — see how you rank community-wide.";
 }
 
-function replySuggestNextAction(_ctx: AgentContext): string {
-  return "Next step from here: review your Base wallet/portfolio, or open Rewards if you want XP and claims. I can prepare a swap or transfer if you want an on-chain action.";
+function replySuggestNextAction(ctx: AgentContext): string {
+  if (ctx.rewards && ctx.rewards.claimableTotal > 0) {
+    return (
+      "You have " +
+      formatCompactNumber(ctx.rewards.claimableTotal) +
+      " MPGR claimable right now — claiming your rewards is the best next move."
+    );
+  }
+  if (ctx.staking && ctx.staking.earnedRewards > 0) {
+    return (
+      "You have " +
+      formatCompactNumber(ctx.staking.earnedRewards) +
+      " MPGR in staking rewards ready to claim — that's your best next move."
+    );
+  }
+  if (ctx.premium && !ctx.premium.isPremium) {
+    return "You're not on a Premium tier yet — locking MPGR to unlock Premium is a great next step for boosting your multipliers.";
+  }
+  if (ctx.staking && ctx.staking.totalStaked === 0) {
+    return "You don't have any MPGR staked — starting to stake MPGR is a solid next move to start earning rewards.";
+  }
+  if (ctx.tokenLock && ctx.tokenLock.activeLocksCount === 0) {
+    return "You don't have any active token locks — locking some MPGR boosts your Premium tier and Holder Score.";
+  }
+  return "You're in good shape across the board — check your portfolio summary to see the full picture.";
 }
 
 const INTENT_HANDLERS: Record<AgentIntent, (ctx: AgentContext) => string> = {
@@ -784,7 +930,7 @@ function buildGreetingReply(memoryContext?: ConversationMemoryContext): string {
   const topicNote = topic
     ? " Want to check in on " + INTENT_LABELS[topic] + " again, or ask about something else?"
     : "";
-  return "Welcome back! I have your wallet and $MPGR on-chain context loaded." + topicNote;
+  return "Welcome back! I've got your MPGR HUB context loaded — XP, staking, Holder Tier, and more." + topicNote;
 }
 
 function buildRecallNote(intent: AgentIntent, memoryContext?: ConversationMemoryContext): string | null {

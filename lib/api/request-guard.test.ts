@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readJsonBody, requestIdFromRequest, verifyTrustedOrigin, protectApiRequest } from "./request-guard";
 
 describe("request guard", () => {
@@ -208,5 +208,59 @@ describe("protectApiRequest (real verifyTrustedOrigin, unmocked)", () => {
     // because this test environment has no Redis configured, which is
     // enforceRateLimit's own unrelated fail-closed behavior.
     expect(result.error?.status).toBe(503);
+  });
+});
+
+describe("verifyTrustedOrigin — Preview vs production configuration", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("fails safely when origin configuration is missing in production", async () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "production");
+    const request = new Request("https://mpgrhub.xyz/api/trade/quote", {
+      method: "POST",
+      headers: { origin: "https://mpgrhub.xyz", "content-type": "application/json" },
+      body: JSON.stringify({ fromToken: "ETH", toToken: "USDC" }),
+    });
+    const response = verifyTrustedOrigin(request);
+    expect(response).not.toBeNull();
+    expect(response?.status).toBe(503);
+    expect(await response?.json()).toEqual({ error: "Origin verification is not configured" });
+  });
+
+  it("enforces origin verification on Vercel Preview using the request origin", async () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "preview");
+    const preview = "https://mpgr-hub-git-fix.vercel.app";
+    const ok = verifyTrustedOrigin(
+      new Request(`${preview}/api/trade/quote`, {
+        method: "POST",
+        headers: { origin: preview },
+      }),
+    );
+    expect(ok).toBeNull();
+
+    const rejected = verifyTrustedOrigin(
+      new Request(`${preview}/api/trade/quote`, {
+        method: "POST",
+        headers: { origin: "https://evil.com" },
+      }),
+    );
+    expect(rejected?.status).toBe(403);
+    expect(await rejected?.json()).toEqual({ error: "Cross-site request rejected" });
+  });
+
+  it("still rejects a missing Origin header on Preview", () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "preview");
+    const response = verifyTrustedOrigin(
+      new Request("https://mpgr-hub-git-fix.vercel.app/api/trade/quote", { method: "POST" }),
+    );
+    expect(response?.status).toBe(403);
   });
 });

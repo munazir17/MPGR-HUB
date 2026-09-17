@@ -6,15 +6,32 @@ export const NONCE_COOKIE = "mpgr_auth_nonce";
 export const SESSION_TTL_SECONDS = 60 * 60 * 8;
 export const NONCE_TTL_SECONDS = 5 * 60;
 
+/**
+ * True when it is safe to derive the app origin from the incoming
+ * request URL because APP_ORIGIN is unset.
+ *
+ * Production (`VERCEL_ENV=production`, or `NODE_ENV=production` off
+ * Vercel) must still set APP_ORIGIN explicitly — never derive there.
+ * Vercel Preview/development deployments run with NODE_ENV=production
+ * but typically do not receive Production-scoped APP_ORIGIN; deriving
+ * from the request keeps same-origin browser POSTs verifiable without
+ * weakening production.
+ */
+export function shouldDeriveOriginFromRequest(): boolean {
+  const vercelEnv = process.env.VERCEL_ENV;
+  if (vercelEnv === "preview" || vercelEnv === "development") return true;
+  if (vercelEnv === "production") return false;
+  return process.env.NODE_ENV !== "production";
+}
+
 export function getAppOrigin(requestUrl?: string): string {
   const configured = process.env.APP_ORIGIN?.trim();
   if (configured) return configured.replace(/\/$/, "");
+  if (shouldDeriveOriginFromRequest() && requestUrl) {
+    return new URL(requestUrl).origin;
+  }
   if (process.env.NODE_ENV === "production") {
     throw new Error("APP_ORIGIN must be configured in production.");
-  }
-  if (requestUrl) {
-    const url = new URL(requestUrl);
-    return url.origin;
   }
   throw new Error("APP_ORIGIN is required when request origin is unavailable.");
 }
