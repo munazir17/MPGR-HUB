@@ -4,6 +4,11 @@
     "payload": "eyJkb21haW4iOiJtcGdyaHViLnh5eiJ9",
     "signature": "zgmZ760fywlsU+ScGXwFP/MLqIWRgnryU4ejg/fbvEcpWOlk4IyyrKWlKq79cayRnEp8JcGZav46tl6xCpOx4Rs="
   },
+
+  "baseBuilder": {
+    "ownerAddress": "0x8cf779b5a4d210d8c75048751b8532f491732964"
+  },
+
   "miniapp": {
     "version": "1",
     "name": "MPGR HUB",
