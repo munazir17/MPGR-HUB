@@ -22,11 +22,12 @@ export const DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 
 /**
  * Hosted NIM model with documented tool calling / agent workflows.
- * Llama 3.3 Nemotron Super 49B v1.5 is on the current integrate.api.nvidia.com
- * catalog and is the model NVIDIA's 2026 NIM agent/tool-calling tutorials use.
- * Override with NVIDIA_MODEL.
+ * Nemotron 3 Super 120B is on the current integrate.api.nvidia.com
+ * catalog and is NVIDIA's agent/tool-calling default (NemoClaw,
+ * OpenHands). The previous Llama 3.3 Nemotron Super 49B v1.5 id is
+ * no longer hosted. Override with NVIDIA_MODEL.
  */
-export const DEFAULT_NVIDIA_MODEL = "nvidia/llama-3.3-nemotron-super-49b-v1.5";
+export const DEFAULT_NVIDIA_MODEL = "nvidia/nemotron-3-super-120b-a12b";
 
 const X402_RESOURCE_URL_TOOL_IDS = new Set([
   "x402_discover_resource",

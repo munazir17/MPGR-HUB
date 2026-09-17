@@ -127,7 +127,7 @@ describe("POST /api/agent/complete/nvidia — key skip and upstream", () => {
     expect(headers.Authorization).toBe(`Bearer ${FAKE_KEY}`);
     const upstreamBody = JSON.parse(String(init.body)) as Record<string, unknown>;
     expect(JSON.stringify(upstreamBody)).not.toContain(FAKE_KEY);
-    expect(upstreamBody.model).toBe("nvidia/llama-3.3-nemotron-super-49b-v1.5");
+    expect(upstreamBody.model).toBe("nvidia/nemotron-3-super-120b-a12b");
   });
 
   it("converts a native NVIDIA tool_call into the MPGR toolCall protocol", async () => {

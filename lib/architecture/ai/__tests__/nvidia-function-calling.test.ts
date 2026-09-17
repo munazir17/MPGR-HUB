@@ -48,6 +48,7 @@ describe("NVIDIA NIM config", () => {
     vi.stubEnv("NVIDIA_MODEL", "");
     expect(resolveNvidiaBaseUrl()).toBe(DEFAULT_NVIDIA_BASE_URL);
     expect(resolveNvidiaModel()).toBe(DEFAULT_NVIDIA_MODEL);
+    expect(DEFAULT_NVIDIA_MODEL).toBe("nvidia/nemotron-3-super-120b-a12b");
     expect(nvidiaChatCompletionsUrl()).toBe(
       "https://integrate.api.nvidia.com/v1/chat/completions",
     );

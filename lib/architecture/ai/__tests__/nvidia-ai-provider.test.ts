@@ -92,6 +92,7 @@ describe("NvidiaAIProvider sendCompletion", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/agent/complete/nvidia");
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(init.credentials).toBe("include");
     const body = JSON.parse(String(init.body)) as {
       systemPrompt: string;
       userPrompt: string;

@@ -47,6 +47,7 @@ export async function sendCompletion(
 
   const res = await fetch("/api/agent/complete/nvidia", {
     method: "POST",
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
     },

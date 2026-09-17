@@ -69,6 +69,7 @@ export async function POST(request: Request) {
   if (!apiKey) {
     // Missing key is a skip, not a crash: the provider chain falls
     // through to OpenAI then the deterministic engine.
+    logNvidiaEvent("skipped_missing_key", { code: "PROVIDER_UNREACHABLE", requestId });
     return respond(
       { error: "NVIDIA_API_KEY is not configured on the server.", code: "PROVIDER_UNREACHABLE" },
       { status: 503 },
