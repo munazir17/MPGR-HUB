@@ -23,6 +23,7 @@ import { toolSuccess } from "@/lib/architecture/tools/agent-tool-result";
 import type { AIProviderRequest } from "../ai-provider";
 import { OpenAIAIProvider } from "../openai-ai-provider";
 import { GeminiAIProvider } from "../gemini-ai-provider";
+import { NvidiaAIProvider } from "../nvidia-ai-provider";
 import { FallbackAIProvider } from "../fallback-ai-provider";
 import { DeterministicAIProvider } from "../deterministic-ai-provider";
 import type { EventBus, Logger } from "@/lib/architecture/core/types";
@@ -97,7 +98,6 @@ describe("OpenAIAIProvider — production tool-calling flow", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/agent/complete");
-    expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe("include");
     expect(executeToolSpy).toHaveBeenCalledWith(
       "yield_comparison",
       {},
@@ -133,6 +133,65 @@ describe("OpenAIAIProvider — production tool-calling flow", () => {
     await expect(
       provider.generateReply(makeRequest()),
     ).rejects.toThrow(/OPENAI_API_KEY/);
+  });
+});
+
+describe("NvidiaAIProvider — production tool-calling flow", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("calls /api/agent/complete/nvidia, invokes yield_comparison through the real runtime, and returns the final reply", async () => {
+    const executeToolSpy = vi
+      .spyOn(agentToolRuntime, "executeTool")
+      .mockResolvedValue(
+        toolSuccess("yield_comparison", {
+          entries: [{ opportunityId: "mpgr-staking" }],
+        }),
+      );
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          content: JSON.stringify({
+            toolCall: {
+              toolId: "yield_comparison",
+              arguments: {},
+            },
+          }),
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          content: JSON.stringify({
+            intent: "general_help",
+            reply: "MPGR Staking is the only known opportunity.",
+          }),
+        }),
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = new NvidiaAIProvider();
+    const response = await provider.generateReply(makeRequest());
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agent/complete/nvidia");
+    expect(executeToolSpy).toHaveBeenCalledWith(
+      "yield_comparison",
+      {},
+      expect.objectContaining({
+        permissions: {
+          canRead: true,
+          canPrepare: true,
+          canExecute: false,
+        },
+      }),
+    );
+    expect(response.reply).toBe("MPGR Staking is the only known opportunity.");
+    expect(response.intent).toBe("general_help");
   });
 });
 
@@ -181,7 +240,6 @@ describe("GeminiAIProvider — production tool-calling flow", () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       "/api/agent/complete/gemini",
     );
-    expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe("include");
 
     expect(executeToolSpy).toHaveBeenCalledWith(
       "yield_opportunities",

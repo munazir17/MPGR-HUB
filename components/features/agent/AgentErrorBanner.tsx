@@ -2,6 +2,7 @@
 
 import { motion } from "framer-motion";
 import { AlertTriangle, RotateCcw, X } from "lucide-react";
+import { sanitizeAgentUserError } from "@/lib/agent/sanitize-agent-user-error";
 
 interface AgentErrorBannerProps {
   message: string;
@@ -23,7 +24,7 @@ export function AgentErrorBanner({ message, onRetry, onDismiss }: AgentErrorBann
       className="flex items-center gap-2.5 border-t border-red-500/20 bg-red-500/10 px-4 py-2.5 sm:px-6"
     >
       <AlertTriangle className="h-4 w-4 shrink-0 text-red-400" aria-hidden="true" />
-      <p className="flex-1 text-xs text-red-200">{message}</p>
+      <p className="flex-1 text-xs text-red-200">{sanitizeAgentUserError(message)}</p>
 
       {onRetry && (
         <button

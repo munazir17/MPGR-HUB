@@ -43,13 +43,21 @@ describe("resolveProviderKindOrder", () => {
   it("always ends with deterministic and only uses implemented network kinds", () => {
     const order = resolveProviderKindOrder("general");
     expect(order.at(-1)).toBe("deterministic");
-    expect(order).toContain("gemini");
-    expect(order).toContain("openai");
+    expect(order).toEqual(["gemini", "nvidia", "openai", "deterministic"]);
     expect(order).not.toContain("anthropic");
   });
 
   it("prefers gemini for research when implemented", () => {
     expect(resolveProviderKindOrder("research")[0]).toBe("gemini");
+  });
+
+  it("keeps Gemini primary for structured turns, with NVIDIA then OpenAI as fallbacks", () => {
+    expect(resolveProviderKindOrder("structured")).toEqual([
+      "gemini",
+      "nvidia",
+      "openai",
+      "deterministic",
+    ]);
   });
 });
 
@@ -59,6 +67,11 @@ describe("ProviderChainAIProvider", () => {
       name: "gemini",
       requiresNetwork: true,
       generateReply: vi.fn().mockRejectedValue(new Error("429 RESOURCE_EXHAUSTED")),
+    };
+    const nvidia: AIProvider = {
+      name: "nvidia",
+      requiresNetwork: true,
+      generateReply: vi.fn().mockRejectedValue(new Error("NVIDIA_API_KEY is not configured")),
     };
     const ok: AIProvider = {
       name: "openai",
@@ -71,9 +84,10 @@ describe("ProviderChainAIProvider", () => {
         followUps: [],
       } satisfies AIProviderResponse),
     };
-    const chain = new ProviderChainAIProvider([failing, ok], fakeBus(), fakeLogger());
+    const chain = new ProviderChainAIProvider([failing, nvidia, ok], fakeBus(), fakeLogger());
     const result = await chain.generateReply(request("What is MPGR?"));
     expect(result.reply).toBe("ok");
+    expect(nvidia.generateReply).toHaveBeenCalledOnce();
     expect(ok.generateReply).toHaveBeenCalledOnce();
   });
 });

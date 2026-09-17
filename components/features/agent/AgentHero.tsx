@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { AgentOrb } from "./AgentOrb";
 import { AgentStatusBadge } from "./AgentStatusBadge";
 import type { AgentStatusId } from "@/lib/agent-config";
+import { formatAgentUserCount } from "@/lib/agent/format-agent-user-count";
+import { useAgentVisitorCount } from "@/hooks/useAgentVisitorCount";
 
 interface AgentHeroProps {
   statuses: AgentStatusId[];
@@ -16,9 +18,25 @@ function greetingForHour(hour: number): string {
   return "Good evening";
 }
 
+function AgentUserCount({ count, align }: { count: number | null; align: "center" | "end" }) {
+  if (count === null) return null;
+  return (
+    <p
+      className={
+        align === "end"
+          ? "text-right text-[10px] font-medium tabular-nums tracking-wide text-muted"
+          : "text-[11px] font-medium tabular-nums tracking-wide text-muted"
+      }
+    >
+      {formatAgentUserCount(count)} Users
+    </p>
+  );
+}
+
 export function AgentHero({ statuses, compact }: AgentHeroProps) {
   const [greeting, setGreeting] = useState("Welcome");
   const thinking = statuses.includes("thinking");
+  const userCount = useAgentVisitorCount();
 
   useEffect(() => {
     setGreeting(greetingForHour(new Date().getHours()));
@@ -32,10 +50,13 @@ export function AgentHero({ statuses, compact }: AgentHeroProps) {
           <p className="text-sm font-semibold text-white">MPGR Agent</p>
           <p className="text-[11px] text-muted">Your AI command center</p>
         </div>
-        <div className="flex flex-wrap justify-end gap-1.5">
-          {statuses.map((status) => (
-            <AgentStatusBadge key={status} status={status} />
-          ))}
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {statuses.map((status) => (
+              <AgentStatusBadge key={status} status={status} />
+            ))}
+          </div>
+          <AgentUserCount count={userCount} align="end" />
         </div>
       </div>
     );
@@ -53,10 +74,13 @@ export function AgentHero({ statuses, compact }: AgentHeroProps) {
       <div className="mt-5">
         <AgentOrb thinking={thinking} />
       </div>
-      <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5">
-        {statuses.map((status) => (
-          <AgentStatusBadge key={status} status={status} />
-        ))}
+      <div className="mt-4 flex flex-col items-center gap-1">
+        <div className="flex flex-wrap items-center justify-center gap-1.5">
+          {statuses.map((status) => (
+            <AgentStatusBadge key={status} status={status} />
+          ))}
+        </div>
+        <AgentUserCount count={userCount} align="center" />
       </div>
     </div>
   );
