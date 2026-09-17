@@ -33,6 +33,12 @@ import { toolError, toolSuccess } from "./agent-tool-result";
 const CANONICAL_APP_ORIGIN = "https://mpgrhub.xyz";
 
 function tradeEndpoint(path: string): string {
+  // Browser calls stay same-origin so the authenticated mpgr_session
+  // cookie is sent naturally. Server-side callers use the canonical origin.
+  if (typeof window !== "undefined") {
+    return path;
+  }
+
   return CANONICAL_APP_ORIGIN + path;
 }
 
