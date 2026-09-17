@@ -40,7 +40,8 @@ export function classifyAgentTask(prompt: string): AgentModelTask {
 /**
  * Preferred network order for a turn.
  * Default remains the configured provider (Gemini unless NEXT_PUBLIC_AI_PROVIDER says otherwise).
- * Structured/tool-prep turns prefer OpenAI when it is implemented, then Gemini.
+ * Chain: Gemini → NVIDIA NIM → OpenAI → deterministic.
+ * Research turns still prefer Gemini when it is implemented.
  * Unimplemented kinds are never returned.
  */
 export function resolveProviderKindOrder(task: AgentModelTask): AIProviderKind[] {
@@ -48,9 +49,7 @@ export function resolveProviderKindOrder(task: AgentModelTask): AIProviderKind[]
   const network = IMPLEMENTED_NETWORK_PROVIDER_KINDS.filter((kind) => kind !== "deterministic");
 
   let preferred: AIProviderKind = configured;
-  if (task === "structured" && network.includes("openai")) {
-    preferred = "openai";
-  } else if (task === "research" && network.includes("gemini")) {
+  if (task === "research" && network.includes("gemini")) {
     preferred = "gemini";
   }
 

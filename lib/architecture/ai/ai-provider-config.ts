@@ -20,20 +20,47 @@
 // "deterministic". "anthropic" / "ollama" remain declared-but-unimplemented;
 // requesting either still falls back to "deterministic", exactly as
 // before.
+//
+// NVIDIA NIM addendum — "nvidia" is implemented
+// (lib/architecture/ai/nvidia-ai-provider.ts +
+// app/api/agent/complete/nvidia/route.ts) as Gemini's first fallback,
+// then OpenAI, then the deterministic engine. Default remains "gemini".
 
-export type AIProviderKind = "deterministic" | "openai" | "anthropic" | "gemini" | "ollama";
+export type AIProviderKind =
+  | "deterministic"
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "ollama"
+  | "nvidia";
 
 const DEFAULT_PROVIDER_KIND: AIProviderKind = "gemini";
 
-const ALL_PROVIDER_KINDS: readonly AIProviderKind[] = ["deterministic", "openai", "anthropic", "gemini", "ollama"];
+const ALL_PROVIDER_KINDS: readonly AIProviderKind[] = [
+  "deterministic",
+  "openai",
+  "anthropic",
+  "gemini",
+  "ollama",
+  "nvidia",
+];
 
 // Grows as later Phase 3C parts add real implementations. Kept as its own
 // explicit list (rather than inferred from a registry) so "is this kind
 // actually usable right now" has a single, obvious source of truth.
-const IMPLEMENTED_PROVIDER_KINDS: readonly AIProviderKind[] = ["deterministic", "openai", "gemini"];
+const IMPLEMENTED_PROVIDER_KINDS: readonly AIProviderKind[] = [
+  "deterministic",
+  "openai",
+  "gemini",
+  "nvidia",
+];
 
 /** Network providers that already have a client + server route. Anthropic/Ollama stay declared-only. */
-export const IMPLEMENTED_NETWORK_PROVIDER_KINDS: readonly AIProviderKind[] = ["gemini", "openai"];
+export const IMPLEMENTED_NETWORK_PROVIDER_KINDS: readonly AIProviderKind[] = [
+  "gemini",
+  "nvidia",
+  "openai",
+];
 
 function isKnownProviderKind(value: string): value is AIProviderKind {
   return (ALL_PROVIDER_KINDS as readonly string[]).includes(value);
