@@ -4,15 +4,27 @@
     "payload": "eyJkb21haW4iOiJtcGdyaHViLnh5eiJ9",
     "signature": "zgmZ760fywlsU+ScGXwFP/MLqIWRgnryU4ejg/fbvEcpWOlk4IyyrKWlKq79cayRnEp8JcGZav46tl6xCpOx4Rs="
   },
-  "frame": {
+  "miniapp": {
     "version": "1",
     "name": "MPGR HUB",
-    "iconUrl": "https://mpgrhub.xyz/icon.png",
     "homeUrl": "https://mpgrhub.xyz",
-    "imageUrl": "https://mpgrhub.xyz/image.png",
-    "buttonTitle": "Check this out",
+    "iconUrl": "https://mpgrhub.xyz/icon.png",
     "splashImageUrl": "https://mpgrhub.xyz/splash.png",
     "splashBackgroundColor": "#eeccff",
-    "webhookUrl": "https://mpgrhub.xyz/api/webhook"
+    "subtitle": "Play Earn Stake AI Pay",
+    "description": "AI-powered onchain hub on Base for gaming, rewards, staking, AI agents and payments.",
+    "primaryCategory": "finance",
+    "tags": [
+      "base",
+      "ai",
+      "gaming",
+      "rewards",
+      "defi"
+    ],
+    "tagline": "Play Earn Stake AI Pay",
+    "noindex": false,
+    "requiredChains": [
+      "eip155:8453"
+    ]
   }
 }
