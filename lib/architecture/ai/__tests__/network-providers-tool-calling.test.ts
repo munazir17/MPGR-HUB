@@ -97,6 +97,7 @@ describe("OpenAIAIProvider — production tool-calling flow", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/agent/complete");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe("include");
     expect(executeToolSpy).toHaveBeenCalledWith(
       "yield_comparison",
       {},
@@ -180,6 +181,7 @@ describe("GeminiAIProvider — production tool-calling flow", () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       "/api/agent/complete/gemini",
     );
+    expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe("include");
 
     expect(executeToolSpy).toHaveBeenCalledWith(
       "yield_opportunities",

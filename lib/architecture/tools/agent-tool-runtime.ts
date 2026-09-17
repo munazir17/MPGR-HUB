@@ -54,6 +54,7 @@ import {
 
 import { validateAgainstSchema } from "./agent-tool-schema-validator";
 import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
+import { resolveTokenizedStockPrepareRoute } from "@/lib/trade/tokenized-stock-route";
 
 import type { AgentToolRegistry } from "./agent-tool-registry";
 import type { AgentToolMode } from "./agent-tool";
@@ -67,7 +68,7 @@ export class AgentToolRuntime {
   ) {}
 
   async executeTool(
-    toolId: string,
+    requestedToolId: string,
     input: unknown,
     context: Partial<AgentToolContext>,
   ): Promise<AgentToolResult> {
@@ -81,6 +82,21 @@ export class AgentToolRuntime {
       ...context,
       requestId,
     };
+
+    let toolId = requestedToolId;
+    let toolInput = input;
+    if (
+      toolInput !== null &&
+      typeof toolInput === "object" &&
+      !Array.isArray(toolInput)
+    ) {
+      const routed = resolveTokenizedStockPrepareRoute(
+        requestedToolId,
+        toolInput as Record<string, unknown>,
+      );
+      toolId = routed.toolId;
+      toolInput = routed.args;
+    }
 
     const tool = this.registry.get(toolId);
 
@@ -149,7 +165,6 @@ export class AgentToolRuntime {
       );
     }
 
-    let toolInput = input;
     if (
       (toolId === "trade_get_price" || toolId === "trade_prepare_swap") &&
       toolInput !== null &&

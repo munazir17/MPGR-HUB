@@ -1,9 +1,9 @@
 // app/api/trade/stocks/quote/route.test.ts
 //
-// Focused CSRF coverage for this route's direct verifyTrustedOrigin()
-// call. Does NOT mock @/lib/api/request-guard (real verifyTrustedOrigin
-// runs); mocks only @/lib/auth/session to observe whether the route
-// reached past the origin gate.
+// CSRF + wallet-session coverage for the B20 prepare route.
+// Does NOT mock @/lib/api/request-guard (real verifyTrustedOrigin runs).
+// Mocks session read and prepareTokenizedStockSwap so a successful
+// prepare can be asserted without hitting chain or signing.
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
@@ -12,13 +12,23 @@ vi.mock("@/lib/auth/session", () => ({
   getSessionFromRequest,
 }));
 
-const APP_ORIGIN = "https://mpgrhub.xyz";
+const prepareTokenizedStockSwap = vi.fn();
+vi.mock("@/lib/trade/tokenized-stock-swap", () => ({
+  prepareTokenizedStockSwap,
+}));
 
-function postStockQuote(headers: Record<string, string> = {}) {
-  return new Request(`${APP_ORIGIN}/api/trade/stocks/quote`, {
+const APP_ORIGIN = "https://mpgrhub.xyz";
+const SESSION_WALLET = "0xd57b0000000000000000000000000000000095f7";
+
+function postStockQuote(
+  headers: Record<string, string> = {},
+  body: Record<string, unknown> = {},
+  url = `${APP_ORIGIN}/api/trade/stocks/quote`,
+) {
+  return new Request(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify({}),
+    body: JSON.stringify(body),
   });
 }
 
@@ -49,6 +59,7 @@ describe("POST /api/trade/stocks/quote — CSRF (real verifyTrustedOrigin)", () 
     const response = await POST(postStockQuote({ origin: "https://evil.com" }));
     expect(response.status).toBe(403);
     expect(getSessionFromRequest).not.toHaveBeenCalled();
+    expect(prepareTokenizedStockSwap).not.toHaveBeenCalled();
   });
 
   it("rejects a request with no Origin/Referer at all", async () => {
@@ -56,5 +67,84 @@ describe("POST /api/trade/stocks/quote — CSRF (real verifyTrustedOrigin)", () 
     const response = await POST(postStockQuote());
     expect(response.status).toBe(403);
     expect(getSessionFromRequest).not.toHaveBeenCalled();
+  });
+
+  it("rejects a Vercel deployment hostname in production when APP_ORIGIN is mpgrhub.xyz", async () => {
+    const { POST } = await import("./route");
+    const vercel = "https://mpgr-hub-ezxs-3z6gjby5g-munazir-razas-projects.vercel.app";
+    const response = await POST(
+      postStockQuote({ origin: vercel }, { symbol: "AAPLc", amount: "50" }, `${vercel}/api/trade/stocks/quote`),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: "Cross-site request rejected" });
+    expect(getSessionFromRequest).not.toHaveBeenCalled();
+    expect(prepareTokenizedStockSwap).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/trade/stocks/quote — wallet session", () => {
+  let savedAppOrigin: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    savedAppOrigin = process.env.APP_ORIGIN;
+    process.env.APP_ORIGIN = APP_ORIGIN;
+  });
+
+  afterEach(() => {
+    if (savedAppOrigin === undefined) delete process.env.APP_ORIGIN;
+    else process.env.APP_ORIGIN = savedAppOrigin;
+  });
+
+  it("returns 401 when the session cookie is missing", async () => {
+    getSessionFromRequest.mockReturnValue(null);
+    const { POST } = await import("./route");
+    const response = await POST(
+      postStockQuote({ origin: APP_ORIGIN }, { symbol: "AAPLc", amount: "50", side: "BUY" }),
+    );
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: "Authentication required", code: "AUTH_REQUIRED" });
+    expect(prepareTokenizedStockSwap).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 when the session is invalid or expired", async () => {
+    getSessionFromRequest.mockReturnValue(null);
+    const { POST } = await import("./route");
+    const response = await POST(
+      postStockQuote({ origin: APP_ORIGIN }, { symbol: "AAPLc", amount: "50" }),
+    );
+    expect(response.status).toBe(401);
+    expect(prepareTokenizedStockSwap).not.toHaveBeenCalled();
+  });
+
+  it("prepares a quote for an authenticated session and never signs or submits", async () => {
+    getSessionFromRequest.mockReturnValue({ wallet: SESSION_WALLET });
+    prepareTokenizedStockSwap.mockResolvedValue({
+      ok: true,
+      proposal: {
+        id: "b20_preview",
+        kind: "tokenized-stock-swap",
+        requiresConfirmation: true,
+        executionAvailable: true,
+        phase: "idle",
+        transaction: { to: "0x1111111111111111111111111111111111111111", data: "0xdead", value: "0" },
+      },
+    });
+    const { POST } = await import("./route");
+    const response = await POST(
+      postStockQuote({ origin: APP_ORIGIN }, { symbol: "AAPLc", amount: "50", side: "BUY" }),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.executed).toBe(false);
+    expect(body.proposal.id).toBe("b20_preview");
+    expect(body.proposal.requiresConfirmation).toBe(true);
+    expect(prepareTokenizedStockSwap).toHaveBeenCalledTimes(1);
+    expect(prepareTokenizedStockSwap).toHaveBeenCalledWith({
+      symbol: "AAPLc",
+      side: "BUY",
+      amountHuman: "50",
+      taker: SESSION_WALLET,
+    });
   });
 });

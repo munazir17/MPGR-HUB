@@ -14,6 +14,7 @@ async function refreshQuote(proposal: TradeProposal): Promise<TradeProposal> {
   const response = await fetch("/api/trade/quote", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
+    credentials: "include",
     body: JSON.stringify({
       fromToken: proposal.from.address,
       toToken: proposal.to.address,

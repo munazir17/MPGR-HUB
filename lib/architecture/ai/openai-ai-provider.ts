@@ -4,6 +4,7 @@ import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-pro
 import { runToolCallingLoop } from "./agent-tool-calling";
 import { AGENT_INTENTS } from "@/lib/agent-intelligence";
 import { compactPromptInputs, isPromptLimitError } from "./server-policy";
+import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 
 // Phase 3C Part 6 — the first real network AIProvider. Talks ONLY to this
 // app's own /api/agent/complete Route Handler (app/api/agent/complete/route.ts)
@@ -67,7 +68,7 @@ export async function sendCompletion(systemPrompt: string, userPrompt: string): 
 
 async function postComplete(systemPrompt: string, userPrompt: string, allowCompactRetry: boolean): Promise<string> {
   const sized = compactPromptInputs(systemPrompt, userPrompt);
-  const res = await fetch("/api/agent/complete", {
+  const res = await fetchWithSession("/api/agent/complete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ systemPrompt: sized.systemPrompt, userPrompt: sized.userPrompt }),
@@ -105,7 +106,7 @@ function buildSystemPrompt(request: AIProviderRequest): string {
     "You are the MPGR Agent, the assistant inside MPGR HUB (a Web3 rewards/XP/staking app).",
     "Respond ONLY with a JSON object of the exact shape {\"intent\": string, \"reply\": string} — no markdown, no extra keys.",
     'Keep "reply" concise (2-4 sentences), friendly, and grounded ONLY in the facts below (or in a tool result you requested) — never invent numbers.',
-    "You also have Base trading tools. ETH/USDC/MPGR price → trade_get_price. B20 research (AAPLc, SPCXc) → tokenized_stock_research. Buy/sell B20 → tokenized_stock_prepare_order. Any other Base swap (including a 0x address) → trade_prepare_swap with fromToken=USDC, amount=\"10\" in human units. Omit taker. Never sign. Never answer a trade request with the MPGR portfolio help text.",
+    "You also have Base trading tools. ETH/USDC/MPGR price → trade_get_price. B20 research (AAPLc, SPCXc) → tokenized_stock_research. Buy/sell B20 (AAPL/AAPLc/…) → tokenized_stock_prepare_order — never trade_prepare_swap for those. Any other Base swap (including a 0x address) → trade_prepare_swap with fromToken=USDC, amount=\"10\" in human units. Omit taker. Never sign. Never answer a trade request with the MPGR portfolio help text.",
     "If the user asks what MPGR HUB is, what $MPGR does, how it fits on Base, x402, or tokenized stocks, set intent to research_query. Do not answer those with portfolio, XP, or rewards capability text.",
     "If the user asks what is moving in the market, ETH/BTC price, or crypto markets, set intent to market_overview. Call trade_get_price or market_intelligence when those tools can answer. Never invent a price.",
     "Portfolio means the whole wallet (ETH, $MPGR, USDC when known, plus staked/locked MPGR). XP, Holder Tier, Season, and referrals are separate account progress.",

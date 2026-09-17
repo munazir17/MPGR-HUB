@@ -11,6 +11,7 @@ import {
 } from "./agent-tool-calling";
 import { toGeminiFunctionDeclarations } from "./gemini-function-declarations";
 import { AGENT_INTENTS } from "@/lib/agent-intelligence";
+import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 
 // Phase 3C Gemini addendum — a second real network AIProvider, added
 // alongside lib/architecture/ai/openai-ai-provider.ts (not replacing it).
@@ -86,7 +87,7 @@ async function sendCompletion(
     getReadAndPrepareToolCatalog(),
   );
 
-  const res = await fetch("/api/agent/complete/gemini", {
+  const res = await fetchWithSession("/api/agent/complete/gemini", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -167,7 +168,7 @@ function buildSystemPrompt(request: AIProviderRequest): string {
     "Trading tools (Base Mainnet only). They never sign or broadcast.",
     "If the user asks the price of ETH, USDC, WETH, or MPGR, call trade_get_price. Never call tokenized_stock_research for those.",
     "If the user asks to research a Coinbase tokenized stock (COINc, AAPLc, TSLAc, SPCXc, NVDAc, or \"tokenized stocks\"), call tokenized_stock_research with {\"symbol\":\"COINc\"} or {} to list the catalog.",
-    "If the user asks to buy or sell a tokenized stock (\"buy $10 of SPCXc\"), call tokenized_stock_prepare_order with {\"symbol\":\"SPCXc\",\"amount\":\"10\",\"side\":\"BUY\"}.",
+    "If the user asks to buy or sell a tokenized stock (\"buy $10 of SPCXc\", \"prepare a trade to buy $50 of tokenized AAPL\"), call tokenized_stock_prepare_order with {\"symbol\":\"AAPLc\",\"amount\":\"50\",\"side\":\"BUY\"}. Never call trade_prepare_swap for AAPL/AAPLc or any other Coinbase B20 ticker.",
     "If the user asks to buy, sell, or swap any other Base token (including a raw 0x address), call trade_prepare_swap. For a dollar buy use fromToken=\"USDC\", toToken=\"the asset\", amount=\"10\". Omit taker.",
     "If the wallet is connected, never say you cannot retrieve wallet details. Do not answer a trade/quote request from the MPGR portfolio/XP help text.",
     "What-is / explain / research questions about MPGR HUB, $MPGR, Base, x402, or tokenized stocks use intent research_query — never portfolio_summary or claimable_rewards.",

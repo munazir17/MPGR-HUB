@@ -3,7 +3,7 @@
 // Agent-facing trade / tokenized-stock tools.
 //
 //   trade_get_price                 (read)
-//   trade_prepare_swap              (prepare) — any Base token + B20
+//   trade_prepare_swap              (prepare) — ETH/USDC/MPGR + Base ERC-20
 //   tokenized_stock_research        (read)
 //   tokenized_stock_prepare_order   (prepare) — B20 on-chain swap
 //
@@ -29,11 +29,13 @@
 import type { AgentTool, AgentToolSchema } from "./agent-tool";
 import { getAgentToolRegistry } from "./agent-tool-registry-instance";
 import { toolError, toolSuccess } from "./agent-tool-result";
-
-const CANONICAL_APP_ORIGIN = "https://mpgrhub.xyz";
+import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 
 function tradeEndpoint(path: string): string {
-  return CANONICAL_APP_ORIGIN + path;
+  // Same-origin relative URL. Browser fetch sends the real Origin and
+  // session cookie. Hardcoding production broke Vercel Preview because
+  // Preview POSTs either missed Origin or failed CSRF against APP_ORIGIN.
+  return path;
 }
 
 function toolFailureCode(code: unknown): "INVALID_INPUT" | "WALLET_NOT_CONNECTED" | "DATA_UNAVAILABLE" | "PROVIDER_ERROR" {
@@ -50,21 +52,19 @@ function isAddressLike(value: unknown): value is string {
 }
 
 async function postJson(path: string, body: unknown): Promise<{ ok: boolean; status: number; payload: Record<string, unknown> | null }> {
-  const response = await fetch(tradeEndpoint(path), {
+  const response = await fetchWithSession(tradeEndpoint(path), {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
-    cache: "no-store",
   });
   const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   return { ok: response.ok, status: response.status, payload };
 }
 
 async function getJson(path: string): Promise<{ ok: boolean; status: number; payload: Record<string, unknown> | null }> {
-  const response = await fetch(tradeEndpoint(path), {
+  const response = await fetchWithSession(tradeEndpoint(path), {
     method: "GET",
     headers: { Accept: "application/json" },
-    cache: "no-store",
   });
   const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   return { ok: response.ok, status: response.status, payload };
@@ -155,7 +155,7 @@ export const tradePrepareSwapTool: AgentTool = {
   id: "trade_prepare_swap",
   name: "Base Swap Proposal",
   description:
-    "Creates a structured Base swap proposal for explicit user confirmation. Works for ETH/WETH/USDC/MPGR and any Base ERC-20 0x address via CDP/0x. Coinbase B20 tokenized stocks (AAPLc, SPCXc, TSLAc, …) route through Aerodrome Slipstream USDC pools. For \"$10 of AAPLc\" use fromToken=USDC, toToken=AAPLc, amount=\"10\". Never signs. Omit taker. Do not call this for a plain ETH price question — use trade_get_price.",
+    "Creates a structured Base swap proposal for explicit user confirmation. Works for ETH/WETH/USDC/MPGR and any Base ERC-20 0x address via CDP/0x. Do not use this for Coinbase B20 tokenized stocks (AAPLc, SPCXc, TSLAc, AAPL, …) — call tokenized_stock_prepare_order instead. Never signs. Omit taker. Do not call this for a plain ETH price question — use trade_get_price.",
   category: "defi",
   mode: "prepare",
   riskLevel: "medium",

@@ -75,7 +75,7 @@ describe("generateIntelligentReply portfolio vs research", () => {
     expect(result.intent).toBe("portfolio_summary");
     expect(result.reply).toContain("0.01 ETH");
     expect(result.reply).toContain("USDC");
-    expect(result.reply).toContain("account progress");
+    expect(result.reply).toContain("Rewards page");
   });
 
   it("answers research without portfolio capability dump", () => {

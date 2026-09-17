@@ -274,6 +274,7 @@ const TRADE_PROMPT_MARKERS = [
   "trade quote",
   "buy quote",
   "prepare a swap",
+  "prepare a trade",
   "prepare a $",
   "prepare a quote",
   "buy $",
@@ -288,6 +289,7 @@ const TRADE_QUOTE_MARKERS = [
   "swap quote",
   "trade quote",
   "prepare a swap",
+  "prepare a trade",
   "prepare a $",
   "prepare a quote",
   "buy $",
@@ -623,7 +625,7 @@ function replyPortfolioSummary(ctx: AgentContext): string {
   ].filter((part): part is string => Boolean(part));
   const exposure = formatCompactNumber(walletBalance + stakedBalance + lockedBalance);
   const progressHint =
-    " XP, Holder Tier, Season Points, and referrals are account progress — ask separately if you want those.";
+    " XP, Holder Tier, Season Points, and referrals are account progress — ask separately if you want those. Rewards details are available on the Rewards page.";
   return (
     "Wallet / portfolio on Base: " +
     parts.join(", ") +
