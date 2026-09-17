@@ -81,6 +81,7 @@ describe("P4 trade tools", () => {
     const called = vi.mocked(fetch).mock.calls[0];
     expect(String(called?.[0])).toBe("/api/trade/quote");
     expect(String(called?.[0])).not.toContain("mpgrhub.xyz");
+    expect((called?.[1] as RequestInit | undefined)?.credentials).toBe("include");
     vi.unstubAllGlobals();
   });
 
@@ -116,6 +117,7 @@ describe("P4 trade tools", () => {
     );
     const called = vi.mocked(fetch).mock.calls[0];
     expect(String(called?.[0])).toBe("/api/trade/stocks/quote");
+    expect((called?.[1] as RequestInit | undefined)?.credentials).toBe("include");
     const body = JSON.parse(String((called?.[1] as RequestInit | undefined)?.body));
     expect(body.symbol).toBe("AAPLc");
     expect(body.amount).toBe("50");

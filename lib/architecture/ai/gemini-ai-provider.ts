@@ -11,6 +11,7 @@ import {
 } from "./agent-tool-calling";
 import { toGeminiFunctionDeclarations } from "./gemini-function-declarations";
 import { AGENT_INTENTS } from "@/lib/agent-intelligence";
+import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 
 // Phase 3C Gemini addendum — a second real network AIProvider, added
 // alongside lib/architecture/ai/openai-ai-provider.ts (not replacing it).
@@ -86,7 +87,7 @@ async function sendCompletion(
     getReadAndPrepareToolCatalog(),
   );
 
-  const res = await fetch("/api/agent/complete/gemini", {
+  const res = await fetchWithSession("/api/agent/complete/gemini", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

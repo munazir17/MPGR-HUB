@@ -43,3 +43,30 @@ export function getSessionSecret(): string {
   }
   return secret;
 }
+
+/**
+ * Cookie flags for `mpgr_session` / `mpgr_auth_nonce`.
+ *
+ * Production and Vercel Preview both run HTTPS with NODE_ENV=production.
+ * SameSite=None; Secure is required so the HttpOnly session cookie is
+ * sent from the Farcaster/Base Mini App webview (a third-party context
+ * where SameSite=Lax cookies are dropped). CSRF is enforced by
+ * verifyTrustedOrigin, not by SameSite.
+ *
+ * Local HTTP dev keeps SameSite=Lax because SameSite=None requires Secure.
+ * Host-only (no Domain) so Preview and production cannot share cookies.
+ */
+export function getAuthCookieAttributes(): {
+  httpOnly: true;
+  secure: boolean;
+  sameSite: "none" | "lax";
+  path: "/";
+} {
+  const secure = process.env.NODE_ENV === "production";
+  return {
+    httpOnly: true,
+    secure,
+    sameSite: secure ? "none" : "lax",
+    path: "/",
+  };
+}

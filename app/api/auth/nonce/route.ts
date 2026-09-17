@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { enforceRateLimit, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 import { issueNonce } from "@/lib/auth/nonce";
-import { NONCE_COOKIE, NONCE_TTL_SECONDS, getAppOrigin } from "@/lib/auth/config";
+import { NONCE_COOKIE, NONCE_TTL_SECONDS, getAppOrigin, getAuthCookieAttributes } from "@/lib/auth/config";
 import { SUPPORTED_CHAIN_ID } from "@/lib/auth/config";
 
 export const runtime = "nodejs";
@@ -23,13 +23,9 @@ export async function GET(request: Request) {
       origin,
     });
     response.cookies.set(NONCE_COOKIE, value.nonce, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
+      ...getAuthCookieAttributes(),
       maxAge: NONCE_TTL_SECONDS,
-    });
-    return withRequestId(response, requestId);
+    });    return withRequestId(response, requestId);
   } catch (error) {
     console.error("GET /api/auth/nonce failed", error);
     return withRequestId(

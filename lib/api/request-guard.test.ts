@@ -147,6 +147,19 @@ describe("verifyTrustedOrigin", () => {
     const response = verifyTrustedOrigin(request);
     expect(response?.status).toBe(403);
   });
+
+  it("rejects a Vercel deployment hostname when production APP_ORIGIN is mpgrhub.xyz", async () => {
+    process.env.APP_ORIGIN = "https://mpgrhub.xyz";
+    const vercel = "https://mpgr-hub-ezxs-3z6gjby5g-munazir-razas-projects.vercel.app";
+    const response = verifyTrustedOrigin(
+      new Request(`${vercel}/api/agent/complete`, {
+        method: "POST",
+        headers: { origin: vercel },
+      }),
+    );
+    expect(response?.status).toBe(403);
+    expect(await response?.json()).toEqual({ error: "Cross-site request rejected" });
+  });
 });
 
 // ---------------------------------------------------------------------

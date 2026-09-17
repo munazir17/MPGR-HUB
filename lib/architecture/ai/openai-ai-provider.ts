@@ -4,6 +4,7 @@ import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-pro
 import { runToolCallingLoop } from "./agent-tool-calling";
 import { AGENT_INTENTS } from "@/lib/agent-intelligence";
 import { compactPromptInputs, isPromptLimitError } from "./server-policy";
+import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 
 // Phase 3C Part 6 — the first real network AIProvider. Talks ONLY to this
 // app's own /api/agent/complete Route Handler (app/api/agent/complete/route.ts)
@@ -67,7 +68,7 @@ export async function sendCompletion(systemPrompt: string, userPrompt: string): 
 
 async function postComplete(systemPrompt: string, userPrompt: string, allowCompactRetry: boolean): Promise<string> {
   const sized = compactPromptInputs(systemPrompt, userPrompt);
-  const res = await fetch("/api/agent/complete", {
+  const res = await fetchWithSession("/api/agent/complete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ systemPrompt: sized.systemPrompt, userPrompt: sized.userPrompt }),

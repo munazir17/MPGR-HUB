@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { Address } from "viem";
 import { isNonceActive, consumeNonce } from "@/lib/auth/nonce";
 import { createSession } from "@/lib/auth/session";
-import { NONCE_COOKIE, SESSION_COOKIE, SUPPORTED_CHAIN_ID, getAppOrigin } from "@/lib/auth/config";
+import { NONCE_COOKIE, SESSION_COOKIE, SUPPORTED_CHAIN_ID, getAppOrigin, getAuthCookieAttributes } from "@/lib/auth/config";
 import { buildSiweMessage, verifySiweSignature } from "@/lib/auth/siwe";
 import { assertJsonBodyLimit, enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody } from "@/lib/api/request-guard";
 import { readCookieValue } from "@/lib/api/cookies";
@@ -63,18 +63,13 @@ export async function POST(request: Request) {
     wallet: session.wallet,
     expiresAt: new Date(session.expiresAt * 1000).toISOString(),
   });
+  const cookie = getAuthCookieAttributes();
   response.cookies.set(SESSION_COOKIE, sessionCookie, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
+    ...cookie,
     maxAge: session.expiresAt - Math.floor(Date.now() / 1000),
   });
   response.cookies.set(NONCE_COOKIE, "", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
+    ...cookie,
     maxAge: 0,
   });
   logApi("info", "wallet_session_created", { requestId, wallet: session.wallet });

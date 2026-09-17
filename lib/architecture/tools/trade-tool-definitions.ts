@@ -29,6 +29,7 @@
 import type { AgentTool, AgentToolSchema } from "./agent-tool";
 import { getAgentToolRegistry } from "./agent-tool-registry-instance";
 import { toolError, toolSuccess } from "./agent-tool-result";
+import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 
 function tradeEndpoint(path: string): string {
   // Same-origin relative URL. Browser fetch sends the real Origin and
@@ -51,21 +52,19 @@ function isAddressLike(value: unknown): value is string {
 }
 
 async function postJson(path: string, body: unknown): Promise<{ ok: boolean; status: number; payload: Record<string, unknown> | null }> {
-  const response = await fetch(tradeEndpoint(path), {
+  const response = await fetchWithSession(tradeEndpoint(path), {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
-    cache: "no-store",
   });
   const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   return { ok: response.ok, status: response.status, payload };
 }
 
 async function getJson(path: string): Promise<{ ok: boolean; status: number; payload: Record<string, unknown> | null }> {
-  const response = await fetch(tradeEndpoint(path), {
+  const response = await fetchWithSession(tradeEndpoint(path), {
     method: "GET",
     headers: { Accept: "application/json" },
-    cache: "no-store",
   });
   const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   return { ok: response.ok, status: response.status, payload };

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getAppOrigin, shouldDeriveOriginFromRequest } from "./config";
+import { getAppOrigin, getAuthCookieAttributes, shouldDeriveOriginFromRequest } from "./config";
 
 describe("getAppOrigin", () => {
   afterEach(() => {
@@ -39,5 +39,33 @@ describe("getAppOrigin", () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("VERCEL_ENV", "preview");
     expect(() => getAppOrigin()).toThrow(/APP_ORIGIN must be configured in production/);
+  });
+});
+
+describe("getAuthCookieAttributes", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("uses SameSite=None; Secure; HttpOnly; Path=/ in production (Mini App)", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const cookie = getAuthCookieAttributes();
+    expect(cookie).toEqual({
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/",
+    });
+    expect(cookie).not.toHaveProperty("domain");
+  });
+
+  it("keeps SameSite=Lax on local HTTP development", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    expect(getAuthCookieAttributes()).toEqual({
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax",
+      path: "/",
+    });
   });
 });

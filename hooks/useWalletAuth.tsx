@@ -37,7 +37,7 @@ export function WalletAuthProvider({ children }: { children: React.ReactNode }) 
     if (!address || !isConnected) return false;
     setLoading(true);
     try {
-      const nonceResponse = await fetch("/api/auth/nonce", { cache: "no-store" });
+      const nonceResponse = await fetch("/api/auth/nonce", { cache: "no-store", credentials: "include" });
       if (!nonceResponse.ok) return false;
       const nonce = (await nonceResponse.json()) as {
         nonce: string;
@@ -67,6 +67,7 @@ export function WalletAuthProvider({ children }: { children: React.ReactNode }) 
       const verifyResponse = await fetch("/api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ address, message, signature }),
       });
       if (!verifyResponse.ok) return false;
