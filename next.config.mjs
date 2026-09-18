@@ -4,6 +4,11 @@ const nextConfig = {
   images: {
     remotePatterns: [{ protocol: "https", hostname: "**" }],
   },
+  // Next.js 16 defaults production builds to Turbopack and fails if a
+  // webpack() config exists without a turbopack key. Empty config here
+  // acknowledges Turbopack; Vercel still runs webpack (see vercel.json)
+  // so the isServer-gated AgentKit/x402 aliases below keep applying.
+  turbopack: {},
   // AgentKit and its CDP/x402 stack are Node-only. Keep them out of the
   // Next bundler so the browser never receives CDP secrets, signers, or
   // the x402 payment clients.
