@@ -1,5 +1,6 @@
 import { createConfig, http } from "wagmi";
 import { base } from "wagmi/chains";
+import { Attribution } from "ox/erc8021";
 import { connectorsForWallets } from "@rainbow-me/rainbowkit";
 import {
   base as baseSmartWallet,
@@ -47,6 +48,9 @@ export const farcasterConnector = farcasterMiniApp();
 export const config = createConfig({
   connectors: [...rainbowKitConnectors, farcasterConnector],
   chains: [base],
+  dataSuffix: Attribution.toDataSuffix({
+    codes: ["bc_6w84im9m"],
+  }),
   transports: {
     // retryCount: 0 — viem's transport-level retry is disabled here so
     // lib/token/rpc-retry.ts's withRetry() is the single, coordinated
