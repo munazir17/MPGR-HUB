@@ -59,7 +59,7 @@ export function FeaturedGameBanner({
         <div className="relative h-28 w-24 shrink-0 sm:h-36 sm:w-32">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/games/mpgr-run/character/mpgr-runner-run.png"
+            src="/games/mpgr-run/character/mpgr-runner-run.webp"
             alt=""
             className="h-full w-full object-contain object-right drop-shadow-[0_12px_24px_rgba(56,189,248,0.25)]"
           />
