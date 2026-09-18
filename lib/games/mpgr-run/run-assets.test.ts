@@ -12,8 +12,8 @@ import {
 
 describe("withAssetVersion", () => {
   it("stamps a path with the current version", () => {
-    expect(withAssetVersion("/games/mpgr-run/character/mpgr-runner-run.png")).toBe(
-      `/games/mpgr-run/character/mpgr-runner-run.png?v=${RUN_ASSET_VERSION}`
+    expect(withAssetVersion("/games/mpgr-run/character/mpgr-runner-run.webp")).toBe(
+      `/games/mpgr-run/character/mpgr-runner-run.webp?v=${RUN_ASSET_VERSION}`
     );
   });
 

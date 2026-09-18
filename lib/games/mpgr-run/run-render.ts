@@ -429,7 +429,7 @@ export function drawRunFrame(
     const runBob = grounded ? Math.abs(Math.sin(world.elapsedMs / 120)) * 2.5 : 0;
 
     let spriteSrc: string = CHARACTER_SPRITES.run;
-    // NOTE: mpgr-runner-fly.png is intentionally excluded from run-assets.ts
+    // NOTE: mpgr-runner-fly.webp is intentionally excluded from run-assets.ts
     // (baked non-uniform sky background, unsafe to auto-cutout — see the
     // audit note there), so jetpack reuses the properly transparent `jump`
     // pose plus the flame VFX above and a forward flight tilt below.

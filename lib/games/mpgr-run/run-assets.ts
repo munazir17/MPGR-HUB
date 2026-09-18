@@ -34,6 +34,14 @@
 //   jump pose instead, and the powerup pickup burst uses procedural VFX
 //   only. Both real files remain on disk for a future manual crop pass.
 //
+// --- Format note (2026-09-18) ------------------------------------------
+// Every image asset under public/games/mpgr-run/ was recompressed from its
+// original PNG bytes to lossless WebP (libwebp, max effort) as part of a
+// size-only optimization pass. The conversion is pixel-exact for every
+// visible pixel and the full alpha channel; dimensions and aspect ratios
+// are unchanged, so all hitboxes, draw scaling, and the background
+// flood-fill behave exactly as before. Only the file extension changed.
+//
 // --- Cache / versioning ------------------------------------------------
 // Browser + CDN caches key off the full URL. Replacing a PNG in
 // public/games/mpgr-run/ without changing the filename used to leave
@@ -51,7 +59,7 @@ import type { ObstacleType, CollectibleType, PowerupType } from "./run-config";
  * Cache-Control on `/games/mpgr-run/*` is safe because this query string
  * makes each art generation a distinct URL.
  */
-export const RUN_ASSET_VERSION = "2026-08-22a";
+export const RUN_ASSET_VERSION = "2026-09-18a";
 
 const VERSION_PARAM = "v";
 
@@ -76,66 +84,66 @@ function asset(path: string): string {
 const BASE = "/games/mpgr-run";
 
 export const CHARACTER_SPRITES = {
-  idle: asset(`${BASE}/character/mpgr-runner-idle.png`),
-  run: asset(`${BASE}/character/mpgr-runner-run.png`),
-  run2: asset(`${BASE}/character/mpgr-runner-run-2.png`),
-  jump: asset(`${BASE}/character/mpgr-runner-jump.png`),
-  fall: asset(`${BASE}/character/mpgr-runner-fall.png`),
-  slide: asset(`${BASE}/character/mpgr-runner-slide.png`),
-  land: asset(`${BASE}/character/mpgr-runner-land.png`),
-  victory: asset(`${BASE}/character/mpgr-runner-victory.png`),
-  // NOTE: mpgr-runner-fly.png exists on disk but is baked onto a full sky
+  idle: asset(`${BASE}/character/mpgr-runner-idle.webp`),
+  run: asset(`${BASE}/character/mpgr-runner-run.webp`),
+  run2: asset(`${BASE}/character/mpgr-runner-run-2.webp`),
+  jump: asset(`${BASE}/character/mpgr-runner-jump.webp`),
+  fall: asset(`${BASE}/character/mpgr-runner-fall.webp`),
+  slide: asset(`${BASE}/character/mpgr-runner-slide.webp`),
+  land: asset(`${BASE}/character/mpgr-runner-land.webp`),
+  victory: asset(`${BASE}/character/mpgr-runner-victory.webp`),
+  // NOTE: mpgr-runner-fly.webp exists on disk but is baked onto a full sky
   // scene with no alpha channel — see the audit note above. Not exported
   // here on purpose; jetpack visually reuses `jump` instead.
 } as const;
 
 export const OBSTACLE_SPRITES: Record<ObstacleType, string> = {
-  spikes: asset(`${BASE}/obstacles/mpgr-run-spikes.png`),
-  crate: asset(`${BASE}/obstacles/mpgr-run-crate.png`),
-  tnt: asset(`${BASE}/obstacles/mpgr-run-tnt.png`),
-  saw: asset(`${BASE}/obstacles/mpgr-run-saw.png`),
-  drone: asset(`${BASE}/obstacles/mpgr-run-drone.png`),
-  barrier: asset(`${BASE}/obstacles/mpgr-run-barrier.png`),
+  spikes: asset(`${BASE}/obstacles/mpgr-run-spikes.webp`),
+  crate: asset(`${BASE}/obstacles/mpgr-run-crate.webp`),
+  tnt: asset(`${BASE}/obstacles/mpgr-run-tnt.webp`),
+  saw: asset(`${BASE}/obstacles/mpgr-run-saw.webp`),
+  drone: asset(`${BASE}/obstacles/mpgr-run-drone.webp`),
+  barrier: asset(`${BASE}/obstacles/mpgr-run-barrier.webp`),
 };
 
 export const COLLECTIBLE_SPRITES: Record<CollectibleType, string> = {
-  coin: asset(`${BASE}/collectibles/mpgr-run-coin.png`),
-  gem: asset(`${BASE}/collectibles/mpgr-run-gem.png`),
-  xpOrb: asset(`${BASE}/collectibles/mpgr-run-xp.png`),
-  key: asset(`${BASE}/collectibles/mpgr-run-key.png`),
-  chest: asset(`${BASE}/collectibles/mpgr-run-treasure-chest.png`),
+  coin: asset(`${BASE}/collectibles/mpgr-run-coin.webp`),
+  gem: asset(`${BASE}/collectibles/mpgr-run-gem.webp`),
+  xpOrb: asset(`${BASE}/collectibles/mpgr-run-xp.webp`),
+  key: asset(`${BASE}/collectibles/mpgr-run-key.webp`),
+  chest: asset(`${BASE}/collectibles/mpgr-run-treasure-chest.webp`),
 };
 
 export const POWERUP_SPRITES: Record<PowerupType, string> = {
-  magnet: asset(`${BASE}/powerups/mpgr-run-magnet.png`),
-  shield: asset(`${BASE}/powerups/mpgr-run-shield.png`),
-  speed: asset(`${BASE}/powerups/mpgr-run-speed-boost.png`),
-  jetpack: asset(`${BASE}/powerups/mpgr-run-jetpack.png`),
-  score2x: asset(`${BASE}/powerups/mpgr-run-score-2x.png`),
-  invincibility: asset(`${BASE}/powerups/mpgr-run-invincibility.png`),
+  magnet: asset(`${BASE}/powerups/mpgr-run-magnet.webp`),
+  shield: asset(`${BASE}/powerups/mpgr-run-shield.webp`),
+  speed: asset(`${BASE}/powerups/mpgr-run-speed-boost.webp`),
+  jetpack: asset(`${BASE}/powerups/mpgr-run-jetpack.webp`),
+  score2x: asset(`${BASE}/powerups/mpgr-run-score-2x.webp`),
+  invincibility: asset(`${BASE}/powerups/mpgr-run-invincibility.webp`),
 };
 
-export const CHECKPOINT_SPRITE = asset(`${BASE}/checkpoints/mpgr-run-checkpoint.png`);
+export const CHECKPOINT_SPRITE = asset(`${BASE}/checkpoints/mpgr-run-checkpoint.webp`);
 
 export const UI_SPRITES = {
-  heart: asset(`${BASE}/ui/mpgr-run-heart.png`),
-  hudFrame: asset(`${BASE}/ui/mpgr-run-hud-frame.png`),
-  powerupFrame: asset(`${BASE}/ui/mpgr-run-powerup-frame.png`),
+  heart: asset(`${BASE}/ui/mpgr-run-heart.webp`),
+  hudFrame: asset(`${BASE}/ui/mpgr-run-hud-frame.webp`),
+  powerupFrame: asset(`${BASE}/ui/mpgr-run-powerup-frame.webp`),
 } as const;
 
 // Real hit/pickup burst artwork — both confirmed proper RGBA cutouts
 // (alpha=0 at every corner). "powerup-collection" is deliberately
 // excluded — see the audit note above.
 export const EFFECT_SPRITES = {
-  hit: asset(`${BASE}/effects/mpgr-run-explosion-hit.png`),
-  coinBurst: asset(`${BASE}/effects/mpgr-run-coin-collection.png`),
-  gemBurst: asset(`${BASE}/effects/mpgr-run-gem-collection.png`),
+  hit: asset(`${BASE}/effects/mpgr-run-explosion-hit.webp`),
+  coinBurst: asset(`${BASE}/effects/mpgr-run-coin-collection.webp`),
+  gemBurst: asset(`${BASE}/effects/mpgr-run-gem-collection.webp`),
 } as const;
 
 export const CITY_ENVIRONMENT = {
-  background: asset(`${BASE}/environment/city/city-background.png`),
-  midground: asset(`${BASE}/environment/city/city-midground.png`),
-  foreground: asset(`${BASE}/environment/city/city-foreground.png`),
+  background: asset(`${BASE}/environment/city/city-background.webp`),
+  midground: asset(`${BASE}/environment/city/city-midground.webp`),
+  foreground: asset(`${BASE}/environment/city/city-foreground.webp`),
 } as const;
 
 /**
