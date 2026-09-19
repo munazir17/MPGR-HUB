@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody, verifyTrustedOrigin } from "@/lib/api/request-guard";
-import { AI_PROMPT_LIMITS, SERVER_AI_POLICY, buildTrustedUserPrompt, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
+import { AI_PROMPT_LIMITS, composeTrustedPromptParts, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
 import {
   buildGeminiGenerateContentRequest,
   classifyGeminiUpstreamFailure,
@@ -130,13 +130,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const promptError = validatePromptInputs(body.systemPrompt, body.userPrompt);
+  const parts = composeTrustedPromptParts(body.systemPrompt, body.userPrompt);
+  const promptError = validatePromptInputs(parts.systemPrompt, parts.userPrompt);
   if (promptError) {
     console.error("[gemini-complete] prompt_invalid", {
       requestId,
       errorType: "PROMPT_VALIDATION",
-      systemChars: body.systemPrompt.length,
-      userChars: body.userPrompt.length,
+      systemChars: parts.systemPrompt.length,
+      userChars: parts.userPrompt.length,
       systemLimit: AI_PROMPT_LIMITS.systemChars,
       userLimit: AI_PROMPT_LIMITS.userChars,
     });
@@ -156,8 +157,8 @@ export async function POST(request: Request) {
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const geminiPayload = buildGeminiGenerateContentRequest({
-    systemPrompt: SERVER_AI_POLICY,
-    userPrompt: buildTrustedUserPrompt(body.systemPrompt, body.userPrompt),
+    systemPrompt: parts.systemPrompt,
+    userPrompt: parts.userPrompt,
     functionDeclarations,
   });
 

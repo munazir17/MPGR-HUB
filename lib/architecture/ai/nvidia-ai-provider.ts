@@ -6,11 +6,12 @@ import type {
   AIProviderResponse,
 } from "./ai-provider";
 import {
-  getReadAndPrepareToolCatalog,
   runToolCallingLoop,
+  selectAdvertisedToolsForPrompt,
 } from "./agent-tool-calling";
 import { toNvidiaTools } from "./nvidia-function-calling";
 import { AGENT_INTENTS } from "@/lib/agent-intelligence";
+import type { AnyAgentTool } from "@/lib/architecture/tools/agent-tool";
 
 // NVIDIA NIM network AIProvider. Talks ONLY to this app's own
 // /api/agent/complete/nvidia Route Handler — never directly to NVIDIA,
@@ -33,17 +34,27 @@ export class NvidiaAIProvider implements AIProvider {
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
     const baseSystemPrompt = buildSystemPrompt(request);
-    return runToolCallingLoop(request, baseSystemPrompt, sendCompletion, {
-      compactToolCatalog: true,
-    });
+    const advertisedTools = selectAdvertisedToolsForPrompt(request.prompt);
+    return runToolCallingLoop(
+      request,
+      baseSystemPrompt,
+      (systemPrompt, userPrompt) => sendCompletion(systemPrompt, userPrompt, advertisedTools),
+      {
+        compactToolCatalog: true,
+        toolCatalog: advertisedTools,
+      },
+    );
   }
 }
 
 export async function sendCompletion(
   systemPrompt: string,
   userPrompt: string,
+  tools: readonly AnyAgentTool[] = selectAdvertisedToolsForPrompt(
+    userPrompt,
+  ),
 ): Promise<string> {
-  const tools = toNvidiaTools(getReadAndPrepareToolCatalog());
+  const nvidiaTools = toNvidiaTools(tools);
 
   const res = await fetch("/api/agent/complete/nvidia", {
     method: "POST",
@@ -54,7 +65,7 @@ export async function sendCompletion(
     body: JSON.stringify({
       systemPrompt,
       userPrompt,
-      tools,
+      tools: nvidiaTools,
     }),
   });
 

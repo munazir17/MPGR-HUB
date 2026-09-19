@@ -55,8 +55,8 @@ import {
 import type { SlashCommand } from "@/lib/agent-commands/types";
 import { serializeAgentFailure, shouldSurfaceAgentUserError, userFacingErrorFromAiProviderEvent } from "@/lib/agent/sanitize-agent-user-error";
 
-const THINKING_DELAY_MIN_MS = 600;
-const THINKING_DELAY_MAX_MS = 1400;
+const THINKING_DELAY_MIN_MS = 0;
+const THINKING_DELAY_MAX_MS = 0;
 
 const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
   favoriteTopics: [],

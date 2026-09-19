@@ -8,8 +8,7 @@ import {
   verifyTrustedOrigin,
 } from "@/lib/api/request-guard";
 import {
-  SERVER_AI_POLICY,
-  buildTrustedUserPrompt,
+  composeTrustedPromptParts,
   validatePromptInputs,
 } from "@/lib/architecture/ai/server-policy";
 import {
@@ -91,7 +90,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const promptError = validatePromptInputs(body.systemPrompt, body.userPrompt);
+  const parts = composeTrustedPromptParts(body.systemPrompt, body.userPrompt);
+  const promptError = validatePromptInputs(parts.systemPrompt, parts.userPrompt);
   if (promptError) {
     return respond({ error: promptError, code: "INVALID_PROMPT" }, { status: 400 });
   }
@@ -116,8 +116,8 @@ export async function POST(request: Request) {
     temperature: 0.4,
     max_tokens: 700,
     messages: [
-      { role: "system", content: SERVER_AI_POLICY },
-      { role: "user", content: buildTrustedUserPrompt(body.systemPrompt, body.userPrompt) },
+      { role: "system", content: parts.systemPrompt },
+      { role: "user", content: parts.userPrompt },
     ],
   };
   if (tools.length > 0) {

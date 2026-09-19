@@ -87,7 +87,7 @@ describe("NvidiaAIProvider sendCompletion", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const content = await sendCompletion("sys", "user question");
+    const content = await sendCompletion("sys", "buy $5 of AAPLc");
     expect(content).toContain("hi");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/agent/complete/nvidia");
@@ -99,7 +99,7 @@ describe("NvidiaAIProvider sendCompletion", () => {
       tools: Array<{ function: { name: string } }>;
     };
     expect(body.systemPrompt).toBe("sys");
-    expect(body.userPrompt).toBe("user question");
+    expect(body.userPrompt).toBe("buy $5 of AAPLc");
     expect(body.tools.some((tool) => tool.function.name === "tokenized_stock_prepare_order")).toBe(
       true,
     );

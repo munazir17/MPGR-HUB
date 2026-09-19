@@ -6,12 +6,13 @@ import type {
   AIProviderResponse,
 } from "./ai-provider";
 import {
-  getReadAndPrepareToolCatalog,
   runToolCallingLoop,
+  selectAdvertisedToolsForPrompt,
 } from "./agent-tool-calling";
 import { toGeminiFunctionDeclarations } from "./gemini-function-declarations";
 import { AGENT_INTENTS } from "@/lib/agent-intelligence";
 import { fetchWithSession } from "@/lib/api/authenticated-fetch";
+import type { AnyAgentTool } from "@/lib/architecture/tools/agent-tool";
 
 // Phase 3C Gemini addendum — a second real network AIProvider, added
 // alongside lib/architecture/ai/openai-ai-provider.ts (not replacing it).
@@ -56,12 +57,13 @@ export class GeminiAIProvider implements AIProvider {
     request: AIProviderRequest,
   ): Promise<AIProviderResponse> {
     const baseSystemPrompt = buildSystemPrompt(request);
+    const advertisedTools = selectAdvertisedToolsForPrompt(request.prompt);
 
     return runToolCallingLoop(
       request,
       baseSystemPrompt,
-      sendCompletion,
-      { compactToolCatalog: true },
+      (systemPrompt, userPrompt) => sendCompletion(systemPrompt, userPrompt, advertisedTools),
+      { compactToolCatalog: true, toolCatalog: advertisedTools },
     );
   }
 }
@@ -82,10 +84,11 @@ export class GeminiAIProvider implements AIProvider {
 async function sendCompletion(
   systemPrompt: string,
   userPrompt: string,
+  tools: readonly AnyAgentTool[] = selectAdvertisedToolsForPrompt(
+    userPrompt,
+  ),
 ): Promise<string> {
-  const functionDeclarations = toGeminiFunctionDeclarations(
-    getReadAndPrepareToolCatalog(),
-  );
+  const functionDeclarations = toGeminiFunctionDeclarations(tools);
 
   const res = await fetchWithSession("/api/agent/complete/gemini", {
     method: "POST",

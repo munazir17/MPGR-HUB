@@ -1,7 +1,7 @@
 // lib/architecture/ai/openai-ai-provider.ts
 
 import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-provider";
-import { runToolCallingLoop } from "./agent-tool-calling";
+import { runToolCallingLoop, selectAdvertisedToolsForPrompt } from "./agent-tool-calling";
 import { AGENT_INTENTS } from "@/lib/agent-intelligence";
 import { compactPromptInputs, isPromptLimitError } from "./server-policy";
 import { fetchWithSession } from "@/lib/api/authenticated-fetch";
@@ -53,7 +53,11 @@ export class OpenAIAIProvider implements AIProvider {
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
     const baseSystemPrompt = buildSystemPrompt(request);
-    return runToolCallingLoop(request, baseSystemPrompt, sendCompletion, { compactToolCatalog: true });
+    const advertisedTools = selectAdvertisedToolsForPrompt(request.prompt);
+    return runToolCallingLoop(request, baseSystemPrompt, sendCompletion, {
+      compactToolCatalog: true,
+      toolCatalog: advertisedTools,
+    });
   }
 }
 

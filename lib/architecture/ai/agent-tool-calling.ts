@@ -41,7 +41,7 @@ import {
   getAgentHighlights,
   getFollowUpPrompts,
 } from "@/lib/agent-actions";
-import { AGENT_INTENTS, type AgentIntent } from "@/lib/agent-intelligence";
+import { AGENT_INTENTS, type AgentIntent, isCryptoSwapQuotePrompt, isTradePrompt, isTradeQuotePrompt, isTransferPrompt, isX402PaymentPrompt } from "@/lib/agent-intelligence";
 import type {
   AIProviderRequest,
   AIProviderResponse,
@@ -319,6 +319,72 @@ export function getReadAndPrepareToolCatalog(): readonly AnyAgentTool[] {
         tool.mode === "read" ||
         tool.mode === "prepare",
     );
+}
+
+const YIELD_TOOL_IDS = ["yield_opportunities", "yield_estimator", "yield_comparison"] as const;
+const X402_TOOL_IDS = ["x402_discover_resource", "x402_prepare_payment"] as const;
+const TRANSFER_TOOL_IDS = ["transfer_prepare_send"] as const;
+const MARKET_TOOL_IDS = ["trade_get_price", "tokenized_stock_research", "market_intelligence"] as const;
+const TRADE_TOOL_IDS = [
+  "trade_get_price",
+  "trade_prepare_swap",
+  "tokenized_stock_research",
+  "tokenized_stock_prepare_order",
+] as const;
+
+function isYieldToolPrompt(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  return /\byield\b|\bapr\b|\bapy\b|yield opportunit|staking opportunit/.test(text);
+}
+
+function isTradeActionPrompt(prompt: string): boolean {
+  if (isCryptoSwapQuotePrompt(prompt)) return true;
+  const text = prompt.toLowerCase();
+  const hasAction =
+    /\b(buy|sell|swap|prepare|order)\b/.test(text) ||
+    text.includes("buy $") ||
+    text.includes("trade quote") ||
+    text.includes("swap quote");
+  if (!hasAction) return false;
+  return isTradePrompt(prompt) || isTradeQuotePrompt(prompt);
+}
+
+function isMarketOrStockResearchPrompt(prompt: string): boolean {
+  if (isTradeActionPrompt(prompt)) return false;
+  if (isTradePrompt(prompt)) return true;
+  const text = prompt.toLowerCase();
+  return /\bprice\b|\bmarket\b|\bquote\b|\bbtc\b|\beth\b|what'?s moving|whats moving|tokenized/.test(
+    text,
+  );
+}
+
+function addToolIds(target: Set<string>, ids: readonly string[]): void {
+  for (const id of ids) target.add(id);
+}
+
+/**
+ * Advertises only the read/prepare tools the current user prompt needs.
+ * Execute/sign tools are never included. Simple chat gets an empty catalog.
+ */
+export function selectAdvertisedToolsForPrompt(prompt: string): readonly AnyAgentTool[] {
+  const ids = new Set<string>();
+
+  if (isTransferPrompt(prompt)) addToolIds(ids, TRANSFER_TOOL_IDS);
+  if (isX402PaymentPrompt(prompt)) addToolIds(ids, X402_TOOL_IDS);
+  if (isYieldToolPrompt(prompt)) addToolIds(ids, YIELD_TOOL_IDS);
+
+  if (isTradeActionPrompt(prompt)) {
+    addToolIds(ids, TRADE_TOOL_IDS);
+  } else if (isMarketOrStockResearchPrompt(prompt)) {
+    addToolIds(ids, MARKET_TOOL_IDS);
+  }
+
+  return getReadAndPrepareToolCatalog().filter(
+    (tool) =>
+      ids.has(tool.id) &&
+      tool.mode !== "execute" &&
+      !tool.id.toLowerCase().includes("execute"),
+  );
 }
 
 export function buildToolCatalogPromptBlock(
@@ -704,9 +770,9 @@ export async function runToolCallingLoop(
   request: AIProviderRequest,
   baseSystemPrompt: string,
   sendCompletion: SendCompletion,
-  options: { compactToolCatalog?: boolean } = {},
+  options: { compactToolCatalog?: boolean; toolCatalog?: readonly AnyAgentTool[] } = {},
 ): Promise<AIProviderResponse> {
-  const toolCatalog = getReadAndPrepareToolCatalog();
+  const toolCatalog = options.toolCatalog ?? selectAdvertisedToolsForPrompt(request.prompt);
   const catalogBlock = options.compactToolCatalog
     ? buildCompactToolCatalogPromptBlock(toolCatalog)
     : buildToolCatalogPromptBlock(toolCatalog);
