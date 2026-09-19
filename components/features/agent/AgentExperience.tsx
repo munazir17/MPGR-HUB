@@ -129,7 +129,12 @@ export function AgentExperience() {
 
                 <AnimatePresence>
                   {error && (
-                    <AgentErrorBanner message={error} onRetry={retryLastMessage} onDismiss={dismissError} />
+                    <AgentErrorBanner
+                      message={error}
+                      lastUserMessage={[...messages].reverse().find((item) => item.role === "user")?.content}
+                      onRetry={retryLastMessage}
+                      onDismiss={dismissError}
+                    />
                   )}
                 </AnimatePresence>
 

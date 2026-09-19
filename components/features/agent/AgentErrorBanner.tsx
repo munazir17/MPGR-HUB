@@ -2,10 +2,11 @@
 
 import { motion } from "framer-motion";
 import { AlertTriangle, RotateCcw, X } from "lucide-react";
-import { sanitizeAgentUserError } from "@/lib/agent/sanitize-agent-user-error";
+import { presentAgentUserError } from "@/lib/agent/sanitize-agent-user-error";
 
 interface AgentErrorBannerProps {
   message: string;
+  lastUserMessage?: string;
   onRetry?: () => void;
   onDismiss?: () => void;
 }
@@ -14,7 +15,15 @@ interface AgentErrorBannerProps {
 // Batch 3 addendum: added `exit` so wrapping it in <AnimatePresence>
 // (app/agent/page.tsx) animates it out on dismiss/retry instead of
 // popping instantly — no other change.
-export function AgentErrorBanner({ message, onRetry, onDismiss }: AgentErrorBannerProps) {
+export function AgentErrorBanner({
+  message,
+  lastUserMessage,
+  onRetry,
+  onDismiss,
+}: AgentErrorBannerProps) {
+  const presented = presentAgentUserError(message, { lastUserMessage });
+  const showRetry = Boolean(presented.retryable && onRetry);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: -8 }}
@@ -24,9 +33,9 @@ export function AgentErrorBanner({ message, onRetry, onDismiss }: AgentErrorBann
       className="flex items-center gap-2.5 border-t border-red-500/20 bg-red-500/10 px-4 py-2.5 sm:px-6"
     >
       <AlertTriangle className="h-4 w-4 shrink-0 text-red-400" aria-hidden="true" />
-      <p className="flex-1 text-xs text-red-200">{sanitizeAgentUserError(message)}</p>
+      <p className="flex-1 text-xs text-red-200">{presented.message}</p>
 
-      {onRetry && (
+      {showRetry && (
         <button
           type="button"
           onClick={onRetry}

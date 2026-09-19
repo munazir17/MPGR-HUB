@@ -53,11 +53,10 @@ import {
   type AgentMessage,
 } from "@/lib/agent-engine";
 import type { SlashCommand } from "@/lib/agent-commands/types";
+import { serializeAgentFailure } from "@/lib/agent/sanitize-agent-user-error";
 
 const THINKING_DELAY_MIN_MS = 600;
 const THINKING_DELAY_MAX_MS = 1400;
-
-const GENERATION_ERROR_MESSAGE = "Something went wrong generating a reply. Please try again.";
 
 // Codes classifyGeminiUpstreamFailure() (lib/architecture/ai/gemini-function-declarations.ts)
 // and gemini-ai-provider.ts's own empty-response/unreachable checks can
@@ -294,7 +293,8 @@ export function useAgentChat() {
       } catch (err) {
         if (loadTokenRef.current !== token) return;
         console.error("MPGR Agent: crash recovery failed", err);
-        setError(GENERATION_ERROR_MESSAGE);
+        setError(serializeAgentFailure(err));
+        setThinking(false);
       } finally {
         if (loadTokenRef.current === token) setThinking(false);
       }
@@ -315,8 +315,7 @@ export function useAgentChat() {
   // throws for any reason. Filters by the current address so a stale
   // subscription from a previous wallet can't set an error for the
   // wrong session. Reuses the existing `error` state — AgentErrorBanner
-  // (already rendered in app/agent/page.tsx) picks this up exactly as it
-  // does GENERATION_ERROR_MESSAGE below.
+  // classifies the API status/code/message into a user-facing banner.
   //
   // Fix — do not bother the user with a banner for an EXPECTED
   // provider-availability failure that FallbackAIProvider has already
@@ -332,7 +331,7 @@ export function useAgentChat() {
     const unsubscribe = agentEventBus.on("ai_provider_error", (payload) => {
       if (payload.address !== address) return;
       if (payload.code && EXPECTED_PROVIDER_FAILURE_CODES.has(payload.code)) return;
-      setError(`[${payload.provider}] ${payload.message}`);
+      setError([payload.code, payload.message].filter(Boolean).join(" "));
     });
     return unsubscribe;
   }, [address]);
@@ -384,7 +383,8 @@ export function useAgentChat() {
         } catch (err) {
           if (loadTokenRef.current !== token) return;
           console.error("MPGR Agent: command execution failed", err);
-          setError(GENERATION_ERROR_MESSAGE);
+          setError(serializeAgentFailure(err));
+          setThinking(false);
           void recordAction(address, commandName, result, {
             success: false,
             durationMs: Date.now() - startedAt,
@@ -421,7 +421,7 @@ export function useAgentChat() {
         } catch (err) {
           if (loadTokenRef.current !== token) return;
           console.error("MPGR Agent: failed to persist message", err);
-          setError(GENERATION_ERROR_MESSAGE);
+          setError(serializeAgentFailure(err));
           setThinking(false);
           return;
         }
@@ -443,7 +443,8 @@ export function useAgentChat() {
           } catch (err) {
             if (loadTokenRef.current !== token) return;
             console.error("MPGR Agent: failed to generate a reply", err);
-            setError(GENERATION_ERROR_MESSAGE);
+            setError(serializeAgentFailure(err));
+            setThinking(false);
           } finally {
             if (loadTokenRef.current === token) setThinking(false);
           }
@@ -481,7 +482,8 @@ export function useAgentChat() {
         } catch (err) {
           if (loadTokenRef.current !== token) return;
           console.error("MPGR Agent: retry failed", err);
-          setError(GENERATION_ERROR_MESSAGE);
+          setError(serializeAgentFailure(err));
+          setThinking(false);
         } finally {
           if (loadTokenRef.current === token) setThinking(false);
         }
@@ -507,7 +509,8 @@ export function useAgentChat() {
       } catch (err) {
         if (loadTokenRef.current !== token) return;
         console.error("MPGR Agent: regenerate failed", err);
-        setError(GENERATION_ERROR_MESSAGE);
+        setError(serializeAgentFailure(err));
+        setThinking(false);
       } finally {
         if (loadTokenRef.current === token) setThinking(false);
       }
