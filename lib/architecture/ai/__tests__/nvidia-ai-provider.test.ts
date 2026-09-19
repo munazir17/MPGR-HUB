@@ -169,6 +169,11 @@ describe("NvidiaAIProvider tool-calling loop", () => {
 });
 
 describe("Gemini → NVIDIA → OpenAI → deterministic chain", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   it("falls back Gemini → NVIDIA → OpenAI → deterministic", async () => {
     const gemini: AIProvider = {
       name: "gemini",
@@ -226,6 +231,29 @@ describe("Gemini → NVIDIA → OpenAI → deterministic chain", () => {
     expect(openai.generateReply).not.toHaveBeenCalled();
   });
 
+  it("does not call OpenAI after NVIDIA returns a successful plaintext reply", async () => {
+    const nvidia = new NvidiaAIProvider();
+    const openai: AIProvider = {
+      name: "openai",
+      requiresNetwork: true,
+      generateReply: vi.fn().mockRejectedValue(new Error("OpenAI is temporarily unavailable.")),
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        expect(String(url)).toBe("/api/agent/complete/nvidia");
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ content: "Hello from Nemotron." }),
+        });
+      }),
+    );
+    const chain = new ProviderChainAIProvider([nvidia, openai], fakeBus(), fakeLogger());
+    const result = await chain.generateReply(makeRequest("hi"));
+    expect(result.reply).toBe("Hello from Nemotron.");
+    expect(openai.generateReply).not.toHaveBeenCalled();
+  });
+
   it("uses OpenAI when Gemini and NVIDIA fail", async () => {
     const gemini: AIProvider = {
       name: "gemini",
@@ -247,5 +275,53 @@ describe("Gemini → NVIDIA → OpenAI → deterministic chain", () => {
     expect(result.reply).toBe("from openai");
     expect(createAIProvider("openai")).toBeInstanceOf(OpenAIAIProvider);
     expect(createAIProvider("deterministic")).toBeInstanceOf(DeterministicAIProvider);
+  });
+});
+
+describe("NVIDIA system prompt size for simple chat", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("does not ship trading/x402 essays on hi, and keeps them for AAPLc buy", async () => {
+    vi.spyOn(agentToolRuntime, "executeTool").mockResolvedValue(
+      toolSuccess("tokenized_stock_prepare_order", {
+        proposal: { id: "p", requiresConfirmation: true },
+      }),
+    );
+    const captured: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { systemPrompt?: string };
+        if (typeof body.systemPrompt === "string") captured.push(body.systemPrompt);
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            content: JSON.stringify({ intent: "general_help", reply: "ok" }),
+          }),
+        });
+      }),
+    );
+
+    const provider = new NvidiaAIProvider();
+    await provider.generateReply(makeRequest("hi"));
+    await provider.generateReply(makeRequest("buy $5 AAPLc"));
+
+    expect(captured).toHaveLength(2);
+    const hiPrompt = captured[0] ?? "";
+    const buyPrompt = captured[1] ?? "";
+
+    expect(hiPrompt).not.toContain("tokenized_stock_prepare_order");
+    expect(hiPrompt).not.toContain("x402_prepare_payment");
+    expect(hiPrompt).not.toContain("trade_prepare_swap");
+    expect(hiPrompt).toContain("You are the MPGR Agent");
+    expect(hiPrompt).toContain('"intent" must be exactly one of:');
+    expect(hiPrompt.length).toBeLessThan(buyPrompt.length);
+    expect(hiPrompt.length).toBeLessThan(1800);
+
+    expect(buyPrompt).toContain("tokenized_stock_prepare_order");
+    expect(buyPrompt).toContain("Never call trade_prepare_swap for AAPL/AAPLc");
   });
 });

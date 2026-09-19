@@ -6,6 +6,7 @@ import type {
   AIProviderResponse,
 } from "./ai-provider";
 import {
+  buildGatedCapabilityInstructions,
   runToolCallingLoop,
   selectAdvertisedToolsForPrompt,
 } from "./agent-tool-calling";
@@ -161,25 +162,12 @@ function buildSystemPrompt(request: AIProviderRequest): string {
 
   const lines: string[] = [
     "You are the MPGR Agent, the assistant inside MPGR HUB (a Web3 rewards/XP/staking app).",
-
-    "You have native tools available for looking up live facts, discovering or preparing an x402-gated resource, researching Coinbase Tokenized Stocks on Base, and preparing a Base swap quote. Prefer calling an appropriate provided tool when the user's request genuinely requires live information, a swap/quote, tokenized-stock research, or x402 resource access.",
-
-    'If the user\'s message already contains an https URL and they ask you to inspect, discover, access, or determine whether it is an x402-gated resource, call x402_discover_resource with arguments {"resourceUrl":"<that URL>"} instead of asking the user to provide the URL again. The argument name is resourceUrl — never url.',
-
-    "If an x402 resource has been discovered and the user explicitly wants to access/pay for it, use x402_prepare_payment with arguments {\"resourceUrl\":\"<that URL>\"} when appropriate. Preparing an x402 payment only creates a proposal for the user to review; it never signs or submits a payment.",
-
-    "Trading tools (Base Mainnet only). They never sign or broadcast.",
-    "If the user asks the price of ETH, USDC, WETH, or MPGR, call trade_get_price. Never call tokenized_stock_research for those.",
-    "If the user asks to research a Coinbase tokenized stock (COINc, AAPLc, TSLAc, SPCXc, NVDAc, or \"tokenized stocks\"), call tokenized_stock_research with {\"symbol\":\"COINc\"} or {} to list the catalog.",
-    "If the user asks to buy or sell a tokenized stock (\"buy $10 of SPCXc\", \"prepare a trade to buy $50 of tokenized AAPL\"), call tokenized_stock_prepare_order with {\"symbol\":\"AAPLc\",\"amount\":\"50\",\"side\":\"BUY\"}. Never call trade_prepare_swap for AAPL/AAPLc or any other Coinbase B20 ticker.",
-    "If the user asks to buy, sell, or swap any other Base token (including a raw 0x address), call trade_prepare_swap. For a dollar buy use fromToken=\"USDC\", toToken=\"the asset\", amount=\"10\". Omit taker.",
-    "If the wallet is connected, never say you cannot retrieve wallet details. Do not answer a trade/quote request from the MPGR portfolio/XP help text.",
+    ...buildGatedCapabilityInstructions(request.prompt),
+    "If the wallet is connected, never say you cannot retrieve wallet details.",
     "What-is / explain / research questions about MPGR HUB, $MPGR, Base, x402, or tokenized stocks use intent research_query — never portfolio_summary or claimable_rewards.",
     "Market questions (what's moving, ETH, BTC) use intent market_overview. Call trade_get_price or market_intelligence when useful. Never invent prices.",
     "Portfolio is the whole wallet plus staked/locked MPGR. XP, Holder Tier, and Season are account progress, not the wallet book.",
-
     'When you are ready to answer the user, respond ONLY with a JSON object of the exact shape {"intent": string, "reply": string} — no markdown, no extra keys.',
-
     'Keep "reply" concise (2-4 sentences), friendly, and grounded ONLY in the facts below (or in a tool result you requested) — never invent numbers, addresses, payment amounts, or tool results.',
   ];
 

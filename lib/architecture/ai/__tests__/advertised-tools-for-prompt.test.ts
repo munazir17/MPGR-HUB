@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectAdvertisedToolsForPrompt } from "../agent-tool-calling";
+import { buildGatedCapabilityInstructions, selectAdvertisedToolsForPrompt } from "../agent-tool-calling";
 
 function ids(prompt: string): string[] {
   return selectAdvertisedToolsForPrompt(prompt).map((tool) => tool.id);
@@ -77,5 +77,21 @@ describe("selectAdvertisedToolsForPrompt", () => {
   it("yield request => yield tools available", () => {
     const selected = ids("Compare the current MPGR yield opportunities for me.");
     for (const id of YIELD_TOOLS) expect(selected).toContain(id);
+  });
+});
+
+describe("buildGatedCapabilityInstructions vs advertised tools", () => {
+  it("hi prompt has no capability essays and no execute verbs", () => {
+    const text = buildGatedCapabilityInstructions("hi").join("\n").toLowerCase();
+    expect(text).toBe("");
+    expect(text).not.toMatch(/execute|sign and submit|broadcast/);
+  });
+
+  it("buy $5 AAPLc keeps prepare_order instructions and never advertise execute", () => {
+    const selected = ids("buy $5 AAPLc");
+    expect(selected.some((id) => id.toLowerCase().includes("execute"))).toBe(false);
+    const text = buildGatedCapabilityInstructions("buy $5 AAPLc").join("\n");
+    expect(text).toContain("tokenized_stock_prepare_order");
+    expect(text.toLowerCase()).not.toContain("wallet_execute");
   });
 });

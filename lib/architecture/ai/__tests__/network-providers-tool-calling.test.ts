@@ -515,7 +515,7 @@ describe("deterministic fallback still works with the tool-calling loop wired in
       "fetch",
       vi.fn().mockResolvedValue(
         jsonResponse({
-          content: "not valid json",
+          content: "",
         }),
       ),
     );

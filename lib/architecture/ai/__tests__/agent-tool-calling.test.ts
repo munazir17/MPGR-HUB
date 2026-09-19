@@ -28,9 +28,11 @@ import { toolError, toolSuccess } from "@/lib/architecture/tools/agent-tool-resu
 import type { AnyAgentTool } from "@/lib/architecture/tools/agent-tool";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
 import type { AIProviderRequest } from "../ai-provider";
+import "@/lib/architecture/tools/trade-tool-definitions";
 
 import {
   MAX_TOOL_CALL_ROUNDS,
+  buildGatedCapabilityInstructions,
   buildToolCatalogPromptBlock,
   getReadOnlyToolCatalog,
   parseModelDirective,
@@ -116,12 +118,41 @@ describe("parseModelDirective", () => {
     }
   });
 
-  it("throws on invalid JSON", () => {
-    expect(() => parseModelDirective("not json", null)).toThrow();
+  it("treats non-empty NVIDIA-style plaintext as a final general_help reply", () => {
+    const directive = parseModelDirective("Hello! How can I help you today?", null);
+    expect(directive.kind).toBe("final");
+    if (directive.kind === "final") {
+      expect(directive.intent).toBe("general_help");
+      expect(directive.reply).toBe("Hello! How can I help you today?");
+    }
   });
 
-  it("throws when neither a tool call nor a non-empty reply is present", () => {
-    expect(() => parseModelDirective(JSON.stringify({ intent: "general_help", reply: "" }), null)).toThrow();
+  it("coerces fenced JSON and preamble-embedded JSON into a directive", () => {
+    const fenced = parseModelDirective(
+      'Sure.\n```json\n{"intent":"general_help","reply":"Hi from NVIDIA."}\n```',
+      null,
+    );
+    expect(fenced.kind).toBe("final");
+    if (fenced.kind === "final") {
+      expect(fenced.reply).toBe("Hi from NVIDIA.");
+    }
+
+    const embedded = parseModelDirective(
+      'Reasoning first.\n{"intent":"general_help","reply":"Embedded works."}',
+      null,
+    );
+    expect(embedded.kind).toBe("final");
+    if (embedded.kind === "final") {
+      expect(embedded.reply).toBe("Embedded works.");
+    }
+  });
+
+  it("throws on empty content or empty-reply protocol JSON", () => {
+    expect(() => parseModelDirective("", null)).toThrow(/missing a non-empty reply/);
+    expect(() => parseModelDirective("   ", null)).toThrow(/missing a non-empty reply/);
+    expect(() => parseModelDirective(JSON.stringify({ intent: "general_help", reply: "" }), null)).toThrow(
+      /missing a non-empty reply/,
+    );
   });
 });
 
@@ -531,5 +562,110 @@ describe("runToolCallingLoop — transfer_prepare_send error handling", () => {
     expect(sendCompletion).toHaveBeenCalledTimes(2);
     expect(response.reply).toBe("Review the proposal and confirm to send.");
     expect(response.transferProposal).toEqual(proposal);
+  });
+});
+
+describe("plaintext NVIDIA/Gemini success does not throw into OpenAI", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns the NVIDIA prose as the assistant reply and never requests another completion", async () => {
+    const sendCompletion = vi.fn().mockResolvedValue("Hello! How can I help you in MPGR HUB today?");
+    const response = await runToolCallingLoop(
+      makeRequest({ prompt: "hi" }),
+      "base prompt",
+      sendCompletion,
+    );
+    expect(sendCompletion).toHaveBeenCalledTimes(1);
+    expect(response.reply).toBe("Hello! How can I help you in MPGR HUB today?");
+    expect(response.intent).toBe("general_help");
+    expect(response.tradeProposal).toBeUndefined();
+  });
+});
+
+describe("AAPLc buy confirmation when the model skips the prepare tool", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("force-prepares a requiresConfirmation proposal and never executes", async () => {
+    const proposal = {
+      id: "b20_aaplc_buy",
+      requiresConfirmation: true,
+      network: "base",
+      kind: "tokenized-stock-swap",
+      provider: "aerodrome-slipstream",
+      fromAmount: "5000000",
+    };
+    const executeSpy = vi.spyOn(agentToolRuntime, "executeTool").mockResolvedValue(
+      toolSuccess("tokenized_stock_prepare_order", { proposal }),
+    );
+
+    const sendCompletion = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ intent: "general_help", reply: "Buying AAPLc now." }));
+
+    const response = await runToolCallingLoop(
+      makeRequest({ prompt: "buy $5 AAPLc" }),
+      "base prompt",
+      sendCompletion,
+    );
+
+    expect(sendCompletion).toHaveBeenCalledTimes(1);
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+    expect(executeSpy.mock.calls[0]?.[0]).toBe("tokenized_stock_prepare_order");
+    expect(executeSpy.mock.calls[0]?.[1]).toEqual({
+      symbol: "AAPLc",
+      amount: "5",
+      side: "BUY",
+    });
+    expect(executeSpy.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({
+        permissions: { canRead: true, canPrepare: true, canExecute: false },
+      }),
+    );
+    expect(executeSpy.mock.calls[0]?.[0]).not.toMatch(/execute|submit|broadcast|sign/i);
+    expect(response.tradeProposal).toEqual(proposal);
+    expect(response.tradeProposal?.requiresConfirmation).toBe(true);
+    expect(response.reply.toLowerCase()).toContain("explicitly confirm");
+    expect(response.reply.toLowerCase()).toMatch(/nothing is signed|will not sign/);
+  });
+
+  it("does not force-prepare a simple hi", async () => {
+    const executeSpy = vi.spyOn(agentToolRuntime, "executeTool");
+    const sendCompletion = vi.fn().mockResolvedValue("hey");
+    const response = await runToolCallingLoop(makeRequest({ prompt: "hi" }), "base prompt", sendCompletion);
+    expect(executeSpy).not.toHaveBeenCalled();
+    expect(response.tradeProposal).toBeUndefined();
+    expect(response.reply).toBe("hey");
+  });
+});
+
+describe("buildGatedCapabilityInstructions", () => {
+  it("omits trading/x402 essays for simple chat", () => {
+    const text = buildGatedCapabilityInstructions("hi").join("\n");
+    expect(text).toBe("");
+    expect(text).not.toContain("tokenized_stock_prepare_order");
+    expect(text).not.toContain("x402_prepare_payment");
+    expect(text).not.toContain("trade_prepare_swap");
+    expect(text).not.toContain("x402_discover_resource");
+  });
+
+  it("keeps B20 prepare safety text for buy $5 AAPLc", () => {
+    const text = buildGatedCapabilityInstructions("buy $5 AAPLc").join("\n");
+    expect(text).toContain("tokenized_stock_prepare_order");
+    expect(text).toContain("Never call trade_prepare_swap for AAPL/AAPLc");
+    expect(text).toContain("never sign or broadcast");
+    expect(text).not.toContain("x402_prepare_payment");
+  });
+
+  it("keeps x402 essays only for x402 prompts", () => {
+    const text = buildGatedCapabilityInstructions(
+      "Prepare a payment proposal for this x402 resource: https://x402-demo-discovery-endpoint.vercel.app/protected",
+    ).join("\n");
+    expect(text).toContain("x402_prepare_payment");
+    expect(text).toContain("never signs or submits a payment");
+    expect(text).not.toContain("tokenized_stock_prepare_order");
   });
 });

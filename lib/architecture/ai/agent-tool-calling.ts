@@ -41,7 +41,7 @@ import {
   getAgentHighlights,
   getFollowUpPrompts,
 } from "@/lib/agent-actions";
-import { AGENT_INTENTS, type AgentIntent, isCryptoSwapQuotePrompt, isTradePrompt, isTradeQuotePrompt, isTransferPrompt, isX402PaymentPrompt } from "@/lib/agent-intelligence";
+import { AGENT_INTENTS, type AgentIntent, extractTradeHumanAmount, extractTradeSymbol, isCryptoSwapQuotePrompt, isTradePrompt, isTradeQuotePrompt, isTradeSellPrompt, isTransferPrompt, isX402PaymentPrompt } from "@/lib/agent-intelligence";
 import type {
   AIProviderRequest,
   AIProviderResponse,
@@ -203,85 +203,126 @@ export type ModelDirective =
   | ToolCallDirective
   | FinalAnswerDirective;
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function tryParseJsonValue(text: string): unknown | undefined {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * NVIDIA Nemotron (and sometimes Gemini) return a 200 with markdown fences,
+ * a reasoning preamble + JSON, or plain prose. The HTTP route already
+ * succeeded — throwing here would incorrectly fall through to OpenAI and
+ * 502 the whole turn.
+ */
+function coerceJsonObject(content: string): Record<string, unknown> | null {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+
+  const direct = tryParseJsonValue(trimmed);
+  if (isPlainObject(direct)) return direct;
+  if (typeof direct === "string" && direct.trim()) {
+    const nested = tryParseJsonValue(direct.trim());
+    if (isPlainObject(nested)) return nested;
+  }
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    const inner = tryParseJsonValue(fenced[1].trim());
+    if (isPlainObject(inner)) return inner;
+  }
+
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    const sliced = tryParseJsonValue(trimmed.slice(start, end + 1));
+    if (isPlainObject(sliced)) return sliced;
+  }
+
+  return null;
+}
+
+function looksLikeProtocolObject(record: Record<string, unknown>): boolean {
+  return "toolCall" in record || "reply" in record || "intent" in record;
+}
+
 export function parseModelDirective(
   content: string,
   previousIntent: AgentIntent | null,
 ): ModelDirective {
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    throw new Error(
-      "AI provider response was not valid JSON.",
-    );
-  }
-
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    Array.isArray(parsed)
-  ) {
-    throw new Error(
-      "AI provider response was not a JSON object.",
-    );
-  }
-
-  const record = parsed as Record<string, unknown>;
-
-  const rawToolCall = record.toolCall;
-
-  if (
-    rawToolCall &&
-    typeof rawToolCall === "object" &&
-    !Array.isArray(rawToolCall)
-  ) {
-    const toolCallRecord =
-      rawToolCall as Record<string, unknown>;
-
-    if (
-      typeof toolCallRecord.toolId === "string" &&
-      toolCallRecord.toolId.trim().length > 0
-    ) {
-      const args =
-        toolCallRecord.arguments &&
-        typeof toolCallRecord.arguments === "object" &&
-        !Array.isArray(toolCallRecord.arguments)
-          ? (toolCallRecord.arguments as Record<string, unknown>)
-          : {};
-
-      const toolId = toolCallRecord.toolId.trim();
-
-      return {
-        kind: "tool_call",
-        toolId,
-        arguments: normalizeTradeToolArguments(
-          toolId,
-          normalizeX402ToolArguments(toolId, args),
-        ),
-      };
-    }
-  }
-
-  const reply =
-    typeof record.reply === "string"
-      ? record.reply
-      : "";
-
-  if (!reply.trim()) {
+  const trimmed = content.trim();
+  if (!trimmed) {
     throw new Error(
       "AI provider response was missing a non-empty reply.",
     );
   }
 
-  const intent = isValidIntent(record.intent)
-    ? record.intent
-    : previousIntent ?? "general_help";
+  const record = coerceJsonObject(trimmed);
+
+  if (record) {
+    const rawToolCall = record.toolCall;
+
+    if (isPlainObject(rawToolCall)) {
+      if (
+        typeof rawToolCall.toolId === "string" &&
+        rawToolCall.toolId.trim().length > 0
+      ) {
+        const args =
+          rawToolCall.arguments &&
+          typeof rawToolCall.arguments === "object" &&
+          !Array.isArray(rawToolCall.arguments)
+            ? (rawToolCall.arguments as Record<string, unknown>)
+            : {};
+
+        const toolId = rawToolCall.toolId.trim();
+
+        return {
+          kind: "tool_call",
+          toolId,
+          arguments: normalizeTradeToolArguments(
+            toolId,
+            normalizeX402ToolArguments(toolId, args),
+          ),
+        };
+      }
+    }
+
+    const reply =
+      typeof record.reply === "string"
+        ? record.reply
+        : typeof record.reply === "number"
+          ? String(record.reply)
+          : "";
+
+    if (reply.trim()) {
+      const intent = isValidIntent(record.intent)
+        ? record.intent
+        : previousIntent ?? "general_help";
+
+      return {
+        kind: "final",
+        intent,
+        reply,
+      };
+    }
+
+    if (looksLikeProtocolObject(record)) {
+      throw new Error(
+        "AI provider response was missing a non-empty reply.",
+      );
+    }
+  }
 
   return {
     kind: "final",
-    intent,
-    reply,
+    intent: previousIntent ?? "general_help",
+    reply: trimmed,
   };
 }
 
@@ -385,6 +426,75 @@ export function selectAdvertisedToolsForPrompt(prompt: string): readonly AnyAgen
       tool.mode !== "execute" &&
       !tool.id.toLowerCase().includes("execute"),
   );
+}
+
+const TRADE_INSTRUCTION_TOOL_IDS = [
+  "trade_get_price",
+  "trade_prepare_swap",
+  "tokenized_stock_research",
+  "tokenized_stock_prepare_order",
+] as const;
+
+/**
+ * Extra system-prompt essays for tools that are actually advertised on
+ * this turn. Simple chat ("hi") gets none of the trading/x402 manuals —
+ * those tokens were the bulk of the ~3k promptTokens on a 20-char user
+ * message. Buy/AAPLc/x402 turns still receive the full safety text.
+ */
+export function buildGatedCapabilityInstructions(prompt: string): string[] {
+  const advertised = new Set(
+    selectAdvertisedToolsForPrompt(prompt).map((tool) => tool.id),
+  );
+  const hasX402 =
+    advertised.has("x402_discover_resource") ||
+    advertised.has("x402_prepare_payment");
+  const hasTrade = TRADE_INSTRUCTION_TOOL_IDS.some((id) => advertised.has(id));
+  const hasTransfer = advertised.has("transfer_prepare_send");
+
+  if (!hasX402 && !hasTrade && !hasTransfer) {
+    return [];
+  }
+
+  const lines: string[] = [];
+
+  if (hasX402 || hasTrade) {
+    lines.push(
+      "You have native tools available for looking up live facts" +
+        (hasX402
+          ? ", discovering or preparing an x402-gated resource"
+          : "") +
+        (hasTrade
+          ? ", researching Coinbase Tokenized Stocks on Base, and preparing a Base swap quote"
+          : "") +
+        ". Prefer calling an appropriate provided tool when the user's request genuinely requires it.",
+    );
+  }
+
+  if (hasX402) {
+    lines.push(
+      'If the user\'s message already contains an https URL and they ask you to inspect, discover, access, or determine whether it is an x402-gated resource, call x402_discover_resource with arguments {"resourceUrl":"<that URL>"} instead of asking the user to provide the URL again. The argument name is resourceUrl — never url.',
+      'If an x402 resource has been discovered and the user explicitly wants to access/pay for it, use x402_prepare_payment with arguments {"resourceUrl":"<that URL>"} when appropriate. Preparing an x402 payment only creates a proposal for the user to review; it never signs or submits a payment.',
+    );
+  }
+
+  if (hasTrade) {
+    lines.push(
+      "Trading tools (Base Mainnet only). They never sign or broadcast.",
+      "If the user asks the price of ETH, USDC, WETH, or MPGR, call trade_get_price. Never call tokenized_stock_research for those.",
+      'If the user asks to research a Coinbase tokenized stock (COINc, AAPLc, TSLAc, SPCXc, NVDAc, or "tokenized stocks"), call tokenized_stock_research with {"symbol":"COINc"} or {} to list the catalog.',
+      'If the user asks to buy or sell a tokenized stock ("buy $10 of SPCXc", "prepare a trade to buy $50 of tokenized AAPL"), call tokenized_stock_prepare_order with {"symbol":"AAPLc","amount":"50","side":"BUY"}. Never call trade_prepare_swap for AAPL/AAPLc or any other Coinbase B20 ticker.',
+      'If the user asks to buy, sell, or swap any other Base token (including a raw 0x address), call trade_prepare_swap. For a dollar buy use fromToken="USDC", toToken="the asset", amount="10". Omit taker.',
+      "Do not answer a trade/quote request from the MPGR portfolio/XP help text.",
+    );
+  }
+
+  if (hasTransfer) {
+    lines.push(
+      "To send/transfer ETH or any Base token, call transfer_prepare_send with {token, amount, recipient}. recipient is a 0x address or a Basename the user actually gave you — never invent one. If they have not given a recipient, ask instead of calling this tool.",
+    );
+  }
+
+  return lines;
 }
 
 export function buildToolCatalogPromptBlock(
@@ -603,6 +713,46 @@ function captureTransferProposal(
   }
   const data = toolResult.data as { proposal?: TransferProposal } | undefined;
   return data?.proposal ?? current;
+}
+
+const FORCED_B20_PREPARE_REPLY =
+  "A tokenized-stock swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.";
+
+/**
+ * If the network model answered a B20 buy/sell in prose (or JSON without
+ * a tool call), still run the prepare-only tool so AgentTradeProposalCard
+ * can render. Never signs. Never calls execute tools. Failures are
+ * swallowed so a successful NVIDIA/Gemini reply is not turned into a 502.
+ */
+async function maybePrepareTokenizedStockOrder(
+  request: AIProviderRequest,
+  captured: TradeProposal | undefined,
+): Promise<TradeProposal | undefined> {
+  if (captured) return captured;
+  if (!isTradePrompt(request.prompt)) return undefined;
+  if (!isTradeQuotePrompt(request.prompt) && !isTradeActionPrompt(request.prompt)) {
+    return undefined;
+  }
+
+  const symbol = extractTradeSymbol(request.prompt);
+  const amount = extractTradeHumanAmount(request.prompt);
+  if (!symbol || !amount) return undefined;
+
+  const result = await runRegisteredTool(
+    "tokenized_stock_prepare_order",
+    {
+      symbol,
+      amount,
+      side: isTradeSellPrompt(request.prompt) ? "SELL" : "BUY",
+    },
+    request,
+  );
+
+  return captureTradeProposal(
+    "tokenized_stock_prepare_order",
+    result,
+    undefined,
+  );
 }
 
 /**
@@ -833,12 +983,21 @@ export async function runToolCallingLoop(
     );
 
     if (directive.kind === "final") {
+      const tradeProposal = await maybePrepareTokenizedStockOrder(
+        request,
+        capturedTradeProposal,
+      );
+      const reply =
+        tradeProposal && !capturedTradeProposal
+          ? FORCED_B20_PREPARE_REPLY
+          : directive.reply;
+
       return buildLoopResponse(
         request,
         directive.intent,
-        directive.reply,
+        reply,
         capturedX402Proposal,
-        capturedTradeProposal,
+        tradeProposal,
         capturedStockReport,
         capturedTransferProposal,
       );
