@@ -53,27 +53,10 @@ import {
   type AgentMessage,
 } from "@/lib/agent-engine";
 import type { SlashCommand } from "@/lib/agent-commands/types";
-import { serializeAgentFailure } from "@/lib/agent/sanitize-agent-user-error";
+import { serializeAgentFailure, shouldSurfaceAgentUserError, userFacingErrorFromAiProviderEvent } from "@/lib/agent/sanitize-agent-user-error";
 
 const THINKING_DELAY_MIN_MS = 600;
 const THINKING_DELAY_MAX_MS = 1400;
-
-// Codes classifyGeminiUpstreamFailure() (lib/architecture/ai/gemini-function-declarations.ts)
-// and gemini-ai-provider.ts's own empty-response/unreachable checks can
-// attach to a thrown provider error. All of these mean the PROVIDER was
-// unavailable — not that anything is broken in this app — and
-// FallbackAIProvider has already returned a working reply from the
-// deterministic fallback by the time this event fires. An error without
-// one of these codes is an unexpected/programming error and must still
-// surface to the user via the banner.
-const EXPECTED_PROVIDER_FAILURE_CODES = new Set([
-  "PROVIDER_RATE_LIMITED",
-  "PROVIDER_UNREACHABLE",
-  "PROVIDER_AUTH_ERROR",
-  "PROVIDER_ERROR",
-  "PROVIDER_INVALID_JSON",
-  "PROVIDER_EMPTY_RESPONSE",
-]);
 
 const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
   favoriteTopics: [],
@@ -179,6 +162,7 @@ export function useAgentChat() {
   const [personalization, setPersonalization] = useState<PersonalizationSnapshot>(EMPTY_PERSONALIZATION);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadTokenRef = useRef(0);
+  const usableAssistantThisTurnRef = useRef(false);
 
   const stopGeneration = useCallback(() => {
     loadTokenRef.current += 1;
@@ -193,6 +177,25 @@ export function useAgentChat() {
   }, []);
 
   const commandPalette = useCommandPalette(personalization.mostUsedCommands);
+
+  const markAssistantReceived = useCallback((nextMessages: AgentMessage[]) => {
+    const last = nextMessages[nextMessages.length - 1];
+    usableAssistantThisTurnRef.current =
+      last?.role === "assistant" && Boolean(last.content?.trim() || last.tokenizedStockReport);
+  }, []);
+
+  const reportPrimaryAgentFailure = useCallback((label: string, err: unknown) => {
+    console.error(label, err);
+    if (
+      shouldSurfaceAgentUserError({
+        source: "primary",
+        hasUsableAssistantResponse: usableAssistantThisTurnRef.current,
+      })
+    ) {
+      setError(serializeAgentFailure(err));
+    }
+    setThinking(false);
+  }, []);
 
   const totalStaked = useMemo(
     () => Number(formatUnits(stakedBalanceRaw, stakingDecimals)),
@@ -284,17 +287,17 @@ export function useAgentChat() {
       const interruptedPrompt = findInterruptedPrompt(state);
       if (!interruptedPrompt) return;
 
+      usableAssistantThisTurnRef.current = false;
       setThinking(true);
       try {
         const recovered = await agentAIService.generateReply(address, interruptedPrompt, context);
         if (loadTokenRef.current !== token) return;
         setMessages(recovered.messages);
+        markAssistantReceived(recovered.messages);
         setError(null);
       } catch (err) {
         if (loadTokenRef.current !== token) return;
-        console.error("MPGR Agent: crash recovery failed", err);
-        setError(serializeAgentFailure(err));
-        setThinking(false);
+        reportPrimaryAgentFailure("MPGR Agent: crash recovery failed", err);
       } finally {
         if (loadTokenRef.current === token) setThinking(false);
       }
@@ -309,29 +312,15 @@ export function useAgentChat() {
     };
   }, [address]);
 
-  // Production audit addendum — subscribes to `ai_provider_error`
-  // (lib/architecture/ai/fallback-ai-provider.ts,
-  // lib/architecture/core/types.ts:55) whenever the primary provider
-  // throws for any reason. Filters by the current address so a stale
-  // subscription from a previous wallet can't set an error for the
-  // wrong session. Reuses the existing `error` state — AgentErrorBanner
-  // classifies the API status/code/message into a user-facing banner.
-  //
-  // Fix — do not bother the user with a banner for an EXPECTED
-  // provider-availability failure that FallbackAIProvider has already
-  // recovered from (the reply the user sees is the fallback's, which
-  // succeeded). `payload.code` only carries one of these known codes
-  // when the failure came from the classified Gemini route response
-  // (see lib/architecture/ai/gemini-ai-provider.ts); a genuine
-  // unexpected/programming error never sets it, so it still surfaces
-  // here exactly as before. Diagnostics for every failure — expected or
-  // not — are still logged internally by fallback-ai-provider.ts
-  // regardless of what the UI shows.
+  // `ai_provider_error` is always secondary/background. Log it for
+  // observability and never promote it to AgentErrorBanner / Retry —
+  // including payloads with no `code` such as "Cross-site request rejected".
+  // Primary generateReply failures still surface via the catch paths below.
   useEffect(() => {
     const unsubscribe = agentEventBus.on("ai_provider_error", (payload) => {
       if (payload.address !== address) return;
-      if (payload.code && EXPECTED_PROVIDER_FAILURE_CODES.has(payload.code)) return;
-      setError([payload.code, payload.message].filter(Boolean).join(" "));
+      console.error("MPGR Agent: secondary request failed", payload);
+      void userFacingErrorFromAiProviderEvent(payload);
     });
     return unsubscribe;
   }, [address]);
@@ -348,6 +337,7 @@ export function useAgentChat() {
       const { commandName, result } = executed;
       const token = loadTokenRef.current;
       const startedAt = Date.now();
+      usableAssistantThisTurnRef.current = false;
 
       (async () => {
         if (result.kind === "error") {
@@ -370,6 +360,7 @@ export function useAgentChat() {
           const state = await agentAIService.runCommand(address, commandName, replyText);
           if (loadTokenRef.current !== token) return;
           setMessages(state.messages);
+          markAssistantReceived(state.messages);
           setError(null);
           const last = state.messages[state.messages.length - 1];
           setStreamingMessageId(last?.id ?? null);
@@ -382,9 +373,7 @@ export function useAgentChat() {
           setActionHistory(history);
         } catch (err) {
           if (loadTokenRef.current !== token) return;
-          console.error("MPGR Agent: command execution failed", err);
-          setError(serializeAgentFailure(err));
-          setThinking(false);
+          reportPrimaryAgentFailure("MPGR Agent: command execution failed", err);
           void recordAction(address, commandName, result, {
             success: false,
             durationMs: Date.now() - startedAt,
@@ -395,7 +384,7 @@ export function useAgentChat() {
         if (result.kind === "navigate") router.push(result.href);
       })();
     },
-    [address, context, router]
+    [address, context, router, markAssistantReceived, reportPrimaryAgentFailure]
   );
 
   const sendMessage = useCallback(
@@ -410,6 +399,7 @@ export function useAgentChat() {
       }
 
       const token = loadTokenRef.current;
+      usableAssistantThisTurnRef.current = false;
       setThinking(true);
       setError(null);
 
@@ -420,9 +410,7 @@ export function useAgentChat() {
           setMessages(afterUser.messages);
         } catch (err) {
           if (loadTokenRef.current !== token) return;
-          console.error("MPGR Agent: failed to persist message", err);
-          setError(serializeAgentFailure(err));
-          setThinking(false);
+          reportPrimaryAgentFailure("MPGR Agent: failed to persist message", err);
           return;
         }
 
@@ -432,6 +420,7 @@ export function useAgentChat() {
             const afterAssistant = await agentAIService.generateReply(address, trimmed, context);
             if (loadTokenRef.current !== token) return;
             setMessages(afterAssistant.messages);
+            markAssistantReceived(afterAssistant.messages);
             setError(null);
             const last = afterAssistant.messages[afterAssistant.messages.length - 1];
             setStreamingMessageId(last?.id ?? null);
@@ -442,21 +431,20 @@ export function useAgentChat() {
             }
           } catch (err) {
             if (loadTokenRef.current !== token) return;
-            console.error("MPGR Agent: failed to generate a reply", err);
-            setError(serializeAgentFailure(err));
-            setThinking(false);
+            reportPrimaryAgentFailure("MPGR Agent: failed to generate a reply", err);
           } finally {
             if (loadTokenRef.current === token) setThinking(false);
           }
         }, delay);
       })();
     },
-    [address, thinking, context, executeCommand, router]
+    [address, thinking, context, executeCommand, router, markAssistantReceived, reportPrimaryAgentFailure]
   );
 
   const retryLastMessage = useCallback(() => {
     if (!address || thinking) return;
     const token = loadTokenRef.current;
+    usableAssistantThisTurnRef.current = false;
     setThinking(true);
     setError(null);
 
@@ -474,6 +462,7 @@ export function useAgentChat() {
           const afterAssistant = await agentAIService.generateReply(address, lastUser.content, context);
           if (loadTokenRef.current !== token) return;
           setMessages(afterAssistant.messages);
+          markAssistantReceived(afterAssistant.messages);
           setError(null);
           const last = afterAssistant.messages[afterAssistant.messages.length - 1];
           if (last?.role === "assistant") {
@@ -481,19 +470,18 @@ export function useAgentChat() {
           }
         } catch (err) {
           if (loadTokenRef.current !== token) return;
-          console.error("MPGR Agent: retry failed", err);
-          setError(serializeAgentFailure(err));
-          setThinking(false);
+          reportPrimaryAgentFailure("MPGR Agent: retry failed", err);
         } finally {
           if (loadTokenRef.current === token) setThinking(false);
         }
       }, THINKING_DELAY_MIN_MS);
     })();
-  }, [address, thinking, context, router]);
+  }, [address, thinking, context, router, markAssistantReceived, reportPrimaryAgentFailure]);
 
   const regenerateLastMessage = useCallback(() => {
     if (!address || thinking) return;
     const token = loadTokenRef.current;
+    usableAssistantThisTurnRef.current = false;
     setThinking(true);
     setError(null);
     timeoutRef.current = setTimeout(async () => {
@@ -501,6 +489,7 @@ export function useAgentChat() {
         const result = await agentAIService.regenerate(address, context);
         if (loadTokenRef.current !== token) return;
         setMessages(result.messages);
+        markAssistantReceived(result.messages);
         setError(null);
         const last = result.messages[result.messages.length - 1];
         if (last?.role === "assistant") {
@@ -508,14 +497,12 @@ export function useAgentChat() {
         }
       } catch (err) {
         if (loadTokenRef.current !== token) return;
-        console.error("MPGR Agent: regenerate failed", err);
-        setError(serializeAgentFailure(err));
-        setThinking(false);
+        reportPrimaryAgentFailure("MPGR Agent: regenerate failed", err);
       } finally {
         if (loadTokenRef.current === token) setThinking(false);
       }
     }, THINKING_DELAY_MIN_MS);
-  }, [address, thinking, context, router]);
+  }, [address, thinking, context, router, markAssistantReceived, reportPrimaryAgentFailure]);
 
   const sendFeedback = useCallback(
     (messageId: string, feedback: AgentFeedback) => {

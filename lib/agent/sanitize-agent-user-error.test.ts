@@ -5,9 +5,12 @@ import {
   AGENT_NETWORK_USER_ERROR,
   AGENT_PROVIDER_USER_ERROR,
   AGENT_REQUEST_TOO_LARGE_USER_ERROR,
+  applyAgentFailureToChatState,
   presentAgentUserError,
   sanitizeAgentUserError,
   serializeAgentFailure,
+  shouldSurfaceAgentUserError,
+  userFacingErrorFromAiProviderEvent,
 } from "./sanitize-agent-user-error";
 
 const TRADE_PROMPT = "buy $5 USDC of AAPLc";
@@ -126,5 +129,122 @@ describe("serializeAgentFailure", () => {
     expect(serializeAgentFailure(err)).toBe("Authentication required");
     expect(serializeAgentFailure(err)).not.toMatch(/\b401\b|\b502\b|\b503\b/);
     expect(sanitizeAgentUserError(serializeAgentFailure(err))).toBe(AGENT_GENERIC_USER_ERROR);
+  });
+});
+
+const AAPLC_ASSISTANT = {
+  role: "assistant" as const,
+  content: "AAPLc oracle price $335.4662 · CDP reports liquidity",
+};
+
+describe("shouldSurfaceAgentUserError", () => {
+  it("shows a user-facing error when the primary request fails with no assistant response", () => {
+    expect(
+      shouldSurfaceAgentUserError({ source: "primary", hasUsableAssistantResponse: false }),
+    ).toBe(true);
+  });
+
+  it("does not show a user-facing error for a secondary failure after a successful assistant response", () => {
+    expect(
+      shouldSurfaceAgentUserError({ source: "secondary", hasUsableAssistantResponse: true }),
+    ).toBe(false);
+  });
+
+  it("does not show a user-facing error for an in-flight secondary failure", () => {
+    expect(
+      shouldSurfaceAgentUserError({ source: "secondary", hasUsableAssistantResponse: false }),
+    ).toBe(false);
+  });
+});
+
+describe("applyAgentFailureToChatState", () => {
+  it("primary agent failure with no assistant response -> user-facing error shown", () => {
+    const state = {
+      messages: [{ role: "user" as const, content: "Check the current price of AAPLc tokenized stock." }],
+      error: null,
+      thinking: true,
+    };
+    const next = applyAgentFailureToChatState(state, {
+      source: "primary",
+      rawError: "Failed to generate a reply",
+      hasUsableAssistantResponse: false,
+    });
+    expect(next.error).toBe("Failed to generate a reply");
+    expect(next.thinking).toBe(false);
+    expect(next.showRetry).toBe(true);
+    expect(next.messages).toEqual(state.messages);
+  });
+
+  it("successful assistant response + secondary request failure -> NO user-facing error shown", () => {
+    const state = {
+      messages: [
+        AAPLC_ASSISTANT,
+        { role: "user" as const, content: "Check the current price of AAPLc tokenized stock." },
+      ],
+      error: null,
+      thinking: true,
+    };
+    const next = applyAgentFailureToChatState(state, {
+      source: "secondary",
+      rawError: "Cross-site request rejected",
+      hasUsableAssistantResponse: true,
+    });
+    expect(next.error).toBeNull();
+    expect(next.thinking).toBe(true);
+    expect(next.showRetry).toBe(false);
+  });
+
+  it("keeps the successful assistant response visible after a secondary failure", () => {
+    const state = {
+      messages: [AAPLC_ASSISTANT],
+      error: null,
+      thinking: false,
+    };
+    const next = applyAgentFailureToChatState(state, {
+      source: "secondary",
+      rawError: "Cross-site request rejected",
+      hasUsableAssistantResponse: true,
+    });
+    expect(next.messages).toEqual(state.messages);
+    expect(next.messages[0]?.content).toContain("AAPLc oracle price");
+    expect(next.error).toBeNull();
+  });
+
+  it("does not show Retry for a secondary failure", () => {
+    const next = applyAgentFailureToChatState(
+      { messages: [AAPLC_ASSISTANT], error: null, thinking: false },
+      {
+        source: "secondary",
+        rawError: "Cross-site request rejected",
+        hasUsableAssistantResponse: true,
+      },
+    );
+    expect(next.showRetry).toBe(false);
+    expect(next.error).toBeNull();
+  });
+
+  it("does not leak Cross-site request rejected as banner copy if a primary failure uses that raw text", () => {
+    expect(sanitizeAgentUserError("Cross-site request rejected")).toBe(AGENT_GENERIC_USER_ERROR);
+    expect(sanitizeAgentUserError("Cross-site request rejected")).not.toMatch(/cross-site/i);
+  });
+});
+
+describe("userFacingErrorFromAiProviderEvent", () => {
+  it("does not surface a user-facing error for ai_provider_error with no code and CSRF message", () => {
+    const payload = { message: "Cross-site request rejected" };
+    expect("code" in payload).toBe(false);
+    expect(userFacingErrorFromAiProviderEvent(payload)).toBeNull();
+
+    const next = applyAgentFailureToChatState(
+      { messages: [AAPLC_ASSISTANT], error: null, thinking: false },
+      {
+        source: "secondary",
+        rawError: payload.message,
+        hasUsableAssistantResponse: true,
+      },
+    );
+    expect(next.error).toBeNull();
+    expect(next.showRetry).toBe(false);
+    expect(next.messages).toEqual([AAPLC_ASSISTANT]);
   });
 });

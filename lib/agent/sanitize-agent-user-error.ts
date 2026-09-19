@@ -7,6 +7,7 @@ export const AGENT_PROVIDER_USER_ERROR =
 export const AGENT_NETWORK_USER_ERROR = "Unable to reach the trading service. Please try again.";
 
 export type AgentUserErrorKind = "auth" | "quote" | "provider" | "network" | "too_large" | "generic";
+export type AgentFailureSource = "primary" | "secondary";
 
 export interface PresentedAgentUserError {
   message: string;
@@ -18,6 +19,12 @@ export interface PresentAgentUserErrorContext {
   lastUserMessage?: string;
 }
 
+export interface AgentChatErrorState<TMessage> {
+  messages: TMessage[];
+  error: string | null;
+  thinking: boolean;
+}
+
 const SIZE_RE =
   /too large|payload too large|request entity too large|body too large|content.?length|\b413\b/i;
 
@@ -25,7 +32,7 @@ const NETWORK_RE =
   /failed to fetch|networkerror|network error|load failed|err_network|err_internet|typeerror/i;
 
 const INTERNAL_RE =
-  /gemini|nvidia|openai|on-device|provider|upstream|rate limit|resource_exhausted|quota|\b429\b|\b500\b|\b502\b|\b503\b|provider_unreachable|provider_error|provider_rate_limited|request id|falling back/i;
+  /gemini|nvidia|openai|on-device|provider|upstream|rate limit|resource_exhausted|quota|\b429\b|\b500\b|\b502\b|\b503\b|provider_unreachable|provider_error|provider_rate_limited|request id|falling back|cross-site request rejected/i;
 
 const RAW_INTERNAL_RE =
   /request id|x-request-id|stack(?:trace)?|at \w+\.|vercel|function invocation|internal server error|trace id|ECONN|ENOENT|EPERM|{\s*"|\/workspace\/|\/app\/|\.ts:\d+/i;
@@ -125,6 +132,61 @@ export function serializeAgentFailure(err: unknown): string {
 }
 
 /**
+ * EventBus `ai_provider_error` is always a secondary/background hop.
+ * It must never become AgentErrorBanner copy — including CSRF bodies
+ * that have a message and no `code`.
+ */
+export function userFacingErrorFromAiProviderEvent(_payload: {
+  code?: string;
+  message?: string;
+}): string | null {
+  return null;
+}
+
+/**
+ * User-facing AgentErrorBanner is only for a failed PRIMARY request that
+ * did not produce a usable assistant reply. Secondary/background failures
+ * (provider hops, CSRF on a follow-up fetch, fallback recovery) stay in
+ * logs and must not replace a successful reply with a red banner.
+ */
+export function shouldSurfaceAgentUserError(input: {
+  source: AgentFailureSource;
+  hasUsableAssistantResponse: boolean;
+}): boolean {
+  return input.source === "primary" && !input.hasUsableAssistantResponse;
+}
+
+/**
+ * Pure UI-state transition for Agent chat errors. Messages are never
+ * removed. Secondary failures leave thinking/error untouched so a
+ * successful reply stays on screen without Retry.
+ */
+export function applyAgentFailureToChatState<TMessage>(
+  state: AgentChatErrorState<TMessage>,
+  failure: {
+    source: AgentFailureSource;
+    rawError: string;
+    hasUsableAssistantResponse: boolean;
+  },
+): AgentChatErrorState<TMessage> & { showRetry: boolean } {
+  if (
+    !shouldSurfaceAgentUserError({
+      source: failure.source,
+      hasUsableAssistantResponse: failure.hasUsableAssistantResponse,
+    })
+  ) {
+    return { ...state, showRetry: false };
+  }
+
+  return {
+    messages: state.messages,
+    error: failure.rawError,
+    thinking: false,
+    showRetry: presentAgentUserError(failure.rawError).retryable,
+  };
+}
+
+/**
  * Display-only sanitizer for the Agent red error banner.
  * Server/Vercel logs keep the original provider error.
  *
@@ -165,7 +227,9 @@ export function presentAgentUserError(
     !message ||
     INTERNAL_RE.test(message) ||
     looksLikeRawInternal(message) ||
-    /\b(required|failed|error|unable|could not|unavailable|unauthorized|forbidden|denied)\b/i.test(message)
+    /\b(required|failed|error|unable|could not|unavailable|unauthorized|forbidden|denied|rejected)\b/i.test(
+      message,
+    )
   ) {
     return { message: AGENT_GENERIC_USER_ERROR, kind: "generic", retryable: true };
   }
