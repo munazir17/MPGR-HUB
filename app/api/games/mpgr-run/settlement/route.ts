@@ -15,7 +15,7 @@
 // persisting its result).
 
 import { NextResponse } from "next/server";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { Address } from "viem";
 import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
 import type { PlayerWeekRecord, WeeklySettlement } from "@/lib/reward-allocation/allocation-types";
@@ -51,8 +51,12 @@ export const maxDuration = 120;
 function isAuthorized(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false; // never allow an unconfigured endpoint to run
-  const auth = request.headers.get("authorization");
-  return auth === `Bearer ${secret}`;
+  const auth = request.headers.get("authorization") ?? "";
+  const expected = `Bearer ${secret}`;
+  const a = Buffer.from(auth);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 async function runSettlementUnlocked(weekKeyOverride?: string) {

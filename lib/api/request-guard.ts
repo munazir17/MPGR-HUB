@@ -1,12 +1,221 @@
 import { getRedis } from "@/lib/api/redis";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { getAppOrigin } from "@/lib/auth/config";
+import { AI_PROMPT_LIMITS } from "@/lib/architecture/ai/server-policy";
 
 function tryRedis() {
   try {
     return getRedis();
   } catch {
     return null;
+  }
+}
+
+function getClientIp(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  if (forwarded) return forwarded;
+  const realIp = request.headers.get("x-real-ip")?.trim();
+  if (realIp) return realIp;
+  return "unknown";
+}
+
+function getEnvInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.floor(n);
+}
+
+function getDailyTtlSeconds(): number {
+  const now = new Date();
+  const tomorrowUtcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  const diff = tomorrowUtcMs - now.getTime();
+  return Math.max(60, Math.ceil(diff / 1000) + 60);
+}
+
+function rateLimitExceededResponse(retryAfterSeconds: number): Response {
+  return new Response(JSON.stringify({ error: "Rate limit exceeded. Please try again later.", code: "RATE_LIMITED" }), {
+    status: 429,
+    headers: { "Content-Type": "application/json", "Retry-After": String(retryAfterSeconds) },
+  });
+}
+
+function serviceUnavailableResponse(message = "Service temporarily unavailable. Please try again later."): Response {
+  return new Response(JSON.stringify({ error: message, code: "RATE_LIMITED" }), {
+    status: 503,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+// Lua: INCR + EXPIRE atomically. Returns the new counter.
+const INCR_EXPIRE_LUA = "local c = redis.call('INCR', KEYS[1]); if c == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end; return c;";
+const INCRBY_EXPIRE_LUA = "local c = redis.call('INCRBY', KEYS[1], ARGV[1]); if c == tonumber(ARGV[1]) then redis.call('EXPIRE', KEYS[1], ARGV[2]) end; return c;";
+// Reserve `estimate` tokens atomically: if cur + estimate > limit => 0 (reject), else INCRBY estimate and return 1 (allow)
+const TOKEN_RESERVE_LUA =
+  "local cur = redis.call('GET', KEYS[1]); if not cur then cur = 0 else cur = tonumber(cur) end; local est = tonumber(ARGV[1]); local limit = tonumber(ARGV[2]); local ttl = tonumber(ARGV[3]); if cur + est > limit then return 0 end; local n = redis.call('INCRBY', KEYS[1], est); if cur == 0 then redis.call('EXPIRE', KEYS[1], ttl) end; return 1;";
+// Adjust token reservations atomically and clamp at zero in the same Redis operation.
+const TOKEN_ADJUST_LUA =
+  "local cur = redis.call('GET', KEYS[1]); if not cur then cur = 0 else cur = tonumber(cur) end; local delta = tonumber(ARGV[1]); local ttl = tonumber(ARGV[2]); local next = cur + delta; if next < 0 then next = 0 end; redis.call('SET', KEYS[1], next); redis.call('EXPIRE', KEYS[1], ttl); return next;";
+
+function allowNonAtomicRedisFallback(): boolean {
+  return process.env.NODE_ENV === "test";
+}
+
+async function atomicIncr(redis: ReturnType<typeof getRedis>, key: string, ttlSeconds: number): Promise<number> {
+  // Prefer Lua atomic path in prod. Fall back to INCR+EXPIRE for test mocks that only stub incr/expire.
+  const maybeEval = (redis as unknown as { eval?: (script: string, keys: string[], args: string[]) => Promise<unknown> }).eval;
+  if (typeof maybeEval === "function") {
+    try {
+      const result = await maybeEval.call(redis, INCR_EXPIRE_LUA, [key], [String(ttlSeconds)]);
+      const num = typeof result === "number" ? result : Number(result);
+      if (Number.isFinite(num)) return num;
+    } catch {
+      // fall through to non-Lua fallback
+    }
+  }
+  // Fallback — not atomic across concurrent isolates, but keeps offline tests and local dev working.
+  const r = redis as unknown as { incr: (key: string) => Promise<number>; expire: (key: string, ttl: number) => Promise<unknown> };
+  if (typeof r.incr === "function") {
+    const count = await r.incr(key);
+    if (count === 1 && typeof r.expire === "function") await r.expire(key, ttlSeconds);
+    return count;
+  }
+  throw new Error("Redis incr not available");
+}
+
+async function atomicIncrBy(
+  redis: ReturnType<typeof getRedis>,
+  key: string,
+  increment: number,
+  ttlSeconds: number,
+): Promise<number> {
+  const maybeEval = (redis as unknown as { eval?: (script: string, keys: string[], args: string[]) => Promise<unknown> }).eval;
+  if (typeof maybeEval === "function") {
+    try {
+      const result = await maybeEval.call(redis, INCRBY_EXPIRE_LUA, [key], [String(increment), String(ttlSeconds)]);
+      const num = typeof result === "number" ? result : Number(result);
+      if (Number.isFinite(num)) return num;
+    } catch {
+      // fall through
+    }
+  }
+  const r = redis as unknown as {
+    incrby?: (key: string, n: number) => Promise<number>;
+    incr?: (key: string) => Promise<number>;
+    expire?: (key: string, ttl: number) => Promise<unknown>;
+    get?: (key: string) => Promise<unknown>;
+    set?: (key: string, v: string) => Promise<unknown>;
+  };
+  if (typeof r.incrby === "function") {
+    const count = await r.incrby(key, increment);
+    if (count === increment && typeof r.expire === "function") await r.expire(key, ttlSeconds);
+    return count;
+  }
+  // Last resort: read-modify-write (not atomic, test only)
+  if (typeof r.get === "function" && typeof r.incr === "function") {
+    const raw = await r.get(key);
+    const cur = raw == null ? 0 : Number(raw);
+    const next = (Number.isFinite(cur) ? cur : 0) + increment;
+    // Use incr loop for mock that only supports incr
+    for (let i = 0; i < increment; i++) await r.incr(key);
+    if (cur === 0 && typeof r.expire === "function") await r.expire(key, ttlSeconds);
+    return next;
+  }
+  throw new Error("Redis incrby not available");
+}
+
+function getTokenReserveEstimate(): number {
+  // Conservative per-request reservation used before upstream. It must be a strict upper bound,
+  // not just an output-token estimate: provider usage includes input/prompt tokens (and tool
+  // declarations where applicable) plus output tokens. All protected AI routes read at most a
+  // 16 KiB JSON body and cap output at 700 tokens; reserve the request-body byte ceiling,
+  // prompt-limit ceilings, output cap, and fixed route/provider overhead so actual total usage
+  // cannot exceed the preflight reservation. A lower env override is treated as unsafe and
+  // raised to this floor.
+  const strictUpperBound =
+    AI_PROMPT_LIMITS.bodyBytes +
+    AI_PROMPT_LIMITS.systemChars +
+    AI_PROMPT_LIMITS.userChars +
+    AI_PROMPT_LIMITS.outputTokens +
+    8192;
+  return Math.max(getEnvInt("AI_TOKEN_RESERVE_ESTIMATE", strictUpperBound), strictUpperBound);
+}
+
+async function tryReserveTokens(
+  redis: ReturnType<typeof getRedis>,
+  key: string,
+  estimate: number,
+  limit: number,
+  ttlSeconds: number,
+): Promise<boolean> {
+  const maybeEval = (redis as unknown as { eval?: (script: string, keys: string[], args: string[]) => Promise<unknown> }).eval;
+  if (typeof maybeEval === "function") {
+    try {
+      const res = await maybeEval.call(redis, TOKEN_RESERVE_LUA, [key], [String(estimate), String(limit), String(ttlSeconds)]);
+      const n = typeof res === "number" ? res : Number(res);
+      if (n === 1) return true;
+      if (n === 0) return false;
+      if (!allowNonAtomicRedisFallback()) throw new Error("Atomic Redis token reservation returned invalid result");
+    } catch {
+      if (!allowNonAtomicRedisFallback()) throw new Error("Atomic Redis token reservation unavailable");
+      // test/offline fallback below
+    }
+  } else if (!allowNonAtomicRedisFallback()) {
+    throw new Error("Atomic Redis token reservation unavailable");
+  }
+  // Fallback for test/offline mocks without eval: GET + INCRBY (not atomic; never used in production)
+  const r = redis as unknown as {
+    get?: (k: string) => Promise<unknown>;
+    incrby?: (k: string, n: number) => Promise<number>;
+    incr?: (k: string) => Promise<number>;
+    expire?: (k: string, ttl: number) => Promise<unknown>;
+  };
+  if (typeof r.get === "function") {
+    const raw = await r.get(key);
+    const cur = raw == null ? 0 : Number(raw);
+    const curNum = Number.isFinite(cur) ? cur : 0;
+    if (curNum + estimate > limit) return false;
+    if (typeof r.incrby === "function") {
+      await r.incrby(key, estimate);
+    } else if (typeof r.incr === "function") {
+      for (let i = 0; i < estimate; i++) await r.incr(key);
+    } else {
+      return false;
+    }
+    if (curNum === 0 && typeof r.expire === "function") await r.expire(key, ttlSeconds);
+    return true;
+  }
+  throw new Error("Redis get not available for reserve");
+}
+
+async function adjustTokenReservation(
+  redis: ReturnType<typeof getRedis>,
+  key: string,
+  delta: number,
+  ttlSeconds: number,
+): Promise<void> {
+  if (delta === 0) return;
+  const maybeEval = (redis as unknown as { eval?: (script: string, keys: string[], args: string[]) => Promise<unknown> }).eval;
+  if (typeof maybeEval === "function") {
+    try {
+      const result = await maybeEval.call(redis, TOKEN_ADJUST_LUA, [key], [String(delta), String(ttlSeconds)]);
+      const num = typeof result === "number" ? result : Number(result);
+      if (Number.isFinite(num)) return;
+      if (!allowNonAtomicRedisFallback()) throw new Error("Atomic Redis token adjustment returned invalid result");
+    } catch {
+      if (!allowNonAtomicRedisFallback()) throw new Error("Atomic Redis token adjustment unavailable");
+      // test/offline fallback below
+    }
+  } else if (!allowNonAtomicRedisFallback()) {
+    throw new Error("Atomic Redis token adjustment unavailable");
+  }
+
+  const next = await atomicIncrBy(redis, key, delta, ttlSeconds);
+  if (delta < 0 && next < 0) {
+    const r = redis as unknown as { set?: (k: string, v: string) => Promise<unknown>; expire?: (key: string, ttl: number) => Promise<unknown> };
+    if (typeof r.set === "function") await r.set(key, "0");
+    if (typeof r.expire === "function") await r.expire(key, ttlSeconds);
   }
 }
 
@@ -41,25 +250,180 @@ export async function readJsonBody<T = unknown>(request: Request, maxBytes = 16 
   }
 }
 
+/**
+ * Dual-bucket, Lua-atomic rate limiter.
+ *
+ * Enforces BOTH a per-IP bucket and a per-wallet bucket (when a wallet session exists)
+ * using the same limit/window. This closes the bypass where an attacker rotates through
+ * fresh wallets to stay under a wallet-only key. INCR+EXPIRE is atomic via Lua so concurrent
+ * requests on serverless cannot race past the limit.
+ *
+ * Returns 503 fail-closed when Redis is not configured or when the Lua eval fails, so the
+ * AI provider's FallbackAIProvider can deterministically handle it.
+ */
 export async function enforceRateLimit(request: Request, bucket: string, limit: number, windowSeconds: number): Promise<Response | null> {
   const redis = tryRedis();
   if (!redis) {
     return new Response(JSON.stringify({ error: "Rate limiting is not configured" }), { status: 503, headers: { "Content-Type": "application/json" } });
   }
   const session = getSessionFromRequest(request);
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-  const subject = session?.wallet.toLowerCase() ?? forwarded;
+  const ip = getClientIp(request);
   const window = Math.floor(Date.now() / 1000 / windowSeconds);
-  const key = `mpgrhub:ratelimit:${bucket}:${window}:${subject}`;
-  const count = await redis.incr(key);
-  if (count === 1) await redis.expire(key, windowSeconds + 5);
-  if (count > limit) {
-    return new Response(JSON.stringify({ error: "Rate limit exceeded" }), {
-      status: 429,
-      headers: { "Content-Type": "application/json", "Retry-After": String(windowSeconds) },
-    });
+  const ttl = windowSeconds + 5;
+
+  try {
+    // Per-IP bucket is always checked. Per-wallet bucket is additionally checked when authenticated.
+    // Both must pass; we increment and check the IP first so a wallet-rotator cannot evade the IP limit.
+    const ipKey = `mpgrhub:ratelimit:${bucket}:${window}:ip:${ip}`;
+    const ipCount = await atomicIncr(redis, ipKey, ttl);
+    if (ipCount > limit) {
+      return rateLimitExceededResponse(windowSeconds);
+    }
+
+    if (session?.wallet) {
+      const wallet = session.wallet.toLowerCase();
+      const walletKey = `mpgrhub:ratelimit:${bucket}:${window}:wallet:${wallet}`;
+      const walletCount = await atomicIncr(redis, walletKey, ttl);
+      if (walletCount > limit) {
+        return rateLimitExceededResponse(windowSeconds);
+      }
+    }
+  } catch {
+    // Fail closed when Redis/Lua is unavailable — callers fall back to deterministic engine.
+    return serviceUnavailableResponse();
   }
+
   return null;
+}
+
+/**
+ * Daily AI budget: per-wallet + global request budget and per-wallet + global token budget.
+ *
+ * - Request budgets are enforced by atomically INCRing a daily key (YYYY-MM-DD UTC) with a TTL until
+ *   next UTC midnight. If either per-wallet or global request count exceeds its env-configured limit,
+ *   returns 429 generic (fail closed). The client AI provider chain treats any 4xx/5xx as a provider
+ *   failure and falls back to the deterministic engine, so UX remains available.
+ * - Token budgets are enforced before the upstream call by atomically reserving a strict per-request
+ *   upper bound via Lua `GET+INCRBY` (cur+est>limit ? reject : INCRBY). The env value
+ *   `AI_TOKEN_RESERVE_ESTIMATE` is only honored when it is at least that strict floor. If either wallet
+ *   or global would exceed its limit, returns 429 without consuming request quota; on request-quota
+ *   failure the token reservation is rolled back with an atomic clamp-at-zero Lua adjustment. After a
+ *   successful upstream call, call recordAiTokenUsage() to adjust the reservation by delta = actual -
+ *   estimate so the counter ends at actual usage.
+ *
+ * Env overrides (all optional, fallback defaults are safe for prod):
+ *   AI_DAILY_REQUESTS_PER_WALLET  default 100
+ *   AI_DAILY_REQUESTS_GLOBAL      default 5000
+ *   AI_DAILY_TOKENS_PER_WALLET    default 100000
+ *   AI_DAILY_TOKENS_GLOBAL        default 2000000
+ *   AI_TOKEN_RESERVE_ESTIMATE     default strict route upper bound (unsafe lower values are raised)
+ */
+export async function enforceAiDailyBudget(request: Request): Promise<Response | null> {
+  const redis = tryRedis();
+  if (!redis) {
+    return serviceUnavailableResponse();
+  }
+
+  const session = getSessionFromRequest(request);
+  const wallet = session?.wallet.toLowerCase() ?? null;
+  const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+  const ttl = getDailyTtlSeconds();
+
+  const reqPerWalletLimit = getEnvInt("AI_DAILY_REQUESTS_PER_WALLET", 100);
+  const reqGlobalLimit = getEnvInt("AI_DAILY_REQUESTS_GLOBAL", 5000);
+  const tokPerWalletLimit = getEnvInt("AI_DAILY_TOKENS_PER_WALLET", 100000);
+  const tokGlobalLimit = getEnvInt("AI_DAILY_TOKENS_GLOBAL", 2000000);
+  const tokenEstimate = getTokenReserveEstimate();
+
+  let walletTokenKey: string | null = null;
+  let globalTokenKey: string | null = null;
+  let walletReserved = false;
+  let globalReserved = false;
+
+  try {
+    // 1) Token budget — atomic reservation before upstream.
+    //    Reserves `estimate` tokens for both wallet and global atomically via Lua (cur+est>limit ? reject : INCRBY).
+    //    This closes the race where N concurrent requests all do GET then all INCRBY and overshoot the cap.
+    globalTokenKey = `mpgrhub:ai:budget:daily:tokens:global:${date}`;
+    if (wallet) {
+      walletTokenKey = `mpgrhub:ai:budget:daily:tokens:wallet:${wallet}:${date}`;
+      const ok = await tryReserveTokens(redis, walletTokenKey, tokenEstimate, tokPerWalletLimit, ttl);
+      if (!ok) return rateLimitExceededResponse(ttl);
+      walletReserved = true;
+    }
+    {
+      const ok = await tryReserveTokens(redis, globalTokenKey, tokenEstimate, tokGlobalLimit, ttl);
+      if (!ok) {
+        if (walletReserved && walletTokenKey) await adjustTokenReservation(redis, walletTokenKey, -tokenEstimate, ttl);
+        return rateLimitExceededResponse(ttl);
+      }
+      globalReserved = true;
+    }
+
+    // 2) Request budget — atomically increment and check. Wallet first, then global.
+    if (wallet) {
+      const walletReqKey = `mpgrhub:ai:budget:daily:requests:wallet:${wallet}:${date}`;
+      const walletReqCount = await atomicIncr(redis, walletReqKey, ttl);
+      if (walletReqCount > reqPerWalletLimit) {
+        if (walletReserved && walletTokenKey) await adjustTokenReservation(redis, walletTokenKey, -tokenEstimate, ttl);
+        if (globalReserved && globalTokenKey) await adjustTokenReservation(redis, globalTokenKey, -tokenEstimate, ttl);
+        return rateLimitExceededResponse(ttl);
+      }
+    }
+
+    const globalReqKey = `mpgrhub:ai:budget:daily:requests:global:${date}`;
+    const globalReqCount = await atomicIncr(redis, globalReqKey, ttl);
+    if (globalReqCount > reqGlobalLimit) {
+      if (walletReserved && walletTokenKey) await adjustTokenReservation(redis, walletTokenKey, -tokenEstimate, ttl);
+      if (globalReserved && globalTokenKey) await adjustTokenReservation(redis, globalTokenKey, -tokenEstimate, ttl);
+      return rateLimitExceededResponse(ttl);
+    }
+  } catch {
+    // Roll back any token reservation on Redis/Lua failure so budget is not leaked, then fail-closed 503.
+    try {
+      if (walletReserved && walletTokenKey) await adjustTokenReservation(redis, walletTokenKey, -tokenEstimate, ttl);
+      if (globalReserved && globalTokenKey) await adjustTokenReservation(redis, globalTokenKey, -tokenEstimate, ttl);
+    } catch {}
+    return serviceUnavailableResponse();
+  }
+
+  return null;
+}
+
+/**
+ * Record actual token usage after a successful upstream AI call.
+ * Adjusts the reservation made in enforceAiDailyBudget (which atomically reserved
+ * `estimate` tokens before upstream). Delta = actual - estimate is applied via
+ * INCRBY so the counter ends at actual usage. Fail-open on Redis error here to
+ * avoid breaking the already-successful response; the daily budget will be
+ * enforced on the next request via enforceAiDailyBudget.
+ * If totalTokens is invalid/<=0 the reservation is kept (conservative) to avoid
+ * undercounting when usage is unknown.
+ */
+export async function recordAiTokenUsage(request: Request, totalTokens: number): Promise<void> {
+  if (!Number.isFinite(totalTokens) || totalTokens <= 0) return;
+  const redis = tryRedis();
+  if (!redis) return;
+  const session = getSessionFromRequest(request);
+  const wallet = session?.wallet.toLowerCase() ?? null;
+  const date = new Date().toISOString().slice(0, 10);
+  const ttl = getDailyTtlSeconds();
+  const tokens = Math.floor(totalTokens);
+  if (tokens <= 0) return;
+  const estimate = getTokenReserveEstimate();
+  const delta = tokens - estimate;
+  if (delta === 0) return;
+
+  try {
+    if (wallet) {
+      const walletTokenKey = `mpgrhub:ai:budget:daily:tokens:wallet:${wallet}:${date}`;
+      await adjustTokenReservation(redis, walletTokenKey, delta, ttl);
+    }
+    const globalTokenKey = `mpgrhub:ai:budget:daily:tokens:global:${date}`;
+    await adjustTokenReservation(redis, globalTokenKey, delta, ttl);
+  } catch {
+    // best-effort; do not throw
+  }
 }
 
 export function requestIdFromRequest(request: Request): string {

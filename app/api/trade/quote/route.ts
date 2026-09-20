@@ -20,11 +20,18 @@ export async function POST(request: Request) {
   if (originError) return withRequestId(originError, requestId);
   const session = getSessionFromRequest(request);
   if (!session) return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: { "Cache-Control": "no-store" } });
-  const rate = checkRateLimit(`${session.wallet.toLowerCase()}:trade-quote`, RATE_LIMIT, RATE_WINDOW_MS);
-  if (!rate.allowed) {
+  const walletRate = await checkRateLimit(`${session.wallet.toLowerCase()}:trade-quote`, RATE_LIMIT, RATE_WINDOW_MS);
+  if (!walletRate.allowed) {
     return json(
       { error: "Too many requests. Please slow down.", code: "RATE_LIMITED" },
-      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) } },
+      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(walletRate.retryAfterSeconds) } },
+    );
+  }
+  const ipRate = await checkRateLimit(`${clientIpFromRequest(request)}:trade-quote:ip`, RATE_LIMIT, RATE_WINDOW_MS);
+  if (!ipRate.allowed) {
+    return json(
+      { error: "Too many requests. Please slow down.", code: "RATE_LIMITED" },
+      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(ipRate.retryAfterSeconds) } },
     );
   }
   const parsedBody = await readJsonBody(request);

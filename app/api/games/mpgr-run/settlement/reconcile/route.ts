@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { reconcileSettlement } from "@/lib/reward-allocation/settlement-reconciliation";
 import { getPreviousWeekKey } from "@/lib/reward-allocation/settlement-engine";
 import { requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
@@ -21,7 +22,13 @@ const STUCK_ALLOCATING_THRESHOLD_MS = Number(
 
 function authorized(request: Request) {
   const secret = process.env.CRON_SECRET;
-  return !!secret && request.headers.get("authorization") === `Bearer ${secret}`;
+  if (!secret) return false;
+  const auth = request.headers.get("authorization") ?? "";
+  const expected = `Bearer ${secret}`;
+  const a = Buffer.from(auth);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 async function reconcileAndCheckStuck(weekKey: string) {

@@ -17,6 +17,17 @@ vi.mock("@/lib/trade/tokenized-stock-swap", () => ({
   prepareTokenizedStockSwap,
 }));
 
+// Task 3: trade limiter is now async Redis-backed (wallet + IP).
+// Mock it so this unit test never touches Redis/network and the
+// authenticated success path resolves immediately.
+vi.mock("@/lib/trade/trade-rate-limit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/trade/trade-rate-limit")>();
+  return {
+    ...actual,
+    checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 10, retryAfterSeconds: 0 }),
+  };
+});
+
 const APP_ORIGIN = "https://mpgrhub.xyz";
 const SESSION_WALLET = "0xd57b0000000000000000000000000000000095f7";
 
