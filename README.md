@@ -28,7 +28,7 @@ See `docs/SECURITY_REMEDIATION.md` and `docs/FINAL_REMEDIATION_VERIFICATION.md`.
 
 ## Technology stack (actual)
 
-- Next.js 15 App Router, React 18, TypeScript strict, Tailwind CSS
+- Next.js 16.3.5 App Router, React 18, TypeScript strict, Tailwind CSS
 - Wagmi + RainbowKit + Viem
 - Base mainnet only
 - Upstash Redis / Vercel KV for sessions, XP, referrals, game allocation
@@ -91,10 +91,10 @@ There is no first-party Dockerfile or docker-compose in this repository. Claims 
 These are **not** done and must not be marked fixed:
 
 1. Independent smart-contract audit and production funding review
-2. Real replay/anti-cheat for MPGR Run (heartbeats are a liveness signal, not proof of play)
+2. Full anti-cheat certification for MPGR Run — in-process deterministic authoritative replay is implemented (`lib/games/mpgr-run/authoritative-replay.ts`: server-issued seed + input trace replayed tick-for-tick, score recomputed, drift-tolerant timing checks), plus server sessions, heartbeats, timing/rate/idempotency gates; external verifier URL remains an additional operator gate, and no independent anti-cheat audit has been performed
 3. Referral sybil identity
 4. Vault-level settlement idempotency or a durable outbox
-5. Full 204MB game-art conversion (only lossless PNG work has been done)
+5. Further game-art optimization — lossless PNG → WebP migration is done (55 files under `public/games/mpgr-run/`, 108.69 MiB → 76.37 MiB, −29.7%, total `public/` 82M), dimensions unchanged, pixel-exact verified; remaining work is responsive sizes / lazy-load / preloading, not format conversion
 6. Split of `RunGame.tsx` (physics helpers were extracted; the component is still large)
 
 ## Licensing
