@@ -21,7 +21,7 @@ const RATE_LIMIT = 60; // requests — read-only catalog/research, higher budget
 const RATE_WINDOW_MS = 60_000;
 
 export async function GET(request: Request) {
-  const rate = checkRateLimit(`${clientIpFromRequest(request)}:trade-stocks-research`, RATE_LIMIT, RATE_WINDOW_MS);
+  const rate = await checkRateLimit(`${clientIpFromRequest(request)}:trade-stocks-research`, RATE_LIMIT, RATE_WINDOW_MS);
   if (!rate.allowed) {
     return NextResponse.json(
       { error: "Too many requests. Please slow down.", code: "RATE_LIMITED" },

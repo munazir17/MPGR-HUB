@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getRoutedSwapPrice } from "@/lib/trade/trade-swap-router";
 import { parseTradeSwapRequest } from "@/lib/trade/trade-request";
-import { checkRateLimit } from "@/lib/trade/trade-rate-limit";
+import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 import { readJsonBody, requestIdFromRequest, withRequestId, verifyTrustedOrigin } from "@/lib/api/request-guard";
 import { getSessionFromRequest } from "@/lib/auth/session";
 
@@ -21,11 +21,18 @@ export async function POST(request: Request) {
   if (!session) {
     return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: { "Cache-Control": "no-store" } });
   }
-  const rate = checkRateLimit(`${session.wallet.toLowerCase()}:trade-price`, RATE_LIMIT, RATE_WINDOW_MS);
-  if (!rate.allowed) {
+  const walletRate = await checkRateLimit(`${session.wallet.toLowerCase()}:trade-price`, RATE_LIMIT, RATE_WINDOW_MS);
+  if (!walletRate.allowed) {
     return json(
       { error: "Too many requests. Please slow down.", code: "RATE_LIMITED" },
-      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) } },
+      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(walletRate.retryAfterSeconds) } },
+    );
+  }
+  const ipRate = await checkRateLimit(`${clientIpFromRequest(request)}:trade-price:ip`, RATE_LIMIT, RATE_WINDOW_MS);
+  if (!ipRate.allowed) {
+    return json(
+      { error: "Too many requests. Please slow down.", code: "RATE_LIMITED" },
+      { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(ipRate.retryAfterSeconds) } },
     );
   }
 

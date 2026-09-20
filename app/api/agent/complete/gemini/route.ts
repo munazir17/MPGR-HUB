@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import { enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody, verifyTrustedOrigin } from "@/lib/api/request-guard";
+import {
+  enforceAiDailyBudget,
+  enforceRateLimit,
+  recordAiTokenUsage,
+  requestIdFromRequest,
+  withRequestId,
+  readJsonBody,
+  verifyTrustedOrigin,
+} from "@/lib/api/request-guard";
 import { AI_PROMPT_LIMITS, composeTrustedPromptParts, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
 import {
   buildGeminiGenerateContentRequest,
@@ -86,6 +94,8 @@ export async function POST(request: Request) {
   if (!auth) return respond({ error: "Authentication required" }, { status: 401 });
   const rateError = await enforceRateLimit(request, "ai", 20, 60);
   if (rateError) return withRequestId(rateError, requestId);
+  const budgetError = await enforceAiDailyBudget(request);
+  if (budgetError) return withRequestId(budgetError, requestId);
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
@@ -284,5 +294,9 @@ export async function POST(request: Request) {
     completionTokens: usage?.candidatesTokenCount ?? null,
     totalTokens: usage?.totalTokenCount ?? null,
   });
+  const totalTokensForBudget = usage?.totalTokenCount ?? (usage?.promptTokenCount ?? 0) + (usage?.candidatesTokenCount ?? 0);
+  if (Number.isFinite(totalTokensForBudget) && totalTokensForBudget > 0) {
+    await recordAiTokenUsage(request, totalTokensForBudget);
+  }
   return respond({ content });
 }

@@ -16,6 +16,8 @@ vi.mock("@/lib/api/request-guard", async (importOriginal) => {
   return {
     ...actual,
     enforceRateLimit: vi.fn().mockResolvedValue(null),
+    enforceAiDailyBudget: vi.fn().mockResolvedValue(null),
+    recordAiTokenUsage: vi.fn().mockResolvedValue(undefined),
   };
 });
 

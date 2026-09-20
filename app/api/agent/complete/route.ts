@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import { enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody, verifyTrustedOrigin } from "@/lib/api/request-guard";
+import {
+  enforceAiDailyBudget,
+  enforceRateLimit,
+  recordAiTokenUsage,
+  requestIdFromRequest,
+  withRequestId,
+  readJsonBody,
+  verifyTrustedOrigin,
+} from "@/lib/api/request-guard";
 import { composeTrustedPromptParts, compactPromptInputs, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
 
 // Phase 3C Part 6 — server-side Route Handler for the OpenAI provider.
@@ -14,7 +22,7 @@ import { composeTrustedPromptParts, compactPromptInputs, validatePromptInputs } 
 // POST /api/agent/complete — it has no knowledge of the API key, the
 // model name, or OpenAI's endpoint at all.
 //
-// Runs on Node (default runtime, no `export const runtime = "edge"`) —
+// Runs on Node (default runtime, no `export const runtime = \"edge\"`) —
 // no reason to opt into Edge for a single outbound fetch per turn.
 //
 // Deliberately thin: parses and forwards the model's raw JSON string
@@ -47,6 +55,8 @@ export async function POST(request: Request) {
   if (!auth) return respond({ error: "Authentication required" }, { status: 401 });
   const rateError = await enforceRateLimit(request, "ai", 20, 60);
   if (rateError) return withRequestId(rateError, requestId);
+  const budgetError = await enforceAiDailyBudget(request);
+  if (budgetError) return withRequestId(budgetError, requestId);
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     // No key configured — a clear, fast 503 rather than a hung request.
@@ -134,5 +144,9 @@ export async function POST(request: Request) {
 
   const usage = (data as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } }).usage;
   console.info("[openai-complete]", { requestId, wallet: auth.wallet, model, promptChars: body.userPrompt.length, completionTokens: usage?.completion_tokens ?? null, promptTokens: usage?.prompt_tokens ?? null });
+  const totalTokensForBudget = usage?.total_tokens ?? (usage?.prompt_tokens ?? 0) + (usage?.completion_tokens ?? 0);
+  if (Number.isFinite(totalTokensForBudget) && totalTokensForBudget > 0) {
+    await recordAiTokenUsage(request, totalTokensForBudget);
+  }
   return respond({ content });
 }
