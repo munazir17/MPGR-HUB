@@ -18,6 +18,19 @@
 // invoked. The existing x402_discover_resource / x402_prepare_payment
 // tools keep this URL as their backend.
 //
+// Access control:
+// This route makes an OUTBOUND server-side request to a URL chosen by
+// the caller. Unauthenticated, that is an open proxy and a free way to
+// burn AgentKit/CDP quota, so it now requires the same three gates the
+// other x402 routes use:
+//   1. verifyTrustedOrigin  — the session cookie is SameSite=None (for
+//      the Mini App webview), so origin must be checked explicitly.
+//   2. an authenticated mpgr_session.
+//   3. enforceRateLimit — same 10/60s budget as /api/x402/register.
+// The in-browser x402_discover_resource / x402_prepare_payment tools
+// call this through fetchWithSession (credentials: "include"), and the
+// browser supplies Origin, so the existing agent flow is unchanged.
+//
 // AgentKit is loaded with a native dynamic import() INSIDE POST's
 // try/catch. A static import would evaluate @coinbase/agentkit →
 // @coinbase/cdp-sdk CJS jwt.js → require("jose") at module init,
@@ -26,7 +39,14 @@
 // catchable and equivalent to PROVIDER_ERROR.
 
 import { NextResponse } from "next/server";
-import { readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
+import {
+  enforceRateLimit,
+  readJsonBody,
+  requestIdFromRequest,
+  verifyTrustedOrigin,
+  withRequestId,
+} from "@/lib/api/request-guard";
+import { getSessionFromRequest } from "@/lib/auth/session";
 
 import {
   assertPublicHttpsUrl,
@@ -107,6 +127,23 @@ interface DiscoverRequestBody {
 
 export async function POST(request: Request) {
   const requestId = requestIdFromRequest(request);
+
+  const originError = verifyTrustedOrigin(request);
+  if (originError) return withRequestId(originError, requestId);
+
+  if (!getSessionFromRequest(request)) {
+    return withRequestId(
+      NextResponse.json(
+        { error: "Authentication required", code: "AUTH_REQUIRED" },
+        { status: 401, headers: { "Cache-Control": "no-store" } },
+      ),
+      requestId,
+    );
+  }
+
+  const rateError = await enforceRateLimit(request, "x402-discover", 10, 60);
+  if (rateError) return withRequestId(rateError, requestId);
+
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
   const body = parsedBody.value as DiscoverRequestBody;

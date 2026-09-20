@@ -1,11 +1,33 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { X402_SUPPORTED_NETWORK } from "@/lib/x402/x402-config";
 
-const { mockInvoke, mockDiscover } = vi.hoisted(() => ({
-  mockInvoke: vi.fn(),
-  mockDiscover: vi.fn(),
+const { mockInvoke, mockDiscover, mockGetSession, mockEnforceRateLimit } =
+  vi.hoisted(() => ({
+    mockInvoke: vi.fn(),
+    mockDiscover: vi.fn(),
+    mockGetSession: vi.fn(),
+    mockEnforceRateLimit: vi.fn(),
+  }));
+
+// The route now requires an authenticated session and a trusted
+// Origin. These existing behaviour tests are about the discovery logic
+// BEHIND those gates, so the session is stubbed as present and the
+// requests below carry a matching Origin. The gates themselves have
+// their own coverage in route.auth.test.ts.
+vi.mock("@/lib/auth/session", () => ({
+  getSessionFromRequest: (...args: unknown[]) => mockGetSession(...args),
 }));
+
+vi.mock("@/lib/api/request-guard", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/lib/api/request-guard")
+  >("@/lib/api/request-guard");
+  return {
+    ...actual,
+    enforceRateLimit: (...args: unknown[]) => mockEnforceRateLimit(...args),
+  };
+});
 
 vi.mock("@/lib/architecture/agentkit", async () => {
   const mapX402 = await vi.importActual<
@@ -29,18 +51,41 @@ vi.mock("@/lib/x402/x402-discover", async () => {
   };
 });
 
+const APP_ORIGIN = "https://mpgrhub.xyz";
+
 function jsonRequest(body: unknown): Request {
-  return new Request("http://localhost/api/x402/discover", {
+  return new Request(`${APP_ORIGIN}/api/x402/discover`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // A real browser always sets Origin on a POST; verifyTrustedOrigin
+      // requires it.
+      origin: APP_ORIGIN,
+    },
     body: JSON.stringify(body),
   });
 }
 
 describe("POST /api/x402/discover via AgentKit", () => {
+  let savedAppOrigin: string | undefined;
+
+  beforeEach(() => {
+    savedAppOrigin = process.env.APP_ORIGIN;
+    process.env.APP_ORIGIN = APP_ORIGIN;
+    mockGetSession.mockReturnValue({
+      wallet: "0x1111111111111111111111111111111111111111",
+      chainId: 8453,
+    });
+    mockEnforceRateLimit.mockResolvedValue(null);
+  });
+
   afterEach(() => {
+    if (savedAppOrigin === undefined) delete process.env.APP_ORIGIN;
+    else process.env.APP_ORIGIN = savedAppOrigin;
     mockInvoke.mockReset();
     mockDiscover.mockReset();
+    mockGetSession.mockReset();
+    mockEnforceRateLimit.mockReset();
   });
 
   it("discovers through AgentKit make_http_request after the SSRF gate", async () => {
