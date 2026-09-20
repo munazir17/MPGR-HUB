@@ -63,3 +63,34 @@ jobs:
       - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
       - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
       - run: forge test -vvv
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  slither:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - run: mkdir -p .forge-deps
+      - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+      - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+      - name: Run Slither analysis
+        uses: crytic/slither-action@v0.4.1
+        with:
+          target: "."
+          solc-version: "0.8.24"
+          fail-on: high
+          slither-args: --filter-paths "openzeppelin|forge-std"

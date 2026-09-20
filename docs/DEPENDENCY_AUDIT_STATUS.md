@@ -19,14 +19,17 @@ this is a starting point, not a replacement for that.
 
 ## Already patched in the current lockfile (no action needed)
 
-- **`next` — pinned exactly to `15.5.24`.** This is the exact patched
-  release for the two critical unauthenticated-RCE advisories disclosed
-  25 Aug 2026 (CVE-2026-75604, Windows path traversal; and the AVIF/
-  libheif heap overflow, GHSA-2xp9-vwfh-vxw4). Whatever the "1
-  critical" in the Aug 23 report referred to, the Next.js version
-  currently pinned is already current against the most severe Next.js
-  advisories disclosed since. No change needed; just don't let a future
-  dependency bump silently pull this back below `15.5.24`.
+- **`next` — pinned exactly to `16.3.5`.** This is the current production
+  version (see `package.json` / `package-lock.json`). It is past the
+  `15.5.24` release that patched the two critical unauthenticated-RCE
+  advisories disclosed 25 Aug 2026 (CVE-2026-75604, Windows path
+  traversal; and the AVIF/libheif heap overflow, GHSA-2xp9-vwfh-vxw4).
+  Whatever the "1 critical" in the Aug 23 report referred to, the
+  Next.js version currently pinned (`16.3.5`) is already current against
+  the most severe Next.js advisories disclosed since and includes the
+  fixes from `15.5.24`. No change needed; just don't let a future
+  dependency bump silently pull this back below `16.3.5` (or below the
+  patched `15.5.24` floor if downgrading major).
 
 - **`axios` — resolves to `1.20.0`** (locked in `package-lock.json`,
   and the `overrides.axios: "$axios"` entry forces every transitive
