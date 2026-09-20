@@ -52,6 +52,7 @@
   "overrides": {
     "axios": "$axios",
     "ws": "8.21.3",
-    "postcss": "$postcss"
+    "postcss": "$postcss",
+    "rpc-websockets": "10.0.1"
   }
 }
