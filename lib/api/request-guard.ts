@@ -1,6 +1,7 @@
 import { getRedis } from "@/lib/api/redis";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { getAppOrigin } from "@/lib/auth/config";
+import { AI_PROMPT_LIMITS } from "@/lib/architecture/ai/server-policy";
 
 function tryRedis() {
   try {
@@ -53,6 +54,13 @@ const INCRBY_EXPIRE_LUA = "local c = redis.call('INCRBY', KEYS[1], ARGV[1]); if 
 // Reserve `estimate` tokens atomically: if cur + estimate > limit => 0 (reject), else INCRBY estimate and return 1 (allow)
 const TOKEN_RESERVE_LUA =
   "local cur = redis.call('GET', KEYS[1]); if not cur then cur = 0 else cur = tonumber(cur) end; local est = tonumber(ARGV[1]); local limit = tonumber(ARGV[2]); local ttl = tonumber(ARGV[3]); if cur + est > limit then return 0 end; local n = redis.call('INCRBY', KEYS[1], est); if cur == 0 then redis.call('EXPIRE', KEYS[1], ttl) end; return 1;";
+// Adjust token reservations atomically and clamp at zero in the same Redis operation.
+const TOKEN_ADJUST_LUA =
+  "local cur = redis.call('GET', KEYS[1]); if not cur then cur = 0 else cur = tonumber(cur) end; local delta = tonumber(ARGV[1]); local ttl = tonumber(ARGV[2]); local next = cur + delta; if next < 0 then next = 0 end; redis.call('SET', KEYS[1], next); redis.call('EXPIRE', KEYS[1], ttl); return next;";
+
+function allowNonAtomicRedisFallback(): boolean {
+  return process.env.NODE_ENV === "test";
+}
 
 async function atomicIncr(redis: ReturnType<typeof getRedis>, key: string, ttlSeconds: number): Promise<number> {
   // Prefer Lua atomic path in prod. Fall back to INCR+EXPIRE for test mocks that only stub incr/expire.
@@ -118,9 +126,20 @@ async function atomicIncrBy(
 }
 
 function getTokenReserveEstimate(): number {
-  // Conservative per-request estimate used for atomic reservation before upstream.
-  // Must be >= max_tokens (700) + typical prompt overhead. 1000 is safe default.
-  return getEnvInt("AI_TOKEN_RESERVE_ESTIMATE", 1000);
+  // Conservative per-request reservation used before upstream. It must be a strict upper bound,
+  // not just an output-token estimate: provider usage includes input/prompt tokens (and tool
+  // declarations where applicable) plus output tokens. All protected AI routes read at most a
+  // 16 KiB JSON body and cap output at 700 tokens; reserve the request-body byte ceiling,
+  // prompt-limit ceilings, output cap, and fixed route/provider overhead so actual total usage
+  // cannot exceed the preflight reservation. A lower env override is treated as unsafe and
+  // raised to this floor.
+  const strictUpperBound =
+    AI_PROMPT_LIMITS.bodyBytes +
+    AI_PROMPT_LIMITS.systemChars +
+    AI_PROMPT_LIMITS.userChars +
+    AI_PROMPT_LIMITS.outputTokens +
+    8192;
+  return Math.max(getEnvInt("AI_TOKEN_RESERVE_ESTIMATE", strictUpperBound), strictUpperBound);
 }
 
 async function tryReserveTokens(
@@ -137,11 +156,15 @@ async function tryReserveTokens(
       const n = typeof res === "number" ? res : Number(res);
       if (n === 1) return true;
       if (n === 0) return false;
+      if (!allowNonAtomicRedisFallback()) throw new Error("Atomic Redis token reservation returned invalid result");
     } catch {
-      // fall through
+      if (!allowNonAtomicRedisFallback()) throw new Error("Atomic Redis token reservation unavailable");
+      // test/offline fallback below
     }
+  } else if (!allowNonAtomicRedisFallback()) {
+    throw new Error("Atomic Redis token reservation unavailable");
   }
-  // Fallback for test mocks without eval: GET + INCRBY (not atomic, but keeps offline tests working)
+  // Fallback for test/offline mocks without eval: GET + INCRBY (not atomic; never used in production)
   const r = redis as unknown as {
     get?: (k: string) => Promise<unknown>;
     incrby?: (k: string, n: number) => Promise<number>;
@@ -173,18 +196,26 @@ async function adjustTokenReservation(
   ttlSeconds: number,
 ): Promise<void> {
   if (delta === 0) return;
-  try {
-    await atomicIncrBy(redis, key, delta, ttlSeconds);
-    if (delta < 0) {
-      const r = redis as unknown as { get?: (k: string) => Promise<unknown>; set?: (k: string, v: string) => Promise<unknown> };
-      if (typeof r.get === "function" && typeof r.set === "function") {
-        const raw = await r.get(key);
-        const cur = raw == null ? 0 : Number(raw);
-        if (Number.isFinite(cur) && cur < 0) await r.set(key, "0");
-      }
+  const maybeEval = (redis as unknown as { eval?: (script: string, keys: string[], args: string[]) => Promise<unknown> }).eval;
+  if (typeof maybeEval === "function") {
+    try {
+      const result = await maybeEval.call(redis, TOKEN_ADJUST_LUA, [key], [String(delta), String(ttlSeconds)]);
+      const num = typeof result === "number" ? result : Number(result);
+      if (Number.isFinite(num)) return;
+      if (!allowNonAtomicRedisFallback()) throw new Error("Atomic Redis token adjustment returned invalid result");
+    } catch {
+      if (!allowNonAtomicRedisFallback()) throw new Error("Atomic Redis token adjustment unavailable");
+      // test/offline fallback below
     }
-  } catch {
-    // best-effort
+  } else if (!allowNonAtomicRedisFallback()) {
+    throw new Error("Atomic Redis token adjustment unavailable");
+  }
+
+  const next = await atomicIncrBy(redis, key, delta, ttlSeconds);
+  if (delta < 0 && next < 0) {
+    const r = redis as unknown as { set?: (k: string, v: string) => Promise<unknown>; expire?: (key: string, ttl: number) => Promise<unknown> };
+    if (typeof r.set === "function") await r.set(key, "0");
+    if (typeof r.expire === "function") await r.expire(key, ttlSeconds);
   }
 }
 
@@ -272,18 +303,20 @@ export async function enforceRateLimit(request: Request, bucket: string, limit: 
  *   next UTC midnight. If either per-wallet or global request count exceeds its env-configured limit,
  *   returns 429 generic (fail closed). The client AI provider chain treats any 4xx/5xx as a provider
  *   failure and falls back to the deterministic engine, so UX remains available.
- * - Token budgets are enforced before the upstream call by atomically reserving `AI_TOKEN_RESERVE_ESTIMATE`
- *   (default 1000) tokens via Lua `GET+INCRBY` (cur+est>limit ? reject : INCRBY). If either wallet or
- *   global would exceed its limit, returns 429 without consuming request quota; on request-quota failure
- *   the token reservation is rolled back. After a successful upstream call, call recordAiTokenUsage() to
- *   adjust the reservation by delta = actual - estimate so the counter ends at actual usage.
+ * - Token budgets are enforced before the upstream call by atomically reserving a strict per-request
+ *   upper bound via Lua `GET+INCRBY` (cur+est>limit ? reject : INCRBY). The env value
+ *   `AI_TOKEN_RESERVE_ESTIMATE` is only honored when it is at least that strict floor. If either wallet
+ *   or global would exceed its limit, returns 429 without consuming request quota; on request-quota
+ *   failure the token reservation is rolled back with an atomic clamp-at-zero Lua adjustment. After a
+ *   successful upstream call, call recordAiTokenUsage() to adjust the reservation by delta = actual -
+ *   estimate so the counter ends at actual usage.
  *
  * Env overrides (all optional, fallback defaults are safe for prod):
  *   AI_DAILY_REQUESTS_PER_WALLET  default 100
  *   AI_DAILY_REQUESTS_GLOBAL      default 5000
  *   AI_DAILY_TOKENS_PER_WALLET    default 100000
  *   AI_DAILY_TOKENS_GLOBAL        default 2000000
- *   AI_TOKEN_RESERVE_ESTIMATE     default 1000
+ *   AI_TOKEN_RESERVE_ESTIMATE     default strict route upper bound (unsafe lower values are raised)
  */
 export async function enforceAiDailyBudget(request: Request): Promise<Response | null> {
   const redis = tryRedis();
