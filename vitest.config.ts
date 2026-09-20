@@ -10,6 +10,16 @@ import path from "node:path";
 // fast — no other project file changes as a result (no babel config, no
 // jest config, no test-environment setup beyond this one file).
 export default defineConfig({
+  // tsconfig.json must keep `"jsx": "preserve"` for Next.js, but that leaves
+  // JSX syntax in .tsx imports untransformed under Vitest (Vite's oxc
+  // transformer follows tsconfig). This override applies the automatic JSX
+  // runtime only inside the test runner; the Next build, typecheck, and
+  // production bundles are unaffected.
+  oxc: {
+    jsx: {
+      runtime: "automatic",
+    },
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "."),

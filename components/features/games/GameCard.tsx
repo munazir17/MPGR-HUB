@@ -26,7 +26,14 @@ export function GameCard({ game, bestScore = 0 }: GameCardProps) {
           <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-white/[0.06] text-3xl shadow-inner">
             {game.iconImage ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={game.iconImage} alt="" className="h-11 w-11 object-contain" aria-hidden="true" />
+              <img
+                src={game.iconImage}
+                alt=""
+                className="h-11 w-11 object-contain"
+                aria-hidden="true"
+                loading="lazy"
+                decoding="async"
+              />
             ) : (
               <span aria-hidden="true">{game.icon}</span>
             )}
