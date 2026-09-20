@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { protectApiRequest, readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 import type { Address } from "viem";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 import { awardServerXP, getServerWalletStanding } from "@/lib/rewards/xp-ledger";
 import { referralStore } from "@/lib/referral/referral-store";
 
@@ -14,7 +14,7 @@ const NO_STORE = { "Cache-Control": "no-store" };
 
 export async function GET(request: Request) {
   const requestId = requestIdFromRequest(request);
-  const session = getSessionFromRequest(request);
+  const session = await authenticateRequest(request);
   if (!session) {
     return withRequestId(NextResponse.json({ error: "Authentication required" }, { status: 401, headers: NO_STORE }), requestId);
   }
@@ -37,7 +37,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const session = getSessionFromRequest(request);
+  const session = await authenticateRequest(request);
   if (!session) return NextResponse.json({ error: "Authentication required" }, { status: 401, headers: NO_STORE });
   const guard = await protectApiRequest(request, "xp", 30, 60);
   const requestId = guard.requestId;

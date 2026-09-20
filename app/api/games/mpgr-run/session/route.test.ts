@@ -19,6 +19,12 @@ const getSessionFromRequest = vi.fn<() => { wallet: string } | null>();
 vi.mock("@/lib/auth/session", () => ({
   getSessionFromRequest,
 }));
+// Task 6: routes authenticate via the server-side session registry; the
+// test keeps driving the same fake through the async entry point.
+vi.mock("@/lib/auth/session-store", () => ({
+  authenticateRequest: async () => getSessionFromRequest(),
+}));
+
 
 const createServerGameSession = vi.fn();
 class TooManyActiveSessionsError extends Error {}

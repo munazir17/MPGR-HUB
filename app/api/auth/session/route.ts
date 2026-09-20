@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 import { requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 
 // Read-only session check. This performs no signature verification and
@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   const requestId = requestIdFromRequest(request);
-  const session = getSessionFromRequest(request);
+  const session = await authenticateRequest(request);
   const body = session
     ? {
         authenticated: true as const,

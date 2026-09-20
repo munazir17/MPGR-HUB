@@ -11,7 +11,7 @@ import { NextResponse } from "next/server";
 import { prepareTokenizedStockSwap } from "@/lib/trade/tokenized-stock-swap";
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 import { readJsonBody, requestIdFromRequest, withRequestId, verifyTrustedOrigin } from "@/lib/api/request-guard";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), requestId);
   const originError = verifyTrustedOrigin(request);
   if (originError) return withRequestId(originError, requestId);
-  const session = getSessionFromRequest(request);
+  const session = await authenticateRequest(request);
   if (!session) {
     return json(
       { error: "Authentication required", code: "AUTH_REQUIRED" },

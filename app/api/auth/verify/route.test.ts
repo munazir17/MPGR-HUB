@@ -1,6 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { buildSiweMessage, siweSignatureVerifier, type AuthMessage } from "@/lib/auth/siwe";
+import { LuaRedis } from "@/lib/__tests__/helpers/lua-redis";
+
+// Task 6: /api/auth/verify registers every minted session server-side so it
+// can be revoked. Back that registry with the in-memory Redis double.
+const redis = new LuaRedis();
+let redisAvailable = true;
+vi.mock("@/lib/api/redis", () => ({
+  getRedis: () => {
+    if (!redisAvailable) throw new Error("Upstash Redis environment variables are missing.");
+    return redis.client();
+  },
+}));
 
 const isNonceActive = vi.fn();
 const consumeNonce = vi.fn();
@@ -61,6 +73,8 @@ function postVerify(body: unknown, headers: Record<string, string> = {}) {
 describe("POST /api/auth/verify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    redis.reset();
+    redisAvailable = true;
     vi.stubEnv("APP_ORIGIN", APP_ORIGIN);
     vi.stubEnv("AUTH_SESSION_SECRET", SECRET);
     vi.stubEnv("NODE_ENV", "production");
@@ -168,5 +182,34 @@ describe("POST /api/auth/verify", () => {
       expect.objectContaining({ wallet: address.toLowerCase() }),
     );
     expect(logApi.mock.calls.some((call) => call[1] === "auth_verify_failed")).toBe(false);
+
+    // Task 6: the minted session is registered server-side, bound to the
+    // wallet, and expires with the cookie — so it can be revoked on logout.
+    const registered = redis.keys().filter((key) => key.startsWith("mpgrhub:auth:session:"));
+    expect(registered).toHaveLength(1);
+    const record = JSON.parse(String(redis.call(["GET", registered[0]])));
+    expect(record.wallet).toBe(address.toLowerCase());
+    const ttl = redis.call(["TTL", registered[0]]) as number;
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(8 * 60 * 60);
+
+    // The cookie it set is accepted by the registry-backed validator …
+    const { authenticateRequest } = await import("@/lib/auth/session-store");
+    const cookieValue = /mpgr_session=([^;]+)/.exec(setCookie)?.[1] ?? "";
+    const authed = await authenticateRequest(
+      new Request(`${APP_ORIGIN}/api/xp`, { headers: { cookie: `mpgr_session=${cookieValue}` } }),
+    );
+    expect(authed?.wallet).toBe(address.toLowerCase());
+  });
+
+  it("does not hand out a session cookie when the registry write fails (fail closed)", async () => {
+    const { POST } = await import("./route");
+    const { address, message, signature } = await signedBody();
+    redisAvailable = false;
+    const response = await POST(
+      postVerify({ address, message, signature }, { cookie: `mpgr_auth_nonce=${NONCE}` }),
+    );
+    expect(response.status).toBe(503);
+    expect(response.headers.get("set-cookie") ?? "").not.toContain("mpgr_session=");
   });
 });

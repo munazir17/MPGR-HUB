@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 import { readCookieValue } from "@/lib/api/cookies";
 import {
   enforceRateLimit,
@@ -50,7 +50,7 @@ export async function POST(request: Request) {
   const rateError = await enforceRateLimit(request, "agent-visitors", 10, 60);
   if (rateError) return withRequestId(rateError, requestId);
 
-  const session = getSessionFromRequest(request);
+  const session = await authenticateRequest(request);
   const existingCookie = readCookieValue(request.headers.get("cookie") ?? "", AGENT_VISITOR_COOKIE);
   let visitorCookie = existingCookie && isAgentVisitorId(existingCookie) ? existingCookie : null;
   if (!visitorCookie) visitorCookie = crypto.randomUUID();

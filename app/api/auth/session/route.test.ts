@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 const getSessionFromRequest = vi.fn();
 vi.mock("@/lib/auth/session", () => ({ getSessionFromRequest }));
+// Task 6: routes authenticate via the server-side session registry; the
+// test keeps driving the same fake through the async entry point.
+vi.mock("@/lib/auth/session-store", () => ({
+  authenticateRequest: async () => getSessionFromRequest(),
+}));
+
 
 describe("GET /api/auth/session", () => {
   it("reports no session without ever touching cookies/signing", async () => {
