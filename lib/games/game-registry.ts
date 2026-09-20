@@ -23,10 +23,11 @@ export const GAME_REGISTRY: GameDefinition[] = [
     estimatedPlayTime: "30s–3min",
     status: "playable",
     icon: "🦖",
-    // 128×128 thumbnail of the idle sprite for the 44px card slot
-    // (q90 WebP, ~5.8KB vs 597KB full art). The game canvas keeps
-    // loading the full-resolution sprite via run-assets.ts.
-    iconImage: "/games/mpgr-run/character/mpgr-runner-idle-128.webp",
+    // Card-sized variant of the character art (256x256 -> drawn at 44 CSS px
+    // in GameCard, which lazy-loads it). The full 1254x1254 sprite stays at
+    // character/mpgr-runner-idle.webp for the canvas loader; using it here
+    // made /games pull ~597 KiB for a 44 px avatar.
+    iconImage: "/games/mpgr-run/character/mpgr-runner-idle-card.webp",
     accentGradient: "from-primary-glow/25 to-primary/10",
     route: "/games/mpgr-run",
     supportsLeaderboard: true,

@@ -8,14 +8,6 @@ The project follows a milestone-based development roadmap.
 
 # Unreleased
 
-## Task 12 — assets and loading performance
-
-### Fixed
-
-- Small-slot portal images no longer download megabyte art: the 32px header mark uses a new 128×128 `public/brand/mpgr-mark-128.webp` (~3.7KB vs 1.58MB `/icon.png`), the 44px game-card icon uses a 128×128 idle-sprite thumbnail (~5.8KB vs 597KB), and the featured-game banner uses a 256px run-sprite thumbnail (~10KB vs 490KB). All thumbnails are high-quality WebP with alpha preserved; full-resolution sources are untouched and the game canvas keeps loading them via the existing tiered pipeline.
-- `GameCard` icons (below the fold) now render with `loading="lazy"` and `decoding="async"`; the featured banner keeps eager loading with `decoding="async"`. `/icon.png` itself is unchanged (favicon, apple-touch-icon, and Farcaster manifest still reference it); unreferenced on-disk art (portal, screen, `image.png`) was intentionally left in place — zero runtime cost.
-- Regression tests: `lib/__tests__/image-assets.test.ts` (every game-manifest sprite resolves on disk, thumbnail magic/dimensions/size bounds, registry iconImage stays small), `BrandMark` / `GameCard` / `FeaturedGameBanner` render tests for src + loading attributes. `vitest.config.ts` applies the automatic JSX runtime inside the test runner only (Next still requires `"jsx": "preserve"`).
-
 ## Task 8 — referral abuse hardening
 
 ### Fixed

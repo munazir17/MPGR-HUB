@@ -57,12 +57,18 @@ export function FeaturedGameBanner({
         </div>
 
         <div className="relative h-28 w-24 shrink-0 sm:h-36 sm:w-32">
+          {/* Above the fold on /games and /rewards, so it stays eager (no
+              loading="lazy") — but it is the 384x256 banner variant, not the
+              full 1536x1024 sprite. No fetchpriority hint: on React 18.3.1
+              the camelCase prop renders as the invalid `fetchPriority`
+              attribute and @types/react rejects the lowercase form.
+              `decoding="async"` keeps its decode off the main thread. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/games/mpgr-run/character/mpgr-runner-run-256.webp"
+            src="/games/mpgr-run/character/mpgr-runner-run-banner.webp"
             alt=""
-            decoding="async"
             className="h-full w-full object-contain object-right drop-shadow-[0_12px_24px_rgba(56,189,248,0.25)]"
+            decoding="async"
           />
         </div>
       </div>

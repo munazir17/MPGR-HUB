@@ -18,9 +18,14 @@ export const metadata: Metadata = {
   title: "MPGR HUB — Play. Trade. Earn. With AI.",
   description:
     "MPGR HUB: a Base-native AI agent for tokenized stocks, x402, MPGR Run, XP, seasons, and rewards.",
+  // Small, purpose-built favicon/touch icons. `/icon.png` (1254x1254,
+  // ~1.5 MB) stays exactly where it is and is still the mini-app icon
+  // referenced by public/.well-known/farcaster.json, but browsers fetch a
+  // declared favicon/apple-touch-icon on page loads, so pointing those at
+  // the full-size artwork meant ~1.5 MB per cold visit for a 32 px mark.
   icons: {
-    icon: "/icon.png",
-    apple: "/icon.png",
+    icon: "/icon-128.png",
+    apple: "/icon-180.png",
   },
   openGraph: {
     title: "MPGR HUB",
