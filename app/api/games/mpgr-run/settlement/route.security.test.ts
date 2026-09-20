@@ -17,7 +17,7 @@
 // the pure settlement math (weights/pool/allocations) runs for real.
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import type { PlayerWeekRecord, WeeklySettlement } from "@/lib/reward-allocation/allocation-types";
+import type { PlayerWeekRecord, SettlementOutboxRecord, WeeklySettlement } from "@/lib/reward-allocation/allocation-types";
 
 const withSettlementLock = vi.fn(async (_weekKey: string, fn: () => Promise<unknown>) => fn());
 vi.mock("@/lib/reward-allocation/settlement-lock", () => ({
@@ -60,6 +60,8 @@ const listEligiblePlayersForWeek = vi.fn(async (): Promise<PlayerWeekRecord[]> =
 const upsertPlayerWeekRecord = vi.fn(async (record: PlayerWeekRecord) => record);
 const getTreasuryLedgerTotal = vi.fn(async () => 0n);
 const recordTreasuryLedgerEntryOnce = vi.fn(async () => true);
+const recordSettlementOutboxAttempt = vi.fn(async (_record: SettlementOutboxRecord) => true);
+const updateSettlementOutboxAttempt = vi.fn(async (record: SettlementOutboxRecord) => record);
 vi.mock("@/lib/reward-allocation/kv-allocation-store", () => ({
   kvAllocationStore: {
     getWeeklySettlement,
@@ -68,6 +70,8 @@ vi.mock("@/lib/reward-allocation/kv-allocation-store", () => ({
     upsertPlayerWeekRecord,
     getTreasuryLedgerTotal,
     recordTreasuryLedgerEntryOnce,
+    recordSettlementOutboxAttempt,
+    updateSettlementOutboxAttempt,
   },
 }));
 
@@ -111,6 +115,8 @@ describe("GET /api/games/mpgr-run/settlement — attestation gate (Task 7)", () 
     vi.clearAllMocks();
     getWeeklySettlement.mockResolvedValue(null);
     upsertWeeklySettlement.mockImplementation(async (s: WeeklySettlement) => s);
+    recordSettlementOutboxAttempt.mockResolvedValue(true);
+    updateSettlementOutboxAttempt.mockImplementation(async (record) => record);
   });
 
   afterEach(() => {
@@ -162,4 +168,73 @@ describe("GET /api/games/mpgr-run/settlement — attestation gate (Task 7)", () 
     expect(vaultAllocateRewardsBatch).not.toHaveBeenCalled();
     expect(vaultGetAvailableBalance).not.toHaveBeenCalled();
   });
+
+  it("writes a durable outbox record before the on-chain batch and confirms it afterwards", async () => {
+    listEligiblePlayersForWeek.mockResolvedValue([playerWeekRecord(true)]);
+    const { GET } = await import("./route");
+
+    const response = await GET(authorizedRequest());
+    expect(response.status).toBe(200);
+
+    expect(recordSettlementOutboxAttempt).toHaveBeenCalledTimes(1);
+    const outbox = recordSettlementOutboxAttempt.mock.calls[0]?.[0] as SettlementOutboxRecord | undefined;
+    expect(outbox).toBeDefined();
+    expect(outbox!.weekKey).toBe("2026-W37");
+    expect(outbox!.operation).toBe("allocateRewardsBatch");
+    expect(outbox!.status).toBe("pending");
+    expect(outbox!.users).toEqual([WALLET]);
+    expect(outbox!.amountsRaw[0]).toBeGreaterThan(0n);
+    expect(vaultAllocateRewardsBatch).toHaveBeenCalledTimes(1);
+    expect(updateSettlementOutboxAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "confirmed", txHash: "0x" + "ab".repeat(32), rewardIds: [1n] }),
+      "pending",
+    );
+  });
+
+  it("fails closed if the pre-broadcast outbox claim cannot be recorded", async () => {
+    listEligiblePlayersForWeek.mockResolvedValue([playerWeekRecord(true)]);
+    recordSettlementOutboxAttempt.mockResolvedValue(false);
+    const { GET } = await import("./route");
+
+    const response = await GET(authorizedRequest());
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.status).toBe("allocating");
+    expect(body.error).toMatch(/outbox record/i);
+    expect(vaultAllocateRewardsBatch).not.toHaveBeenCalled();
+  });
+
+  it("does not submit a second on-chain batch when a concurrent attempt won the computed-to-allocating CAS", async () => {
+    listEligiblePlayersForWeek.mockResolvedValue([playerWeekRecord(true)]);
+    upsertWeeklySettlement.mockImplementation(async (settlement: WeeklySettlement, expected?: WeeklySettlement["status"]) => {
+      if (settlement.status === "allocating" && expected === "computed") {
+        return { ...settlement, allocationAttemptId: "winner-attempt-id" };
+      }
+      return settlement;
+    });
+    const { GET } = await import("./route");
+
+    const response = await GET(authorizedRequest());
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.reason).toMatch(/already claimed/i);
+    expect(recordSettlementOutboxAttempt).not.toHaveBeenCalled();
+    expect(vaultAllocateRewardsBatch).not.toHaveBeenCalled();
+  });
+
+  it("marks the outbox uncertain and leaves the week allocating when confirmation fails after submission", async () => {
+    listEligiblePlayersForWeek.mockResolvedValue([playerWeekRecord(true)]);
+    vaultAllocateRewardsBatch.mockRejectedValueOnce(new Error("receipt timeout"));
+    const { GET } = await import("./route");
+
+    const response = await GET(authorizedRequest());
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.status).toBe("allocating");
+    expect(updateSettlementOutboxAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "uncertain", errorCode: "ALLOCATION_CONFIRMATION_FAILED" }),
+      "pending",
+    );
+  });
+
 });
