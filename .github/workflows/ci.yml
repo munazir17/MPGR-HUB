@@ -87,33 +87,41 @@ jobs:
       - run: mkdir -p .forge-deps
       - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
       - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
-      - name: Check forge and solc
-        run: |
-          forge --version
-          forge build --help | head -n 20
-          ls -la .forge-deps/
-          cat foundry.toml
-      - name: Run Slither via pip (debug)
+      - name: Install Slither
         run: |
           pip install slither-analyzer==0.11.6
           slither --version
-          echo "=== trying slither with foundry ==="
-          slither . --filter-paths "openzeppelin|forge-std" --checklist 2>&1 | head -n 500 || true
-          echo "=== exit code $? ==="
-          echo "=== trying with json ==="
-          slither . --filter-paths "openzeppelin|forge-std" --json - 2>&1 | head -n 1000 || true
-      - name: Run Slither action (no fail)
-        uses: crytic/slither-action@v0.4.1
-        id: slither
-        continue-on-error: true
-        with:
-          target: "contracts/"
-          solc-version: "0.8.24"
-          fail-on: none
-          slither-args: --filter-paths "openzeppelin|forge-std"
-      - name: Show outputs
-        if: always()
+          forge --version
+      - name: Run Slither with checklist
         run: |
-          echo "sarif path: ${{ steps.slither.outputs.sarif }}"
-          ls -la
-          cat ${{ steps.slither.outputs.sarif }} 2>&1 | head -n 500 || echo "no sarif"
+          echo "Running slither checklist..."
+          slither . --filter-paths "openzeppelin|forge-std" --checklist 2>&1 | tee slither-checklist.txt
+          echo "Exit code: $?"
+      - name: Run Slither JSON output
+        run: |
+          echo "Running slither json..."
+          slither . --filter-paths "openzeppelin|forge-std" --json slither.json 2>&1 | tee slither-log.txt
+          echo "Exit code: $?"
+          echo "=== JSON ==="
+          cat slither.json | head -n 200
+          echo "=== detectors ==="
+          slither . --filter-paths "openzeppelin|forge-std" --json - 2>&1 | head -n 1000 || true
+      - name: Run Slither with fail-on high simulation
+        run: |
+          echo "Simulating fail-on high: checking for high severity"
+          slither . --filter-paths "openzeppelin|forge-std" --fail-pedantic --filter-paths "openzeppelin|forge-std" 2>&1 | tee slither-fail.txt || true
+          echo "Now with --fail-high"
+          slither . --filter-paths "openzeppelin|forge-std" 2>&1 | tee slither-default.txt
+          echo "Exit code: ${PIPESTATUS[0]}"
+      - name: Upload Slither artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slither-debug
+          path: |
+            slither-checklist.txt
+            slither.json
+            slither-log.txt
+            slither-fail.txt
+            slither-default.txt
+          if-no-files-found: warn
