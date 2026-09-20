@@ -53,6 +53,23 @@ export async function POST(request: Request) {
   const eventId = action === "WALLET_CONNECTED" ? "wallet-connected" : `daily-check-in:${new Date().toISOString().slice(0, 10)}`;
   if (action === "DAILY_CHECK_IN" && !DATE_RE.test(eventId.slice(-10))) return json({ error: "Invalid date" }, { status: 400 });
   const result = await awardServerXP(session.wallet as Address, action as "WALLET_CONNECTED" | "DAILY_CHECK_IN", eventId);
+
+  // Task 8 referral abuse hardening: a genuine, server-awarded daily
+  // check-in marks this wallet as an ACTIVE user. That is the trigger that
+  // settles any pending referral reward for whoever referred this wallet
+  // (attribution + activity + referrer cap are re-checked atomically inside
+  // the store; the ledger event key makes double-credit impossible).
+  // Settlement must never affect this response: both helpers swallow all
+  // errors by contract, with an outer guard for belt-and-braces.
+  if (result.awarded && action === "DAILY_CHECK_IN") {
+    try {
+      await referralStore.markReferredActivity(session.wallet);
+      await referralStore.settleReferralReward(session.wallet);
+    } catch {
+      /* referral settlement failures must not break the check-in */
+    }
+  }
+
   const standing = await getServerWalletStanding(session.wallet as Address);
   return json(
     {
