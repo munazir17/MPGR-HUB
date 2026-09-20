@@ -6,6 +6,20 @@ The project follows a milestone-based development roadmap.
 
 ---
 
+# Unreleased
+
+## Task 4 — next.config.mjs hardening (part 1: image optimizer)
+
+### Fixed
+
+- `images.remotePatterns` no longer allows `hostname: "**"`. The always-on `/_next/image` route would fetch and re-serve any https URL a caller named (open image proxy / quota abuse). The repo has no `next/image` usage — first-party or in bundled dependencies — and every image is a local `/public` file rendered with `<img>`, so the allowlist is now explicitly empty. Local images through `/_next/image` keep working. Regression tests: `lib/__tests__/next-config.test.ts` (runs Next's real config loader and image-optimizer validation).
+
+### Not changed yet (owner decision pending)
+
+- `X-Frame-Options: DENY` is still sent on every response. It blocks the Farcaster **web** client, which loads Mini Apps in an iframe (mobile clients use a WebView and are unaffected). The replacement `Content-Security-Policy: frame-ancestors` allowlist requires the owner to confirm the exact embedding origins before it is changed.
+
+---
+
 # Version 0.6.1
 
 ## Remaining August 2026 audit closeout

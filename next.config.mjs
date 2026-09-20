@@ -2,7 +2,16 @@
 const nextConfig = {
   reactStrictMode: true,
   images: {
-    remotePatterns: [{ protocol: "https", hostname: "**" }],
+    // Intentionally empty. `/_next/image` exists in every Next app and will
+    // fetch + re-serve any remote URL matching these patterns; a wildcard
+    // hostname made the production origin an open image proxy (bandwidth /
+    // Vercel image-optimisation quota abuse, confused-deputy fetches).
+    // The repo was audited: nothing imports `next/image` and every image
+    // is a local /public file rendered with <img>, so no remote host is
+    // needed. Add hosts here explicitly (protocol + full hostname, never
+    // "*"/"**") if a remote next/image source is ever introduced, and
+    // extend lib/__tests__/next-config.test.ts accordingly.
+    remotePatterns: [],
   },
   // Next.js 16 defaults production builds to Turbopack and fails if a
   // webpack() config exists without a turbopack key. Empty config here
