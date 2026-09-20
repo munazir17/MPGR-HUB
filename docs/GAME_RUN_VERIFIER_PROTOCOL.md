@@ -3,6 +3,20 @@
 This protocol is the security boundary for real-value MPGR Run settlement.
 The browser result is never treated as proof of gameplay.
 
+> **Implementation note (Task 7, 2026-09):** the in-repo implementation of
+> the verification step is the **in-process deterministic authoritative
+> replay** (`lib/games/mpgr-run/authoritative-replay.ts`, invoked by
+> `lib/games/mpgr-run/authoritative-verifier.ts` on every reward
+> submission). It reproduces the run from the server-issued seed + the
+> recorded input trace and only accepts results that match the replayed
+> simulation. **No code path currently calls an external
+> `$GAME_RUN_VERIFIER_URL`** — those variables remain an additional
+> operator gate inside `gameRewardsAreOperatorEnabled()`
+> (`lib/games/games-reward-config.ts`) that settlement requires before
+> paying out, pending a decision on whether the external verifier
+> described in this document is ever deployed. The XP/weekly-fact path
+> requires a passing replay in BOTH flag configurations since Task 7.
+
 ## Request
 
 `POST $GAME_RUN_VERIFIER_URL`

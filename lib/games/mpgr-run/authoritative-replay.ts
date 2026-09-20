@@ -6,6 +6,7 @@ import {
   HIT_INVULNERABILITY_MS,
   JETPACK_FLY_HEIGHT,
   LANE_COUNT,
+  MAX_SESSION_DURATION_MS,
   MAX_SPEED,
   MAGNET_ATTRACT_MS,
   MAGNET_RANGE_PX,
@@ -35,6 +36,34 @@ import type { RunInputTrace, RunInputEvent } from "./input-trace";
 
 export const MPGR_RUN_SIMULATION_WIDTH = 960;
 export const MPGR_RUN_FIXED_DT_MS = 1000 / 60;
+
+/**
+ * Maximum tolerated distance between a submitted input timestamp and its
+ * nearest fixed-simulation-tick position, in milliseconds.
+ *
+ * WHY THIS IS NOT ZERO: the client accumulates its simulation clock as
+ * `world.elapsedMs += (1/60) * 1000` once per tick and records input
+ * timestamps from that accumulated value, while this verifier compares
+ * against `tick * MPGR_RUN_FIXED_DT_MS` computed directly. Repeated
+ * floating-point addition drifts from direct multiplication: measured,
+ * the drift first exceeds 1e-9 ms around tick 2773 (~46 s), so a
+ * zero-tolerance (or 1e-9) check rejected every honest run longer than
+ * ~46 s — the server's own verifier was breaking legitimate gameplay.
+ *
+ * DERIVATION (not an arbitrary threshold): after N additions the
+ * accumulated value can differ from N·DT by at most N · ½·ulp(max),
+ * where each addition rounds by no more than half a ULP of the running
+ * value, the running value never exceeds MAX_SESSION_DURATION_MS, and
+ * ½·ulp(x) ≤ 2⁻⁵³·x. With N = MAX_SESSION_DURATION_MS / DT = 108 000
+ * ticks (the longest run the reward route will ever accept) the bound
+ * is ≈ 2.2e-5 ms — five orders of magnitude below one tick (16.67 ms),
+ * so it can never confuse one tick with an adjacent one, and any
+ * genuinely off-grid timestamp (≥ 0.5 ms away) is still rejected.
+ */
+export const MAX_INPUT_TICK_DRIFT_MS =
+  (MAX_SESSION_DURATION_MS / MPGR_RUN_FIXED_DT_MS) *
+  (Number.EPSILON / 2) *
+  MAX_SESSION_DURATION_MS;
 
 interface ReplayPlayer {
   lane: number;
@@ -409,9 +438,19 @@ export function replayAuthoritativeRun(input: {
 
   const events = [...input.inputTrace.events];
 
+  // Pre-computed tick index for every event. Inputs are applied on the
+  // EXACT tick the client recorded them for (a press recorded after tick
+  // T takes effect from step T+1 — the same semantics as the client's
+  // keydown-between-frames handling), instead of comparing the raw
+  // timestamps against the replay's own accumulated clock. That
+  // comparison inherited the same float drift it was meant to verify
+  // against and could apply an honest input one tick late.
+  const eventTicks: number[] = new Array(events.length);
+
   let previousMs = -1;
 
-  for (const event of events) {
+  for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
+    const event = events[eventIndex];
     if (!Number.isFinite(event.atMs) || event.atMs < 0) {
       return { verified: false, reason: "Invalid input timestamp." };
     }
@@ -439,13 +478,14 @@ export function replayAuthoritativeRun(input: {
     const tick = Math.round(event.atMs / MPGR_RUN_FIXED_DT_MS);
     if (
       tick < 0 ||
-      Math.abs(tick * MPGR_RUN_FIXED_DT_MS - event.atMs) > 1e-9
+      Math.abs(tick * MPGR_RUN_FIXED_DT_MS - event.atMs) > MAX_INPUT_TICK_DRIFT_MS
     ) {
       return {
         verified: false,
         reason: "Input timestamp is not aligned to the fixed simulation clock.",
       };
     }
+    eventTicks[eventIndex] = tick;
 
     previousMs = event.atMs;
   }
@@ -479,10 +519,7 @@ export function replayAuthoritativeRun(input: {
   for (let tick = 0; tick < ticks; tick++) {
     const nextTime = world.elapsedMs + MPGR_RUN_FIXED_DT_MS;
 
-    while (
-      eventIndex < events.length &&
-      events[eventIndex].atMs <= world.elapsedMs
-    ) {
+    while (eventIndex < events.length && eventTicks[eventIndex] === tick) {
       applyInput(world, events[eventIndex]);
       eventIndex++;
     }

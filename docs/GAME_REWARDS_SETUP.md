@@ -21,6 +21,18 @@ the dashboard into `.env.local`.
 
 ## 3. Deploy the authoritative game verifier (REQUIRED before financial rewards)
 
+> **Task 7 note (2026-09):** the verification step itself is already
+> implemented in-process — every reward submission is deterministically
+> replayed server-side (`lib/games/mpgr-run/authoritative-replay.ts`), and
+> since Task 7 only a passing replay can earn XP or weekly competitive
+> facts in either flag configuration. No code path calls an external
+> verifier today; the variables below remain an additional operator gate
+> that `gameRewardsAreOperatorEnabled()` requires before settlement pays
+> out. If you do deploy the external verifier described in
+> `docs/GAME_RUN_VERIFIER_PROTOCOL.md`, wire it in as an additional check
+> (and decide whether the gate should still require it) — do not assume
+> it is already invoked.
+
 Deploy an independent verifier implementing `docs/GAME_RUN_VERIFIER_PROTOCOL.md`
 and configure these server-only variables:
 

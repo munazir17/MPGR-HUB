@@ -205,6 +205,13 @@ return ARGV[1]
 `;
 
 
+// ARGV[6]/ARGV[7] (Task 7): the authoritative attestation for the run
+// being recorded (verificationVersion, authoritativeProofId). They are
+// applied UPGRADE-ONLY: an empty argument never clears an attestation
+// already stored on the record, so a verified run can never be downgraded
+// by any later write. Records written before Task 7 simply lack the two
+// optional fields — they stay readable, and the settlement route keeps
+// requiring them for financial eligibility (fail-closed).
 const RECORD_VALIDATED_RUN_SCRIPT = `
 local current = redis.call("GET", KEYS[1])
 local record
@@ -232,6 +239,8 @@ if record.validRunCount >= tonumber(ARGV[5]) then
 else
   record.eligibilityStatus = "pending"
 end
+if ARGV[6] ~= "" then record.verificationVersion = ARGV[6] end
+if ARGV[7] ~= "" then record.authoritativeProofId = ARGV[7] end
 
 local encoded = cjson.encode(record)
 redis.call("SET", KEYS[1], encoded)
@@ -407,10 +416,16 @@ export const kvAllocationStore: AllocationStore = {
     seasonPointsEarnedThisWeek,
     lastRunAt,
     minValidRunsForEligibility,
+    verificationVersion?: string,
+    authoritativeProofId?: string,
   ) {
     if (!Number.isFinite(score) || score < 0) throw new Error("Invalid run score.");
     if (!Number.isFinite(seasonPointsEarnedThisWeek) || seasonPointsEarnedThisWeek < 0) throw new Error("Invalid season points.");
     if (!Number.isInteger(minValidRunsForEligibility) || minValidRunsForEligibility < 1) throw new Error("Invalid eligibility threshold.");
+    // Attestation fields are server-derived only (see the script header);
+    // bound their length so a corrupted value can never bloat the record.
+    if (verificationVersion !== undefined && (typeof verificationVersion !== "string" || verificationVersion.length === 0 || verificationVersion.length > 64)) throw new Error("Invalid verification version.");
+    if (authoritativeProofId !== undefined && (typeof authoritativeProofId !== "string" || authoritativeProofId.length === 0 || authoritativeProofId.length > 128)) throw new Error("Invalid authoritative proof id.");
 
     const record: PlayerWeekRecord = {
       wallet,
@@ -430,7 +445,7 @@ export const kvAllocationStore: AllocationStore = {
     const result = await kv().eval(
       RECORD_VALIDATED_RUN_SCRIPT,
       [playerWeekKey(wallet, weekKey)],
-      [serialize(record), String(score), String(seasonPointsEarnedThisWeek), lastRunAt, String(minValidRunsForEligibility)],
+      [serialize(record), String(score), String(seasonPointsEarnedThisWeek), lastRunAt, String(minValidRunsForEligibility), verificationVersion ?? "", authoritativeProofId ?? ""],
     );
     const stored = normalizeRedisValue<PlayerWeekRecord>(result);
     if (!stored) throw new Error(`recordValidatedRun: unable to decode result for ${wallet}/${weekKey}`);

@@ -4,12 +4,18 @@
 // aren't already covered elsewhere:
 //   - a session issued for a different game id is rejected outright
 //   - an already-consumed session is rejected outright (single-use)
-//   - a valid, first-time submission consumes its session exactly once
+//   - a valid (server-verified), first-time submission consumes its
+//     session exactly once
 //   - financial rewards stay fail-closed when the operator has enabled
 //     GAME_REWARDS_ENABLED but authoritative verification did not pass
+//
+// Task 7: "valid" is now strictly "authoritatively verified" — the
+// unverified-but-plausible path (which used to credit XP/weekly facts
+// while the flags were disabled) is rejected; that behavior and the full
+// abuse surface are covered in route.security.test.ts.
 // validateRunResult/computeRunScore run for real (pure, already covered
-// by run-validation.test.ts); storage, auth, and the network verifier
-// call are mocked at the module boundary.
+// by run-validation.test.ts); storage, auth, and the verifier call are
+// mocked at the module boundary.
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { RunResult } from "@/lib/games/mpgr-run/run-score";
@@ -101,10 +107,14 @@ const RESULT: RunResult = {
   score: 0, // recomputed server-side regardless of what's submitted
 };
 
+// Task 7: the request contract now strictly requires the input trace
+// (the authoritative replay's input) — the real client always sends it.
+const VALID_TRACE = { version: 1, events: [] as Array<{ type: "jump"; atMs: number }> };
+
 function postReward(sessionId: string) {
   return new Request("http://localhost/api/games/mpgr-run/reward", {
     method: "POST",
-    body: JSON.stringify({ sessionId, result: RESULT }),
+    body: JSON.stringify({ sessionId, result: RESULT, inputTrace: VALID_TRACE }),
   });
 }
 
@@ -149,7 +159,11 @@ describe("POST /api/games/mpgr-run/reward", () => {
   });
 
   it("consumes the session exactly once for a first-time, valid submission", async () => {
+    // Task 7: "valid" means server-verified — only a run that passes the
+    // authoritative replay is accepted (unverified runs are rejected
+    // before crediting, see route.security.test.ts).
     getServerGameSession.mockResolvedValue(baseSession());
+    verifyAuthoritativeRun.mockResolvedValue({ verified: true, proofId: "proof-1" });
     const { POST } = await import("./route");
     const response = await POST(postReward("session-1234567890"));
     expect(response.status).toBe(200);

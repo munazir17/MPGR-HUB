@@ -8,14 +8,25 @@
 // of those fields are accepted even if present in the body.
 //
 // This endpoint does NOT allocate MPGR. It only:
-//   1. validates the request shape
+//   1. validates the request shape (including the input trace)
 //   2. validates the wallet address
 //   3. re-validates the RunResult server-side (reusing the existing,
 //      pure validateRunResult() — same bounds the client already uses)
-//   4. atomically records the run (sessionId idempotency via KV NX)
-//   5. if valid, updates this wallet's PlayerWeekRecord for the current
-//      settlement week (validRunCount, bestScore, eligibility)
-//   6. returns an honest status — never a reward amount, weight, or rank
+//   4. always runs the server-side authoritative replay (the real
+//      verification — client-side bounds alone are never sufficient)
+//   5. atomically records the run (sessionId idempotency via KV NX) —
+//      every attempt is kept for audit, verified or not
+//   6. if valid AND verified, updates this wallet's PlayerWeekRecord for
+//      the current settlement week (validRunCount, bestScore, eligibility,
+//      plus the authoritative attestation settlement requires) and awards
+//      the capped game XP — only verified runs ever credit anything
+//   7. returns an honest status — never a reward amount, weight, or rank
+//
+// Task 7: an unverified run (replay failed) no longer grants server XP or
+// weekly competitive facts even while the operator flags are disabled —
+// that path previously let a fabricated-but-plausible result bypass the
+// disabled verification gate. Verified behavior (what an honest run sees)
+// is unchanged.
 //
 // Runs on Node (not Edge) since it uses server-side Upstash Redis.
 
@@ -69,6 +80,31 @@ interface RewardRequestBody {
   };
 }
 
+/**
+ * Task 7: strict input-trace validation at the request boundary. The
+ * authoritative replay expects a version-1 trace whose events are
+ * jump/slide/lane with finite, non-negative, tick-quantized timestamps;
+ * anything else must be a 400, not a TypeError deep inside the verifier.
+ * (The replay re-checks every property itself — this only keeps the
+ * boundary honest and the error surface 400, not 500.)
+ */
+function isValidInputTrace(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const trace = value as Record<string, unknown>;
+  if (trace.version !== 1) return false;
+  if (!Array.isArray(trace.events)) return false;
+  if (trace.events.length > 4096) return false;
+  for (const raw of trace.events as Array<unknown>) {
+    if (!raw || typeof raw !== "object") return false;
+    const event = raw as Record<string, unknown>;
+    if (typeof event.atMs !== "number" || !Number.isFinite(event.atMs) || event.atMs < 0) return false;
+    if (event.type === "jump" || event.type === "slide") continue;
+    if (event.type === "lane" && (event.dir === 1 || event.dir === -1)) continue;
+    return false;
+  }
+  return true;
+}
+
 function isValidShape(value: unknown): value is RewardRequestBody {
   if (!value || typeof value !== "object") return false;
   const body = value as Record<string, unknown>;
@@ -82,6 +118,7 @@ function isValidShape(value: unknown): value is RewardRequestBody {
   }
   if (typeof r.collided !== "boolean") return false;
   if (typeof r.score !== "number" || !Number.isFinite(r.score as number)) return false;
+  if (!isValidInputTrace(body.inputTrace)) return false;
   return true;
 }
 
@@ -208,6 +245,26 @@ export async function POST(request: Request) {
     });
   }
 
+  // Task 7: client-side plausibility (validateRunResult) is a sanity
+  // filter, not verification. While the operator flags are disabled the
+  // financial gate above is off, but that must NOT mean "no
+  // verification": an unverified run (the authoritative replay could not
+  // reproduce it) credits nothing — no weekly facts, no XP — even when
+  // financial rewards are off. Verified runs below are the only path to
+  // any reward, in both flag configurations.
+  if (!authoritative.verified) {
+    return json({
+      accepted: false,
+      duplicate: false,
+      valid: false,
+      reasons: [authoritative.reason ?? "Authoritative game verification failed."],
+    });
+  }
+
+  // From here on the run is authoritatively verified: the stored result
+  // is the server-replayed one (see above) and the attestation is the
+  // replay's proof.
+
   // Only update the weekly ledger while the week is still open — once a
   // settlement has closed/computed/allocated a week, further submissions
   // for that (already-passed) weekKey are still recorded for audit
@@ -217,13 +274,15 @@ export async function POST(request: Request) {
 
   let playerWeek: PlayerWeekRecord | null = null;
 
-  const canRecordWeeklyFacts =
-    authoritative.verified || process.env.GAME_REWARDS_ENABLED !== "true";
-
-  if (weekIsOpenForContributions && canRecordWeeklyFacts) {
+  if (weekIsOpenForContributions) {
     const serverSeasonPoints = await getServerSeasonPoints(wallet);
     // This is one atomic Redis operation: two simultaneous valid runs can
     // never both read the same validRunCount and overwrite each other.
+    //
+    // Task 7: the attestation (verificationVersion + authoritativeProofId)
+    // is persisted with the weekly record — the settlement route's
+    // eligibility filter requires exactly those fields for financial
+    // payout, so without them no verified run could ever become eligible.
     playerWeek = await kvAllocationStore.recordValidatedRun(
       wallet,
       weekKey,
@@ -231,12 +290,15 @@ export async function POST(request: Request) {
       serverSeasonPoints,
       new Date().toISOString(),
       MIN_VALID_RUNS_FOR_ELIGIBILITY,
+      "authoritative-v1",
+      authoritative.proofId ?? "",
     );
 
   }
 
-  // Server-authoritative XP remains available even while financial game
-  // rewards are disabled; it is independently idempotent by session ID.
+  // Server-authoritative XP for a VERIFIED run (the unverified path
+  // returned above). It remains available while financial game rewards
+  // are disabled, and is independently idempotent by session ID.
   try { await awardCappedGameXP(wallet, sessionId); }
   catch (error) { console.error("Game XP ledger update failed", error); }
 
