@@ -30,6 +30,7 @@ import type {
   AllocationStatus,
   PlayerWeekRecord,
   RunRecord,
+  SettlementOutboxRecord,
   WeeklySettlement,
 } from "./allocation-types";
 
@@ -85,12 +86,41 @@ function ledgerEntryKey(rewardType: "GAME", settlementKeyValue: string) {
   return `mpgrhub:games:ledger-entry:${rewardType}:${settlementKeyValue}`;
 }
 
+function settlementOutboxKey(weekKey: string, allocationAttemptId: string) {
+  return `mpgrhub:games:settlement-outbox:${weekKey}:${allocationAttemptId}`;
+}
+
+function settlementOutboxIndexKey(weekKey: string) {
+  return `mpgrhub:games:settlement-outbox-index:${weekKey}`;
+}
+
 
 const RECORD_LEDGER_ONCE_SCRIPT = `
 local created = redis.call("SET", KEYS[1], "1", "NX")
 if not created then return 0 end
 redis.call("INCRBY", KEYS[2], ARGV[1])
 return 1
+`;
+
+const CAS_UPSERT_OUTBOX_SCRIPT = `
+local current = redis.call("GET", KEYS[1])
+local expected = ARGV[2]
+
+if expected ~= "" then
+  if current == false then
+    return {err = "CAS_MISMATCH_NOT_FOUND"}
+  end
+
+  local ok, decoded = pcall(cjson.decode, current)
+  if not ok or decoded.status ~= expected then
+    return current
+  end
+elseif current == false then
+  return {err = "OUTBOX_NOT_FOUND"}
+end
+
+redis.call("SET", KEYS[1], ARGV[1])
+return ARGV[1]
 `;
 
 // ---------------------------------------------------------------------------
@@ -628,5 +658,30 @@ export const kvAllocationStore: AllocationStore = {
       ledgerKey(rewardType),
       Number(units)
     );
+  },
+
+  async recordSettlementOutboxAttempt(record: SettlementOutboxRecord): Promise<boolean> {
+    const key = settlementOutboxKey(record.weekKey, record.allocationAttemptId);
+    const inserted = await kv().set(key, serialize(record), { nx: true });
+    if (inserted === null) return false;
+    await kv().sadd(settlementOutboxIndexKey(record.weekKey), record.allocationAttemptId);
+    return true;
+  },
+
+  async updateSettlementOutboxAttempt(record, expectedStatus) {
+    const key = settlementOutboxKey(record.weekKey, record.allocationAttemptId);
+    const result = await kv().eval(
+      CAS_UPSERT_OUTBOX_SCRIPT,
+      [key],
+      [serialize(record), expectedStatus ?? ""],
+    );
+    if (result === null || result === undefined) {
+      throw new Error(`updateSettlementOutboxAttempt: unexpected empty result for ${key}`);
+    }
+    const stored = normalizeRedisValue<SettlementOutboxRecord>(result);
+    if (!stored) {
+      throw new Error(`updateSettlementOutboxAttempt: unable to decode result for ${key}`);
+    }
+    return stored;
   },
 };

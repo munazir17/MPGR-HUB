@@ -210,4 +210,29 @@ export interface WeeklySettlement {
   updatedAt: string;
 }
 
+
+export type SettlementOutboxStatus =
+  | "pending"
+  | "confirmed"
+  | "uncertain"
+  | "reconciled"
+  | "failed";
+
+export interface SettlementOutboxRecord {
+  id: string;
+  weekKey: string;
+  allocationAttemptId: string;
+  operation: "allocateRewardsBatch";
+  status: SettlementOutboxStatus;
+  seasonId: bigint;
+  users: Address[];
+  amountsRaw: bigint[];
+  rewardTypes: number[];
+  txHash: Hash | null;
+  rewardIds: bigint[];
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type { Address, Hash };

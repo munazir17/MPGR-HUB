@@ -36,6 +36,8 @@ import type {
   AllocationStatus,
   PlayerWeekRecord,
   RunRecord,
+  SettlementOutboxRecord,
+  SettlementOutboxStatus,
   WeeklySettlement,
 } from "./allocation-types";
 
@@ -144,4 +146,18 @@ export interface AllocationStore {
     settlementKey: string,
     amountRaw: bigint,
   ): Promise<boolean>;
+
+  /**
+   * Durable outbox marker written before the external allocateRewardsBatch
+   * side effect. If this write fails, callers must not submit the on-chain
+   * transaction; if later writes fail, reconciliation can use the pending
+   * outbox plus weekly/player settlement state to determine the outcome.
+   */
+  recordSettlementOutboxAttempt(record: SettlementOutboxRecord): Promise<boolean>;
+
+  /** Conditionally advances an outbox attempt. Must never create a second economic effect. */
+  updateSettlementOutboxAttempt(
+    record: SettlementOutboxRecord,
+    expectedStatus?: SettlementOutboxStatus,
+  ): Promise<SettlementOutboxRecord>;
 }

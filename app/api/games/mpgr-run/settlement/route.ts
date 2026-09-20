@@ -18,7 +18,7 @@ import { NextResponse } from "next/server";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { Address } from "viem";
 import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
-import type { PlayerWeekRecord, WeeklySettlement } from "@/lib/reward-allocation/allocation-types";
+import type { PlayerWeekRecord, SettlementOutboxRecord, WeeklySettlement } from "@/lib/reward-allocation/allocation-types";
 import {
   computeAllocations,
   computeRawWeight,
@@ -268,11 +268,64 @@ async function runSettlementUnlocked(weekKeyOverride?: string) {
   const amounts = payable.map((a) => a.amountRaw);
   const rewardTypes = payable.map(() => 0); // RewardType.GAME
 
+  const now = new Date().toISOString();
+  let outbox: SettlementOutboxRecord = {
+    id: `settlement:${weekKey}:allocateRewardsBatch:${allocationAttemptId}`,
+    weekKey,
+    allocationAttemptId,
+    operation: "allocateRewardsBatch",
+    status: "pending",
+    seasonId,
+    users,
+    amountsRaw: amounts,
+    rewardTypes,
+    txHash: null,
+    rewardIds: [],
+    errorCode: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const outboxInserted = await kvAllocationStore.recordSettlementOutboxAttempt(outbox);
+  if (!outboxInserted) {
+    return {
+      weekKey,
+      status: "allocating",
+      alreadyDone: false,
+      settlement,
+      error: "Settlement attempt already has an outbox record; not submitting a second on-chain batch.",
+      note: "Run reconciliation before any retry.",
+    };
+  }
+
   let allocateResult;
   try {
     allocateResult = await rewardVaultAdminClient.allocateRewardsBatch(seasonId, users, amounts, rewardTypes);
+    outbox = await kvAllocationStore.updateSettlementOutboxAttempt(
+      {
+        ...outbox,
+        status: "confirmed",
+        txHash: allocateResult.txHash,
+        rewardIds: allocateResult.rewardIds,
+        updatedAt: new Date().toISOString(),
+      },
+      "pending",
+    );
   } catch (err) {
     console.error("Settlement allocation confirmation failed", { weekKey, error: err });
+    try {
+      await kvAllocationStore.updateSettlementOutboxAttempt(
+        {
+          ...outbox,
+          status: "uncertain",
+          errorCode: "ALLOCATION_CONFIRMATION_FAILED",
+          updatedAt: new Date().toISOString(),
+        },
+        "pending",
+      );
+    } catch (outboxError) {
+      console.error("Settlement outbox update failed after uncertain allocation", { weekKey, error: outboxError });
+    }
     // Leave status "allocating" so reconciliation can inspect on-chain state.
     // Never return provider/RPC/signer details to the HTTP caller.
     return {
@@ -363,19 +416,20 @@ function serializable<T>(value: T): unknown {
 // before allocateRewardsBatch is ever called, so a lost race (e.g. lock
 // TTL expiry) aborts instead of silently proceeding. Neither closes the
 // gap for an arbitrary crash (host failure, network partition, etc.) —
-// that still requires a durable transactional outbox or on-chain replay
-// protection the vault contract doesn't have, which is out of scope
-// here. This route still deliberately does NOT auto-retry an
+// that still requires on-chain replay protection the vault contract
+// doesn't have. This route now writes a durable outbox record before the
+// external call, but it still deliberately does NOT auto-retry an
 // "allocating" settlement (see the check at the top of runSettlement) —
-// auto-retrying here risks a double allocation, which is strictly worse
-// than a paused settlement. Recovery is a manual step — see
+// auto-retrying here risks a double allocation while allocateRewardsBatch
+// has no idempotency key, which is strictly worse than a paused
+// settlement. Recovery is a manual step — see
 // docs/SETTLEMENT_RECOVERY_RUNBOOK.md for the exact procedure. The
 // daily reconcile cron now flags a settlement that's been "allocating"
 // too long (see reconcile/route.ts's SETTLEMENT_STUCK_ALLOCATING log
 // line / `alert` field) so this doesn't rely on someone noticing.
-// This is a genuine, disclosed gap — true exactly-once
-// delivery across an arbitrary crash requires either a durable
-// transactional outbox or idempotent on-chain replay protection the
-// vault contract itself doesn't provide (allocateRewardsBatch has no
-// idempotency key), and building either is beyond what this task's
-// existing infrastructure (no queue, no DB beyond KV) supports today.
+// This is a genuine, disclosed limitation — true exactly-once delivery
+// across an arbitrary crash requires idempotent on-chain replay
+// protection in a future vault ABI. The additive outbox in KV improves
+// auditability and ensures Redis failure before the external call fails
+// closed; it does not make a non-idempotent on-chain function safe to
+// replay automatically.

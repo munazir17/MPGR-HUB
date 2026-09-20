@@ -16,10 +16,12 @@ have.
 
 The system **deliberately does not auto-retry** a settlement stuck in
 `allocating` — see the "Known limitation" comment at the bottom of
-`settlement/route.ts`. Auto-retrying risks calling
-`allocateRewardsBatch` a second time for the same week, which the vault
-contract has no idempotency key to prevent, and that is strictly worse
-than a paused settlement. Recovery is therefore a manual step.
+`settlement/route.ts` and `docs/SETTLEMENT_EXACTLY_ONCE_DESIGN.md`.
+The route writes a durable pre-broadcast outbox record for audit and
+fail-closed behavior, but auto-retrying can still call
+`allocateRewardsBatch` a second time for the same week because the vault
+contract has no idempotency key to prevent replay. That is strictly
+worse than a paused settlement, so recovery remains a manual step.
 
 ## How you'll find out
 
