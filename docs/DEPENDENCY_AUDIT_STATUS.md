@@ -35,6 +35,36 @@ this is a starting point, not a replacement for that.
   version that patched the critical SSRF advisory CVE-2026-40175
   (CVSS 10). No change needed.
 
+- **`rpc-websockets` — pinned to `10.0.1` via `overrides`** (Task 5,
+  2026-09). This is a runtime-boundary fix, not a security advisory.
+  `@coinbase/agentkit` → `@solana/web3.js` → `rpc-websockets@9.3.9`
+  did a synchronous CommonJS `require("uuid")` of `uuid@14`, which is
+  ESM-only. `@coinbase/agentkit` is a `serverExternalPackages` entry, so
+  Next leaves that `require()` chain to Node at request time, and on
+  Vercel's serverless runtime (no `require(esm)` interop) it threw
+  `ERR_REQUIRE_ESM` → 500 from `POST /api/agentkit/invoke`. Upstream
+  removed the `uuid` dependency in `9.3.10` (`crypto.randomUUID()`
+  instead); `10.0.1` is byte-identical to `9.3.10` apart from the
+  version field, and `9.3.10` is marked deprecated on npm, so the
+  non-deprecated build is pinned. Same public API; `@solana/web3.js`
+  declares `^9.0.2` only because it predates the 10.x tag. Drop the
+  override once `@solana/web3.js` declares `rpc-websockets >= 9.3.10`
+  on its own.
+
+  Three more boundaries of the same kind sit inside `@coinbase/agentkit`
+  itself and have no upstream release to pin to (the packages are
+  `"type": "module"` at every published version):
+  `@across-protocol/app-sdk`, `@base-org/account/spend-permission`, and
+  `clanker-sdk/v4`. Those, together with the older `@coinbase/cdp-sdk` →
+  `jose` case, are rewritten to lazy `import()` on `postinstall` by
+  `scripts/fix-cdp-jose-esm.cjs`, which now also fails the install if
+  `require("@coinbase/agentkit")` does not succeed under
+  `node --no-experimental-require-module`. The same check is a vitest
+  regression test:
+  `lib/architecture/agentkit/__tests__/esm-runtime-boundary.test.ts`
+  loads every `serverExternalPackages` entry under that flag (the
+  Vercel condition).
+
 ## Already has a documented, reasoned exception process
 
 `scripts/audit-high.mjs` already implements exactly the "separate,
