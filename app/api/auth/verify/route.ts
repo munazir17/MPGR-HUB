@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Address } from "viem";
 import { isNonceActive, consumeNonce } from "@/lib/auth/nonce";
-import { createSession } from "@/lib/auth/session";
+import { issueSession } from "@/lib/auth/session-store";
 import { NONCE_COOKIE, SESSION_COOKIE, SUPPORTED_CHAIN_ID, getAppOrigin, getAuthCookieAttributes } from "@/lib/auth/config";
 import { buildSiweMessage, verifySiweSignature } from "@/lib/auth/siwe";
 import { assertJsonBodyLimit, enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody } from "@/lib/api/request-guard";
@@ -93,7 +93,14 @@ export async function POST(request: Request) {
     return json({ error: "Wallet signature verification failed" }, { status: 401 });
   }
   if (!(await consumeNonce(nonce))) return json({ error: "Nonce expired or already used" }, { status: 409 });
-  const { value: sessionCookie, session } = createSession(value.address as Address);
+  let sessionCookie: string;
+  let session: Awaited<ReturnType<typeof issueSession>>["session"];
+  try {
+    ({ value: sessionCookie, session } = await issueSession(value.address as Address));
+  } catch (error) {
+    console.error("POST /api/auth/verify could not register session", error);
+    return json({ error: "Unable to create session" }, { status: 503 });
+  }
   const response = NextResponse.json({
     authenticated: true,
     wallet: session.wallet,

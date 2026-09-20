@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 import {
   enforceAiDailyBudget,
   enforceRateLimit,
@@ -61,7 +61,7 @@ export async function POST(request: Request) {
     withRequestId(NextResponse.json(body, init), requestId);
   const originError = verifyTrustedOrigin(request);
   if (originError) return withRequestId(originError, requestId);
-  const auth = getSessionFromRequest(request);
+  const auth = await authenticateRequest(request);
   if (!auth) return respond({ error: "Authentication required" }, { status: 401 });
   const rateError = await enforceRateLimit(request, "ai", 20, 60);
   if (rateError) return withRequestId(rateError, requestId);

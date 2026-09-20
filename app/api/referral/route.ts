@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/request-guard";
 import { referralStore } from "@/lib/referral/referral-store";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 import { awardServerXP } from "@/lib/rewards/xp-ledger";
 
 export const runtime = "nodejs";
@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 
 export async function GET(request: Request) {
-  const session = getSessionFromRequest(request);
+  const session = await authenticateRequest(request);
   const { searchParams } = new URL(request.url);
   const wallet = searchParams.get("wallet");
 
@@ -54,7 +54,7 @@ export async function POST(request: Request) {
     return json({ error: "Body must be { referrer: 0x-address }" }, { status: 400 });
   }
 
-  const session = getSessionFromRequest(request);
+  const session = await authenticateRequest(request);
   if (!session) return json({ error: "Authentication required" }, { status: 401 });
 
   try {

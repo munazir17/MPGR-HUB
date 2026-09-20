@@ -6,7 +6,7 @@
 
 import { NextResponse } from "next/server";
 import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/request-guard";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 
 import { submitBoundX402Payment } from "@/lib/x402/x402-submit";
 
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
   const requestId = guard.requestId;
   if (guard.error) return guard.error;
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
-  if (!getSessionFromRequest(request)) return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: NO_STORE });
+  if (!(await authenticateRequest(request))) return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: NO_STORE });
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
   const body: unknown = parsedBody.value;

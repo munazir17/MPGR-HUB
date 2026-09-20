@@ -46,7 +46,7 @@ import {
   verifyTrustedOrigin,
   withRequestId,
 } from "@/lib/api/request-guard";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 
 import {
   assertPublicHttpsUrl,
@@ -131,7 +131,7 @@ export async function POST(request: Request) {
   const originError = verifyTrustedOrigin(request);
   if (originError) return withRequestId(originError, requestId);
 
-  if (!getSessionFromRequest(request)) {
+  if (!(await authenticateRequest(request))) {
     return withRequestId(
       NextResponse.json(
         { error: "Authentication required", code: "AUTH_REQUIRED" },

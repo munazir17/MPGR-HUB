@@ -9,10 +9,19 @@ describe("XP ledger Lua scripts", () => {
     expect(AWARD_XP_SCRIPT).not.toMatch(/redis\(\)\.call/);
   });
 
-  it("award script is idempotent via SET NX and stores a TTL", () => {
+  // Task 6: the event/meta keys used to carry a ~400 day TTL ("EX"), which
+  // let one-time events be re-awarded and lost ledger history. Idempotency
+  // keys are now permanent; see xp-ledger.durability.test.ts for the
+  // executed-Lua behaviour tests.
+  it("award script is idempotent via SET NX and never expires ledger keys", () => {
     expect(AWARD_XP_SCRIPT).toContain('"NX"');
-    expect(AWARD_XP_SCRIPT).toContain('"EX"');
-    expect(AWARD_XP_SCRIPT).toContain("if not created then return 0 end");
+    expect(AWARD_XP_SCRIPT).not.toContain('"EX"');
+    expect(AWARD_XP_SCRIPT).not.toContain("EXPIRE");
+    expect(AWARD_XP_SCRIPT).toContain("if not created then");
+    expect(AWARD_XP_SCRIPT).toContain("return 0");
+    // Legacy TTL'd keys are made permanent the first time they are replayed.
+    expect(AWARD_XP_SCRIPT).toContain('redis.call("PERSIST", KEYS[1])');
+    expect(AWARD_XP_SCRIPT).toContain('redis.call("PERSIST", KEYS[6])');
   });
 
   it("capped game XP script decrements the cap on duplicate or over-cap", () => {

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getRankedWallets, getServerWalletStanding, getRankedWalletCount } from "@/lib/rewards/xp-ledger";
 import { referralStore } from "@/lib/referral/referral-store";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 import type { Address } from "viem";
 
 export const runtime = "nodejs";
@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const walletParam = searchParams.get("wallet");
   if (walletParam && !ADDRESS_RE.test(walletParam)) return NextResponse.json({ error: "Invalid wallet address" }, { status: 400, headers });
-  const session = getSessionFromRequest(request);
+  const session = await authenticateRequest(request);
   if (walletParam && (!session || session.wallet.toLowerCase() !== walletParam.toLowerCase())) {
     return NextResponse.json({ error: "Authentication required for wallet standing" }, { status: 401, headers });
   }

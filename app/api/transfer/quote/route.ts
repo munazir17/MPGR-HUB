@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { buildTransferProposal } from "@/lib/trade/transfer-proposal";
 import { parseTransferRequest } from "@/lib/trade/transfer-request";
 import { protectApiRequest, withRequestId } from "@/lib/api/request-guard";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
   // Nothing in the request body is ever trusted for who is sending —
   // see lib/trade/transfer-request.ts, which does not even read a
   // sender/from field.
-  const session = getSessionFromRequest(request);
+  const session = await authenticateRequest(request);
   if (!session) {
     return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: { "Cache-Control": "no-store" } });
   }

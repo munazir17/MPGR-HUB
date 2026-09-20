@@ -22,6 +22,12 @@ const { mockInvoke, mockDiscover, mockGetSession, mockEnforceRateLimit } =
 vi.mock("@/lib/auth/session", () => ({
   getSessionFromRequest: (...args: unknown[]) => mockGetSession(...args),
 }));
+// Task 6: routes authenticate via the server-side session registry; the
+// test keeps driving the same fake through the async entry point.
+vi.mock("@/lib/auth/session-store", () => ({
+  authenticateRequest: async (...args: unknown[]) => mockGetSession(...args),
+}));
+
 
 // Real verifyTrustedOrigin runs; only the Redis-backed limiter is
 // stubbed so the test needs no Upstash credentials.

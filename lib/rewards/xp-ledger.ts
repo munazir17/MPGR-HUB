@@ -13,6 +13,8 @@ const eventKey = (wallet: string, eventId: string) => `mpgrhub:xp:event:${wallet
 const metaKey = (wallet: string, eventId: string) => `mpgrhub:xp:event-meta:${wallet.toLowerCase()}:${eventId}`;
 const indexKey = "mpgrhub:xp:wallets";
 const gameCapKey = (wallet: string, day: string) => `mpgrhub:xp:game-cap:${wallet.toLowerCase()}:${day}`;
+/** Unused by the scripts since Task 6; retained so ARGV positions never shift. */
+const LEGACY_TTL_ARG = String(60 * 60 * 24 * 400);
 
 export interface XPLedgerEntry {
   wallet: Address;
@@ -34,26 +36,47 @@ function utcDayId(date = new Date()) {
 /**
  * Atomic idempotent award.
  * KEYS: event, total, month, rank, wallet-index, event-meta.
- * ARGV: xp, wallet, unused, unused, unused, meta-json, ttl-seconds.
+ * ARGV: xp, wallet, unused, unused, unused, meta-json, ttl-seconds (legacy, ignored).
+ *
+ * Durability (Task 6): the event (idempotency) key and the event-meta
+ * (ledger history) key are written WITHOUT a TTL. They previously expired
+ * after ~400 days, which (a) let a one-time event such as WALLET_CONNECTED
+ * be credited again once its key lapsed and (b) silently dropped ledger
+ * history while the totals it explained lived on.
+ *
+ * Migration is read-old/write-new and happens inside the same atomic
+ * script: when SET NX finds an existing key (a duplicate), it PERSISTs
+ * both the event and meta keys so records written by the previous version
+ * lose their pending expiry the first time they are touched. Totals are
+ * never modified on that path, so existing balances are preserved exactly.
+ * Rollback: the old script simply keeps writing TTL keys; nothing here
+ * changes key names or value formats.
  *
  * Must use redis.call (Lua). redis().call is a JS typo and throws at runtime.
  */
 export const AWARD_XP_SCRIPT = `
-local created = redis.call("SET", KEYS[1], "1", "NX", "EX", ARGV[7])
-if not created then return 0 end
+local created = redis.call("SET", KEYS[1], "1", "NX")
+if not created then
+  redis.call("PERSIST", KEYS[1])
+  redis.call("PERSIST", KEYS[6])
+  return 0
+end
 redis.call("INCRBY", KEYS[2], ARGV[1])
 redis.call("INCRBY", KEYS[3], ARGV[1])
 redis.call("ZINCRBY", KEYS[4], ARGV[1], ARGV[2])
 redis.call("SADD", KEYS[5], ARGV[2])
-redis.call("SET", KEYS[6], ARGV[6], "EX", ARGV[7])
+redis.call("SET", KEYS[6], ARGV[6])
 return 1
 `;
 
 /**
  * Atomic daily-capped game XP + idempotent event award.
  * KEYS: event, total, month, rank, wallet-index, event-meta, cap.
- * ARGV: xp, wallet, unused, unused, unused, meta-json, ttl-seconds, cap-limit, cap-ttl.
+ * ARGV: xp, wallet, unused, unused, unused, meta-json, ttl-seconds (legacy, ignored), cap-limit, cap-ttl.
  * Returns 1 awarded, 0 duplicate event, -1 daily cap reached.
+ *
+ * Same durability rules as AWARD_XP_SCRIPT for the event / meta keys. The
+ * daily cap key is operational state and keeps its short TTL.
  */
 export const AWARD_CAPPED_GAME_XP_SCRIPT = `
 local cap = redis.call("INCR", KEYS[7])
@@ -64,16 +87,18 @@ if tonumber(cap) > tonumber(ARGV[8]) then
   redis.call("DECR", KEYS[7])
   return -1
 end
-local created = redis.call("SET", KEYS[1], "1", "NX", "EX", ARGV[7])
+local created = redis.call("SET", KEYS[1], "1", "NX")
 if not created then
   redis.call("DECR", KEYS[7])
+  redis.call("PERSIST", KEYS[1])
+  redis.call("PERSIST", KEYS[6])
   return 0
 end
 redis.call("INCRBY", KEYS[2], ARGV[1])
 redis.call("INCRBY", KEYS[3], ARGV[1])
 redis.call("ZINCRBY", KEYS[4], ARGV[1], ARGV[2])
 redis.call("SADD", KEYS[5], ARGV[2])
-redis.call("SET", KEYS[6], ARGV[6], "EX", ARGV[7])
+redis.call("SET", KEYS[6], ARGV[6])
 return 1
 `;
 
@@ -99,7 +124,9 @@ export async function awardServerXP(
   const normalized = wallet.toLowerCase();
   const month = monthId(timestamp);
   const xp = definition.xp;
-  const ttl = String(60 * 60 * 24 * 400);
+  // ARGV[7] is kept for positional compatibility only; the scripts no
+  // longer apply a TTL to ledger keys (see AWARD_XP_SCRIPT).
+  const ttl = LEGACY_TTL_ARG;
   const meta = ledgerMeta(normalized, action, xp, eventId, timestamp);
 
   const result = await redis().eval(
@@ -136,7 +163,7 @@ export async function awardCappedGameXP(
   const normalized = wallet.toLowerCase();
   const month = monthId(timestamp);
   const xp = definition.xp;
-  const ttl = String(60 * 60 * 24 * 400);
+  const ttl = LEGACY_TTL_ARG;
   const capTtl = String(60 * 60 * 48);
   const meta = ledgerMeta(normalized, "GAME_MPGR_RUN_COMPLETE", xp, eventId, timestamp);
 

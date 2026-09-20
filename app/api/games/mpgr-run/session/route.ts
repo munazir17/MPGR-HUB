@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { protectApiRequest, withRequestId } from "@/lib/api/request-guard";
 import type { Address } from "viem";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 import { createServerGameSession, TooManyActiveSessionsError } from "@/lib/games/mpgr-run/server-session";
 import { MPGR_RUN_GAME_ID } from "@/lib/games/mpgr-run/run-config";
 import { randomUUID } from "node:crypto";
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   const requestId = guard.requestId;
   if (guard.error) return guard.error;
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
-  const auth = getSessionFromRequest(request);
+  const auth = await authenticateRequest(request);
   if (!auth) return json({ error: "Authentication required" }, { status: 401 });
   const sessionId = randomUUID();
   try {

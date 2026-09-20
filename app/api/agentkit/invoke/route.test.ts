@@ -25,6 +25,18 @@ vi.mock("@/lib/auth/session", () => ({
     sessionId: "test-session",
   })),
 }));
+// Task 6: routes authenticate via the server-side session registry; the
+// test keeps driving the same fake through the async entry point.
+vi.mock("@/lib/auth/session-store", () => ({
+  authenticateRequest: async () => ({
+    wallet: "0x00000000000000000000000000000000000000aa",
+    chainId: 8453,
+    issuedAt: 1,
+    expiresAt: 9_999_999_999,
+    sessionId: "test-session",
+  }),
+}));
+
 
 vi.mock("@/lib/architecture/agentkit", () => ({
   invokeAgentKitAction: (...args: unknown[]) => mockInvoke(...args),

@@ -13,7 +13,7 @@
 import { isAddress } from "viem";
 import { NextResponse } from "next/server";
 import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/request-guard";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 
 import {
   KNOWN_X402_ASSET_DOMAINS,
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
   if (guard.error) return guard.error;
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
   const jsonError = (status: number, code: string, error: string) => json({ error, code }, { status, headers: NO_STORE });
-  if (!getSessionFromRequest(request)) return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: NO_STORE });
+  if (!(await authenticateRequest(request))) return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: NO_STORE });
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
   const body: unknown = parsedBody.value;

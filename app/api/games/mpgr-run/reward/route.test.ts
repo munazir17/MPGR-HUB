@@ -25,6 +25,12 @@ const getSessionFromRequest = vi.fn();
 vi.mock("@/lib/auth/session", () => ({
   getSessionFromRequest,
 }));
+// Task 6: routes authenticate via the server-side session registry; the
+// test keeps driving the same fake through the async entry point.
+vi.mock("@/lib/auth/session-store", () => ({
+  authenticateRequest: async () => getSessionFromRequest(),
+}));
+
 
 const getServerGameSession = vi.fn();
 const consumeGameSession = vi.fn(async () => undefined);

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { protectApiRequest, readJsonBody, withRequestId } from "@/lib/api/request-guard";
 import type { Address } from "viem";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 import { recordGameHeartbeat } from "@/lib/games/mpgr-run/server-session";
 import { MPGR_RUN_GAME_ID } from "@/lib/games/mpgr-run/run-config";
 
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   const guard = await protectApiRequest(request, "game-checkpoint", 30, 60);
   if (guard.error) return guard.error;
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), guard.requestId);
-  const auth = getSessionFromRequest(request);
+  const auth = await authenticateRequest(request);
   if (!auth) return json({ error: "Authentication required" }, { status: 401 });
   const parsedBody = await readJsonBody(request);
   if (!parsedBody.ok) return withRequestId(parsedBody.response, guard.requestId);

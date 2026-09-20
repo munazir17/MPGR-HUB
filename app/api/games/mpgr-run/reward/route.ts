@@ -27,7 +27,7 @@ import type { RunResult, RunStats } from "@/lib/games/mpgr-run/run-score";
 import { MPGR_RUN_TRACE_VERSION } from "@/lib/games/mpgr-run/input-trace";
 import { computeRunScore } from "@/lib/games/mpgr-run/run-score";
 import { kvAllocationStore } from "@/lib/reward-allocation/kv-allocation-store";
-import { getSessionFromRequest } from "@/lib/auth/session";
+import { authenticateRequest } from "@/lib/auth/session-store";
 import { consumeGameSession, getServerGameSession, heartbeatsCoverDuration } from "@/lib/games/mpgr-run/server-session";
 import { verifyAuthoritativeRun } from "@/lib/games/mpgr-run/authoritative-verifier";
 import { MIN_VALID_RUNS_FOR_ELIGIBILITY } from "@/lib/games/games-reward-config";
@@ -101,7 +101,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const auth = getSessionFromRequest(request);
+  const auth = await authenticateRequest(request);
   if (!auth) return json({ error: "Authentication required" }, { status: 401 });
   const wallet = auth.wallet as Address;
   const sessionId = body.sessionId;
