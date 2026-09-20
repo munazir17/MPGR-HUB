@@ -247,12 +247,12 @@ contract MPGRStaking is IMPGRStaking, Ownable, Pausable, ReentrancyGuard {
     }
 
     /// @inheritdoc IMPGRStaking
-    /// @dev Behavior, signature, modifiers, checks, and emitted event are
-    ///      unchanged from Milestone 1B. Only the internal token-pull step
-    ///      was extracted into `_pullRewardTokens()` so
-    ///      extendRewardSchedule() (Milestone 1C) can reuse it instead of
-    ///      duplicating it.
-    function depositRewards(uint256 amount) external onlyOwner nonReentrant {
+    /// @dev Adds updateReward(address(0)) (Milestone 1C fix): checkpoints
+    ///      global accrual at the old rewardRate before potentially
+    ///      resetting lastUpdateTime/periodFinish. Without this, resetting
+    ///      after expiry (or when rate is 0) would discard accrued rewards
+    ///      that had not yet been checkpointed into rewardPerTokenStored.
+    function depositRewards(uint256 amount) external onlyOwner nonReentrant updateReward(address(0)) {
         if (amount == 0) revert ZeroAmount();
 
         _pullRewardTokens(amount);
