@@ -8,15 +8,13 @@ The project follows a milestone-based development roadmap.
 
 # Unreleased
 
-## Task 4 — next.config.mjs hardening (part 1: image optimizer)
+## Task 4 — next.config.mjs hardening
 
 ### Fixed
 
-- `images.remotePatterns` no longer allows `hostname: "**"`. The always-on `/_next/image` route would fetch and re-serve any https URL a caller named (open image proxy / quota abuse). The repo has no `next/image` usage — first-party or in bundled dependencies — and every image is a local `/public` file rendered with `<img>`, so the allowlist is now explicitly empty. Local images through `/_next/image` keep working. Regression tests: `lib/__tests__/next-config.test.ts` (runs Next's real config loader and image-optimizer validation).
-
-### Not changed yet (owner decision pending)
-
-- `X-Frame-Options: DENY` is still sent on every response. It blocks the Farcaster **web** client, which loads Mini Apps in an iframe (mobile clients use a WebView and are unaffected). The replacement `Content-Security-Policy: frame-ancestors` allowlist requires the owner to confirm the exact embedding origins before it is changed.
+- `images.remotePatterns` no longer allows `hostname: "**"`. The always-on `/_next/image` route would fetch and re-serve any https URL a caller named (open image proxy / quota abuse). The repo has no `next/image` usage — first-party or in bundled dependencies — and every image is a local `/public` file rendered with `<img>`, so the allowlist is now explicitly empty. Local images through `/_next/image` keep working.
+- Framing policy (owner-approved 2026-09-20): page and static routes now send `Content-Security-Policy: frame-ancestors 'self' https://farcaster.xyz` instead of `X-Frame-Options: DENY`. The Farcaster **web** client loads Mini Apps in an iframe, which `DENY` refused (mobile clients use a WebView and were unaffected). `/api/*` keeps `X-Frame-Options: DENY` and additionally sends `frame-ancestors 'none'`. The CSP contains only the framing directive. Allowlist lives in `FRAME_ANCESTORS` in `next.config.mjs`.
+- Regression tests: `lib/__tests__/next-config.test.ts` (runs Next's real config loader, image-optimizer validation and header-route compiler).
 
 ---
 
