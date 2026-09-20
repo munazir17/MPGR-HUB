@@ -1,8 +1,25 @@
+// Origins allowed to embed page routes in an <iframe> (CSP frame-ancestors).
+// Owner-approved list (2026-09-20): our own origin plus the Farcaster web
+// client, which iframes Mini Apps (its mobile app uses a WebView instead).
+// Keep entries explicit — full https origins only, never "*" or a bare
+// scheme like "https:". Changing this list must update
+// lib/__tests__/next-config.test.ts (APPROVED_FRAME_ANCESTORS).
+const FRAME_ANCESTORS = ["'self'", "https://farcaster.xyz"];
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   images: {
-    remotePatterns: [{ protocol: "https", hostname: "**" }],
+    // Intentionally empty. `/_next/image` exists in every Next app and will
+    // fetch + re-serve any remote URL matching these patterns; a wildcard
+    // hostname made the production origin an open image proxy (bandwidth /
+    // Vercel image-optimisation quota abuse, confused-deputy fetches).
+    // The repo was audited: nothing imports `next/image` and every image
+    // is a local /public file rendered with <img>, so no remote host is
+    // needed. Add hosts here explicitly (protocol + full hostname, never
+    // "*"/"**") if a remote next/image source is ever introduced, and
+    // extend lib/__tests__/next-config.test.ts accordingly.
+    remotePatterns: [],
   },
   // Next.js 16 defaults production builds to Turbopack and fails if a
   // webpack() config exists without a turbopack key. Empty config here
@@ -65,9 +82,37 @@ const nextConfig = {
         headers: [
           { key: "Cross-Origin-Opener-Policy", value: "same-origin-allow-popups" },
           { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+        ],
+      },
+      // Framing policy (owner-approved 2026-09-20). The two sources below are
+      // exact complements of each other, so every path gets exactly one of
+      // them regardless of how the host applies overlapping header rules.
+      {
+        // API routes never render in a frame: keep the legacy header and its
+        // CSP equivalent.
+        source: "/api/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+        ],
+      },
+      {
+        // Pages and static assets. The Farcaster WEB client loads Mini Apps in
+        // an <iframe> (mobile clients use a WebView and ignore framing headers),
+        // and X-Frame-Options cannot express an allowlist (ALLOW-FROM is
+        // obsolete), so CSP frame-ancestors replaces it here. No X-Frame-Options
+        // on these paths: browsers without CSP2 would otherwise still refuse
+        // the Farcaster host. This CSP sets ONLY frame-ancestors — adding other
+        // directives (script-src, connect-src, ...) would affect wallet SDKs
+        // and must be a deliberate separate change.
+        source: "/((?!api(?:/|$)).*)",
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value: `frame-ancestors ${FRAME_ANCESTORS.join(" ")}`,
+          },
         ],
       },
     ];
