@@ -87,34 +87,10 @@ jobs:
       - run: mkdir -p .forge-deps
       - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
       - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
-      - name: Install Slither
-        run: |
-          pip install slither-analyzer==0.11.6
-          slither --version
-      - name: Test target contracts/ vs .
-        run: |
-          echo "=== slither . (foundry) ==="
-          slither . --filter-paths "openzeppelin|forge-std" 2>&1 | tail -n 100
-          echo "exit:$?"
-          echo "=== slither contracts/ (solc) ==="
-          slither contracts/ --filter-paths "openzeppelin|forge-std" 2>&1 | tail -n 200
-          echo "exit:$?"
-          echo "=== slither contracts/ with solc remaps ==="
-          slither contracts/ --filter-paths "openzeppelin|forge-std" --solc-remaps "@openzeppelin/contracts/=.forge-deps/openzeppelin-contracts/contracts/,forge-std/=.forge-deps/forge-std/src/" 2>&1 | tail -n 200
-          echo "exit:$?"
-      - name: Test slither-action equivalent
-        run: |
-          echo "=== action used target contracts/ + checklist + fail-high ==="
-          slither contracts/ --filter-paths "openzeppelin|forge-std" --checklist --fail-high 2>&1 | tail -n 300
-          echo "exit:$?"
-          echo "=== action used target contracts/ + checklist + no-fail-pedantic ==="
-          slither contracts/ --filter-paths "openzeppelin|forge-std" --checklist --no-fail-pedantic 2>&1 | tail -n 300
-          echo "exit:$?"
-      - name: Upload
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Run Slither analysis
+        uses: crytic/slither-action@v0.4.1
         with:
-          name: slither-outputs
-          path: |
-            *.txt
-          if-no-files-found: warn
+          target: "."
+          solc-version: "0.8.24"
+          fail-on: high
+          slither-args: --filter-paths "openzeppelin|forge-std"
