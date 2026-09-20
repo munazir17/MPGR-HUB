@@ -86,7 +86,14 @@ export interface AllocationStore {
     expectedStatus?: AllocationStatus
   ): Promise<PlayerWeekRecord>;
 
-  /** Atomically records one already-validated run without a read/modify/write race. */
+  /**
+   * Atomically records one already-validated run without a read/modify/write
+   * race. `verificationVersion`/`authoritativeProofId` carry the
+   * authoritative-verification attestation for the run; implementations
+   * must apply them upgrade-only (an empty/absent attestation must never
+   * clear one already stored), since settlement eligibility filters on
+   * exactly those fields.
+   */
   recordValidatedRun(
     wallet: Address,
     weekKey: string,
@@ -94,6 +101,8 @@ export interface AllocationStore {
     seasonPointsEarnedThisWeek: number,
     lastRunAt: string,
     minValidRunsForEligibility: number,
+    verificationVersion?: string,
+    authoritativeProofId?: string,
   ): Promise<PlayerWeekRecord>;
 
   /** Every PlayerWeekRecord with eligibilityStatus === "eligible" for a given week, for the settlement job to weight/pool over. */
