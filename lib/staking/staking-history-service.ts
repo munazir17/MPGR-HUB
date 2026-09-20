@@ -5,8 +5,6 @@ import { stakingHistoryReader } from "./staking-history-reader";
 import { logger } from "@/lib/architecture/core/logger";
 import { MPGR_STAKING_CONFIG } from "./staking-config";
 import type { StakingHistoryCacheEntry, StakingHistoryEvent } from "./staking-types";
-// TEMPORARY — Phase 3F diagnostic trace only. See lib/_debug/reward-hub-trace.ts.
-import { trace } from "@/lib/_debug/reward-hub-trace";
 
 // Phase 3F Part 2 — In-flight scan dedup.
 //
@@ -104,17 +102,9 @@ function mergeAndSort(existing: StakingHistoryEvent[], incoming: StakingHistoryE
 // identical to the original steady-state behavior.
 async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<StakingHistoryEvent[]> {
   const cached = historyCache.get(cacheKey);
-  // TEMPORARY — Phase 3F diagnostic trace only.
-  const scanAndCacheStarted = trace.start("staking-history-service.scanAndCache", {
-    walletAddress,
-    hadCachedEntry: !!cached,
-  });
 
   try {
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    const latestBlockStarted = trace.start("staking-history-reader.getLatestBlockNumber");
     const latestBlock = await stakingHistoryReader.getLatestBlockNumber();
-    trace.end("staking-history-reader.getLatestBlockNumber", latestBlockStarted, { latestBlock: latestBlock.toString() });
 
     const lookback = BigInt(MPGR_STAKING_CONFIG.historyLookbackBlocks);
     const horizonFloor = latestBlock > lookback ? latestBlock - lookback : 0n;
@@ -128,20 +118,11 @@ async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<S
       const windowFrom = latestBlock > initialWindow ? latestBlock - initialWindow : 0n;
       const windowFloor = windowFrom > horizonFloor ? windowFrom : horizonFloor;
 
-      // TEMPORARY — Phase 3F diagnostic trace only.
-      const fetchStarted = trace.start("staking-history-reader.fetchHistory (initial window)", {
-        fromBlock: windowFloor.toString(),
-        toBlock: latestBlock.toString(),
-      });
       const { events: initialEvents, complete: initialComplete } = await stakingHistoryReader.fetchHistory(
         walletAddress,
         windowFloor,
         latestBlock
       );
-      trace.end("staking-history-reader.fetchHistory (initial window)", fetchStarted, {
-        newEventsCount: initialEvents.length,
-        complete: initialComplete,
-      });
 
       const merged = mergeAndSort([], initialEvents);
 
@@ -176,13 +157,6 @@ async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<S
         });
       }
 
-      // TEMPORARY — Phase 3F diagnostic trace only.
-      trace.end("staking-history-service.scanAndCache", scanAndCacheStarted, {
-        mergedCount: merged.length,
-        initialWindow: true,
-        complete: initialComplete,
-        backfillComplete: initialComplete && windowFloor <= horizonFloor,
-      });
       return merged;
     }
 
@@ -192,20 +166,11 @@ async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<S
     let entries = cached.entries;
     let lastBlockScanned = cached.lastBlockScanned;
     if (lastBlockScanned < latestBlock) {
-      // TEMPORARY — Phase 3F diagnostic trace only.
-      const forwardStarted = trace.start("staking-history-reader.fetchHistory (forward)", {
-        fromBlock: (lastBlockScanned + 1n).toString(),
-        toBlock: latestBlock.toString(),
-      });
       const { events: forwardEvents, complete: forwardComplete } = await stakingHistoryReader.fetchHistory(
         walletAddress,
         lastBlockScanned + 1n,
         latestBlock
       );
-      trace.end("staking-history-reader.fetchHistory (forward)", forwardStarted, {
-        newEventsCount: forwardEvents.length,
-        complete: forwardComplete,
-      });
       // Events found are real and safe to keep regardless of completeness
       // — mergeAndSort dedupes by id, so re-scanning this same range on a
       // future retry can never double-count them.
@@ -237,20 +202,11 @@ async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<S
       const stepTo = earliestBlockScanned - 1n;
 
       if (stepFrom <= stepTo) {
-        // TEMPORARY — Phase 3F diagnostic trace only.
-        const backfillStarted = trace.start("staking-history-reader.fetchHistory (backfill step)", {
-          fromBlock: stepFrom.toString(),
-          toBlock: stepTo.toString(),
-        });
         const { events: backfillEvents, complete: backfillComplete } = await stakingHistoryReader.fetchHistory(
           walletAddress,
           stepFrom,
           stepTo
         );
-        trace.end("staking-history-reader.fetchHistory (backfill step)", backfillStarted, {
-          newEventsCount: backfillEvents.length,
-          complete: backfillComplete,
-        });
         entries = mergeAndSort(entries, backfillEvents);
         if (backfillComplete) {
           earliestBlockScanned = stepFrom;
@@ -282,17 +238,10 @@ async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<S
       });
     }
 
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    trace.end("staking-history-service.scanAndCache", scanAndCacheStarted, {
-      mergedCount: entries.length,
-      backfillComplete: earliestBlockScanned <= horizonFloor,
-    });
     return entries;
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     logger.error("stakingHistoryService.getHistory failed", { walletAddress, error: errorMsg });
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    trace.end("staking-history-service.scanAndCache", scanAndCacheStarted, { failed: true, error: errorMsg });
     return cached ? cached.entries : [];
   }
 }
@@ -307,8 +256,6 @@ export const stakingHistoryService = {
     const limit = options.limit ?? MPGR_STAKING_CONFIG.historyPageSize;
 
     if (cached && !options.forceRefresh && isCacheValid(cached)) {
-      // TEMPORARY — Phase 3F diagnostic trace only.
-      trace.mark("staking-history-service cache HIT", { walletAddress });
       return cached.entries.slice(0, limit);
     }
 
@@ -320,16 +267,10 @@ export const stakingHistoryService = {
     // reliably see each other.
     const existingScan = inFlightScans.get(cacheKey);
     if (existingScan) {
-      // TEMPORARY — Phase 3F diagnostic trace only. Confirms/denies
-      // dedup: this line firing means a second concurrent caller
-      // correctly joined the in-flight scan instead of starting a new one.
-      trace.mark("staking-history-service DEDUP HIT (joined in-flight scan)", { walletAddress });
       const merged = await existingScan;
       return merged.slice(0, limit);
     }
 
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    trace.mark("staking-history-service cache MISS, starting new scan", { walletAddress, forceRefresh: options.forceRefresh });
     const scanPromise = scanAndCache(walletAddress, cacheKey).finally(() => {
       inFlightScans.delete(cacheKey);
     });

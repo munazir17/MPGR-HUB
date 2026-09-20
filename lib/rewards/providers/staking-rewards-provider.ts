@@ -5,8 +5,6 @@ import { stakingService } from "@/lib/staking/staking-service";
 import { stakingHistoryService } from "@/lib/staking/staking-history-service";
 import { REWARD_CATEGORY_METADATA } from "../reward-config";
 import type { RewardCategorySummary, RewardClaimHistoryEntry, RewardProvider } from "../reward-types";
-// TEMPORARY — Phase 3F diagnostic trace only. See lib/_debug/reward-hub-trace.ts.
-import { trace } from "@/lib/_debug/reward-hub-trace";
 
 // Phase 3F Part 1 — Staking Rewards Provider.
 //
@@ -27,9 +25,6 @@ export const stakingRewardsProvider: RewardProvider = {
   label: REWARD_CATEGORY_METADATA[CATEGORY].label,
 
   async getSummary(address: Address): Promise<RewardCategorySummary> {
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    const summaryStarted = trace.start("stakingRewardsProvider.getSummary", { address });
-
     // Phase 3I — Reward Hub loading fix (uncouple Summary from the cold
     // history scan). This used to also await
     // stakingHistoryService.getHistory(address, {}) here, in parallel
@@ -68,9 +63,8 @@ export const stakingRewardsProvider: RewardProvider = {
     // background scan has found by then, and converges to the exact total
     // as backfill completes, exactly like the History list itself already
     // does.
-    const walletStateStarted = trace.start("staking.getWalletState");
+
     const walletState = await stakingService.getWalletState(address);
-    trace.end("staking.getWalletState", walletStateStarted);
 
     // Phase 3J — hole #2 fix. Was stakingHistoryService.getCachedHistory()
     // (TTL-gated: returns null, and therefore claimedRaw 0, the instant
@@ -93,9 +87,6 @@ export const stakingRewardsProvider: RewardProvider = {
     // of the last read — currently accrued but not yet claimed.
     const claimableRaw = walletState.earnedRewards;
 
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    trace.end("stakingRewardsProvider.getSummary", summaryStarted);
-
     return {
       category: CATEGORY,
       label: REWARD_CATEGORY_METADATA[CATEGORY].label,
@@ -107,11 +98,7 @@ export const stakingRewardsProvider: RewardProvider = {
   },
 
   async getHistory(address: Address, limit?: number): Promise<RewardClaimHistoryEntry[]> {
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    const historyStarted = trace.start("stakingRewardsProvider.getHistory", { address, limit });
-    const scanStarted = trace.start("stakingHistoryService.getHistory (from getHistory)");
     await stakingHistoryService.getHistory(address, limit ? { limit } : {});
-    trace.end("stakingHistoryService.getHistory (from getHistory)", scanStarted);
     const fullHistory = stakingHistoryService.getCachedHistory(address) ?? [];
 
     const entries: RewardClaimHistoryEntry[] = fullHistory
@@ -124,9 +111,6 @@ export const stakingRewardsProvider: RewardProvider = {
         timestamp: event.timestamp,
         txHash: event.txHash,
       }));
-
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    trace.end("stakingRewardsProvider.getHistory", historyStarted, { count: entries.length });
 
     return typeof limit === "number" ? entries.slice(0, limit) : entries;
   },
