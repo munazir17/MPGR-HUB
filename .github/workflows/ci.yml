@@ -92,36 +92,26 @@ jobs:
           pip install slither-analyzer==0.11.6
           slither --version
           forge --version
-      - name: Run Slither with checklist
+      - name: Slither default (no fail)
         run: |
-          echo "Running slither checklist..."
-          slither . --filter-paths "openzeppelin|forge-std" --checklist 2>&1 | tee slither-checklist.txt
-          echo "Exit code: $?"
-      - name: Run Slither JSON output
-        run: |
-          echo "Running slither json..."
-          slither . --filter-paths "openzeppelin|forge-std" --json slither.json 2>&1 | tee slither-log.txt
-          echo "Exit code: $?"
-          echo "=== JSON ==="
-          cat slither.json | head -n 200
-          echo "=== detectors ==="
-          slither . --filter-paths "openzeppelin|forge-std" --json - 2>&1 | head -n 1000 || true
-      - name: Run Slither with fail-on high simulation
-        run: |
-          echo "Simulating fail-on high: checking for high severity"
-          slither . --filter-paths "openzeppelin|forge-std" --fail-pedantic --filter-paths "openzeppelin|forge-std" 2>&1 | tee slither-fail.txt || true
-          echo "Now with --fail-high"
           slither . --filter-paths "openzeppelin|forge-std" 2>&1 | tee slither-default.txt
-          echo "Exit code: ${PIPESTATUS[0]}"
-      - name: Upload Slither artifacts
+          echo "exit:$?"
+      - name: Slither fail-high
+        run: |
+          slither . --filter-paths "openzeppelin|forge-std" --fail-high 2>&1 | tee slither-fail-high.txt
+          echo "exit:$?"
+      - name: Slither checklist
+        run: |
+          slither . --filter-paths "openzeppelin|forge-std" --checklist 2>&1 | tee slither-checklist.txt
+          echo "exit:$?"
+      - name: Slither checklist + fail-high
+        run: |
+          slither . --filter-paths "openzeppelin|forge-std" --checklist --fail-high 2>&1 | tee slither-checklist-fail-high.txt
+          echo "exit:$?"
+      - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: slither-debug
+          name: slither-outputs
           path: |
-            slither-checklist.txt
-            slither.json
-            slither-log.txt
-            slither-fail.txt
-            slither-default.txt
-          if-no-files-found: warn
+            slither-*.txt
