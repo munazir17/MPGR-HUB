@@ -597,7 +597,6 @@ export function RunGame({ address }: RunGameProps) {
 
       rafRef.current = requestAnimationFrame(loop);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [step, draw]
   );
 

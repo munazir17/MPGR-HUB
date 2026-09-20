@@ -19,7 +19,6 @@ function fmt(ms: number): string {
 export const trace = {
   // Call at the start of a phase. Returns a token to pass to trace.end().
   start(label: string, meta?: Record<string, unknown>): number {
-    // eslint-disable-next-line no-console
     console.log(`[RewardHub TRACE] ${label} START`, meta ?? "");
     return now();
   },
@@ -27,14 +26,12 @@ export const trace = {
   // Call at the end of a phase with the token returned by trace.start().
   end(label: string, startedAt: number, meta?: Record<string, unknown>): number {
     const elapsed = now() - startedAt;
-    // eslint-disable-next-line no-console
     console.log(`[RewardHub TRACE] ${label} END ${fmt(elapsed)}`, meta ?? "");
     return elapsed;
   },
 
   // One-off marker with no duration (e.g. cache hit/miss, counts).
   mark(label: string, meta?: Record<string, unknown>): void {
-    // eslint-disable-next-line no-console
     console.log(`[RewardHub TRACE] ${label}`, meta ?? "");
   },
 
@@ -44,7 +41,6 @@ export const trace = {
   rpcSnapshot(label: string): { totalCalls: number; totalFailures: number; totalRetries: number } {
     const d = getRpcDiagnostics();
     const snap = { totalCalls: d.totalCalls, totalFailures: d.totalFailures, totalRetries: d.totalRetries };
-    // eslint-disable-next-line no-console
     console.log(`[RewardHub TRACE] ${label} rpcDiagnostics`, snap);
     return snap;
   },

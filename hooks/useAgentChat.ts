@@ -301,7 +301,6 @@ export function useAgentChat() {
       } finally {
         if (loadTokenRef.current === token) setThinking(false);
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [address, isConnected]);

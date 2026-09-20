@@ -21,17 +21,14 @@ function withPrefix(level: LogLevel, message: string): string {
 export class ConsoleLogger implements Logger {
   debug(message: string, context?: LogContext): void {
     if (!DEBUG_ENABLED) return;
-    // eslint-disable-next-line no-console
     console.debug(withPrefix("debug", message), context ?? "");
   }
 
   warn(message: string, context?: LogContext): void {
-    // eslint-disable-next-line no-console
     console.warn(withPrefix("warn", message), context ?? "");
   }
 
   error(message: string, context?: LogContext): void {
-    // eslint-disable-next-line no-console
     console.error(withPrefix("error", message), context ?? "");
   }
 }
