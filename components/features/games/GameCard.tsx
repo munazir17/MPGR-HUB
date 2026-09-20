@@ -25,8 +25,18 @@ export function GameCard({ game, bestScore = 0 }: GameCardProps) {
         <div className="mb-5 flex items-start justify-between gap-3">
           <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-white/[0.06] text-3xl shadow-inner">
             {game.iconImage ? (
+              // Card art is 44 CSS px: lazy-load it (below the fold on a
+              // phone and never the LCP element) and decode it off the main
+              // thread. The referenced file is the card-sized variant.
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={game.iconImage} alt="" className="h-11 w-11 object-contain" aria-hidden="true" />
+              <img
+                src={game.iconImage}
+                alt=""
+                className="h-11 w-11 object-contain"
+                loading="lazy"
+                decoding="async"
+                aria-hidden="true"
+              />
             ) : (
               <span aria-hidden="true">{game.icon}</span>
             )}

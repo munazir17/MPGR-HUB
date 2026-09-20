@@ -160,3 +160,94 @@ gained the `.webp` extension).
 | ui/mpgr-run-heart.png | 1536x1024 | RGBA | 1.80 MiB | 995.1 KiB | -46.0% |
 | ui/mpgr-run-hud-frame.png | 1672x941 | RGBA | 961.7 KiB | 775.2 KiB | -19.4% |
 | ui/mpgr-run-powerup-frame.png | 1536x1024 | RGBA | 2.55 MiB | 1.75 MiB | -31.3% |
+
+---
+
+# Delivery follow-up — Task 12 (2026-09-20)
+
+The 2026-09-18 pass above was **storage-only**: it made each file bit-exactly
+smaller without touching dimensions. Task 12 addressed what is actually
+transferred and decoded at runtime. Nothing above was undone: no existing
+`.webp` was re-encoded, no file was deleted or renamed, and
+`RUN_ASSET_VERSION` was **not** bumped (the new files get fresh filenames, so
+a bump would only have forced every player to re-download all 55 sprites for
+no reason).
+
+## Measured baseline (pristine `origin/main`, `84247c1`)
+
+| Metric | Value |
+| --- | --- |
+| `public/` total | 85,103,391 B (81.16 MiB), 72 files |
+| Files > 1 MiB | 49 |
+| `public/games/` | 80,077,949 B (76.37 MiB) |
+| Sprite paths in the manifest | 34 total = 11 critical (14,577,916 B) + 23 optional (30,185,910 B) |
+
+## What was actually wrong
+
+Not the art's file size — its **rendered size**. Four images were fetched at
+full canvas resolution to be painted at 16–44 CSS px:
+
+- the in-run HUD hearts and power-up frame are DOM `<img>`s only (16 / 24 CSS
+  px) but lived in the *critical* preload lane at 995.1 KiB + 1.75 MiB;
+- the game-card avatar and the featured banner are 44 / 96–128 CSS px boxes
+  drawn from the 1254x1254 and 1536x1024 canvas sprites;
+- the brand mark (32 CSS px) and the declared favicon/apple-touch-icon both
+  pointed at `/icon.png` (1254x1254, 1.5 MiB), so every cold page visit
+  fetched 1.5 MB for a 32 px mark.
+
+## Changes
+
+| Asset (new file) | Dimensions | Size | Replaces (at full size) | Saving | Sampled at |
+| --- | --- | --- | --- | --- | --- |
+| `icon-128.png` | 128x128 | 29,805 B | `icon.png` 1,583,925 B | **-98.1%** | favicon + brand mark (32 CSS px) |
+| `icon-180.png` | 180x180 | 52,571 B | `icon.png` 1,583,925 B | **-96.7%** | apple-touch-icon |
+| `ui/mpgr-run-heart-icon.webp` | 96x64 | 7,562 B | `ui/mpgr-run-heart.webp` 1,018,976 B | **-99.3%** | in-run HUD hearts (16 CSS px x DPR 3) |
+| `ui/mpgr-run-powerup-frame-icon.webp` | 144x96 | 27,886 B | `ui/mpgr-run-powerup-frame.webp` 1,837,782 B | **-98.5%** | active-powerup chip (24 CSS px x DPR 3) |
+| `character/mpgr-runner-idle-card.webp` | 256x256 | 37,390 B | `character/mpgr-runner-idle.webp` 611,472 B | **-93.9%** | game card avatar (44 CSS px) |
+| `character/mpgr-runner-run-banner.webp` | 384x256 | 46,360 B | `character/mpgr-runner-run.webp` 501,954 B | **-90.8%** | featured banner (128x112 CSS px) |
+
+Loading changes:
+
+- the two HUD sprites stay in the critical lane (still eager, still
+  first-frame) but now total 35,448 B instead of 2,856,758 B — the
+  in-game critical lane dropped from **14,577,916 B to 11,756,606 B
+  (-2,821,310 B, -19.3%)** with no ordering, gating, or concurrency change;
+- `GameCard` avatar is `loading="lazy"` + `decoding="async"` (44 px, below
+  the fold); the featured banner stays eager (above the fold) with
+  `decoding="async"`;
+- no `fetchpriority` hint was added: on React 18.3.1 the camelCase prop
+  renders as the invalid `fetchPriority` attribute and `@types/react`
+  rejects the lowercase spelling, so the hint would either warn or fail
+  typecheck;
+- `image.png` (1,574,673 B) is referenced by a stale comment only and is
+  never requested; it was left alone.
+
+## Verification
+
+- New regression coverage: `lib/games/mpgr-run/run-assets.files.test.ts`
+  (every manifest path resolves on disk; gameplay art keeps its exact
+  intrinsic dimensions; HUD/card/icon variants stay inside size budgets) and
+  `lib/games/asset-loading-policy.test.ts` (no `loading="lazy"` on any game
+  code path; card lazy; banner eager; small icons declared; mini-app
+  manifest still on `/icon.png` + `/splash.png`; no `next/image` anywhere).
+- Pixel fidelity: each variant was compared with its original resampled to
+  the largest device-pixel box it is drawn in (original resized with the same
+  Lanczos kernel as the variant). Visible-pixel mean absolute error:
+  heart 0.47, power-up frame 1.24, card 4.91, banner **0.00 (pixel-identical
+  at its render size)**; maximum alpha error ≤ 34/255 on the card and ≤ 1
+  everywhere else. A side-by-side composite of all four originals against
+  their variants was rendered and reviewed before adoption.
+- The PNG/WebP header dimension parser used by the new tests was validated
+  against `sharp` metadata on all 64 images in `public/` (0 mismatches).
+
+## Left unchanged on purpose
+
+`portal/` (4 x ~2.3 MiB), `screen/` (11), `pads/` (2),
+`effects/mpgr-run-level-complete`, `effects/mpgr-run-powerup-collection` and
+`image.png` are referenced by **no code path** — they cannot be lazily loaded
+or made responsive because nothing loads them, so they cost nothing at
+runtime and were kept rather than deleted (deleting large art is
+out of bounds for this task). `RUN_ASSET_VERSION` stays `2026-09-18a`.
+
+Repo storage **grew** by 201,574 B (six new variant files, nothing removed);
+the win is in bytes transferred and decoded, not in clone size.

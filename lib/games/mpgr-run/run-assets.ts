@@ -125,10 +125,37 @@ export const POWERUP_SPRITES: Record<PowerupType, string> = {
 
 export const CHECKPOINT_SPRITE = asset(`${BASE}/checkpoints/mpgr-run-checkpoint.webp`);
 
+// --- HUD-only art (2026-09-20, asset/performance pass) ------------------
+// heart and powerupFrame are *never* drawn on the canvas. run-render.ts
+// (the only canvas consumer) imports CHARACTER/OBSTACLE/COLLECTIBLE/
+// POWERUP/EFFECT/CHECKPOINT/CITY art and nothing from UI_SPRITES; the two
+// entries below are rendered exclusively as DOM <img> elements in the
+// in-run HUD, at 16 CSS px (heart, one per HP pip) and 24 CSS px
+// (powerupFrame, inside the active-powerup chip).
+//
+// They used to point at the full 1536x1024 originals, which meant the
+// critical preload lane downloaded 995 KiB + 1.79 MiB (and the DOM had to
+// decode a 6 MB RGBA bitmap per asset) to paint two 16/24 px icons. They
+// now point at dedicated small variants that are aspect- and
+// alpha-preserving downscales of the exact same artwork:
+//   ui/mpgr-run-heart-icon.webp         96x64   (7.4 KiB)  from mpgr-run-heart.webp
+//   ui/mpgr-run-powerup-frame-icon.webp 144x96  (27.2 KiB) from mpgr-run-powerup-frame.webp
+// Both are lossless WebP and comfortably above the largest device-pixel
+// size they are drawn at (16/24 CSS px x DPR 3 = 48x32 / 72x48).
+//
+// The originals stay on disk, untouched, and are still the art to start
+// from if a future change needs a bigger HUD sprite. New filenames were
+// used deliberately: the versioned URL is a fresh cache key, so no
+// RUN_ASSET_VERSION bump (which would force every player to re-download
+// all 55 sprites) is needed, and no cached full-size copy can be served.
+// If an entry below is ever repointed, keep the rule: a DOM-only sprite
+// must be sized for its largest rendered size x 3, with aspect ratio and
+// alpha channel preserved (see lib/games/asset-loading-policy.test.ts,
+// which fails if these two grow back into multi-megabyte canvas art).
 export const UI_SPRITES = {
-  heart: asset(`${BASE}/ui/mpgr-run-heart.webp`),
+  heart: asset(`${BASE}/ui/mpgr-run-heart-icon.webp`),
   hudFrame: asset(`${BASE}/ui/mpgr-run-hud-frame.webp`),
-  powerupFrame: asset(`${BASE}/ui/mpgr-run-powerup-frame.webp`),
+  powerupFrame: asset(`${BASE}/ui/mpgr-run-powerup-frame-icon.webp`),
 } as const;
 
 // Real hit/pickup burst artwork — both confirmed proper RGBA cutouts
