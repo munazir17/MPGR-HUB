@@ -9,8 +9,6 @@ import { stakedEventAbiItem, unstakedEventAbiItem, rewardPaidEventAbiItem } from
 import { withRetry } from "@/lib/token/rpc-retry";
 import { logger } from "@/lib/architecture/core/logger";
 import type { StakingHistoryEvent, StakingHistoryEventKind } from "./staking-types";
-// TEMPORARY — Phase 3F diagnostic trace only. See lib/_debug/reward-hub-trace.ts.
-import { trace } from "@/lib/_debug/reward-hub-trace";
 
 // Phase 3F perf fix (measured-evidence pass, events-without-args revision).
 //
@@ -110,33 +108,16 @@ function getViemClient() {
   return client;
 }
 
-// TEMPORARY — Phase 3F diagnostic trace only.
-let getBlockCallCount = 0;
-export function __resetGetBlockCallCount(): void {
-  getBlockCallCount = 0;
-}
-
-// TEMPORARY — Phase 3F diagnostic trace only. Lets the next trace run
-// directly confirm the ~300 -> ~100 request-count reduction.
-let getLogsCallCount = 0;
-export function __resetGetLogsCallCount(): void {
-  getLogsCallCount = 0;
-}
-
 async function getBlockTimestampMs(blockNumber: bigint): Promise<number> {
   const cached = blockTimestampCache.get(blockNumber);
   if (cached !== undefined) return cached;
 
   const client = getViemClient();
-  // TEMPORARY — Phase 3F diagnostic trace only.
-  getBlockCallCount += 1;
-  const started = trace.start(`getBlock:${blockNumber}`);
   const block = await withRetry(
     `stakingHistoryReader.getBlock:${blockNumber}`,
     () => getBlock(client, { blockNumber }),
     MPGR_STAKING_CONFIG.retry
   );
-  trace.end(`getBlock:${blockNumber}`, started);
   const timestampMs = Number(block.timestamp) * 1000;
   blockTimestampCache.set(blockNumber, timestampMs);
   return timestampMs;
@@ -179,13 +160,6 @@ async function scanAllEvents(
     chunkStart = chunkEnd + 1n;
   }
 
-  // TEMPORARY — Phase 3F diagnostic trace only.
-  const scanStarted = trace.start("combined scan (Staked+Unstaked+RewardPaid, single getLogs per chunk)", {
-    totalChunks: ranges.length,
-    totalBatches: Math.ceil(ranges.length / concurrency),
-    concurrency,
-  });
-
   const results: ScannedStakingEvent[] = [];
   // Phase 3H — starts true; any chunk that exhausts withRetry and lands
   // in the catch below flips it to false and stays false for the rest of
@@ -194,15 +168,10 @@ async function scanAllEvents(
 
   for (let i = 0; i < ranges.length; i += concurrency) {
     const batch = ranges.slice(i, i + concurrency);
-    const batchIndex = i / concurrency;
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    const batchStarted = trace.start(`combined scan batch ${batchIndex}`, { chunksInBatch: batch.length });
     const batchWallStart = Date.now();
     const batchResults = await Promise.all(
       batch.map(async ([batchChunkStart, batchChunkEnd]) => {
         try {
-          // TEMPORARY — Phase 3F diagnostic trace only.
-          getLogsCallCount += 1;
           const logs = await withRetry(
             `stakingHistoryReader.getLogs:combined:${batchChunkStart}-${batchChunkEnd}`,
             () =>
@@ -232,8 +201,6 @@ async function scanAllEvents(
         }
       })
     );
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    trace.end(`combined scan batch ${batchIndex}`, batchStarted);
 
     for (const logs of batchResults) {
       for (const log of logs) {
@@ -269,16 +236,6 @@ async function scanAllEvents(
     }
   }
 
-  // TEMPORARY — Phase 3F diagnostic trace only.
-  trace.end("combined scan (Staked+Unstaked+RewardPaid, single getLogs per chunk)", scanStarted, {
-    logs: results.length,
-    staked: results.filter((e) => e.kind === "Staked").length,
-    unstaked: results.filter((e) => e.kind === "Unstaked").length,
-    rewardPaid: results.filter((e) => e.kind === "RewardPaid").length,
-    getLogsCallCount,
-    complete,
-  });
-
   return { events: results, complete };
 }
 
@@ -299,25 +256,13 @@ export const stakingHistoryReader = {
   ): Promise<ScanResult<StakingHistoryEvent>> {
     if (fromBlock > toBlock) return { events: [], complete: true };
 
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    __resetGetBlockCallCount();
-    __resetGetLogsCallCount();
-    const fetchStarted = trace.start("fetchHistory internal", {
-      fromBlock: fromBlock.toString(),
-      toBlock: toBlock.toString(),
-    });
-    trace.rpcSnapshot("fetchHistory internal BEFORE scans");
-
     try {
-      const scansStarted = trace.start("combined scanAllEvents");
       const scanResult = await scanAllEvents(walletAddress, fromBlock, toBlock);
       const scanned = scanResult.events;
       // Phase 3H — overall completeness for this fetchHistory call. Starts
       // from scanAllEvents' getLogs-chunk result; the timestamp phase
       // below can additionally flip it to false, but never back to true.
       let complete = scanResult.complete;
-      trace.end("combined scanAllEvents", scansStarted, { logs: scanned.length, complete });
-      trace.rpcSnapshot("fetchHistory internal AFTER scans, BEFORE timestamp phase");
 
       const uniqueBlocks = [...new Set(scanned.map((e) => e.blockNumber))];
 
@@ -338,18 +283,9 @@ export const stakingHistoryReader = {
       // entry, so the affected event still renders with an approximate
       // timestamp rather than vanishing.
       const timestampConcurrency = Math.max(1, MPGR_STAKING_CONFIG.historyChunkConcurrency);
-      // TEMPORARY — Phase 3F diagnostic trace only.
-      const timestampPhaseStarted = trace.start("timestamp phase (getBlockTimestampMs fan-out)", {
-        uniqueBlocks: uniqueBlocks.length,
-        concurrency: timestampConcurrency,
-        totalBatches: Math.ceil(uniqueBlocks.length / timestampConcurrency),
-      });
       const timestampEntries: (readonly [bigint, number])[] = [];
       for (let i = 0; i < uniqueBlocks.length; i += timestampConcurrency) {
         const batch = uniqueBlocks.slice(i, i + timestampConcurrency);
-        const batchIndex = i / timestampConcurrency;
-        // TEMPORARY — Phase 3F diagnostic trace only.
-        const batchStarted = trace.start(`timestamp phase batch ${batchIndex}`, { blocksInBatch: batch.length });
         const batchResults = await Promise.all(
           batch.map(async (blockNumber) => {
             try {
@@ -365,19 +301,12 @@ export const stakingHistoryReader = {
             }
           })
         );
-        // TEMPORARY — Phase 3F diagnostic trace only.
-        trace.end(`timestamp phase batch ${batchIndex}`, batchStarted);
         for (const r of batchResults) {
           if (r.timestampMs !== undefined) {
             timestampEntries.push([r.blockNumber, r.timestampMs] as const);
           }
         }
       }
-      trace.end("timestamp phase (getBlockTimestampMs fan-out)", timestampPhaseStarted, {
-        uniqueBlocks: uniqueBlocks.length,
-        getBlockCallCount,
-      });
-      trace.rpcSnapshot("fetchHistory internal AFTER timestamp phase");
       const timestampsByBlock = new Map(timestampEntries);
 
       const events: StakingHistoryEvent[] = scanned.map((e) => {
@@ -401,13 +330,6 @@ export const stakingHistoryReader = {
       }
       deduped.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
 
-      // TEMPORARY — Phase 3F diagnostic trace only.
-      trace.end("fetchHistory internal", fetchStarted, {
-        eventCount: deduped.length,
-        uniqueBlocks: uniqueBlocks.length,
-        getLogsCallCount,
-        complete,
-      });
       return { events: deduped, complete };
     } catch (err) {
       logger.error("stakingHistoryReader.fetchHistory failed", {
@@ -416,8 +338,6 @@ export const stakingHistoryReader = {
         toBlock: toBlock.toString(),
         error: err instanceof Error ? err.message : String(err),
       });
-      // TEMPORARY — Phase 3F diagnostic trace only.
-      trace.end("fetchHistory internal", fetchStarted, { failed: true });
       // Phase 3H — this path is now only reached by a genuinely
       // unexpected error outside the per-chunk/per-timestamp handling
       // above (e.g. getViemClient() itself failing). Always incomplete —

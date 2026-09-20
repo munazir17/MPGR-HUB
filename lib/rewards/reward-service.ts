@@ -11,8 +11,6 @@ import type {
   RewardHubCacheEntry,
   RewardHubSummary,
 } from "./reward-types";
-// TEMPORARY — Phase 3F diagnostic trace only. See lib/_debug/reward-hub-trace.ts.
-import { trace } from "@/lib/_debug/reward-hub-trace";
 
 // Phase 3F Part 1 — Reward Service.
 //
@@ -74,23 +72,15 @@ export const rewardService = {
     const key = cacheKey(address);
     const cached = hubCache.get(key);
     if (cached && !options.forceRefresh && isCacheValid(cached.timestamp, cached.ttl)) {
-      // TEMPORARY — Phase 3F diagnostic trace only.
-      trace.mark("getRewardHubSummary cache HIT", { address });
       return cached.summary;
     }
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    trace.mark("getRewardHubSummary cache MISS", { address, forceRefresh: options.forceRefresh });
-    const summaryStarted = trace.start("getRewardHubSummary aggregation");
 
     const categorySummaries = await Promise.all(
       ALL_CATEGORIES.map(async (category) => {
         const provider = getProviderForCategory(category);
         if (!provider) return inactiveSummary(category);
         try {
-          // TEMPORARY — Phase 3F diagnostic trace only.
-          const s = trace.start(`provider ${category}.getSummary`);
           const result = await provider.getSummary(address);
-          trace.end(`provider ${category}.getSummary`, s);
           return result;
         } catch {
           // A single misbehaving provider must never take down the whole
@@ -111,8 +101,6 @@ export const rewardService = {
     };
 
     hubCache.set(key, { summary, timestamp: Date.now(), ttl: MPGR_REWARDS_CONFIG.hubCacheTtl });
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    trace.end("getRewardHubSummary aggregation", summaryStarted);
     return summary;
   },
 
@@ -126,21 +114,13 @@ export const rewardService = {
     const limit = options.limit ?? MPGR_REWARDS_CONFIG.historyPageSize;
 
     if (cached && !options.forceRefresh && isCacheValid(cached.timestamp, cached.ttl)) {
-      // TEMPORARY — Phase 3F diagnostic trace only.
-      trace.mark("getRewardHistory cache HIT", { address });
       return cached.entries.slice(0, limit);
     }
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    trace.mark("getRewardHistory cache MISS", { address, forceRefresh: options.forceRefresh });
-    const historyStarted = trace.start("getRewardHistory aggregation");
 
     const perProvider = await Promise.all(
       REWARD_PROVIDERS.map(async (provider) => {
         try {
-          // TEMPORARY — Phase 3F diagnostic trace only.
-          const s = trace.start(`provider ${provider.category}.getHistory`);
           const result = await provider.getHistory(address);
-          trace.end(`provider ${provider.category}.getHistory`, s, { count: result.length });
           return result;
         } catch {
           return [] as RewardClaimHistoryEntry[];
@@ -153,8 +133,6 @@ export const rewardService = {
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
     historyCache.set(key, { entries: merged, timestamp: Date.now(), ttl: MPGR_REWARDS_CONFIG.historyCacheTtl });
-    // TEMPORARY — Phase 3F diagnostic trace only.
-    trace.end("getRewardHistory aggregation", historyStarted, { mergedCount: merged.length });
     return merged.slice(0, limit);
   },
 
