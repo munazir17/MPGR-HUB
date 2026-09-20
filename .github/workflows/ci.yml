@@ -91,22 +91,24 @@ jobs:
         run: |
           pip install slither-analyzer==0.11.6
           slither --version
-          forge --version
-      - name: Slither default (no fail)
+      - name: Test target contracts/ vs .
         run: |
-          slither . --filter-paths "openzeppelin|forge-std" 2>&1 | tee slither-default.txt
+          echo "=== slither . (foundry) ==="
+          slither . --filter-paths "openzeppelin|forge-std" 2>&1 | tail -n 100
           echo "exit:$?"
-      - name: Slither fail-high
-        run: |
-          slither . --filter-paths "openzeppelin|forge-std" --fail-high 2>&1 | tee slither-fail-high.txt
+          echo "=== slither contracts/ (solc) ==="
+          slither contracts/ --filter-paths "openzeppelin|forge-std" 2>&1 | tail -n 200
           echo "exit:$?"
-      - name: Slither checklist
-        run: |
-          slither . --filter-paths "openzeppelin|forge-std" --checklist 2>&1 | tee slither-checklist.txt
+          echo "=== slither contracts/ with solc remaps ==="
+          slither contracts/ --filter-paths "openzeppelin|forge-std" --solc-remaps "@openzeppelin/contracts/=.forge-deps/openzeppelin-contracts/contracts/,forge-std/=.forge-deps/forge-std/src/" 2>&1 | tail -n 200
           echo "exit:$?"
-      - name: Slither checklist + fail-high
+      - name: Test slither-action equivalent
         run: |
-          slither . --filter-paths "openzeppelin|forge-std" --checklist --fail-high 2>&1 | tee slither-checklist-fail-high.txt
+          echo "=== action used target contracts/ + checklist + fail-high ==="
+          slither contracts/ --filter-paths "openzeppelin|forge-std" --checklist --fail-high 2>&1 | tail -n 300
+          echo "exit:$?"
+          echo "=== action used target contracts/ + checklist + no-fail-pedantic ==="
+          slither contracts/ --filter-paths "openzeppelin|forge-std" --checklist --no-fail-pedantic 2>&1 | tail -n 300
           echo "exit:$?"
       - name: Upload
         if: always()
@@ -114,4 +116,5 @@ jobs:
         with:
           name: slither-outputs
           path: |
-            slither-*.txt
+            *.txt
+          if-no-files-found: warn
