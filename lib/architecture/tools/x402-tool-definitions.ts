@@ -21,6 +21,7 @@
 // The AI can discover and prepare a proposal, but signing/submission
 // remains exclusively behind the explicit Confirm & Pay UI flow.
 
+import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 import { parseX402PaymentRequired } from "@/lib/x402/x402-parse";
 import { buildX402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
@@ -61,13 +62,26 @@ function isHttpsUrl(value: unknown): value is string {
  * Same-origin discovery. The route always returns HTTP 200 with:
  *   { status, body, finalUrl }
  * `status` is the upstream x402 status (402 when payment is required).
+ *
+ * Auth note: /api/x402/discover now requires an authenticated session
+ * and a trusted Origin (it performs a server-side outbound fetch, so
+ * it must not be an open proxy). These tools execute in the browser,
+ * where:
+ *   - fetchWithSession sets credentials: "include", which is required
+ *     for the HttpOnly mpgr_session cookie to be sent inside the
+ *     Farcaster/Base Mini App webview (SameSite=None; a default
+ *     "same-origin" credentials mode drops it there); and
+ *   - the browser itself sets the Origin header on this POST, which is
+ *     what verifyTrustedOrigin checks.
+ * A 401 from the route surfaces as PROVIDER_ERROR below, which the
+ * agent already degrades gracefully on.
  */
 async function discoverResourceServerSide(resourceUrl: string): Promise<{
   status: number;
   body: unknown | null;
   finalUrl: string;
 }> {
-  const response = await fetch(resolveDiscoveryEndpoint(), {
+  const response = await fetchWithSession(resolveDiscoveryEndpoint(), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
