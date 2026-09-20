@@ -7,6 +7,12 @@ const redis = () => getRedis();
 
 export const XP_POLICY_VERSION = "xp-policy-v2";
 const totalKey = (wallet: string) => `mpgrhub:xp:total:${wallet.toLowerCase()}`;
+/** Canonical XP-total key for cross-module existence checks (referral
+ *  reward settlement: a payout target must already be a real ledger
+ *  wallet). Key format owned here so consumers never duplicate it. */
+export function xpTotalKey(wallet: string): string {
+  return totalKey(wallet);
+}
 const monthKey = (wallet: string, month: string) => `mpgrhub:xp:month:${month}:${wallet.toLowerCase()}`;
 const rankKey = "mpgrhub:xp:rank";
 const eventKey = (wallet: string, eventId: string) => `mpgrhub:xp:event:${wallet.toLowerCase()}:${eventId}`;

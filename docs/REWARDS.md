@@ -91,6 +91,34 @@ Invite new users.
 
 Reward successful referrals.
 
+Implementation status: on-chain/USDB referral payouts are **not live**
+(no reward provider exists for this category yet). What IS live is the
+server XP-ledger reward (`REFERRAL_SUCCESS`, +100 XP) with the Task 8
+anti-abuse rules:
+
+- Attribution is permanent, first-write-wins, and only ever made by the
+  referred wallet's own authenticated session (the referrer address in
+  the request body can be anyone; the referred side can never be forged).
+- Self-referral is rejected (case-normalized wallet comparison).
+- The reward is NOT paid at signup time. It stays pending until the
+  referred wallet performs genuine server-awarded activity (its first
+  daily check-in), which makes bulk sybil registration worthless on its
+  own.
+- A referrer's reward count is capped per UTC day
+  (`REFERRAL_REWARDS_PER_REFERRER_PER_DAY`, default 5) and checked
+  atomically together with the payout claim, so concurrent farming
+  cannot overshoot the cap. The cap throttles payouts only — honest
+  referrals never lose attribution or count.
+- A referral pays only into a referrer that already exists in the server
+  XP ledger, so rewards cannot be pointed at arbitrary or fabricated
+  addresses.
+- Every paid referral is credited exactly once: replay, refresh, retries
+  from multiple sessions and races on the same referred wallet are all
+  deduplicated by the permanent ledger event key.
+- Self-referral, attribution-steal attempts and cap saturations are
+  logged (`referral.abuse.*`, `referral.reward.*`) and counted in
+  `mpgrhub:referral:abuse:{wallet}:{day}` for operator review.
+
 ---
 
 ## AI Rewards

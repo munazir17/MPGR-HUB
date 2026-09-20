@@ -8,6 +8,15 @@ The project follows a milestone-based development roadmap.
 
 # Unreleased
 
+## Task 8 — referral abuse hardening
+
+### Fixed
+
+- Referral rewards (the +100 XP `REFERRAL_SUCCESS` ledger grant — the largest single award in the system) were paid to the referrer **instantly on attribution**, uncapped. Rate limits key on the request sender — the *referred* wallet — so a sybil farm of throwaway wallets arriving through one `?ref=` link minted unlimited XP for one referrer with zero genuine activity. Now the reward is stored as a durable pending record at registration and settles only when the referred wallet earns a genuine server-awarded activity event (daily check-in), the referrer already exists in the server XP ledger, and the per-referrer daily reward cap (`REFERRAL_REWARDS_PER_REFERRER_PER_DAY`, default 5, fail-closed) has room. Cap check + claim are atomic in one Lua script; the permanent ledger event key keeps every replay/race at-most-once.
+- Self-referral, attribution-steal attempts and cap saturations are now logged (`referral.abuse.*` / `referral.reward.daily-cap`) and counted per wallet/day in `mpgrhub:referral:abuse:{wallet}:{day}` for operator review.
+- Attribution itself is unchanged: permanent, first-write-wins, referred identity always taken from the authenticated session (never the request body), all existing `mpgrhub:referral:referredby:*` / `referrals:*` keys and values keep their format, and referral counts stay capped to real attributed wallets. No migration needed; records written by the old immediate-pay path are never re-paid (same ledger event id) and never invalidated.
+- Regression tests: `lib/referral/referral-store.test.ts` (real Lua via the fengari Redis double: idempotency, atomic caps, concurrent claims, corrupt records, Redis-failure paths, legacy data), `app/api/referral/route.security.test.ts` (real route + session + origin + guard: farming window, cap, replays, multi-session, steal, tampering, fail-closed), `app/api/referral/route.ratelimit.test.ts` (real dual-bucket limiter on the endpoint).
+
 ## Task 4 — next.config.mjs hardening
 
 ### Fixed
