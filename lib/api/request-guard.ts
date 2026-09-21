@@ -1,6 +1,6 @@
 import { getRedis } from "@/lib/api/redis";
 import { getSessionFromRequest } from "@/lib/auth/session";
-import { getAppOrigin } from "@/lib/auth/config";
+import { resolveTrustedAppOrigin } from "@/lib/auth/config";
 import { AI_PROMPT_LIMITS } from "@/lib/architecture/ai/server-policy";
 
 function tryRedis() {
@@ -461,7 +461,12 @@ export function verifyTrustedOrigin(request: Request): Response | null {
 
   let appOrigin: string;
   try {
-    appOrigin = getAppOrigin(request.url);
+    // resolveTrustedAppOrigin() prefers a configured APP_ORIGIN and only
+    // derives the origin from the request where that is explicitly allowed
+    // (non-production, Vercel Preview, or APP_ORIGIN_ALLOW_REQUEST_DERIVED).
+    // Derivation honours x-forwarded-proto so an HTTPS-terminating preview
+    // proxy matches the browser's https Origin.
+    appOrigin = resolveTrustedAppOrigin(request);
   } catch {
     // APP_ORIGIN misconfiguration is a deploy problem surfaced loudly
     // elsewhere by getAppOrigin() — fail closed rather than allow an

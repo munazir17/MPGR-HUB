@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getAppOrigin, getAuthCookieAttributes, shouldDeriveOriginFromRequest } from "./config";
+import {
+  allowRequestDerivedOrigin,
+  getAppOrigin,
+  getAuthCookieAttributes,
+  resolveTrustedAppOrigin,
+  shouldDeriveOriginFromRequest,
+} from "./config";
 
 describe("getAppOrigin", () => {
   afterEach(() => {
@@ -39,6 +45,67 @@ describe("getAppOrigin", () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("VERCEL_ENV", "preview");
     expect(() => getAppOrigin()).toThrow(/APP_ORIGIN must be configured in production/);
+  });
+});
+
+describe("resolveTrustedAppOrigin", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const proxyRequest = () =>
+    new Request("http://3000-sandbox-preview.e2b.app/api/agent/complete", {
+      method: "POST",
+      headers: { "x-forwarded-proto": "https" },
+    });
+
+  it("prefers a configured APP_ORIGIN and ignores request headers", () => {
+    vi.stubEnv("APP_ORIGIN", "https://mpgrhub.xyz/");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "production");
+    expect(resolveTrustedAppOrigin(proxyRequest())).toBe("https://mpgrhub.xyz");
+  });
+
+  it("upgrades the derived scheme from x-forwarded-proto for TLS-terminating previews", () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "1");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "");
+    expect(resolveTrustedAppOrigin(proxyRequest())).toBe("https://3000-sandbox-preview.e2b.app");
+  });
+
+  it("uses the proxy Host header, not the bind address, behind TLS", () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "1");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "");
+    // Exactly what an ephemeral preview sees: the framework builds
+    // request.url from the server's bind address while the public host only
+    // arrives in the Host header.
+    const bound = new Request("http://0.0.0.0:3000/api/agent/complete", {
+      method: "POST",
+      headers: { host: "3000-sandbox-preview.e2b.app", "x-forwarded-proto": "https" },
+    });
+    expect(bound.url).toBe("http://0.0.0.0:3000/api/agent/complete");
+    expect(resolveTrustedAppOrigin(bound)).toBe("https://3000-sandbox-preview.e2b.app");
+  });
+
+  it("only honours the opt-in outside Vercel production", () => {
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "1");
+    vi.stubEnv("VERCEL_ENV", "production");
+    expect(allowRequestDerivedOrigin()).toBe(false);
+    vi.stubEnv("VERCEL_ENV", "");
+    expect(allowRequestDerivedOrigin()).toBe(true);
+  });
+
+  it("throws without APP_ORIGIN when derivation is not allowed", () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "");
+    expect(() => resolveTrustedAppOrigin(proxyRequest())).toThrow(
+      /APP_ORIGIN must be configured in production/,
+    );
   });
 });
 

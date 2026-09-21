@@ -75,7 +75,18 @@ export interface TapePairDetail extends TapeSnapshot {
     kind: "wrapped" | "stable" | "b20-stock";
     address: string;
     chainlinkFeed: string | null;
-    official: true;
+    /** True only for live official assets (see `status`). */
+    official: boolean;
+    /**
+     * "live" | "announced-not-live" | "unlisted" — Coinbase published B20
+     * addresses for COINc/CRCLc/INTCc but Base's official list marks them
+     * not live yet, so they must never read as tradable.
+     */
+    status: "live" | "announced-not-live";
+    /** False for published-but-not-live assets. */
+    live: boolean;
+    /** Official underlying-company name from base.org/stocks, when known. */
+    company: string | null;
     basescanUrl: string;
     officialListUrl: string;
     notes: string | null;

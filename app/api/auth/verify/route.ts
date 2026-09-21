@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { Address } from "viem";
 import { isNonceActive, consumeNonce } from "@/lib/auth/nonce";
 import { issueSession } from "@/lib/auth/session-store";
-import { NONCE_COOKIE, SESSION_COOKIE, SUPPORTED_CHAIN_ID, getAppOrigin, getAuthCookieAttributes } from "@/lib/auth/config";
+import { NONCE_COOKIE, SESSION_COOKIE, SUPPORTED_CHAIN_ID, getAuthCookieAttributes, resolveTrustedAppOrigin } from "@/lib/auth/config";
 import { buildSiweMessage, verifySiweSignature } from "@/lib/auth/siwe";
 import { assertJsonBodyLimit, enforceRateLimit, requestIdFromRequest, withRequestId, readJsonBody } from "@/lib/api/request-guard";
 import { readCookieValue } from "@/lib/api/cookies";
@@ -62,7 +62,10 @@ export async function POST(request: Request) {
     return json({ error: "Nonce expired or already used" }, { status: 401 });
   }
 
-  const origin = getAppOrigin(request.url);
+  // Public origin of THIS request (configured APP_ORIGIN wins; otherwise
+  // derived from Host/x-forwarded-proto where allowed). Using request.url
+  // directly would yield the server bind address behind a preview proxy.
+  const origin = resolveTrustedAppOrigin(request);
   const issued = (value.message as string).match(/Issued At: (.+)/)?.[1];
   const expires = (value.message as string).match(/Expiration Time: (.+)/)?.[1];
   const expected = {

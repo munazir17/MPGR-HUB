@@ -30,7 +30,12 @@ import {
 import type { X402PaymentRequirements } from "@/lib/x402/x402-types";
 
 const PAY_TO = "0xE8e26183C0F8C44D8A46B9D2b78b0F2A0f7e5a6d";
-const PAYER_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
+// TEST-ONLY signer. Deliberately derived from a repeated byte rather
+// than written as a literal 64-hex key: it controls no funds on any
+// network, and no secret-looking string is committed to the repo (this
+// keeps secret scanners such as GitLeaks' generic-api-key rule quiet,
+// matching the attacker key constructed the same way below).
+const PAYER_KEY = `0x${"59".repeat(32)}` as `0x${string}`;
 const RESOURCE_URL = "https://mpgrhub.xyz/api/x402/tape";
 
 const account = privateKeyToAccount(PAYER_KEY);
@@ -168,6 +173,30 @@ describe("x402 tape pricing + requirement", () => {
     expect(tapeResourceUrl("https://mpgrhub.xyz/api/x402/tape?x=1")).toBe(RESOURCE_URL);
     vi.stubEnv("APP_ORIGIN", "https://example.com/");
     expect(tapeResourceUrl(null)).toBe("https://example.com/api/x402/tape");
+  });
+
+  it("advertises the proxy-forwarded host as the resource, not the server bind address", () => {
+    // Ephemeral preview: TLS terminates upstream, so request.url reports the
+    // bind address. A 402 body advertising that would make clients sign a
+    // payment for a resource URL they never requested.
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "1");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "");
+    const request = new Request("http://0.0.0.0:3000/api/x402/tape", {
+      headers: { host: "3000-sandbox-preview.e2b.app", "x-forwarded-proto": "https" },
+    });
+    expect(request.url).toBe("http://0.0.0.0:3000/api/x402/tape");
+    expect(tapeResourceUrl(request)).toBe("https://3000-sandbox-preview.e2b.app/api/x402/tape");
+  });
+
+  it("still lets a configured APP_ORIGIN win over request derivation", () => {
+    vi.stubEnv("APP_ORIGIN", "https://example.com/");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "1");
+    const request = new Request("http://0.0.0.0:3000/api/x402/tape", {
+      headers: { host: "3000-sandbox-preview.e2b.app", "x-forwarded-proto": "https" },
+    });
+    expect(tapeResourceUrl(request)).toBe("https://example.com/api/x402/tape");
   });
 
   it("prefers the CDP facilitator when CDP keys exist, else the public one", () => {

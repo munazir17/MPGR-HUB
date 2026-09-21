@@ -153,7 +153,7 @@ const pairSchema: AgentToolSchema = {
     symbol: {
       type: "string",
       description:
-        "Allowlisted pair symbol: a Coinbase wrapped asset (cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA), USDC, or an official B20 stock (NVDAc, AAPLc, GOOGLc, METAc, AMZNc, MSFTc, TSLAc, SPCXc, SNDKc, MSTRc, COINc, CRCLc, INTCc). Underlying tickers (AAPL) resolve to their B20 token.",
+        "Allowlisted pair symbol: a Coinbase wrapped asset (cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA), native USDC, or one of the 10 LIVE official Coinbase Tokenized Stocks (NVDAc, AAPLc, GOOGLc, METAc, AMZNc, MSFTc, TSLAc, SPCXc, SNDKc, MSTRc). Underlying tickers (AAPL) resolve to their B20 token. COINc/CRCLc/INTCc have Coinbase-published addresses but are not live yet — they return status announced-not-live.",
     },
   },
   required: ["symbol"],
@@ -242,7 +242,7 @@ export const verifyB20ContractTool: AgentTool = {
   id: "verify_b20_contract",
   name: "Verify B20 Contract",
   description:
-    "Checks whether a Base contract address is an official Coinbase Tokenized Stock (B20). Answers strictly from the docs-verified allowlist: official:true with symbol/name/feed/registry when it matches, official:false for everything else — including look-alike 0xb200… addresses and clone tickers. Never verifies from memory or the web.",
+    "Checks whether a Base contract address is an official Coinbase Tokenized Stock (B20) using Base's verified registry (base.org/stocks). Returns status live (official:true, tradable), announced-not-live (Coinbase published the address but the asset is not live yet — COINc/CRCLc/INTCc — so official:false and never tradable), or unlisted (official:false, including look-alike 0xb200… addresses and clone tickers). A 0xb200 prefix alone does not make a token a stock: Coinbase also issues B20-standard wrapped crypto such as cbHYPE and cbZEC. Never verifies from memory or the web.",
   category: "research",
   mode: "read",
   riskLevel: "low",
@@ -349,6 +349,12 @@ export const getPremiumTool: AgentTool = {
       return toolError("get_premium", {
         code: "INVALID_INPUT",
         message: `"${query}" is not an official Coinbase Tokenized Stock (B20) on Base. Premium is only defined for the allowlisted stock tokens.`,
+      });
+    }
+    if (!pair.live) {
+      return toolError("get_premium", {
+        code: "INVALID_INPUT",
+        message: `${pair.symbol} is a Coinbase-published B20 address that is NOT LIVE yet (no issued supply, no Chainlink feed), so there is no premium to report. Base's official list carries 10 live tokenized stocks.`,
       });
     }
     try {
@@ -495,7 +501,14 @@ function resolveSwapSide(
   const address = typeof addressValue === "string" ? addressValue.trim() : "";
   if (symbol) {
     const pair = findBasePair(symbol);
-    if (pair) return { address: pair.address, symbol: pair.symbol };
+    if (pair) {
+      if (!pair.live) {
+        return {
+          error: `${pair.symbol} is a Coinbase-published B20 address that is NOT LIVE yet — Base's official tokenized-stocks list (base.org/stocks) carries 10 live assets and this one was removed pending launch, so it has no issued supply and no Chainlink feed. Refusing to prepare a swap into it.`,
+        };
+      }
+      return { address: pair.address, symbol: pair.symbol };
+    }
     // ETH/WETH/MPGR are not tape pairs but are known trade tokens.
     const upper = symbol.toUpperCase();
     if (upper === "ETH" || upper === "WETH" || upper === "MPGR") {

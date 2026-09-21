@@ -75,8 +75,12 @@ export async function GET(request: Request) {
         name: pair.name,
         kind: pair.kind,
         address: pair.address,
+        company: pair.company ?? null,
         chainlinkFeed: pair.chainlinkFeed ?? null,
-        official: true,
+        // Only a live official asset is reported as official/tradable.
+        official: pair.live,
+        status: pair.live ? "live" : "announced-not-live",
+        live: pair.live,
         basescanUrl: basescanTokenUrl(pair.address),
         officialListUrl: OFFICIAL_LIST_SOURCES[0],
         notes: pair.notes ?? null,

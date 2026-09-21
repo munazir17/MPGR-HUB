@@ -47,7 +47,11 @@ describe("GET /api/market/pair", () => {
     expect(body.pair.basescanUrl).toBe(
       "https://basescan.org/token/0xb200000000000000000000C2e324d24d7eEcd1fb",
     );
-    expect(body.pair.officialListUrl).toContain("docs.base.org");
+    // Base's own verified registry is the primary "official list" link.
+    expect(body.pair.officialListUrl).toBe("https://base.org/stocks");
+    expect(body.pair.live).toBe(true);
+    expect(body.pair.status).toBe("live");
+    expect(body.pair.company).toBe("Apple");
     expect(body.stockEntry.premiumBps).toBe(50);
     expect(body.pair.chainlinkFeed.toLowerCase()).toBe(
       "0x787f13dEa48Db0897CbCDD985de77809D837F988".toLowerCase(),
@@ -66,6 +70,27 @@ describe("GET /api/market/pair", () => {
     expect(usdcBody.pair.kind).toBe("stable");
     expect(usdcBody.wrappedEntry.symbol).toBe("USDC");
     expect(usdcBody.stockEntry).toBeNull();
+  });
+
+  it("reports a published-but-not-live B20 address as not official and not tradable", async () => {
+    const { GET } = await import("./route");
+    // COINc: Coinbase published the B20 address, but Base's official list
+    // removed it as not live yet, so it must never read as tradable.
+    const response = await GET(new Request("https://mpgrhub.xyz/api/market/pair?symbol=COINc"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.pair.symbol).toBe("COINc");
+    expect(body.pair.address.toLowerCase()).toBe(
+      "0xb200000000000000000000c85a31389d71f3ecfb",
+    );
+    expect(body.pair.official).toBe(false);
+    expect(body.pair.live).toBe(false);
+    expect(body.pair.status).toBe("announced-not-live");
+    expect(body.pair.company).toBe("Coinbase");
+    expect(body.pair.chainlinkFeed).toBeNull();
+    expect(body.pair.notes).toMatch(/NOT LIVE/i);
+    // No tape entry can exist for an asset with no feed and no supply.
+    expect(body.stockEntry).toBeNull();
   });
 
   it("rejects unknown symbols and look-alike tickers with 404", async () => {

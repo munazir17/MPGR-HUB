@@ -151,6 +151,11 @@ export function PairSheet({ symbol, onClose, onPrepareSwap }: PairSheetProps) {
                   official
                 </span>
               ) : null}
+              {pair && pair.live === false ? (
+                <span className="shrink-0 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+                  not live yet
+                </span>
+              ) : null}
             </div>
             <p className="mt-0.5 font-mono text-[11px] text-muted">{symbol}</p>
           </div>
@@ -237,8 +242,17 @@ export function PairSheet({ symbol, onClose, onPrepareSwap }: PairSheetProps) {
                 <span className="text-[11px] text-muted">{stock?.source ?? wrapped?.source ?? "—"}</span>
               </Row>
 
+              {pair.live === false ? (
+                <p className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.07] p-2 text-[11px] leading-relaxed text-amber-200">
+                  Coinbase has published this B20 contract address, but Base&apos;s official
+                  tokenized-stocks list does not carry it as live yet — there is no issued supply
+                  and no Chainlink feed, so it cannot be priced or swapped. Preparing an order is
+                  disabled until it launches. Re-check the official list below.
+                </p>
+              ) : null}
+
               <div className="mt-3 flex flex-col gap-2">
-                {onPrepareSwap && pair.kind !== "stable" ? (
+                {onPrepareSwap && pair.kind !== "stable" && pair.live !== false ? (
                   <button
                     type="button"
                     onClick={() => onPrepareSwap(pair.symbol)}

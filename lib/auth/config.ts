@@ -24,6 +24,66 @@ export function shouldDeriveOriginFromRequest(): boolean {
   return process.env.NODE_ENV !== "production";
 }
 
+/**
+ * Explicit opt-in for preview / self-hosted deployments that terminate TLS
+ * upstream and cannot know their public origin at build time (for example an
+ * ephemeral sandbox preview host). When set to "1"/"true" — and never on
+ * Vercel production — the CSRF origin check may derive the app origin from
+ * the incoming request instead of failing every POST with 503
+ * "Origin verification is not configured".
+ *
+ * This does not weaken deployments that set APP_ORIGIN: a configured value
+ * always wins.
+ */
+export function allowRequestDerivedOrigin(): boolean {
+  if (process.env.VERCEL_ENV === "production") return false;
+  const flag = process.env.APP_ORIGIN_ALLOW_REQUEST_DERIVED?.trim().toLowerCase();
+  return flag === "1" || flag === "true";
+}
+
+/**
+ * Origin used by the CSRF check in verifyTrustedOrigin.
+ *
+ * Resolution order:
+ *  1. APP_ORIGIN when configured (always wins — production behaviour
+ *     unchanged).
+ *  2. Otherwise the request's own origin, when derivation is allowed
+ *     (non-production, Vercel Preview/development, or the explicit
+ *     APP_ORIGIN_ALLOW_REQUEST_DERIVED opt-in). The scheme honours
+ *     `x-forwarded-proto`, because previews and Vercel terminate TLS in
+ *     front of an HTTP server: without that, a browser's `https://…` Origin
+ *     would never match the derived `http://…` and every same-origin POST
+ *     would be rejected as cross-site.
+ *  3. Otherwise throw, so the caller fails closed.
+ */
+export function resolveTrustedAppOrigin(request: Request): string {
+  const configured = process.env.APP_ORIGIN?.trim();
+  if (configured) return configured.replace(/\/$/, "");
+  if (shouldDeriveOriginFromRequest() || allowRequestDerivedOrigin()) {
+    const url = new URL(request.url);
+    // Behind a TLS-terminating proxy (Vercel Preview, an ephemeral sandbox
+    // preview host) `request.url` carries the server's own bind address and a
+    // plain-http scheme — deriving from it would never match the browser's
+    // Origin. Use the public host the proxy forwarded in `Host` and the scheme
+    // from `x-forwarded-proto`. Browsers cannot set `Host`, so a cross-site
+    // page's Origin still never matches the derived app origin.
+    const hostHeader = request.headers.get("host")?.split(",")[0]?.trim();
+    const forwardedProto = (request.headers.get("x-forwarded-proto") ?? "")
+      .split(",")[0]
+      ?.trim()
+      .toLowerCase();
+    const scheme = forwardedProto === "https" ? "https:" : url.protocol;
+    const host = hostHeader || url.host;
+    // new URL(...) also validates the host — a malformed value throws and the
+    // caller fails closed.
+    return new URL(`${scheme}//${host}`).origin;
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("APP_ORIGIN must be configured in production.");
+  }
+  throw new Error("APP_ORIGIN is required when request origin is unavailable.");
+}
+
 export function getAppOrigin(requestUrl?: string): string {
   const configured = process.env.APP_ORIGIN?.trim();
   if (configured) return configured.replace(/\/$/, "");

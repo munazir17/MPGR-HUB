@@ -7,7 +7,7 @@
 // invents a ticker, address, price, or venue — unknown inputs stay
 // unresolved so the dedicated prepare tool can fail closed.
 
-import { findBasePair } from "@/lib/markets/base-pairs";
+import { findBasePair, isNotYetLiveB20 } from "@/lib/markets/base-pairs";
 import { findTokenizedStock } from "./tokenized-stocks";
 import { resolveTradeToken } from "./trade-tokens";
 
@@ -87,11 +87,53 @@ function normalizePrepareSwapArgs(args: Record<string, unknown>): Record<string,
   return next;
 }
 
+/**
+ * True when any leg of the arguments names a Coinbase-published B20 address
+ * that Base's official list marks as NOT LIVE yet (COINc, CRCLc, INTCc —
+ * removed from the live list by base/docs#1955, 2026-09-11: no issued supply
+ * and no Chainlink feed). Accepts symbols, underlying tickers and raw
+ * addresses, because a leg may arrive as any of the three.
+ */
+function namesNotYetLiveB20(args: Record<string, unknown>): boolean {
+  return ["sellSymbol", "sellAddress", "buySymbol", "buyAddress", "symbol", "fromToken", "toToken"].some(
+    (key) => {
+      const raw = args[key];
+      if (typeof raw !== "string" || !raw.trim()) return false;
+      const pair = findBasePair(raw);
+      return pair !== null && pair.kind === "b20-stock" && !pair.live;
+    },
+  );
+}
+
+/**
+ * prepare_swap-shaped arguments for a not-yet-live B20 leg, so the refusal
+ * comes from prepare_swap's own allowlist gate (an explicit "not live yet"
+ * error, no network call) instead of a confusing liquidity failure from a
+ * quote route — or a generic schema-validation error.
+ */
+function notLivePrepareSwapArgs(
+  ticker: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const side = String(args.side ?? "BUY").trim().toUpperCase();
+  const amount =
+    typeof args.amount === "string" || typeof args.amount === "number"
+      ? String(args.amount)
+      : (args.amount ?? "");
+  return side === "SELL"
+    ? { sellSymbol: ticker, buySymbol: "USDC", amount }
+    : { sellSymbol: "USDC", buySymbol: ticker, amount };
+}
+
 export function resolveTokenizedStockPrepareRoute(
   toolId: string,
   args: Record<string, unknown>,
 ): { toolId: string; args: Record<string, unknown> } {
   if (toolId === "prepare_swap") {
+    // Never reroute a not-yet-live B20 leg onto a quote route: keep it on
+    // prepare_swap, which refuses it deterministically with a real
+    // explanation and makes no network call.
+    if (namesNotYetLiveB20(args)) return { toolId, args };
     // Continue through the trade_prepare_swap routing below with
     // normalized arguments (B20 legs land on the dedicated tool).
     return resolveTokenizedStockPrepareRoute(
@@ -105,8 +147,32 @@ export function resolveTokenizedStockPrepareRoute(
     if (!rawSymbol) return { toolId, args };
     const catalog = findTokenizedStock(rawSymbol);
     if (!catalog) return { toolId, args };
+    // The pre-existing B20 prepare tool must not quote an asset Base's
+    // official list does not carry as live — hand it to prepare_swap's
+    // allowlist gate so the user gets "not live yet", not a liquidity error.
+    if (isNotYetLiveB20(catalog.ticker)) {
+      return { toolId: "prepare_swap", args: notLivePrepareSwapArgs(catalog.ticker, args) };
+    }
     if (catalog.ticker === rawSymbol) return { toolId, args };
     return { toolId, args: { ...args, symbol: catalog.ticker } };
+  }
+
+  // trade_prepare_swap with a not-yet-live B20 leg (e.g. the model called it
+  // directly with a raw COINc address) also fails closed on prepare_swap.
+  if (toolId === "trade_prepare_swap" && namesNotYetLiveB20(args)) {
+    const normalized = normalizePrepareSwapArgs(args);
+    const notLive = ["fromToken", "toToken"]
+      .map((key) => (typeof normalized[key] === "string" ? (normalized[key] as string) : ""))
+      .map((value) => findBasePair(value))
+      .find((pair) => pair !== null && pair.kind === "b20-stock" && !pair.live);
+    if (notLive) {
+      const side =
+        typeof normalized.fromToken === "string" &&
+        findBasePair(normalized.fromToken)?.symbol === notLive.symbol
+          ? "SELL"
+          : "BUY";
+      return { toolId: "prepare_swap", args: notLivePrepareSwapArgs(notLive.symbol, { ...args, side }) };
+    }
   }
 
   if (toolId !== "trade_prepare_swap") return { toolId, args };

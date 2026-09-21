@@ -139,3 +139,84 @@ describe("resolveTokenizedStockPrepareRoute", () => {
     });
   });
 });
+
+describe("prepare_swap alias — published-but-not-live B20 assets", () => {
+  // COINc/CRCLc/INTCc have Coinbase-published addresses but are not live on
+  // Base's official list. Rerouting them onto a quote route would surface a
+  // confusing liquidity failure, so they stay on prepare_swap, whose execute
+  // refuses with an explicit "not live yet" message and no network call.
+  it("keeps a not-live buy on prepare_swap instead of a quote route", () => {
+    const routed = resolveTokenizedStockPrepareRoute("prepare_swap", {
+      sellSymbol: "USDC",
+      buySymbol: "COINc",
+      amount: "10",
+    });
+    expect(routed.toolId).toBe("prepare_swap");
+    expect(routed.args).toEqual({ sellSymbol: "USDC", buySymbol: "COINc", amount: "10" });
+  });
+
+  it("keeps a not-live sell on prepare_swap", () => {
+    const routed = resolveTokenizedStockPrepareRoute("prepare_swap", {
+      sellSymbol: "CRCLc",
+      buySymbol: "USDC",
+      amount: "5",
+    });
+    expect(routed.toolId).toBe("prepare_swap");
+  });
+
+  it("still reroutes the ten live stocks onto the dedicated B20 prepare tool", () => {
+    const routed = resolveTokenizedStockPrepareRoute("prepare_swap", {
+      sellSymbol: "USDC",
+      buySymbol: "MSTRc",
+      amount: "25",
+    });
+    expect(routed.toolId).toBe("tokenized_stock_prepare_order");
+    expect(routed.args).toEqual({ symbol: "MSTRc", amount: "25", side: "BUY" });
+  });
+});
+
+describe("not-yet-live B20 assets can never reach a quote route", () => {
+  const COINC_ADDRESS = "0xb200000000000000000000c85a31389D71F3ecfb";
+
+  it("hands a not-live symbol on the dedicated B20 tool to prepare_swap's gate", () => {
+    const routed = resolveTokenizedStockPrepareRoute("tokenized_stock_prepare_order", {
+      symbol: "COINc",
+      amount: "10",
+      side: "BUY",
+    });
+    expect(routed.toolId).toBe("prepare_swap");
+    expect(routed.args).toEqual({ sellSymbol: "USDC", buySymbol: "COINc", amount: "10" });
+  });
+
+  it("keeps the sell direction when translating a not-live order", () => {
+    const routed = resolveTokenizedStockPrepareRoute("tokenized_stock_prepare_order", {
+      symbol: "CRCLc",
+      amount: "5",
+      side: "SELL",
+    });
+    expect(routed.toolId).toBe("prepare_swap");
+    expect(routed.args).toEqual({ sellSymbol: "CRCLc", buySymbol: "USDC", amount: "5" });
+  });
+
+  it("catches a raw not-live address passed to the generic swap tool", () => {
+    const routed = resolveTokenizedStockPrepareRoute("trade_prepare_swap", {
+      fromToken: "USDC",
+      toToken: COINC_ADDRESS,
+      amount: "25",
+    });
+    expect(routed.toolId).toBe("prepare_swap");
+    expect(routed.args).toEqual({ sellSymbol: "USDC", buySymbol: "COINc", amount: "25" });
+  });
+
+  it("leaves every live B20 asset on the dedicated prepare tool", () => {
+    for (const symbol of ["AAPLc", "MSTRc", "SNDKc", "SPCXc", "NVDAc"]) {
+      const routed = resolveTokenizedStockPrepareRoute("tokenized_stock_prepare_order", {
+        symbol,
+        amount: "10",
+        side: "BUY",
+      });
+      expect(routed.toolId, symbol).toBe("tokenized_stock_prepare_order");
+      expect(routed.args.symbol, symbol).toBe(symbol);
+    }
+  });
+});

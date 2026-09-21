@@ -1,4 +1,5 @@
 import "server-only";
+import { resolveTrustedAppOrigin } from "@/lib/auth/config";
 
 // lib/x402/x402-tape-resource.ts
 //
@@ -184,8 +185,28 @@ export function buildTapePaymentRequiredBody(
   };
 }
 
-/** Absolute resource URL for the 402 body (request URL, APP_ORIGIN fallback). */
-export function tapeResourceUrl(requestUrl?: string | null): string {
+/**
+ * Absolute resource URL for the 402 body.
+ *
+ * Accepts the incoming Request (preferred) or a request URL string. With a
+ * Request the public origin is resolved the same way the CSRF guard resolves
+ * it — a configured APP_ORIGIN wins, otherwise the origin is derived from the
+ * proxy-forwarded Host/x-forwarded-proto. That matters because behind a
+ * TLS-terminating preview proxy `request.url` carries the server's bind
+ * address (`https://0.0.0.0:3000`), and a 402 body that advertises that as
+ * `resource` would have clients sign a payment for a URL they never requested.
+ */
+export function tapeResourceUrl(request?: Request | string | null): string {
+  if (request instanceof Request) {
+    try {
+      return `${resolveTrustedAppOrigin(request)}${X402_TAPE_PATH}`;
+    } catch {
+      // Origin derivation is not allowed here (production without APP_ORIGIN):
+      // keep the previous request-URL behaviour rather than fail differently.
+      return tapeResourceUrl(request.url);
+    }
+  }
+  const requestUrl = typeof request === "string" ? request : null;
   if (requestUrl) {
     try {
       const url = new URL(requestUrl);

@@ -196,6 +196,96 @@ describe("verify_b20_contract", () => {
   });
 });
 
+// Coinbase published B20 addresses for COINc/CRCLc/INTCc, but Base's official
+// tokenized-stocks list removed those rows as not live yet (base/docs#1955).
+// Every agent surface must treat them as real-but-untradable, never as
+// official/tradable and never as an unknown scam.
+const COINC = "0xb200000000000000000000c85a31389D71F3ecfb";
+const CB_HYPE = "0xB200000000000000000000451d033a5000cb479e";
+
+describe("published-but-not-live B20 assets", () => {
+  it("verify_b20_contract answers announced-not-live, never official:true", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "verify_b20_contract",
+      { address: COINC },
+      { confirmationMode: "always_confirm", requestId: "t-nl-v1" },
+    );
+    expect(result.success).toBe(true);
+    const verification = (
+      result.data as {
+        verification: {
+          official: boolean;
+          status: string;
+          live: boolean;
+          symbol: string | null;
+          company: string | null;
+          reason: string;
+        };
+      }
+    ).verification;
+    expect(verification.official).toBe(false);
+    expect(verification.status).toBe("announced-not-live");
+    expect(verification.live).toBe(false);
+    expect(verification.symbol).toBe("COINc");
+    expect(verification.company).toBe("Coinbase");
+    expect(verification.reason).toMatch(/NOT LIVE/);
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(0);
+  });
+
+  it("does not read a 0xB200 prefix as a tokenized stock (cbHYPE is wrapped crypto)", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "verify_b20_contract",
+      { address: CB_HYPE },
+      { confirmationMode: "always_confirm", requestId: "t-nl-v2" },
+    );
+    const verification = (result.data as { verification: { official: boolean; status: string } })
+      .verification;
+    expect(verification.official).toBe(false);
+    expect(verification.status).toBe("unlisted");
+  });
+
+  it("prepare_swap refuses a not-live buy without calling any quote route", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "prepare_swap",
+      { sellSymbol: "USDC", buySymbol: "COINc", amount: "10" },
+      { confirmationMode: "always_confirm", requestId: "t-nl-s1", walletAddress: WALLET },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe("INVALID_INPUT");
+    expect(result.error?.message).toMatch(/NOT LIVE/);
+    // Fail closed BEFORE any network call — no quote is prepared at all.
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(0);
+  });
+
+  it("prepare_swap refuses a not-live sell too", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "prepare_swap",
+      { sellSymbol: "CRCLc", buySymbol: "USDC", amount: "5" },
+      { confirmationMode: "always_confirm", requestId: "t-nl-s2", walletAddress: WALLET },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toMatch(/NOT LIVE/);
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(0);
+  });
+
+  it("get_premium refuses a not-live asset — no feed, no premium", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool(
+      "get_premium",
+      { symbol: "INTCc" },
+      { confirmationMode: "always_confirm", requestId: "t-nl-p1" },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe("INVALID_INPUT");
+    expect(result.error?.message).toMatch(/NOT LIVE/);
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(0);
+  });
+});
+
 describe("get_stock_holdings", () => {
   it("is refused by the runtime without a connected wallet", async () => {
     const runtime = makeRuntime();

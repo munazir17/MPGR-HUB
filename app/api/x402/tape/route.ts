@@ -52,7 +52,7 @@ function paymentRequiredResponse(
   const payTo = x402TapePayTo();
   // payTo is checked by the caller before this is reachable.
   const body = buildTapePaymentRequiredBody(
-    tapeResourceUrl(request.url),
+    tapeResourceUrl(request),
     payTo!,
     reason,
   );
@@ -99,7 +99,7 @@ export async function GET(request: Request) {
     return paymentRequiredResponse(request, 402);
   }
 
-  const requirement = buildTapePaymentRequirement(tapeResourceUrl(request.url), payTo);
+  const requirement = buildTapePaymentRequirement(tapeResourceUrl(request), payTo);
   const result = await processTapeXPayment(xPayment, requirement);
 
   if (!result.ok) {
