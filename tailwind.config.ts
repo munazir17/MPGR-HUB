@@ -62,12 +62,22 @@ const config: Config = {
           "0%": { backgroundPosition: "-150% 0" },
           "100%": { backgroundPosition: "150% 0" },
         },
+        // Base Stocks live tape (components/markets/LiveTape.tsx): the
+        // track holds two identical chip sequences and translates exactly
+        // -50%, so the loop is seamless. Paired with hover:animation-play-
+        // state-paused for "pause on hover".
+        marquee: {
+          "0%": { transform: "translateX(0)" },
+          "100%": { transform: "translateX(-50%)" },
+        },
       },
       animation: {
         shimmer: "shimmer 2s linear infinite",
         float: "float 5s ease-in-out infinite",
         "glow-pulse": "glow-pulse 3s ease-in-out infinite",
         shine: "shine 3s ease-in-out infinite",
+        "tape-marquee": "marquee 48s linear infinite",
+        "tape-marquee-fast": "marquee 32s linear infinite",
       },
     },
   },

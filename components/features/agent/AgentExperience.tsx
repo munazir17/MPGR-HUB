@@ -8,20 +8,46 @@ import { MpgrMarketTicker } from "@/components/features/market/MpgrMarketTicker"
 import { AgentChatWindow } from "@/components/features/agent/AgentChatWindow";
 import { AgentEmptyState } from "@/components/features/agent/AgentEmptyState";
 import { AgentInput } from "@/components/features/agent/AgentInput";
-import { AgentPromptSuggestions } from "@/components/features/agent/AgentPromptSuggestions";
+import {
+  AgentPromptSuggestions,
+  type AgentPromptSuggestionItem,
+} from "@/components/features/agent/AgentPromptSuggestions";
 import { AgentQuickActions } from "@/components/features/agent/AgentQuickActions";
 import { AgentErrorBanner } from "@/components/features/agent/AgentErrorBanner";
 import { AgentErrorBoundary } from "@/components/features/agent/AgentErrorBoundary";
 import { AgentX402PaymentModal } from "@/components/features/agent/AgentX402PaymentModal";
 import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTradeConfirmationModal";
 import { AgentTransferConfirmationModal } from "@/components/features/agent/AgentTransferConfirmationModal";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { useX402Payment } from "@/hooks/useX402Payment";
 import { useTradeQuote } from "@/hooks/useTradeQuote";
 import { useTransferQuote } from "@/hooks/useTransferQuote";
 import type { AgentStatusId } from "@/lib/agent-config";
 
-export function AgentExperience() {
+export interface AgentExperienceProps {
+  /** Replaces the default MPGR hero (used by /agent's Base Stocks terminal). */
+  heroSlot?: (statuses: AgentStatusId[]) => ReactNode;
+  /** Suggestion chips. Empty array hides the chip rows entirely. */
+  suggestions?: readonly AgentPromptSuggestionItem[];
+  /** Replaces the chip grid in the no-messages state. */
+  emptyStateText?: string;
+  /** Hide the MPGR ticker in the wallet-disconnected state. */
+  hideMarketTicker?: boolean;
+  /** Hide the Research/Trade/Portfolio/Rewards quick-action grid. */
+  hideQuickActions?: boolean;
+  /** Called with sendMessage once the chat controller is mounted (terminal pages wire external buttons through it). */
+  onReady?: (api: { sendMessage: (prompt: string) => void }) => void;
+}
+
+export function AgentExperience({
+  heroSlot,
+  suggestions,
+  emptyStateText,
+  hideMarketTicker,
+  hideQuickActions,
+  onReady,
+}: AgentExperienceProps = {}) {
   const {
     messages,
     thinking,
@@ -49,6 +75,16 @@ export function AgentExperience() {
 
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking"] : ["online"];
   const hasMessages = messages.length > 0;
+  const chipItems = suggestions ?? undefined;
+
+  // Terminal pages (e.g. /agent) wire external buttons — the tape's
+  // "Prepare swap" action — into the chat through this callback. The
+  // ref keeps re-renders from re-firing it when onReady isn't memoized.
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  useEffect(() => {
+    onReadyRef.current?.({ sendMessage });
+  }, [sendMessage]);
 
   return (
     <>
@@ -60,14 +96,31 @@ export function AgentExperience() {
           className="flex min-h-0 flex-1 flex-col"
         >
           <div className="shrink-0">
-            <AgentHero statuses={heroStatuses} compact={hasMessages} />
+            {heroSlot ? (
+              heroSlot(heroStatuses)
+            ) : (
+              <AgentHero statuses={heroStatuses} compact={hasMessages} />
+            )}
+            {chipItems && chipItems.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 px-1 pt-2 md:gap-2">
+                <AgentPromptSuggestions
+                  variant="row"
+                  items={chipItems}
+                  onSelect={sendMessage}
+                  disabled={thinking}
+                  className="flex-wrap overflow-visible pb-0"
+                />
+              </div>
+            ) : null}
           </div>
 
           {!isConnected ? (
             <div className="flex min-h-0 flex-1 flex-col">
-              <div className="mt-3">
-                <MpgrMarketTicker compact />
-              </div>
+              {hideMarketTicker ? null : (
+                <div className="mt-3">
+                  <MpgrMarketTicker compact />
+                </div>
+              )}
               <AgentCapabilities
                 connected={false}
                 onSelectPrompt={sendMessage}
@@ -117,13 +170,22 @@ export function AgentExperience() {
                       onReviewTransferProposal={transferQuote.openProposal}
                     />
                   </div>
+                ) : emptyStateText ? (
+                  <div className="flex min-h-0 flex-1 items-center justify-center px-3 py-8">
+                    <p className="text-center text-sm text-muted">{emptyStateText}</p>
+                  </div>
                 ) : (
                   <AgentEmptyState onSelectPrompt={sendMessage} />
                 )}
 
-                {hasMessages && (
+                {hasMessages && (chipItems === undefined || chipItems.length > 0) && (
                   <div className="shrink-0 px-1 pt-2">
-                    <AgentPromptSuggestions variant="row" onSelect={sendMessage} disabled={thinking} />
+                    <AgentPromptSuggestions
+                      variant="row"
+                      items={chipItems}
+                      onSelect={sendMessage}
+                      disabled={thinking}
+                    />
                   </div>
                 )}
 
@@ -148,7 +210,7 @@ export function AgentExperience() {
                   />
                 </div>
 
-                {!hasMessages && (
+                {!hasMessages && !hideQuickActions && (
                   <div className="shrink-0 pt-3">
                     <AgentQuickActions onSelectPrompt={sendMessage} disabled={thinking} />
                   </div>

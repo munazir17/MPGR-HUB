@@ -12,6 +12,7 @@ import { useHolderTier } from "@/lib/useHolderTier";
 
 const NAV_LINKS = [
   { href: "/", label: "Home" },
+  { href: "/agent", label: "Stocks" },
   { href: "/rewards", label: "Rewards" },
   { href: "/profile", label: "Profile" },
 ];

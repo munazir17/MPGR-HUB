@@ -14,8 +14,11 @@ import {
   type TapeSourceDeps,
 } from "@/lib/markets/tape";
 
-function makeDeps(overrides: Partial<TapeSourceDeps> = {}): TapeSourceDeps {
-  const now = Date.now();
+function makeDeps(
+  overrides: Partial<TapeSourceDeps> & { now?: number } = {},
+): TapeSourceDeps {
+  const { now: nowOverride, ...deps } = overrides;
+  const now = nowOverride ?? Date.now();
   return {
     nowMs: () => now,
     getBlockNumber: vi.fn(async () => 30_000_000),
@@ -25,7 +28,7 @@ function makeDeps(overrides: Partial<TapeSourceDeps> = {}): TapeSourceDeps {
     })),
     readPaused: vi.fn(async () => false),
     fetchDexPairs: vi.fn(async () => [] as DexScreenerPairLike[]),
-    ...overrides,
+    ...deps,
   };
 }
 

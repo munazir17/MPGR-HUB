@@ -46,10 +46,11 @@ async function signPaymentHeader(options: {
   validAfter?: bigint;
   validBefore?: bigint;
   nonce?: `0x${string}`;
-  asset?: string;
+  asset?: `0x${string}`;
   network?: string;
 } = {}): Promise<string> {
-  const domainConfig = resolveEip712Domain(options.asset ?? BASE_USDC, undefined)!;
+  const asset = options.asset ?? (BASE_USDC as `0x${string}`);
+  const domainConfig = resolveEip712Domain(asset, undefined)!;
   const message = {
     from: account.address,
     to: (options.to ?? PAY_TO) as `0x${string}`,
@@ -63,7 +64,7 @@ async function signPaymentHeader(options: {
       name: domainConfig.domain.name,
       version: domainConfig.domain.version,
       chainId: X402_CHAIN_ID,
-      verifyingContract: (options.asset ?? BASE_USDC) as `0x${string}`,
+      verifyingContract: asset,
     },
     types: {
       TransferWithAuthorization: [
@@ -150,12 +151,12 @@ describe("x402 tape pricing + requirement", () => {
     const body = buildTapePaymentRequiredBody(RESOURCE_URL, PAY_TO as `0x${string}`);
     expect(body.x402Version).toBe(2);
     expect(body.accepts).toHaveLength(1);
-    const accept = body.accepts[0] as Record<string, unknown>;
+    const accept = body.accepts[0] as unknown as Record<string, unknown>;
     expect(accept.scheme).toBe("exact");
     expect(accept.network).toBe("eip155:8453");
     expect(accept.asset).toBe(BASE_USDC);
     expect(accept.maxAmountRequired).toBe("20000");
-    expect(accept.payTo.toLowerCase()).toBe(PAY_TO.toLowerCase());
+    expect(String(accept.payTo).toLowerCase()).toBe(PAY_TO.toLowerCase());
     expect(accept.resource).toBe(RESOURCE_URL);
     expect(accept.description).toBe("MPGR / Base Stocks live tape snapshot");
     const extra = accept.extra as Record<string, unknown>;
@@ -235,7 +236,7 @@ describe("processTapeXPayment — fail closed", () => {
     const header = await signPaymentHeader();
     // Swap in a signature from another account over the same message.
     const decoded = JSON.parse(Buffer.from(header, "base64").toString("utf-8"));
-    const attacker = privateKeyToAccount("0x" + "22".repeat(32));
+    const attacker = privateKeyToAccount(`0x${"22".repeat(32)}` as `0x${string}`);
     const domainConfig = resolveEip712Domain(BASE_USDC, undefined)!;
     decoded.payload.signature = await attacker.signTypedData({
       domain: {

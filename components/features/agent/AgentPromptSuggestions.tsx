@@ -5,11 +5,19 @@ import { ChevronRight } from "lucide-react";
 import { AGENT_PROMPT_SUGGESTIONS } from "@/lib/agent-config";
 import { clsx } from "clsx";
 
+export interface AgentPromptSuggestionItem {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
 interface AgentPromptSuggestionsProps {
   onSelect: (prompt: string) => void;
   disabled?: boolean;
   variant?: "grid" | "row";
   className?: string;
+  /** Overrides the default MPGR suggestions (used by /agent's Base Stocks chips). */
+  items?: readonly AgentPromptSuggestionItem[];
 }
 
 export function AgentPromptSuggestions({
@@ -17,11 +25,13 @@ export function AgentPromptSuggestions({
   disabled,
   variant = "grid",
   className,
+  items,
 }: AgentPromptSuggestionsProps) {
+  const suggestions = items ?? AGENT_PROMPT_SUGGESTIONS;
   if (variant === "row") {
     return (
       <div className={clsx("flex gap-1.5 overflow-x-auto pb-1 md:gap-2", className)}>
-        {AGENT_PROMPT_SUGGESTIONS.map((suggestion) => (
+        {suggestions.map((suggestion) => (
           <button
             key={suggestion.id}
             type="button"
@@ -38,7 +48,7 @@ export function AgentPromptSuggestions({
 
   return (
     <div className={clsx("flex w-full max-w-md flex-col gap-2", className)}>
-      {AGENT_PROMPT_SUGGESTIONS.map((suggestion, i) => (
+      {suggestions.map((suggestion, i) => (
         <motion.button
           key={suggestion.id}
           type="button"
