@@ -12,8 +12,8 @@ This checkout contains the code remediation for the August 2026 engineering revi
 - Referral attribution requires the referred wallet's authenticated session, stores a 7-day click, and awards referrer XP from the server event.
 - MPGR Run sessions are issued server-side and bound to the authenticated wallet, game ID, and expiry.
 - Live game heartbeats are recorded; reward submit rejects runs whose claimed duration is not covered by those pings (short-run grace remains).
-- Game reward submissions use the server session identity and server clock window; financial eligibility additionally requires an independent verifier attestation with a unique proof ID.
-- Real-value game settlement requires both operator gates plus configured verifier URL/secret; all gates default to disabled and missing verifier configuration fails closed.
+- Game reward submissions use the server session identity and server clock window; financial eligibility additionally requires an in-process authoritative replay attestation with a unique proof ID (no external verifier).
+- Real-value game settlement requires both operator gates (`GAME_REWARDS_ENABLED` + `GAME_AUTHORITATIVE_VERIFICATION_ENABLED`); both default to disabled and fail closed. No external `GAME_RUN_VERIFIER_URL` is required — active verifier is in-process replay.
 - Settlement uses a global distributed lock because weeks share one vault balance/budget, plus durable allocation state, reconciliation for an `allocating` state, and request IDs on cron routes.
 - AI proxy routes require authentication, enforce body/prompt limits, distributed rate limits, timeouts, bounded output, and generic upstream errors.
 - Chain ID and contract addresses live in `lib/chain/base.ts`. Memory keys are namespaced by wallet and chain, with legacy-key migration and a full clear path.
@@ -23,7 +23,7 @@ This checkout contains the code remediation for the August 2026 engineering revi
 
 ## Operational requirements before enabling financial game rewards
 
-1. Deploy and verify the authoritative game verifier/replay/checkpoint service described in `docs/GAME_RUN_VERIFIER_PROTOCOL.md`.
+1. Review and verify the in-process authoritative game verifier (deterministic replay `lib/games/mpgr-run/authoritative-replay.ts` + checkpoint/heartbeat) described in `docs/GAME_RUN_VERIFIER_PROTOCOL.md`.
 2. Set `AUTH_SESSION_SECRET`, `APP_ORIGIN`, Redis credentials, and the required reward-manager configuration.
 3. Install the exact contract test dependencies and run `forge test -vvv`.
 4. Run the full web checks: `npm ci`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, and `npm run audit:high`.

@@ -121,16 +121,20 @@ export type GamesRewardConfig = typeof GAMES_REWARD_CONFIG;
 /**
  * Real-value game rewards require two independent operator gates:
  * GAME_REWARDS_ENABLED enables the economic pipeline, while
- * GAME_AUTHORITATIVE_VERIFICATION_ENABLED asserts that a trusted server-side
- * verifier is deployed. The latter defaults to false and is intentionally
- * not inferred from client-side sanity checks.
+ * GAME_AUTHORITATIVE_VERIFICATION_ENABLED asserts that the server-side
+ * authoritative verifier (in-process deterministic replay:
+ * lib/games/mpgr-run/authoritative-replay.ts + authoritative-verifier.ts)
+ * has been reviewed and is considered trusted for financial settlement.
+ * Both default to false (fail-closed) and are intentionally not inferred
+ * from client-side sanity checks.
+ *
+ * Historical note: earlier docs described an external verifier behind
+ * GAME_RUN_VERIFIER_URL/SECRET. No code path ever called an external
+ * verifier — the authoritative mechanism is the in-process replay.
+ * Those env vars are not required by the audit and have been removed
+ * from the operator gate to avoid unnecessary future-only wiring.
  */
-export function authoritativeGameVerifierIsConfigured(): boolean {
-  return Boolean(process.env.GAME_RUN_VERIFIER_URL?.trim() && process.env.GAME_RUN_VERIFIER_SECRET?.trim());
-}
-
 export function gameRewardsAreOperatorEnabled(): boolean {
   return process.env.GAME_REWARDS_ENABLED === "true" &&
-    process.env.GAME_AUTHORITATIVE_VERIFICATION_ENABLED === "true" &&
-    authoritativeGameVerifierIsConfigured();
+    process.env.GAME_AUTHORITATIVE_VERIFICATION_ENABLED === "true";
 }
