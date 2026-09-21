@@ -20,4 +20,4 @@ The reconciliation checks the vault's on-chain reward records against the durabl
 - Never reuse a reward-manager key outside the dedicated settlement service.
 - Keep `CRON_SECRET` server-only.
 - Keep `REWARD_MANAGER_PRIVATE_KEY` server-only and rotate it through the documented operational process.
-- Keep both `GAME_REWARDS_ENABLED=false` and `GAME_AUTHORITATIVE_VERIFICATION_ENABLED=false` until an authoritative game verifier is deployed, integrated into the reward path, and reviewed.
+- Keep both `GAME_REWARDS_ENABLED=false` and `GAME_AUTHORITATIVE_VERIFICATION_ENABLED=false` until the authoritative in-process replay verifier (`lib/games/mpgr-run/authoritative-replay.ts`) is reviewed and approved for financial settlement. No external `GAME_RUN_VERIFIER_URL` is required.

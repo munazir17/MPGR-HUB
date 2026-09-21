@@ -19,30 +19,33 @@ project. This populates `KV_REST_API_URL` / `KV_REST_API_TOKEN` /
 manual value entry needed on Vercel; for local dev, copy the values from
 the dashboard into `.env.local`.
 
-## 3. Deploy the authoritative game verifier (REQUIRED before financial rewards)
+## 3. Authoritative game verification (REQUIRED before financial rewards)
 
-> **Task 7 note (2026-09):** the verification step itself is already
-> implemented in-process — every reward submission is deterministically
-> replayed server-side (`lib/games/mpgr-run/authoritative-replay.ts`), and
-> since Task 7 only a passing replay can earn XP or weekly competitive
-> facts in either flag configuration. No code path calls an external
-> verifier today; the variables below remain an additional operator gate
-> that `gameRewardsAreOperatorEnabled()` requires before settlement pays
-> out. If you do deploy the external verifier described in
-> `docs/GAME_RUN_VERIFIER_PROTOCOL.md`, wire it in as an additional check
-> (and decide whether the gate should still require it) — do not assume
-> it is already invoked.
+The authoritative verifier is the **in-process deterministic replay**
+implemented in `lib/games/mpgr-run/authoritative-replay.ts` and invoked
+via `lib/games/mpgr-run/authoritative-verifier.ts` on every reward
+submission. It reproduces the run from the server-issued seed + recorded
+input trace and only accepts results that match the replayed simulation.
+No code path calls an external verifier — `GAME_RUN_VERIFIER_URL` /
+`GAME_RUN_VERIFIER_SECRET` are not required and have been removed from
+the operator gate.
 
-Deploy an independent verifier implementing `docs/GAME_RUN_VERIFIER_PROTOCOL.md`
-and configure these server-only variables:
+Before enabling financial rewards, the replay implementation must be
+reviewed (anti-cheat audit). Configure these server-only variables only
+after review:
 
-- `GAME_RUN_VERIFIER_URL`
-- `GAME_RUN_VERIFIER_SECRET`
 - `GAME_AUTHORITATIVE_VERIFICATION_ENABLED=true`
-- `GAME_REWARDS_ENABLED=true` only after the verifier has been reviewed
+- `GAME_REWARDS_ENABLED=true` only after the verifier review is complete
 
-The application fails closed if the verifier is missing, times out, rejects the
-run, or returns no proof ID. Client-side run validation is never a substitute.
+The application fails closed if the replay rejects the run, if the
+required operator flags are missing, or if settlement prerequisites
+(season, reward manager, vault balance) are unavailable. Client-side run
+validation is never a substitute.
+
+> **Historical note:** `docs/GAME_RUN_VERIFIER_PROTOCOL.md` described an
+> external verifier service. That protocol is retained for reference but
+> is not the active verification mechanism. The active mechanism is the
+> in-process replay described above.
 
 ## 3. Generate a reward-manager signer key
 
