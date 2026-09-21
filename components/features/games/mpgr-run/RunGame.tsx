@@ -20,7 +20,7 @@ import {
   type PowerupType,
 } from "@/lib/games/mpgr-run/run-config";
 import { type World, freshWorld } from "@/lib/games/mpgr-run/run-world";
-import { drawRunFrame } from "@/lib/games/mpgr-run/run-render";
+import { drawRunFrame, runVerticalScale } from "@/lib/games/mpgr-run/run-render";
 import { createRunInputTrace, type RunInputTrace } from "@/lib/games/mpgr-run/input-trace";
 
 import type { Phase, HudSnapshot, RunGameProps } from "./RunGameTypes";
@@ -251,7 +251,11 @@ export function RunGame({ address }: RunGameProps) {
         steps < MAX_STEPS_PER_FRAME &&
         !worldRef.current.gameOver
       ) {
-        step(FIXED_DT, sizeRef.current.height);
+        // canvasHeight is used ONLY for visual spawn positions (bursts),
+        // never physics/collision — the responsive renderer scales those
+        // design-space y values by runVerticalScale at draw time, so the
+        // simulation must see the design-space height to match.
+        step(FIXED_DT, sizeRef.current.height / runVerticalScale(sizeRef.current.width));
         fixedStepAccumulatorRef.current -= FIXED_DT;
         steps += 1;
       }

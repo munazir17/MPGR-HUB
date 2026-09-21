@@ -8,18 +8,21 @@
 // keeps its name — MPGR AGENT — the stocks tooling simply lives inside
 // it now.
 //
-// Layout (top → bottom):
+// Layout (top → bottom, content-driven — no forced viewport heights):
 //   1. LiveTape — full width, dark, monospace prices, pause on hover
 //   2. MPGR AGENT hero: title + one-line subtitle + always-visible
 //      non-US disclaimer
 //   3. ONE unified chat: "Conversation" thread (when messages exist),
 //      the canonical suggested chips and the "Ask anything..." composer
-//      rendered together in one composer card
+//      rendered together in one composer card. The thread sizes to its
+//      content (compact with few messages, capped + scrolling when long)
+//      so there is never a huge empty panel under the last message.
+//   4. Existing social/community footer.
 //   Pair sheet = right drawer on desktop, bottom sheet on mobile
 //   (owned by LiveTape). Wallet button stays in the existing Navbar.
 //
-// The rest of the existing Home page (social/community footer, links,
-// styling) is unchanged.
+// The agent column widens on desktop (lg:max-w-5xl) so the chat is a
+// real desktop workspace instead of a stretched mobile column.
 
 import { useCallback, useRef } from "react";
 
@@ -58,7 +61,7 @@ export default function HomePage() {
   return (
     <div className="flex min-h-[100dvh] flex-col">
       <Navbar />
-      <div className="flex min-h-[calc(100dvh-5rem)] flex-1 flex-col md:min-h-0">
+      <div className="flex flex-1 flex-col">
         <LiveTape onPrepareSwap={handlePrepareSwap} />
         <AgentExperience
           heroSlot={heroSlot}

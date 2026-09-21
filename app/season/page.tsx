@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Sparkles, Trophy, Gift, Flag, HelpCircle } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { CountdownCard } from "@/components/ui/CountdownCard";
@@ -32,7 +33,7 @@ export default function SeasonPage() {
   return (
     <>
       <Navbar />
-      <main className="mx-auto max-w-3xl px-4 py-10">
+      <PageContainer size="narrow">
         {!mounted ? (
           <div className="space-y-4">
             <SkeletonCard lines={2} />
@@ -134,7 +135,7 @@ export default function SeasonPage() {
             </div>
           </motion.div>
         )}
-      </main>
+      </PageContainer>
     </>
   );
 }

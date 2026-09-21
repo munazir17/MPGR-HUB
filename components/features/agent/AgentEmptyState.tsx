@@ -8,7 +8,7 @@ interface AgentEmptyStateProps {
 
 export function AgentEmptyState({ onSelectPrompt }: AgentEmptyStateProps) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center px-1 pb-2">
+    <div className="flex flex-col items-center px-1 py-6">
       <AgentPromptSuggestions onSelect={onSelectPrompt} />
     </div>
   );

@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { Users } from "lucide-react";
 import { useAccount } from "wagmi";
 import { Navbar } from "@/components/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
 import { LeaderboardRow } from "@/components/ui/LeaderboardRow";
 import { SkeletonCard } from "@/components/ui/SkeletonCard";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -42,7 +43,7 @@ export default function LeaderboardPage() {
   return (
     <>
       <Navbar />
-      <main className="mx-auto max-w-2xl px-4 py-10">
+      <PageContainer size="narrow">
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
           {/* XP, Season, and Season Points are three distinct values (see
               lib/xp-engine.ts). Each LeaderboardRow already shows a
@@ -123,7 +124,7 @@ export default function LeaderboardPage() {
             </div>
           )}
         </motion.div>
-      </main>
+      </PageContainer>
     </>
   );
 }

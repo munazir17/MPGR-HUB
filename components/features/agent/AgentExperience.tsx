@@ -113,12 +113,12 @@ export function AgentExperience({
 
   return (
     <>
-      <main className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-2 pt-1 md:mx-auto md:max-w-3xl md:overflow-visible md:px-4 md:py-8">
+      <main className="mx-auto flex w-full flex-col px-3 pb-2 pt-1 md:max-w-3xl md:px-4 md:py-8 lg:max-w-5xl">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
-          className="flex min-h-0 flex-1 flex-col"
+          className="flex flex-col"
         >
           <div className="shrink-0">
             {heroSlot ? (
@@ -129,7 +129,7 @@ export function AgentExperience({
           </div>
 
           {!isConnected ? (
-            <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex flex-col">
               {hideMarketTicker ? null : (
                 <div className="mt-3">
                   <MpgrMarketTicker compact />
@@ -148,12 +148,12 @@ export function AgentExperience({
               </p>
             </div>
           ) : !hasLoaded ? (
-            <div className="flex flex-1 items-center justify-center p-6">
+            <div className="flex items-center justify-center p-10">
               <p className="text-sm text-muted">Loading conversation...</p>
             </div>
           ) : (
             <AgentErrorBoundary>
-              <div className="flex min-h-0 flex-1 flex-col">
+              <div className="flex flex-col">
                 {hasMessages && (
                   <div className="flex shrink-0 items-center justify-between px-1 py-2">
                     <p className="text-sm font-semibold text-white">Conversation</p>
@@ -170,7 +170,7 @@ export function AgentExperience({
                 )}
 
                 {hasMessages ? (
-                  <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/[0.07] bg-surface">
+                  <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-surface">
                     <AgentChatWindow
                       messages={messages}
                       thinking={thinking}
@@ -185,7 +185,7 @@ export function AgentExperience({
                     />
                   </div>
                 ) : emptyStateText ? (
-                  <div className="flex min-h-0 flex-1 items-center justify-center px-3 py-8">
+                  <div className="flex items-center justify-center px-3 py-12">
                     <p className="text-center text-sm text-muted">{emptyStateText}</p>
                   </div>
                 ) : (

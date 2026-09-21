@@ -78,7 +78,10 @@ export function AgentChatWindow({
   let previousDayKey: string | null = null;
 
   return (
-    <div className="flex-1 space-y-3 overflow-y-auto px-3 py-3 sm:px-4 md:space-y-4 md:px-6 md:py-5">
+    <div
+      className="max-h-[56vh] space-y-3 overflow-y-auto px-3 py-3 sm:max-h-[60vh] sm:px-4 md:space-y-4 md:px-6 md:py-5 lg:max-h-[64vh]"
+      data-testid="agent-chat-window"
+    >
       {messages.map((message, i) => {
         const dayKey = getMessageDayKey(message.timestamp);
         const showSeparator = dayKey !== previousDayKey;

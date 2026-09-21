@@ -6,6 +6,7 @@ import { useAccount } from "wagmi";
 import { motion } from "framer-motion";
 import { Gift, Trophy, HelpCircle, AlertCircle, X, Medal, Star, Flame, Award } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { StatCard } from "@/components/ui/StatCard";
 import { OnChainRewardsSection } from "@/components/ui/OnChainRewardsSection";
@@ -72,7 +73,7 @@ export default function RewardsPage() {
     <>
       <Navbar />
 
-      <main className="mx-auto max-w-4xl px-4 py-8 md:py-10">
+      <PageContainer>
         {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-7">
             <div>
@@ -197,41 +198,45 @@ export default function RewardsPage() {
               )}
             </div>
 
-            <div>
-              <SectionHeader title="Claim History" subtitle="Every claim across every active category" />
-              <RewardClaimHistoryList
-                entries={rewardHubHistory}
-                isLoading={rewardHubHistoryLoading}
-                isLoadingMore={rewardHubLoadingMore}
-                error={rewardHubHistoryError}
-                hasMore={rewardHubHasMore}
-                onLoadMore={loadMoreRewardHubHistory}
-                onRetry={refreshRewardHub}
-              />
-            </div>
-
-            <GlassCard className="p-5">
-              <div className="flex items-center gap-2">
-                <HelpCircle className="h-4 w-4 text-primary" aria-hidden="true" />
-                <p className="text-sm font-medium text-white">How Rewards Work</p>
-              </div>
-              <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-muted">
-                <li>• Play MPGR Run and complete Hub actions to earn XP and season points</li>
-                <li>• On-chain rewards are allocated to your wallet in the Reward Vault and claimed directly from Base Mainnet</li>
-                <li>• Staking rewards accrue continuously — claim them from the Staking page</li>
-                <li>• Season points and milestones reset every calendar month</li>
-              </ul>
-            </GlassCard>
-
-            {record && record.history.length > 0 && (
+            <div className="grid gap-7 lg:grid-cols-2 lg:items-start">
               <div>
-                <SectionHeader title="Recent activity" />
-                <ActivityTimeline entries={record.history} limit={8} />
+                <SectionHeader title="Claim History" subtitle="Every claim across every active category" />
+                <RewardClaimHistoryList
+                  entries={rewardHubHistory}
+                  isLoading={rewardHubHistoryLoading}
+                  isLoadingMore={rewardHubLoadingMore}
+                  error={rewardHubHistoryError}
+                  hasMore={rewardHubHasMore}
+                  onLoadMore={loadMoreRewardHubHistory}
+                  onRetry={refreshRewardHub}
+                />
               </div>
-            )}
+
+              <div className="space-y-7">
+                <GlassCard className="p-5">
+                  <div className="flex items-center gap-2">
+                    <HelpCircle className="h-4 w-4 text-primary" aria-hidden="true" />
+                    <p className="text-sm font-medium text-white">How Rewards Work</p>
+                  </div>
+                  <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-muted">
+                    <li>• Play MPGR Run and complete Hub actions to earn XP and season points</li>
+                    <li>• On-chain rewards are allocated to your wallet in the Reward Vault and claimed directly from Base Mainnet</li>
+                    <li>• Staking rewards accrue continuously — claim them from the Staking page</li>
+                    <li>• Season points and milestones reset every calendar month</li>
+                  </ul>
+                </GlassCard>
+
+                {record && record.history.length > 0 && (
+                  <div>
+                    <SectionHeader title="Recent activity" />
+                    <ActivityTimeline entries={record.history} limit={8} />
+                  </div>
+                )}
+              </div>
+            </div>
           </motion.div>
         )}
-      </main>
+      </PageContainer>
     </>
   );
 }
