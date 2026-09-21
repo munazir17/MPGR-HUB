@@ -10,9 +10,11 @@ import { BrandMark } from "@/components/brand/BrandMark";
 import { HolderTierBadge } from "@/components/features/holder-tier/HolderTierBadge";
 import { useHolderTier } from "@/lib/useHolderTier";
 
+// Top nav mirrors the bottom nav: Home | Rewards | Profile. The Stocks
+// entry was removed when the Base Stocks terminal moved into Home's
+// MPGR AGENT (no separate Stocks tab anymore).
 const NAV_LINKS = [
   { href: "/", label: "Home" },
-  { href: "/agent", label: "Stocks" },
   { href: "/rewards", label: "Rewards" },
   { href: "/profile", label: "Profile" },
 ];
@@ -35,7 +37,7 @@ export function Navbar() {
             {NAV_LINKS.map((link) => {
               const isActive =
                 link.href === "/"
-                  ? pathname === "/" || pathname === "/agent"
+                  ? pathname === "/"
                   : pathname === link.href || pathname?.startsWith(`${link.href}/`);
               return (
                 <Link

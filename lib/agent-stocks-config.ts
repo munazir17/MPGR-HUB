@@ -1,6 +1,8 @@
 // lib/agent-stocks-config.ts
 //
-// Copy + default suggestions for the Base Stocks Agent screen (/agent).
+// Copy + default suggestions for the MPGR AGENT experience on Home ("/").
+// The Base Stocks terminal that used to live at /agent was moved here —
+// there is no separate Stocks tab/page anymore.
 //
 // Product decision (locked): the agent's first screen is Coinbase
 // wrapped assets + Coinbase Tokenized Stocks (B20) on Base. One line:
@@ -27,7 +29,9 @@ import {
 import { BASE_STOCKS_DISCLAIMER } from "@/lib/markets/base-pairs";
 import { X402_TAPE_PATH } from "@/lib/x402/x402-tape-info";
 
-export const STOCKS_AGENT_TITLE = "Base Stocks Agent";
+// The agent's display name. Always "MPGR AGENT" — the stocks tooling was
+// folded into the Home agent, but the agent itself was never renamed.
+export const MPGR_AGENT_TITLE = "MPGR AGENT";
 
 export const STOCKS_AGENT_SUBTITLE =
   "Live Coinbase wrapped assets and Coinbase Tokenized Stocks on Base.";

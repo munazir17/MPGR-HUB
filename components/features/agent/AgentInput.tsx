@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import { Send, Square } from "lucide-react";
 import { AgentCommandPalette } from "./AgentCommandPalette";
@@ -16,6 +16,14 @@ interface AgentInputProps {
   // precedent from 3A.4) when no palette is wired behind it.
   commandPalette?: ReturnType<typeof useCommandPalette>;
   onSelectCommand?: (command: SlashCommand) => void;
+  /**
+   * Optional content rendered INSIDE the composer card, above the
+   * textarea row — the canonical home of the suggested prompt chips.
+   * Keeping the chips inside the same card as the "Ask anything..."
+   * input is what makes the whole area read as ONE chat interface
+   * instead of a chip feed floating above a separate chat system.
+   */
+  suggestionsSlot?: ReactNode;
 }
 
 const MIN_HEIGHT_PX = 44;
@@ -35,6 +43,7 @@ export function AgentInput({
   onStop,
   commandPalette,
   onSelectCommand,
+  suggestionsSlot,
 }: AgentInputProps) {
   const [value, setValue] = useState("");
   const [isComposing, setIsComposing] = useState(false);
@@ -112,36 +121,46 @@ export function AgentInput({
           onSelect={handleSelectCommand}
         />
       )}
-      <div className="flex items-end gap-2 rounded-2xl border border-white/[0.08] bg-surface p-2 sm:p-2.5">
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => handleChange(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onCompositionStart={() => setIsComposing(true)}
-          onCompositionEnd={() => setIsComposing(false)}
-          disabled={disabled}
-          rows={1}
-          placeholder="Ask anything..."
-          aria-label="Message MPGR Agent"
-          className="max-h-28 min-h-[44px] flex-1 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-3.5 py-2.5 text-sm text-white placeholder:text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-        />
-        <motion.button
-          type="button"
-          onClick={disabled && onStop ? onStop : handleSend}
-          disabled={disabled ? !onStop : !value.trim()}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          aria-label={disabled ? "Stop generating" : "Send message"}
-          title={disabled ? "Stop generating" : "Send message"}
+      <div className="rounded-2xl border border-white/[0.08] bg-surface p-2 sm:p-2.5">
+        {suggestionsSlot ? (
+          <div
+            className="mb-2 border-b border-white/[0.06] pb-2"
+            data-testid="agent-composer-suggestions"
+          >
+            {suggestionsSlot}
+          </div>
+        ) : null}
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => handleChange(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onCompositionStart={() => setIsComposing(true)}
+            onCompositionEnd={() => setIsComposing(false)}
+            disabled={disabled}
+            rows={1}
+            placeholder="Ask anything..."
+            aria-label="Message MPGR Agent"
+            className="max-h-28 min-h-[44px] flex-1 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-3.5 py-2.5 text-sm text-white placeholder:text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          <motion.button
+            type="button"
+            onClick={disabled && onStop ? onStop : handleSend}
+            disabled={disabled ? !onStop : !value.trim()}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            aria-label={disabled ? "Stop generating" : "Send message"}
+            title={disabled ? "Stop generating" : "Send message"}
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-background shadow-glow transition-opacity duration-200 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {disabled ? (
-            <Square className="h-4 w-4" aria-hidden="true" />
-          ) : (
-            <Send className="h-4 w-4" aria-hidden="true" />
-          )}
-        </motion.button>
+          >
+            {disabled ? (
+              <Square className="h-4 w-4" aria-hidden="true" />
+            ) : (
+              <Send className="h-4 w-4" aria-hidden="true" />
+            )}
+          </motion.button>
+        </div>
       </div>
     </div>
   );

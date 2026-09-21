@@ -26,9 +26,15 @@ import { useTransferQuote } from "@/hooks/useTransferQuote";
 import type { AgentStatusId } from "@/lib/agent-config";
 
 export interface AgentExperienceProps {
-  /** Replaces the default MPGR hero (used by /agent's Base Stocks terminal). */
+  /** Replaces the default MPGR hero (used by Home's MPGR AGENT stocks terminal). */
   heroSlot?: (statuses: AgentStatusId[]) => ReactNode;
-  /** Suggestion chips. Empty array hides the chip rows entirely. */
+  /**
+   * Suggestion chips. This is the ONE canonical chip set: it renders
+   * inside the composer card (above the "Ask anything..." input), in
+   * both the empty and active conversation states, so the chips always
+   * read as part of the chat instead of a separate feed. Empty array
+   * hides the chips entirely.
+   */
   suggestions?: readonly AgentPromptSuggestionItem[];
   /** Replaces the chip grid in the no-messages state. */
   emptyStateText?: string;
@@ -36,7 +42,7 @@ export interface AgentExperienceProps {
   hideMarketTicker?: boolean;
   /** Hide the Research/Trade/Portfolio/Rewards quick-action grid. */
   hideQuickActions?: boolean;
-  /** Called with sendMessage once the chat controller is mounted (terminal pages wire external buttons through it). */
+  /** Called with sendMessage once the chat controller is mounted (pages wire external buttons — e.g. the tape's "Prepare swap" — through it). */
   onReady?: (api: { sendMessage: (prompt: string) => void }) => void;
 }
 
@@ -75,11 +81,30 @@ export function AgentExperience({
 
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking"] : ["online"];
   const hasMessages = messages.length > 0;
-  const chipItems = suggestions ?? undefined;
 
-  // Terminal pages (e.g. /agent) wire external buttons — the tape's
-  // "Prepare swap" action — into the chat through this callback. The
-  // ref keeps re-renders from re-firing it when onReady isn't memoized.
+  // ONE canonical chip set, rendered inside the composer card so the
+  // chips, the messages, and the "Ask anything..." input all read as a
+  // single chat interface:
+  //   - explicit `suggestions` (Home's stocks chips): always visible;
+  //   - default (no prop): the default MPGR suggestions appear only
+  //     once a conversation exists, matching the old below-the-thread
+  //     row — the no-messages state keeps its suggestion grid instead.
+  const showComposerChips =
+    suggestions !== undefined ? suggestions.length > 0 : hasMessages;
+  const composerChips = showComposerChips ? (
+    <AgentPromptSuggestions
+      variant="row"
+      items={suggestions}
+      tone="inset"
+      onSelect={sendMessage}
+      disabled={thinking}
+      className="flex-wrap overflow-visible pb-0"
+    />
+  ) : undefined;
+
+  // Pages wire external buttons — the tape's "Prepare swap" action —
+  // into the chat through this callback. The ref keeps re-renders from
+  // re-firing it when onReady isn't memoized.
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
   useEffect(() => {
@@ -101,17 +126,6 @@ export function AgentExperience({
             ) : (
               <AgentHero statuses={heroStatuses} compact={hasMessages} />
             )}
-            {chipItems && chipItems.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5 px-1 pt-2 md:gap-2">
-                <AgentPromptSuggestions
-                  variant="row"
-                  items={chipItems}
-                  onSelect={sendMessage}
-                  disabled={thinking}
-                  className="flex-wrap overflow-visible pb-0"
-                />
-              </div>
-            ) : null}
           </div>
 
           {!isConnected ? (
@@ -178,17 +192,6 @@ export function AgentExperience({
                   <AgentEmptyState onSelectPrompt={sendMessage} />
                 )}
 
-                {hasMessages && (chipItems === undefined || chipItems.length > 0) && (
-                  <div className="shrink-0 px-1 pt-2">
-                    <AgentPromptSuggestions
-                      variant="row"
-                      items={chipItems}
-                      onSelect={sendMessage}
-                      disabled={thinking}
-                    />
-                  </div>
-                )}
-
                 <AnimatePresence>
                   {error && (
                     <AgentErrorBanner
@@ -207,6 +210,7 @@ export function AgentExperience({
                     onStop={stopGeneration}
                     commandPalette={commandPalette}
                     onSelectCommand={selectPaletteCommand}
+                    suggestionsSlot={composerChips}
                   />
                 </div>
 

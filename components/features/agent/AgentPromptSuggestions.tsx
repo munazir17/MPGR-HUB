@@ -22,8 +22,15 @@ interface AgentPromptSuggestionsProps {
   disabled?: boolean;
   variant?: "grid" | "row";
   className?: string;
-  /** Overrides the default MPGR suggestions (used by /agent's Base Stocks chips). */
+  /** Overrides the default MPGR suggestions (used by Home's MPGR AGENT stocks chips). */
   items?: readonly AgentPromptSuggestionItem[];
+  /**
+   * "inset" is for chips rendered inside an existing surface card —
+   * e.g. the chat composer — where a bg-surface fill would be
+   * invisible. It swaps the chip fill to surface-2. Same shape,
+   * same click behavior.
+   */
+  tone?: "default" | "inset";
 }
 
 export function AgentPromptSuggestions({
@@ -32,8 +39,10 @@ export function AgentPromptSuggestions({
   variant = "grid",
   className,
   items,
+  tone = "default",
 }: AgentPromptSuggestionsProps) {
   const suggestions: readonly AgentPromptSuggestionItem[] = items ?? AGENT_PROMPT_SUGGESTIONS;
+  const chipFill = tone === "inset" ? "bg-surface-2" : "bg-surface";
   if (variant === "row") {
     return (
       <div className={clsx("flex gap-1.5 overflow-x-auto pb-1 md:gap-2", className)}>
@@ -43,7 +52,10 @@ export function AgentPromptSuggestions({
             type="button"
             disabled={disabled}
             onClick={() => onSelect(suggestion.buildPrompt?.(window.location.origin) ?? suggestion.prompt)}
-            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-full border border-white/[0.08] bg-surface px-3 py-1.5 text-xs font-medium text-muted transition-colors duration-200 hover:border-primary/30 hover:text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+            className={clsx(
+              "flex shrink-0 cursor-pointer items-center gap-1 rounded-full border border-white/[0.08] px-3 py-1.5 text-xs font-medium text-muted transition-colors duration-200 hover:border-primary/30 hover:text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50",
+              chipFill,
+            )}
           >
             {suggestion.label}
           </button>

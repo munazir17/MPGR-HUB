@@ -3,12 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
-import { Home, CandlestickChart, Gift, User } from "lucide-react";
+import { Home, Gift, User } from "lucide-react";
 import { clsx } from "clsx";
 
+// Bottom navigation is exactly Home | Rewards | Profile. The Stocks
+// entry was removed when the Base Stocks terminal moved into Home's
+// MPGR AGENT (there is no separate Stocks tab anymore).
 const TABS = [
   { href: "/", label: "Home", icon: Home },
-  { href: "/agent", label: "Stocks", icon: CandlestickChart },
   { href: "/rewards", label: "Rewards", icon: Gift },
   { href: "/profile", label: "Profile", icon: User },
 ];
@@ -28,7 +30,7 @@ export function BottomNav() {
       className="fixed inset-x-0 bottom-0 z-50 border-t border-white/[0.07] bg-background/95 backdrop-blur-md sm:hidden"
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
-      <div className="grid grid-cols-4">
+      <div className="grid grid-cols-3">
         {TABS.map((tab) => {
           const active =
             pathname === tab.href || pathname?.startsWith(`${tab.href}/`);
