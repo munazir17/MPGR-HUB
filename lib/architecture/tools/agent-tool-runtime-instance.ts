@@ -60,6 +60,12 @@ import "./trade-tool-definitions";
 // the Confirm & Send UI, same boundary as trade/x402 above.
 import "./transfer-tool-definitions";
 
+// Base Stocks Agent addendum — registers get_tape / get_pair /
+// verify_b20_contract / get_stock_holdings / get_premium /
+// describe_x402_tape (read) and prepare_swap (prepare). Allowlist-only
+// address resolution; signing stays behind the same Confirm & Swap UI.
+import "./stocks-tool-definitions";
+
 export const agentToolRuntime = new AgentToolRuntime(
   getAgentToolRegistry(),
   agentEventBus,

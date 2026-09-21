@@ -44,15 +44,23 @@ import {
   x402NetworksEquivalent,
 } from "./x402-config";
 import { decodeXPaymentHeader } from "./x402-submit";
+import {
+  X402_TAPE_DESCRIPTION,
+  X402_TAPE_MIME_TYPE,
+  X402_TAPE_PATH,
+} from "./x402-tape-info";
 import type { X402PaymentRequirements, X402SettlementResponse } from "./x402-types";
 
 // ---------------------------------------------------------------------------
 // Config (env-driven, fail closed)
 // ---------------------------------------------------------------------------
 
-export const X402_TAPE_PATH = "/api/x402/tape";
-export const X402_TAPE_DESCRIPTION = "MPGR / Base Stocks live tape snapshot";
-export const X402_TAPE_MIME_TYPE = "application/json";
+export {
+  X402_TAPE_PATH,
+  X402_TAPE_DESCRIPTION,
+  X402_TAPE_MIME_TYPE,
+} from "./x402-tape-info";
+
 export const X402_TAPE_ASSET = BASE_USDC as Address;
 export const X402_TAPE_ASSET_DECIMALS =
   KNOWN_X402_ASSET_DECIMALS[X402_TAPE_ASSET.toLowerCase()] ?? 6;

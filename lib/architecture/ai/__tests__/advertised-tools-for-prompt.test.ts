@@ -95,3 +95,78 @@ describe("buildGatedCapabilityInstructions vs advertised tools", () => {
     expect(text.toLowerCase()).not.toContain("wallet_execute");
   });
 });
+
+const STOCKS_TOOLS = [
+  "get_tape",
+  "get_pair",
+  "get_premium",
+  "verify_b20_contract",
+  "describe_x402_tape",
+];
+
+describe("Base Stocks Agent prompt gating", () => {
+  it("chip 1 — NVDAc premium vs feed advertises the tape tools and the premium essay", () => {
+    const prompt = "Show NVDAc premium vs feed.";
+    const advertised = ids(prompt);
+    expect(advertised).toEqual(expect.arrayContaining(["get_premium", "get_pair", "get_tape"]));
+    const text = buildGatedCapabilityInstructions(prompt).join("\n").toLowerCase();
+    expect(text).toContain("base stocks tools");
+    expect(text).toContain("never invent");
+  });
+
+  it("chip 2 — quote USDC → AAPLc still routes through the trade tool family", () => {
+    const prompt = "Quote 10 USDC → AAPLc on Base.";
+    expect(ids(prompt)).toEqual(expect.arrayContaining(["trade_prepare_swap", "prepare_swap", "tokenized_stock_prepare_order"]));
+  });
+
+  it("chip 3 — Coinbase stock holdings advertises get_stock_holdings, never XP/portfolio tools", () => {
+    const prompt = "What are my Coinbase stock holdings on Base?";
+    const advertised = ids(prompt);
+    expect(advertised).toContain("get_stock_holdings");
+    expect(advertised).not.toContain("portfolio_overview");
+    expect(advertised).not.toContain("xp_balance");
+  });
+
+  it("chip 4 — verify a look-alike 0xb200 address advertises verify_b20_contract", () => {
+    const prompt = "Verify this 0xb200 contract: 0xb200111111111111111111111111111111111111";
+    expect(ids(prompt)).toContain("verify_b20_contract");
+  });
+
+  it("chip 5 — paid tape snapshot advertises describe_x402_tape + the x402 payment tools", () => {
+    const prompt = "Live tape snapshot $0.02 x402.";
+    const advertised = ids(prompt);
+    expect(advertised).toEqual(
+      expect.arrayContaining(["describe_x402_tape", "get_tape", "x402_discover_resource", "x402_prepare_payment"]),
+    );
+    const text = buildGatedCapabilityInstructions(prompt).join("\n");
+    expect(text).toContain("/api/x402/tape");
+    expect(text).toContain("x402_prepare_payment");
+  });
+
+  it("chip 6 — prepare swap USDC → TSLAc advertises prepare_swap and the stock essay", () => {
+    const prompt = "Prepare a swap of 10 USDC to TSLAc on Base. I will confirm before anything is signed.";
+    const advertised = ids(prompt);
+    expect(advertised).toEqual(expect.arrayContaining(["prepare_swap", "tokenized_stock_prepare_order"]));
+    const text = buildGatedCapabilityInstructions(prompt).join("\n").toLowerCase();
+    expect(text).toContain("base stocks tools");
+  });
+
+  it("unrelated prompts never advertise the stocks tools", () => {
+    for (const prompt of ["hi", "what is the MPGR price?", "explain staking", "send 10 USDC to alice.base.eth"]) {
+      const advertised = ids(prompt);
+      for (const tool of STOCKS_TOOLS) expect(advertised).not.toContain(tool);
+      expect(advertised).not.toContain("get_stock_holdings");
+    }
+  });
+
+  it("MPGR premium-tier style questions do not trip the stock premium detector", () => {
+    const advertised = ids("What does MPGR Premium include?");
+    expect(advertised).not.toContain("get_premium");
+  });
+
+  it("stock tool ids are read/prepare-only catalog entries (no execute verb leaks)", () => {
+    const text = buildGatedCapabilityInstructions("Show NVDAc premium vs feed.").join("\n").toLowerCase();
+    expect(text).not.toContain("execute the swap");
+    expect(text).not.toContain("sign automatically");
+  });
+});
