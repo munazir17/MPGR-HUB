@@ -183,12 +183,12 @@ export function chainlinkAnswerToUsd(answer: string, decimals = 8): number | nul
   } catch {
     return null;
   }
-  const negative = raw < 0n;
-  const abs = negative ? -raw : raw;
-  const formatted = formatUnits(abs, decimals);
-  const value = Number(formatted);
+  // A non-positive equity price is a broken/frozen answer — refuse to
+  // publish it rather than showing a negative "price".
+  if (raw <= 0n) return null;
+  const value = Number(formatUnits(raw, decimals));
   if (!Number.isFinite(value) || value <= 0) return null;
-  return negative ? -value : value;
+  return value;
 }
 
 /** Groups a flat pair list by baseToken address (lowercased). */
