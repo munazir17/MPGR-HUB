@@ -9,6 +9,12 @@ export interface AgentPromptSuggestionItem {
   id: string;
   label: string;
   prompt: string;
+  /**
+   * Optional click-time prompt builder (browser only). Used when the
+   * prompt needs runtime context — e.g. the absolute https URL of this
+   * deployment, which x402 discovery/prepare requires.
+   */
+  buildPrompt?: (origin: string) => string;
 }
 
 interface AgentPromptSuggestionsProps {
@@ -27,7 +33,7 @@ export function AgentPromptSuggestions({
   className,
   items,
 }: AgentPromptSuggestionsProps) {
-  const suggestions = items ?? AGENT_PROMPT_SUGGESTIONS;
+  const suggestions: readonly AgentPromptSuggestionItem[] = items ?? AGENT_PROMPT_SUGGESTIONS;
   if (variant === "row") {
     return (
       <div className={clsx("flex gap-1.5 overflow-x-auto pb-1 md:gap-2", className)}>
@@ -36,7 +42,7 @@ export function AgentPromptSuggestions({
             key={suggestion.id}
             type="button"
             disabled={disabled}
-            onClick={() => onSelect(suggestion.prompt)}
+            onClick={() => onSelect(suggestion.buildPrompt?.(window.location.origin) ?? suggestion.prompt)}
             className="flex shrink-0 cursor-pointer items-center gap-1 rounded-full border border-white/[0.08] bg-surface px-3 py-1.5 text-xs font-medium text-muted transition-colors duration-200 hover:border-primary/30 hover:text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {suggestion.label}
@@ -56,7 +62,7 @@ export function AgentPromptSuggestions({
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: i * 0.04, duration: 0.28 }}
-          onClick={() => onSelect(suggestion.prompt)}
+          onClick={() => onSelect(suggestion.buildPrompt?.(window.location.origin) ?? suggestion.prompt)}
           className="flex min-h-[44px] cursor-pointer items-center justify-between rounded-full border border-white/[0.08] bg-surface px-4 py-2.5 text-left text-sm text-white/90 transition-colors hover:border-primary/30 hover:bg-surface-2 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <span>{suggestion.label}</span>

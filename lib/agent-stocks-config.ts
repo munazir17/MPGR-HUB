@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 
 import { BASE_STOCKS_DISCLAIMER } from "@/lib/markets/base-pairs";
+import { X402_TAPE_PATH } from "@/lib/x402/x402-tape-info";
 
 export const STOCKS_AGENT_TITLE = "Base Stocks Agent";
 
@@ -43,6 +44,12 @@ export interface StocksAgentChip {
   label: string;
   prompt: string;
   icon: LucideIcon;
+  /**
+   * Optional click-time prompt builder (browser only). Used when the
+   * prompt needs runtime context — e.g. the absolute https URL of this
+   * deployment, which x402 discovery/prepare requires.
+   */
+  buildPrompt?: (origin: string) => string;
 }
 
 /** Default chips, exact product list. Labels may tighten, never swap in MPGR/XP chips. */
@@ -76,6 +83,12 @@ export const STOCKS_AGENT_CHIPS: readonly StocksAgentChip[] = [
     id: "tape-x402",
     label: "Live tape snapshot ($0.02 x402)",
     prompt: "Prepare the $0.02 x402 payment for the live Base Stocks tape snapshot.",
+    // x402_prepare_payment needs the absolute https resource URL —
+    // build it from the deployment origin at click time.
+    buildPrompt: (origin) =>
+      origin
+        ? `Prepare the $0.02 x402 payment for the live Base Stocks tape snapshot: discover and prepare the payment for ${origin}${X402_TAPE_PATH}`
+        : "Prepare the $0.02 x402 payment for the live Base Stocks tape snapshot.",
     icon: Activity,
   },
   {
