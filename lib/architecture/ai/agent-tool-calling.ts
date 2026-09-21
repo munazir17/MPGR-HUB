@@ -1,719 +1,83 @@
 // lib/architecture/ai/agent-tool-calling.ts
-//
-// P2/P3 production wiring — the shared, provider-agnostic tool-calling
-// loop used by network AIProviders.
-//
-// Tool execution remains client-side through the production
-// AgentToolRuntime singleton. Read tools may be executed directly by this
-// loop. Prepare tools may only prepare a structured proposal; they can never
-// sign, submit, or execute a payment. Execute tools are never reachable.
-//
-// P3 x402 integration:
-//   - x402_prepare_payment is advertised as a "prepare" tool.
-//   - Its structured proposal is captured directly from the tool result.
-//   - The model is never trusted to invent payment amount, asset, or payTo.
-//   - The proposal is returned separately as x402Proposal.
-//   - Signing remains outside this loop and requires explicit human
-//     confirmation through the existing x402 confirmation/execution flow.
-//
-// P4 trade integration:
-//   - trade_prepare_swap is advertised as a prepare tool.
-//   - Structured TradeProposal is captured from the tool result.
-//   - The model is never trusted to invent amounts, tokens, or calldata.
-//   - Signing remains behind explicit Confirm & Swap.
-//
-// Agent send/transfer integration:
-//   - transfer_prepare_send is advertised as a prepare tool.
-//   - Structured TransferProposal is captured from the tool result.
-//   - The model is never trusted to invent a recipient, token, or amount —
-//     recipient/Basename resolution and balance checks all happen server
-//     side (lib/trade/transfer-request.ts / transfer-proposal.ts).
-//   - Signing remains behind explicit Confirm & Send.
-//
-// P3 robustness addendum:
-//   - x402 tool arguments are normalized to resourceUrl (never url).
-//   - A valid tool result on the final allowed turn is turned into a
-//     grounded {"intent","reply"} instead of throwing into
-//     FallbackAIProvider / DeterministicAIProvider.
 
-import {
-  getAgentActions,
-  getAgentHighlights,
-  getFollowUpPrompts,
-} from "@/lib/agent-actions";
-import { AGENT_INTENTS, type AgentIntent, extractTradeHumanAmount, extractTradeSymbol, isCryptoSwapQuotePrompt, isTradePrompt, isTradeQuotePrompt, isTradeSellPrompt, isTransferPrompt, isX402PaymentPrompt } from "@/lib/agent-intelligence";
 import type {
   AIProviderRequest,
   AIProviderResponse,
 } from "./ai-provider";
-import { getAgentToolRegistry } from "@/lib/architecture/tools/agent-tool-registry-instance";
-import { agentToolRuntime } from "@/lib/architecture/tools/agent-tool-runtime-instance";
-import { toolError } from "@/lib/architecture/tools/agent-tool-result";
-import type { AgentToolResult } from "@/lib/architecture/tools/agent-tool-result";
 import type { AnyAgentTool } from "@/lib/architecture/tools/agent-tool";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
-import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
-import { formatAtomicAmount } from "@/lib/trade/trade-format";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
-
-export const MAX_TOOL_CALL_ROUNDS = 3;
-
-const X402_RESOURCE_URL_TOOL_IDS = new Set([
-  "x402_discover_resource",
-  "x402_prepare_payment",
-]);
-
-function isValidIntent(value: unknown): value is AgentIntent {
-  return (
-    typeof value === "string" &&
-    (AGENT_INTENTS as readonly string[]).includes(value)
-  );
-}
-
-// ---------------------------------------------------------------------------
-// x402 argument normalization
-// ---------------------------------------------------------------------------
-
-/**
- * x402_discover_resource / x402_prepare_payment require `resourceUrl`.
- *
- * Models (and a few older tests) sometimes emit `url` or `resource`.
- * Those aliases are rewritten here so the real tool schema is satisfied
- * without advertising `url` on the declaration.
- */
-export function normalizeX402ToolArguments(
-  toolId: string,
-  args: Record<string, unknown>,
-): Record<string, unknown> {
-  if (!X402_RESOURCE_URL_TOOL_IDS.has(toolId)) {
-    return args;
-  }
-
-  const resourceUrl = pickResourceUrl(args);
-
-  if (resourceUrl === null) {
-    return args;
-  }
-
-  const next: Record<string, unknown> = {
-    ...args,
-    resourceUrl,
-  };
-
-  delete next.url;
-  delete next.resource;
-
-  return next;
-}
-
-const TRADE_TAKER_TOOL_IDS = new Set([
-  "trade_get_price",
-  "trade_prepare_swap",
-  "tokenized_stock_research",
-]);
-
-/**
- * CDP quotes are bound to `taker`. If the model omitted it, fill from
- * the connected wallet — never invent a different address.
- */
-export function normalizeTradeToolArguments(
-  toolId: string,
-  args: Record<string, unknown>,
-  walletAddress?: string,
-): Record<string, unknown> {
-  if (!TRADE_TAKER_TOOL_IDS.has(toolId)) return args;
-  if (toolId === "tokenized_stock_research") {
-    if (typeof args.taker === "string" && args.taker.trim().length > 0) return args;
-    if (typeof walletAddress === "string" && walletAddress.trim().length > 0) {
-      return { ...args, taker: walletAddress.trim() };
-    }
-    return args;
-  }
-  return hydrateTradeSwapArguments(args, walletAddress);
-}
-
-function hasNegativeTradeAmount(prompt: string): boolean {
-  if (typeof prompt !== "string" || !prompt.trim()) return false;
-
-  const lower = prompt.toLowerCase();
-
-  // Only activate for an actual trade- or transfer-like request. Send/
-  // transfer verbs are included here too — "send -10 USDC to 0x..." is
-  // the same signed-amount trick against transfer_prepare_send that
-  // this check already exists to catch for trade_prepare_swap.
-  const hasTradeVerb =
-    /\b(buy|sell|swap|trade|purchase|send|transfer)\b/.test(lower);
-
-  if (!hasTradeVerb) return false;
-
-  // Catch common signed-dollar/number forms before the LLM can
-  // normalize "-$2" / "$-2" / "-2" into a positive value.
-  return (
-    /-\s*\$\s*\d+(?:\.\d+)?/.test(lower) ||
-    /\$\s*-\s*\d+(?:\.\d+)?/.test(lower) ||
-    /(?:^|\s)-\s*\d+(?:\.\d+)?(?:\s|$)/.test(lower)
-  );
-}
-
-function pickResourceUrl(
-  args: Record<string, unknown>,
-): string | null {
-  if (
-    typeof args.resourceUrl === "string" &&
-    args.resourceUrl.trim()
-  ) {
-    return args.resourceUrl.trim();
-  }
-
-  if (
-    typeof args.url === "string" &&
-    args.url.trim()
-  ) {
-    return args.url.trim();
-  }
-
-  if (
-    typeof args.resource === "string" &&
-    args.resource.trim()
-  ) {
-    return args.resource.trim();
-  }
-
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Model directive parsing
-// ---------------------------------------------------------------------------
-
-export interface ToolCallDirective {
-  kind: "tool_call";
-  toolId: string;
-  arguments: Record<string, unknown>;
-}
-
-export interface FinalAnswerDirective {
-  kind: "final";
-  intent: AgentIntent;
-  reply: string;
-}
-
-export type ModelDirective =
-  | ToolCallDirective
-  | FinalAnswerDirective;
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function tryParseJsonValue(text: string): unknown | undefined {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * NVIDIA Nemotron (and sometimes Gemini) return a 200 with markdown fences,
- * a reasoning preamble + JSON, or plain prose. The HTTP route already
- * succeeded — throwing here would incorrectly fall through to OpenAI and
- * 502 the whole turn.
- */
-function coerceJsonObject(content: string): Record<string, unknown> | null {
-  const trimmed = content.trim();
-  if (!trimmed) return null;
-
-  const direct = tryParseJsonValue(trimmed);
-  if (isPlainObject(direct)) return direct;
-  if (typeof direct === "string" && direct.trim()) {
-    const nested = tryParseJsonValue(direct.trim());
-    if (isPlainObject(nested)) return nested;
-  }
-
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced?.[1]) {
-    const inner = tryParseJsonValue(fenced[1].trim());
-    if (isPlainObject(inner)) return inner;
-  }
-
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start !== -1 && end > start) {
-    const sliced = tryParseJsonValue(trimmed.slice(start, end + 1));
-    if (isPlainObject(sliced)) return sliced;
-  }
-
-  return null;
-}
-
-function looksLikeProtocolObject(record: Record<string, unknown>): boolean {
-  return "toolCall" in record || "reply" in record || "intent" in record;
-}
-
-export function parseModelDirective(
-  content: string,
-  previousIntent: AgentIntent | null,
-): ModelDirective {
-  const trimmed = content.trim();
-  if (!trimmed) {
-    throw new Error(
-      "AI provider response was missing a non-empty reply.",
-    );
-  }
-
-  const record = coerceJsonObject(trimmed);
-
-  if (record) {
-    const rawToolCall = record.toolCall;
-
-    if (isPlainObject(rawToolCall)) {
-      if (
-        typeof rawToolCall.toolId === "string" &&
-        rawToolCall.toolId.trim().length > 0
-      ) {
-        const args =
-          rawToolCall.arguments &&
-          typeof rawToolCall.arguments === "object" &&
-          !Array.isArray(rawToolCall.arguments)
-            ? (rawToolCall.arguments as Record<string, unknown>)
-            : {};
-
-        const toolId = rawToolCall.toolId.trim();
-
-        return {
-          kind: "tool_call",
-          toolId,
-          arguments: normalizeTradeToolArguments(
-            toolId,
-            normalizeX402ToolArguments(toolId, args),
-          ),
-        };
-      }
-    }
-
-    const reply =
-      typeof record.reply === "string"
-        ? record.reply
-        : typeof record.reply === "number"
-          ? String(record.reply)
-          : "";
-
-    if (reply.trim()) {
-      const intent = isValidIntent(record.intent)
-        ? record.intent
-        : previousIntent ?? "general_help";
-
-      return {
-        kind: "final",
-        intent,
-        reply,
-      };
-    }
-
-    if (looksLikeProtocolObject(record)) {
-      throw new Error(
-        "AI provider response was missing a non-empty reply.",
-      );
-    }
-  }
-
-  return {
-    kind: "final",
-    intent: previousIntent ?? "general_help",
-    reply: trimmed,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Tool catalog
-// ---------------------------------------------------------------------------
-
-/**
- * Existing P2 read-only catalog.
- *
- * Kept unchanged so existing callers/tests retain the original
- * read-only behavior.
- */
-export function getReadOnlyToolCatalog(): readonly AnyAgentTool[] {
-  return getAgentToolRegistry()
-    .list()
-    .filter((tool) => tool.mode === "read");
-}
-
-/**
- * P3 catalog.
- *
- * Includes read tools and prepare tools.
- *
- * Prepare is intentionally different from execute:
- *   read    -> may inspect data
- *   prepare -> may construct a proposal
- *   execute -> never exposed to this model loop
- */
-export function getReadAndPrepareToolCatalog(): readonly AnyAgentTool[] {
-  return getAgentToolRegistry()
-    .list()
-    .filter(
-      (tool) =>
-        tool.mode === "read" ||
-        tool.mode === "prepare",
-    );
-}
-
-const YIELD_TOOL_IDS = ["yield_opportunities", "yield_estimator", "yield_comparison"] as const;
-const X402_TOOL_IDS = ["x402_discover_resource", "x402_prepare_payment"] as const;
-const TRANSFER_TOOL_IDS = ["transfer_prepare_send"] as const;
-const MARKET_TOOL_IDS = ["trade_get_price", "tokenized_stock_research", "market_intelligence"] as const;
-const TRADE_TOOL_IDS = [
-  "trade_get_price",
-  "trade_prepare_swap",
-  "tokenized_stock_research",
-  "tokenized_stock_prepare_order",
-] as const;
-
-function isYieldToolPrompt(prompt: string): boolean {
-  const text = prompt.toLowerCase();
-  return /\byield\b|\bapr\b|\bapy\b|yield opportunit|staking opportunit/.test(text);
-}
-
-function isTradeActionPrompt(prompt: string): boolean {
-  if (isCryptoSwapQuotePrompt(prompt)) return true;
-  const text = prompt.toLowerCase();
-  const hasAction =
-    /\b(buy|sell|swap|prepare|order)\b/.test(text) ||
-    text.includes("buy $") ||
-    text.includes("trade quote") ||
-    text.includes("swap quote");
-  if (!hasAction) return false;
-  return isTradePrompt(prompt) || isTradeQuotePrompt(prompt);
-}
-
-function isMarketOrStockResearchPrompt(prompt: string): boolean {
-  if (isTradeActionPrompt(prompt)) return false;
-  if (isTradePrompt(prompt)) return true;
-  const text = prompt.toLowerCase();
-  return /\bprice\b|\bmarket\b|\bquote\b|\bbtc\b|\beth\b|what'?s moving|whats moving|tokenized/.test(
-    text,
-  );
-}
-
-function addToolIds(target: Set<string>, ids: readonly string[]): void {
-  for (const id of ids) target.add(id);
-}
-
-/**
- * Advertises only the read/prepare tools the current user prompt needs.
- * Execute/sign tools are never included. Simple chat gets an empty catalog.
- */
-export function selectAdvertisedToolsForPrompt(prompt: string): readonly AnyAgentTool[] {
-  const ids = new Set<string>();
-
-  if (isTransferPrompt(prompt)) addToolIds(ids, TRANSFER_TOOL_IDS);
-  if (isX402PaymentPrompt(prompt)) addToolIds(ids, X402_TOOL_IDS);
-  if (isYieldToolPrompt(prompt)) addToolIds(ids, YIELD_TOOL_IDS);
-
-  if (isTradeActionPrompt(prompt)) {
-    addToolIds(ids, TRADE_TOOL_IDS);
-  } else if (isMarketOrStockResearchPrompt(prompt)) {
-    addToolIds(ids, MARKET_TOOL_IDS);
-  }
-
-  return getReadAndPrepareToolCatalog().filter(
-    (tool) =>
-      ids.has(tool.id) &&
-      tool.mode !== "execute" &&
-      !tool.id.toLowerCase().includes("execute"),
-  );
-}
-
-const TRADE_INSTRUCTION_TOOL_IDS = [
-  "trade_get_price",
-  "trade_prepare_swap",
-  "tokenized_stock_research",
-  "tokenized_stock_prepare_order",
-] as const;
-
-/**
- * Extra system-prompt essays for tools that are actually advertised on
- * this turn. Simple chat ("hi") gets none of the trading/x402 manuals —
- * those tokens were the bulk of the ~3k promptTokens on a 20-char user
- * message. Buy/AAPLc/x402 turns still receive the full safety text.
- */
-export function buildGatedCapabilityInstructions(prompt: string): string[] {
-  const advertised = new Set(
-    selectAdvertisedToolsForPrompt(prompt).map((tool) => tool.id),
-  );
-  const hasX402 =
-    advertised.has("x402_discover_resource") ||
-    advertised.has("x402_prepare_payment");
-  const hasTrade = TRADE_INSTRUCTION_TOOL_IDS.some((id) => advertised.has(id));
-  const hasTransfer = advertised.has("transfer_prepare_send");
-
-  if (!hasX402 && !hasTrade && !hasTransfer) {
-    return [];
-  }
-
-  const lines: string[] = [];
-
-  if (hasX402 || hasTrade) {
-    lines.push(
-      "You have native tools available for looking up live facts" +
-        (hasX402
-          ? ", discovering or preparing an x402-gated resource"
-          : "") +
-        (hasTrade
-          ? ", researching Coinbase Tokenized Stocks on Base, and preparing a Base swap quote"
-          : "") +
-        ". Prefer calling an appropriate provided tool when the user's request genuinely requires it.",
-    );
-  }
-
-  if (hasX402) {
-    lines.push(
-      'If the user\'s message already contains an https URL and they ask you to inspect, discover, access, or determine whether it is an x402-gated resource, call x402_discover_resource with arguments {"resourceUrl":"<that URL>"} instead of asking the user to provide the URL again. The argument name is resourceUrl — never url.',
-      'If an x402 resource has been discovered and the user explicitly wants to access/pay for it, use x402_prepare_payment with arguments {"resourceUrl":"<that URL>"} when appropriate. Preparing an x402 payment only creates a proposal for the user to review; it never signs or submits a payment.',
-    );
-  }
-
-  if (hasTrade) {
-    lines.push(
-      "Trading tools (Base Mainnet only). They never sign or broadcast.",
-      "If the user asks the price of ETH, USDC, WETH, or MPGR, call trade_get_price. Never call tokenized_stock_research for those.",
-      'If the user asks to research a Coinbase tokenized stock (COINc, AAPLc, TSLAc, SPCXc, NVDAc, or "tokenized stocks"), call tokenized_stock_research with {"symbol":"COINc"} or {} to list the catalog.',
-      'If the user asks to buy or sell a tokenized stock ("buy $10 of SPCXc", "prepare a trade to buy $50 of tokenized AAPL"), call tokenized_stock_prepare_order with {"symbol":"AAPLc","amount":"50","side":"BUY"}. Never call trade_prepare_swap for AAPL/AAPLc or any other Coinbase B20 ticker.',
-      'If the user asks to buy, sell, or swap any other Base token (including a raw 0x address), call trade_prepare_swap. For a dollar buy use fromToken="USDC", toToken="the asset", amount="10". Omit taker.',
-      "Do not answer a trade/quote request from the MPGR portfolio/XP help text.",
-    );
-  }
-
-  if (hasTransfer) {
-    lines.push(
-      "To send/transfer ETH or any Base token, call transfer_prepare_send with {token, amount, recipient}. recipient is a 0x address or a Basename the user actually gave you — never invent one. If they have not given a recipient, ask instead of calling this tool.",
-    );
-  }
-
-  return lines;
-}
-
-export function buildToolCatalogPromptBlock(
-  tools: readonly AnyAgentTool[],
-): string {
-  if (tools.length === 0) {
-    return "";
-  }
-
-  const lines = tools.map(
-    (tool) =>
-      '- "' + tool.id + '": ' + tool.description + " Arguments JSON schema: " + JSON.stringify(
-        tool.inputSchema,
-      ),
-  );
-
-  return [
-    "You have tools for looking up live on-chain/app facts you do not already know, for preparing an x402 payment proposal, for researching Coinbase Tokenized Stocks on Base, and for preparing a Base swap quote.",
-    "Read tools may retrieve information.",
-    "Prepare tools may construct a proposal only. They never sign, pay, submit, or execute anything.",
-    "Execute tools are not available to you.",
-    "Never invent tool result data.",
-    "Available tools:",
-    ...lines,
-    'To call a tool, respond with ONLY this JSON and nothing else: {"toolCall":{"toolId":"<id>","arguments":{...matching that tool\'s schema...}}}',
-    'Once you have enough information, respond with ONLY this JSON: {"intent":"<intent>","reply":"<answer>"}',
-    "Call at most one tool per turn.",
-    "Never invent a toolId.",
-    'For x402_discover_resource and x402_prepare_payment the URL argument name is resourceUrl — never url.',
-    "Never invent payment amount, asset, recipient, or any other payment field. If x402_prepare_payment succeeds, the app itself will display the structured proposal.",
-    'For buy/sell/swap/quote of any Base token (ETH, USDC, MPGR, a 0x address) call trade_prepare_swap. Dollar buys: fromToken="USDC", amount="10" (human units). Omit taker.',
-    "For Coinbase B20 tokenized stocks (AAPL, AAPLc, SPCXc, COINc, TSLAc, …) ALWAYS call tokenized_stock_prepare_order with {symbol, amount} to buy/sell, or tokenized_stock_research to look up catalog/oracle data. Never call trade_prepare_swap for a B20 ticker.",
-    "Never call tokenized_stock_research for ETH, USDC, WETH, or MPGR. Use trade_get_price for those prices.",
-    'To send/transfer ETH or any Base token to someone, call transfer_prepare_send with {token, amount, recipient}. recipient is a 0x address or a Basename (name.base.eth) the user actually gave you — never invent, guess, or reuse an address from earlier in the conversation for a different request. If the user has not given a recipient, ask for one instead of calling this tool.',
-  ].join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Tool execution
-// ---------------------------------------------------------------------------
-
-function safeStringify(value: unknown): string {
-  return JSON.stringify(
-    value,
-    (_key, v) =>
-      typeof v === "bigint" ? v.toString() : v,
-  );
-}
-
-/**
- * Existing P2 read-only execution path.
- *
- * Kept intentionally read-only.
- */
-export async function runRegisteredReadTool(
-  toolId: string,
-  args: Record<string, unknown>,
-  request: AIProviderRequest,
-): Promise<AgentToolResult> {
-  const tool = getAgentToolRegistry().get(toolId);
-
-  if (!tool || tool.mode !== "read") {
-    return toolError(toolId, {
-      code: "TOOL_NOT_FOUND",
-      message: 'No read-only tool is registered with id "' + toolId + '".',
-    });
-  }
-
-  try {
-    return await agentToolRuntime.executeTool(
-      toolId,
-      normalizeTradeToolArguments(
-        toolId,
-        normalizeX402ToolArguments(toolId, args),
-        request.address,
-      ),
-      {
-        appContext: request.agentContext,
-        memoryContext: request.memoryContext,
-        walletAddress: request.address,
-        confirmationMode: "always_confirm",
-        permissions: {
-          canRead: true,
-          canPrepare: false,
-          canExecute: false,
-        },
-      },
-    );
-  } catch {
-    return toolError(toolId, {
-      code: "PROVIDER_ERROR",
-      message: "The tool failed unexpectedly.",
-      retryable: true,
-    });
-  }
-}
-
-/**
- * P3 execution path.
- *
- * Allows only registered read/prepare tools.
- *
- * Execute tools are rejected before reaching the runtime.
- */
-export async function runRegisteredTool(
-  toolId: string,
-  args: Record<string, unknown>,
-  request: AIProviderRequest,
-): Promise<AgentToolResult> {
-  const tool = getAgentToolRegistry().get(toolId);
-
-  if (
-    !tool ||
-    (tool.mode !== "read" &&
-      tool.mode !== "prepare")
-  ) {
-    return toolError(toolId, {
-      code: "TOOL_NOT_FOUND",
-      message: 'No read or prepare tool is registered with id "' + toolId + '".',
-    });
-  }
-
-  try {
-    return await agentToolRuntime.executeTool(
-      toolId,
-      normalizeTradeToolArguments(
-        toolId,
-        normalizeX402ToolArguments(toolId, args),
-        request.address,
-      ),
-      {
-        appContext: request.agentContext,
-        memoryContext: request.memoryContext,
-        walletAddress: request.address,
-        confirmationMode: "always_confirm",
-        permissions: {
-          canRead: true,
-          canPrepare: true,
-          canExecute: false,
-        },
-      },
-    );
-  } catch {
-    return toolError(toolId, {
-      code: "PROVIDER_ERROR",
-      message: "The tool failed unexpectedly.",
-      retryable: true,
-    });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Tool-calling loop
-// ---------------------------------------------------------------------------
+import {
+  extractTradeHumanAmount,
+  extractTradeSymbol,
+  isTradePrompt,
+  isTradeQuotePrompt,
+  isTradeSellPrompt,
+} from "@/lib/agent-intelligence";
+
+// Re-exports from decomposed modules preserving 100% public API compatibility
+export {
+  MAX_TOOL_CALL_ROUNDS,
+  normalizeX402ToolArguments,
+  normalizeTradeToolArguments,
+  hasNegativeTradeAmount,
+} from "./tool-call-normalization";
+
+export {
+  parseModelDirective,
+} from "./tool-call-parser";
+export type {
+  ToolCallDirective,
+  FinalAnswerDirective,
+  ModelDirective,
+} from "./tool-call-parser";
+
+export {
+  getReadOnlyToolCatalog,
+  getReadAndPrepareToolCatalog,
+  selectAdvertisedToolsForPrompt,
+  buildGatedCapabilityInstructions,
+  buildToolCatalogPromptBlock,
+  buildCompactToolCatalogPromptBlock,
+} from "./tool-catalog-selector";
+
+export {
+  runRegisteredReadTool,
+  runRegisteredTool,
+  synthesizeFinalReplyFromToolResult,
+} from "./tool-execution-service";
+
+import {
+  MAX_TOOL_CALL_ROUNDS,
+  hasNegativeTradeAmount,
+} from "./tool-call-normalization";
+import {
+  parseModelDirective,
+} from "./tool-call-parser";
+import {
+  buildCompactToolCatalogPromptBlock,
+  buildToolCatalogPromptBlock,
+  isTradeActionPrompt,
+  selectAdvertisedToolsForPrompt,
+} from "./tool-catalog-selector";
+import {
+  buildLoopResponse,
+  captureTradeProposal,
+  captureTokenizedStockReport,
+  captureTransferProposal,
+  captureX402Proposal,
+  formatInsufficientBalanceReply,
+  formatTransferPrepareFailureReply,
+  runRegisteredTool,
+  safeStringify,
+  synthesizeFinalReplyFromToolResult,
+} from "./tool-execution-service";
 
 export type SendCompletion = (
   systemPrompt: string,
   userPrompt: string,
 ) => Promise<string>;
-
-function captureX402Proposal(
-  toolId: string,
-  toolResult: AgentToolResult,
-  current: X402PaymentProposal | undefined,
-): X402PaymentProposal | undefined {
-  if (
-    toolId !== "x402_prepare_payment" ||
-    !toolResult.success
-  ) {
-    return current;
-  }
-
-  const data = toolResult.data as
-    | {
-        proposal?: X402PaymentProposal;
-      }
-    | undefined;
-
-  return data?.proposal ?? current;
-}
-
-function captureTradeProposal(
-  toolId: string,
-  toolResult: AgentToolResult,
-  current: TradeProposal | undefined,
-): TradeProposal | undefined {
-  if (
-    (toolId !== "trade_prepare_swap" && toolId !== "tokenized_stock_prepare_order") ||
-    !toolResult.success
-  ) {
-    return current;
-  }
-  const data = toolResult.data as { proposal?: TradeProposal } | undefined;
-  return data?.proposal ?? current;
-}
-
-function captureTokenizedStockReport(
-  toolId: string,
-  toolResult: AgentToolResult,
-  current: TokenizedStockReport | undefined,
-): TokenizedStockReport | undefined {
-  if (toolId !== "tokenized_stock_research" || !toolResult.success) {
-    return current;
-  }
-  const data = toolResult.data as { report?: TokenizedStockReport } | undefined;
-  return data?.report ?? current;
-}
-
-function captureTransferProposal(
-  toolId: string,
-  toolResult: AgentToolResult,
-  current: TransferProposal | undefined,
-): TransferProposal | undefined {
-  if (toolId !== "transfer_prepare_send" || !toolResult.success) {
-    return current;
-  }
-  const data = toolResult.data as { proposal?: TransferProposal } | undefined;
-  return data?.proposal ?? current;
-}
 
 const FORCED_B20_PREPARE_REPLY =
   "A tokenized-stock swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.";
@@ -756,134 +120,6 @@ async function maybePrepareTokenizedStockOrder(
 }
 
 /**
- * Deterministic, grounded reply for a failed transfer_prepare_send call.
- *
- * transfer_prepare_send failures already carry a specific, user-facing
- * message from lib/trade/transfer-request.ts / transfer-basename.ts /
- * transfer-proposal.ts / transfer-tool-definitions.ts (invalid
- * recipient, unresolved Basename, resolver failure, provider error,
- * etc). The model must never be given a free turn to paraphrase or
- * replace that message with generic assistant/help text — this is
- * returned directly instead of being folded back into the transcript.
- */
-function formatTransferPrepareFailureReply(
-  toolResult: AgentToolResult,
-): string {
-  const message = toolResult.error?.message?.trim();
-  return message
-    ? `${message}${/nothing (was|will be) sent/i.test(message) ? "" : " Nothing was sent."}`
-    : "Could not prepare that Base transfer. Nothing was sent. Please try again.";
-}
-
-/**
- * Deterministic, grounded reply when transfer_prepare_send succeeds but
- * the live on-chain balance check came back short. This is not a tool
- * failure (buildTransferProposal returns ok:true with
- * sufficientBalance:false so the UI can still show why nothing is
- * signable — see transfer-proposal.ts's header comment), but the chat
- * reply must be just as deterministic as an outright failure: never
- * generic "ready to review" text.
- */
-function formatInsufficientBalanceReply(
-  proposal: TransferProposal,
-): string {
-  const available = formatAtomicAmount(
-    proposal.senderBalance,
-    proposal.asset.decimals,
-  );
-  if (proposal.kind === "native-transfer") {
-    return `Insufficient ETH balance. You have ${available} ETH, which isn't enough to cover ${proposal.displayAmount} plus network fees. Nothing was sent.`;
-  }
-  return `Insufficient ${proposal.asset.symbol} balance. You have ${available} ${proposal.asset.symbol}, but you're trying to send ${proposal.displayAmount}. Nothing was sent.`;
-}
-
-function buildLoopResponse(
-  request: AIProviderRequest,
-  intent: AgentIntent,
-  reply: string,
-  x402Proposal: X402PaymentProposal | undefined,
-  tradeProposal?: TradeProposal,
-  tokenizedStockReport?: TokenizedStockReport,
-  transferProposal?: TransferProposal,
-): AIProviderResponse {
-  return {
-    intent,
-    reply,
-    actions: getAgentActions(
-      intent,
-      request.agentContext,
-    ),
-    highlights: getAgentHighlights(
-      intent,
-      request.agentContext,
-    ),
-    followUps: getFollowUpPrompts(intent),
-    ...(x402Proposal ? { x402Proposal } : {}),
-    ...(tradeProposal ? { tradeProposal } : {}),
-    ...(tokenizedStockReport ? { tokenizedStockReport } : {}),
-    ...(transferProposal ? { transferProposal } : {}),
-  };
-}
-
-/**
- * Last-resort reply when the model keeps requesting tools on its final
- * allowed turn. Grounded only in the structured tool result — never
- * invents payment amount / asset / payTo.
- */
-export function synthesizeFinalReplyFromToolResult(
-  toolId: string,
-  toolResult: AgentToolResult,
-  capturedX402Proposal:
-    | X402PaymentProposal
-    | undefined,
-  capturedTradeProposal?: TradeProposal,
-  capturedTransferProposal?: TransferProposal,
-): string {
-  if (capturedTransferProposal) {
-    return "A Base transfer proposal is ready for you to review in the app. I will not sign or send anything until you explicitly confirm.";
-  }
-
-  if (capturedTradeProposal) {
-    return capturedTradeProposal.executionAvailable
-      ? "A Base swap proposal is ready for you to review in the app. I will not sign or submit anything until you explicitly confirm."
-      : "I looked up that pair on Base. No executable route is available right now — the research is on screen. I will not sign anything.";
-  }
-
-  if (capturedX402Proposal) {
-    return "A payment proposal is ready for you to review in the app. I will not sign or submit anything until you explicitly confirm.";
-  }
-
-  if (toolId === "x402_discover_resource") {
-    if (toolResult.success) {
-      const paymentRequired =
-        (
-          toolResult.data as
-            | { paymentRequired?: unknown }
-            | undefined
-        )?.paymentRequired === true;
-
-      return paymentRequired
-        ? "This resource requires an x402 payment. The accepted options come from the resource server. Say if you want me to prepare a payment proposal — I will not sign or submit it."
-        : "This resource did not request an x402 payment.";
-    }
-
-    return (
-      toolResult.error?.message?.trim() ||
-      "I could not determine whether that resource requires an x402 payment. Please retry."
-    );
-  }
-
-  if (toolResult.success) {
-    return "I finished that lookup. Ask if you want me to go further — I will not sign or submit any transaction.";
-  }
-
-  return (
-    toolResult.error?.message?.trim() ||
-    "I could not complete that lookup. Please retry or rephrase."
-  );
-}
-
-/**
  * Runs one provider turn with bounded client-side tool calling.
  *
  * P3 x402 behavior:
@@ -901,21 +137,6 @@ export function synthesizeFinalReplyFromToolResult(
  * and returns a grounded final answer. It does not throw into
  * FallbackAIProvider after a valid tool result.
  */
-function buildCompactToolCatalogPromptBlock(
-  tools: readonly AnyAgentTool[],
-): string {
-  if (tools.length === 0) {
-    return "";
-  }
-
-  return [
-    "Native function tools are available. Use them when they are the correct way to answer the user's request.",
-    "Available tool IDs:",
-    ...tools.map((tool) => `- "${tool.id}"`),
-    "Use the native function/tool interface and follow the declared argument schema exactly.",
-  ].join("\n");
-}
-
 export async function runToolCallingLoop(
   request: AIProviderRequest,
   baseSystemPrompt: string,
@@ -1169,4 +390,3 @@ export async function runToolCallingLoop(
     "Tool-calling loop ended without a final answer.",
   );
 }
-
