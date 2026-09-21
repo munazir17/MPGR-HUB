@@ -111,6 +111,15 @@ function authorizedRequest(url = "http://localhost/api/games/mpgr-run/settlement
 describe("GET /api/games/mpgr-run/settlement — attestation gate (Task 7)", () => {
   const prevCron = process.env.CRON_SECRET;
   beforeEach(() => {
+    // Deterministic clock (test-only). The route derives its settlement week
+    // key from "now" via getPreviousWeekKey(new Date()), so the outbox
+    // assertion below pins the clock to a fixed instant inside ISO week
+    // 2026-W38 — whose previous week is always 2026-W37 — instead of
+    // depending on the real calendar day the suite happens to run on.
+    // vi.setSystemTime() only mocks Date when fake timers are not enabled,
+    // so real timers (and everything async) keep working; vi.useRealTimers()
+    // in afterEach restores the real clock.
+    vi.setSystemTime(new Date("2026-09-16T12:00:00.000Z"));
     process.env.CRON_SECRET = "test-cron-secret";
     vi.clearAllMocks();
     getWeeklySettlement.mockResolvedValue(null);
@@ -120,6 +129,9 @@ describe("GET /api/games/mpgr-run/settlement — attestation gate (Task 7)", () 
   });
 
   afterEach(() => {
+    // Undo the deterministic clock set in beforeEach so no other file/test
+    // inherits a mocked Date.
+    vi.useRealTimers();
     if (prevCron === undefined) delete process.env.CRON_SECRET;
     else process.env.CRON_SECRET = prevCron;
   });
