@@ -146,14 +146,16 @@ export function AgentExperience({
                 </div>
               )}
 
-              {/* Empty-state sizing contract: NO artificial min-height —
-                  not vh, not px. The empty state is pure content + padding,
-                  so the compact message sits directly above the chips +
-                  composer strip and the intro/cards/footer follow naturally.
-                  With messages, the thread above is content-driven too
+              {/* Empty-state sizing contract (DOM chain audited): NO
+                  min-height/height/flex-1/grow anywhere between <body> and
+                  the composer — the whole chain is natural block/flex-auto
+                  flow. The empty state is a plain text block with small
+                  padding (py-4) and NO items/justify-center, so it occupies
+                  only its text height and the chips + composer follow
+                  immediately. Active threads stay content-driven
                   (AgentChatWindow keeps only the max-h caps + scrolling). */}
               {!isConnected ? (
-                <div className="flex flex-col items-center justify-center px-4 py-8 text-center">
+                <div className="px-4 py-4 text-center sm:px-6">
                   <p className="text-sm font-semibold text-white">
                     Connect a wallet to chat with MPGR Agent
                   </p>
@@ -164,7 +166,7 @@ export function AgentExperience({
                   </p>
                 </div>
               ) : !hasLoaded ? (
-                <div className="flex items-center justify-center px-4 py-8">
+                <div className="px-4 py-4 text-center sm:px-6">
                   <p className="text-sm text-muted">Loading conversation...</p>
                 </div>
               ) : hasMessages ? (
@@ -181,8 +183,8 @@ export function AgentExperience({
                   onReviewTransferProposal={transferQuote.openProposal}
                 />
               ) : (
-                <div className="flex items-center justify-center px-4 py-8">
-                  <p className="text-center text-sm text-muted">{emptyStateText}</p>
+                <div className="px-4 py-4 text-center sm:px-6">
+                  <p className="text-sm text-muted">{emptyStateText}</p>
                 </div>
               )}
 
