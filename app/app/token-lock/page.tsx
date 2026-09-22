@@ -126,9 +126,10 @@ export default function TokenLockPage() {
               </div>
             </div>
 
-            {/* Create Lock + Next Unlock countdown */}
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              <div className="lg:col-span-2">
+            {/* Create Lock + Next Unlock countdown — same 5/7 desktop
+                split as Staking (form right, summary left). */}
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 lg:items-start">
+              <div className="lg:order-2 lg:col-span-7">
                 <SectionHeader title="Create Lock" subtitle="Choose an amount and a term" />
                 <CreateLockCard
                   availableBalance={availableBalance}
@@ -143,7 +144,7 @@ export default function TokenLockPage() {
                   loading={loading}
                 />
               </div>
-              <div>
+              <div className="lg:order-1 lg:col-span-5">
                 <SectionHeader title="Next Unlock" subtitle="Countdown to your soonest lock maturity" />
                 {upcomingUnlockAt ? (
                   <CountdownCard target={new Date(upcomingUnlockAt)} label="Time until unlock" />
