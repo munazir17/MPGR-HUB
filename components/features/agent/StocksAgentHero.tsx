@@ -27,7 +27,7 @@ export function StocksAgentHero({ statuses }: StocksAgentHeroProps) {
   return (
     <div className="px-1 pb-1 pt-3 md:pt-4" data-testid="stocks-agent-hero">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <h1 className="text-xl font-semibold tracking-tight text-white md:text-2xl">
+        <h1 className="text-2xl font-semibold tracking-tight text-white md:text-3xl">
           {MPGR_AGENT_TITLE}
         </h1>
         <div className="flex flex-wrap items-center gap-1.5">

@@ -1,18 +1,34 @@
 "use client";
 
+// components/features/agent/AgentExperience.tsx
+//
+// The ONE canonical MPGR AGENT chat. This is the only chat
+// implementation in the app — there is no second/legacy conversation
+// component rendering alongside it.
+//
+// Structure (always exactly one of each):
+//
+//   hero (MPGR AGENT heading + status + disclaimer)
+//   ONE chat surface card:
+//     - "Conversation" header + Clear (when a conversation exists)
+//     - the message thread (content-driven height, capped + scrolling)
+//     - the composer strip: suggested prompt chips + "Ask anything..."
+//       input — inside the same card, so chips, messages and composer
+//       read as one interface
+//
+// The legacy disconnected-state UI (capabilities card with its own
+// prompt-chip rows, quick-action grid, market ticker) was removed —
+// the disconnected state is the same chat surface with a compact
+// connect-wallet empty state and a locked composer.
+
 import { AnimatePresence, motion } from "framer-motion";
 import { RotateCcw } from "lucide-react";
-import { AgentHero } from "@/components/features/agent/AgentHero";
-import { AgentCapabilities } from "@/components/features/agent/AgentCapabilities";
-import { MpgrMarketTicker } from "@/components/features/market/MpgrMarketTicker";
 import { AgentChatWindow } from "@/components/features/agent/AgentChatWindow";
-import { AgentEmptyState } from "@/components/features/agent/AgentEmptyState";
 import { AgentInput } from "@/components/features/agent/AgentInput";
 import {
   AgentPromptSuggestions,
   type AgentPromptSuggestionItem,
 } from "@/components/features/agent/AgentPromptSuggestions";
-import { AgentQuickActions } from "@/components/features/agent/AgentQuickActions";
 import { AgentErrorBanner } from "@/components/features/agent/AgentErrorBanner";
 import { AgentErrorBoundary } from "@/components/features/agent/AgentErrorBoundary";
 import { AgentX402PaymentModal } from "@/components/features/agent/AgentX402PaymentModal";
@@ -26,23 +42,16 @@ import { useTransferQuote } from "@/hooks/useTransferQuote";
 import type { AgentStatusId } from "@/lib/agent-config";
 
 export interface AgentExperienceProps {
-  /** Replaces the default MPGR hero (used by Home's MPGR AGENT stocks terminal). */
-  heroSlot?: (statuses: AgentStatusId[]) => ReactNode;
+  /** The MPGR AGENT hero (heading/status/disclaimer). */
+  heroSlot: (statuses: AgentStatusId[]) => ReactNode;
   /**
-   * Suggestion chips. This is the ONE canonical chip set: it renders
-   * inside the composer card (above the "Ask anything..." input), in
-   * both the empty and active conversation states, so the chips always
-   * read as part of the chat instead of a separate feed. Empty array
-   * hides the chips entirely.
+   * The ONE canonical suggested-prompt set, rendered inside the
+   * composer strip. Empty array hides the chips.
    */
-  suggestions?: readonly AgentPromptSuggestionItem[];
-  /** Replaces the chip grid in the no-messages state. */
-  emptyStateText?: string;
-  /** Hide the MPGR ticker in the wallet-disconnected state. */
-  hideMarketTicker?: boolean;
-  /** Hide the Research/Trade/Portfolio/Rewards quick-action grid. */
-  hideQuickActions?: boolean;
-  /** Called with sendMessage once the chat controller is mounted (pages wire external buttons — e.g. the tape's "Prepare swap" — through it). */
+  suggestions: readonly AgentPromptSuggestionItem[];
+  /** Copy shown in the chat body before the first message. */
+  emptyStateText: string;
+  /** Called with sendMessage once the chat controller is mounted (Home wires the tape's "Prepare swap" through it). */
   onReady?: (api: { sendMessage: (prompt: string) => void }) => void;
 }
 
@@ -50,10 +59,8 @@ export function AgentExperience({
   heroSlot,
   suggestions,
   emptyStateText,
-  hideMarketTicker,
-  hideQuickActions,
   onReady,
-}: AgentExperienceProps = {}) {
+}: AgentExperienceProps) {
   const {
     messages,
     thinking,
@@ -82,29 +89,23 @@ export function AgentExperience({
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking"] : ["online"];
   const hasMessages = messages.length > 0;
 
-  // ONE canonical chip set, rendered inside the composer card so the
-  // chips, the messages, and the "Ask anything..." input all read as a
-  // single chat interface:
-  //   - explicit `suggestions` (Home's stocks chips): always visible;
-  //   - default (no prop): the default MPGR suggestions appear only
-  //     once a conversation exists, matching the old below-the-thread
-  //     row — the no-messages state keeps its suggestion grid instead.
-  const showComposerChips =
-    suggestions !== undefined ? suggestions.length > 0 : hasMessages;
-  const composerChips = showComposerChips ? (
-    <AgentPromptSuggestions
-      variant="row"
-      items={suggestions}
-      tone="inset"
-      onSelect={sendMessage}
-      disabled={thinking}
-      className="flex-wrap overflow-visible pb-0"
-    />
-  ) : undefined;
+  // ONE chip set, inside the composer strip. Hidden while the wallet is
+  // disconnected (sendMessage is a no-op without an address) and while
+  // the conversation is still loading.
+  const composerChips =
+    isConnected && hasLoaded && suggestions.length > 0 ? (
+      <AgentPromptSuggestions
+        variant="row"
+        items={suggestions}
+        onSelect={sendMessage}
+        disabled={thinking}
+        className="flex-wrap overflow-visible pb-0"
+      />
+    ) : null;
 
-  // Pages wire external buttons — the tape's "Prepare swap" action —
-  // into the chat through this callback. The ref keeps re-renders from
-  // re-firing it when onReady isn't memoized.
+  // Home wires the tape's "Prepare swap" action into the chat through
+  // this callback. The ref keeps re-renders from re-firing it when
+  // onReady isn't memoized.
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
   useEffect(() => {
@@ -113,115 +114,98 @@ export function AgentExperience({
 
   return (
     <>
-      <main className="mx-auto flex w-full flex-col px-3 pb-2 pt-1 md:max-w-3xl md:px-4 md:py-8 lg:max-w-5xl">
+      <main className="mx-auto w-full flex-col px-3 pb-2 pt-1 md:max-w-3xl md:px-4 md:py-8 lg:max-w-6xl">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
           className="flex flex-col"
         >
-          <div className="shrink-0">
-            {heroSlot ? (
-              heroSlot(heroStatuses)
-            ) : (
-              <AgentHero statuses={heroStatuses} compact={hasMessages} />
-            )}
-          </div>
+          <div className="shrink-0">{heroSlot(heroStatuses)}</div>
 
-          {!isConnected ? (
-            <div className="flex flex-col">
-              {hideMarketTicker ? null : (
-                <div className="mt-3">
-                  <MpgrMarketTicker compact />
+          <AgentErrorBoundary>
+            {/* ONE chat surface: header + thread + composer in a single
+                card, so the conversation, chips and "Ask anything..."
+                input are visually one interface. */}
+            <div
+              className="overflow-hidden rounded-2xl border border-white/[0.07] bg-surface"
+              data-testid="agent-chat-surface"
+            >
+              {hasMessages && (
+                <div className="flex shrink-0 items-center justify-between border-b border-white/[0.06] px-4 py-2.5">
+                  <p className="text-sm font-semibold text-white">Conversation</p>
+                  <button
+                    type="button"
+                    onClick={clearChat}
+                    disabled={thinking}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-surface px-2.5 py-1.5 text-[11px] font-medium text-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    Clear
+                  </button>
                 </div>
               )}
-              <AgentCapabilities
-                connected={false}
-                onSelectPrompt={sendMessage}
-                onNeedWallet={() => {
-                  window.scrollTo({ top: 0, behavior: "smooth" });
-                }}
-              />
-              <p className="mt-3 text-center text-xs text-muted">
-                Connect a wallet in the header to chat. Research is explained above;
-                onchain actions still require your signature.
-              </p>
-            </div>
-          ) : !hasLoaded ? (
-            <div className="flex items-center justify-center p-10">
-              <p className="text-sm text-muted">Loading conversation...</p>
-            </div>
-          ) : (
-            <AgentErrorBoundary>
-              <div className="flex flex-col">
-                {hasMessages && (
-                  <div className="flex shrink-0 items-center justify-between px-1 py-2">
-                    <p className="text-sm font-semibold text-white">Conversation</p>
-                    <button
-                      type="button"
-                      onClick={clearChat}
-                      disabled={thinking}
-                      className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-surface px-2.5 py-1.5 text-[11px] font-medium text-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <RotateCcw className="h-3 w-3" aria-hidden="true" />
-                      Clear
-                    </button>
-                  </div>
-                )}
 
-                {hasMessages ? (
-                  <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-surface">
-                    <AgentChatWindow
-                      messages={messages}
-                      thinking={thinking}
-                      onSelectPrompt={sendMessage}
-                      onFeedback={sendFeedback}
-                      onRegenerate={regenerateLastMessage}
-                      canRegenerate={canRegenerate}
-                      streamingMessageId={streamingMessageId}
-                      onReviewX402Proposal={x402Payment.openProposal}
-                      onReviewTradeProposal={tradeQuote.openProposal}
-                      onReviewTransferProposal={transferQuote.openProposal}
-                    />
-                  </div>
-                ) : emptyStateText ? (
-                  <div className="flex items-center justify-center px-3 py-12">
-                    <p className="text-center text-sm text-muted">{emptyStateText}</p>
-                  </div>
-                ) : (
-                  <AgentEmptyState onSelectPrompt={sendMessage} />
-                )}
-
-                <AnimatePresence>
-                  {error && (
-                    <AgentErrorBanner
-                      message={error}
-                      lastUserMessage={[...messages].reverse().find((item) => item.role === "user")?.content}
-                      onRetry={retryLastMessage}
-                      onDismiss={dismissError}
-                    />
-                  )}
-                </AnimatePresence>
-
-                <div className="shrink-0 pt-2">
-                  <AgentInput
-                    onSend={sendMessage}
-                    disabled={thinking}
-                    onStop={stopGeneration}
-                    commandPalette={commandPalette}
-                    onSelectCommand={selectPaletteCommand}
-                    suggestionsSlot={composerChips}
-                  />
+              {!isConnected ? (
+                <div className="flex flex-col items-center justify-center px-4 py-12 text-center">
+                  <p className="text-sm font-semibold text-white">
+                    Connect a wallet to chat with MPGR Agent
+                  </p>
+                  <p className="mt-1.5 max-w-md text-xs leading-relaxed text-muted">
+                    The agent researches Coinbase wrapped assets and tokenized
+                    stocks, and prepares on-chain actions for review — nothing
+                    is signed without your confirmation.
+                  </p>
                 </div>
+              ) : !hasLoaded ? (
+                <div className="flex items-center justify-center px-4 py-12">
+                  <p className="text-sm text-muted">Loading conversation...</p>
+                </div>
+              ) : hasMessages ? (
+                <AgentChatWindow
+                  messages={messages}
+                  thinking={thinking}
+                  onSelectPrompt={sendMessage}
+                  onFeedback={sendFeedback}
+                  onRegenerate={regenerateLastMessage}
+                  canRegenerate={canRegenerate}
+                  streamingMessageId={streamingMessageId}
+                  onReviewX402Proposal={x402Payment.openProposal}
+                  onReviewTradeProposal={tradeQuote.openProposal}
+                  onReviewTransferProposal={transferQuote.openProposal}
+                />
+              ) : (
+                <div className="flex items-center justify-center px-4 py-12">
+                  <p className="text-center text-sm text-muted">{emptyStateText}</p>
+                </div>
+              )}
 
-                {!hasMessages && !hideQuickActions && (
-                  <div className="shrink-0 pt-3">
-                    <AgentQuickActions onSelectPrompt={sendMessage} disabled={thinking} />
-                  </div>
+              <AnimatePresence>
+                {error && (
+                  <AgentErrorBanner
+                    message={error}
+                    lastUserMessage={[...messages].reverse().find((item) => item.role === "user")?.content}
+                    onRetry={retryLastMessage}
+                    onDismiss={dismissError}
+                  />
                 )}
+              </AnimatePresence>
+
+              <div className="border-t border-white/[0.06] bg-background/40 p-2 sm:p-2.5">
+                <AgentInput
+                  onSend={sendMessage}
+                  disabled={thinking}
+                  locked={!isConnected || !hasLoaded}
+                  placeholder={isConnected ? "Ask anything..." : "Connect a wallet to chat..."}
+                  onStop={stopGeneration}
+                  commandPalette={commandPalette}
+                  onSelectCommand={selectPaletteCommand}
+                  suggestionsSlot={composerChips}
+                  embedded
+                />
               </div>
-            </AgentErrorBoundary>
-          )}
+            </div>
+          </AgentErrorBoundary>
 
           <p className="shrink-0 pt-2 text-center text-[11px] text-muted">
             Try <span className="text-primary">/help</span> for commands.

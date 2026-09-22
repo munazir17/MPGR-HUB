@@ -122,36 +122,69 @@ const OBSTACLE_COLOR: Record<ObstacleEntity["type"], { fill: string; dark: strin
  * in RunGame.tsx, since they touch canvasRef/ctxRef/sizeRef) are stripped
  * away: a 2D context, the current World snapshot, the viewport size, and
  * the sprite lookup. Nothing else.
- */
 /** Natural aspect of the city parallax artwork (1536x1024 source files). */
 const RUN_CITY_ART_ASPECT = 1536 / 1024;
 
 /**
- * Vertical gameplay scale for the responsive renderer.
+ * Uniform gameplay scale for the responsive renderer.
  *
  * The simulation is untouched: the world is 960 units wide, entities
  * spawn at x=960, and the authoritative replay verifies every collision
- * in those fixed units. Rendering, however, must scale with the real
- * viewport so a desktop canvas gets a genuinely LARGER game instead of
- * the same tiny phone sprites swimming in extra space:
+ * in those fixed units. Rendering uses ONE uniform scale so the player,
+ * obstacles, collectibles and hitboxes all grow together with the
+ * viewport — no anisotropic stretch, no thin sprites on phones:
  *
- *   - horizontal: sx = viewportWidth / 960 always shows the FULL
- *     simulation width (cropping the field would cut reaction time —
- *     a gameplay change, not a layout one);
- *   - vertical: sy scales the fixed-pixel gameplay units (player size,
- *     lane gap, obstacle heights, jump arcs…) up with the canvas width,
- *     floored at 1 so phones keep their current readable sizes and
- *     capped so ultrawide monitors don't get absurd.
- *
- * On desktop/tablet widths sx ≈ sy, so characters, obstacles and hitboxes
- * stay proportional. Lanes remain anchored at LANE_CENTER_Y of the
- * canvas, so tall screens show more sky/street rather than a squashed
- * band.
+ *   - desktop/tablet: u = viewportWidth / 960 shows the FULL simulation
+ *     width (cropping the field would cut reaction time — a gameplay
+ *     change, not a layout one), scaled up as big as the screen allows;
+ *   - phones (below RUN_MIN_VIEW_SCALE * 960 css px): the scale is
+ *     floored so gameplay objects stay clearly visible; the field is
+ *     correspondingly cropped behind the spawn edge via
+ *     runCameraOffsetX();
+ *   - ultrawide: capped so the game never gets absurd.
  */
-export function runVerticalScale(viewportWidth: number): number {
-  return clamp(viewportWidth / MPGR_RUN_SIMULATION_WIDTH, 1, 2.25);
+export const RUN_MIN_VIEW_SCALE = 0.75;
+export const RUN_MAX_VIEW_SCALE = 2.4;
+
+export function runViewScale(viewportWidth: number): number {
+  return clamp(
+    viewportWidth / MPGR_RUN_SIMULATION_WIDTH,
+    RUN_MIN_VIEW_SCALE,
+    RUN_MAX_VIEW_SCALE,
+  );
 }
 
+/**
+ * Left edge of the visible camera window, in simulation x units.
+ *
+ *   - full field visible (u = w/960, uncapped): 0 — identical framing
+ *     to the classic renderer;
+ *   - zoomed past the whole field (u capped on ultrawide): the window
+ *     is right-anchored at the spawn edge (960) so entities never pop
+ *     in mid-screen, and the extra width shows more road behind the
+ *     player;
+ *   - cropped (narrow screens): keep a short run-up behind the player
+ *     and crop ahead, never past the spawn edge.
+ */
+export function runCameraOffsetX(viewportWidth: number): number {
+  const visible = viewportWidth / runViewScale(viewportWidth);
+  if (visible >= MPGR_RUN_SIMULATION_WIDTH) {
+    return MPGR_RUN_SIMULATION_WIDTH - visible; // <= 0, right-anchored
+  }
+  const playerX = MPGR_RUN_SIMULATION_WIDTH * PLAYER_X;
+  const runUp = 110; // sim units of road kept visible behind the player
+  return Math.max(0, Math.min(playerX - runUp, MPGR_RUN_SIMULATION_WIDTH - visible));
+}
+
+/**
+ * Renders one frame of MPGR Run onto `ctx`.
+ *
+ * Signature mirrors exactly what the original inline `draw` useCallback
+ * closed over once its own canvas/context/size guard clauses (which stay
+ * in RunGame.tsx, since they touch canvasRef/ctxRef/sizeRef) are stripped
+ * away: a 2D context, the current World snapshot, the viewport size, and
+ * the sprite lookup. Nothing else.
+ */
 export function drawRunFrame(
   ctx: CanvasRenderingContext2D,
   world: World,
@@ -163,20 +196,21 @@ export function drawRunFrame(
     const p = world.player;
     const playerScreenX = width * PLAYER_X;
 
-    const sx = viewportWidth / width;
-    const sy = runVerticalScale(viewportWidth);
-    // Design-space height: the height the simulation's visual spawn
-    // helpers should see so their y coordinates match this render.
-    // laneY(lane) below is exactly laneBaselineScreenY(designHeight) * sy.
-    const designHeight = height / sy;
-    const laneY = (lane: number) => laneBaselineScreenY(designHeight, lane) * sy;
+    // ONE uniform gameplay scale + camera window (see runViewScale).
+    const u = runViewScale(viewportWidth);
+    const camX = runCameraOffsetX(viewportWidth);
+    const visible = viewportWidth / u; // sim units across the screen
+    // Design-space height: the vertical unit space the simulation's
+    // visual helpers (lane anchors, burst spawn y) are computed in.
+    const designHeight = height / u;
+    const laneY = (lane: number) => laneBaselineScreenY(designHeight, lane);
 
     // --- Backdrop (screen space) ---------------------------------------
     // Sky + parallax are drawn in raw screen pixels so the city artwork
     // can keep its natural 3:2 aspect (height-fit, tiled horizontally)
-    // instead of being stretched to the canvas shape — that stretch was
-    // what made buildings look compressed on phones and bloated on
-    // wide desktops.
+    // instead of being stretched to the canvas shape. traveledPx is
+    // simulation px — multiply by u for the on-screen scroll speed, so
+    // the backdrop keeps pace with the entities.
     ctx.save();
     if (world.screenShake > 0.5) {
       ctx.translate((Math.random() - 0.5) * world.screenShake, (Math.random() - 0.5) * world.screenShake);
@@ -191,9 +225,7 @@ export function drawRunFrame(
 
     // Real "City Run" artwork, three depth layers scrolling at different
     // rates tied to actual distance traveled (so it pauses correctly and
-    // never drifts out of sync with the game clock). traveledPx is
-    // simulation px — multiply by sx for the on-screen scroll speed, so
-    // the backdrop keeps pace with the entities.
+    // never drifts out of sync with the game clock).
     const cityBg = getSprite(CITY_ENVIRONMENT.background);
     const cityMid = getSprite(CITY_ENVIRONMENT.midground);
     const cityFg = getSprite(CITY_ENVIRONMENT.foreground);
@@ -201,7 +233,7 @@ export function drawRunFrame(
     const drawParallaxLayer = (img: CanvasImageSource | null, speedFactor: number, alpha: number) => {
       if (!img) return;
       const layerW = height * RUN_CITY_ART_ASPECT;
-      const offset = (world.traveledPx * speedFactor * sx) % layerW;
+      const offset = (world.traveledPx * speedFactor * u) % layerW;
       const copies = Math.ceil(viewportWidth / layerW) + 1;
       ctx.globalAlpha = alpha;
       for (let i = 0; i <= copies; i++) {
@@ -220,20 +252,21 @@ export function drawRunFrame(
     // Procedural skyline glow strips — fallback only until every city
     // layer is load+decode-ready as a set.
     if (!cityReady) {
-      const gap = 140 * sx;
-      const scroll = ((world.elapsedMs / 40) * sx) % gap;
+      const gap = 140 * u;
+      const scroll = ((world.elapsedMs / 40) * u) % gap;
       ctx.globalAlpha = 0.12;
       ctx.fillStyle = "#3B82F6";
       for (let bx = -scroll - gap; bx < viewportWidth + gap; bx += gap) {
-        ctx.fillRect(bx, height * 0.18, 44 * sx, height * 0.32);
+        ctx.fillRect(bx, height * 0.18, 44 * u, height * 0.32);
       }
       ctx.globalAlpha = 1;
     }
     ctx.restore();
 
-    // --- World (simulation x-space, vertical gameplay units × sy) -----
+    // --- World (uniform sim/design space, camera-translated) -----------
     ctx.save();
-    ctx.scale(sx, 1);
+    ctx.scale(u, u);
+    ctx.translate(-camX, 0);
     if (world.screenShake > 0.5) {
       ctx.translate((Math.random() - 0.5) * world.screenShake, (Math.random() - 0.5) * world.screenShake);
     }
@@ -246,15 +279,15 @@ export function drawRunFrame(
       ctx.globalAlpha = isCurrent ? 0.55 : 0.18;
       ctx.lineWidth = isCurrent ? 2 : 1;
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(width, y);
+      ctx.moveTo(camX, y);
+      ctx.lineTo(camX + visible, y);
       ctx.stroke();
       if (isCurrent) {
-        const glow = ctx.createLinearGradient(0, y - 10 * sy, 0, y + 4 * sy);
+        const glow = ctx.createLinearGradient(0, y - 10, 0, y + 4);
         glow.addColorStop(0, "rgba(59,130,246,0.16)");
         glow.addColorStop(1, "rgba(59,130,246,0)");
         ctx.fillStyle = glow;
-        ctx.fillRect(0, y - 10 * sy, width, 14 * sy);
+        ctx.fillRect(camX, y - 10, visible, 14);
       }
     }
     ctx.globalAlpha = 1;
@@ -266,7 +299,7 @@ export function drawRunFrame(
       const flashAlpha = clamp(remaining, 0, 1);
       ctx.globalAlpha = flashAlpha * 0.5;
       ctx.fillStyle = "#FBBF24";
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(camX, 0, visible, designHeight);
       ctx.globalAlpha = 1;
 
       const checkpointImg = getSprite(CHECKPOINT_SPRITE);
@@ -274,10 +307,10 @@ export function drawRunFrame(
         // Ease-out scale-in over the first 260ms, then hold, then fade with the flash alpha.
         const growT = clamp(elapsedSinceStart / 260, 0, 1);
         const easedGrow = 1 - Math.pow(1 - growT, 3);
-        const baseSize = Math.min(width, height) * 0.28;
+        const baseSize = Math.min(visible, designHeight) * 0.28;
         const size = baseSize * (0.7 + easedGrow * 0.3);
-        const cx = width / 2;
-        const cy = height * 0.22;
+        const cx = camX + visible / 2;
+        const cy = designHeight * 0.22;
 
         // Radiating ring pulse behind the badge.
         const ringT = clamp(elapsedSinceStart / 700, 0, 1);
@@ -298,18 +331,18 @@ export function drawRunFrame(
     for (const pu of world.powerups) {
       if (pu.collected) continue;
       const y = laneY(pu.lane);
-      const bob = Math.sin(world.elapsedMs / 260 + pu.id) * 5 * sy;
+      const bob = Math.sin(world.elapsedMs / 260 + pu.id) * 5;
       const cfg = POWERUP_TYPES[pu.type];
       const puImg = getSprite(POWERUP_SPRITES[pu.type]);
-      const puCy = y - 20 * sy + bob;
+      const puCy = y - 20 + bob;
       ctx.shadowColor = cfg.color;
       ctx.shadowBlur = 12;
       if (puImg) {
-        const size = pu.radius * 2.6 * sy;
+        const size = pu.radius * 2.6;
         ctx.drawImage(puImg, pu.x - size / 2, puCy - size / 2, size, size);
       } else {
         ctx.beginPath();
-        ctx.arc(pu.x, puCy, pu.radius * sy, 0, Math.PI * 2);
+        ctx.arc(pu.x, puCy, pu.radius, 0, Math.PI * 2);
         ctx.fillStyle = cfg.color;
         ctx.fill();
         ctx.strokeStyle = "rgba(255,255,255,0.85)";
@@ -323,20 +356,20 @@ export function drawRunFrame(
     for (const c of world.collectibles) {
       if (c.collected) continue;
       const y = laneY(c.lane);
-      const bob = Math.sin(world.elapsedMs / 300 + c.id) * 6 * sy;
+      const bob = Math.sin(world.elapsedMs / 300 + c.id) * 6;
       const attracting = c.magnetizedAtMs !== undefined;
       const shrink = attracting ? clamp(1 - (world.elapsedMs - c.magnetizedAtMs!) / MAGNET_ATTRACT_MS, 0.25, 1) : 1;
       const color = COLLECTIBLE_TYPES[c.type].color;
       const cImg = getSprite(COLLECTIBLE_SPRITES[c.type]);
-      const cCy = y - 14 * sy + bob;
+      const cCy = y - 14 + bob;
       ctx.shadowColor = color;
       ctx.shadowBlur = 8;
       if (cImg) {
-        const size = c.radius * 2.4 * shrink * sy;
+        const size = c.radius * 2.4 * shrink;
         ctx.drawImage(cImg, c.x - size / 2, cCy - size / 2, size, size);
       } else {
         ctx.beginPath();
-        ctx.arc(c.x, cCy, c.radius * shrink * sy, 0, Math.PI * 2);
+        ctx.arc(c.x, cCy, c.radius * shrink, 0, Math.PI * 2);
         ctx.fillStyle = color;
         ctx.fill();
         ctx.strokeStyle = "rgba(255,255,255,0.6)";
@@ -348,7 +381,7 @@ export function drawRunFrame(
         ctx.strokeStyle = "rgba(34,211,238,0.5)";
         ctx.beginPath();
         ctx.moveTo(c.x, cCy);
-        ctx.lineTo(playerScreenX + PLAYER_SIZE / 2, laneY(p.lane) - (p.playerY + PLAYER_SIZE / 2) * sy);
+        ctx.lineTo(playerScreenX + PLAYER_SIZE / 2, laneY(p.lane) - p.playerY - PLAYER_SIZE / 2);
         ctx.stroke();
       }
     }
@@ -356,8 +389,8 @@ export function drawRunFrame(
     // Obstacles.
     for (const o of world.obstacles) {
       const y = laneY(o.lane);
-      const top = y - (o.groundHeight + o.height) * sy;
-      const bottom = y - o.groundHeight * sy;
+      const top = y - o.groundHeight - o.height;
+      const bottom = y - o.groundHeight;
       const palette = OBSTACLE_COLOR[o.type];
       const oImg = getSprite(OBSTACLE_SPRITES[o.type]);
       ctx.save();
@@ -371,7 +404,7 @@ export function drawRunFrame(
       ctx.globalAlpha = o.hit ? 0.55 : 1;
       if (oImg) {
         const drawW = o.width * 1.5;
-        const drawH = (o.height + o.groundHeight + 8) * sy;
+        const drawH = o.height + o.groundHeight + 8;
         ctx.shadowColor = palette.fill;
         ctx.shadowBlur = o.hit ? 0 : 6;
         if (o.type === "saw") {
@@ -387,7 +420,7 @@ export function drawRunFrame(
         ctx.fillStyle = gradient;
         ctx.shadowColor = palette.fill;
         ctx.shadowBlur = o.hit ? 0 : 6;
-        const r = 4 * sy;
+        const r = 4;
         ctx.beginPath();
         ctx.moveTo(o.x + r, top);
         ctx.lineTo(o.x + o.width - r, top);
@@ -404,13 +437,13 @@ export function drawRunFrame(
       ctx.restore();
     }
 
-    // Particles (y stored in design space by the simulation).
+    // Particles (y in design units, spawned by the simulation).
     for (const part of world.particles) {
       const alpha = clamp(part.life / part.maxLife, 0, 1);
       ctx.globalAlpha = alpha;
       ctx.fillStyle = part.color;
       ctx.beginPath();
-      ctx.arc(part.x, part.y * sy, part.size * sy, 0, Math.PI * 2);
+      ctx.arc(part.x, part.y, part.size, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
@@ -420,16 +453,16 @@ export function drawRunFrame(
       const img = getSprite(burst.sprite);
       if (!img) continue;
       const t = clamp((world.elapsedMs - burst.startMs) / burst.durationMs, 0, 1);
-      const size = burst.maxSize * (0.5 + t * 0.6) * sy;
+      const size = burst.maxSize * (0.5 + t * 0.6);
       ctx.globalAlpha = 1 - t;
-      ctx.drawImage(img, burst.x - size / 2, burst.y * sy - size / 2, size, size);
+      ctx.drawImage(img, burst.x - size / 2, burst.y - size / 2, size, size);
     }
     ctx.globalAlpha = 1;
 
     // Player — drawn from the smoothed lane offset so switching lanes glides
     // instead of snapping (collision above always uses the logical p.lane).
-    const baselineY = height * LANE_CENTER_Y + p.laneOffset * sy;
-    const playerHeight = (p.sliding ? PLAYER_SIZE * SLIDE_HITBOX_SCALE : PLAYER_SIZE) * sy;
+    const baselineY = designHeight * LANE_CENTER_Y + p.laneOffset;
+    const playerHeight = p.sliding ? PLAYER_SIZE * SLIDE_HITBOX_SCALE : PLAYER_SIZE;
     const playerBottom = baselineY - p.playerY;
     const playerTop = playerBottom - playerHeight;
     const invulnerable = world.elapsedMs < p.invulnerableUntilMs;
@@ -437,10 +470,10 @@ export function drawRunFrame(
 
     if (shielded) {
       ctx.beginPath();
-      ctx.arc(playerScreenX + PLAYER_SIZE / 2, (playerTop + playerBottom) / 2, PLAYER_SIZE * 0.9 * sy, 0, Math.PI * 2);
+      ctx.arc(playerScreenX + PLAYER_SIZE / 2, (playerTop + playerBottom) / 2, PLAYER_SIZE * 0.9, 0, Math.PI * 2);
       ctx.strokeStyle = world.activePowerups.invincibility ? "#F472B6" : "#34D399";
       ctx.globalAlpha = 0.6 + Math.sin(world.elapsedMs / 90) * 0.2;
-      ctx.lineWidth = 2.5 * sy;
+      ctx.lineWidth = 2.5;
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
@@ -448,11 +481,11 @@ export function drawRunFrame(
       // Layered flicker flame — richer than a single triangle, still pure procedural VFX.
       for (let layer = 0; layer < 2; layer++) {
         const flicker = Math.random() * 8;
-        const len = (14 + layer * 8 + flicker) * sy;
+        const len = 14 + layer * 8 + flicker;
         ctx.beginPath();
-        ctx.moveTo(playerScreenX + 2, playerBottom - (2 + layer * 3) * sy);
-        ctx.lineTo(playerScreenX - len, playerBottom + (4 + layer * 2) * sy);
-        ctx.lineTo(playerScreenX + 2, playerBottom + (8 + layer * 3) * sy);
+        ctx.moveTo(playerScreenX + 2, playerBottom - 2 - layer * 3);
+        ctx.lineTo(playerScreenX - len, playerBottom + 4 + layer * 2);
+        ctx.lineTo(playerScreenX + 2, playerBottom + 8 + layer * 3);
         ctx.closePath();
         ctx.fillStyle = layer === 0 ? "#FDE68A" : "#FB923C";
         ctx.shadowColor = "#FB923C";
@@ -467,7 +500,7 @@ export function drawRunFrame(
       ctx.globalAlpha = 0.35;
       ctx.fillStyle = COLORS.player;
       for (let i = 1; i <= 3; i++) {
-        ctx.fillRect(playerScreenX - i * 10, playerTop + 4 * sy, 6, playerHeight - 8 * sy);
+        ctx.fillRect(playerScreenX - i * 10, playerTop + 4, 6, playerHeight - 8);
       }
       ctx.globalAlpha = 1;
     }
@@ -479,7 +512,7 @@ export function drawRunFrame(
     // solely to where the sprite is drawn, never to playerTop/playerBottom (which
     // stay authoritative for collision, the shield ring, and every other effect).
     const grounded = p.playerY <= 0 && !p.sliding && !jetpackActiveNow;
-    const runBob = grounded ? Math.abs(Math.sin(world.elapsedMs / 120)) * 2.5 * sy : 0;
+    const runBob = grounded ? Math.abs(Math.sin(world.elapsedMs / 120)) * 2.5 : 0;
 
     let spriteSrc: string = CHARACTER_SPRITES.run;
     // NOTE: mpgr-runner-fly.webp is intentionally excluded from run-assets.ts
@@ -521,7 +554,7 @@ export function drawRunFrame(
       ctx.fillStyle = grad;
       ctx.shadowColor = "rgba(59,130,246,0.55)";
       ctx.shadowBlur = 14;
-      const pr = 7 * sy;
+      const pr = 7;
       ctx.beginPath();
       ctx.moveTo(playerScreenX + pr, playerTop);
       ctx.lineTo(playerScreenX + PLAYER_SIZE - pr, playerTop);
@@ -542,18 +575,20 @@ export function drawRunFrame(
 
     // Cinematic vignette — a constant, subtle cyberpunk framing so the
     // premium mood holds even where no sprite/particle is on screen.
+    // Drawn over the whole camera window (not just the 960-unit field)
+    // so ultrawide zoomed views are covered edge to edge.
     const vignette = ctx.createRadialGradient(
-      width / 2,
-      height / 2,
-      Math.min(width, height) * 0.35,
-      width / 2,
-      height / 2,
-      Math.max(width, height) * 0.7
+      camX + visible / 2,
+      designHeight / 2,
+      Math.min(visible, designHeight) * 0.35,
+      camX + visible / 2,
+      designHeight / 2,
+      Math.max(visible, designHeight) * 0.7
     );
     vignette.addColorStop(0, "rgba(0,0,0,0)");
     vignette.addColorStop(1, "rgba(0,0,0,0.38)");
     ctx.fillStyle = vignette;
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(camX, 0, visible, designHeight);
 
     // Hit-damage flash — a brief red pulse over the whole frame, on top of
     // everything else, so a hit always reads clearly even mid-chaos.
@@ -561,7 +596,7 @@ export function drawRunFrame(
       const hitT = clamp((world.hitFlashUntilMs - world.elapsedMs) / 220, 0, 1);
       ctx.globalAlpha = hitT * 0.35;
       ctx.fillStyle = "#DC2626";
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(camX, 0, visible, designHeight);
       ctx.globalAlpha = 1;
     }
 
