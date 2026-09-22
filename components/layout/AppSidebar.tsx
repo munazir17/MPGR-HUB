@@ -128,6 +128,11 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
             className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm"
             aria-hidden="true"
           />
+          {/* Content-driven height: anchored to the top-right, the panel
+              is only as tall as its items (+ safe-area padding) and ends
+              shortly after the final entry — never stretched to the full
+              viewport. max-h-dvh + the scrolling nav handle the unlikely
+              case of the menu outgrowing the screen. */}
           <motion.aside
             key="drawer"
             initial={{ x: "100%" }}
@@ -137,10 +142,11 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
             role="dialog"
             aria-modal="true"
             aria-label="MPGR HUB menu"
-            className="fixed inset-y-0 right-0 z-[70] flex w-80 max-w-[86vw] flex-col border-l border-white/[0.08] bg-background shadow-glow-lg"
+            className="fixed right-0 top-0 z-[70] flex max-h-dvh w-80 max-w-[86vw] flex-col overflow-hidden border-b border-l border-white/[0.08] bg-background shadow-glow-lg"
+            style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
             data-testid="app-sidebar"
           >
-            <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] px-4 py-3.5">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.07] px-4 py-3.5">
               <BrandMark />
               <button
                 type="button"
@@ -153,13 +159,13 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
             </div>
 
             {/* Wallet stays reachable from the menu itself. */}
-            <div className="border-b border-white/[0.07] px-4 py-3">
+            <div className="shrink-0 border-b border-white/[0.07] px-4 py-3">
               <ConnectButton showBalance={false} />
             </div>
 
             <nav
               aria-label="MPGR ecosystem"
-              className="flex-1 overflow-y-auto px-3 py-3"
+              className="min-h-0 flex-1 overflow-y-auto px-3 py-3"
             >
               {SIDEBAR_GROUPS.map((group) => (
                 <div key={group.title} className="mb-4 last:mb-0">

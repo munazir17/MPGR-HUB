@@ -146,8 +146,14 @@ export function AgentExperience({
                 </div>
               )}
 
+              {/* Empty-state sizing contract: compact, px-based medium height
+                  (NOT viewport-driven) so the panel never becomes a giant
+                  blank rectangle — the chips/composer strip directly below
+                  stays visually attached, and the intro/cards/footer follow
+                  naturally on the first scroll. With messages, the thread
+                  above is content-driven (see AgentChatWindow's max-h caps). */}
               {!isConnected ? (
-                <div className="flex min-h-[32vh] flex-col items-center justify-center px-4 py-8 text-center sm:min-h-[34vh] lg:min-h-[40vh]">
+                <div className="flex min-h-[220px] flex-col items-center justify-center px-4 py-8 text-center sm:min-h-[260px]">
                   <p className="text-sm font-semibold text-white">
                     Connect a wallet to chat with MPGR Agent
                   </p>
@@ -158,7 +164,7 @@ export function AgentExperience({
                   </p>
                 </div>
               ) : !hasLoaded ? (
-                <div className="flex min-h-[32vh] items-center justify-center px-4 py-8 sm:min-h-[34vh] lg:min-h-[40vh]">
+                <div className="flex min-h-[220px] items-center justify-center px-4 py-8 sm:min-h-[260px]">
                   <p className="text-sm text-muted">Loading conversation...</p>
                 </div>
               ) : hasMessages ? (
@@ -175,7 +181,7 @@ export function AgentExperience({
                   onReviewTransferProposal={transferQuote.openProposal}
                 />
               ) : (
-                <div className="flex min-h-[32vh] items-center justify-center px-4 py-8 sm:min-h-[34vh] lg:min-h-[40vh]">
+                <div className="flex min-h-[220px] items-center justify-center px-4 py-8 sm:min-h-[260px]">
                   <p className="text-center text-sm text-muted">{emptyStateText}</p>
                 </div>
               )}
