@@ -387,7 +387,8 @@ a[role="button"],
   /* The Agent Core floats on a wrapper div with this class — freeze it
      to the static poster pose instead of a frozen mid-frame. */
   .agent-core-float,
-  .agent-core-shadow {
+  .agent-core-shadow,
+  .animate-core-filament {
     animation: none !important;
     transform: none !important;
   }

@@ -161,7 +161,7 @@ export function StakeModal({
                     <label htmlFor="stake-amount" className="text-xs text-muted">
                       Amount
                     </label>
-                    <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-white/10 bg-background/50 px-3 py-2.5">
+                    <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-white/[0.08] bg-elevated px-3 py-2.5">
                       <input
                         id="stake-amount"
                         type="number"

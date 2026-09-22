@@ -94,7 +94,7 @@ export function BurnCard({
           <label htmlFor="burn-amount" className="text-xs text-muted">
             Amount
           </label>
-          <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-white/10 bg-background/50 px-3 py-2.5">
+          <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-white/[0.08] bg-elevated px-3 py-2.5">
             <input
               id="burn-amount"
               type="number"
@@ -126,7 +126,7 @@ export function BurnCard({
           ))}
         </div>
 
-        <div className="relative mt-4 space-y-2 rounded-xl bg-background/50 p-3.5">
+        <div className="relative mt-4 space-y-2 rounded-xl bg-elevated p-3.5">
           <div className="flex items-center justify-between text-xs">
             <span className="text-muted">Estimated Remaining Balance</span>
             <span className="font-semibold text-white">{formatCompactNumber(remainingBalance)} MPGR</span>

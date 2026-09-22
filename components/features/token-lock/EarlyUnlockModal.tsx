@@ -139,7 +139,7 @@ export function EarlyUnlockModal({
                     on-chain by the Token Lock contract.
                   </div>
 
-                  <div className="mt-4 space-y-2 rounded-xl bg-background/50 p-3.5">
+                  <div className="mt-4 space-y-2 rounded-xl bg-elevated p-3.5">
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-muted">Locked Principal</span>
                       <span className="font-semibold text-white">{formatCompactNumber(amountFormatted)} MPGR</span>

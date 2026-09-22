@@ -41,7 +41,7 @@ export function FeaturedGameBanner({
           </p>
 
           <div className="mt-4 flex flex-wrap items-center gap-3">
-            <span className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-semibold text-background">
+            <span className="btn-primary btn-primary-sm text-sm">
               Play Now
               <ArrowRight className="h-4 w-4" aria-hidden="true" />
             </span>

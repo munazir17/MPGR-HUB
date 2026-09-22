@@ -117,7 +117,7 @@ export function ExitModal({
                     transaction.
                   </p>
 
-                  <div className="mt-4 space-y-2 rounded-xl bg-background/50 p-3.5">
+                  <div className="mt-4 space-y-2 rounded-xl bg-elevated p-3.5">
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-muted">Staked principal</span>
                       <span className="font-semibold text-white">
