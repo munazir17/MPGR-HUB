@@ -147,7 +147,7 @@ export function AgentExperience({
               )}
 
               {!isConnected ? (
-                <div className="flex flex-col items-center justify-center px-4 py-12 text-center">
+                <div className="flex min-h-[32vh] flex-col items-center justify-center px-4 py-8 text-center sm:min-h-[34vh] lg:min-h-[40vh]">
                   <p className="text-sm font-semibold text-white">
                     Connect a wallet to chat with MPGR Agent
                   </p>
@@ -158,7 +158,7 @@ export function AgentExperience({
                   </p>
                 </div>
               ) : !hasLoaded ? (
-                <div className="flex items-center justify-center px-4 py-12">
+                <div className="flex min-h-[32vh] items-center justify-center px-4 py-8 sm:min-h-[34vh] lg:min-h-[40vh]">
                   <p className="text-sm text-muted">Loading conversation...</p>
                 </div>
               ) : hasMessages ? (
@@ -175,7 +175,7 @@ export function AgentExperience({
                   onReviewTransferProposal={transferQuote.openProposal}
                 />
               ) : (
-                <div className="flex items-center justify-center px-4 py-12">
+                <div className="flex min-h-[32vh] items-center justify-center px-4 py-8 sm:min-h-[34vh] lg:min-h-[40vh]">
                   <p className="text-center text-sm text-muted">{emptyStateText}</p>
                 </div>
               )}

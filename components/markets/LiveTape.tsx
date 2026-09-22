@@ -32,7 +32,15 @@ type ChipModel =
   | { key: string; symbol: string; usd: number | null; change24h: number | null; stale: boolean }
   | null;
 
+// Display-only: USDC is deliberately hidden from the TOP ticker chips.
+// It stays everywhere else — the tape API, the agent's get_tape tool,
+// pair/quote logic and swaps all still report and use USDC (it is the
+// quote asset for every B20 pool). This filter only changes what the
+// live tape at the top of the screen shows.
+const TICKER_HIDDEN_SYMBOLS = new Set(["USDC"]);
+
 function wrappedToChip(entry: TapeWrappedEntry): ChipModel {
+  if (TICKER_HIDDEN_SYMBOLS.has(entry.symbol)) return null;
   return {
     key: `w-${entry.symbol}`,
     symbol: entry.symbol,

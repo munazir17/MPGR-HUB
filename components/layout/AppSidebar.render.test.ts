@@ -4,14 +4,19 @@ import { renderToString } from "react-dom/server";
 
 // components/layout/AppSidebar.render.test.ts
 //
-// Renders the real AppSidebar (open state) to a string and locks the
-// sidebar's information architecture:
+// Renders the real AppSidebar (open state) to a string and locks its
+// information architecture. The sidebar is deliberately short —
+// exactly these entries:
 //
-//   - it contains the secondary MPGR ecosystem sections,
-//   - every link targets an EXISTING app route (no invented pages),
-//   - it does NOT contain a Stocks entry (the Base Stocks terminal
-//     lives inside the Home MPGR AGENT; there is no Stocks tab),
-//   - the wallet stays reachable from the drawer.
+//   REWARDS:   Reward Hub, Leaderboard
+//   PLAY:      Games, MPGR Run
+//   ECOSYSTEM: Staking, Token Lock, Burn, $MPGR
+//   ACCOUNT:   Profile
+//
+// Everything else (Season, Season Pass, Docs, Whitepaper, Roadmap,
+// About, Support, legal) must NOT appear — those routes still exist
+// and stay reachable from the Home footer, they are just not sidebar
+// entries. The wallet must remain reachable inside the drawer.
 //
 // JSX is expressed with createElement because this repo's vitest config
 // only picks up *.test.ts files.
@@ -29,68 +34,65 @@ vi.mock("next/link", () => ({
 
 const { AppSidebar } = await import("@/components/layout/AppSidebar");
 
-/** Every page route that actually exists in app/ (no invented links). */
-const EXISTING_ROUTES = new Set([
-  "/",
-  "/rewards",
-  "/profile",
-  "/games",
-  "/games/mpgr-run",
-  "/leaderboard",
-  "/staking",
-  "/app/token-lock",
-  "/burn",
-  "/token",
-  "/season",
-  "/season-pass",
-  "/docs",
-  "/whitepaper",
-  "/roadmap",
-  "/about",
-  "/support",
-  "/terms",
-  "/privacy",
-]);
+const EXPECTED_ENTRIES: Record<string, string> = {
+  "Reward Hub": "/rewards",
+  Leaderboard: "/leaderboard",
+  Games: "/games",
+  "MPGR Run": "/games/mpgr-run",
+  Staking: "/staking",
+  "Token Lock": "/app/token-lock",
+  Burn: "/burn",
+  $MPGR: "/token",
+  Profile: "/profile",
+};
+
+const REMOVED_LABELS = [
+  "Season",
+  "Season Pass",
+  "Docs",
+  "Whitepaper",
+  "Roadmap",
+  "About",
+  "Support",
+  "Terms",
+  "Privacy",
+];
 
 describe("AppSidebar (rendered)", () => {
   const html = renderToString(createElement(AppSidebar, { open: true, onClose: () => {} }));
 
-  it("renders the drawer with the expected group titles", () => {
+  it("renders the drawer with exactly the four requested groups", () => {
     expect(html).toContain("MPGR HUB menu");
-    for (const group of ["Rewards", "Play", "Ecosystem", "Learn", "Account"]) {
+    for (const group of ["Rewards", "Play", "Ecosystem", "Account"]) {
       expect(html).toContain(group);
     }
+    // The old "Learn" group is gone.
+    expect(html).not.toContain('aria-label="Learn"');
   });
 
-  it("contains the secondary ecosystem sections", () => {
-    for (const label of [
-      "Reward Hub",
-      "Season",
-      "Season Pass",
-      "Leaderboard",
-      "Games",
-      "MPGR Run",
-      "Staking",
-      "Token Lock",
-      "$MPGR",
-      "Docs",
-      "Whitepaper",
-      "Roadmap",
-      "About",
-      "Profile",
-    ]) {
-      expect(html).toContain(label);
-    }
-    // Rendered HTML escapes the ampersand.
-    expect(html).toContain("Support &amp; FAQ");
-  });
-
-  it("links only to routes that actually exist", () => {
+  it("contains exactly the requested navigation entries", () => {
     const hrefs = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
-    expect(hrefs.length).toBeGreaterThan(10);
-    for (const href of hrefs) {
-      expect(EXISTING_ROUTES.has(href)).toBe(true);
+    // BrandMark's home link + the nine entries (order-insensitive).
+    expect([...hrefs].sort()).toEqual(["/", ...Object.values(EXPECTED_ENTRIES)].sort());
+    for (const [label, href] of Object.entries(EXPECTED_ENTRIES)) {
+      expect(html).toContain(`>${label}<`);
+      expect(html).toContain(`href="${href}"`);
     }
+  });
+
+  it("contains none of the removed secondary entries", () => {
+    for (const label of REMOVED_LABELS) {
+      expect(html).not.toContain(`>${label}<`);
+    }
+    expect(html).not.toContain('href="/season"');
+    expect(html).not.toContain('href="/season-pass"');
+    expect(html).not.toContain('href="/docs"');
+    expect(html).not.toContain('href="/whitepaper"');
+    expect(html).not.toContain('href="/roadmap"');
+    expect(html).not.toContain('href="/about"');
+    expect(html).not.toContain('href="/support"');
+    expect(html).not.toContain('href="/terms"');
+    expect(html).not.toContain('href="/privacy"');
   });
 
   it("has no Stocks entry — the agent on Home is the stocks experience", () => {

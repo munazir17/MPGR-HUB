@@ -20,20 +20,14 @@ import { usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import {
-  BookOpen,
   ChevronRight,
   Coins,
-  FileText,
   Flame,
   Gamepad2,
   Gift,
-  Info,
-  LifeBuoy,
-  Map,
   Medal,
   PiggyBank,
   Play,
-  Trophy,
   User,
   Vault,
   X,
@@ -41,7 +35,6 @@ import {
 } from "lucide-react";
 import { clsx } from "clsx";
 import { BrandMark } from "@/components/brand/BrandMark";
-import { APP_NAME, TAGLINE } from "@/lib/site";
 
 interface SidebarLink {
   href: string;
@@ -54,14 +47,16 @@ interface SidebarGroup {
   links: SidebarLink[];
 }
 
+// The complete sidebar — deliberately short. Secondary destinations
+// that are not listed here (Season, Season Pass, Docs, Whitepaper,
+// Roadmap, About, Support, legal) still exist as routes and remain
+// reachable from the Home footer; they are just not sidebar entries.
 // Existing routes only — do not add entries without a real page.
 const SIDEBAR_GROUPS: SidebarGroup[] = [
   {
     title: "Rewards",
     links: [
       { href: "/rewards", label: "Reward Hub", icon: Gift },
-      { href: "/season", label: "Season", icon: Flame },
-      { href: "/season-pass", label: "Season Pass", icon: Trophy },
       { href: "/leaderboard", label: "Leaderboard", icon: Medal },
     ],
   },
@@ -82,24 +77,9 @@ const SIDEBAR_GROUPS: SidebarGroup[] = [
     ],
   },
   {
-    title: "Learn",
-    links: [
-      { href: "/docs", label: "Docs", icon: BookOpen },
-      { href: "/whitepaper", label: "Whitepaper", icon: FileText },
-      { href: "/roadmap", label: "Roadmap", icon: Map },
-      { href: "/about", label: "About", icon: Info },
-      { href: "/support", label: "Support & FAQ", icon: LifeBuoy },
-    ],
-  },
-  {
     title: "Account",
     links: [{ href: "/profile", label: "Profile", icon: User }],
   },
-];
-
-const LEGAL_LINKS: SidebarLink[] = [
-  { href: "/terms", label: "Terms", icon: FileText },
-  { href: "/privacy", label: "Privacy", icon: FileText },
 ];
 
 interface AppSidebarProps {
@@ -216,23 +196,6 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
                 </div>
               ))}
             </nav>
-
-            <div className="border-t border-white/[0.07] px-4 py-3.5">
-              <div className="flex items-center gap-3">
-                {LEGAL_LINKS.map((link) => (
-                  <Link
-                    key={link.href}
-                    href={link.href}
-                    className="text-xs font-medium text-muted transition-colors hover:text-white"
-                  >
-                    {link.label}
-                  </Link>
-                ))}
-              </div>
-              <p className="mt-2 text-[10px] leading-relaxed text-muted">
-                {APP_NAME} — {TAGLINE}
-              </p>
-            </div>
           </motion.aside>
         </>
       )}
