@@ -1,8 +1,9 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Bot, User } from "lucide-react";
+import { User } from "lucide-react";
 import { clsx } from "clsx";
+import { AgentCore } from "./AgentCore";
 import { AgentHighlightChips } from "./AgentHighlightChips";
 import { AgentActionCard } from "./AgentActionCard";
 import { AgentX402ProposalCard } from "./AgentX402ProposalCard";
@@ -88,7 +89,7 @@ export function AgentChatBubble({
         {isUser ? (
           <User className="h-3.5 w-3.5 text-muted" aria-hidden="true" />
         ) : (
-          <Bot className="h-3.5 w-3.5 text-white" aria-hidden="true" />
+          <AgentCore variant="jewel" state={disabled ? "thinking" : "idle"} />
         )}
       </span>
 
@@ -99,8 +100,8 @@ export function AgentChatBubble({
           className={clsx(
             "min-w-0 break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
             isUser
-              ? "rounded-br-sm bg-primary text-background"
-              : "rounded-bl-sm border border-white/[0.08] bg-surface-2 text-white"
+              ? "rounded-br-md bg-gradient-blue font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_2px_0_#1E63DB]"
+              : "rounded-bl-md border border-white/[0.08] bg-surface-2 text-white"
           )}
         >
           {displayContent}
@@ -139,7 +140,7 @@ export function AgentChatBubble({
         )}
 
         <div className="flex items-center gap-1 px-1">
-          <span className="text-[10px] text-muted">{formatTime(message.timestamp)}</span>
+          <span className="font-mono text-[10px] tabular-nums text-muted">{formatTime(message.timestamp)}</span>
           {!isUser && onFeedback && revealComplete && (
             <AgentMessageToolbar
               content={message.content}

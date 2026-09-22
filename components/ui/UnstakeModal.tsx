@@ -87,7 +87,7 @@ export function UnstakeModal({
             exit={{ y: 40, opacity: 0 }}
             transition={{ type: "spring", stiffness: 260, damping: 26 }}
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-md rounded-t-2xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-2xl"
+            className="relative w-full max-w-[440px] rounded-t-3xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-3xl sm:p-8"
             style={{ paddingBottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}
           >
             <button
@@ -138,7 +138,7 @@ export function UnstakeModal({
                     <label htmlFor="unstake-amount" className="text-xs text-muted">
                       Amount
                     </label>
-                    <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-white/10 bg-background/50 px-3 py-2.5">
+                    <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-white/[0.08] bg-elevated px-3 py-2.5">
                       <input
                         id="unstake-amount"
                         type="number"
@@ -173,7 +173,7 @@ export function UnstakeModal({
                   {isWrongNetwork ? (
                     <button
                       onClick={onSwitchNetwork}
-                      className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold py-2.5 text-sm font-semibold text-background transition-transform active:scale-95"
+                      className="btn-primary mt-5 w-full text-sm"
                     >
                       Switch to Base
                     </button>
@@ -182,7 +182,7 @@ export function UnstakeModal({
                       onClick={() => canSubmit && onUnstake(amountRaw)}
                       disabled={!canSubmit}
                       aria-label="Confirm unstake"
-                      className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold py-2.5 text-sm font-semibold text-background transition-transform active:scale-95 disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
+                      className="btn-primary mt-5 w-full text-sm"
                     >
                       {busy ? (
                         <>

@@ -72,7 +72,7 @@ export function BurnCard({
       <GlassCard className="relative overflow-hidden p-5 sm:p-6">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-gradient-gold opacity-20 blur-3xl"
+          className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-gold/[0.06] blur-3xl"
         />
 
         <div className="relative flex items-center gap-2">
@@ -94,7 +94,7 @@ export function BurnCard({
           <label htmlFor="burn-amount" className="text-xs text-muted">
             Amount
           </label>
-          <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-white/10 bg-background/50 px-3 py-2.5">
+          <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-white/[0.08] bg-elevated px-3 py-2.5">
             <input
               id="burn-amount"
               type="number"
@@ -126,7 +126,7 @@ export function BurnCard({
           ))}
         </div>
 
-        <div className="relative mt-4 space-y-2 rounded-xl bg-background/50 p-3.5">
+        <div className="relative mt-4 space-y-2 rounded-xl bg-elevated p-3.5">
           <div className="flex items-center justify-between text-xs">
             <span className="text-muted">Estimated Remaining Balance</span>
             <span className="font-semibold text-white">{formatCompactNumber(remainingBalance)} MPGR</span>
@@ -165,10 +165,8 @@ export function BurnCard({
         <motion.button
           onClick={handleSubmit}
           disabled={!canSubmit}
-          whileHover={canSubmit ? { scale: 1.02 } : undefined}
-          whileTap={canSubmit ? { scale: 0.97 } : undefined}
           aria-label="Confirm burn"
-          className="relative mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold text-sm font-semibold text-background transition-transform disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
+          className="btn-destructive relative mt-5 w-full py-3 text-sm"
         >
           {submitting ? (
             <>

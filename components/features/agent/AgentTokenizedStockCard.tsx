@@ -13,7 +13,7 @@ export function AgentTokenizedStockCard({ report }: AgentTokenizedStockCardProps
     return (
       <div className="w-full rounded-xl border border-white/10 bg-white/[0.04] p-3 text-left">
         <div className="mb-2 flex items-center gap-2">
-          <Building2 className="h-4 w-4 text-emerald-400" />
+          <Building2 className="h-4 w-4 text-good" />
           <p className="text-xs font-semibold text-white">Coinbase Tokenized Stocks on Base</p>
         </div>
         <p className="mb-2 text-[11px] text-muted">
@@ -34,7 +34,7 @@ export function AgentTokenizedStockCard({ report }: AgentTokenizedStockCardProps
   return (
     <div className="w-full rounded-xl border border-white/10 bg-white/[0.04] p-3 text-left">
       <div className="mb-2 flex items-center gap-2">
-        <Building2 className="h-4 w-4 text-emerald-400" />
+        <Building2 className="h-4 w-4 text-good" />
         <p className="text-xs font-semibold text-white">
           {catalog.symbol} · {catalog.underlyingTicker}
         </p>

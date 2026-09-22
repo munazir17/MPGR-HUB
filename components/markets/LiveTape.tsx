@@ -80,7 +80,7 @@ function TapeChip({ chip, onSelect }: { chip: NonNullable<ChipModel>; onSelect: 
           stale
         </span>
       ) : change ? (
-        <span className={clsx("tabular-nums text-[10px]", up ? "text-emerald-400" : "text-red-400")}>
+        <span className={clsx("tabular-nums text-[10px]", up ? "text-good" : "text-bad")}>
           {change}
         </span>
       ) : null}
@@ -152,7 +152,7 @@ export function LiveTape({ onPrepareSwap, className }: LiveTapeProps) {
     <>
       <div
         className={clsx(
-          "z-40 flex h-11 w-full items-stretch overflow-hidden border-b border-white/[0.06] bg-[#070C16] md:h-12",
+          "z-40 flex h-9 w-full items-stretch overflow-hidden border-b border-white/[0.06] bg-[#070C16] md:h-10",
           className,
         )}
         data-testid="live-tape"
@@ -171,8 +171,8 @@ export function LiveTape({ onPrepareSwap, className }: LiveTapeProps) {
               connecting
             </span>
           ) : (
-            <span className="flex items-center gap-1.5 font-mono text-[10px] text-emerald-400">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
+            <span className="flex items-center gap-1.5 font-mono text-[10px] text-good">
+              <span className="h-1.5 w-1.5 rounded-full bg-good" aria-hidden="true" />
               live
             </span>
           )}

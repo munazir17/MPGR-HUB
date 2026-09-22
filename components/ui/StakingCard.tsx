@@ -104,7 +104,7 @@ export function StakingCard({
       {isWrongNetwork ? (
         <button
           onClick={onSwitchNetwork}
-          className="relative mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold px-5 py-2.5 text-sm font-semibold text-background transition-transform active:scale-95"
+          className="btn-gold relative mt-5 w-full text-sm"
         >
           Switch to Base to continue
         </button>
@@ -113,9 +113,8 @@ export function StakingCard({
           <motion.button
             onClick={onOpenStake}
             disabled={!canStake}
-            whileTap={canStake ? { scale: 0.97 } : undefined}
             aria-label="Open stake MPGR dialog"
-            className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-gradient-gold px-3 py-2.5 text-xs font-semibold text-background transition-colors disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
+            className="btn-primary btn-primary-sm w-full"
           >
             <PiggyBank className="h-3.5 w-3.5" aria-hidden="true" />
             Stake
@@ -124,9 +123,8 @@ export function StakingCard({
           <motion.button
             onClick={onOpenUnstake}
             disabled={!canUnstake}
-            whileTap={canUnstake ? { scale: 0.97 } : undefined}
             aria-label="Open unstake MPGR dialog"
-            className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+            className="btn-ghost w-full text-xs"
           >
             <ArrowDownToLine className="h-3.5 w-3.5" aria-hidden="true" />
             Unstake
@@ -135,9 +133,8 @@ export function StakingCard({
           <motion.button
             onClick={onClaim}
             disabled={!canClaim}
-            whileTap={canClaim ? { scale: 0.97 } : undefined}
             aria-label="Claim earned rewards"
-            className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-gold/25 bg-gold/10 px-3 py-2.5 text-xs font-semibold text-gold transition-colors hover:bg-gold/15 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/[0.03] disabled:text-muted"
+            className="btn-gold btn-gold-sm w-full"
           >
             {claimBusy ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -150,9 +147,8 @@ export function StakingCard({
           <motion.button
             onClick={onOpenExit}
             disabled={!canExit}
-            whileTap={canExit ? { scale: 0.97 } : undefined}
             aria-label="Open exit staking dialog"
-            className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+            className="btn-ghost w-full text-xs"
           >
             <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
             Exit

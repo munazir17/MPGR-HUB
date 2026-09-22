@@ -23,11 +23,7 @@ export function SectionHeader({
   if (size === "page") {
     return (
       <div className="mb-8 md:mb-10">
-        <span
-          aria-hidden="true"
-          className="mb-3 block h-px w-10 bg-gradient-to-r from-primary/80 to-transparent"
-        />
-        <Tag className="text-2xl font-semibold tracking-[-0.02em] text-white md:text-4xl md:leading-[44px]">
+        <Tag className="display-l text-[28px] text-white md:text-4xl md:leading-[44px]">
           {title}
         </Tag>
         {subtitle && (
@@ -41,10 +37,6 @@ export function SectionHeader({
 
   return (
     <div className="mb-5">
-      <span
-        aria-hidden="true"
-        className="mb-2.5 block h-px w-8 bg-gradient-to-r from-primary/80 to-transparent"
-      />
       <Tag className="text-base font-semibold tracking-[-0.01em] text-white md:text-lg">
         {title}
       </Tag>

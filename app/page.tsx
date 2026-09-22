@@ -1,22 +1,15 @@
 "use client";
 
-// app/page.tsx — Home = MPGR AGENT.
+// app/page.tsx — Home = the MPGR AGENT stage.
 //
-// The Base Stocks terminal that used to live at "/agent" was moved
-// here; there is no separate Stocks tab/page anymore (mobile navigates
-// via the header's sidebar menu, and /agent redirects to "/"). The agent
-// keeps its name — MPGR AGENT — the stocks tooling simply lives inside
-// it now.
+// The product IS the agent, so the first screen IS its workstation:
 //
-// The page flows naturally (no forced viewport heights, no stretch):
-//
-//   1. LiveTape — full width, dark, monospace prices, pause on hover
-//   2. MPGR AGENT hero + the ONE chat surface (conversation thread +
-//      suggested chips + "Ask anything..." composer in a single card),
-//      wide on desktop (xl:max-w-[1760px]) so the chat is the primary
-//      content of the page
-//   3. Compact MPGR HUB info section (brand message + 3 cards)
-//   4. Social/community footer
+//   1. Navbar (sticky) + LiveTape — the only chrome above the stage
+//   2. THE STAGE (AgentExperience) — a viewport-height agent workspace:
+//      top bar (folded hero) + body (3D core / thread) + dock (composer).
+//      The tape's "Prepare swap" injects the same prompt into the chat.
+//   3. Compact MPGR HUB info section (frames + existing copy) + footer —
+//      deliberately BELOW the fold, visually secondary
 //
 //   Pair sheet = right drawer on desktop, bottom sheet on mobile
 //   (owned by LiveTape). Wallet button stays in the existing Navbar.
@@ -49,10 +42,14 @@ export default function HomePage() {
     );
   }, []);
 
+  // The hero renders INSIDE the stage's top bar (its testid moves with
+  // it — stocks-agent-hero still exists, now in the bar). `thread` lets
+  // it swap the big empty-state core for the 28px jewel.
   const heroSlot = useCallback(
-    (statuses: Parameters<typeof StocksAgentHero>[0]["statuses"]) => (
-      <StocksAgentHero statuses={statuses} />
-    ),
+    (
+      statuses: Parameters<typeof StocksAgentHero>[0]["statuses"],
+      opts: { thread: boolean },
+    ) => <StocksAgentHero statuses={statuses} thread={opts.thread} />,
     [],
   );
 

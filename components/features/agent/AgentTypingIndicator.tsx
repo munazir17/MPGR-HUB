@@ -1,12 +1,13 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Bot } from "lucide-react";
+
+import { AgentCore } from "./AgentCore";
 
 // Phase 3A.6 — Typing Indicator, extracted from AgentChatWindow.tsx's
-// former inline ThinkingBubble (same markup/animation, zero visual
-// change) so it can also be reused wherever else a "typing" state needs
-// showing, without duplicating the animation definition.
+// former inline ThinkingBubble. The agent's avatar is now the AgentCore
+// jewel (the same 28px object the hero shrinks to) so the "thinking"
+// identity is carried by the product's own object, not a second mascot.
 export function AgentTypingIndicator() {
   return (
     <motion.div
@@ -14,9 +15,7 @@ export function AgentTypingIndicator() {
       animate={{ opacity: 1, y: 0 }}
       className="flex items-end gap-2"
     >
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-premium shadow-glow-gold ring-1 ring-white/10">
-        <Bot className="h-3.5 w-3.5 text-white" aria-hidden="true" />
-      </span>
+      <AgentCore variant="jewel" state="thinking" className="mb-0.5" />
       <div className="flex items-center gap-1 rounded-2xl rounded-bl-sm border border-white/[0.08] bg-white/[0.04] px-4 py-3 backdrop-blur-xl">
         {[0, 1, 2].map((i) => (
           <motion.span

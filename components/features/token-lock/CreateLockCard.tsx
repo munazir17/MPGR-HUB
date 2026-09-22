@@ -157,7 +157,7 @@ export function CreateLockCard({
                 value={amountInput}
                 onChange={(e) => setAmountInput(e.target.value)}
                 disabled={isBusy}
-                className="mt-1.5 w-full rounded-xl border border-white/10 bg-background/50 px-3.5 py-2.5 text-lg font-semibold text-white placeholder:text-muted/50 focus:border-primary/50 focus:outline-none disabled:opacity-50"
+                className="mt-1.5 w-full rounded-xl border border-white/[0.08] bg-elevated px-3.5 py-2.5 text-lg font-semibold text-white placeholder:text-muted/50 focus:border-primary/50 focus:outline-none disabled:opacity-50"
               />
               {exceedsBalance && (
                 <p className="mt-1 text-[11px] text-red-400">Amount exceeds your available MPGR balance.</p>
@@ -196,7 +196,7 @@ export function CreateLockCard({
               onClick={handleSubmit}
               disabled={isWrongNetwork ? false : !canSubmit}
               aria-label="Create MPGR lock"
-              className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold py-2.5 text-sm font-semibold text-background transition-transform active:scale-95 disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
+              className="btn-primary mt-5 w-full text-sm"
             >
               {isWrongNetwork ? (
                 "Switch to Base"

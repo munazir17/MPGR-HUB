@@ -13,8 +13,8 @@ import { clsx } from "clsx";
 //
 //   mobile  — full width, 16px gutters, comfortable touch stacking
 //   tablet  — 24px gutters, content still centered
-//   desktop — up to 1152px (max-w-6xl) of real content width with
-//             32px gutters, so grids/cards use the screen properly
+//   desktop — up to 1120px of real content width with 32px gutters,
+//             so grids/cards use the screen properly
 //
 // Pages keep their own vertical rhythm via className overrides.
 
@@ -30,7 +30,7 @@ export function PageContainer({ children, className, size = "default" }: PageCon
     <main
       className={clsx(
         "mx-auto w-full px-4 py-10 sm:px-6 md:py-14 lg:px-8",
-        size === "narrow" ? "max-w-4xl" : "max-w-6xl",
+        size === "narrow" ? "max-w-4xl" : "max-w-[1120px]",
         className,
       )}
     >
