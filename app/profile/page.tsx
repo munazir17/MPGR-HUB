@@ -22,6 +22,7 @@ import {
   BookOpen,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { AchievementCard } from "@/components/ui/AchievementCard";
 import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
@@ -111,7 +112,7 @@ export default function ProfilePage() {
   return (
     <>
       <Navbar />
-      <main className="mx-auto max-w-3xl px-4 py-8 md:py-10">
+      <PageContainer>
         {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <div>
@@ -127,35 +128,95 @@ export default function ProfilePage() {
               />
             )}
 
-            <GlassCard className="p-5">
-              <div className="flex items-center gap-4">
-                <AddressAvatar address={address ?? ""} size={64} />
-                <div className="min-w-0 flex-1">
-                  <h2 className="truncate text-lg font-semibold text-white">
-                    {address ? formatAddress(address, 6) : "Not connected"}
-                  </h2>
-                  <p className="mt-0.5 text-xs text-muted">
-                    {isConnected ? "Wallet connected on Base" : "Connect from the header"}
-                  </p>
-                </div>
-              </div>
-              <div className="mt-4 grid grid-cols-3 gap-2">
-                <div className="rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
-                  <p className="text-[10px] uppercase tracking-wider text-muted">Level</p>
-                  <p className="mt-1 text-lg font-semibold text-white">{levelInfo?.level ?? 1}</p>
-                </div>
-                <div className="rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
-                  <p className="text-[10px] uppercase tracking-wider text-muted">Total XP</p>
-                  <p className="mt-1 text-lg font-semibold text-white">{formatCompactNumber(record?.xp ?? 0)}</p>
-                </div>
-                <div className="rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
-                  <p className="text-[10px] uppercase tracking-wider text-muted">Streak</p>
-                  <p className="mt-1 text-lg font-semibold text-white">{record?.streak ?? 0}d</p>
-                </div>
-              </div>
-            </GlassCard>
+            {/* Desktop: two balanced columns (identity/rewards left,
+                account/ecosystem right). Mobile: natural stacking. */}
+            <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+              <div className="space-y-6">
+                <GlassCard className="p-5">
+                  <div className="flex items-center gap-4">
+                    <AddressAvatar address={address ?? ""} size={64} />
+                    <div className="min-w-0 flex-1">
+                      <h2 className="truncate text-lg font-semibold text-white">
+                        {address ? formatAddress(address, 6) : "Not connected"}
+                      </h2>
+                      <p className="mt-0.5 text-xs text-muted">
+                        {isConnected ? "Wallet connected on Base" : "Connect from the header"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid grid-cols-3 gap-2">
+                    <div className="min-w-0 rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
+                      <p className="text-[10px] uppercase tracking-wider text-muted">Level</p>
+                      <p className="mt-1 truncate text-lg font-semibold text-white">{levelInfo?.level ?? 1}</p>
+                    </div>
+                    <div className="min-w-0 rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
+                      <p className="text-[10px] uppercase tracking-wider text-muted">Total XP</p>
+                      <p className="mt-1 truncate text-lg font-semibold text-white">{formatCompactNumber(record?.xp ?? 0)}</p>
+                    </div>
+                    <div className="min-w-0 rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
+                      <p className="text-[10px] uppercase tracking-wider text-muted">Streak</p>
+                      <p className="mt-1 truncate text-lg font-semibold text-white">{record?.streak ?? 0}d</p>
+                    </div>
+                  </div>
+                </GlassCard>
 
-            <GlassCard className="divide-y divide-white/[0.06] overflow-hidden p-0">
+                <GlassCard className="p-5">
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-sm font-medium text-white">Referral</p>
+                    <p className="text-xs text-muted">
+                      Referrals: <span className="font-semibold text-white">{referralCount ?? 0}</span>
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-background/50 px-3 py-2">
+                    <span className="flex-1 truncate text-xs text-muted">
+                      {referralLink || "Connect wallet to get your referral link"}
+                    </span>
+                    <button
+                      onClick={copyReferralLink}
+                      aria-label="Copy referral link"
+                      disabled={!referralLink}
+                      className="shrink-0 p-1 text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <button
+                    onClick={shareReferralLink}
+                    aria-label="Share referral link"
+                    disabled={!referralLink}
+                    className="mt-3 flex min-h-[40px] w-full items-center justify-center gap-2 rounded-xl bg-primary text-sm font-semibold text-background disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Share2 className="h-4 w-4" aria-hidden="true" />
+                    Share
+                  </button>
+                  {copied && <p className="mt-2 text-xs text-gold">Copied to clipboard</p>}
+                </GlassCard>
+
+                {holderTierStatus && (
+                  <div>
+                    <SectionHeader title="Current Holder Tier" subtitle="Your MPGR Holder Score & tier" />
+                    <HolderTierCard status={holderTierStatus} />
+                  </div>
+                )}
+
+                {seasonPassStatus && (
+                  <div>
+                    <SeasonProgressCard
+                      levelProgress={seasonPassStatus.levelProgress}
+                      seasonPoints={seasonPassStatus.seasonPoints}
+                    />
+                    <Link
+                      href="/season-pass"
+                      className="mt-3 flex min-h-[40px] w-full items-center justify-center rounded-xl border border-white/10 bg-surface text-xs font-semibold text-white hover:bg-surface-2"
+                    >
+                      View Season {seasonPassStatus.seasonNumber} Pass
+                    </Link>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-6">
+                <GlassCard className="divide-y divide-white/[0.06] overflow-hidden p-0">
               <div className="flex items-start gap-3 p-4">
                 <Wallet className="mt-0.5 h-4 w-4 text-primary" aria-hidden="true" />
                 <div className="min-w-0 flex-1">
@@ -234,41 +295,9 @@ export default function ProfilePage() {
               </Link>
             </GlassCard>
 
-            <GlassCard className="p-5">
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-sm font-medium text-white">Referral</p>
-                <p className="text-xs text-muted">
-                  Referrals: <span className="font-semibold text-white">{referralCount ?? 0}</span>
-                </p>
-              </div>
-              <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-background/50 px-3 py-2">
-                <span className="flex-1 truncate text-xs text-muted">
-                  {referralLink || "Connect wallet to get your referral link"}
-                </span>
-                <button
-                  onClick={copyReferralLink}
-                  aria-label="Copy referral link"
-                  disabled={!referralLink}
-                  className="shrink-0 p-1 text-primary disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <Copy className="h-4 w-4" />
-                </button>
-              </div>
-              <button
-                onClick={shareReferralLink}
-                aria-label="Share referral link"
-                disabled={!referralLink}
-                className="mt-3 flex min-h-[40px] w-full items-center justify-center gap-2 rounded-xl bg-primary text-sm font-semibold text-background disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <Share2 className="h-4 w-4" aria-hidden="true" />
-                Share
-              </button>
-              {copied && <p className="mt-2 text-xs text-gold">Copied to clipboard</p>}
-            </GlassCard>
-
             <div>
               <SectionHeader title="Ecosystem" subtitle="Staking, locks, seasons, and more" />
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {ECOSYSTEM_LINKS.map((link) => {
                   const Icon = link.icon;
                   return (
@@ -284,59 +313,41 @@ export default function ProfilePage() {
                 })}
               </div>
             </div>
-
-            {holderTierStatus && (
-              <div>
-                <SectionHeader title="Current Holder Tier" subtitle="Your MPGR Holder Score & tier" />
-                <HolderTierCard status={holderTierStatus} />
-              </div>
-            )}
-
-            {seasonPassStatus && (
-              <div>
-                <SeasonProgressCard
-                  levelProgress={seasonPassStatus.levelProgress}
-                  seasonPoints={seasonPassStatus.seasonPoints}
-                />
-                <Link
-                  href="/season-pass"
-                  className="mt-3 flex min-h-[40px] w-full items-center justify-center rounded-xl border border-white/10 bg-surface text-xs font-semibold text-white hover:bg-surface-2"
-                >
-                  View Season {seasonPassStatus.seasonNumber} Pass
-                </Link>
-              </div>
-            )}
-
-            <div>
-              <SectionHeader title="Achievements" />
-              <div className="grid grid-cols-2 gap-3">
-                {achievements.map((achievement) => (
-                  <AchievementCard key={achievement.id} achievement={achievement} onClaim={() => claim(achievement.id)} />
-                ))}
               </div>
             </div>
 
-            <div id="activity">
-              <SectionHeader title="Activity" subtitle="Recent XP history" />
-              {record && record.history.length > 0 ? (
-                <ActivityTimeline entries={record.history} limit={10} />
-              ) : (
-                <EmptyState icon={Activity} title="No activity yet" description="Your XP history will appear here." />
-              )}
+            <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+              <div>
+                <SectionHeader title="Achievements" />
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {achievements.map((achievement) => (
+                    <AchievementCard key={achievement.id} achievement={achievement} onClaim={() => claim(achievement.id)} />
+                  ))}
+                </div>
+              </div>
+
+              <div id="activity">
+                <SectionHeader title="Activity" subtitle="Recent XP history" />
+                {record && record.history.length > 0 ? (
+                  <ActivityTimeline entries={record.history} limit={10} />
+                ) : (
+                  <EmptyState icon={Activity} title="No activity yet" description="Your XP history will appear here." />
+                )}
+              </div>
             </div>
 
             <button
               type="button"
               onClick={() => void handleSignOut()}
               disabled={!isConnected}
-              className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border border-red-400/20 bg-red-500/10 text-sm font-semibold text-red-300 hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border border-red-400/20 bg-red-500/10 text-sm font-semibold text-red-300 hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-40 lg:mx-auto lg:max-w-md"
             >
               <LogOut className="h-4 w-4" aria-hidden="true" />
               Sign Out
             </button>
           </motion.div>
         )}
-      </main>
+      </PageContainer>
     </>
   );
 }

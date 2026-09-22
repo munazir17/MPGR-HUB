@@ -122,6 +122,68 @@ const OBSTACLE_COLOR: Record<ObstacleEntity["type"], { fill: string; dark: strin
  * in RunGame.tsx, since they touch canvasRef/ctxRef/sizeRef) are stripped
  * away: a 2D context, the current World snapshot, the viewport size, and
  * the sprite lookup. Nothing else.
+/** Natural aspect of the city parallax artwork (1536x1024 source files). */
+const RUN_CITY_ART_ASPECT = 1536 / 1024;
+
+/**
+ * Uniform gameplay scale for the responsive renderer.
+ *
+ * The simulation is untouched: the world is 960 units wide, entities
+ * spawn at x=960, and the authoritative replay verifies every collision
+ * in those fixed units. Rendering uses ONE uniform scale so the player,
+ * obstacles, collectibles and hitboxes all grow together with the
+ * viewport — no anisotropic stretch, no thin sprites on phones:
+ *
+ *   - desktop/tablet: u = viewportWidth / 960 shows the FULL simulation
+ *     width (cropping the field would cut reaction time — a gameplay
+ *     change, not a layout one), scaled up as big as the screen allows;
+ *   - phones (below RUN_MIN_VIEW_SCALE * 960 css px): the scale is
+ *     floored so gameplay objects stay clearly visible; the field is
+ *     correspondingly cropped behind the spawn edge via
+ *     runCameraOffsetX();
+ *   - ultrawide: capped so the game never gets absurd.
+ */
+export const RUN_MIN_VIEW_SCALE = 0.75;
+export const RUN_MAX_VIEW_SCALE = 2.4;
+
+export function runViewScale(viewportWidth: number): number {
+  return clamp(
+    viewportWidth / MPGR_RUN_SIMULATION_WIDTH,
+    RUN_MIN_VIEW_SCALE,
+    RUN_MAX_VIEW_SCALE,
+  );
+}
+
+/**
+ * Left edge of the visible camera window, in simulation x units.
+ *
+ *   - full field visible (u = w/960, uncapped): 0 — identical framing
+ *     to the classic renderer;
+ *   - zoomed past the whole field (u capped on ultrawide): the window
+ *     is right-anchored at the spawn edge (960) so entities never pop
+ *     in mid-screen, and the extra width shows more road behind the
+ *     player;
+ *   - cropped (narrow screens): keep a short run-up behind the player
+ *     and crop ahead, never past the spawn edge.
+ */
+export function runCameraOffsetX(viewportWidth: number): number {
+  const visible = viewportWidth / runViewScale(viewportWidth);
+  if (visible >= MPGR_RUN_SIMULATION_WIDTH) {
+    return MPGR_RUN_SIMULATION_WIDTH - visible; // <= 0, right-anchored
+  }
+  const playerX = MPGR_RUN_SIMULATION_WIDTH * PLAYER_X;
+  const runUp = 110; // sim units of road kept visible behind the player
+  return Math.max(0, Math.min(playerX - runUp, MPGR_RUN_SIMULATION_WIDTH - visible));
+}
+
+/**
+ * Renders one frame of MPGR Run onto `ctx`.
+ *
+ * Signature mirrors exactly what the original inline `draw` useCallback
+ * closed over once its own canvas/context/size guard clauses (which stay
+ * in RunGame.tsx, since they touch canvasRef/ctxRef/sizeRef) are stripped
+ * away: a 2D context, the current World snapshot, the viewport size, and
+ * the sprite lookup. Nothing else.
  */
 export function drawRunFrame(
   ctx: CanvasRenderingContext2D,
@@ -134,20 +196,32 @@ export function drawRunFrame(
     const p = world.player;
     const playerScreenX = width * PLAYER_X;
 
+    // ONE uniform gameplay scale + camera window (see runViewScale).
+    const u = runViewScale(viewportWidth);
+    const camX = runCameraOffsetX(viewportWidth);
+    const visible = viewportWidth / u; // sim units across the screen
+    // Design-space height: the vertical unit space the simulation's
+    // visual helpers (lane anchors, burst spawn y) are computed in.
+    const designHeight = height / u;
+    const laneY = (lane: number) => laneBaselineScreenY(designHeight, lane);
+
+    // --- Backdrop (screen space) ---------------------------------------
+    // Sky + parallax are drawn in raw screen pixels so the city artwork
+    // can keep its natural 3:2 aspect (height-fit, tiled horizontally)
+    // instead of being stretched to the canvas shape. traveledPx is
+    // simulation px — multiply by u for the on-screen scroll speed, so
+    // the backdrop keeps pace with the entities.
     ctx.save();
-    ctx.scale(viewportWidth / width, 1);
     if (world.screenShake > 0.5) {
       ctx.translate((Math.random() - 0.5) * world.screenShake, (Math.random() - 0.5) * world.screenShake);
     }
-
-    // Background — premium electric-blue city-run environment.
-    ctx.clearRect(-20, -20, width + 40, height + 40);
+    ctx.clearRect(-40, -40, viewportWidth + 80, height + 80);
     const skyGradient = ctx.createLinearGradient(0, 0, 0, height);
     skyGradient.addColorStop(0, "#0A0B0D");
     skyGradient.addColorStop(0.55, "#0D1420");
     skyGradient.addColorStop(1, "#111826");
     ctx.fillStyle = skyGradient;
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(-40, -40, viewportWidth + 80, height + 80);
 
     // Real "City Run" artwork, three depth layers scrolling at different
     // rates tied to actual distance traveled (so it pauses correctly and
@@ -158,10 +232,13 @@ export function drawRunFrame(
     const cityReady = !!(cityBg && cityMid && cityFg);
     const drawParallaxLayer = (img: CanvasImageSource | null, speedFactor: number, alpha: number) => {
       if (!img) return;
-      const offset = (world.traveledPx * speedFactor) % width;
+      const layerW = height * RUN_CITY_ART_ASPECT;
+      const offset = (world.traveledPx * speedFactor * u) % layerW;
+      const copies = Math.ceil(viewportWidth / layerW) + 1;
       ctx.globalAlpha = alpha;
-      ctx.drawImage(img, -offset, 0, width, height);
-      ctx.drawImage(img, width - offset, 0, width, height);
+      for (let i = 0; i <= copies; i++) {
+        ctx.drawImage(img, i * layerW - offset, 0, layerW, height);
+      }
       ctx.globalAlpha = 1;
     };
     // All three layers or none — a late mid/fg arriving after bg would
@@ -175,33 +252,42 @@ export function drawRunFrame(
     // Procedural skyline glow strips — fallback only until every city
     // layer is load+decode-ready as a set.
     if (!cityReady) {
-      const scroll = (world.elapsedMs / 40) % width;
+      const gap = 140 * u;
+      const scroll = ((world.elapsedMs / 40) * u) % gap;
       ctx.globalAlpha = 0.12;
       ctx.fillStyle = "#3B82F6";
-      for (let i = -1; i < 6; i++) {
-        const bx = ((i * 140 - scroll) % (width + 140)) - 70;
-        ctx.fillRect(bx, height * 0.18, 44, height * 0.32);
+      for (let bx = -scroll - gap; bx < viewportWidth + gap; bx += gap) {
+        ctx.fillRect(bx, height * 0.18, 44 * u, height * 0.32);
       }
       ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+
+    // --- World (uniform sim/design space, camera-translated) -----------
+    ctx.save();
+    ctx.scale(u, u);
+    ctx.translate(-camX, 0);
+    if (world.screenShake > 0.5) {
+      ctx.translate((Math.random() - 0.5) * world.screenShake, (Math.random() - 0.5) * world.screenShake);
     }
 
     // Three lane tracks.
     for (let lane = 0; lane < LANE_COUNT; lane++) {
-      const laneY = laneBaselineScreenY(height, lane);
+      const y = laneY(lane);
       const isCurrent = lane === p.lane;
       ctx.strokeStyle = COLORS.laneLine;
       ctx.globalAlpha = isCurrent ? 0.55 : 0.18;
       ctx.lineWidth = isCurrent ? 2 : 1;
       ctx.beginPath();
-      ctx.moveTo(0, laneY);
-      ctx.lineTo(width, laneY);
+      ctx.moveTo(camX, y);
+      ctx.lineTo(camX + visible, y);
       ctx.stroke();
       if (isCurrent) {
-        const glow = ctx.createLinearGradient(0, laneY - 10, 0, laneY + 4);
+        const glow = ctx.createLinearGradient(0, y - 10, 0, y + 4);
         glow.addColorStop(0, "rgba(59,130,246,0.16)");
         glow.addColorStop(1, "rgba(59,130,246,0)");
         ctx.fillStyle = glow;
-        ctx.fillRect(0, laneY - 10, width, 14);
+        ctx.fillRect(camX, y - 10, visible, 14);
       }
     }
     ctx.globalAlpha = 1;
@@ -213,7 +299,7 @@ export function drawRunFrame(
       const flashAlpha = clamp(remaining, 0, 1);
       ctx.globalAlpha = flashAlpha * 0.5;
       ctx.fillStyle = "#FBBF24";
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(camX, 0, visible, designHeight);
       ctx.globalAlpha = 1;
 
       const checkpointImg = getSprite(CHECKPOINT_SPRITE);
@@ -221,10 +307,10 @@ export function drawRunFrame(
         // Ease-out scale-in over the first 260ms, then hold, then fade with the flash alpha.
         const growT = clamp(elapsedSinceStart / 260, 0, 1);
         const easedGrow = 1 - Math.pow(1 - growT, 3);
-        const baseSize = Math.min(width, height) * 0.28;
+        const baseSize = Math.min(visible, designHeight) * 0.28;
         const size = baseSize * (0.7 + easedGrow * 0.3);
-        const cx = width / 2;
-        const cy = height * 0.22;
+        const cx = camX + visible / 2;
+        const cy = designHeight * 0.22;
 
         // Radiating ring pulse behind the badge.
         const ringT = clamp(elapsedSinceStart / 700, 0, 1);
@@ -244,11 +330,11 @@ export function drawRunFrame(
     // Power-up pickups.
     for (const pu of world.powerups) {
       if (pu.collected) continue;
-      const laneY = laneBaselineScreenY(height, pu.lane);
+      const y = laneY(pu.lane);
       const bob = Math.sin(world.elapsedMs / 260 + pu.id) * 5;
       const cfg = POWERUP_TYPES[pu.type];
       const puImg = getSprite(POWERUP_SPRITES[pu.type]);
-      const puCy = laneY - 20 + bob;
+      const puCy = y - 20 + bob;
       ctx.shadowColor = cfg.color;
       ctx.shadowBlur = 12;
       if (puImg) {
@@ -269,13 +355,13 @@ export function drawRunFrame(
     // Collectibles.
     for (const c of world.collectibles) {
       if (c.collected) continue;
-      const laneY = laneBaselineScreenY(height, c.lane);
+      const y = laneY(c.lane);
       const bob = Math.sin(world.elapsedMs / 300 + c.id) * 6;
       const attracting = c.magnetizedAtMs !== undefined;
       const shrink = attracting ? clamp(1 - (world.elapsedMs - c.magnetizedAtMs!) / MAGNET_ATTRACT_MS, 0.25, 1) : 1;
       const color = COLLECTIBLE_TYPES[c.type].color;
       const cImg = getSprite(COLLECTIBLE_SPRITES[c.type]);
-      const cCy = laneY - 14 + bob;
+      const cCy = y - 14 + bob;
       ctx.shadowColor = color;
       ctx.shadowBlur = 8;
       if (cImg) {
@@ -295,16 +381,16 @@ export function drawRunFrame(
         ctx.strokeStyle = "rgba(34,211,238,0.5)";
         ctx.beginPath();
         ctx.moveTo(c.x, cCy);
-        ctx.lineTo(playerScreenX + PLAYER_SIZE / 2, laneBaselineScreenY(height, p.lane) - p.playerY - PLAYER_SIZE / 2);
+        ctx.lineTo(playerScreenX + PLAYER_SIZE / 2, laneY(p.lane) - p.playerY - PLAYER_SIZE / 2);
         ctx.stroke();
       }
     }
 
     // Obstacles.
     for (const o of world.obstacles) {
-      const laneY = laneBaselineScreenY(height, o.lane);
-      const top = laneY - o.groundHeight - o.height;
-      const bottom = laneY - o.groundHeight;
+      const y = laneY(o.lane);
+      const top = y - o.groundHeight - o.height;
+      const bottom = y - o.groundHeight;
       const palette = OBSTACLE_COLOR[o.type];
       const oImg = getSprite(OBSTACLE_SPRITES[o.type]);
       ctx.save();
@@ -351,7 +437,7 @@ export function drawRunFrame(
       ctx.restore();
     }
 
-    // Particles.
+    // Particles (y in design units, spawned by the simulation).
     for (const part of world.particles) {
       const alpha = clamp(part.life / part.maxLife, 0, 1);
       ctx.globalAlpha = alpha;
@@ -375,7 +461,7 @@ export function drawRunFrame(
 
     // Player — drawn from the smoothed lane offset so switching lanes glides
     // instead of snapping (collision above always uses the logical p.lane).
-    const baselineY = height * LANE_CENTER_Y + p.laneOffset;
+    const baselineY = designHeight * LANE_CENTER_Y + p.laneOffset;
     const playerHeight = p.sliding ? PLAYER_SIZE * SLIDE_HITBOX_SCALE : PLAYER_SIZE;
     const playerBottom = baselineY - p.playerY;
     const playerTop = playerBottom - playerHeight;
@@ -489,18 +575,20 @@ export function drawRunFrame(
 
     // Cinematic vignette — a constant, subtle cyberpunk framing so the
     // premium mood holds even where no sprite/particle is on screen.
+    // Drawn over the whole camera window (not just the 960-unit field)
+    // so ultrawide zoomed views are covered edge to edge.
     const vignette = ctx.createRadialGradient(
-      width / 2,
-      height / 2,
-      Math.min(width, height) * 0.35,
-      width / 2,
-      height / 2,
-      Math.max(width, height) * 0.7
+      camX + visible / 2,
+      designHeight / 2,
+      Math.min(visible, designHeight) * 0.35,
+      camX + visible / 2,
+      designHeight / 2,
+      Math.max(visible, designHeight) * 0.7
     );
     vignette.addColorStop(0, "rgba(0,0,0,0)");
     vignette.addColorStop(1, "rgba(0,0,0,0.38)");
     ctx.fillStyle = vignette;
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(camX, 0, visible, designHeight);
 
     // Hit-damage flash — a brief red pulse over the whole frame, on top of
     // everything else, so a hit always reads clearly even mid-chaos.
@@ -508,7 +596,7 @@ export function drawRunFrame(
       const hitT = clamp((world.hitFlashUntilMs - world.elapsedMs) / 220, 0, 1);
       ctx.globalAlpha = hitT * 0.35;
       ctx.fillStyle = "#DC2626";
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(camX, 0, visible, designHeight);
       ctx.globalAlpha = 1;
     }
 

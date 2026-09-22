@@ -26,6 +26,6 @@ export const AGENT_ICON_MAP: Record<AgentIconKey, LucideIcon> = {
   season: Award,
   profile: User,
   leaderboard: Trophy,
-  // Phase 3D — matches components/BottomNav.tsx's own icon for Games.
+  // Phase 3D — matches the sidebar menu's own icon for Games.
   games: Gamepad2,
 };

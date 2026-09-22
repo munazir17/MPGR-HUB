@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { enforceRateLimit, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 import { issueNonce } from "@/lib/auth/nonce";
-import { NONCE_COOKIE, NONCE_TTL_SECONDS, getAppOrigin, getAuthCookieAttributes } from "@/lib/auth/config";
+import { NONCE_COOKIE, NONCE_TTL_SECONDS, getAuthCookieAttributes, resolveTrustedAppOrigin } from "@/lib/auth/config";
 import { SUPPORTED_CHAIN_ID } from "@/lib/auth/config";
 
 export const runtime = "nodejs";
@@ -14,7 +14,10 @@ export async function GET(request: Request) {
 
   try {
     const value = await issueNonce();
-    const origin = getAppOrigin(request.url);
+    // Public origin of THIS request (configured APP_ORIGIN wins; otherwise
+  // derived from Host/x-forwarded-proto where allowed). Using request.url
+  // directly would yield the server bind address behind a preview proxy.
+  const origin = resolveTrustedAppOrigin(request);
     const response = NextResponse.json({
       nonce: value.nonce,
       issuedAt: value.issuedAt,

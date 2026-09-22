@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Gamepad2, Award, Flame, Star, Trophy } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
 import { StatCard } from "@/components/ui/StatCard";
 import { AchievementCard } from "@/components/ui/AchievementCard";
 import { FloatingXP } from "@/components/ui/FloatingXP";
@@ -39,7 +40,7 @@ export default function GamesPage() {
       <FloatingXP amount={lastEvent?.amount ?? null} onComplete={dismissEvent} />
       <LevelUpModal level={leveledUp} onClose={dismissLevelUp} />
 
-      <main className="mx-auto max-w-6xl px-4 py-10">
+      <PageContainer>
         {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-8">
             <SectionHeader
@@ -85,7 +86,7 @@ export default function GamesPage() {
               {achievements.length === 0 ? (
                 <EmptyState icon={Award} title="No achievements yet" description="Start earning XP to unlock achievements." />
               ) : (
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
                   {achievements.map((achievement) => (
                     <AchievementCard
                       key={achievement.id}
@@ -98,7 +99,7 @@ export default function GamesPage() {
             </div>
           </motion.div>
         )}
-      </main>
+      </PageContainer>
     </>
   );
 }

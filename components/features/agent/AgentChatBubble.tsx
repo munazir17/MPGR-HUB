@@ -92,12 +92,12 @@ export function AgentChatBubble({
         )}
       </span>
 
-      <div className={clsx("flex max-w-[80%] flex-col gap-1.5", isUser ? "items-end" : "items-start")}>
+      <div className={clsx("flex min-w-0 max-w-[80%] flex-col gap-1.5", isUser ? "items-end" : "items-start")}>
         {hasHighlights && <AgentHighlightChips highlights={message.highlights!} />}
 
         <div
           className={clsx(
-            "rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
+            "min-w-0 break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
             isUser
               ? "rounded-br-sm bg-primary text-background"
               : "rounded-bl-sm border border-white/[0.08] bg-surface-2 text-white"

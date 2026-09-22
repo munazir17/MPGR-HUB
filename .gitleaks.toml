@@ -1,0 +1,25 @@
+# .gitleaks.toml
+#
+# Minimal, surgical secret-scan configuration. ALL default GitLeaks
+# rules stay fully active — nothing is disabled repo-wide, no rule is
+# turned off, and no path is blanket-exempted.
+#
+# The single exemption below covers one already-published commit that
+# contained a test-only EIP-3009 signing fixture written as a literal
+# 64-hex private key. That key was generated locally for these tests,
+# controls no funds on any network, and was never used outside CI. Git
+# history is immutable, so the literal cannot be removed from that
+# commit without rewriting published history; the fixture itself has
+# since been replaced by a deterministically derived key (no literal
+# secret in source). Exempting the introducing commit — rather than the
+# rule, the file, or the scanner — keeps every future commit, file and
+# rule fully scanned.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "One published commit containing a since-replaced test-only signing fixture; all other findings remain active."
+commits = [
+  "0201b95088c0d2daf76c5bbd118f3249ec31b4ec",
+]

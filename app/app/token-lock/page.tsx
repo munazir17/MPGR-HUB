@@ -5,6 +5,7 @@ import { useAccount } from "wagmi";
 import { motion } from "framer-motion";
 import { Vault, History } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -78,7 +79,7 @@ export default function TokenLockPage() {
         onReset={() => resetActionState("earlyUnlock")}
       />
 
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
+      <PageContainer className="py-8 sm:py-12">
         {!mounted ? null : (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
@@ -233,7 +234,7 @@ export default function TokenLockPage() {
             </div>
           </motion.div>
         )}
-      </main>
+      </PageContainer>
     </>
   );
 }

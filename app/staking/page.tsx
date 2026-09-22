@@ -5,6 +5,7 @@ import { useAccount } from "wagmi";
 import { motion } from "framer-motion";
 import { Lock, X, AlertCircle } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { FloatingXP } from "@/components/ui/FloatingXP";
@@ -123,7 +124,7 @@ export default function StakingPage() {
         onSwitchNetwork={switchToBase}
       />
 
-      <main className="mx-auto max-w-6xl px-4 py-10">
+      <PageContainer>
         {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <SectionHeader
@@ -216,7 +217,7 @@ export default function StakingPage() {
             />
           </motion.div>
         )}
-      </main>
+      </PageContainer>
     </>
   );
       }

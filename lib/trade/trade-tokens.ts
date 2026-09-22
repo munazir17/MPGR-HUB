@@ -15,6 +15,7 @@ import {
   NATIVE_ETH_SENTINEL,
   isNativeEthSentinel,
 } from "./trade-config";
+import { BASE_PAIRS } from "@/lib/markets/base-pairs";
 import { COINBASE_B20_TOKENIZED_STOCKS } from "./tokenized-stocks";
 import type { TradeTokenKind, TradeTokenRef } from "./trade-types";
 
@@ -67,6 +68,22 @@ export const KNOWN_TRADE_TOKENS: readonly KnownTradeToken[] = [
     name: stock.name,
     decimals: 18,
     kind: "b20-tokenized-stock" as const,
+  })),
+  // Coinbase wrapped assets from the typed Base pairs allowlist
+  // (lib/markets/base-pairs.ts). USDC already has its entry above, so
+  // `stable` pairs are skipped here. Decimals are the officially
+  // documented values (Basescan-verified); B20 decimals are never
+  // hardcoded and are re-verified on-chain by the swap path.
+  ...BASE_PAIRS.filter(
+    (pair): pair is typeof pair & { decimals: number } =>
+      pair.kind === "wrapped" && pair.decimals !== null,
+  ).map((pair) => ({
+    aliases: [pair.symbol.toLowerCase()],
+    address: pair.address,
+    symbol: pair.symbol,
+    name: pair.name,
+    decimals: pair.decimals,
+    kind: "erc20" as const,
   })),
 ];
 

@@ -5,6 +5,7 @@ import { useAccount } from "wagmi";
 import { motion } from "framer-motion";
 import { Flame, History, Trophy, Target, Award } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonCard } from "@/components/ui/SkeletonCard";
@@ -60,7 +61,7 @@ export default function BurnPage() {
         onClose={handleCloseSuccess}
       />
 
-      <main className="mx-auto max-w-6xl px-4 py-8 pb-24 sm:py-12 sm:pb-12">
+      <PageContainer className="py-8 sm:py-12">
         {!mounted ? null : (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
@@ -155,7 +156,7 @@ export default function BurnPage() {
             </div>
           </motion.div>
         )}
-      </main>
+      </PageContainer>
     </>
   );
 }

@@ -276,4 +276,94 @@ describe("verifyTrustedOrigin — Preview vs production configuration", () => {
     );
     expect(response?.status).toBe(403);
   });
+
+  // ---------------------------------------------------------------------
+  // Ephemeral preview hosts (TLS terminated by an upstream proxy) that run
+  // a production build without APP_ORIGIN. Without the explicit opt-in the
+  // guard must keep failing closed exactly as before.
+  // ---------------------------------------------------------------------
+
+  const PREVIEW_HOST = "3000-sandbox-preview.e2b.app";
+
+  function previewPost(origin: string, forwardedProto = "https"): Request {
+    return new Request(`http://${PREVIEW_HOST}/api/agent/complete`, {
+      method: "POST",
+      headers: { origin, "x-forwarded-proto": forwardedProto },
+    });
+  }
+
+  it("keeps failing closed on a production preview build with no APP_ORIGIN and no opt-in", async () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "");
+    const response = verifyTrustedOrigin(previewPost(`https://${PREVIEW_HOST}`));
+    expect(response?.status).toBe(503);
+    expect(await response?.json()).toEqual({ error: "Origin verification is not configured" });
+  });
+
+  it("verifies the browser Origin against the proxy-forwarded origin when the opt-in is set", () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "1");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "");
+    // The server itself is plain HTTP behind the proxy; x-forwarded-proto
+    // upgrades the derived origin so the browser's https Origin matches.
+    expect(verifyTrustedOrigin(previewPost(`https://${PREVIEW_HOST}`))).toBeNull();
+  });
+
+  it("verifies a preview POST whose request.url is the server bind address", () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "1");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "");
+    // The proxy terminates TLS and forwards the public host in `Host`; the
+    // framework reports the bind address in request.url.
+    const request = new Request(`http://0.0.0.0:3000/api/agent/complete`, {
+      method: "POST",
+      headers: {
+        host: PREVIEW_HOST,
+        origin: `https://${PREVIEW_HOST}`,
+        "x-forwarded-proto": "https",
+      },
+    });
+    expect(request.url).toBe("http://0.0.0.0:3000/api/agent/complete");
+    expect(verifyTrustedOrigin(request)).toBeNull();
+  });
+
+  it("still rejects a cross-site Origin when the request-derived opt-in is set", async () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "1");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "");
+    const response = verifyTrustedOrigin(previewPost("https://evil.com"));
+    expect(response?.status).toBe(403);
+    expect(await response?.json()).toEqual({ error: "Cross-site request rejected" });
+  });
+
+  it("ignores the opt-in on Vercel production, where APP_ORIGIN is mandatory", async () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "1");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "production");
+    const response = verifyTrustedOrigin(previewPost(`https://${PREVIEW_HOST}`));
+    expect(response?.status).toBe(503);
+  });
+
+  it("lets a configured APP_ORIGIN win over request derivation", async () => {
+    vi.stubEnv("APP_ORIGIN", "https://mpgrhub.xyz");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "1");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "");
+    expect(verifyTrustedOrigin(previewPost("https://mpgrhub.xyz"))).toBeNull();
+    expect(verifyTrustedOrigin(previewPost(`https://${PREVIEW_HOST}`))?.status).toBe(403);
+  });
+
+  it("derives the https origin in dev mode behind a TLS-terminating preview proxy", () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    vi.stubEnv("APP_ORIGIN_ALLOW_REQUEST_DERIVED", "");
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("VERCEL_ENV", "");
+    expect(verifyTrustedOrigin(previewPost(`https://${PREVIEW_HOST}`))).toBeNull();
+  });
 });

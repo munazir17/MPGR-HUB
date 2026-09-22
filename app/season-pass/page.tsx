@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Crown } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonCard } from "@/components/ui/SkeletonCard";
 import { SectionHeader } from "@/components/ui/SectionHeader";
@@ -43,7 +44,7 @@ export default function SeasonPassPage() {
   return (
     <>
       <Navbar />
-      <main className="mx-auto max-w-6xl px-4 py-10">
+      <PageContainer>
         {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <SectionHeader
@@ -100,7 +101,7 @@ export default function SeasonPassPage() {
             )}
           </motion.div>
         )}
-      </main>
+      </PageContainer>
     </>
   );
 }

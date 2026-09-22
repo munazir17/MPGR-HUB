@@ -217,6 +217,10 @@ export function looksLikeX402InformationalPrompt(normalized: string): boolean {
 export function looksLikeX402PaymentPrompt(normalized: string): boolean {
   if (looksLikeX402InformationalPrompt(normalized)) return false;
   if (normalized.includes("https://") && normalized.includes("x402")) return true;
+  // "Prepare the $0.02 x402 payment for the live Base Stocks tape
+  // snapshot" — the paid tape resource is this app's own x402 endpoint;
+  // advertise the discover/prepare payment tools even without a URL.
+  if (normalized.includes("x402 payment") && normalized.includes("tape")) return true;
   return X402_PAYMENT_ACTION_MARKERS.some((marker) => normalized.includes(marker));
 }
 
