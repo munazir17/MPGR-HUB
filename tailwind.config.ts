@@ -1,5 +1,8 @@
 import type { Config } from "tailwindcss";
 
+// MPGR HUB — premium design tokens.
+// Dark, Base-native, restrained: deep neutral-navy surfaces, one blue
+// accent + one gold accent, hairline borders, layered soft shadows.
 const config: Config = {
   darkMode: "class",
   content: [
@@ -10,40 +13,51 @@ const config: Config = {
     extend: {
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        mono: [
+          "ui-monospace",
+          "SF Mono",
+          "Menlo",
+          "Consolas",
+          "monospace",
+        ],
       },
       colors: {
-        background: "#070B14",
-        surface: "#0E1628",
-        "surface-2": "#121C32",
-        border: "#1C2A42",
-        primary: "#38BDF8",
-        "primary-glow": "#7DD3FC",
-        gold: "#E8C36A",
-        "gold-glow": "#F5D78A",
-        muted: "#8B9BB4",
+        background: "#05080F",
+        surface: "#0A101B",
+        "surface-2": "#0D1524",
+        border: "#182234",
+        primary: "#4DA3FF",
+        "primary-glow": "#8CC7FF",
+        gold: "#E2C073",
+        "gold-glow": "#F3DA9B",
+        muted: "#8FA0B6",
       },
       backgroundImage: {
-        "gradient-premium": "linear-gradient(135deg, #38BDF8 0%, #2563EB 100%)",
-        "gradient-blue": "linear-gradient(135deg, #38BDF8 0%, #1D4ED8 100%)",
-        "gradient-gold": "linear-gradient(135deg, #F5D78A 0%, #E8C36A 100%)",
-        "gradient-radial": "radial-gradient(circle at center, var(--tw-gradient-stops))",
+        "gradient-premium": "linear-gradient(180deg, #55A9FF 0%, #2472EB 100%)",
+        "gradient-blue": "linear-gradient(135deg, #3E97FF 0%, #1E63DB 100%)",
+        "gradient-gold": "linear-gradient(180deg, #F3DA9B 0%, #DDB765 100%)",
+        "gradient-radial":
+          "radial-gradient(circle at center, var(--tw-gradient-stops))",
         "gradient-mesh":
-          "radial-gradient(ellipse 80% 50% at 18% -12%, rgba(56,189,248,0.14), transparent 58%), radial-gradient(ellipse 60% 40% at 100% 0%, rgba(37,99,235,0.10), transparent 55%)",
+          "radial-gradient(ellipse 70% 42% at 50% -12%, rgba(77,163,255,0.10), transparent 60%), radial-gradient(ellipse 42% 28% at 100% 0%, rgba(226,192,115,0.05), transparent 55%)",
         "gradient-shine":
-          "linear-gradient(115deg, transparent 20%, rgba(255,255,255,0.08) 40%, rgba(255,255,255,0.14) 50%, rgba(255,255,255,0.08) 60%, transparent 80%)",
+          "linear-gradient(115deg, transparent 20%, rgba(255,255,255,0.06) 40%, rgba(255,255,255,0.10) 50%, rgba(255,255,255,0.06) 60%, transparent 80%)",
+        // Card fill: a faint top-lit sheen over the surface color.
+        "gradient-surface":
+          "linear-gradient(180deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.010) 100%)",
       },
       boxShadow: {
-        glow: "0 0 28px rgba(56, 189, 248, 0.12)",
-        "glow-gold": "0 0 20px rgba(232, 195, 106, 0.12)",
-        "glow-lg": "0 16px 40px rgba(3, 8, 20, 0.45)",
+        glow: "0 0 24px rgba(77, 163, 255, 0.10)",
+        "glow-gold": "0 0 20px rgba(226, 192, 115, 0.10)",
+        "glow-lg": "0 24px 64px -24px rgba(0, 0, 0, 0.65)",
         "glow-gold-lg": "0 12px 32px rgba(3, 8, 20, 0.4)",
-        soft: "0 8px 28px rgba(3, 8, 20, 0.35)",
+        soft: "inset 0 1px 0 0 rgba(255,255,255,0.03), 0 12px 32px -16px rgba(0,0,0,0.55)",
         "inner-top": "inset 0 1px 0 0 rgba(255,255,255,0.05)",
       },
       borderRadius: {
         xl: "1rem",
         "2xl": "1.5rem",
-        "3xl": "1.75rem",
+        "3xl": "2rem",
       },
       keyframes: {
         shimmer: {
@@ -72,7 +86,7 @@ const config: Config = {
         },
       },
       animation: {
-        shimmer: "shimmer 2s linear infinite",
+        shimmer: "shimmer 2.2s linear infinite",
         float: "float 5s ease-in-out infinite",
         "glow-pulse": "glow-pulse 3s ease-in-out infinite",
         shine: "shine 3s ease-in-out infinite",

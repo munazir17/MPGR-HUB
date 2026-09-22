@@ -16,10 +16,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider
           theme={darkTheme({
-            accentColor: "#3B82F6",
-            accentColorForeground: "white",
-            borderRadius: "large",
+            accentColor: "#2472EB",
+            accentColorForeground: "#FFFFFF",
+            borderRadius: "medium",
           })}
+          modalSize="compact"
         >
           {/* Single shared wallet-auth instance for the whole app — see
               hooks/useWalletAuth.tsx for why this must be one Provider

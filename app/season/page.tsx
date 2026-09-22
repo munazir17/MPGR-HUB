@@ -41,7 +41,7 @@ export default function SeasonPage() {
           </div>
         ) : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-            <SectionHeader title={`Season ${seasonNumber}`} subtitle="Earn XP this month to climb the season ranking" />
+            <SectionHeader size="page" as="h1" title={`Season ${seasonNumber}`} subtitle="Earn XP this month to climb the season ranking" />
 
             {!isConnected && (
               <EmptyState

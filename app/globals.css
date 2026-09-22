@@ -10,15 +10,20 @@ html {
 
 body {
   position: relative;
-  background-color: #070b14;
-  color: #f4f7fb;
+  background-color: #05080f;
+  color: #eef3fa;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-tap-highlight-color: transparent;
-  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  font-feature-settings: "cv11", "ss01", "calt";
+  text-rendering: optimizeLegibility;
 }
 
+/* Ambient light: one cool top glow + a faint warm counter-glow.
+   Extremely restrained — depth without noise. */
 body::before {
   content: "";
   position: fixed;
@@ -26,8 +31,15 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 58% 36% at 12% -10%, rgba(56, 189, 248, 0.12), transparent 64%),
-    radial-gradient(ellipse 46% 30% at 100% 0%, rgba(37, 99, 235, 0.08), transparent 60%);
+    radial-gradient(ellipse 64% 40% at 50% -14%, rgba(77, 163, 255, 0.09), transparent 62%),
+    radial-gradient(ellipse 36% 24% at 100% 0%, rgba(226, 192, 115, 0.04), transparent 58%);
+}
+
+/* Display headings: tighter optical tracking for a premium feel. */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.02em;
 }
 
 img {
@@ -36,19 +48,23 @@ img {
 }
 
 ::selection {
-  background-color: rgba(56, 189, 248, 0.28);
+  background-color: rgba(77, 163, 255, 0.26);
   color: #ffffff;
 }
 
 ::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1c2a42;
+  background: #1a2537;
   border-radius: 8px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #243652;
+  background: #24344e;
 }
 
 button,
@@ -58,23 +74,45 @@ a[role="button"],
 }
 
 :focus-visible {
-  outline: 2px solid #38bdf8;
+  outline: 2px solid #4da3ff;
   outline-offset: 2px;
   border-radius: 6px;
 }
 
 .text-gradient-gold {
-  background: linear-gradient(135deg, #f5d78a 0%, #e8c36a 100%);
+  background: linear-gradient(180deg, #f3da9b 0%, #ddb765 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 
 .text-gradient-premium {
-  background: linear-gradient(135deg, #7dd3fc 0%, #38bdf8 100%);
+  background: linear-gradient(180deg, #8cc7ff 0%, #4da3ff 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+@layer components {
+  /* Small uppercase kicker used above section/page titles. */
+  .eyebrow {
+    @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-muted;
+  }
+
+  /* Primary action — blue gradient with an inner top highlight. */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-premium font-semibold text-white shadow-glow transition-all duration-200 hover:brightness-[1.08] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  /* Quiet secondary action on dark surfaces. */
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] font-medium text-white/80 transition-colors duration-200 hover:bg-white/[0.07] hover:text-white active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  /* Pill chip (filters, quick links, suggestion prompts). */
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 text-xs font-medium text-white/80 transition-colors duration-200 hover:border-white/[0.16] hover:bg-white/[0.06] hover:text-white active:scale-[0.98];
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

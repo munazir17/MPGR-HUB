@@ -114,7 +114,7 @@ export function AgentExperience({
 
   return (
     <>
-      <main className="mx-auto w-full flex-col px-3 pb-2 pt-1 sm:px-4 md:py-8 lg:px-8 xl:max-w-[1760px]">
+      <main className="mx-auto w-full flex-col px-3 pb-3 pt-0 sm:px-4 md:pb-8 lg:px-8 xl:max-w-[1760px]">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -128,17 +128,21 @@ export function AgentExperience({
                 card, so the conversation, chips and "Ask anything..."
                 input are visually one interface. */}
             <div
-              className="overflow-hidden rounded-2xl border border-white/[0.07] bg-surface"
+              className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-surface bg-gradient-surface shadow-soft md:rounded-3xl"
               data-testid="agent-chat-surface"
             >
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.08] to-transparent"
+              />
               {hasMessages && (
-                <div className="flex shrink-0 items-center justify-between border-b border-white/[0.06] px-4 py-2.5">
-                  <p className="text-sm font-semibold text-white">Conversation</p>
+                <div className="flex shrink-0 items-center justify-between border-b border-white/[0.06] px-4 py-2.5 md:px-5">
+                  <p className="text-[13px] font-semibold tracking-[-0.01em] text-white/90">Conversation</p>
                   <button
                     type="button"
                     onClick={clearChat}
                     disabled={thinking}
-                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-surface px-2.5 py-1.5 text-[11px] font-medium text-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-[11px] font-medium text-muted transition-colors hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     Clear
@@ -155,19 +159,19 @@ export function AgentExperience({
                   immediately. Active threads stay content-driven
                   (AgentChatWindow keeps only the max-h caps + scrolling). */}
               {!isConnected ? (
-                <div className="px-4 py-4 text-center sm:px-6">
-                  <p className="text-sm font-semibold text-white">
+                <div className="px-4 py-6 text-center sm:px-6 md:py-8">
+                  <p className="text-[15px] font-semibold tracking-[-0.01em] text-white">
                     Connect a wallet to chat with MPGR Agent
                   </p>
-                  <p className="mt-1.5 max-w-md text-xs leading-relaxed text-muted">
+                  <p className="mx-auto mt-2 max-w-md text-[13px] leading-relaxed text-muted">
                     The agent researches Coinbase wrapped assets and tokenized
                     stocks, and prepares on-chain actions for review — nothing
                     is signed without your confirmation.
                   </p>
                 </div>
               ) : !hasLoaded ? (
-                <div className="px-4 py-4 text-center sm:px-6">
-                  <p className="text-sm text-muted">Loading conversation...</p>
+                <div className="px-4 py-6 text-center sm:px-6 md:py-8">
+                  <p className="text-[13px] text-muted">Loading conversation...</p>
                 </div>
               ) : hasMessages ? (
                 <AgentChatWindow
@@ -183,8 +187,8 @@ export function AgentExperience({
                   onReviewTransferProposal={transferQuote.openProposal}
                 />
               ) : (
-                <div className="px-4 py-4 text-center sm:px-6">
-                  <p className="text-sm text-muted">{emptyStateText}</p>
+                <div className="px-4 py-6 text-center sm:px-6 md:py-8">
+                  <p className="text-[13px] text-muted">{emptyStateText}</p>
                 </div>
               )}
 
@@ -199,7 +203,7 @@ export function AgentExperience({
                 )}
               </AnimatePresence>
 
-              <div className="border-t border-white/[0.06] bg-background/40 p-2 sm:p-2.5">
+              <div className="border-t border-white/[0.06] bg-white/[0.02] p-2 sm:p-2.5">
                 <AgentInput
                   onSend={sendMessage}
                   disabled={thinking}
@@ -215,8 +219,8 @@ export function AgentExperience({
             </div>
           </AgentErrorBoundary>
 
-          <p className="shrink-0 pt-2 text-center text-[11px] text-muted">
-            Try <span className="text-primary">/help</span> for commands.
+          <p className="shrink-0 pt-3 text-center text-[11px] text-muted/70">
+            Try <span className="font-medium text-primary">/help</span> for commands.
           </p>
         </motion.div>
       </main>

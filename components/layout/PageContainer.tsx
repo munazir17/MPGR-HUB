@@ -29,7 +29,7 @@ export function PageContainer({ children, className, size = "default" }: PageCon
   return (
     <main
       className={clsx(
-        "mx-auto w-full px-4 py-8 sm:px-6 md:py-10 lg:px-8",
+        "mx-auto w-full px-4 py-10 sm:px-6 md:py-14 lg:px-8",
         size === "narrow" ? "max-w-4xl" : "max-w-6xl",
         className,
       )}

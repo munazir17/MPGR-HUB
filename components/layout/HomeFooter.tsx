@@ -55,15 +55,13 @@ function FooterLinkColumn({
 }) {
   return (
     <nav aria-label={title} className={className}>
-      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted">
-        {title}
-      </p>
-      <ul className="mt-3 space-y-2">
+      <p className="eyebrow">{title}</p>
+      <ul className="mt-4 space-y-2.5">
         {links.map((l) => (
           <li key={`${title}-${l.label}`}>
             <Link
               href={l.href}
-              className="text-xs font-medium text-muted transition-colors hover:text-white"
+              className="text-[13px] font-medium text-muted transition-colors duration-200 hover:text-white"
             >
               {l.label}
             </Link>
@@ -84,8 +82,8 @@ export function HomeFooter() {
         {/* Brand block */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold text-white">{APP_NAME}</p>
-            <p className="text-xs text-muted">{TAGLINE}</p>
+            <p className="text-[15px] font-semibold tracking-[-0.01em] text-white">{APP_NAME}</p>
+            <p className="mt-0.5 text-xs text-muted/80">{TAGLINE}</p>
           </div>
           <a
             href={BUY_MPGR_URL}
@@ -99,7 +97,7 @@ export function HomeFooter() {
         </div>
 
         {/* THREE information sections */}
-        <div className="mt-6 grid gap-8 border-t border-white/[0.06] pt-6 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-8 grid gap-10 border-t border-white/[0.06] pt-8 sm:grid-cols-2 lg:grid-cols-3">
           {/* Mobile-only redundancy cleanup: on phones this column duplicates
             the sidebar menu, so it is hidden below sm. Desktop keeps the
             full footer. */}
@@ -132,9 +130,9 @@ export function HomeFooter() {
         </div>
 
         {/* Bottom bar */}
-        <div className="mt-8 flex flex-col gap-2 border-t border-white/[0.06] pt-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-muted">© 2026 {APP_NAME}. All rights reserved.</p>
-          <p className="max-w-2xl text-xs leading-5 text-muted sm:text-right">
+        <div className="mt-10 flex flex-col gap-2 border-t border-white/[0.06] pt-5 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-muted/80">© 2026 {APP_NAME}. All rights reserved.</p>
+          <p className="max-w-2xl text-xs leading-5 text-muted/80 sm:text-right">
             Disclaimer: {APP_NAME} provides informational and technology services and does
             not provide financial, investment, or trading advice.
           </p>

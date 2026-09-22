@@ -10,9 +10,6 @@
 //
 // Every entry points at an EXISTING route. No new pages, no duplicated
 // features — this is pure information architecture.
-//
-// The visual style is deliberately plain for this pass (structure over
-// skin); premium art direction comes in a later design pass.
 
 import { useEffect } from "react";
 import Link from "next/link";
@@ -142,11 +139,11 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
             role="dialog"
             aria-modal="true"
             aria-label="MPGR HUB menu"
-            className="fixed right-0 top-0 z-[70] flex max-h-dvh w-80 max-w-[86vw] flex-col overflow-hidden border-b border-l border-white/[0.08] bg-background shadow-glow-lg"
+            className="fixed right-0 top-0 z-[70] flex max-h-dvh w-80 max-w-[86vw] flex-col overflow-hidden border-b border-l border-white/[0.06] bg-surface shadow-glow-lg"
             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
             data-testid="app-sidebar"
           >
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.07] px-4 py-3.5">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] px-4 py-3.5">
               <BrandMark />
               <button
                 type="button"
@@ -159,17 +156,17 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
             </div>
 
             {/* Wallet stays reachable from the menu itself. */}
-            <div className="shrink-0 border-b border-white/[0.07] px-4 py-3">
+            <div className="shrink-0 border-b border-white/[0.06] px-4 py-3">
               <ConnectButton showBalance={false} />
             </div>
 
             <nav
               aria-label="MPGR ecosystem"
-              className="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+              className="min-h-0 flex-1 overflow-y-auto px-3 py-4"
             >
               {SIDEBAR_GROUPS.map((group) => (
-                <div key={group.title} className="mb-4 last:mb-0">
-                  <p className="px-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted">
+                <div key={group.title} className="mb-5 last:mb-0">
+                  <p className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted/80">
                     {group.title}
                   </p>
                   <ul className="space-y-0.5">
@@ -182,14 +179,20 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
                             href={link.href}
                             aria-current={active ? "page" : undefined}
                             className={clsx(
-                              "flex min-h-[44px] items-center gap-3 rounded-xl px-2.5 text-sm transition-colors",
+                              "relative flex min-h-[44px] items-center gap-3 rounded-xl px-3 text-sm transition-colors duration-200",
                               active
-                                ? "bg-primary/10 font-semibold text-white"
-                                : "font-medium text-muted hover:bg-white/[0.05] hover:text-white",
+                                ? "bg-white/[0.06] font-semibold text-white"
+                                : "font-medium text-muted hover:bg-white/[0.04] hover:text-white",
                             )}
                           >
+                            {active && (
+                              <span
+                                aria-hidden="true"
+                                className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary"
+                              />
+                            )}
                             <Icon
-                              className={clsx("h-4 w-4 shrink-0", active ? "text-primary" : "text-muted")}
+                              className={clsx("h-4 w-4 shrink-0", active ? "text-primary" : "text-muted/80")}
                               aria-hidden="true"
                             />
                             <span className="flex-1">{link.label}</span>
@@ -218,7 +221,7 @@ export function AppSidebarMenuButton({ onClick, open }: { onClick: () => void; o
       aria-label={open ? "Close menu" : "Open menu"}
       aria-expanded={open}
       aria-haspopup="dialog"
-      className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-surface text-muted transition-colors hover:border-primary/30 hover:text-white"
+      className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.03] text-muted transition-colors duration-200 hover:border-white/[0.16] hover:text-white"
       data-testid="app-sidebar-menu-button"
     >
       {open ? (

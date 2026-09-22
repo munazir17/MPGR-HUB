@@ -105,13 +105,13 @@ export default function TokenLockPage() {
                 className="pointer-events-none absolute -bottom-24 -right-16 h-56 w-56 rounded-full bg-gradient-gold opacity-10 blur-3xl"
               />
 
-              <div className="relative flex items-center gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-premium shadow-glow-gold">
-                  <Vault className="h-5 w-5 text-white" aria-hidden="true" />
+              <div className="relative flex items-center gap-3.5">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-primary/[0.2] bg-primary/[0.08]">
+                  <Vault className="h-5 w-5 text-primary" aria-hidden="true" />
                 </div>
                 <div>
-                  <h1 className="text-xl font-bold tracking-tight text-white sm:text-2xl">Token Lock</h1>
-                  <p className="text-sm text-muted">Lock MPGR on Base for a fixed term.</p>
+                  <h1 className="text-2xl font-semibold tracking-[-0.02em] text-white md:text-4xl md:leading-[44px]">Token Lock</h1>
+                  <p className="mt-1 text-sm text-muted">Lock MPGR on Base for a fixed term.</p>
                 </div>
               </div>
 

@@ -56,7 +56,7 @@ export default function LeaderboardPage() {
               `Season ${seasonNumber}` convention already used on
               app/season/page.tsx. */}
           <div className="flex items-start justify-between gap-3">
-            <SectionHeader title="Leaderboard" subtitle="Global rankings across every MPGR HUB wallet" />
+            <SectionHeader size="page" as="h1" title="Leaderboard" subtitle="Global rankings across every MPGR HUB wallet" />
             <span className="mt-0.5 inline-flex shrink-0 items-center rounded-full bg-white/5 px-2.5 py-1 text-xs font-semibold text-gold">
               Season {seasonNumber}
             </span>
