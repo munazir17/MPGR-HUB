@@ -80,7 +80,7 @@ export function EarlyUnlockModal({
             exit={{ y: 40, opacity: 0 }}
             transition={{ type: "spring", stiffness: 260, damping: 26 }}
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-md rounded-t-2xl border border-red-500/25 bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-2xl"
+            className="relative w-full max-w-[440px] rounded-t-3xl border border-red-500/25 bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-3xl sm:p-8"
             style={{ paddingBottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}
           >
             <button
@@ -173,7 +173,7 @@ export function EarlyUnlockModal({
                     onClick={handleConfirm}
                     disabled={!canSubmit}
                     aria-label="Confirm early unlock"
-                    className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-red-500/40 bg-red-500/15 py-2.5 text-sm font-semibold text-red-300 transition-transform active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="btn-destructive mt-5 w-full py-3 text-sm"
                   >
                     {isBusy ? (
                       <>

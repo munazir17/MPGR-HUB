@@ -314,7 +314,7 @@ export function AgentActionConfirmationModal({
               damping: 26,
             }}
             onClick={(event) => event.stopPropagation()}
-            className="relative w-full max-w-md rounded-t-2xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-2xl"
+            className="relative w-full max-w-[440px] rounded-t-3xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-3xl sm:p-8"
             style={{
               paddingBottom:
                 "calc(1.5rem + env(safe-area-inset-bottom))",
@@ -407,7 +407,7 @@ export function AgentActionConfirmationModal({
             </div>
 
             {failed && error && (
-              <div className="mt-3 flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+              <div className="mt-3 flex items-center gap-2 rounded-xl border border-bad/20 bg-bad/10 px-3 py-2 text-xs text-bad">
                 <AlertCircle
                   className="h-4 w-4 shrink-0"
                   aria-hidden="true"
@@ -417,7 +417,7 @@ export function AgentActionConfirmationModal({
             )}
 
             {ready && (
-              <div className="mt-3 flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">
+              <div className="mt-3 flex items-center gap-2 rounded-xl border border-good/20 bg-good/10 px-3 py-2 text-xs text-good">
                 <CheckCircle2
                   className="h-4 w-4 shrink-0"
                   aria-hidden="true"
@@ -437,7 +437,7 @@ export function AgentActionConfirmationModal({
               }}
               disabled={!ready}
               aria-label="Confirm action"
-              className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold py-2.5 text-sm font-semibold text-background transition-transform active:scale-95 disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
+              className="btn-primary mt-5 w-full text-sm"
             >
               {busy ? (
                 <>
@@ -498,8 +498,8 @@ function StatusRow({
       <span
         className={
           ok
-            ? "font-semibold text-emerald-400"
-            : "font-semibold text-red-400"
+            ? "font-semibold text-good"
+            : "font-semibold text-bad"
         }
       >
         {value}

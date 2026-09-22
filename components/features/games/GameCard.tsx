@@ -9,13 +9,17 @@ import type { GameDefinition } from "@/lib/games";
 interface GameCardProps {
   game: GameDefinition;
   bestScore?: number;
+  /** Featured (flagship) tile — gold border, first in the grid. */
+  featured?: boolean;
 }
 
-export function GameCard({ game, bestScore = 0 }: GameCardProps) {
+export function GameCard({ game, bestScore = 0, featured = false }: GameCardProps) {
   const playable = game.status === "playable";
 
   return (
-    <GlassCard className="group relative overflow-hidden p-0">
+    <GlassCard
+      className={featured ? "group relative overflow-hidden p-0 ring-1 ring-gold/40" : "group relative overflow-hidden p-0"}
+    >
       {/* Game accent */}
       <div
         className={`pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b ${game.accentGradient} opacity-80`}
@@ -100,13 +104,13 @@ export function GameCard({ game, bestScore = 0 }: GameCardProps) {
         {playable ? (
           <Link
             href={game.route}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-bold text-primary-foreground transition-all hover:brightness-110 active:scale-[0.98]"
+            className="btn-primary btn-primary-sm w-full text-sm"
           >
             Play Now
-            <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+            <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5" />
           </Link>
         ) : (
-          <div className="flex w-full cursor-default items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-muted-foreground">
+          <div className="btn-ghost w-full cursor-default text-sm">
             <Lock className="h-4 w-4" />
             Coming Soon
           </div>

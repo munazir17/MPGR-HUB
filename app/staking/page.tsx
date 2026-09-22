@@ -160,6 +160,9 @@ export default function StakingPage() {
               </motion.div>
             )}
 
+            {/* Stats band first (contract-read values), then the desktop
+                5/7 split: live summary on the left, the staking form on
+                the right. Mobile stacks in the same order. */}
             <StakingStats
               walletBalanceRaw={walletBalanceRaw}
               stakedBalanceRaw={stakedBalanceRaw}
@@ -170,27 +173,33 @@ export default function StakingPage() {
               loading={loading}
             />
 
-            <LiveRewardCounter liveEarnedRewardsRaw={liveEarnedRewardsRaw} decimals={decimals} loading={loading} />
+            <div className="grid gap-6 lg:grid-cols-12 lg:items-start">
+              <div className="space-y-6 lg:col-span-5">
+                <LiveRewardCounter liveEarnedRewardsRaw={liveEarnedRewardsRaw} decimals={decimals} loading={loading} />
 
-            <StakingCard
-              walletBalanceRaw={walletBalanceRaw}
-              stakedBalanceRaw={stakedBalanceRaw}
-              earnedRewardsRaw={earnedRewardsRaw}
-              decimals={decimals}
-              isPoolPaused={isPoolPaused}
-              isWrongNetwork={isWrongNetwork}
-              loading={loading}
-              claimState={claimState}
-              onOpenStake={() => isConnected && setStakeModalOpen(true)}
-              onOpenUnstake={() => isConnected && setUnstakeModalOpen(true)}
-              onOpenExit={() => isConnected && setExitModalOpen(true)}
-              onClaim={() => isConnected && claimRewards()}
-              onSwitchNetwork={switchToBase}
-            />
+                <div className="flex items-center justify-between rounded-[14px] border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-xs text-muted">
+                  <span>Total staked pool-wide</span>
+                  <span className="font-mono font-semibold tabular-nums text-white">{formatTokenBalance(totalStakedRaw, decimals)} MPGR</span>
+                </div>
+              </div>
 
-            <div className="flex items-center justify-between rounded-2xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-xs text-muted">
-              <span>Total staked pool-wide</span>
-              <span className="font-semibold text-white">{formatTokenBalance(totalStakedRaw, decimals)} MPGR</span>
+              <div className="lg:col-span-7">
+                <StakingCard
+                  walletBalanceRaw={walletBalanceRaw}
+                  stakedBalanceRaw={stakedBalanceRaw}
+                  earnedRewardsRaw={earnedRewardsRaw}
+                  decimals={decimals}
+                  isPoolPaused={isPoolPaused}
+                  isWrongNetwork={isWrongNetwork}
+                  loading={loading}
+                  claimState={claimState}
+                  onOpenStake={() => isConnected && setStakeModalOpen(true)}
+                  onOpenUnstake={() => isConnected && setUnstakeModalOpen(true)}
+                  onOpenExit={() => isConnected && setExitModalOpen(true)}
+                  onClaim={() => isConnected && claimRewards()}
+                  onSwitchNetwork={switchToBase}
+                />
+              </div>
             </div>
 
             <SectionHeader title="Analytics" subtitle="Pool and wallet analytics, read straight from the deployed contract" />

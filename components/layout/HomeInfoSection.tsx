@@ -45,12 +45,12 @@ export function HomeInfoSection() {
   return (
     <section
       aria-label="About MPGR HUB"
-      className="mx-auto w-full px-4 pb-12 pt-10 sm:px-6 md:pt-16 lg:px-8 xl:max-w-[1760px]"
+      className="mx-auto w-full max-w-[1120px] px-4 pb-12 pt-10 sm:px-6 md:pt-16 lg:px-8"
       data-testid="home-info-section"
     >
       <div className="mx-auto max-w-3xl text-center">
         <p className="eyebrow">{APP_NAME}</p>
-        <h2 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-white md:text-4xl md:leading-[44px]">
+        <h2 className="display-l mt-3 text-[28px] text-white md:text-4xl md:leading-[44px]">
           Build. Explore. Trade. Earn with AI on Base.
         </h2>
 
@@ -80,16 +80,13 @@ export function HomeInfoSection() {
         </p>
       </div>
 
-      <div className="mt-10 grid gap-3 sm:gap-4 md:grid-cols-3">
+      <div className="mt-10 grid gap-4 sm:gap-5 md:grid-cols-3">
         {CARDS.map((card) => {
           const Icon = card.icon;
           return (
-            <GlassCard
-              key={card.title}
-              className="p-6 transition-colors duration-300 hover:border-white/[0.12]"
-            >
+            <GlassCard key={card.title} variant="frame" className="p-5 md:p-6">
               <div className="flex items-center gap-3">
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-primary/[0.16] bg-primary/[0.07]">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border border-primary/[0.16] bg-primary/[0.07]">
                   <Icon className="h-4 w-4 text-primary" aria-hidden="true" />
                 </span>
                 <p className="text-[15px] font-semibold tracking-[-0.01em] text-white">

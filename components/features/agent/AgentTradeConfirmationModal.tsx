@@ -67,14 +67,14 @@ export function AgentTradeConfirmationModal({
           exit={{ opacity: 0 }}
         >
           <motion.div
-            className="w-full max-w-md rounded-t-2xl border border-white/[0.08] bg-surface bg-gradient-surface p-5 shadow-glow-lg sm:rounded-2xl"
+            className="w-full max-w-[440px] rounded-t-3xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-3xl sm:p-8"
             initial={{ y: 40, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 20, opacity: 0 }}
           >
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <ArrowLeftRight className="h-5 w-5 text-emerald-400" />
+                <ArrowLeftRight className="h-5 w-5 text-good" />
                 <h2 className="text-sm font-semibold text-white">
                   {proposal.kind === "tokenized-stock-swap" ? "Confirm tokenized-stock swap" : "Confirm swap"}
                 </h2>
@@ -147,14 +147,14 @@ export function AgentTradeConfirmationModal({
             )}
 
             {failed && error && (
-              <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-bad/30 bg-bad/10 p-3 text-sm text-bad">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>{error.message}</span>
               </div>
             )}
 
             {settled && (
-              <div className="mb-4 flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300">
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-good/30 bg-good/10 p-3 text-sm text-good">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                   Swap settled
@@ -168,7 +168,7 @@ export function AgentTradeConfirmationModal({
               <button
                 onClick={onConfirmAndSwap}
                 disabled={!canConfirm}
-                className="w-full rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+                className="btn-primary w-full text-sm"
               >
                 {proposal.executionAvailable ? "Confirm & Swap" : "Execution unavailable"}
               </button>

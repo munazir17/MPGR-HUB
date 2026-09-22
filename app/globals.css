@@ -2,6 +2,41 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================================
+   MPGR HUB — design tokens (roles, not renames).
+
+   Existing Tailwind color names (background, surface, primary, gold,
+   muted, …) keep working; these custom properties add the ROLE layer
+   used by the raw-CSS component classes below.
+   ========================================================================== */
+:root {
+  --bg: #05080f;
+  --bg-elevated: #070c16;
+  --surface: #0a101b;
+  --surface-2: #0d1524;
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #eef3fa;
+  --text-2: #8fa0b6;
+  --accent: #4da3ff;
+  --accent-2: #2472eb;
+  --accent-glow: #8cc7ff;
+  --gold: #e2c073;
+  --gold-2: #ddb765;
+  --good: #3ddc84;
+  --bad: #ff6b6b;
+
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-cta: 16px;
+  --r-pill: 999px;
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --t-fast: 120ms;
+  --t-med: 200ms;
+  --t-slow: 400ms;
+}
+
 html {
   scroll-behavior: smooth;
   overflow-x: hidden;
@@ -10,8 +45,8 @@ html {
 
 body {
   position: relative;
-  background-color: #05080f;
-  color: #eef3fa;
+  background-color: var(--bg);
+  color: var(--text);
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -23,7 +58,8 @@ body {
 }
 
 /* Ambient light: one cool top glow + a faint warm counter-glow.
-   Extremely restrained — depth without noise. */
+   Extremely restrained — depth without noise. No site-wide grid, no
+   particles. */
 body::before {
   content: "";
   position: fixed;
@@ -31,8 +67,8 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 64% 40% at 50% -14%, rgba(77, 163, 255, 0.09), transparent 62%),
-    radial-gradient(ellipse 36% 24% at 100% 0%, rgba(226, 192, 115, 0.04), transparent 58%);
+    radial-gradient(ellipse 50% 36% at 50% -8%, rgba(77, 163, 255, 0.14), transparent 60%),
+    radial-gradient(ellipse 28% 22% at 88% 18%, rgba(226, 192, 115, 0.06), transparent 55%);
 }
 
 /* Display headings: tighter optical tracking for a premium feel. */
@@ -93,25 +129,248 @@ a[role="button"],
   color: transparent;
 }
 
+/* ============================================================================
+   Typography helpers (Inter only — already loaded).
+   ========================================================================== */
+.display-xl {
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+}
+
+.display-l {
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.04;
+}
+
 @layer components {
   /* Small uppercase kicker used above section/page titles. */
   .eyebrow {
     @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-muted;
   }
 
-  /* Primary action — blue gradient with an inner top highlight. */
+  /* ==========================================================================
+     PHYSICAL BUTTONS — extruded, with a real lip that collapses on press.
+     MPGR blue. NOT a glow pill, NOT round.
+     ========================================================================== */
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-premium font-semibold text-white shadow-glow transition-all duration-200 hover:brightness-[1.08] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-40;
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-height: 52px;
+    padding: 0 1.375rem;
+    border-radius: var(--r-cta);
+    font-weight: 600;
+    color: #ffffff;
+    cursor: pointer;
+    border: 1px solid rgba(140, 199, 255, 0.38);
+    background: linear-gradient(180deg, #6ab2ff 0%, #4da3ff 44%, #2472eb 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      inset 0 -1px 0 rgba(9, 32, 74, 0.4),
+      0 3px 0 #1e63db,
+      0 8px 16px rgba(30, 99, 219, 0.22);
+    transition:
+      transform var(--t-med) var(--ease-out),
+      box-shadow var(--t-med) var(--ease-out),
+      filter var(--t-fast) linear,
+      opacity var(--t-fast) linear;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  @media (min-width: 768px) {
+    .btn-primary {
+      min-height: 56px;
+    }
+  }
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.07);
+  }
+  .btn-primary:active:not(:disabled) {
+    transform: translateY(2px) scale(0.98);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      0 1px 0 #1e63db,
+      0 3px 8px rgba(30, 99, 219, 0.18);
+  }
+  .btn-primary:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+    filter: saturate(0.5);
   }
 
-  /* Quiet secondary action on dark surfaces. */
+  /* Compact 3D blue for dense grids (min 44px touch target). */
+  .btn-primary-sm {
+    min-height: 44px;
+    padding: 0 1rem;
+    font-size: 0.8125rem;
+    border-radius: 12px;
+  }
+
+  /* Gold physical button — value / claim actions. */
+  .btn-gold {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-height: 52px;
+    padding: 0 1.375rem;
+    border-radius: var(--r-cta);
+    font-weight: 700;
+    color: #221907;
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    background: linear-gradient(180deg, #f3da9b 0%, #e2c073 46%, #ddb765 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      inset 0 -1px 0 rgba(94, 66, 15, 0.35),
+      0 3px 0 #b98f3e,
+      0 8px 16px rgba(221, 183, 101, 0.2);
+    transition:
+      transform var(--t-med) var(--ease-out),
+      box-shadow var(--t-med) var(--ease-out),
+      filter var(--t-fast) linear,
+      opacity var(--t-fast) linear;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  @media (min-width: 768px) {
+    .btn-gold {
+      min-height: 56px;
+    }
+  }
+  .btn-gold:hover:not(:disabled) {
+    filter: brightness(1.05);
+  }
+  .btn-gold:active:not(:disabled) {
+    transform: translateY(2px) scale(0.98);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.45),
+      0 1px 0 #b98f3e,
+      0 3px 8px rgba(221, 183, 101, 0.16);
+  }
+  .btn-gold:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+    filter: saturate(0.5);
+  }
+  .btn-gold-sm {
+    min-height: 44px;
+    padding: 0 1rem;
+    font-size: 0.8125rem;
+    border-radius: 12px;
+  }
+
+  /* Quiet secondary action — hairline ghost. */
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] font-medium text-white/80 transition-colors duration-200 hover:bg-white/[0.07] hover:text-white active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] font-medium text-white/80 transition-colors duration-200 hover:border-white/[0.16] hover:bg-white/[0.07] hover:text-white active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-40;
   }
 
-  /* Pill chip (filters, quick links, suggestion prompts). */
+  /* Card hover lift — pointer-fine devices ONLY (no sticky hover on
+     touch). translateY(-2px) + border warming to primary/28, 200ms. */
+  @media (hover: hover) and (pointer: fine) {
+    .card-lift {
+      transition:
+        transform var(--t-med) var(--ease-out),
+        border-color var(--t-med) linear,
+        background-color var(--t-med) linear;
+    }
+    .card-lift:hover {
+      transform: translateY(-2px);
+      border-color: rgba(77, 163, 255, 0.28);
+    }
+  }
+
+
+  /* The composer's 44×44 send key — same physical recipe as .btn-primary
+     at a fixed square size (inline styles carry the extrusion so the
+     class only owns hover/press physics). */
+  .btn-primary-send:hover:not(:disabled) {
+    filter: brightness(1.07);
+  }
+  .btn-primary-send:active:not(:disabled) {
+    transform: translateY(2px) scale(0.98);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      0 1px 0 #1e63db,
+      0 3px 8px rgba(30, 99, 219, 0.18);
+  }
+
+
+  /* Destructive (burn confirm) — red outline, never a filled celebration. */
+  .btn-destructive {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-[#FF6B6B]/45 bg-[#FF6B6B]/[0.06] font-semibold text-[#FF6B6B] transition-all duration-200 hover:border-[#FF6B6B]/70 hover:bg-[#FF6B6B]/[0.12] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FF6B6B]/40 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  /* Pill chip (filters, quick links, suggestion prompts).
+     32–36px tall, hairline, quiet until hovered. */
   .chip {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 text-xs font-medium text-white/80 transition-colors duration-200 hover:border-white/[0.16] hover:bg-white/[0.06] hover:text-white active:scale-[0.98];
+    @apply inline-flex min-h-[36px] items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 text-xs font-medium text-white/80 transition-colors duration-200 hover:border-white/[0.16] hover:bg-white/[0.06] hover:text-white active:scale-[0.98];
+  }
+
+  /* ==========================================================================
+     CARD SPECIES
+     TILE — stats, staking, games, rewards… (GlassCard default)
+     FRAME — transparent + hairline + "+" corner ticks (HomeInfo)
+     STAGE — the Agent workspace itself (built in AgentExperience)
+     ========================================================================== */
+
+  /* Gifted-style corner ticks: a "+" at each corner of a FRAME card. */
+  .corner-tick {
+    position: absolute;
+    width: 11px;
+    height: 11px;
+    pointer-events: none;
+  }
+  .corner-tick::before,
+  .corner-tick::after {
+    content: "";
+    position: absolute;
+    background: rgba(143, 160, 182, 0.55);
+  }
+  .corner-tick::before {
+    left: 5px;
+    top: 0;
+    width: 1px;
+    height: 11px;
+  }
+  .corner-tick::after {
+    left: 0;
+    top: 5px;
+    width: 11px;
+    height: 1px;
+  }
+  .corner-tick-tl {
+    top: -5px;
+    left: -5px;
+  }
+  .corner-tick-tr {
+    top: -5px;
+    right: -5px;
+  }
+  .corner-tick-bl {
+    bottom: -5px;
+    left: -5px;
+  }
+  .corner-tick-br {
+    bottom: -5px;
+    right: -5px;
+  }
+
+  /* Optional ~2% grain, STAGE only. */
+  .stage-grain::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.022'/%3E%3C/svg%3E");
+    background-size: 160px 160px;
   }
 }
 
@@ -123,5 +382,13 @@ a[role="button"],
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  /* The Agent Core floats on a wrapper div with this class — freeze it
+     to the static poster pose instead of a frozen mid-frame. */
+  .agent-core-float,
+  .agent-core-shadow {
+    animation: none !important;
+    transform: none !important;
   }
 }

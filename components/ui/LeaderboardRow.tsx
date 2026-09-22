@@ -18,6 +18,10 @@ interface LeaderboardRowProps {
   tier?: PremiumTierId;
 }
 
+// One leaderboard row — a TILE with mono tabular figures and hairline
+// rows. The connected wallet is highlighted as "you" with a primary/10
+// fill. On phones the figures stack under the identity instead of
+// squeezing it.
 export function LeaderboardRow({
   rank,
   address,
@@ -41,41 +45,38 @@ export function LeaderboardRow({
     <motion.div
       initial={{ opacity: 0, x: -8 }}
       animate={{ opacity: 1, x: 0 }}
-      whileHover={{ x: 2 }}
+      transition={{ duration: 0.25 }}
       className={clsx(
-        "flex items-center gap-3 rounded-xl border p-3.5 transition-colors duration-200",
+        "flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[14px] border p-3.5 transition-colors duration-200",
         isCurrentUser
-          ? "border-primary/40 bg-primary/[0.06] shadow-glow"
-          : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04]"
+          ? "border-primary/40 bg-primary/10 shadow-glow"
+          : "border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04]"
       )}
     >
       <span
         className={clsx(
-          "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold",
-          isTop3 ? medalBg : medalBg
+          "flex h-7 w-7 shrink-0 items-center justify-center rounded-full font-mono text-xs font-bold tabular-nums",
+          medalBg
         )}
       >
         {rank}
       </span>
       <AddressAvatar address={address} size={32} />
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-1.5 truncate text-sm font-medium text-white">
-          {formatAddress(address)} {isCurrentUser && <span className="text-primary">(you)</span>}
+        <p className="flex items-center gap-1.5 truncate font-mono text-sm font-medium text-white">
+          {formatAddress(address)} {isCurrentUser && <span className="font-sans text-primary">(you)</span>}
           {tier && tier !== "none" && <PremiumBadge tier={tier} size="sm" />}
         </p>
-        <p className="text-[11px] text-muted">{referrals} referrals</p>
+        <p className="font-mono text-[11px] tabular-nums text-muted">{referrals} referrals</p>
       </div>
-      <div className="text-right">
-        <p className="text-sm font-semibold text-white">{formatCompactNumber(xp)} XP</p>
+      <div className="w-full text-right sm:w-auto sm:text-right">
+        <p className="font-mono text-sm font-semibold tabular-nums text-white">{formatCompactNumber(xp)} XP</p>
         {/* This is `seasonPoints` (a distinct, server-tracked metric — see
             lib/xp-engine.ts getSeasonPoints), never the season NUMBER and
-            never XP. It previously rendered as a bare "150 season" with no
-            "points"/"pts" qualifier, which reads as if Season itself were
-            being set to the XP value whenever the two numbers happened to
-            match (e.g. for a wallet whose full XP total was earned this
-            season). The value was already correct; only the label was
-            ambiguous. */}
-        <p className="text-[11px] font-medium text-gradient-gold">{formatCompactNumber(seasonPoints)} season pts</p>
+            never XP. The value is correct; the label stays qualified. */}
+        <p className="font-mono text-[11px] font-medium tabular-nums text-gradient-gold">
+          {formatCompactNumber(seasonPoints)} season pts
+        </p>
       </div>
     </motion.div>
   );

@@ -23,13 +23,18 @@ const config: Config = {
       },
       colors: {
         background: "#05080F",
+        elevated: "#070C16",
         surface: "#0A101B",
         "surface-2": "#0D1524",
         border: "#182234",
         primary: "#4DA3FF",
         "primary-glow": "#8CC7FF",
+        "primary-2": "#2472EB",
         gold: "#E2C073",
         "gold-glow": "#F3DA9B",
+        "gold-2": "#DDB765",
+        good: "#3DDC84",
+        bad: "#FF6B6B",
         muted: "#8FA0B6",
       },
       backgroundImage: {
@@ -59,6 +64,14 @@ const config: Config = {
         "2xl": "1.5rem",
         "3xl": "2rem",
       },
+      transitionTimingFunction: {
+        out: "cubic-bezier(.23, 1, .32, 1)",
+      },
+      transitionDuration: {
+        fast: "120ms",
+        med: "200ms",
+        slow: "400ms",
+      },
       keyframes: {
         shimmer: {
           "0%": { backgroundPosition: "-200% 0" },
@@ -67,6 +80,17 @@ const config: Config = {
         float: {
           "0%, 100%": { transform: "translateY(0px)" },
           "50%": { transform: "translateY(-6px)" },
+        },
+        // Agent Core (components/features/agent/AgentCore.tsx): a slow
+        // ±6px idle hover. 6s — a calm instrument, not a bobbing toy.
+        "core-float": {
+          "0%, 100%": { transform: "translateY(-6px)" },
+          "50%": { transform: "translateY(6px)" },
+        },
+        // Contact-shadow breathing, phase-locked to the core float.
+        "core-shadow": {
+          "0%, 100%": { transform: "translateY(6px) scale(1)", opacity: "0.55" },
+          "50%": { transform: "translateY(-6px) scale(0.9)", opacity: "0.35" },
         },
         "glow-pulse": {
           "0%, 100%": { opacity: "0.45" },
@@ -80,6 +104,10 @@ const config: Config = {
         // track holds two identical chip sequences and translates exactly
         // -50%, so the loop is seamless. Paired with hover:animation-play-
         // state-paused for "pause on hover".
+        "core-filament": {
+          "0%": { transform: "rotate(0deg)" },
+          "100%": { transform: "rotate(360deg)" },
+        },
         marquee: {
           "0%": { transform: "translateX(0)" },
           "100%": { transform: "translateX(-50%)" },
@@ -88,6 +116,9 @@ const config: Config = {
       animation: {
         shimmer: "shimmer 2.2s linear infinite",
         float: "float 5s ease-in-out infinite",
+        "core-float": "core-float 6s ease-in-out infinite",
+        "core-shadow": "core-shadow 6s ease-in-out infinite",
+        "core-filament": "core-filament 9s linear infinite",
         "glow-pulse": "glow-pulse 3s ease-in-out infinite",
         shine: "shine 3s ease-in-out infinite",
         "tape-marquee": "marquee 48s linear infinite",

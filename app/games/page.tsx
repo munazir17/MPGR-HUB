@@ -72,14 +72,17 @@ export default function GamesPage() {
 
             <div>
               <SectionHeader title="Play" subtitle="MPGR Run is the live flagship game" />
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {getPlayableGames().map((game) => (
-                  <GameCard
-                    key={game.id}
-                    game={game}
-                    bestScore={game.id === MPGR_RUN_GAME_ID ? gameStats?.bestScore : undefined}
-                  />
-                ))}
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                {[...getPlayableGames()]
+                  .sort((a, b) => (a.id === MPGR_RUN_GAME_ID ? -1 : b.id === MPGR_RUN_GAME_ID ? 1 : 0))
+                  .map((game) => (
+                    <GameCard
+                      key={game.id}
+                      game={game}
+                      featured={game.id === MPGR_RUN_GAME_ID}
+                      bestScore={game.id === MPGR_RUN_GAME_ID ? gameStats?.bestScore : undefined}
+                    />
+                  ))}
               </div>
             </div>
 

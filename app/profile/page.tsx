@@ -116,11 +116,8 @@ export default function ProfilePage() {
         {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <div>
-              <span
-                aria-hidden="true"
-                className="mb-3 block h-px w-10 bg-gradient-to-r from-primary/80 to-transparent"
-              />
-              <h1 className="text-2xl font-semibold tracking-[-0.02em] text-white md:text-4xl md:leading-[44px]">Profile</h1>
+              <p className="eyebrow">Account</p>
+              <h1 className="display-l mt-3 text-[28px] text-white md:text-4xl md:leading-[44px]">Profile</h1>
               <p className="mt-2 text-sm text-muted md:text-[15px]">Your account and preferences.</p>
             </div>
 
@@ -137,10 +134,10 @@ export default function ProfilePage() {
             <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
               <div className="space-y-6">
                 <GlassCard className="p-5">
-                  <div className="flex items-center gap-4">
+                  <div className="flex min-h-[72px] items-center gap-4">
                     <AddressAvatar address={address ?? ""} size={64} />
                     <div className="min-w-0 flex-1">
-                      <h2 className="truncate text-lg font-semibold text-white">
+                      <h2 className="truncate font-mono text-lg font-semibold text-white">
                         {address ? formatAddress(address, 6) : "Not connected"}
                       </h2>
                       <p className="mt-0.5 text-xs text-muted">

@@ -69,7 +69,7 @@ export function ExitModal({
             exit={{ y: 40, opacity: 0 }}
             transition={{ type: "spring", stiffness: 260, damping: 26 }}
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-md rounded-t-2xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-2xl"
+            className="relative w-full max-w-[440px] rounded-t-3xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-3xl sm:p-8"
             style={{ paddingBottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}
           >
             <button
@@ -152,7 +152,7 @@ export function ExitModal({
                   {isWrongNetwork ? (
                     <button
                       onClick={onSwitchNetwork}
-                      className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold py-2.5 text-sm font-semibold text-background transition-transform active:scale-95"
+                      className="btn-primary mt-5 w-full text-sm"
                     >
                       Switch to Base
                     </button>
@@ -161,7 +161,7 @@ export function ExitModal({
                       onClick={() => canSubmit && onExit()}
                       disabled={!canSubmit}
                       aria-label="Confirm exit"
-                      className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold py-2.5 text-sm font-semibold text-background transition-transform active:scale-95 disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
+                      className="btn-primary mt-5 w-full text-sm"
                     >
                       {busy ? (
                         <>

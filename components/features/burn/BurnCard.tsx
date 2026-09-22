@@ -72,7 +72,7 @@ export function BurnCard({
       <GlassCard className="relative overflow-hidden p-5 sm:p-6">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-gradient-gold opacity-20 blur-3xl"
+          className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-gold/[0.06] blur-3xl"
         />
 
         <div className="relative flex items-center gap-2">
@@ -165,10 +165,8 @@ export function BurnCard({
         <motion.button
           onClick={handleSubmit}
           disabled={!canSubmit}
-          whileHover={canSubmit ? { scale: 1.02 } : undefined}
-          whileTap={canSubmit ? { scale: 0.97 } : undefined}
           aria-label="Confirm burn"
-          className="relative mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold text-sm font-semibold text-background transition-transform disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
+          className="btn-destructive relative mt-5 w-full py-3 text-sm"
         >
           {submitting ? (
             <>

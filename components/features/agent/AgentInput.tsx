@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { motion } from "framer-motion";
 import { Send, Square } from "lucide-react";
 import { AgentCommandPalette } from "./AgentCommandPalette";
 import type { useCommandPalette } from "@/hooks/useCommandPalette";
@@ -28,24 +27,25 @@ interface AgentInputProps {
    */
   suggestionsSlot?: ReactNode;
   /**
-   * Embedded mode: the composer renders inside the unified chat
-   * surface card, so it drops its own border/fill instead of drawing a
-   * card inside a card.
+   * Embedded mode: the composer renders inside the stage dock, drawing
+   * its own opaque #070C16 surface + hairline (it sits on the stage's
+   * surface, not inside another card).
    */
   embedded?: boolean;
 }
 
-const MIN_HEIGHT_PX = 44;
-const MAX_HEIGHT_PX = 112;
+const MIN_HEIGHT_PX = 56;
+const MAX_HEIGHT_PX = 120;
 
-// Phase 3A.4 Batch 2 update — auto-growing height + IME composition guard.
-// Contract unchanged for every existing caller.
+// The stage DOCK composer. Contract unchanged for every existing caller
+// — same send / stop / lock / IME / palette behavior; only the physical
+// form changed:
 //
-// Phase 3A.6 — detects a leading "/" to open the command palette above
-// the input. Palette navigation (up/down/enter/esc) intercepts the
-// textarea's keydown only while the palette is open; normal typing and
-// the existing Enter-to-send / Shift+Enter-newline behavior are
-// otherwise untouched.
+//   · opaque #070C16 surface, 16px radius, hairline, focus ring primary/40
+//   · textarea grows 56 → 120px
+//   · send = a 44×44 SQUARE-ISH (16px radius) extruded blue button —
+//     a physical key, not a round glow pill
+//   · /commands palette behavior untouched
 export function AgentInput({
   onSend,
   disabled,
@@ -123,6 +123,8 @@ export function AgentInput({
     }
   };
 
+  const stopping = disabled && !locked && Boolean(onStop);
+
   return (
     <div className="flex flex-col">
       {commandPalette && (
@@ -137,17 +139,13 @@ export function AgentInput({
         className={
           embedded
             ? "p-0"
-            : "rounded-2xl border border-white/[0.08] bg-surface p-2 sm:p-2.5"
+            : "rounded-2xl border border-white/[0.08] bg-elevated p-2 sm:p-2.5"
         }
         data-testid="agent-composer"
       >
         {suggestionsSlot ? (
           <div
-            className={
-              embedded
-                ? "mb-2 pb-2"
-                : "mb-2 border-b border-white/[0.06] pb-2"
-            }
+            className={embedded ? "mb-2 pb-2" : "mb-2 border-b border-white/[0.06] pb-2"}
             data-testid="agent-composer-suggestions"
           >
             {suggestionsSlot}
@@ -156,7 +154,7 @@ export function AgentInput({
         <div
           className={
             embedded
-              ? "flex items-end gap-2 rounded-xl border border-white/[0.07] bg-background/60 px-2 py-1.5 transition-colors duration-200 focus-within:border-primary/40 sm:px-2.5"
+              ? "flex items-end gap-2 rounded-[16px] border border-white/[0.08] bg-elevated px-2 py-2 transition-[border-color,box-shadow] duration-200 focus-within:border-primary/40 focus-within:shadow-[0_0_0_3px_rgba(77,163,255,0.14)] sm:px-2.5"
               : "flex items-end gap-2"
           }
         >
@@ -171,24 +169,29 @@ export function AgentInput({
             rows={1}
             placeholder={placeholder}
             aria-label="Message MPGR Agent"
-            className="max-h-28 min-h-[44px] flex-1 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-3.5 py-2.5 text-sm text-white placeholder:text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            className="max-h-[120px] min-h-[52px] flex-1 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-3 py-1.5 text-sm text-white placeholder:text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 md:min-h-[56px]"
           />
-          <motion.button
+          {/* 44×44 physical key — extruded blue lip that collapses on press. */}
+          <button
             type="button"
             onClick={disabled && !locked && onStop ? onStop : handleSend}
             disabled={locked || (disabled ? !onStop : !value.trim())}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            aria-label={disabled && !locked ? "Stop generating" : "Send message"}
-            title={disabled && !locked ? "Stop generating" : "Send message"}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-premium text-white shadow-glow transition-[filter] duration-200 hover:brightness-[1.08] disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label={stopping ? "Stop generating" : "Send message"}
+            title={stopping ? "Stop generating" : "Send message"}
+            className="btn-primary-send group flex h-11 w-11 shrink-0 items-center justify-center rounded-[16px] text-white transition-[transform,box-shadow,filter] disabled:cursor-not-allowed disabled:opacity-40"
+            style={{
+              border: "1px solid rgba(140,199,255,0.38)",
+              background: "linear-gradient(180deg, #6AB2FF 0%, #4DA3FF 44%, #2472EB 100%)",
+              boxShadow:
+                "inset 0 1px 0 rgba(255,255,255,0.28), inset 0 -1px 0 rgba(9,32,74,0.4), 0 3px 0 #1E63DB, 0 8px 14px rgba(30,99,219,0.22)",
+            }}
           >
-            {disabled && !locked ? (
+            {stopping ? (
               <Square className="h-4 w-4" aria-hidden="true" />
             ) : (
-              <Send className="h-4 w-4" aria-hidden="true" />
+              <Send className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" aria-hidden="true" />
             )}
-          </motion.button>
+          </button>
         </div>
       </div>
     </div>

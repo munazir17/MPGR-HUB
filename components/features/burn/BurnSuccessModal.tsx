@@ -63,7 +63,7 @@ export function BurnSuccessModal({ open, amount, address, onClose }: BurnSuccess
             exit={{ y: 40, opacity: 0 }}
             transition={{ type: "spring", stiffness: 260, damping: 24 }}
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-sm overflow-hidden rounded-t-2xl border border-gold/20 bg-surface p-6 text-center shadow-glow-gold sm:rounded-2xl"
+            className="relative w-full max-w-[440px] overflow-hidden rounded-t-3xl border border-gold/20 bg-surface p-6 text-center shadow-glow-gold sm:rounded-3xl sm:p-8"
             style={{ paddingBottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}
           >
             <div

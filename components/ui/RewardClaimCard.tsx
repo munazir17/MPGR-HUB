@@ -107,7 +107,7 @@ export function RewardClaimCard({ reward, onClaim, claiming = false }: RewardCla
           onClick={onClaim}
           disabled={!unlocked || claimed || claiming}
           aria-label={`${title} — ${claimed ? "claimed" : unlocked ? "claim reward" : "locked"}`}
-          className="relative mt-3 flex min-h-[36px] w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-gold py-1.5 text-xs font-semibold text-background transition-transform active:scale-95 disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
+          className="btn-gold btn-gold-sm relative mt-3 w-full text-xs"
         >
           {claiming ? (
             <>

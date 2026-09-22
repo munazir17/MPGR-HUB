@@ -125,11 +125,9 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
             className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm"
             aria-hidden="true"
           />
-          {/* Content-driven height: anchored to the top-right, the panel
-              is only as tall as its items (+ safe-area padding) and ends
-              shortly after the final entry — never stretched to the full
-              viewport. max-h-dvh + the scrolling nav handle the unlikely
-              case of the menu outgrowing the screen. */}
+          {/* Mobile (<768): a FULL-height sheet — 16px labels, 48px rows,
+              easy thumb travel. Desktop: the compact content-driven
+              drawer (only as tall as its items, anchored top-right). */}
           <motion.aside
             key="drawer"
             initial={{ x: "100%" }}
@@ -139,7 +137,7 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
             role="dialog"
             aria-modal="true"
             aria-label="MPGR HUB menu"
-            className="fixed right-0 top-0 z-[70] flex max-h-dvh w-80 max-w-[86vw] flex-col overflow-hidden border-b border-l border-white/[0.06] bg-surface shadow-glow-lg"
+            className="fixed right-0 top-0 z-[70] flex max-h-dvh w-80 max-w-[86vw] flex-col overflow-hidden border-b border-l border-white/[0.06] bg-surface shadow-glow-lg max-md:h-dvh max-md:w-full max-md:max-w-none max-md:border-b-0"
             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
             data-testid="app-sidebar"
           >
@@ -179,7 +177,7 @@ export function AppSidebar({ open, onClose }: AppSidebarProps) {
                             href={link.href}
                             aria-current={active ? "page" : undefined}
                             className={clsx(
-                              "relative flex min-h-[44px] items-center gap-3 rounded-xl px-3 text-sm transition-colors duration-200",
+                              "relative flex min-h-[48px] items-center gap-3 rounded-xl px-3 text-base transition-colors duration-200 md:min-h-[44px] md:text-sm",
                               active
                                 ? "bg-white/[0.06] font-semibold text-white"
                                 : "font-medium text-muted hover:bg-white/[0.04] hover:text-white",

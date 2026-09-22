@@ -196,7 +196,7 @@ export function CreateLockCard({
               onClick={handleSubmit}
               disabled={isWrongNetwork ? false : !canSubmit}
               aria-label="Create MPGR lock"
-              className="mt-5 flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-gold py-2.5 text-sm font-semibold text-background transition-transform active:scale-95 disabled:cursor-not-allowed disabled:bg-none disabled:bg-surface disabled:text-muted"
+              className="btn-primary mt-5 w-full text-sm"
             >
               {isWrongNetwork ? (
                 "Switch to Base"
