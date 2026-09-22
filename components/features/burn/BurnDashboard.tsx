@@ -28,13 +28,13 @@ export function BurnDashboard({ stats, milestones, loading }: BurnDashboardProps
           className="pointer-events-none absolute -bottom-24 -right-16 h-56 w-56 rounded-full bg-gradient-premium opacity-10 blur-3xl"
         />
 
-        <div className="relative flex items-center gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-gold shadow-glow-gold">
-            <Flame className="h-5 w-5 text-background" aria-hidden="true" />
+        <div className="relative flex items-center gap-3.5">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-gold/[0.2] bg-gold/[0.08]">
+            <Flame className="h-5 w-5 text-gold" aria-hidden="true" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-white sm:text-2xl">Burn Portal</h1>
-            <p className="text-sm text-muted">
+            <h1 className="text-2xl font-semibold tracking-[-0.02em] text-white md:text-4xl md:leading-[44px]">Burn Portal</h1>
+            <p className="mt-1 text-sm text-muted">
               Permanently remove MPGR from circulation and track your impact on supply.
             </p>
           </div>

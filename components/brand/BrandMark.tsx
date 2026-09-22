@@ -1,5 +1,3 @@
-"use client";
-
 import Link from "next/link";
 import { clsx } from "clsx";
 
@@ -16,7 +14,10 @@ export function MpgrMark({ className }: { className?: string }) {
       alt=""
       draggable={false}
       decoding="async"
-      className={clsx("h-8 w-8 shrink-0 rounded-lg object-cover select-none", className)}
+      className={clsx(
+        "h-8 w-8 shrink-0 rounded-[10px] object-cover select-none ring-1 ring-white/[0.10]",
+        className
+      )}
     />
   );
 }
@@ -26,11 +27,14 @@ export function BrandMark({ className }: { className?: string }) {
     <Link
       href="/"
       aria-label="MPGR HUB home"
-      className={clsx("flex min-w-0 items-center gap-2.5", className)}
+      className={clsx(
+        "flex min-w-0 items-center gap-2.5 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+        className
+      )}
     >
       <MpgrMark />
-      <span className="truncate text-sm font-semibold tracking-tight text-white">
-        MPGR HUB
+      <span className="truncate text-[15px] font-semibold tracking-[-0.01em] text-white">
+        MPGR<span className="text-white/45"> HUB</span>
       </span>
     </Link>
   );

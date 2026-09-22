@@ -80,7 +80,7 @@ export function EarlyUnlockModal({
             exit={{ y: 40, opacity: 0 }}
             transition={{ type: "spring", stiffness: 260, damping: 26 }}
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-md rounded-t-2xl border border-red-500/20 bg-surface p-6 shadow-glow sm:rounded-2xl"
+            className="relative w-full max-w-md rounded-t-2xl border border-red-500/25 bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-2xl"
             style={{ paddingBottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}
           >
             <button

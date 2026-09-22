@@ -314,7 +314,7 @@ export function AgentActionConfirmationModal({
               damping: 26,
             }}
             onClick={(event) => event.stopPropagation()}
-            className="relative w-full max-w-md rounded-t-2xl border border-white/10 bg-surface p-6 shadow-glow sm:rounded-2xl"
+            className="relative w-full max-w-md rounded-t-2xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-2xl"
             style={{
               paddingBottom:
                 "calc(1.5rem + env(safe-area-inset-bottom))",

@@ -116,8 +116,12 @@ export default function ProfilePage() {
         {!mounted ? null : (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <div>
-              <h1 className="text-3xl font-semibold tracking-tight text-white">Profile</h1>
-              <p className="mt-1 text-sm text-muted">Your account and preferences.</p>
+              <span
+                aria-hidden="true"
+                className="mb-3 block h-px w-10 bg-gradient-to-r from-primary/80 to-transparent"
+              />
+              <h1 className="text-2xl font-semibold tracking-[-0.02em] text-white md:text-4xl md:leading-[44px]">Profile</h1>
+              <p className="mt-2 text-sm text-muted md:text-[15px]">Your account and preferences.</p>
             </div>
 
             {!isConnected && (

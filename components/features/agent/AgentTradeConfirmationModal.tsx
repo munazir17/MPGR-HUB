@@ -67,7 +67,7 @@ export function AgentTradeConfirmationModal({
           exit={{ opacity: 0 }}
         >
           <motion.div
-            className="w-full max-w-md rounded-t-2xl border border-white/10 bg-zinc-950 p-5 sm:rounded-2xl"
+            className="w-full max-w-md rounded-t-2xl border border-white/[0.08] bg-surface bg-gradient-surface p-5 shadow-glow-lg sm:rounded-2xl"
             initial={{ y: 40, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 20, opacity: 0 }}

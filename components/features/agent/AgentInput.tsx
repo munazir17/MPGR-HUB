@@ -156,7 +156,7 @@ export function AgentInput({
         <div
           className={
             embedded
-              ? "flex items-end gap-2 rounded-xl border border-white/[0.06] bg-surface px-2 py-1.5 sm:px-2.5"
+              ? "flex items-end gap-2 rounded-xl border border-white/[0.07] bg-background/60 px-2 py-1.5 transition-colors duration-200 focus-within:border-primary/40 sm:px-2.5"
               : "flex items-end gap-2"
           }
         >
@@ -181,7 +181,7 @@ export function AgentInput({
             whileTap={{ scale: 0.95 }}
             aria-label={disabled && !locked ? "Stop generating" : "Send message"}
             title={disabled && !locked ? "Stop generating" : "Send message"}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-background shadow-glow transition-opacity duration-200 disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-premium text-white shadow-glow transition-[filter] duration-200 hover:brightness-[1.08] disabled:cursor-not-allowed disabled:opacity-40"
           >
             {disabled && !locked ? (
               <Square className="h-4 w-4" aria-hidden="true" />

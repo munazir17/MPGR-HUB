@@ -72,8 +72,8 @@ function TapeChip({ chip, onSelect }: { chip: NonNullable<ChipModel>; onSelect: 
       className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 font-mono text-[11px] leading-none transition-colors hover:bg-white/[0.06] focus-visible:bg-white/[0.08] focus-visible:outline-none"
       aria-label={`${chip.symbol} ${formatTapeUsd(chip.usd)}${change ? `, ${change} 24h` : ""}${chip.stale ? ", stale" : ""}`}
     >
-      <span className="font-semibold tracking-wide text-white">{chip.symbol}</span>
-      <span className="tabular-nums text-white/80">{formatTapeUsd(chip.usd)}</span>
+      <span className="font-semibold tracking-wide text-white/90">{chip.symbol}</span>
+      <span className="tabular-nums text-white/60">{formatTapeUsd(chip.usd)}</span>
       {chip.stale ? (
         <span className="flex items-center gap-1 text-[10px] text-amber-400">
           <span className="h-1.5 w-1.5 rounded-full bg-amber-400" aria-hidden="true" />
@@ -111,10 +111,10 @@ function Track({
   const sequence = [...chips, ...chips];
   return (
     <div className="group flex h-full min-w-0 shrink-0 items-center overflow-hidden border-r border-white/[0.07]">
-      <span className="z-10 flex h-full shrink-0 items-center border-r border-white/[0.07] bg-[#0A1120] px-2.5 text-[9px] font-semibold uppercase leading-none tracking-[0.14em] text-muted">
+      <span className="z-10 flex h-full shrink-0 items-center border-r border-white/[0.06] bg-[#070C16] px-2.5 text-[9px] font-semibold uppercase leading-none tracking-[0.16em] text-muted/90">
         {label}
       </span>
-      <div className="relative flex h-full min-w-0 overflow-hidden">
+      <div className="relative flex h-full min-w-0 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_20px,black_calc(100%-20px),transparent)]">
         <div
           className={clsx(
             "flex h-full w-max items-center gap-1 py-0.5 pr-1 group-hover:[animation-play-state:paused]",
@@ -152,14 +152,14 @@ export function LiveTape({ onPrepareSwap, className }: LiveTapeProps) {
     <>
       <div
         className={clsx(
-          "z-40 flex h-11 w-full items-stretch overflow-hidden border-b border-white/[0.07] bg-[#0A1120] md:h-12",
+          "z-40 flex h-11 w-full items-stretch overflow-hidden border-b border-white/[0.06] bg-[#070C16] md:h-12",
           className,
         )}
         data-testid="live-tape"
       >
         <Track label="Coinbase · Base" chips={wrappedChips} speed="normal" onSelect={openPair} />
         <Track label="Stocks B20" chips={stockChips} speed="fast" onSelect={openPair} />
-        <div className="ml-auto flex h-full shrink-0 items-center gap-2 px-2.5">
+        <div className="relative z-10 ml-auto flex h-full shrink-0 items-center gap-2 border-l border-white/[0.06] bg-[#070C16] px-3">
           {error ? (
             <span className="flex items-center gap-1.5 font-mono text-[10px] text-amber-400">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" aria-hidden="true" />
