@@ -13,7 +13,7 @@
 //   1. LiveTape — full width, dark, monospace prices, pause on hover
 //   2. MPGR AGENT hero + the ONE chat surface (conversation thread +
 //      suggested chips + "Ask anything..." composer in a single card),
-//      wide on desktop (lg:max-w-6xl) so the chat is the primary
+//      wide on desktop (xl:max-w-[1760px]) so the chat is the primary
 //      content of the page
 //   3. Compact MPGR HUB info section (brand message + 3 cards)
 //   4. Social/community footer

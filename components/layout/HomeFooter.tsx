@@ -78,7 +78,7 @@ export function HomeFooter() {
       className="shrink-0 border-t border-white/[0.08] px-4 pb-6 pt-8 sm:px-6"
       style={{ paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))" }}
     >
-      <div className="mx-auto max-w-6xl lg:px-8">
+      <div className="mx-auto w-full max-w-[1760px] lg:px-8">
         {/* Brand block */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>

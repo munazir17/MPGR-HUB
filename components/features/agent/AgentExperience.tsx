@@ -114,7 +114,7 @@ export function AgentExperience({
 
   return (
     <>
-      <main className="mx-auto w-full flex-col px-3 pb-2 pt-1 md:max-w-3xl md:px-4 md:py-8 lg:max-w-6xl">
+      <main className="mx-auto w-full flex-col px-3 pb-2 pt-1 sm:px-4 md:py-8 lg:px-8 xl:max-w-[1760px]">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}

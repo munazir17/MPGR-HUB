@@ -24,7 +24,7 @@ export function Navbar() {
         className="sticky top-0 z-50 border-b border-white/[0.07] bg-background/90 backdrop-blur-md"
         style={{ paddingTop: "env(safe-area-inset-top)" }}
       >
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-2 px-4 py-3 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full max-w-[1760px] items-center justify-between gap-2 px-4 py-3 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-5">
             <BrandMark />
 
