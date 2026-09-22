@@ -3,8 +3,8 @@
 // app/page.tsx — Home = MPGR AGENT.
 //
 // The Base Stocks terminal that used to live at "/agent" was moved
-// here; there is no separate Stocks tab/page anymore (bottom nav is
-// Home | Rewards | Profile, and /agent redirects to "/"). The agent
+// here; there is no separate Stocks tab/page anymore (mobile navigates
+// via the header's sidebar menu, and /agent redirects to "/"). The agent
 // keeps its name — MPGR AGENT — the stocks tooling simply lives inside
 // it now.
 //

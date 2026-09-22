@@ -113,7 +113,7 @@ describe("eslint.config.mjs (project config file)", () => {
     const eslint = new ESLint();
     expect(await eslint.isPathIgnored("app/layout.tsx")).toBe(false);
     expect(await eslint.isPathIgnored("lib/api/cookies.ts")).toBe(false);
-    expect(await eslint.isPathIgnored("components/BottomNav.tsx")).toBe(false);
+    expect(await eslint.isPathIgnored("components/Navbar.tsx")).toBe(false);
   });
 
   it("keeps the legacy ignorePatterns (.next/, out/, coverage/, node_modules/)", async () => {

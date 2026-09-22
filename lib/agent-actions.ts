@@ -45,7 +45,7 @@ import { formatCompactNumber } from "@/lib/format";
 //      navigation), never a broken or unexpected route.
 //   3. AgentIconKey gained "games" for the new open_games action, mapped
 //      in components/features/agent/agent-icon-map.ts to the exact same
-//      Gamepad2 icon components/BottomNav.tsx already uses for Games —
+//      Gamepad2 icon the sidebar menu already uses for Games —
 //      reusing established icon language, per this file's own existing
 //      convention (see the Crown/Coins examples above).
 

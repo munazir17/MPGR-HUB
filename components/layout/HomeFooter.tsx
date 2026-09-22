@@ -101,8 +101,8 @@ export function HomeFooter() {
         {/* THREE information sections */}
         <div className="mt-6 grid gap-8 border-t border-white/[0.06] pt-6 sm:grid-cols-2 lg:grid-cols-3">
           {/* Mobile-only redundancy cleanup: on phones this column duplicates
-            the sidebar menu, so it is hidden below sm (the same breakpoint
-            the mobile bottom nav uses). Desktop keeps the full footer. */}
+            the sidebar menu, so it is hidden below sm. Desktop keeps the
+            full footer. */}
           <FooterLinkColumn title="Ecosystem" links={ecosystem} className="hidden sm:block" />
           <FooterLinkColumn title="Learn" links={learn} />
 

@@ -86,7 +86,7 @@ export default function GamesPage() {
               {achievements.length === 0 ? (
                 <EmptyState icon={Award} title="No achievements yet" description="Start earning XP to unlock achievements." />
               ) : (
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
                   {achievements.map((achievement) => (
                     <AchievementCard
                       key={achievement.id}

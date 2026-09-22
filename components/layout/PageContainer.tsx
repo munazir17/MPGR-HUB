@@ -16,8 +16,7 @@ import { clsx } from "clsx";
 //   desktop — up to 1152px (max-w-6xl) of real content width with
 //             32px gutters, so grids/cards use the screen properly
 //
-// Pages keep their own vertical rhythm via className overrides
-// (e.g. extra bottom padding to clear the mobile bottom nav).
+// Pages keep their own vertical rhythm via className overrides.
 
 interface PageContainerProps {
   children: ReactNode;

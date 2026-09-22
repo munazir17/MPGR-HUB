@@ -145,17 +145,17 @@ export default function ProfilePage() {
                     </div>
                   </div>
                   <div className="mt-4 grid grid-cols-3 gap-2">
-                    <div className="rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
+                    <div className="min-w-0 rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
                       <p className="text-[10px] uppercase tracking-wider text-muted">Level</p>
-                      <p className="mt-1 text-lg font-semibold text-white">{levelInfo?.level ?? 1}</p>
+                      <p className="mt-1 truncate text-lg font-semibold text-white">{levelInfo?.level ?? 1}</p>
                     </div>
-                    <div className="rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
+                    <div className="min-w-0 rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
                       <p className="text-[10px] uppercase tracking-wider text-muted">Total XP</p>
-                      <p className="mt-1 text-lg font-semibold text-white">{formatCompactNumber(record?.xp ?? 0)}</p>
+                      <p className="mt-1 truncate text-lg font-semibold text-white">{formatCompactNumber(record?.xp ?? 0)}</p>
                     </div>
-                    <div className="rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
+                    <div className="min-w-0 rounded-xl border border-white/[0.06] bg-background/40 px-3 py-3 text-center">
                       <p className="text-[10px] uppercase tracking-wider text-muted">Streak</p>
-                      <p className="mt-1 text-lg font-semibold text-white">{record?.streak ?? 0}d</p>
+                      <p className="mt-1 truncate text-lg font-semibold text-white">{record?.streak ?? 0}d</p>
                     </div>
                   </div>
                 </GlassCard>
@@ -297,7 +297,7 @@ export default function ProfilePage() {
 
             <div>
               <SectionHeader title="Ecosystem" subtitle="Staking, locks, seasons, and more" />
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {ECOSYSTEM_LINKS.map((link) => {
                   const Icon = link.icon;
                   return (
@@ -319,7 +319,7 @@ export default function ProfilePage() {
             <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
               <div>
                 <SectionHeader title="Achievements" />
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {achievements.map((achievement) => (
                     <AchievementCard key={achievement.id} achievement={achievement} onClaim={() => claim(achievement.id)} />
                   ))}

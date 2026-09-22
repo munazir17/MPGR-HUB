@@ -29,12 +29,12 @@ export function StatCard({ label, value, icon: Icon, accent = "blue", loading }:
     <motion.div whileHover={{ scale: 1.02 }} transition={{ type: "spring", stiffness: 300, damping: 20 }}>
       <GlassCard className="p-5">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-medium uppercase tracking-wider text-muted">{label}</span>
+          <span className="min-w-0 truncate text-[11px] font-medium uppercase tracking-wider text-muted">{label}</span>
           <div
             className={
               isGold
-                ? "flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-gold-glow/20 to-gold/10 ring-1 ring-gold/20"
-                : "flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-primary-glow/20 to-primary/10 ring-1 ring-primary/20"
+                ? "flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-gold-glow/20 to-gold/10 ring-1 ring-gold/20"
+                : "flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary-glow/20 to-primary/10 ring-1 ring-primary/20"
             }
           >
             <Icon className={isGold ? "h-4 w-4 text-gold" : "h-4 w-4 text-primary"} aria-hidden="true" />

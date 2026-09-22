@@ -61,7 +61,7 @@ export default function BurnPage() {
         onClose={handleCloseSuccess}
       />
 
-      <PageContainer className="py-8 pb-24 sm:py-12 sm:pb-12">
+      <PageContainer className="py-8 sm:py-12">
         {!mounted ? null : (
           <motion.div
             initial={{ opacity: 0, y: 10 }}

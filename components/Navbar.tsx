@@ -10,9 +10,9 @@ import { useHolderTier } from "@/lib/useHolderTier";
 
 // The header is intentionally minimal: brand (→ Home = the MPGR AGENT),
 // holder tier, wallet, and the menu button. Secondary navigation lives
-// in the AppSidebar (all ecosystem sections incl. Rewards and
-// Profile); on phones the BottomNav keeps Home | Rewards | Profile.
-// A duplicate link row here would just restate the sidebar.
+// in the AppSidebar (all ecosystem sections incl. Rewards and Profile)
+// on every viewport — phones included, since the bottom tab bar was
+// removed. A duplicate link row here would just restate the sidebar.
 export function Navbar() {
   const { isConnected } = useAccount();
   const { status: holderTierStatus } = useHolderTier();

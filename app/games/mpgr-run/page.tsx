@@ -20,17 +20,16 @@ export default function MPGRRunPage() {
   return (
     // The game IS the first viewport: a full 100dvh play surface with
     // only a minimal brand/wallet strip above it — no Navbar, no bottom
-    // tab bar (this route is in BottomNav's IMMERSIVE_ROUTES list), no
-    // panels stealing playable height. -mb-20 cancels the bottom padding
-    // <body> reserves globally for the mobile bottom nav so the game
-    // genuinely fills the phone screen.
+    // tab bar, no panels stealing playable height. (The mobile bottom
+    // nav was removed app-wide; phones navigate via the header's
+    // sidebar menu, so there is no body padding left to cancel here.)
     //
     // "Weekly Game Rewards" lives BELOW that viewport now — the player
     // gets the full game first and scrolls down for rewards info after.
     // The page scrolls normally; the game section itself stays a fixed
     // 100dvh stage so the canvas can size itself to the real viewport
     // (and scale the world up on desktop — see run-render.ts).
-    <div className="-mb-20 sm:mb-0">
+    <div>
       <section className="relative flex h-[100dvh] max-h-[100dvh] flex-col overflow-hidden">
         <div
           className="flex shrink-0 items-center justify-between gap-2 px-2 sm:px-4"

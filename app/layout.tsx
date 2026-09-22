@@ -6,7 +6,6 @@ import { MiniAppAutoConnect } from "@/components/MiniAppAutoConnect";
 import { RecentPageTracker } from "@/components/RecentPageTracker";
 import { ReferralCapture } from "@/components/ReferralCapture";
 import { WalletAuthBootstrap } from "@/components/WalletAuthBootstrap";
-import { BottomNav } from "@/components/BottomNav";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -51,14 +50,13 @@ export default function RootLayout({
         <meta name="base:app_id" content="6a79d1c8d198f685bc61e308" />
       </head>
 
-      <body className="min-h-screen bg-background pb-20 font-sans antialiased sm:pb-0">
+      <body className="min-h-screen bg-background font-sans antialiased">
         <Providers>
           <MiniAppAutoConnect />
           <RecentPageTracker />
           <ReferralCapture />
           <WalletAuthBootstrap />
           {children}
-          <BottomNav />
         </Providers>
       </body>
     </html>
