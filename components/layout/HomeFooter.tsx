@@ -47,12 +47,14 @@ const community = [
 function FooterLinkColumn({
   title,
   links,
+  className,
 }: {
   title: string;
   links: readonly { label: string; href: string }[];
+  className?: string;
 }) {
   return (
-    <nav aria-label={title}>
+    <nav aria-label={title} className={className}>
       <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted">
         {title}
       </p>
@@ -98,7 +100,10 @@ export function HomeFooter() {
 
         {/* THREE information sections */}
         <div className="mt-6 grid gap-8 border-t border-white/[0.06] pt-6 sm:grid-cols-2 lg:grid-cols-3">
-          <FooterLinkColumn title="Ecosystem" links={ecosystem} />
+          {/* Mobile-only redundancy cleanup: on phones this column duplicates
+            the sidebar menu, so it is hidden below sm (the same breakpoint
+            the mobile bottom nav uses). Desktop keeps the full footer. */}
+          <FooterLinkColumn title="Ecosystem" links={ecosystem} className="hidden sm:block" />
           <FooterLinkColumn title="Learn" links={learn} />
 
           <div className="space-y-6 sm:col-span-2 lg:col-span-1">
