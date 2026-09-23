@@ -168,6 +168,7 @@ export interface TradeError {
     | "LIQUIDITY_UNAVAILABLE"
     | "QUOTE_EXPIRED"
     | "QUOTE_CHANGED"
+    | "INSUFFICIENT_BALANCE"
     | "PROVIDER_ERROR"
     | "WALLET_REJECTED"
     | "SIGNING_FAILED"

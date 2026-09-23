@@ -15,6 +15,7 @@ import {
   TRADE_MIN_SLIPPAGE_BPS,
   TRADE_NETWORK,
 } from "./trade-config";
+import { balanceShortfallMessage, tradeBalanceShortfall } from "./trade-balance";
 import { isSupportedTradeProvider, type TradeError, type TradeProposal } from "./trade-types";
 
 export const TRADE_CONFIRMATION_STATES = [
@@ -73,6 +74,24 @@ export function revalidateTradeProposal(
     return fail(
       "EXECUTION_UNAVAILABLE",
       "No executable swap was returned for this pair on Base. Research only — nothing will be signed.",
+    );
+  }
+  // A route being available is not the same as the wallet being able to
+  // pay for it. An under-funded swap still broadcasts (and still burns
+  // gas) today, reverting on-chain with a bare `STF`, so insufficient
+  // balance blocks confirmation — it is a blocker, not a warning.
+  // executeTrade() re-reads the live balance again before signing, so a
+  // quote older than the wallet's last outgoing transfer cannot slip
+  // through either.
+  const shortfall = tradeBalanceShortfall(proposal.issues?.balance);
+  if (shortfall) {
+    return fail(
+      "INSUFFICIENT_BALANCE",
+      balanceShortfallMessage({
+        symbol: proposal.from.symbol,
+        decimals: proposal.from.decimals,
+        shortfall,
+      }),
     );
   }
   if (account && account.toLowerCase() !== proposal.taker.toLowerCase()) {
