@@ -1,8 +1,8 @@
 // lib/campaigns/campaigns/agent-example.ts
 //
-// Example campaign definition — completed event kept for history.
-// Finalized leaderboards and participant records for ended campaigns are
-// preserved server-side forever (namespaced by campaign id).
+// Example campaign definition — AI agent activity competition.
+// The window is set in the future so the campaign currently resolves to
+// upcoming; the operator activates campaigns later by editing startAt/endAt.
 
 import type { CampaignDefinition } from "@/lib/campaigns/campaign-types";
 
@@ -11,18 +11,18 @@ const campaign: CampaignDefinition = {
   slug: "agent-competition",
   title: "MPGR Agent Competition",
   description:
-    "A past community event rewarding the wallets that put the MPGR AI Agent to work. Kept on the Campaigns page as a completed event with its finalized leaderboard.",
+    "A community competition rewarding the wallets that put the MPGR AI Agent to work. Join with your connected wallet, complete agent tasks during the event window, and climb the campaign leaderboard.",
   banner: "/campaigns/agent-competition.jpg",
-  startAt: "2026-08-15T00:00:00.000Z",
-  endAt: "2026-08-31T23:59:59.000Z",
+  startAt: "2026-11-01T00:00:00.000Z",
+  endAt: "2026-11-15T23:59:59.000Z",
   status: "auto",
   eventType: "agent",
   trackingMetric: "activity",
   rules: [
     "Join the campaign with your connected wallet.",
-    "Each completed agent task during the window earned campaign points.",
-    "The final leaderboard was frozen when the campaign ended.",
-    "Winners were paid manually by the operator — rewards are never auto-transferred.",
+    "Each completed agent task during the window earns campaign points.",
+    "The leaderboard is frozen when the campaign window ends.",
+    "Winners are recorded at finalization and paid manually by the operator — rewards are never auto-transferred.",
   ],
   rewardPool: "50000",
   rewardType: "MPGR",

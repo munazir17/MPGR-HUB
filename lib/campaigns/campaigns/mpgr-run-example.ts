@@ -13,8 +13,8 @@ const campaign: CampaignDefinition = {
   description:
     "Compete for the weekly MPGR reward pool. Submit verified MPGR Run sessions — every valid run earns campaign points on top of a participation bonus.",
   banner: "/campaigns/mpgr-run-weekly.jpg",
-  startAt: "2026-09-16T00:00:00.000Z",
-  endAt: "2026-09-30T23:59:59.000Z",
+  startAt: "2026-10-07T00:00:00.000Z",
+  endAt: "2026-10-21T23:59:59.000Z",
   status: "auto",
   eventType: "game",
   trackingMetric: "score",

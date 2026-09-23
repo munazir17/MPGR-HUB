@@ -28,8 +28,8 @@ function makeCampaign(patch: Partial<CampaignDefinition> = {}): CampaignDefiniti
     slug: "adapter-test",
     title: "Adapter test",
     description: "Adapter test campaign.",
-    startAt: "2026-09-01T00:00:00.000Z",
-    endAt: "2026-09-30T00:00:00.000Z",
+    startAt: "2026-10-01T00:00:00.000Z",
+    endAt: "2026-10-31T00:00:00.000Z",
     status: "auto",
     eventType: "social",
     trackingMetric: "points",
@@ -58,8 +58,8 @@ function runRecord(patch: Partial<RunRecord> = {}): RunRecord {
   return {
     sessionId: "session-abc-123",
     wallet: W1 as RunRecord["wallet"],
-    weekKey: "2026-W38",
-    submittedAt: "2026-09-20T10:00:00.000Z",
+    weekKey: "2026-W41",
+    submittedAt: "2026-10-10T10:00:00.000Z",
     serverValidated: true,
     result: { score: 4_200 } as RunRecord["result"],
     ...patch,
@@ -69,7 +69,7 @@ function runRecord(patch: Partial<RunRecord> = {}): RunRecord {
 beforeEach(() => {
   getRunRecord.mockReset();
   vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-09-20T12:00:00.000Z"));
+  vi.setSystemTime(new Date("2026-10-10T12:00:00.000Z"));
 });
 
 afterEach(() => {
@@ -78,10 +78,10 @@ afterEach(() => {
 
 describe("shared validation pipeline", () => {
   const campaign = makeCampaign();
-  const now = new Date("2026-09-20T12:00:00.000Z");
+  const now = new Date("2026-10-10T12:00:00.000Z");
 
   it("rejects an inactive campaign window", async () => {
-    const upcoming = makeCampaign({ startAt: "2026-10-01T00:00:00.000Z", endAt: "2026-10-15T00:00:00.000Z" });
+    const upcoming = makeCampaign({ startAt: "2026-11-01T00:00:00.000Z", endAt: "2026-11-15T00:00:00.000Z" });
     const result = await resolveCampaignAction(upcoming, "plain", W1, undefined, now);
     expect(result).toMatchObject({ ok: false, code: "campaign-not-active" });
 
@@ -154,7 +154,7 @@ describe("shared validation pipeline", () => {
 
 describe("game adapter (server RunRecord evidence)", () => {
   const campaign = findCampaignBySlug("mpgr-run-weekly")!;
-  const now = new Date("2026-09-20T12:00:00.000Z");
+  const now = new Date("2026-10-10T12:00:00.000Z");
 
   it("derives score and idempotency id from the server record", async () => {
     getRunRecord.mockResolvedValueOnce(runRecord());

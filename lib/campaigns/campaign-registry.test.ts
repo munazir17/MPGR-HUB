@@ -24,8 +24,8 @@ function override(campaign: CampaignDefinition, patch: Partial<CampaignDefinitio
 
 beforeEach(() => {
   vi.useFakeTimers();
-  // Inside the mpgr-run example window (2026-09-16 → 2026-09-30).
-  vi.setSystemTime(new Date("2026-09-20T12:00:00.000Z"));
+  // Launch state (2026-09-23): every example window is still in the future.
+  vi.setSystemTime(new Date("2026-09-23T12:00:00.000Z"));
 });
 
 afterEach(() => {
@@ -81,17 +81,17 @@ describe("campaign lifecycle status (start/end)", () => {
   });
 
   it("is active exactly inside the window", () => {
-    vi.setSystemTime(new Date("2026-09-16T00:00:00.000Z"));
+    vi.setSystemTime(new Date("2026-10-07T00:00:00.000Z"));
     expect(resolveCampaignStatus(mpgrRun)).toBe("active");
-    vi.setSystemTime(new Date("2026-09-25T12:00:00.000Z"));
+    vi.setSystemTime(new Date("2026-10-15T12:00:00.000Z"));
     expect(resolveCampaignStatus(mpgrRun)).toBe("active");
   });
 
   it("is completed at/after endAt", () => {
-    vi.setSystemTime(new Date("2026-09-30T23:59:59.000Z"));
+    vi.setSystemTime(new Date("2026-10-21T23:59:59.000Z"));
     // endAt is inclusive to the last second (status flips when now >= end).
     const atEnd = resolveCampaignStatus(mpgrRun);
-    vi.setSystemTime(new Date("2026-10-01T00:00:00.000Z"));
+    vi.setSystemTime(new Date("2026-10-22T00:00:00.000Z"));
     expect(resolveCampaignStatus(mpgrRun)).toBe("completed");
     expect(["active", "completed"]).toContain(atEnd);
     expect(isCampaignActive(mpgrRun)).toBe(false);
@@ -110,11 +110,28 @@ describe("campaign lifecycle status (start/end)", () => {
 });
 
 describe("multiple campaigns coexist", () => {
-  it("serves active, upcoming and completed campaigns at the same instant", () => {
-    expect(getCampaignsByStatus("active").map((c) => c.slug)).toContain("mpgr-run-weekly");
-    expect(getCampaignsByStatus("upcoming").map((c) => c.slug)).toContain("trading-competition");
-    expect(getCampaignsByStatus("completed").map((c) => c.slug)).toContain("agent-competition");
+  it("launch state: all three examples are upcoming, nothing active or completed", () => {
+    expect(getCampaignsByStatus("active").map((c) => c.slug)).toEqual([]);
+    expect(getCampaignsByStatus("completed").map((c) => c.slug)).toEqual([]);
+    const upcoming = getCampaignsByStatus("upcoming").map((c) => c.slug);
+    expect(upcoming).toContain("mpgr-run-weekly");
+    expect(upcoming).toContain("trading-competition");
+    expect(upcoming).toContain("agent-competition");
     expect(getCampaignsByStatus("all")).toEqual(getAllCampaigns());
+  });
+
+  it("moves examples through upcoming → active → completed as clocks cross their windows", () => {
+    vi.setSystemTime(new Date("2026-10-10T12:00:00.000Z"));
+    const active = getCampaignsByStatus("active").map((c) => c.slug);
+    expect(active).toContain("mpgr-run-weekly");
+    expect(active).toContain("trading-competition");
+    expect(getCampaignsByStatus("upcoming").map((c) => c.slug)).toContain("agent-competition");
+
+    vi.setSystemTime(new Date("2026-11-05T12:00:00.000Z"));
+    expect(getCampaignsByStatus("active").map((c) => c.slug)).toContain("agent-competition");
+    const completed = getCampaignsByStatus("completed").map((c) => c.slug);
+    expect(completed).toContain("mpgr-run-weekly");
+    expect(completed).toContain("trading-competition");
   });
 
   it("finds campaigns by id or slug", () => {
@@ -128,7 +145,7 @@ describe("public serialization", () => {
   it("normalizes every field the UI consumes", () => {
     const campaign = findCampaignBySlug("mpgr-run-weekly")!;
     const view = toPublicCampaign(campaign, { participantCount: 7, viewer: null });
-    expect(view.status).toBe("active");
+    expect(view.status).toBe("upcoming");
     expect(view.participantCount).toBe(7);
     expect(view.rewardPool).toBe("1000000");
     expect(view.rewardType).toBe("MPGR");

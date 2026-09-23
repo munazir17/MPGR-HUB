@@ -48,9 +48,9 @@ describe("GET /api/campaigns", () => {
     expect(data.campaigns.length).toBeGreaterThanOrEqual(3);
 
     const bySlug = Object.fromEntries(data.campaigns.map((c: { slug: string }) => [c.slug, c]));
-    expect(bySlug["mpgr-run-weekly"].status).toBe("active");
+    expect(bySlug["mpgr-run-weekly"].status).toBe("upcoming");
     expect(bySlug["trading-competition"].status).toBe("upcoming");
-    expect(bySlug["agent-competition"].status).toBe("completed");
+    expect(bySlug["agent-competition"].status).toBe("upcoming");
 
     // Normalized public shape the UI consumes.
     const run = bySlug["mpgr-run-weekly"];
@@ -68,14 +68,19 @@ describe("GET /api/campaigns", () => {
   });
 
   it("filters by status", async () => {
-    const res = await getList(`${APP_ORIGIN}/api/campaigns?status=active`);
+    const res = await getList(`${APP_ORIGIN}/api/campaigns?status=upcoming`);
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.campaigns.every((c: { status: string }) => c.status === "active")).toBe(true);
-    expect(data.campaigns.map((c: { slug: string }) => c.slug)).toContain("mpgr-run-weekly");
+    expect(data.campaigns.every((c: { status: string }) => c.status === "upcoming")).toBe(true);
+    const slugs = data.campaigns.map((c: { slug: string }) => c.slug);
+    expect(slugs).toContain("mpgr-run-weekly");
+    expect(slugs).toContain("trading-competition");
+    expect(slugs).toContain("agent-competition");
   });
 
   it("attaches the viewer standing when a session cookie is present", async () => {
+    // Move inside the run window so the join is accepted.
+    vi.setSystemTime(new Date("2026-10-10T12:00:00.000Z"));
     const wallet = "0x1111111111111111111111111111111111111111" as const;
     const cookie = await cookieFor(wallet);
 
@@ -98,6 +103,8 @@ describe("GET /api/campaigns", () => {
   });
 
   it("finalizes a completed campaign's leaderboard on read (write-once)", async () => {
+    // Move past the agent window so the campaign is completed and finalizable.
+    vi.setSystemTime(new Date("2026-11-16T12:00:00.000Z"));
     const res = await getList();
     expect(res.status).toBe(200);
     const data = await res.json();
