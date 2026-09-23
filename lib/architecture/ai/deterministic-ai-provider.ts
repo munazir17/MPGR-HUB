@@ -1,7 +1,12 @@
 import {
+  extractBaseSwapIntent,
+  extractUnresolvedSwapOrder,
+  isTradeExecutionPrompt,
+  resolveTokenizedStockOrderSide,
   extractCryptoSwapAmount,
   extractCryptoSwapPair,
   extractTradeHumanAmount,
+  extractTokenizedStockOrderAmount,
   extractTradeSymbol,
   extractTransferRequest,
   extractX402ResourceUrl,
@@ -12,10 +17,12 @@ import {
   isTradeSellPrompt,
   isTransferPrompt,
   isX402PaymentPrompt,
+  type BaseSwapIntent,
 } from "@/lib/agent-intelligence";
 import { getFollowUpPrompts } from "@/lib/agent-actions";
 import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-provider";
 import { runRegisteredTool } from "./agent-tool-calling";
+import { answerWalletBalance } from "./wallet-balance-answer";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
@@ -36,6 +43,14 @@ export class DeterministicAIProvider implements AIProvider {
   readonly requiresNetwork = false;
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
+    // Strict wallet-balance questions ("What is my MSTRc balance?", "How much
+    // MPGR do I have?", "What's in my wallet?", "How much is my wallet
+    // worth?") are answered from live reads — and ONLY what was asked. This
+    // runs before every trade/portfolio branch so a token balance can never
+    // be answered with a whole-portfolio dump.
+    const balanceAnswer = await answerWalletBalance(request);
+    if (balanceAnswer) return balanceAnswer;
+
     if (isTransferPrompt(request.prompt)) {
       return prepareOrExplainTransfer(request);
     }
@@ -51,12 +66,36 @@ export class DeterministicAIProvider implements AIProvider {
       return quoteOrPrepareCryptoSwap(request);
     }
 
+    // Extended catalog swaps — cbBTC/cbETH/cbDOGE/cbXRP/cbLTC/cbADA,
+    // official B20 tickers the earlier branches did not claim, and raw
+    // 0x addresses the user pasted instead of a symbol. Same quote/
+    // prepare routes as the API path; never signs.
+    const baseSwap = extractBaseSwapIntent(request.prompt);
+    if (baseSwap) {
+      return prepareOrExplainBaseSwap(request, baseSwap);
+    }
+
     if (isTradePrompt(request.prompt)) {
       return prepareOrExplainTrade(request);
     }
 
     if (isX402PaymentPrompt(request.prompt)) {
       return prepareOrExplainX402(request);
+    }
+
+    // A SIZED order naming an asset this app does not support ("buy 10
+    // USDC of FAKECOIN") gets an explicit refusal. It never reaches a
+    // prepare tool, and the user is pointed at the supported set plus the
+    // 0x-address route instead of being handed generic help.
+    const unresolvedOrder = extractUnresolvedSwapOrder(request.prompt);
+    if (unresolvedOrder) {
+      const named = unresolvedOrder.unresolved.map((operand) => '"' + operand + '"').join(" and ");
+      return helpResponse(
+        named +
+          " is not an asset this app supports, so I will not prepare that order — I never invent a contract from a symbol. " +
+          "Supported: ETH, WETH, USDC, MPGR, the Coinbase wrapped assets (cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA) and the official Coinbase Tokenized Stocks (AAPLc, COINc, TSLAc, …). " +
+          "If you mean a different Base token, paste its 0x contract address — that route quotes through Coinbase CDP/0x and stays unverified until you review and confirm. Nothing was signed or submitted.",
+      );
     }
 
     return generateIntelligentReply(
@@ -231,33 +270,185 @@ async function quoteOrPrepareCryptoSwap(
   );
 }
 
+/**
+ * Reference-price-only reply for a quote/price question over the
+ * extended catalog (no proposal, no signature).
+ */
+async function quoteBaseSwapSide(
+  request: AIProviderRequest,
+  intent: BaseSwapIntent,
+): Promise<AIProviderResponse> {
+  const result = await runRegisteredTool(
+    "trade_get_price",
+    {
+      fromToken: intent.sell.symbol ?? intent.sell.address,
+      toToken: intent.buy.symbol ?? intent.buy.address,
+      ...(intent.amount ? { amount: intent.amount } : {}),
+    },
+    request,
+  );
+
+  if (result.success) {
+    const price = (result.data as { price?: unknown; provider?: string } | undefined)?.price;
+    return {
+      intent: "general_help",
+      reply:
+        "Live Base quote for " +
+        intent.sell.input +
+        " → " +
+        intent.buy.input +
+        (price ? ": " + JSON.stringify(price) : " is ready from the trade price path") +
+        ". This is a quote only — nothing is signed or submitted.",
+      actions: [],
+      highlights: [],
+      followUps: getFollowUpPrompts("general_help"),
+    };
+  }
+
+  const detail =
+    typeof result.error?.message === "string" && result.error.message.trim()
+      ? result.error.message.trim()
+      : "Live Base quote tools are not available right now.";
+  return helpResponse(
+    "I could not fetch a live " +
+      intent.sell.input +
+      " → " +
+      intent.buy.input +
+      " quote. " +
+      detail +
+      " I will not invent a price. Nothing was signed or submitted.",
+  );
+}
+
+/**
+ * Natural "swap X to Y" over the existing supported token universe.
+ *
+ *   - no amount yet       → ask for it (no API call, no guessed unit)
+ *   - quote/price wording → trade_get_price (reference only)
+ *   - otherwise           → prepare_swap, which routes B20 legs through
+ *                           the Aerodrome path and everything else
+ *                           through the existing CDP → 0x quote route
+ *
+ * Never signs. The proposal it returns is review-only, exactly like the
+ * other prepare tools.
+ */
+async function prepareOrExplainBaseSwap(
+  request: AIProviderRequest,
+  intent: BaseSwapIntent,
+): Promise<AIProviderResponse> {
+  if (intent.quoteOnly) {
+    return quoteBaseSwapSide(request, intent);
+  }
+
+  if (!intent.amount) {
+    return helpResponse(
+      "How much " +
+        intent.sell.input +
+        " do you want to swap to " +
+        intent.buy.input +
+        "? Tell me the amount and I will prepare a Base swap proposal with the live quote (minimum received, route and fees) for you to review. Nothing is signed until you confirm in your wallet.",
+    );
+  }
+
+  const result = await runRegisteredTool(
+    "prepare_swap",
+    {
+      amount: intent.amount,
+      ...(intent.sell.symbol
+        ? { sellSymbol: intent.sell.symbol }
+        : { sellAddress: intent.sell.address }),
+      ...(intent.buy.symbol
+        ? { buySymbol: intent.buy.symbol }
+        : { buyAddress: intent.buy.address }),
+    },
+    request,
+  );
+
+  if (result.success) {
+    const proposal = (result.data as { proposal?: TradeProposal } | undefined)?.proposal;
+    if (proposal) {
+      return {
+        intent: "general_help",
+        reply:
+          "A Base swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.",
+        actions: [],
+        highlights: [],
+        followUps: getFollowUpPrompts("general_help"),
+        tradeProposal: proposal,
+      };
+    }
+  }
+
+  const detail =
+    typeof result.error?.message === "string" && result.error.message.trim()
+      ? result.error.message.trim()
+      : "No live Base swap quote is available for that pair right now.";
+  return helpResponse(detail + " Nothing was signed or submitted.");
+}
+
 async function prepareOrExplainTrade(
   request: AIProviderRequest,
 ): Promise<AIProviderResponse> {
   const symbol = extractTradeSymbol(request.prompt);
   const wantsQuote = isTradeQuotePrompt(request.prompt);
+  // An explicit execution order ("sell my USDC worth of MSTRc",
+  // "sell 5 MSTRc", "buy $10 of AAPLc") is NOT a research question. It
+  // has to reach the prepare path — and when the size is missing it must
+  // ASK for the size, never answer with a research-only reply while the
+  // card claims an execution route is ready. Research phrasing without an
+  // execution verb ("check AAPLc price", "NVDAc premium vs feed",
+  // "should I buy AAPLc?") keeps the research path untouched.
+  const wantsExecution = isTradeExecutionPrompt(request.prompt);
 
-  if (wantsQuote) {
+  if (wantsQuote || wantsExecution) {
     if (!symbol) {
       return helpResponse(
         "I cannot safely resolve that tokenized stock from the official Coinbase B20 catalog on Base. Name a catalog ticker such as AAPLc, COINc, or TSLAc. Nothing was signed or submitted.",
       );
     }
 
-    const amount = extractTradeHumanAmount(request.prompt);
+    // Side first: "sell my 4 USDC worth of MSTRc" SELLS MSTRc with a
+    // ~4 USDC value target, "buy 5 USDC of MSTRc" spends 5 USDC on
+    // MSTRc, and "sell 5 MSTRc" sells 5 shares. Deciding this from the
+    // value-target phrasing and the resolved pair (falling back to the
+    // wording) keeps the prepared order pointed the way the user asked.
+    const catalogSwap = extractBaseSwapIntent(request.prompt);
+    const side = resolveTokenizedStockOrderSide(request.prompt, symbol);
+    const fundingSymbol =
+      catalogSwap && catalogSwap.buy.symbol === symbol ? catalogSwap.sell.symbol : null;
+
+    // Unit matters for B20 orders: "Sell 5 AAPLc" is 5 shares, while
+    // "Sell $5 of my AAPLc" is a dollar budget. Reading both as dollars
+    // is what made "Sell 5 AAPLc" prepare a wrong-sized (or unpricable)
+    // order.
+    const orderAmount = extractTokenizedStockOrderAmount(request.prompt, symbol);
+    const amount = orderAmount?.amount ?? null;
+    const amountUnit = orderAmount?.unit ?? "usd";
     if (!amount) {
+      const question =
+        side === "SELL"
+          ? "How much " +
+            symbol +
+            " do you want to sell? Give me an amount — dollars (for example $10) or a share count (for example 0.05) — and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet."
+          : "How much " +
+            (fundingSymbol ?? "USDC") +
+            " do you want to spend on " +
+            symbol +
+            "? Give me an amount — dollars (for example $10) or a share count (for example 0.05) — and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet.";
       return helpResponse(
-        "A dollar or token amount is required before I can prepare a tokenized-stock swap (for example $10). I will not guess fromAmount. Nothing was signed or submitted.",
+        wantsExecution
+          ? question
+          : "A dollar or token amount is required before I can prepare a tokenized-stock swap (for example $10). I will not guess fromAmount. Nothing was signed or submitted.",
       );
     }
 
-    const selling = isTradeSellPrompt(request.prompt);
     const result = await runRegisteredTool(
       "tokenized_stock_prepare_order",
       {
         symbol,
         amount,
-        side: selling ? "SELL" : "BUY",
+        side,
+        amountUnit,
       },
       request,
     );

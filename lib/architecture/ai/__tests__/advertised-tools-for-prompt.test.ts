@@ -15,7 +15,9 @@ const MARKET_TOOLS = ["trade_get_price", "tokenized_stock_research", "market_int
 const X402_TOOLS = ["x402_discover_resource", "x402_prepare_payment"];
 const TRANSFER_TOOLS = ["transfer_prepare_send"];
 const YIELD_TOOLS = ["yield_opportunities", "yield_estimator", "yield_comparison"];
+const WALLET_BALANCE_TOOLS = ["wallet_balances"];
 const UNRELATED = [
+  ...WALLET_BALANCE_TOOLS,
   ...TRADE_TOOLS,
   ...MARKET_TOOLS,
   ...X402_TOOLS,
@@ -151,6 +153,25 @@ describe("Base Stocks Agent prompt gating", () => {
     expect(text).toContain("base stocks tools");
   });
 
+  it("an explicit order over the extended allowlist advertises the prepare tools", () => {
+    for (const prompt of ["Sell 5 usdc of eth", "Buy 5 USDC of ETH"]) {
+      const advertised = ids(prompt);
+      expect(advertised).toEqual(
+        expect.arrayContaining(["trade_prepare_swap", "prepare_swap", "trade_get_price"]),
+      );
+      const text = buildGatedCapabilityInstructions(prompt).join("\n");
+      expect(text).toContain("ALWAYS goes through the prepare tools");
+    }
+  });
+
+  it("price/premium research prompts still do not advertise the prepare tools", () => {
+    for (const prompt of ["check cbADA price", "what is the cbADA premium vs feed"]) {
+      const advertised = ids(prompt);
+      expect(advertised).not.toContain("prepare_swap");
+      expect(advertised).not.toContain("trade_prepare_swap");
+    }
+  });
+
   it("unrelated prompts never advertise the stocks tools", () => {
     for (const prompt of ["hi", "what is the MPGR price?", "explain staking", "send 10 USDC to alice.base.eth"]) {
       const advertised = ids(prompt);
@@ -162,6 +183,42 @@ describe("Base Stocks Agent prompt gating", () => {
   it("MPGR premium-tier style questions do not trip the stock premium detector", () => {
     const advertised = ids("What does MPGR Premium include?");
     expect(advertised).not.toContain("get_premium");
+  });
+
+  it("a balance question advertises only wallet_balances and the strict-answer essay", () => {
+    for (const prompt of [
+      "What is my MSTRc balance?",
+      "How much ETH do I have?",
+      "How much MPGR do I have?",
+      "What's in my wallet?",
+      "How much is my wallet worth?",
+    ]) {
+      const advertised = ids(prompt);
+      expect(advertised, prompt).toContain("wallet_balances");
+      // A balance read never drags in anything that could prepare, move,
+      // or pay out funds — read-only market context is allowed.
+      for (const id of [
+        "trade_prepare_swap",
+        "tokenized_stock_prepare_order",
+        "prepare_swap",
+        "get_stock_holdings",
+        "transfer_prepare_send",
+        "x402_prepare_payment",
+      ]) {
+        expect(advertised, `${prompt} → ${id}`).not.toContain(id);
+      }
+
+      const text = buildGatedCapabilityInstructions(prompt).join("\n");
+      expect(text).toContain("wallet_balances");
+      expect(text.toLowerCase()).toContain("answer only what was asked");
+      expect(text).toContain("never merge");
+    }
+  });
+
+  it("balance tooling stays out of every other prompt", () => {
+    for (const prompt of ["hi", "what is MPGR?", "Swap 10 USDC to cbADA", "Check MSTRc price"]) {
+      expect(ids(prompt), prompt).not.toContain("wallet_balances");
+    }
   });
 
   it("stock tool ids are read/prepare-only catalog entries (no execute verb leaks)", () => {

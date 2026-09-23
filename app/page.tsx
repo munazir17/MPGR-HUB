@@ -28,18 +28,23 @@ import {
 } from "@/lib/agent-stocks-config";
 
 export default function HomePage() {
-  const sendRef = useRef<((prompt: string) => void) | null>(null);
+  // The stage owns the chat + trade controllers; Home only needs the two
+  // actions the tape drives: drop a prompt into the thread, and run the
+  // one-tap swap fast path (instant quote → trade confirmation modal).
+  const agentRef = useRef<{
+    sendMessage: (prompt: string) => void;
+    prepareSwap: (symbol: string) => void;
+  } | null>(null);
 
-  const handleReady = useCallback((api: { sendMessage: (prompt: string) => void }) => {
-    sendRef.current = api.sendMessage;
-  }, []);
+  const handleReady = useCallback(
+    (api: { sendMessage: (prompt: string) => void; prepareSwap: (symbol: string) => void }) => {
+      agentRef.current = api;
+    },
+    [],
+  );
 
   const handlePrepareSwap = useCallback((symbol: string) => {
-    const send = sendRef.current;
-    if (!send) return;
-    send(
-      `Prepare a swap of 10 USDC to ${symbol} on Base. Show minOut, route, price impact and fees — I will sign in my wallet.`,
-    );
+    agentRef.current?.prepareSwap(symbol);
   }, []);
 
   // The hero renders INSIDE the stage's top bar (its testid moves with

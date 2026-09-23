@@ -7,6 +7,7 @@
 import {
   TRADE_DEFAULT_SLIPPAGE_BPS,
 } from "./trade-config";
+import { balanceShortfallMessage, tradeBalanceShortfall } from "./trade-balance";
 import type {
   CdpSwapQuote,
   TradeKind,
@@ -64,6 +65,25 @@ export function buildSwapRiskFacts(input: {
       title: "Incomplete simulation",
       detail:
         "CDP could not fully simulate this swap. The quote may fail on-chain.",
+    });
+  }
+
+  // Insufficient sell-token balance is a critical, not a warning: the
+  // swap route pays the buy token out of the pool before pulling the
+  // sell token, so an under-funded wallet reverts on-chain and the user
+  // loses gas to a transaction that could never settle. Read at quote
+  // time and re-checked live immediately before signing.
+  const shortfall = tradeBalanceShortfall(input.quote.issues?.balance);
+  if (shortfall) {
+    facts.push({
+      id: "insufficient-balance",
+      severity: "critical",
+      title: `Insufficient ${input.from.symbol} balance`,
+      detail: balanceShortfallMessage({
+        symbol: input.from.symbol,
+        decimals: input.from.decimals,
+        shortfall,
+      }),
     });
   }
 

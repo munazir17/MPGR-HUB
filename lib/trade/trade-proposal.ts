@@ -40,6 +40,8 @@ export interface BuildTradeProposalInput {
   taker: string;
   quotedAt?: Date;
   provider?: TradeProvider;
+  /** Signed bps vs. mid (lib/trade/trade-price-impact.ts), or null. */
+  priceImpactBps?: number | null;
 }
 
 function checksum(address: string): Address {
@@ -182,6 +184,7 @@ export function buildTradeProposal(
       quotedAt: quotedAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
       fees: input.quote.fees ?? {},
+      priceImpactBps: input.priceImpactBps ?? null,
       issues,
       transaction: input.quote.transaction,
       permit2: input.quote.permit2,

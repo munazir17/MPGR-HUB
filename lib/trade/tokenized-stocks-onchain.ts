@@ -26,6 +26,82 @@ async function readOptional<T>(fn: () => Promise<T>): Promise<T | null> {
 }
 
 /**
+ * REAL price history for a Coinbase equity feed: the feed's own published
+ * rounds, replayed newest → oldest with AggregatorV3 `getRoundData`.
+ *
+ * This is the authoritative source the app already uses for tokenized
+ * stocks — the chart is not modelled or extrapolated, it is the rounds
+ * Chainlink actually published (a round is written on the documented
+ * deviation/heartbeat schedule, so the number of points varies with
+ * market activity). Failures produce fewer points, never invented ones.
+ */
+export async function readChainlinkRoundHistory(
+  feed: `0x${string}`,
+  limit = 24,
+): Promise<{ t: number; price: number }[]> {
+  if (!Number.isInteger(limit) || limit <= 0) return [];
+  const client = getTradePublicClient();
+
+  const latest = await readOptional(() =>
+    client.readContract({
+      address: feed,
+      abi: CHAINLINK_AGGREGATOR_V3_ABI,
+      functionName: "latestRoundData",
+    }),
+  );
+  if (!latest || latest[0] === undefined) return [];
+
+  const decimals = Number(
+    (await readOptional(() =>
+      client.readContract({
+        address: feed,
+        abi: CHAINLINK_AGGREGATOR_V3_ABI,
+        functionName: "decimals",
+      }),
+    )) ?? 8,
+  );
+
+  const latestRoundId = latest[0] as bigint;
+  const roundIds: bigint[] = [];
+  for (let i = 0n; i < BigInt(limit); i++) {
+    const id = latestRoundId - i;
+    if (id <= 0n) break;
+    roundIds.push(id);
+  }
+  if (roundIds.length === 0) return [];
+
+  // One RPC round trip (Multicall3); a missing/reverted round is skipped
+  // rather than fabricated.
+  const results = await readOptional(() =>
+    client.multicall({
+      contracts: roundIds.map((roundId) => ({
+        address: feed,
+        abi: CHAINLINK_AGGREGATOR_V3_ABI,
+        functionName: "getRoundData" as const,
+        args: [roundId] as const,
+      })),
+      allowFailure: true,
+    }),
+  );
+  if (!results) return [];
+
+  const points: { t: number; price: number }[] = [];
+  for (const result of results) {
+    if (result.status !== "success") continue;
+    const answer = result.result[1] as bigint;
+    const updatedAt = Number(result.result[3] as bigint);
+    if (!Number.isFinite(updatedAt) || updatedAt <= 0) continue;
+    if (answer <= 0n) continue;
+    const price = Number(formatUnits(answer, decimals));
+    if (!Number.isFinite(price) || price <= 0) continue;
+    points.push({ t: updatedAt, price });
+  }
+
+  // Oldest → newest for the chart.
+  return points.sort((a, b) => a.t - b.t);
+}
+
+/**
  * Lightweight, single-purpose on-chain decimals read for a B20 token.
  * Used by the swap-amount conversion path (trade-request.ts), which
  * needs only this one value and must not assume a catalog default —

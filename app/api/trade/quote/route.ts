@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 
 import { createRoutedSwapQuote } from "@/lib/trade/trade-swap-router";
 import { buildTradeProposal } from "@/lib/trade/trade-proposal";
+import { withTradeQuoteCache } from "@/lib/trade/trade-quote-cache";
+import { estimateQuotePriceImpactBps } from "@/lib/trade/trade-price-impact";
 import { parseTradeSwapRequest } from "@/lib/trade/trade-request";
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 import { readJsonBody, requestIdFromRequest, withRequestId, verifyTrustedOrigin } from "@/lib/api/request-guard";
@@ -12,6 +14,9 @@ export const dynamic = "force-dynamic";
 
 const RATE_LIMIT = 15;
 const RATE_WINDOW_MS = 60_000;
+// One upstream quote for an identical request inside this window (the
+// tape's one-tap prepare and the agent tool can ask for the same swap).
+const QUOTE_DEDUPE_MS = 6_000;
 
 export async function POST(request: Request) {
   const requestId = requestIdFromRequest(request);
@@ -48,13 +53,25 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await createRoutedSwapQuote({
-    fromToken: parsed.value.from.address,
-    toToken: parsed.value.to.address,
-    fromAmount: parsed.value.fromAmount,
-    taker: session.wallet,
-    slippageBps: parsed.value.slippageBps,
-  });
+  const result = await withTradeQuoteCache(
+    [
+      "trade-quote",
+      session.wallet.toLowerCase(),
+      parsed.value.from.address.toLowerCase(),
+      parsed.value.to.address.toLowerCase(),
+      parsed.value.fromAmount,
+      parsed.value.slippageBps,
+    ].join(":"),
+    QUOTE_DEDUPE_MS,
+    () =>
+      createRoutedSwapQuote({
+        fromToken: parsed.value.from.address,
+        toToken: parsed.value.to.address,
+        fromAmount: parsed.value.fromAmount,
+        taker: session.wallet,
+        slippageBps: parsed.value.slippageBps,
+      }),
+  );
 
   if (!result.ok) {
     const status =
@@ -69,6 +86,17 @@ export async function POST(request: Request) {
     );
   }
 
+  // Price impact vs. the app's own mid price (tape). Null when a leg has
+  // no live trusted price — the confirmation modal then says so instead
+  // of showing a number nobody measured.
+  const priceImpactBps = await estimateQuotePriceImpactBps({
+    quote: result.value,
+    fromAddress: parsed.value.from.address,
+    toAddress: parsed.value.to.address,
+    fromDecimals: parsed.value.from.decimals,
+    toDecimals: parsed.value.to.decimals,
+  });
+
   const proposal = buildTradeProposal({
     from: parsed.value.from,
     to: parsed.value.to,
@@ -76,6 +104,7 @@ export async function POST(request: Request) {
     slippageBps: parsed.value.slippageBps,
     taker: session.wallet,
     provider: result.provider,
+    priceImpactBps,
   });
 
   if (!proposal.ok) {

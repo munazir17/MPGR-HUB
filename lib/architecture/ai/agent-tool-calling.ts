@@ -9,12 +9,16 @@ import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
 import {
-  extractTradeHumanAmount,
+  extractTokenizedStockOrderAmount,
   extractTradeSymbol,
+  isTradeExecutionPrompt,
   isTradePrompt,
   isTradeQuotePrompt,
   isTradeSellPrompt,
+  resolveTokenizedStockOrderSide,
 } from "@/lib/agent-intelligence";
+
+import { extractBaseSwapIntent } from "@/lib/agent-intelligence";
 
 // Re-exports from decomposed modules preserving 100% public API compatibility
 export {
@@ -55,6 +59,7 @@ import {
 import {
   parseModelDirective,
 } from "./tool-call-parser";
+import { answerWalletBalance } from "./wallet-balance-answer";
 import {
   buildCompactToolCatalogPromptBlock,
   buildToolCatalogPromptBlock,
@@ -83,6 +88,34 @@ const FORCED_B20_PREPARE_REPLY =
   "A tokenized-stock swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.";
 
 /**
+ * An explicit B20 buy/sell order that cannot be quoted YET because the
+ * user did not state a size. The reply must ask for the size — a
+ * research-only answer to an execution order is the bug this guards
+ * against (the card would meanwhile advertise a live execution route).
+ */
+function pendingTokenizedStockOrderSides(prompt: string): { symbol: string; side: "BUY" | "SELL" } | null {
+  if (!isTradePrompt(prompt) || !isTradeExecutionPrompt(prompt)) return null;
+  const symbol = extractTradeSymbol(prompt);
+  if (!symbol) return null;
+  if (extractTokenizedStockOrderAmount(prompt, symbol)) return null;
+  return { symbol, side: resolveTokenizedStockOrderSide(prompt, symbol) };
+}
+
+function formatPendingOrderReply(prompt: string): string {
+  const pending = pendingTokenizedStockOrderSides(prompt);
+  if (!pending) return "";
+  const funding =
+    extractBaseSwapIntent(prompt)?.sell.symbol ?? "USDC";
+  return (
+    "How much " +
+    (pending.side === "SELL" ? pending.symbol : funding) +
+    " do you want to " +
+    (pending.side === "SELL" ? "sell" : "spend on " + pending.symbol) +
+    "? Give me an amount — dollars (for example $10) or a share count (for example 0.05) — and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet."
+  );
+}
+
+/**
  * If the network model answered a B20 buy/sell in prose (or JSON without
  * a tool call), still run the prepare-only tool so AgentTradeProposalCard
  * can render. Never signs. Never calls execute tools. Failures are
@@ -94,20 +127,28 @@ async function maybePrepareTokenizedStockOrder(
 ): Promise<TradeProposal | undefined> {
   if (captured) return captured;
   if (!isTradePrompt(request.prompt)) return undefined;
-  if (!isTradeQuotePrompt(request.prompt) && !isTradeActionPrompt(request.prompt)) {
+  if (
+    !isTradeQuotePrompt(request.prompt) &&
+    !isTradeActionPrompt(request.prompt) &&
+    !isTradeExecutionPrompt(request.prompt)
+  ) {
     return undefined;
   }
 
   const symbol = extractTradeSymbol(request.prompt);
-  const amount = extractTradeHumanAmount(request.prompt);
-  if (!symbol || !amount) return undefined;
+  if (!symbol) return undefined;
+  // Unit-aware: a bare number next to the ticker is a share count
+  // ("Sell 5 AAPLc"); "$5 of my AAPLc" stays a dollar budget.
+  const orderAmount = extractTokenizedStockOrderAmount(request.prompt, symbol);
+  if (!orderAmount) return undefined;
 
   const result = await runRegisteredTool(
     "tokenized_stock_prepare_order",
     {
       symbol,
-      amount,
-      side: isTradeSellPrompt(request.prompt) ? "SELL" : "BUY",
+      amount: orderAmount.amount,
+      side: resolveTokenizedStockOrderSide(request.prompt, symbol),
+      amountUnit: orderAmount.unit,
     },
     request,
   );
@@ -143,6 +184,13 @@ export async function runToolCallingLoop(
   sendCompletion: SendCompletion,
   options: { compactToolCatalog?: boolean; toolCatalog?: readonly AnyAgentTool[] } = {},
 ): Promise<AIProviderResponse> {
+  // Strict wallet-balance questions are answered deterministically from live
+  // on-chain reads BEFORE the model is called, so a single-token balance
+  // ("What is my MSTRc balance?") can never come back as a portfolio summary
+  // or a guessed number. Everything else keeps the normal tool loop.
+  const balanceAnswer = await answerWalletBalance(request);
+  if (balanceAnswer) return balanceAnswer;
+
   const toolCatalog = options.toolCatalog ?? selectAdvertisedToolsForPrompt(request.prompt);
   const catalogBlock = options.compactToolCatalog
     ? buildCompactToolCatalogPromptBlock(toolCatalog)
@@ -208,6 +256,23 @@ export async function runToolCallingLoop(
         request,
         capturedTradeProposal,
       );
+
+      // An execution order with no size cannot be quoted, so the reply is
+      // the amount question — deterministically, and without the research
+      // card, instead of whatever the model wrote about the asset.
+      const pendingOrderReply = formatPendingOrderReply(request.prompt);
+      if (pendingOrderReply && !tradeProposal && !capturedTradeProposal) {
+        return buildLoopResponse(
+          request,
+          request.previousIntent ?? "general_help",
+          pendingOrderReply,
+          capturedX402Proposal,
+          undefined,
+          undefined,
+          capturedTransferProposal,
+        );
+      }
+
       const reply =
         tradeProposal && !capturedTradeProposal
           ? FORCED_B20_PREPARE_REPLY
@@ -321,7 +386,11 @@ export async function runToolCallingLoop(
       directive.toolId === "x402_prepare_payment";
     const isTradePrepare =
       directive.toolId === "trade_prepare_swap" ||
-      directive.toolId === "tokenized_stock_prepare_order";
+      directive.toolId === "tokenized_stock_prepare_order" ||
+      // Base Stocks Agent alias: same quote route, same review-only
+      // proposal — it must get the short structured-proposal
+      // instruction instead of a free-form next turn.
+      directive.toolId === "prepare_swap";
     const isTransferPrepare =
       directive.toolId === "transfer_prepare_send";
 

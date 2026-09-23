@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockSend, mockSign, mockWait } = vi.hoisted(() => ({
+const { mockSend, mockSign, mockWait, mockRead } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   mockSign: vi.fn(),
   mockWait: vi.fn(),
+  mockRead: vi.fn(),
 }));
 
 vi.mock("wagmi/actions", () => ({
   sendTransaction: (...args: unknown[]) => mockSend(...args),
   signTypedData: (...args: unknown[]) => mockSign(...args),
   waitForTransactionReceipt: (...args: unknown[]) => mockWait(...args),
+  readContract: (...args: unknown[]) => mockRead(...args),
 }));
 
 vi.mock("@/lib/wagmi", () => ({ config: {} }));
@@ -79,6 +81,15 @@ describe("executeTrade", () => {
     mockSend.mockReset();
     mockSign.mockReset();
     mockWait.mockReset();
+    mockRead.mockReset();
+    // Pre-broadcast funds guard: the wallet is funded for every case here.
+    // The allowance stays short so the approval steps these tests assert
+    // still run (a covering allowance is covered by the funds-safety suite).
+    mockRead.mockImplementation(async (_config: unknown, params: { functionName?: string }) => {
+      if (params?.functionName === "balanceOf") return 10_000_000n;
+      if (params?.functionName === "allowance") return 0n;
+      throw new Error(`unexpected read: ${String(params?.functionName)}`);
+    });
   });
 
   it("does not touch the wallet when confirmation is not READY", async () => {

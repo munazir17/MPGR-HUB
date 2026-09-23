@@ -77,6 +77,22 @@ export const CHAINLINK_AGGREGATOR_V3_ABI = [
       { name: "answeredInRound", type: "uint80" },
     ],
   },
+  // Standard AggregatorV3Interface read, used ONLY to replay the feed's
+  // own published rounds for the asset-detail chart. Same return tuple as
+  // latestRoundData, so no new decoding logic is introduced.
+  {
+    type: "function",
+    name: "getRoundData",
+    stateMutability: "view",
+    inputs: [{ name: "_roundId", type: "uint80" }],
+    outputs: [
+      { name: "roundId", type: "uint80" },
+      { name: "answer", type: "int256" },
+      { name: "startedAt", type: "uint256" },
+      { name: "updatedAt", type: "uint256" },
+      { name: "answeredInRound", type: "uint80" },
+    ],
+  },
 ] as const;
 
 export const WAD = 10n ** 18n;

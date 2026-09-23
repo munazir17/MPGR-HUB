@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server";
 
 import { prepareTokenizedStockSwap } from "@/lib/trade/tokenized-stock-swap";
+import { withTradeQuoteCache } from "@/lib/trade/trade-quote-cache";
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 import { readJsonBody, requestIdFromRequest, withRequestId, verifyTrustedOrigin } from "@/lib/api/request-guard";
 import { authenticateRequest } from "@/lib/auth/session-store";
@@ -18,6 +19,10 @@ export const dynamic = "force-dynamic";
 
 const RATE_LIMIT = 15;
 const RATE_WINDOW_MS = 60_000;
+// One upstream Aerodrome quote for an identical request inside this
+// window (the tape's one-tap prepare and the agent tool ask for the same
+// swap).
+const QUOTE_DEDUPE_MS = 6_000;
 
 function statusFor(code: string): number {
   if (code === "CREDENTIALS_MISSING") return 503;
@@ -63,6 +68,17 @@ export async function POST(request: Request) {
   const symbol = typeof body?.symbol === "string" ? body.symbol.trim() : "";
   const side = body?.side === "SELL" ? "SELL" : "BUY";
   const amount = typeof body?.amount === "string" ? body.amount.trim() : "";
+  // Optional unit for `amount`: "usd" (default) or a share/token count
+  // ("Sell 5 AAPLc" = 5 shares). Absent keeps the previous behavior
+  // byte-for-byte, so older callers are unaffected.
+  const rawAmountUnit = body?.amountUnit;
+  if (rawAmountUnit !== undefined && rawAmountUnit !== "usd" && rawAmountUnit !== "token") {
+    return json(
+      { error: 'amountUnit must be "usd" or "token".', code: "INVALID_INPUT" },
+      { status: 400, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  const amountUnit = rawAmountUnit as "usd" | "token" | undefined;
 
   if (!symbol || !amount) {
     return json(
@@ -71,12 +87,25 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await prepareTokenizedStockSwap({
-    symbol,
-    side,
-    amountHuman: amount,
-    taker: session.wallet,
-  });
+  const result = await withTradeQuoteCache(
+    [
+      "trade-stocks-quote",
+      session.wallet.toLowerCase(),
+      symbol.toUpperCase(),
+      side,
+      amount,
+      amountUnit ?? "usd",
+    ].join(":"),
+    QUOTE_DEDUPE_MS,
+    () =>
+      prepareTokenizedStockSwap({
+        symbol,
+        side,
+        amountHuman: amount,
+        taker: session.wallet,
+        ...(amountUnit ? { amountUnit } : {}),
+      }),
+  );
   if (!result.ok) {
     return json(
       { error: result.error.message, code: result.error.code },

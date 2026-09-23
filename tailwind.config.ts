@@ -101,16 +101,19 @@ const config: Config = {
           "100%": { backgroundPosition: "150% 0" },
         },
         // Base Stocks live tape (components/markets/LiveTape.tsx): the
-        // track holds two identical chip sequences and translates exactly
-        // -50%, so the loop is seamless. Paired with hover:animation-play-
-        // state-paused for "pause on hover".
+        // track holds N identical copies of the interleaved chip
+        // sequence and translates by exactly one copy
+        // (-100% / --tape-copies), so the loop is seamless. The variable
+        // defaults to 2, which is the original -50% behavior when unset.
+        // Paired with hover:animation-play-state-paused for "pause on
+        // hover".
         "core-filament": {
           "0%": { transform: "rotate(0deg)" },
           "100%": { transform: "rotate(360deg)" },
         },
         marquee: {
           "0%": { transform: "translateX(0)" },
-          "100%": { transform: "translateX(-50%)" },
+          "100%": { transform: "translateX(calc(-100% / var(--tape-copies, 2)))" },
         },
       },
       animation: {

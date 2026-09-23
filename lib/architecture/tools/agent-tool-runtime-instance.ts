@@ -66,6 +66,11 @@ import "./transfer-tool-definitions";
 // address resolution; signing stays behind the same Confirm & Swap UI.
 import "./stocks-tool-definitions";
 
+// Wallet-balance addendum — registers wallet_balances (read-only live
+// session-wallet balances: native ETH + the supported catalog). Read
+// only; the wallet always comes from AgentToolContext.walletAddress.
+import "./wallet-balance-tool-definitions";
+
 export const agentToolRuntime = new AgentToolRuntime(
   getAgentToolRegistry(),
   agentEventBus,

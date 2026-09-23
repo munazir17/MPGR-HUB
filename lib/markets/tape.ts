@@ -34,6 +34,7 @@ import {
   TAPE_WRAPPED_PAIRS,
   type BasePairEntry,
 } from "./base-pairs";
+import { recordTapeSample } from "./tape-history";
 import type { TapeSnapshot, TapeStockEntry, TapeWrappedEntry } from "./tape-types";
 
 // ---------------------------------------------------------------------------
@@ -380,6 +381,19 @@ interface CacheEntry {
 let cache: CacheEntry | null = null;
 let inflight: Promise<TapeSnapshot> | null = null;
 
+/**
+ * Chart history side-effect: one observation per asset from a FRESH
+ * snapshot (never from a cache hit — that would just repeat the same
+ * price with the same timestamp). Kept out of buildTapeSnapshot() so the
+ * pure builder stays side-effect free for its unit tests.
+ */
+function recordSnapshotSamples(snapshot: TapeSnapshot, atSeconds: number): void {
+  for (const entry of snapshot.wrapped) recordTapeSample(entry.symbol, entry.usd, atSeconds);
+  for (const entry of snapshot.stocks) {
+    recordTapeSample(entry.symbol, entry.usdDex ?? entry.usdFeed, atSeconds);
+  }
+}
+
 function snapshotHasAnyPrice(snapshot: TapeSnapshot): boolean {
   return (
     snapshot.wrapped.some((entry) => entry.usd !== null) ||
@@ -411,6 +425,7 @@ export async function getTapeSnapshot(deps: TapeSourceDeps = defaultDeps()): Pro
       .then((snapshot) => {
         if (snapshotHasAnyPrice(snapshot) || !cache) {
           cache = { snapshot, storedAtMs: deps.nowMs() };
+          recordSnapshotSamples(snapshot, Math.floor(deps.nowMs() / 1000));
           return snapshot;
         }
         const degraded: TapeSnapshot = { ...cache.snapshot, degraded: true };

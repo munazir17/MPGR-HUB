@@ -4,22 +4,35 @@
 //
 // Sticky trading-terminal tape for the Base Stocks Agent.
 //
-//   Segment A — Coinbase wrapped assets + native USDC on Base
-//   Segment B — Coinbase Tokenized Stocks (B20)
+// ONE continuously scrolling track that interleaves the two
+// authoritative sources the app already trusts:
 //
-// Two continuously marquee-scrolling tracks (CSS keyframe, duplicated
-// content for a seamless loop), pause on hover, monospace tabular
-// prices. Red/green is reserved for the 24h % only. A stale feed/DEX
-// leg renders an amber dot + "stale" — never a fabricated price.
+//   official Coinbase Tokenized Stock (B20) → Coinbase asset →
+//   official Coinbase Tokenized Stock (B20) → Coinbase asset → …
 //
-// Clicking a chip opens the PairSheet (right drawer desktop, bottom
-// sheet mobile) owned by this component.
+//   - Tokenized stocks come only from lib/markets/base-pairs.ts's live
+//     official catalog (the same list the swap path quotes). Nothing is
+//     invented from the wider stock market.
+//   - Coinbase assets are the wrapped assets + native USDC from that
+//     same typed allowlist, priced by GET /api/market/tape.
+//
+// There is no static section label any more (the old "COINBASE · BASE" /
+// "Stocks B20" markers are gone) — the mixed sequence itself is the
+// tape. The marquee is seamless: the base sequence is repeated and the
+// track translates by exactly one copy, so there is no visible reset or
+// jump on mobile or desktop. Monospace tabular prices; red/green is
+// reserved for the 24h % only. A stale leg renders an amber dot +
+// "stale" — never a fabricated price.
+//
+// Clicking a chip still opens the PairSheet (right drawer desktop,
+// bottom sheet mobile), which owns the asset detail + Prepare Swap flow.
 
-import { useCallback, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
 
 import { PairSheet } from "./PairSheet";
 import { formatChange24h, formatTapeUsd, useTape } from "@/hooks/useTape";
+import { interleaveTapeEntries, tapeMarqueeCopies } from "@/lib/markets/tape-order";
 import type { TapeStockEntry, TapeWrappedEntry } from "@/lib/markets/tape-types";
 
 export interface LiveTapeProps {
@@ -28,9 +41,15 @@ export interface LiveTapeProps {
   className?: string;
 }
 
-type ChipModel =
-  | { key: string; symbol: string; usd: number | null; change24h: number | null; stale: boolean }
-  | null;
+interface TapeChipModel {
+  key: string;
+  symbol: string;
+  usd: number | null;
+  change24h: number | null;
+  stale: boolean;
+}
+
+type ChipModel = TapeChipModel | null;
 
 // Display-only: USDC is deliberately hidden from the TOP ticker chips.
 // It stays everywhere else — the tape API, the agent's get_tape tool,
@@ -39,7 +58,7 @@ type ChipModel =
 // live tape at the top of the screen shows.
 const TICKER_HIDDEN_SYMBOLS = new Set(["USDC"]);
 
-function wrappedToChip(entry: TapeWrappedEntry): ChipModel {
+function wrappedToChip(entry: TapeWrappedEntry): TapeChipModel | null {
   if (TICKER_HIDDEN_SYMBOLS.has(entry.symbol)) return null;
   return {
     key: `w-${entry.symbol}`,
@@ -50,7 +69,7 @@ function wrappedToChip(entry: TapeWrappedEntry): ChipModel {
   };
 }
 
-function stockToChip(entry: TapeStockEntry): ChipModel {
+function stockToChip(entry: TapeStockEntry): TapeChipModel {
   return {
     key: `s-${entry.symbol}`,
     symbol: entry.symbol,
@@ -62,7 +81,7 @@ function stockToChip(entry: TapeStockEntry): ChipModel {
   };
 }
 
-function TapeChip({ chip, onSelect }: { chip: NonNullable<ChipModel>; onSelect: (symbol: string) => void }) {
+function TapeChip({ chip, onSelect }: { chip: TapeChipModel; onSelect: (symbol: string) => void }) {
   const change = formatChange24h(chip.change24h);
   const up = chip.change24h !== null && chip.change24h >= 0;
   return (
@@ -88,45 +107,20 @@ function TapeChip({ chip, onSelect }: { chip: NonNullable<ChipModel>; onSelect: 
   );
 }
 
-function Track({
-  label,
+function TapeSequence({
   chips,
-  speed,
   onSelect,
+  sequenceRef,
 }: {
-  label: string;
-  chips: NonNullable<ChipModel>[];
-  speed: "normal" | "fast";
+  chips: TapeChipModel[];
   onSelect: (symbol: string) => void;
+  sequenceRef?: React.Ref<HTMLDivElement>;
 }) {
-  if (chips.length === 0) {
-    return (
-      <div className="flex h-full shrink-0 items-center gap-2 border-r border-white/[0.07] px-3">
-        <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-muted">{label}</span>
-        <span className="font-mono text-[11px] text-muted">waiting for prices…</span>
-      </div>
-    );
-  }
-  // Two identical sequences; the track translates -50% for a seamless loop.
-  const sequence = [...chips, ...chips];
   return (
-    <div className="group flex h-full min-w-0 shrink-0 items-center overflow-hidden border-r border-white/[0.07]">
-      <span className="z-10 flex h-full shrink-0 items-center border-r border-white/[0.06] bg-[#070C16] px-2.5 text-[9px] font-semibold uppercase leading-none tracking-[0.16em] text-muted/90">
-        {label}
-      </span>
-      <div className="relative flex h-full min-w-0 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_20px,black_calc(100%-20px),transparent)]">
-        <div
-          className={clsx(
-            "flex h-full w-max items-center gap-1 py-0.5 pr-1 group-hover:[animation-play-state:paused]",
-            speed === "fast" ? "animate-tape-marquee-fast" : "animate-tape-marquee",
-          )}
-          aria-hidden="true"
-        >
-          {sequence.map((chip, index) => (
-            <TapeChip key={`${chip.key}-${index}`} chip={chip} onSelect={onSelect} />
-          ))}
-        </div>
-      </div>
+    <div ref={sequenceRef} className="flex shrink-0 items-center gap-1 pr-1">
+      {chips.map((chip) => (
+        <TapeChip key={chip.key} chip={chip} onSelect={onSelect} />
+      ))}
     </div>
   );
 }
@@ -134,19 +128,54 @@ function Track({
 export function LiveTape({ onPrepareSwap, className }: LiveTapeProps) {
   const { snapshot, loading, error } = useTape();
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const [copies, setCopies] = useState(2);
+  const measureRef = useRef<HTMLDivElement>(null);
 
-  const openPair = useCallback((symbol: string) => setSelectedSymbol(symbol), []);
-  const closePair = useCallback(() => setSelectedSymbol(null), []);
-  const handlePrepareSwap = useCallback(
-    (symbol: string) => {
-      setSelectedSymbol(null);
-      onPrepareSwap?.(symbol);
-    },
-    [onPrepareSwap],
+  const openPair = (symbol: string) => setSelectedSymbol(symbol);
+  const closePair = () => setSelectedSymbol(null);
+  const handlePrepareSwap = (symbol: string) => {
+    setSelectedSymbol(null);
+    onPrepareSwap?.(symbol);
+  };
+
+  const wrappedChips = useMemo(
+    () =>
+      (snapshot?.wrapped ?? [])
+        .map(wrappedToChip)
+        .filter((chip): chip is TapeChipModel => chip !== null),
+    [snapshot?.wrapped],
+  );
+  const stockChips = useMemo(
+    () => (snapshot?.stocks ?? []).map(stockToChip),
+    [snapshot?.stocks],
   );
 
-  const wrappedChips = (snapshot?.wrapped ?? []).map(wrappedToChip).filter((c): c is NonNullable<ChipModel> => c !== null);
-  const stockChips = (snapshot?.stocks ?? []).map(stockToChip).filter((c): c is NonNullable<ChipModel> => c !== null);
+  // stock → Coinbase asset → stock → Coinbase asset → …
+  const baseSequence = useMemo(
+    () => interleaveTapeEntries(stockChips, wrappedChips),
+    [stockChips, wrappedChips],
+  );
+
+  // Keep the marquee covered on wide screens: one copy of the sequence
+  // is measured once (and on resize), never per price refresh.
+  useEffect(() => {
+    const measure = () => {
+      const width = measureRef.current?.scrollWidth ?? 0;
+      const viewport = typeof window === "undefined" ? 0 : window.innerWidth;
+      setCopies(tapeMarqueeCopies(width, viewport));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [baseSequence.length]);
+
+  const trackStyle = { ["--tape-copies" as string]: String(copies) };
+  const renderedSequence = useMemo(
+    () => Array.from({ length: copies }, (_, copyIndex) =>
+      baseSequence.map((chip) => ({ chip, key: `${chip.key}-${copyIndex}` })),
+    ).flat(),
+    [baseSequence, copies],
+  );
 
   return (
     <>
@@ -157,8 +186,30 @@ export function LiveTape({ onPrepareSwap, className }: LiveTapeProps) {
         )}
         data-testid="live-tape"
       >
-        <Track label="Coinbase · Base" chips={wrappedChips} speed="normal" onSelect={openPair} />
-        <Track label="Stocks B20" chips={stockChips} speed="fast" onSelect={openPair} />
+        {baseSequence.length === 0 ? (
+          <div className="flex h-full items-center gap-2 px-3">
+            <span className="font-mono text-[11px] text-muted">waiting for prices…</span>
+          </div>
+        ) : (
+          <div className="group relative flex h-full min-w-0 flex-1 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_20px,black_calc(100%-20px),transparent)]">
+            {/* Measurement copy — layout only, never visible or focusable. */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none invisible absolute h-0 w-max overflow-hidden"
+            >
+              <TapeSequence chips={baseSequence} onSelect={openPair} sequenceRef={measureRef} />
+            </div>
+            <div
+              className="flex h-full w-max items-center py-0.5 animate-tape-marquee group-hover:[animation-play-state:paused]"
+              style={trackStyle}
+              aria-hidden="true"
+            >
+              {renderedSequence.map(({ chip, key }) => (
+                <TapeChip key={key} chip={chip} onSelect={openPair} />
+              ))}
+            </div>
+          </div>
+        )}
         <div className="relative z-10 ml-auto flex h-full shrink-0 items-center gap-2 border-l border-white/[0.06] bg-[#070C16] px-3">
           {error ? (
             <span className="flex items-center gap-1.5 font-mono text-[10px] text-amber-400">
@@ -179,11 +230,11 @@ export function LiveTape({ onPrepareSwap, className }: LiveTapeProps) {
         </div>
       </div>
 
-      {/* Screen-reader / no-JS-motion fallback: the same chips, static. */}
+      {/* Screen-reader / no-JS-motion fallback: the same mixed sequence, static. */}
       <div className="sr-only">
         <p>Live Base tape</p>
         <ul>
-          {[...wrappedChips, ...stockChips].map((chip) => (
+          {baseSequence.map((chip) => (
             <li key={`sr-${chip.key}`}>
               {chip.symbol} {formatTapeUsd(chip.usd)}
               {chip.stale ? " (stale)" : ""}
@@ -196,6 +247,11 @@ export function LiveTape({ onPrepareSwap, className }: LiveTapeProps) {
         symbol={selectedSymbol}
         onClose={closePair}
         onPrepareSwap={onPrepareSwap ? handlePrepareSwap : undefined}
+        preview={
+          selectedSymbol
+            ? (baseSequence.find((chip) => chip.symbol === selectedSymbol) ?? null)
+            : null
+        }
       />
     </>
   );

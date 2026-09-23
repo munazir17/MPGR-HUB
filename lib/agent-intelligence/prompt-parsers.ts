@@ -95,6 +95,21 @@ export const TRADE_SYMBOLS: { needle: string; ticker: string }[] = [
   { needle: "spacex", ticker: "SPCXc" },
 ];
 
+/**
+ * Every catalog ticker, for the "<number> <ticker>" amount shape
+ * ("sell 5 MSTRc", "buy 2 NVDAc"). Built from TRADE_SYMBOLS so a new
+ * catalog asset is understood here automatically instead of silently
+ * reading as "no amount given".
+ */
+const TRADE_UNIT_TICKERS = [
+  ...new Set(TRADE_SYMBOLS.map((entry) => entry.ticker.toLowerCase())),
+].join("|");
+
+const TRADE_UNIT_AMOUNT_RE = new RegExp(
+  "\\b([0-9]+(?:\\.[0-9]+)?)\\s+(?:shares?|tokens?|" + TRADE_UNIT_TICKERS + ")\\b",
+  "i",
+);
+
 export function looksLikeTradePrompt(normalized: string): boolean {
   return TRADE_PROMPT_MARKERS.some((marker) => normalized.includes(marker));
 }
@@ -121,7 +136,12 @@ export function normalizeSwapToken(raw: string): string {
 
 export function extractCryptoSwapPair(rawPrompt: string): { fromToken: string; toToken: string } | null {
   const text = rawPrompt.toLowerCase();
-  const token = "(?:\\$)?(eth|weth|usdc|mpgr)";
+  // Word boundaries matter: without them a wrapped ticker that merely
+  // CONTAINS a core symbol matched the wrong side — "swap 10 USDC to
+  // cbETH" parsed as USDC → ETH. The extended catalog parser
+  // (agent-intelligence/swap-intent.ts) now owns those tokens, so the
+  // core parser must decline them instead of mis-reading them.
+  const token = "(?:\\$)?\\b(eth|weth|usdc|mpgr)\\b";
 
   const howMuch = text.match(
     new RegExp("how much\\s+" + token + "[\\s\\w,]{0,48}?\\b(?:for|from)\\s+(?:[0-9]+(?:\\.[0-9]+)?)?\\s*" + token, "i"),
@@ -176,8 +196,81 @@ export function extractTradeSymbol(rawPrompt: string): string | null {
   return null;
 }
 
+/**
+ * True when the user is giving an EXECUTION order for an asset
+ * ("sell my USDC worth of MSTRc", "buy 5 USDC of ETH", "swap 10 USDC to
+ * cbADA") rather than asking for research/analysis.
+ *
+ * This is the switch that keeps the two behaviors apart: an execution
+ * order must reach the live quote/prepare path (proposal → confirmation
+ * modal → wallet signature), while "check AAPLc price", "NVDAc premium vs
+ * feed" or "should I buy AAPLc?" stay research-only.
+ *
+ * Deliberately narrow: a trade verb alone is not enough — advice and
+ * how-to questions are excluded, because those are questions ABOUT
+ * trading, not orders.
+ */
+export function isTradeExecutionPrompt(rawPrompt: string): boolean {
+  const text = normalizePrompt(rawPrompt);
+  if (!/\b(buy|sell|swap|trade|order|convert|exchange)\b/.test(text)) return false;
+  const advice =
+    /^(should|why|when)\b|\bshould (?:i|we)\b|\bhow (?:do|does|can|to|would|much do)\b|\bis it (?:a )?good\b|\b(?:good|right) time to\b|\bworth (?:buying|selling)\b|\bthoughts on\b|\bwhat do you think\b|\btrade ideas?\b/;
+  return !advice.test(text);
+}
+
 export function isTradeSellPrompt(rawPrompt: string): boolean {
   return /\bsell\b/.test(normalizePrompt(rawPrompt));
+}
+
+export interface TokenizedStockOrderAmount {
+  amount: string;
+  /**
+   * "usd"   — the user gave a dollar figure ("$5", "5 USDC", "5 worth of").
+   * "token" — the user gave a share/token count ("Sell 5 AAPLc").
+   */
+  unit: "usd" | "token";
+}
+
+/**
+ * Unit-aware amount for a Coinbase B20 tokenized-stock order.
+ *
+ * Why this exists: a bare number next to a B20 ticker is a SHARE count
+ * ("Sell 5 AAPLc" = 5 shares ≈ $1,688), but it was being read as a
+ * dollar budget by extractTradeHumanAmount — so the order showed up as
+ * $5 and could not be sized at that precision. Dollar-shaped amounts
+ * ("$5 of my AAPLc", "5 USDC worth of MSTRc") keep their meaning; only a
+ * number attached to the ticker / "shares" / "tokens" becomes a count.
+ *
+ * Returns null when the prompt states no amount at all, so the caller
+ * asks for one instead of guessing.
+ */
+export function extractTokenizedStockOrderAmount(
+  rawPrompt: string,
+  symbol: string,
+): TokenizedStockOrderAmount | null {
+  const USD_NUMBER = "[0-9]+(?:\\.[0-9]+)?";
+  const dollar = rawPrompt.match(new RegExp(`\\$\\s*(${USD_NUMBER})`));
+  if (dollar) return { amount: dollar[1], unit: "usd" };
+
+  const usdc = rawPrompt.match(new RegExp(`\\b(${USD_NUMBER})\\s*(?:usdc|usd)\\b`, "i"));
+  if (usdc) return { amount: usdc[1], unit: "usd" };
+
+  const worth = rawPrompt.match(new RegExp(`\\b(${USD_NUMBER})\\s+worth\\b`, "i"));
+  if (worth) return { amount: worth[1], unit: "usd" };
+
+  // A count: "<n> AAPLc", "<n> AAPL", "<n> shares [of AAPLc]", "<n> tokens".
+  // The B20 ticker and its underlying both count — the catalog resolves
+  // them to the same contract.
+  const tickerPattern = symbol
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/c$/i, "c?");
+  const ticker = rawPrompt.match(new RegExp(`\\b(${USD_NUMBER})\\s+${tickerPattern}\\b`, "i"));
+  if (ticker) return { amount: ticker[1], unit: "token" };
+
+  const units = rawPrompt.match(new RegExp(`\\b(${USD_NUMBER})\\s+(?:shares?|tokens?|stocks?)\\b`, "i"));
+  if (units) return { amount: units[1], unit: "token" };
+
+  return null;
 }
 
 export function extractTradeHumanAmount(rawPrompt: string): string | null {
@@ -187,7 +280,7 @@ export function extractTradeHumanAmount(rawPrompt: string): string | null {
   if (usdc) return usdc[1];
   const worth = rawPrompt.match(/\b([0-9]+(?:\.[0-9]+)?)\s+worth\b/i);
   if (worth) return worth[1];
-  const units = rawPrompt.match(/\b([0-9]+(?:\.[0-9]+)?)\s+(?:shares?|tokens?|aaplc|coinc|tslac|nvdac)\b/i);
+  const units = rawPrompt.match(TRADE_UNIT_AMOUNT_RE);
   if (units) return units[1];
   return null;
 }
