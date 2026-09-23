@@ -136,16 +136,16 @@ describe("tokenized-stock research and prepare routing", () => {
     expect(reply).not.toContain("research only");
   });
 
-  it("reads the funded phrasing as a BUY: 'sell my USDC worth of MSTRc' acquires MSTRc", async () => {
+  it("reads 'sell X USDC worth of MSTRc' as a SELL of MSTRc worth X USDC", async () => {
     runTool.mockResolvedValue(toolSuccess("tokenized_stock_prepare_order", { proposal }));
     await new DeterministicAIProvider().generateReply(
       makeRequest("Sell 100 USDC worth of MSTRc"),
     );
-    // The sell verb funds the trade; the order must not be prepared as a
-    // MSTRc liquidation.
+    // The SELL verb governs and the dollar figure is the sale's value
+    // target — this must never be prepared as a USDC-funded BUY of MSTRc.
     expect(runTool).toHaveBeenCalledWith(
       "tokenized_stock_prepare_order",
-      { symbol: "MSTRc", amount: "100", side: "BUY", amountUnit: "usd" },
+      { symbol: "MSTRc", amount: "100", side: "SELL", amountUnit: "usd" },
       expect.any(Object),
     );
   });

@@ -54,23 +54,30 @@ export type {
 } from "./agent-intelligence/wallet-balance-intent";
 
 import { extractBaseSwapIntent as extractBaseSwapIntentForSide } from "./agent-intelligence/swap-intent";
+import { isSellValueTargetPhrasing } from "./agent-intelligence/swap-intent";
 import { isTradeSellPrompt as isSellPhrased } from "./agent-intelligence/prompt-parsers";
 
 /**
  * Which side of a Coinbase B20 order the user is actually on.
  *
- * The old rule was "the word sell appears → SELL the B20 token", which
- * mis-reads the very common phrasing where the SIDE TOKEN is USDC:
- * "sell my USDC worth of MSTRc" means spend USDC to ACQUIRE MSTRc (a BUY
- * of MSTRc on the B20 route), and "sell 5 USDC of ETH" is a USDC → ETH
- * swap. When the extended parser resolves a pair that names the B20
- * ticker, that pair decides the side; only prompts with no resolvable
- * pair fall back to the wording.
+ * Two phrasing families have to stay apart:
+ *
+ *   "Sell my 4 USDC worth of MSTRc"  → SELL MSTRc, ~4 USDC out. The SELL
+ *     verb governs and the dollar figure is the sale's value target.
+ *     (Read as a BUY this prepared the exact opposite order — 4 USDC in,
+ *     MSTRc out — which is what this fixes.)
+ *   "Buy 5 USDC of MSTRc"            → BUY MSTRc, 5 USDC in.
+ *   "Sell 5 MSTRc"                   → SELL 5 MSTRc for USDC.
+ *
+ * When the extended parser resolves a pair that names the B20 ticker and
+ * no value-target phrasing is present, that pair decides the side; only
+ * prompts with no resolvable pair fall back to the wording.
  */
 export function resolveTokenizedStockOrderSide(
   rawPrompt: string,
   ticker: string | null,
 ): "BUY" | "SELL" {
+  if (ticker && isSellValueTargetPhrasing(rawPrompt, ticker)) return "SELL";
   if (ticker) {
     const intent = extractBaseSwapIntentForSide(rawPrompt);
     if (intent) {

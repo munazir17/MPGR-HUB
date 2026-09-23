@@ -84,7 +84,7 @@ describe("explicit orders route into the live execution flow", () => {
     );
   });
 
-  it("prepares 'Sell my 5 USDC worth of MSTRc' as a funded BUY of MSTRc", async () => {
+  it("prepares 'Sell my 5 USDC worth of MSTRc' as a SELL of MSTRc (~5 USDC out)", async () => {
     runTool.mockResolvedValue(
       toolSuccess("tokenized_stock_prepare_order", { proposal: b20Proposal }),
     );
@@ -92,9 +92,11 @@ describe("explicit orders route into the live execution flow", () => {
       makeRequest("Sell my 5 USDC worth of MSTRc"),
     );
 
+    // SELL MSTRc with a 5 USDC value target — the pair is MSTRc → USDC,
+    // not 5 USDC → MSTRc.
     expect(runTool).toHaveBeenCalledWith(
       "tokenized_stock_prepare_order",
-      { symbol: "MSTRc", amount: "5", side: "BUY", amountUnit: "usd" },
+      { symbol: "MSTRc", amount: "5", side: "SELL", amountUnit: "usd" },
       expect.any(Object),
     );
     expect(response.tradeProposal).toEqual(b20Proposal);

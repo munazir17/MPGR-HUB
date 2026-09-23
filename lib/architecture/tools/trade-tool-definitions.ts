@@ -270,7 +270,7 @@ const stockOrderSchema: AgentToolSchema = {
     amountUnit: {
       type: "string",
       description:
-        "\"usd\" (default) when the user gave a dollar figure (\"$5 of my AAPLc\", \"sell 5 USDC worth of MSTRc\"); \"token\" when the user gave a share/token count (\"Sell 5 AAPLc\", \"buy 0.01 TSLAc\"). A bare number next to a B20 ticker is a token count, not dollars.",
+        "\"usd\" (default) when the user gave a dollar figure (\"$5 of my AAPLc\", \"sell 5 USDC worth of MSTRc\"); \"token\" when the user gave a share/token count (\"Sell 5 AAPLc\", \"buy 0.01 TSLAc\"). A bare number next to a B20 ticker is a token count, not dollars. With \"usd\", side SELL means \"sell that many dollars' worth of the stock\" and side BUY means \"spend that many dollars on the stock\".",
     },
   },
   required: ["symbol", "amount"],

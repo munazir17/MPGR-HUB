@@ -407,10 +407,11 @@ async function prepareOrExplainTrade(
       );
     }
 
-    // Side first: "sell my USDC worth of MSTRc" is a BUY of MSTRc paid in
-    // USDC, while "sell 5 MSTRc" is a SELL of MSTRc. Deciding this from
-    // the resolved pair (falling back to the wording) keeps the prepared
-    // order pointed the way the user asked.
+    // Side first: "sell my 4 USDC worth of MSTRc" SELLS MSTRc with a
+    // ~4 USDC value target, "buy 5 USDC of MSTRc" spends 5 USDC on
+    // MSTRc, and "sell 5 MSTRc" sells 5 shares. Deciding this from the
+    // value-target phrasing and the resolved pair (falling back to the
+    // wording) keeps the prepared order pointed the way the user asked.
     const catalogSwap = extractBaseSwapIntent(request.prompt);
     const side = resolveTokenizedStockOrderSide(request.prompt, symbol);
     const fundingSymbol =

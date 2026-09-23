@@ -330,3 +330,47 @@ export function extractBaseSwapIntent(prompt: string): BaseSwapIntent | null {
 
   return null;
 }
+
+/**
+ * "Sell my 4 USDC worth of MSTRc" / "sell 5 usd worth of AAPLc".
+ *
+ * The SELL verb governs here: the dollar figure is the VALUE TARGET of
+ * the sale (how much USDC the user wants out), and the named stock is
+ * what gets sold. Treating the USDC figure as the sell side inverted the
+ * order — "Sell my 4 USDC worth of MSTRc" was prepared as "spend 4 USDC
+ * to BUY MSTRc", the opposite of what the user asked for.
+ *
+ * Only this shape flips: the verb must be sell/swap/trade/convert, the
+ * amount must be denominated in USDC/USD/dollars, and it must be joined
+ * to the operand by "worth of". "buy 5 USDC of MSTRc" (a USDC-funded
+ * buy) and "sell 5 USDC of ETH" (a crypto swap pair) keep their existing
+ * meaning, and "sell 5 MSTRc" is unaffected.
+ */
+const SELL_VALUE_TARGET_RE = new RegExp(
+  "\\b(?:sell|swap|trade|convert|exchange)\\s+" +
+    "(?:(?:my|our|the)\\s+)?" +
+    "(?:(?:all|entire)\\s+(?:of\\s+)?)?" +
+    "(?:\\$\\s*)?[0-9]+(?:\\.[0-9]+)?" +
+    "\\s*(?:\\$\\s*)?" +
+    "(?:usdc|usd|dollars?)" +
+    "\\s+worth\\s+of\\s+" +
+    TOKEN,
+  "i",
+);
+
+/**
+ * True when `rawPrompt` sells `ticker` with a USDC value target
+ * ("sell my 4 USDC worth of MSTRc" → SELL MSTRc, ~4 USDC out).
+ * The operand after "worth of" must resolve to the same contract as
+ * `ticker`, so an unrelated or unsupported name never flips the side.
+ */
+export function isSellValueTargetPhrasing(rawPrompt: string, ticker: string): boolean {
+  if (typeof rawPrompt !== "string" || !rawPrompt.trim() || !ticker) return false;
+  const match = rawPrompt.match(SELL_VALUE_TARGET_RE);
+  if (!match) return false;
+
+  const target = resolveSide(match[1]);
+  const symbol = resolveTradeToken(ticker);
+  if (!target || !symbol.ok) return false;
+  return target.address.toLowerCase() === symbol.token.address.toLowerCase();
+}
