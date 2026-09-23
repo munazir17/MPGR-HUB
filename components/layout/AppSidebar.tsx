@@ -18,6 +18,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import {
   ChevronRight,
+  Megaphone,
   Coins,
   Flame,
   Gamepad2,
@@ -49,12 +50,15 @@ interface SidebarGroup {
 // Roadmap, About, Support, legal) still exist as routes and remain
 // reachable from the Home footer; they are just not sidebar entries.
 // Existing routes only — do not add entries without a real page.
+// (Campaigns is the one dedicated route added as its own entry — it
+// lives under Rewards, between Leaderboard and Play.)
 const SIDEBAR_GROUPS: SidebarGroup[] = [
   {
     title: "Rewards",
     links: [
       { href: "/rewards", label: "Reward Hub", icon: Gift },
       { href: "/leaderboard", label: "Leaderboard", icon: Medal },
+      { href: "/campaigns", label: "Campaigns", icon: Megaphone },
     ],
   },
   {

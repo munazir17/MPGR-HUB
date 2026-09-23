@@ -106,7 +106,8 @@ export class LuaRedis {
       }
       case "INCR":
       case "DECR":
-      case "INCRBY": {
+      case "INCRBY":
+      case "DECRBY": {
         const key = rest[0];
         const delta = name === "INCR" ? 1 : name === "DECR" ? -1 : Number(rest[1]);
         if (!Number.isInteger(delta)) throw new Error("ERR value is not an integer or out of range");
@@ -189,6 +190,25 @@ export class LuaRedis {
         if (!entry) return 0;
         if (entry.value.kind !== "zset") throw new Error("WRONGTYPE " + rest[0]);
         return entry.value.value.size;
+      }
+      case "ZRANGE": {
+        const key = rest[0];
+        const start = Number(rest[1]);
+        const stop = Number(rest[2]);
+        const opts = rest.slice(3).map((o) => String(o).toUpperCase());
+        const rev = opts.includes("REV");
+        const entry = this.live(key);
+        if (!entry) return [];
+        if (entry.value.kind !== "zset") throw new Error("WRONGTYPE " + key);
+        const sorted = [...entry.value.value.entries()].sort((a, b) =>
+          rev ? b[1] - a[1] || a[0].localeCompare(b[0]) : a[1] - b[1] || a[0].localeCompare(b[0]),
+        );
+        const n = sorted.length;
+        const norm = (i: number) => (i < 0 ? n + i : i);
+        const from = Math.max(0, norm(start));
+        const to = stop < 0 ? norm(stop) : Math.min(n - 1, stop);
+        if (from > to || from >= n || n === 0) return [];
+        return sorted.slice(from, to + 1).map(([m]) => m);
       }
       case "ZREVRANK": {
         const entry = this.live(rest[0]);
@@ -273,6 +293,11 @@ export class LuaRedis {
       },
       async zrevrank(key: string, member: string): Promise<number | null> { return self.call(["ZREVRANK", key, member]) as number | null; },
       async zcard(key: string): Promise<number> { return self.call(["ZCARD", key]) as number; },
+      async zrange(key: string, start: number, stop: number, opts?: { rev?: boolean }): Promise<string[]> {
+        const args = ["ZRANGE", key, String(start), String(stop)];
+        if (opts?.rev) args.push("REV");
+        return self.call(args) as string[];
+      },
       async zrem(key: string, member: string): Promise<number> { return self.call(["ZREM", key, member]) as number; },
       async eval<T = unknown>(script: string, keys: string[], args: Array<string | number>): Promise<T> {
         return self.eval(script, keys, args) as T;
