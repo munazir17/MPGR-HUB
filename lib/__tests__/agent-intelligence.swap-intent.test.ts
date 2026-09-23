@@ -93,3 +93,62 @@ describe("extractBaseSwapIntent", () => {
     expect(intent?.buy.symbol).toBe("cbETH");
   });
 });
+describe("execution-order phrasings (live routing, not research)", () => {
+  it("parses 'Sell 5 usdc of eth' as a USDC → ETH order with a size", () => {
+    const intent = extractBaseSwapIntent("Sell 5 usdc of eth");
+    expect(intent).not.toBeNull();
+    expect(intent?.sell.symbol).toBe("USDC");
+    expect(intent?.buy.symbol).toBe("ETH");
+    expect(intent?.amount).toBe("5");
+    expect(intent?.quoteOnly).toBe(false);
+  });
+
+  it("parses 'Buy 5 USDC of ETH' as spending 5 USDC for ETH", () => {
+    const intent = extractBaseSwapIntent("Buy 5 USDC of ETH");
+    expect(intent).not.toBeNull();
+    expect(intent?.sell.symbol).toBe("USDC");
+    expect(intent?.buy.symbol).toBe("ETH");
+    expect(intent?.amount).toBe("5");
+    expect(intent?.quoteOnly).toBe(false);
+  });
+
+  it("parses 'Sell my USDC worth of MSTRc' as an order with no size yet", () => {
+    const intent = extractBaseSwapIntent("Sell my USDC worth of MSTRc");
+    expect(intent).not.toBeNull();
+    expect(intent?.sell.symbol).toBe("USDC");
+    expect(intent?.buy.symbol).toBe("MSTRc");
+    // No amount is invented — the caller asks for it.
+    expect(intent?.amount).toBeNull();
+    expect(intent?.quoteOnly).toBe(false);
+  });
+
+  it("parses 'sell all my USDC for cbADA' and 'swap 10 USDC worth of cbADA'", () => {
+    const all = extractBaseSwapIntent("sell all my USDC for cbADA");
+    expect(all?.sell.symbol).toBe("USDC");
+    expect(all?.buy.symbol).toBe("cbADA");
+    expect(all?.amount).toBeNull();
+
+    const worthOf = extractBaseSwapIntent("swap 10 USDC worth of cbADA");
+    expect(worthOf?.sell.symbol).toBe("USDC");
+    expect(worthOf?.buy.symbol).toBe("cbADA");
+    expect(worthOf?.amount).toBe("10");
+  });
+
+  it("still keeps one-token dollar buys on the USDC-funded path", () => {
+    const dollars = extractBaseSwapIntent("Buy $25 of cbDOGE");
+    expect(dollars?.sell.symbol).toBe("USDC");
+    expect(dollars?.buy.symbol).toBe("cbDOGE");
+    expect(dollars?.amount).toBe("25");
+    expect(dollars?.amountIsDollar).toBe(true);
+
+    const units = extractBaseSwapIntent("buy 25 cbDOGE");
+    expect(units?.buy.symbol).toBe("cbDOGE");
+    expect(units?.amount).toBe("25");
+  });
+
+  it("leaves price/ research phrasings to the research path", () => {
+    expect(extractBaseSwapIntent("check cbADA price")).toBeNull();
+    expect(extractBaseSwapIntent("what is the cbADA premium vs feed")).toBeNull();
+    expect(extractBaseSwapIntent("how do I sell cbADA?")).toBeNull();
+  });
+});

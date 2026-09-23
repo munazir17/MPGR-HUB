@@ -1,6 +1,7 @@
 import type { AnyAgentTool } from "@/lib/architecture/tools/agent-tool";
 import { getAgentToolRegistry } from "@/lib/architecture/tools/agent-tool-registry-instance";
 import {
+  extractBaseSwapIntent,
   isCryptoSwapQuotePrompt,
   isTradePrompt,
   isTradeQuotePrompt,
@@ -149,8 +150,25 @@ export function isYieldToolPrompt(prompt: string): boolean {
   return /\byield\b|\bapr\b|\bapy\b|yield opportunit|staking opportunit/.test(text);
 }
 
+/**
+ * An explicit swap order over the extended allowlist ("sell 5 usdc of
+ * eth", "buy 5 USDC of ETH") whose pair resolves deterministically.
+ *
+ * isTradeActionPrompt above misses these because it is keyed on the
+ * B20/quote markers, so "sell 5 usdc of eth" used to fall into the
+ * research/market tool set — the model then answered a live order with
+ * research. Requires the pair to actually resolve, so ordinary chat and
+ * research prompts are unaffected. Quote-only phrasing is excluded: those
+ * are price questions, not orders.
+ */
+export function isResolvedSwapOrderPrompt(prompt: string): boolean {
+  const intent = extractBaseSwapIntent(prompt);
+  return intent !== null && !intent.quoteOnly;
+}
+
 export function isTradeActionPrompt(prompt: string): boolean {
   if (isCryptoSwapQuotePrompt(prompt)) return true;
+  if (isResolvedSwapOrderPrompt(prompt)) return true;
   const text = prompt.toLowerCase();
   const hasAction =
     /\b(buy|sell|swap|prepare|order)\b/.test(text) ||
@@ -269,6 +287,7 @@ export function buildGatedCapabilityInstructions(prompt: string): string[] {
   if (hasTrade) {
     lines.push(
       "Trading tools (Base Mainnet only). They never sign or broadcast.",
+      "An explicit buy/sell/swap/trade order ALWAYS goes through the prepare tools (trade_prepare_swap / prepare_swap for other Base tokens, tokenized_stock_prepare_order for Coinbase B20 tokenized stocks) — never answer an order with research or with a price look-up. If the order does not state an amount, ask for the amount instead of researching.",
       "If the user asks the price of ETH, USDC, WETH, or MPGR, call trade_get_price. Never call tokenized_stock_research for those.",
       'If the user asks to research a Coinbase tokenized stock (COINc, AAPLc, TSLAc, SPCXc, NVDAc, or "tokenized stocks"), call tokenized_stock_research with {"symbol":"COINc"} or {} to list the catalog.',
       'If the user asks to buy or sell a tokenized stock ("buy $10 of SPCXc", "prepare a trade to buy $50 of tokenized AAPL"), call tokenized_stock_prepare_order with {"symbol":"AAPLc","amount":"50","side":"BUY"}. Never call trade_prepare_swap for AAPL/AAPLc or any other Coinbase B20 ticker.',

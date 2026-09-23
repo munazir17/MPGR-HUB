@@ -151,6 +151,25 @@ describe("Base Stocks Agent prompt gating", () => {
     expect(text).toContain("base stocks tools");
   });
 
+  it("an explicit order over the extended allowlist advertises the prepare tools", () => {
+    for (const prompt of ["Sell 5 usdc of eth", "Buy 5 USDC of ETH"]) {
+      const advertised = ids(prompt);
+      expect(advertised).toEqual(
+        expect.arrayContaining(["trade_prepare_swap", "prepare_swap", "trade_get_price"]),
+      );
+      const text = buildGatedCapabilityInstructions(prompt).join("\n");
+      expect(text).toContain("ALWAYS goes through the prepare tools");
+    }
+  });
+
+  it("price/premium research prompts still do not advertise the prepare tools", () => {
+    for (const prompt of ["check cbADA price", "what is the cbADA premium vs feed"]) {
+      const advertised = ids(prompt);
+      expect(advertised).not.toContain("prepare_swap");
+      expect(advertised).not.toContain("trade_prepare_swap");
+    }
+  });
+
   it("unrelated prompts never advertise the stocks tools", () => {
     for (const prompt of ["hi", "what is the MPGR price?", "explain staking", "send 10 USDC to alice.base.eth"]) {
       const advertised = ids(prompt);

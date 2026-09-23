@@ -1,5 +1,7 @@
 import {
   extractBaseSwapIntent,
+  isTradeExecutionPrompt,
+  resolveTokenizedStockOrderSide,
   extractCryptoSwapAmount,
   extractCryptoSwapPair,
   extractTradeHumanAmount,
@@ -363,28 +365,56 @@ async function prepareOrExplainTrade(
 ): Promise<AIProviderResponse> {
   const symbol = extractTradeSymbol(request.prompt);
   const wantsQuote = isTradeQuotePrompt(request.prompt);
+  // An explicit execution order ("sell my USDC worth of MSTRc",
+  // "sell 5 MSTRc", "buy $10 of AAPLc") is NOT a research question. It
+  // has to reach the prepare path — and when the size is missing it must
+  // ASK for the size, never answer with a research-only reply while the
+  // card claims an execution route is ready. Research phrasing without an
+  // execution verb ("check AAPLc price", "NVDAc premium vs feed",
+  // "should I buy AAPLc?") keeps the research path untouched.
+  const wantsExecution = isTradeExecutionPrompt(request.prompt);
 
-  if (wantsQuote) {
+  if (wantsQuote || wantsExecution) {
     if (!symbol) {
       return helpResponse(
         "I cannot safely resolve that tokenized stock from the official Coinbase B20 catalog on Base. Name a catalog ticker such as AAPLc, COINc, or TSLAc. Nothing was signed or submitted.",
       );
     }
 
+    // Side first: "sell my USDC worth of MSTRc" is a BUY of MSTRc paid in
+    // USDC, while "sell 5 MSTRc" is a SELL of MSTRc. Deciding this from
+    // the resolved pair (falling back to the wording) keeps the prepared
+    // order pointed the way the user asked.
+    const catalogSwap = extractBaseSwapIntent(request.prompt);
+    const side = resolveTokenizedStockOrderSide(request.prompt, symbol);
+    const fundingSymbol =
+      catalogSwap && catalogSwap.buy.symbol === symbol ? catalogSwap.sell.symbol : null;
+
     const amount = extractTradeHumanAmount(request.prompt);
     if (!amount) {
+      const question =
+        side === "SELL"
+          ? "How much " +
+            symbol +
+            " do you want to sell? Give me a dollar amount (for example $10) and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet."
+          : "How much " +
+            (fundingSymbol ?? "USDC") +
+            " do you want to spend on " +
+            symbol +
+            "? Give me a dollar amount (for example $10) and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet.";
       return helpResponse(
-        "A dollar or token amount is required before I can prepare a tokenized-stock swap (for example $10). I will not guess fromAmount. Nothing was signed or submitted.",
+        wantsExecution
+          ? question
+          : "A dollar or token amount is required before I can prepare a tokenized-stock swap (for example $10). I will not guess fromAmount. Nothing was signed or submitted.",
       );
     }
 
-    const selling = isTradeSellPrompt(request.prompt);
     const result = await runRegisteredTool(
       "tokenized_stock_prepare_order",
       {
         symbol,
         amount,
-        side: selling ? "SELL" : "BUY",
+        side,
       },
       request,
     );

@@ -25,6 +25,9 @@
 //     instead of guessing a unit conversion
 //   - quote-only phrasing ("quote", "price", "how much") is flagged so
 //     callers can answer with a price instead of a proposal
+//   - an execution order with no size still parses (amount: null): the
+//     caller asks for the amount instead of silently treating an order as
+//     a research question
 
 import { resolveTradeToken, type ResolveTradeTokenResult } from "@/lib/trade/trade-tokens";
 import type { TradeTokenKind } from "@/lib/trade/trade-types";
@@ -57,10 +60,15 @@ const SYMBOL = "[a-z][a-z0-9]{1,15}";
 const TOKEN = `(${SYMBOL}|0x[a-f0-9]{40})`;
 const NUMBER = "([0-9]+(?:\\.[0-9]+)?)";
 
+// The link between the sell and buy side. "of" and "worth of" are how
+// people write the same request ("sell 5 usdc of eth", "swap 10 USDC
+// worth of cbADA"); the arrow/"/" forms are the chip wording.
+const LINK = "(?:worth\\s+of|to|into|for|in|of|->|=>|→|/)";
+
 /**
  * "swap 10 USDC to cbADA" / "quote 10 USDC to cbADA" /
  * "convert $5 eth into USDC" / "sell 2 cbBTC for USDC" /
- * "swap $10 of cbBTC to cbADA"
+ * "swap $10 of cbBTC to cbADA" / "sell 5 usdc of eth"
  */
 const SWAP_RE = new RegExp(
   "\\b(?:swap|trade|convert|exchange|sell|quote)\\s+" +
@@ -71,7 +79,46 @@ const SWAP_RE = new RegExp(
     "\\s*(\\$\\s*)?" +
     "(?:(?:of|worth)\\s+(?:of\\s+)?|some\\s+)?" +
     TOKEN +
-    "\\s*(?:to|into|for|->|=>|→|/)\\s*" +
+    "\\s*" +
+    LINK +
+    "\\s*" +
+    TOKEN,
+  "i",
+);
+
+/**
+ * "sell my USDC worth of MSTRc" / "sell all my USDC for cbADA" —
+ * an explicit execution order with NO size, so the size is not guessed
+ * (the caller asks). The possessive/all prefix is required, which is
+ * what keeps this from stealing the amount-bearing forms above.
+ */
+const SELL_ALL_RE = new RegExp(
+  "\\b(?:sell|swap|trade|convert|exchange)\\s+" +
+    "(?:(?:all|entire|100%)\\s+(?:of\\s+)?(?:my\\s+|our\\s+)?|(?:my|our)\\s+(?:entire\\s+|whole\\s+)?)" +
+    "(\\$\\s*)?" +
+    TOKEN +
+    "\\s*" +
+    LINK +
+    "\\s*" +
+    TOKEN,
+  "i",
+);
+
+/**
+ * "buy 5 USDC of ETH" / "buy 10 usdc worth of cbada" — the amount is
+ * denominated in the FIRST token and the SECOND is what is bought. Two
+ * tokens are mandatory, so "buy $25 of cbDOGE" (one token) still falls to
+ * BUY_RE below as a USDC-funded buy.
+ */
+const BUY_FOR_RE = new RegExp(
+  "\\bbuy\\s+(?:of\\s+|some\\s+)?" +
+    "(\\$\\s*)?" +
+    NUMBER +
+    "\\s*(?:\\$\\s*|of\\s+|some\\s+|worth\\s+(?:of\\s+)?)?" +
+    TOKEN +
+    "\\s*" +
+    LINK +
+    "\\s*" +
     TOKEN,
   "i",
 );
@@ -179,6 +226,30 @@ export function extractBaseSwapIntent(prompt: string): BaseSwapIntent | null {
     //         4 = sell token, 5 = buy token
     const dollar = Boolean(swap[1] || swap[3]);
     const intent = buildIntent(swap[4], swap[5], swap[2] ?? null, dollar, text);
+    if (intent) return intent;
+  }
+
+  // An explicit execution order with no size ("sell my USDC worth of
+  // MSTRc"): recognized as a swap so the caller asks for the amount and
+  // quotes live — never answered as research.
+  const sellAll = text.match(SELL_ALL_RE);
+  if (sellAll) {
+    // groups: 1 = $ prefix (ignored), 2 = sell token, 3 = buy token
+    const intent = buildIntent(sellAll[2], sellAll[3], null, false, text);
+    if (intent) return intent;
+  }
+
+  // "buy 5 USDC of ETH": the number is denominated in the first token.
+  const buyFor = text.match(BUY_FOR_RE);
+  if (buyFor) {
+    // groups: 1 = $ prefix, 2 = number, 3 = amount token, 4 = buy token
+    const intent = buildIntent(
+      buyFor[3],
+      buyFor[4],
+      buyFor[2] ?? null,
+      Boolean(buyFor[1]),
+      text,
+    );
     if (intent) return intent;
   }
 

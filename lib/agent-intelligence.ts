@@ -30,6 +30,7 @@ export {
   isCryptoSwapQuotePrompt,
   extractTradeSymbol,
   isTradeSellPrompt,
+  isTradeExecutionPrompt,
   extractTradeHumanAmount,
   isX402PaymentPrompt,
   isTransferPrompt,
@@ -40,6 +41,34 @@ export {
 export {
   extractBaseSwapIntent,
 } from "./agent-intelligence/swap-intent";
+
+import { extractBaseSwapIntent as extractBaseSwapIntentForSide } from "./agent-intelligence/swap-intent";
+import { isTradeSellPrompt as isSellPhrased } from "./agent-intelligence/prompt-parsers";
+
+/**
+ * Which side of a Coinbase B20 order the user is actually on.
+ *
+ * The old rule was "the word sell appears → SELL the B20 token", which
+ * mis-reads the very common phrasing where the SIDE TOKEN is USDC:
+ * "sell my USDC worth of MSTRc" means spend USDC to ACQUIRE MSTRc (a BUY
+ * of MSTRc on the B20 route), and "sell 5 USDC of ETH" is a USDC → ETH
+ * swap. When the extended parser resolves a pair that names the B20
+ * ticker, that pair decides the side; only prompts with no resolvable
+ * pair fall back to the wording.
+ */
+export function resolveTokenizedStockOrderSide(
+  rawPrompt: string,
+  ticker: string | null,
+): "BUY" | "SELL" {
+  if (ticker) {
+    const intent = extractBaseSwapIntentForSide(rawPrompt);
+    if (intent) {
+      if (intent.buy.symbol === ticker) return "BUY";
+      if (intent.sell.symbol === ticker) return "SELL";
+    }
+  }
+  return isSellPhrased(rawPrompt) ? "SELL" : "BUY";
+}
 export type {
   BaseSwapIntent,
   BaseSwapIntentSide,

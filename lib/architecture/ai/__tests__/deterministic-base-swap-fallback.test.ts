@@ -138,6 +138,50 @@ describe("DeterministicAIProvider — supported-catalog swap fallback", () => {
     expect(response.reply).toContain("Nothing was signed");
   });
 
+  it("routes 'Sell 5 usdc of eth' into the live prepare/quote path", async () => {
+    runTool.mockResolvedValue(toolSuccess("prepare_swap", { proposal }));
+
+    const response = await new DeterministicAIProvider().generateReply(
+      makeRequest("Sell 5 usdc of eth"),
+    );
+
+    expect(runTool).toHaveBeenCalledWith(
+      "prepare_swap",
+      { amount: "5", sellSymbol: "USDC", buySymbol: "ETH" },
+      expect.any(Object),
+    );
+    expect(response.tradeProposal).toEqual(proposal);
+    expect(response.reply).toContain("Nothing is signed or submitted");
+  });
+
+  it("routes 'Buy 5 USDC of ETH' into the live prepare/quote path", async () => {
+    runTool.mockResolvedValue(toolSuccess("prepare_swap", { proposal }));
+
+    const response = await new DeterministicAIProvider().generateReply(
+      makeRequest("Buy 5 USDC of ETH"),
+    );
+
+    expect(runTool).toHaveBeenCalledWith(
+      "prepare_swap",
+      { amount: "5", sellSymbol: "USDC", buySymbol: "ETH" },
+      expect.any(Object),
+    );
+    expect(response.tradeProposal).toEqual(proposal);
+    // Never the generic help/portfolio text.
+    expect(response.reply).not.toContain("Portfolio Summary");
+  });
+
+  it("asks for the size of an order that arrives without one (no research answer)", async () => {
+    const response = await new DeterministicAIProvider().generateReply(
+      makeRequest("Sell my USDC worth of cbADA"),
+    );
+
+    expect(runTool).not.toHaveBeenCalled();
+    expect(response.tradeProposal).toBeUndefined();
+    expect(response.reply.toLowerCase()).toContain("how much");
+    expect(response.reply).not.toContain("Portfolio Summary");
+  });
+
   it("leaves unsupported prompts to the normal chat path", async () => {
     const response = await new DeterministicAIProvider().generateReply(
       makeRequest("What is MPGR HUB?"),

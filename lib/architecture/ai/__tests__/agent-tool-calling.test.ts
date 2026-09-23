@@ -322,6 +322,73 @@ describe("runToolCallingLoop", () => {
     expect(response.reply).toBe("Only MPGR Staking is currently known.");
   });
 
+  it("answers an explicit B20 order with no size by asking for the size, not with research", async () => {
+    // The model researched the asset and then wrote a research-only answer
+    // for an order it could not size. The loop must not hand that back as
+    // the final reply (the card meanwhile advertises an execution route).
+    const spy = vi
+      .spyOn(agentToolRuntime, "executeTool")
+      .mockResolvedValue(
+        toolSuccess("tokenized_stock_research", {
+          report: { kind: "catalog", assets: [{ symbol: "MSTRc" }] },
+        }),
+      );
+
+    const sendCompletion = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({ toolCall: { toolId: "tokenized_stock_research", arguments: { symbol: "MSTRc" } } }),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({ intent: "general_help", reply: "Here is research on MSTRc. Research only." }),
+      );
+
+    const response = await runToolCallingLoop(
+      makeRequest({ prompt: "Sell my USDC worth of MSTRc" }),
+      "base prompt",
+      sendCompletion,
+    );
+
+    expect(spy).toHaveBeenCalledWith(
+      "tokenized_stock_research",
+      { symbol: "MSTRc" },
+      expect.anything(),
+    );
+    expect(response.reply.toLowerCase()).toContain("how much");
+    // "sell my USDC worth of MSTRc" is funded by USDC, so the size question
+    // is about the USDC leg — the order is a BUY of MSTRc, not a MSTRc sell.
+    expect(response.reply.toLowerCase()).toContain("usdc");
+    expect(response.reply.toLowerCase()).toContain("mstrc");
+    expect(response.reply.toLowerCase()).toContain("spend");
+    expect(response.reply).not.toContain("Research only");
+    expect(response.tokenizedStockReport).toBeUndefined();
+  });
+
+  it("still returns the model's research answer for a research question", async () => {
+    vi.spyOn(agentToolRuntime, "executeTool").mockResolvedValue(
+      toolSuccess("tokenized_stock_research", {
+        report: { kind: "catalog", assets: [{ symbol: "MSTRc" }] },
+      }),
+    );
+
+    const sendCompletion = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({ toolCall: { toolId: "tokenized_stock_research", arguments: { symbol: "MSTRc" } } }),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({ intent: "general_help", reply: "Here is research on MSTRc. Research only." }),
+      );
+
+    const response = await runToolCallingLoop(
+      makeRequest({ prompt: "Check MSTRc price and oracle" }),
+      "base prompt",
+      sendCompletion,
+    );
+
+    expect(response.reply).toBe("Here is research on MSTRc. Research only.");
+  });
+
   it("folds an unknown tool id back into the transcript instead of crashing", async () => {
     const sendCompletion = vi
       .fn()

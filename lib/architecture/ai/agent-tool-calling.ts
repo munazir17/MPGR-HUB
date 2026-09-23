@@ -11,10 +11,14 @@ import type { TransferProposal } from "@/lib/trade/transfer-types";
 import {
   extractTradeHumanAmount,
   extractTradeSymbol,
+  isTradeExecutionPrompt,
   isTradePrompt,
   isTradeQuotePrompt,
   isTradeSellPrompt,
+  resolveTokenizedStockOrderSide,
 } from "@/lib/agent-intelligence";
+
+import { extractBaseSwapIntent } from "@/lib/agent-intelligence";
 
 // Re-exports from decomposed modules preserving 100% public API compatibility
 export {
@@ -83,6 +87,34 @@ const FORCED_B20_PREPARE_REPLY =
   "A tokenized-stock swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.";
 
 /**
+ * An explicit B20 buy/sell order that cannot be quoted YET because the
+ * user did not state a size. The reply must ask for the size — a
+ * research-only answer to an execution order is the bug this guards
+ * against (the card would meanwhile advertise a live execution route).
+ */
+function pendingTokenizedStockOrderSides(prompt: string): { symbol: string; side: "BUY" | "SELL" } | null {
+  if (!isTradePrompt(prompt) || !isTradeExecutionPrompt(prompt)) return null;
+  const symbol = extractTradeSymbol(prompt);
+  if (!symbol) return null;
+  if (extractTradeHumanAmount(prompt)) return null;
+  return { symbol, side: resolveTokenizedStockOrderSide(prompt, symbol) };
+}
+
+function formatPendingOrderReply(prompt: string): string {
+  const pending = pendingTokenizedStockOrderSides(prompt);
+  if (!pending) return "";
+  const funding =
+    extractBaseSwapIntent(prompt)?.sell.symbol ?? "USDC";
+  return (
+    "How much " +
+    (pending.side === "SELL" ? pending.symbol : funding) +
+    " do you want to " +
+    (pending.side === "SELL" ? "sell" : "spend on " + pending.symbol) +
+    "? Give me a dollar amount (for example $10) and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet."
+  );
+}
+
+/**
  * If the network model answered a B20 buy/sell in prose (or JSON without
  * a tool call), still run the prepare-only tool so AgentTradeProposalCard
  * can render. Never signs. Never calls execute tools. Failures are
@@ -94,7 +126,11 @@ async function maybePrepareTokenizedStockOrder(
 ): Promise<TradeProposal | undefined> {
   if (captured) return captured;
   if (!isTradePrompt(request.prompt)) return undefined;
-  if (!isTradeQuotePrompt(request.prompt) && !isTradeActionPrompt(request.prompt)) {
+  if (
+    !isTradeQuotePrompt(request.prompt) &&
+    !isTradeActionPrompt(request.prompt) &&
+    !isTradeExecutionPrompt(request.prompt)
+  ) {
     return undefined;
   }
 
@@ -107,7 +143,7 @@ async function maybePrepareTokenizedStockOrder(
     {
       symbol,
       amount,
-      side: isTradeSellPrompt(request.prompt) ? "SELL" : "BUY",
+      side: resolveTokenizedStockOrderSide(request.prompt, symbol),
     },
     request,
   );
@@ -208,6 +244,23 @@ export async function runToolCallingLoop(
         request,
         capturedTradeProposal,
       );
+
+      // An execution order with no size cannot be quoted, so the reply is
+      // the amount question — deterministically, and without the research
+      // card, instead of whatever the model wrote about the asset.
+      const pendingOrderReply = formatPendingOrderReply(request.prompt);
+      if (pendingOrderReply && !tradeProposal && !capturedTradeProposal) {
+        return buildLoopResponse(
+          request,
+          request.previousIntent ?? "general_help",
+          pendingOrderReply,
+          capturedX402Proposal,
+          undefined,
+          undefined,
+          capturedTransferProposal,
+        );
+      }
+
       const reply =
         tradeProposal && !capturedTradeProposal
           ? FORCED_B20_PREPARE_REPLY
