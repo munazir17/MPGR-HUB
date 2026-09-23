@@ -8,7 +8,7 @@ import { renderToString } from "react-dom/server";
 // information architecture. The sidebar is deliberately short —
 // exactly these entries:
 //
-//   REWARDS:   Reward Hub, Leaderboard
+//   REWARDS:   Reward Hub, Leaderboard, Campaigns
 //   PLAY:      Games, MPGR Run
 //   ECOSYSTEM: Staking, Token Lock, Burn, $MPGR
 //   ACCOUNT:   Profile
@@ -37,6 +37,7 @@ const { AppSidebar } = await import("@/components/layout/AppSidebar");
 const EXPECTED_ENTRIES: Record<string, string> = {
   "Reward Hub": "/rewards",
   Leaderboard: "/leaderboard",
+  Campaigns: "/campaigns",
   Games: "/games",
   "MPGR Run": "/games/mpgr-run",
   Staking: "/staking",
@@ -72,7 +73,7 @@ describe("AppSidebar (rendered)", () => {
 
   it("contains exactly the requested navigation entries", () => {
     const hrefs = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
-    // BrandMark's home link + the nine entries (order-insensitive).
+    // BrandMark's home link + the ten entries (order-insensitive).
     expect([...hrefs].sort()).toEqual(["/", ...Object.values(EXPECTED_ENTRIES)].sort());
     for (const [label, href] of Object.entries(EXPECTED_ENTRIES)) {
       expect(html).toContain(`>${label}<`);
