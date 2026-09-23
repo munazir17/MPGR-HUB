@@ -72,6 +72,12 @@ const LINK = "(?:worth\\s+of|to|into|for|in|of|->|=>|→|/)";
  */
 const SWAP_RE = new RegExp(
   "\\b(?:swap|trade|convert|exchange|sell|quote)\\s+" +
+    // "my"/"our"/"the" and "all/entire" are how people hand over the
+    // funding side: "sell MY 5 USDC worth of MSTRc", "swap my 2 usdc for
+    // eth". They never carry a size by themselves, so the amount groups
+    // below are unchanged.
+    "(?:(?:my|our|the)\\s+)?" +
+    "(?:(?:all|entire)\\s+(?:of\\s+)?)?" +
     "(?:(?:of|worth|some)\\s+(?:of\\s+)?)?" +
     "(\\$\\s*)?" +
     NUMBER +
@@ -111,7 +117,9 @@ const SELL_ALL_RE = new RegExp(
  * BUY_RE below as a USDC-funded buy.
  */
 const BUY_FOR_RE = new RegExp(
-  "\\bbuy\\s+(?:of\\s+|some\\s+)?" +
+  "\\bbuy\\s+" +
+    "(?:(?:my|our|the)\\s+)?" +
+    "(?:of\\s+|some\\s+)?" +
     "(\\$\\s*)?" +
     NUMBER +
     "\\s*(?:\\$\\s*|of\\s+|some\\s+|worth\\s+(?:of\\s+)?)?" +
@@ -199,6 +207,64 @@ function buildIntent(
     amountIsDollar: amountIsDollar && numeric !== null,
     quoteOnly: QUOTE_ONLY_RE.test(prompt.toLowerCase()),
   };
+}
+
+export interface UnresolvedSwapOrder {
+  /** The raw operand text the user wrote for each side. */
+  sell: string;
+  buy: string;
+  amount: string | null;
+  /** The operands this app's catalog could not resolve. */
+  unresolved: string[];
+}
+
+/**
+ * A SIZED order ("buy 10 USDC of FAKECOIN", "sell 5 SCAMCOIN for USDC")
+ * whose operands the catalog cannot resolve.
+ *
+ * This exists so an unsupported token gets an explicit refusal instead of
+ * generic help — and, above all, so nothing downstream can ever prepare
+ * it: an unknown ticker never becomes an executable contract just because
+ * a symbol was supplied. Addresses are NOT reported here: a 0x address
+ * is resolvable (unverified) and keeps the existing CDP-quoted path.
+ *
+ * A digit is required, which is what keeps conversational prompts
+ * ("buy me a coffee") and unsized research questions out of this path.
+ */
+export function extractUnresolvedSwapOrder(prompt: string): UnresolvedSwapOrder | null {
+  if (typeof prompt !== "string" || !prompt.trim()) return null;
+  const text = prompt.trim();
+  if (!/[0-9]/.test(text)) return null;
+
+  const shape = (sell: string, buy: string, amount: string | null, dollar: boolean) => {
+    if (buildIntent(sell, buy, amount, dollar, text)) return null;
+    const unresolved = [sell, buy].filter((operand) => resolveSide(operand) === null);
+    // Both sides resolved (e.g. "swap 10 USDC to USDC") — that is not an
+    // unsupported-asset problem, so keep the existing behavior.
+    if (unresolved.length === 0) return null;
+    return { sell, buy, amount, unresolved };
+  };
+
+  const swap = text.match(SWAP_RE);
+  if (swap) {
+    // groups: 1 = $ before number, 2 = number, 3 = $ after number,
+    //         4 = sell token, 5 = buy token
+    return shape(swap[4], swap[5], swap[2] ?? null, Boolean(swap[1] || swap[3]));
+  }
+
+  const buyFor = text.match(BUY_FOR_RE);
+  if (buyFor) {
+    // groups: 1 = $ prefix, 2 = number, 3 = amount token, 4 = buy token
+    return shape(buyFor[3], buyFor[4], buyFor[2] ?? null, Boolean(buyFor[1]));
+  }
+
+  const buy = text.match(BUY_RE);
+  if (buy) {
+    // groups: 1 = $ prefix, 2 = number, 3 = buy token
+    return shape("USDC", buy[3], buy[2] ?? null, Boolean(buy[1]));
+  }
+
+  return null;
 }
 
 /**

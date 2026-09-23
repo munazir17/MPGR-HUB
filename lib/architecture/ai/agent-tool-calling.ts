@@ -59,6 +59,7 @@ import {
 import {
   parseModelDirective,
 } from "./tool-call-parser";
+import { answerWalletBalance } from "./wallet-balance-answer";
 import {
   buildCompactToolCatalogPromptBlock,
   buildToolCatalogPromptBlock,
@@ -179,6 +180,13 @@ export async function runToolCallingLoop(
   sendCompletion: SendCompletion,
   options: { compactToolCatalog?: boolean; toolCatalog?: readonly AnyAgentTool[] } = {},
 ): Promise<AIProviderResponse> {
+  // Strict wallet-balance questions are answered deterministically from live
+  // on-chain reads BEFORE the model is called, so a single-token balance
+  // ("What is my MSTRc balance?") can never come back as a portfolio summary
+  // or a guessed number. Everything else keeps the normal tool loop.
+  const balanceAnswer = await answerWalletBalance(request);
+  if (balanceAnswer) return balanceAnswer;
+
   const toolCatalog = options.toolCatalog ?? selectAdvertisedToolsForPrompt(request.prompt);
   const catalogBlock = options.compactToolCatalog
     ? buildCompactToolCatalogPromptBlock(toolCatalog)

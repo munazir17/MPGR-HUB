@@ -1,5 +1,6 @@
 import {
   extractBaseSwapIntent,
+  extractUnresolvedSwapOrder,
   isTradeExecutionPrompt,
   resolveTokenizedStockOrderSide,
   extractCryptoSwapAmount,
@@ -20,6 +21,7 @@ import {
 import { getFollowUpPrompts } from "@/lib/agent-actions";
 import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-provider";
 import { runRegisteredTool } from "./agent-tool-calling";
+import { answerWalletBalance } from "./wallet-balance-answer";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
@@ -40,6 +42,14 @@ export class DeterministicAIProvider implements AIProvider {
   readonly requiresNetwork = false;
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
+    // Strict wallet-balance questions ("What is my MSTRc balance?", "How much
+    // MPGR do I have?", "What's in my wallet?", "How much is my wallet
+    // worth?") are answered from live reads — and ONLY what was asked. This
+    // runs before every trade/portfolio branch so a token balance can never
+    // be answered with a whole-portfolio dump.
+    const balanceAnswer = await answerWalletBalance(request);
+    if (balanceAnswer) return balanceAnswer;
+
     if (isTransferPrompt(request.prompt)) {
       return prepareOrExplainTransfer(request);
     }
@@ -70,6 +80,21 @@ export class DeterministicAIProvider implements AIProvider {
 
     if (isX402PaymentPrompt(request.prompt)) {
       return prepareOrExplainX402(request);
+    }
+
+    // A SIZED order naming an asset this app does not support ("buy 10
+    // USDC of FAKECOIN") gets an explicit refusal. It never reaches a
+    // prepare tool, and the user is pointed at the supported set plus the
+    // 0x-address route instead of being handed generic help.
+    const unresolvedOrder = extractUnresolvedSwapOrder(request.prompt);
+    if (unresolvedOrder) {
+      const named = unresolvedOrder.unresolved.map((operand) => '"' + operand + '"').join(" and ");
+      return helpResponse(
+        named +
+          " is not an asset this app supports, so I will not prepare that order — I never invent a contract from a symbol. " +
+          "Supported: ETH, WETH, USDC, MPGR, the Coinbase wrapped assets (cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA) and the official Coinbase Tokenized Stocks (AAPLc, COINc, TSLAc, …). " +
+          "If you mean a different Base token, paste its 0x contract address — that route quotes through Coinbase CDP/0x and stays unverified until you review and confirm. Nothing was signed or submitted.",
+      );
     }
 
     return generateIntelligentReply(

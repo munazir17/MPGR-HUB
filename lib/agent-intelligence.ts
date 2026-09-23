@@ -40,7 +40,17 @@ export {
 
 export {
   extractBaseSwapIntent,
+  extractUnresolvedSwapOrder,
 } from "./agent-intelligence/swap-intent";
+
+export {
+  parseWalletBalanceRequest,
+  isWalletBalancePrompt,
+} from "./agent-intelligence/wallet-balance-intent";
+export type {
+  WalletBalanceRequest,
+  WalletBalanceScope,
+} from "./agent-intelligence/wallet-balance-intent";
 
 import { extractBaseSwapIntent as extractBaseSwapIntentForSide } from "./agent-intelligence/swap-intent";
 import { isTradeSellPrompt as isSellPhrased } from "./agent-intelligence/prompt-parsers";

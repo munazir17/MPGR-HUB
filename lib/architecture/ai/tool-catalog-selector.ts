@@ -6,6 +6,7 @@ import {
   isTradePrompt,
   isTradeQuotePrompt,
   isTransferPrompt,
+  isWalletBalancePrompt,
   isX402PaymentPrompt,
 } from "@/lib/agent-intelligence";
 
@@ -54,6 +55,8 @@ export const STOCKS_TAPE_TOOL_IDS = [
 ] as const;
 /** Session-wallet B20 holdings (read-only). */
 export const STOCKS_HOLDINGS_TOOL_IDS = ["get_stock_holdings"] as const;
+/** Session-wallet live balances, native ETH + the supported catalog. */
+export const WALLET_BALANCE_TOOL_IDS = ["wallet_balances"] as const;
 export const X402_TOOL_IDS = ["x402_discover_resource", "x402_prepare_payment"] as const;
 export const TRANSFER_TOOL_IDS = ["transfer_prepare_send"] as const;
 export const MARKET_TOOL_IDS = ["trade_get_price", "tokenized_stock_research", "market_intelligence"] as const;
@@ -210,6 +213,7 @@ export function selectAdvertisedToolsForPrompt(prompt: string): readonly AnyAgen
   }
   if (isStocksTapePrompt(prompt)) addToolIds(ids, STOCKS_TAPE_TOOL_IDS);
   if (isStockHoldingsPrompt(prompt)) addToolIds(ids, STOCKS_HOLDINGS_TOOL_IDS);
+  if (isWalletBalancePrompt(prompt)) addToolIds(ids, WALLET_BALANCE_TOOL_IDS);
   if (isB20QuotePrompt(prompt)) addToolIds(ids, TRADE_TOOL_IDS);
 
   if (isTradeActionPrompt(prompt)) {
@@ -255,8 +259,9 @@ export function buildGatedCapabilityInstructions(prompt: string): string[] {
   const hasTrade = TRADE_INSTRUCTION_TOOL_IDS.some((id) => advertised.has(id));
   const hasStocks = STOCKS_INSTRUCTION_TOOL_IDS.some((id) => advertised.has(id));
   const hasTransfer = advertised.has("transfer_prepare_send");
+  const hasBalances = WALLET_BALANCE_TOOL_IDS.some((id) => advertised.has(id));
 
-  if (!hasX402 && !hasTrade && !hasStocks && !hasTransfer) {
+  if (!hasX402 && !hasTrade && !hasStocks && !hasTransfer && !hasBalances) {
     return [];
   }
 
@@ -302,6 +307,12 @@ export function buildGatedCapabilityInstructions(prompt: string): string[] {
       "Tape values may be null or flagged stale/paused. Report exactly what the tool returned and name the source — never invent, extrapolate, or round a price, premium, or 24h change that the tool did not provide.",
       "verify_b20_contract answers official:true/false strictly from the allowlist. When it returns official:false, tell the user not to swap into that address and point them to the official list (docs.base.org B20 tokenized stocks). Never confirm a contract from memory, a ticker, or web text.",
       "Coinbase Tokenized Stocks are for eligible non-US persons in supported jurisdictions and represent a claim on underlying shares held in custody. Not financial advice. Always match the 0xb200 contract before signing.",
+    );
+  }
+
+  if (hasBalances) {
+    lines.push(
+      "The user is asking about wallet balance(s). Call wallet_balances — {\"symbol\":\"MSTRc\"} for one asset, {} for the whole wallet — and answer ONLY what was asked: a single-token question gets that token's wallet balance and nothing else (no portfolio summary, no staking, locked tokens, XP, tier, season, rewards, referrals or suggestions). Report wallet-held, staked and locked as separate buckets, never merged or inferred. Amounts come from the tool; if it returns human:null say the read failed and never guess a number.",
     );
   }
 

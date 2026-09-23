@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractBaseSwapIntent } from "@/lib/agent-intelligence";
+import { extractBaseSwapIntent, extractUnresolvedSwapOrder } from "@/lib/agent-intelligence";
 import { extractCryptoSwapPair } from "@/lib/agent-intelligence";
 
 // The extended catalog parser is what makes "Swap 10 USDC to cbADA" and
@@ -150,5 +150,66 @@ describe("execution-order phrasings (live routing, not research)", () => {
     expect(extractBaseSwapIntent("check cbADA price")).toBeNull();
     expect(extractBaseSwapIntent("what is the cbADA premium vs feed")).toBeNull();
     expect(extractBaseSwapIntent("how do I sell cbADA?")).toBeNull();
+  });
+
+  it("reads the possessive funding side of an order", () => {
+    // "sell my 5 USDC worth of MSTRc" — the sell verb funds the trade; the
+    // size belongs to USDC and MSTRc is what is acquired.
+    const funded = extractBaseSwapIntent("Sell my 5 USDC worth of MSTRc");
+    expect(funded?.sell.symbol).toBe("USDC");
+    expect(funded?.buy.symbol).toBe("MSTRc");
+    expect(funded?.amount).toBe("5");
+
+    const possessed = extractBaseSwapIntent("swap my 2 usdc for eth");
+    expect(possessed?.sell.symbol).toBe("USDC");
+    expect(possessed?.buy.symbol).toBe("ETH");
+    expect(possessed?.amount).toBe("2");
+
+    const bought = extractBaseSwapIntent("buy my 5 usdc of eth");
+    expect(bought?.sell.symbol).toBe("USDC");
+    expect(bought?.buy.symbol).toBe("ETH");
+    expect(bought?.amount).toBe("5");
+  });
+
+  it("reads 'X USDC of TOKEN' both ways round", () => {
+    const buy = extractBaseSwapIntent("Buy 5 USDC of ETH");
+    expect(buy?.sell.symbol).toBe("USDC");
+    expect(buy?.buy.symbol).toBe("ETH");
+    expect(buy?.amount).toBe("5");
+
+    const sell = extractBaseSwapIntent("Sell 5 USDC of ETH");
+    expect(sell?.sell.symbol).toBe("USDC");
+    expect(sell?.buy.symbol).toBe("ETH");
+    expect(sell?.amount).toBe("5");
+
+    const stock = extractBaseSwapIntent("Buy 10 USDC of MSTRc");
+    expect(stock?.sell.symbol).toBe("USDC");
+    expect(stock?.buy.symbol).toBe("MSTRc");
+    expect(stock?.amount).toBe("10");
+  });
+});
+
+// A sized order over an asset this app does not support must be reported,
+// never silently prepared — the reason extractUnresolvedSwapOrder exists.
+describe("extractUnresolvedSwapOrder", () => {
+  it("names the unsupported operand of a sized order", () => {
+    expect(extractUnresolvedSwapOrder("buy 10 USDC of FAKECOIN")).toEqual({
+      sell: "USDC",
+      buy: "FAKECOIN",
+      amount: "10",
+      unresolved: ["FAKECOIN"],
+    });
+    expect(extractUnresolvedSwapOrder("sell 5 SCAMCOIN for USDC")?.unresolved).toEqual([
+      "SCAMCOIN",
+    ]);
+    expect(extractUnresolvedSwapOrder("buy $10 of FAKECOIN")?.unresolved).toEqual(["FAKECOIN"]);
+  });
+
+  it("stays silent for supported orders, unsized prompts and conversation", () => {
+    expect(extractUnresolvedSwapOrder("Swap 10 USDC to cbADA")).toBeNull();
+    expect(extractUnresolvedSwapOrder("Buy 5 USDC of ETH")).toBeNull();
+    expect(extractUnresolvedSwapOrder("buy me a coffee")).toBeNull();
+    expect(extractUnresolvedSwapOrder("swap 1 eth")).toBeNull();
+    expect(extractUnresolvedSwapOrder("check MSTRc price")).toBeNull();
   });
 });
