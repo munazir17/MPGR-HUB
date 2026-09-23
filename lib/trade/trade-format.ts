@@ -34,6 +34,76 @@ export function parseAtomicAmount(value: unknown): bigint | null {
   }
 }
 
+/**
+ * Exact decimal → (integer, scale) parts, so money math never touches
+ * IEEE-754 floats.
+ *
+ * This is a real-funds correctness fix: "$5 of my AAPLc" used to be
+ * converted as `Number("5") / Number("337.595`) → `String(0.014810...)`,
+ * a float whose decimal expansion runs past AAPLc's 8 on-chain decimals,
+ * so parseHumanTokenAmount() correctly refused it ("Could not convert
+ * that dollar amount into a B20 token size") and the order never
+ * prepared. Flooring the exact rational instead gives the same intent
+ * with no rounding surprises.
+ */
+function decimalParts(value: string): { int: bigint; scale: number } | null {
+  const raw = String(value).trim().replace(/,/g, "").replace(/^\$/, "");
+  if (!/^[0-9]+(\.[0-9]+)?$/.test(raw)) return null;
+  const [whole, fraction = ""] = raw.split(".");
+  if (fraction.length > 60) return null; // bound the exponent, never guess
+  const int = BigInt(whole + fraction);
+  return { int, scale: fraction.length };
+}
+
+/**
+ * floor(usdAmount / unitPriceUsd × 10^tokenDecimals) — the atomic token
+ * size that a dollar-denominated stock order buys/sells.
+ *
+ * Floor (never round up) so a "$5" order can never spend more than $5
+ * worth, and the result always lands exactly on the token's own decimals.
+ */
+export function usdToTokenAtomic(
+  usdAmount: string,
+  unitPriceUsd: string,
+  tokenDecimals: number,
+): bigint | null {
+  if (!Number.isInteger(tokenDecimals) || tokenDecimals < 0) return null;
+  const usd = decimalParts(usdAmount);
+  const price = decimalParts(unitPriceUsd);
+  if (!usd || !price || price.int <= 0n) return null;
+
+  const numerator = usd.int * 10n ** BigInt(price.scale + tokenDecimals);
+  const denominator = price.int * 10n ** BigInt(usd.scale);
+  if (denominator <= 0n) return null;
+
+  const atomic = numerator / denominator;
+  return atomic > 0n ? atomic : null;
+}
+
+/**
+ * floor(tokenAtomic / 10^tokenDecimals × unitPriceUsd × 10^usdDecimals) —
+ * the USDC budget for a token-denominated order ("Buy 0.01 AAPLc").
+ */
+export function tokenAtomicToUsdAtomic(
+  tokenAtomic: bigint,
+  unitPriceUsd: string,
+  tokenDecimals: number,
+  usdDecimals: number,
+): bigint | null {
+  if (!Number.isInteger(tokenDecimals) || tokenDecimals < 0) return null;
+  if (!Number.isInteger(usdDecimals) || usdDecimals < 0) return null;
+  if (tokenAtomic <= 0n) return null;
+  const price = decimalParts(unitPriceUsd);
+  if (!price || price.int <= 0n) return null;
+
+  const numerator = tokenAtomic * price.int * 10n ** BigInt(usdDecimals);
+  const denominator = 10n ** BigInt(tokenDecimals + price.scale);
+  if (denominator <= 0n) return null;
+
+  const atomic = numerator / denominator;
+  return atomic > 0n ? atomic : null;
+}
+
 export function parseHumanTokenAmount(
   value: unknown,
   decimals: number,

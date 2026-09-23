@@ -264,7 +264,13 @@ const stockOrderSchema: AgentToolSchema = {
     },
     amount: {
       type: "string",
-      description: "Human USD amount, e.g. \"10\" for $10. Do not convert to atomic units.",
+      description:
+        "Human amount, e.g. \"10\". Meaning depends on amountUnit: dollars (default) or a share/token count. Do not convert to atomic units.",
+    },
+    amountUnit: {
+      type: "string",
+      description:
+        "\"usd\" (default) when the user gave a dollar figure (\"$5 of my AAPLc\", \"sell 5 USDC worth of MSTRc\"); \"token\" when the user gave a share/token count (\"Sell 5 AAPLc\", \"buy 0.01 TSLAc\"). A bare number next to a B20 ticker is a token count, not dollars.",
     },
   },
   required: ["symbol", "amount"],
@@ -283,10 +289,11 @@ export const tokenizedStockPrepareOrderTool: AgentTool = {
   inputSchema: stockOrderSchema,
 
   async execute(input, context) {
-    const body = (input ?? {}) as { symbol?: unknown; side?: unknown; amount?: unknown };
+    const body = (input ?? {}) as { symbol?: unknown; side?: unknown; amount?: unknown; amountUnit?: unknown };
     const symbol = typeof body.symbol === "string" ? body.symbol.trim() : "";
     const side = body.side === "SELL" ? "SELL" : "BUY";
     const amount = typeof body.amount === "string" ? body.amount.trim() : "";
+    const amountUnit = body.amountUnit === "token" ? "token" : body.amountUnit === "usd" ? "usd" : undefined;
     const taker = context.walletAddress?.trim() ?? "";
 
     if (!symbol || !amount) {
@@ -303,7 +310,13 @@ export const tokenizedStockPrepareOrderTool: AgentTool = {
     }
 
     try {
-      const { ok, payload } = await postJson("/api/trade/stocks/quote", { symbol, side, amount, taker });
+      const { ok, payload } = await postJson("/api/trade/stocks/quote", {
+        symbol,
+        side,
+        amount,
+        taker,
+        ...(amountUnit ? { amountUnit } : {}),
+      });
       if (!ok || !payload) {
         return toolError("tokenized_stock_prepare_order", {
           code: toolFailureCode(payload?.code),

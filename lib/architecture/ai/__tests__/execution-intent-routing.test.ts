@@ -94,7 +94,7 @@ describe("explicit orders route into the live execution flow", () => {
 
     expect(runTool).toHaveBeenCalledWith(
       "tokenized_stock_prepare_order",
-      { symbol: "MSTRc", amount: "5", side: "BUY" },
+      { symbol: "MSTRc", amount: "5", side: "BUY", amountUnit: "usd" },
       expect.any(Object),
     );
     expect(response.tradeProposal).toEqual(b20Proposal);
@@ -108,7 +108,7 @@ describe("explicit orders route into the live execution flow", () => {
 
     expect(runTool).toHaveBeenCalledWith(
       "tokenized_stock_prepare_order",
-      { symbol: "MSTRc", amount: "10", side: "BUY" },
+      { symbol: "MSTRc", amount: "10", side: "BUY", amountUnit: "usd" },
       expect.any(Object),
     );
   });
@@ -121,7 +121,59 @@ describe("explicit orders route into the live execution flow", () => {
 
     expect(runTool).toHaveBeenCalledWith(
       "tokenized_stock_prepare_order",
-      { symbol: "MSTRc", amount: "5", side: "SELL" },
+      { symbol: "MSTRc", amount: "5", side: "SELL", amountUnit: "token" },
+      expect.any(Object),
+    );
+  });
+
+  it("sizes 'Sell 5 AAPLc' as 5 SHARES, not $5", async () => {
+    runTool.mockResolvedValue(
+      toolSuccess("tokenized_stock_prepare_order", { proposal: b20Proposal }),
+    );
+    await new DeterministicAIProvider().generateReply(makeRequest("Sell 5 AAPLc"));
+
+    expect(runTool).toHaveBeenCalledWith(
+      "tokenized_stock_prepare_order",
+      { symbol: "AAPLc", amount: "5", side: "SELL", amountUnit: "token" },
+      expect.any(Object),
+    );
+  });
+
+  it("sizes 'Sell 0.015 AAPLc' as a fractional share count", async () => {
+    runTool.mockResolvedValue(
+      toolSuccess("tokenized_stock_prepare_order", { proposal: b20Proposal }),
+    );
+    await new DeterministicAIProvider().generateReply(makeRequest("Sell 0.015 AAPLc"));
+
+    expect(runTool).toHaveBeenCalledWith(
+      "tokenized_stock_prepare_order",
+      { symbol: "AAPLc", amount: "0.015", side: "SELL", amountUnit: "token" },
+      expect.any(Object),
+    );
+  });
+
+  it("keeps '$5 of my AAPLc' a dollar-denominated sell", async () => {
+    runTool.mockResolvedValue(
+      toolSuccess("tokenized_stock_prepare_order", { proposal: b20Proposal }),
+    );
+    await new DeterministicAIProvider().generateReply(makeRequest("Sell $5 of my AAPLc"));
+
+    expect(runTool).toHaveBeenCalledWith(
+      "tokenized_stock_prepare_order",
+      { symbol: "AAPLc", amount: "5", side: "SELL", amountUnit: "usd" },
+      expect.any(Object),
+    );
+  });
+
+  it("reads 'Sell AAPLc of 5 usdc' as a dollar-denominated sell", async () => {
+    runTool.mockResolvedValue(
+      toolSuccess("tokenized_stock_prepare_order", { proposal: b20Proposal }),
+    );
+    await new DeterministicAIProvider().generateReply(makeRequest("Sell AAPLc of 5 usdc"));
+
+    expect(runTool).toHaveBeenCalledWith(
+      "tokenized_stock_prepare_order",
+      { symbol: "AAPLc", amount: "5", side: "SELL", amountUnit: "usd" },
       expect.any(Object),
     );
   });

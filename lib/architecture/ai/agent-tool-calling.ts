@@ -9,7 +9,7 @@ import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
 import {
-  extractTradeHumanAmount,
+  extractTokenizedStockOrderAmount,
   extractTradeSymbol,
   isTradeExecutionPrompt,
   isTradePrompt,
@@ -97,7 +97,7 @@ function pendingTokenizedStockOrderSides(prompt: string): { symbol: string; side
   if (!isTradePrompt(prompt) || !isTradeExecutionPrompt(prompt)) return null;
   const symbol = extractTradeSymbol(prompt);
   if (!symbol) return null;
-  if (extractTradeHumanAmount(prompt)) return null;
+  if (extractTokenizedStockOrderAmount(prompt, symbol)) return null;
   return { symbol, side: resolveTokenizedStockOrderSide(prompt, symbol) };
 }
 
@@ -111,7 +111,7 @@ function formatPendingOrderReply(prompt: string): string {
     (pending.side === "SELL" ? pending.symbol : funding) +
     " do you want to " +
     (pending.side === "SELL" ? "sell" : "spend on " + pending.symbol) +
-    "? Give me a dollar amount (for example $10) and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet."
+    "? Give me an amount — dollars (for example $10) or a share count (for example 0.05) — and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet."
   );
 }
 
@@ -136,15 +136,19 @@ async function maybePrepareTokenizedStockOrder(
   }
 
   const symbol = extractTradeSymbol(request.prompt);
-  const amount = extractTradeHumanAmount(request.prompt);
-  if (!symbol || !amount) return undefined;
+  if (!symbol) return undefined;
+  // Unit-aware: a bare number next to the ticker is a share count
+  // ("Sell 5 AAPLc"); "$5 of my AAPLc" stays a dollar budget.
+  const orderAmount = extractTokenizedStockOrderAmount(request.prompt, symbol);
+  if (!orderAmount) return undefined;
 
   const result = await runRegisteredTool(
     "tokenized_stock_prepare_order",
     {
       symbol,
-      amount,
+      amount: orderAmount.amount,
       side: resolveTokenizedStockOrderSide(request.prompt, symbol),
+      amountUnit: orderAmount.unit,
     },
     request,
   );

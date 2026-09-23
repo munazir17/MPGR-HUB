@@ -68,6 +68,17 @@ export async function POST(request: Request) {
   const symbol = typeof body?.symbol === "string" ? body.symbol.trim() : "";
   const side = body?.side === "SELL" ? "SELL" : "BUY";
   const amount = typeof body?.amount === "string" ? body.amount.trim() : "";
+  // Optional unit for `amount`: "usd" (default) or a share/token count
+  // ("Sell 5 AAPLc" = 5 shares). Absent keeps the previous behavior
+  // byte-for-byte, so older callers are unaffected.
+  const rawAmountUnit = body?.amountUnit;
+  if (rawAmountUnit !== undefined && rawAmountUnit !== "usd" && rawAmountUnit !== "token") {
+    return json(
+      { error: 'amountUnit must be "usd" or "token".', code: "INVALID_INPUT" },
+      { status: 400, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  const amountUnit = rawAmountUnit as "usd" | "token" | undefined;
 
   if (!symbol || !amount) {
     return json(
@@ -83,6 +94,7 @@ export async function POST(request: Request) {
       symbol.toUpperCase(),
       side,
       amount,
+      amountUnit ?? "usd",
     ].join(":"),
     QUOTE_DEDUPE_MS,
     () =>
@@ -91,6 +103,7 @@ export async function POST(request: Request) {
         side,
         amountHuman: amount,
         taker: session.wallet,
+        ...(amountUnit ? { amountUnit } : {}),
       }),
   );
   if (!result.ok) {

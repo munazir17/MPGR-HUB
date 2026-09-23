@@ -32,6 +32,7 @@ export {
   isTradeSellPrompt,
   isTradeExecutionPrompt,
   extractTradeHumanAmount,
+  extractTokenizedStockOrderAmount,
   isX402PaymentPrompt,
   isTransferPrompt,
   extractTransferRequest,

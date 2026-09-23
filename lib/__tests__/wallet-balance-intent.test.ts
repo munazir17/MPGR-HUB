@@ -45,6 +45,44 @@ describe("wallet-balance intent parsing", () => {
     });
   });
 
+  it("reads the '<token> in my wallet' shape as a single-token balance", () => {
+    // Reported bug: this phrasing fell through to the tokenized-stock
+    // research path, so a balance question was answered with an oracle
+    // price card.
+    expect(parseWalletBalanceRequest("How much AAPLc in my wallet")).toEqual({
+      kind: "single",
+      token: "AAPLc",
+      resolved: true,
+      mention: "AAPLc",
+      scope: "wallet",
+    });
+    expect(parseWalletBalanceRequest("how much eth in my wallet")).toMatchObject({
+      kind: "single",
+      token: "ETH",
+      scope: "wallet",
+    });
+    expect(parseWalletBalanceRequest("how much USDC do I have in my wallet")).toMatchObject({
+      kind: "single",
+      token: "USDC",
+    });
+    expect(parseWalletBalanceRequest("how many cbBTC in my wallet")).toMatchObject({
+      kind: "single",
+      token: "cbBTC",
+    });
+  });
+
+  it("asks for a symbol when a wallet question names an unresolvable asset", () => {
+    const request = parseWalletBalanceRequest("How much FAKECOIN in my wallet");
+    expect(request).toMatchObject({ kind: "single", token: "FAKECOIN", resolved: false });
+  });
+
+  it("keeps a bare price question out of the balance path", () => {
+    // Only the explicit wallet location counts — no wallet, no balance read.
+    expect(parseWalletBalanceRequest("how much is AAPLc")).toBeNull();
+    expect(parseWalletBalanceRequest("what is the AAPLc price")).toBeNull();
+    expect(parseWalletBalanceRequest("how much is my AAPLc worth")).toBeNull();
+  });
+
   it("resolves B20 tickers, underlying names and the core catalog", () => {
     expect(parseWalletBalanceRequest("what is my AAPLc balance")).toMatchObject({
       token: "AAPLc",

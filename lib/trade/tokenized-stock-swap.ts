@@ -14,7 +14,11 @@ import "server-only";
 // CDP Trade API / 0x reject B20 — they are not used on this path.
 
 import { BASE_USDC } from "./trade-config";
-import { parseHumanTokenAmount } from "./trade-format";
+import {
+  parseHumanTokenAmount,
+  tokenAtomicToUsdAtomic,
+  usdToTokenAtomic,
+} from "./trade-format";
 import { buildTradeProposal } from "./trade-proposal";
 import { estimateSwapPriceImpactBps } from "./trade-price-impact";
 import { createRoutedSwapQuote } from "./trade-swap-router";
@@ -39,6 +43,14 @@ export async function prepareTokenizedStockSwap(input: {
   amountHuman: string;
   taker: string;
   slippageBps?: number;
+  /**
+   * Unit of `amountHuman`.
+   *   "usd"   (default) — a dollar budget: BUY spends $N of USDC,
+   *                       SELL sells $N worth of the stock.
+   *   "token" — a share/token count: "Sell 5 AAPLc" is 5 shares, not $5.
+   * Defaults to "usd" so every existing caller keeps its behavior exactly.
+   */
+  amountUnit?: "usd" | "token";
 }): Promise<TokenizedStockSwapOutcome> {
   // SECURITY: reject signed/negative dollar amounts before any
   // catalog lookup, quote generation, or execution preparation.
@@ -72,11 +84,17 @@ export async function prepareTokenizedStockSwap(input: {
     };
   }
 
+  const amountUnit = input.amountUnit === "token" ? "token" : "usd";
   const usd = parsePositiveDecimal(input.amountHuman);
+  // Exact user text (no Number() round-trip) for all money math below.
+  const amountText = normalizedAmount.trim();
   if (usd === null) {
     return {
       ok: false,
-      error: { code: "INVALID_INPUT", message: `"${input.amountHuman}" is not a valid dollar amount.` },
+      error: {
+        code: "INVALID_INPUT",
+        message: `"${input.amountHuman}" is not a valid ${amountUnit === "token" ? "token" : "dollar"} amount.`,
+      },
     };
   }
 
@@ -135,15 +153,63 @@ export async function prepareTokenizedStockSwap(input: {
   let to = verifiedStockToken;
   let fromAmount: bigint;
 
-  if (input.side === "BUY") {
-    const parsed = parseHumanTokenAmount(String(usd), usdc.token.decimals);
+  const impliedPriceUsd = onchain.impliedTokenPriceUsd;
+
+  if (amountUnit === "token") {
+    // A share/token-denominated order ("Sell 5 AAPLc", "Buy 0.01 AAPLc").
+    // Decimals were verified on-chain above (fail-closed), so this parses
+    // exactly with no float step at all.
+    const tokenAtomic = parseHumanTokenAmount(amountText, verifiedStockToken.decimals);
+    if (tokenAtomic === null || tokenAtomic <= 0n) {
+      return {
+        ok: false,
+        error: {
+          code: "INVALID_INPUT",
+          message: `That is not a valid ${catalog.ticker} amount at its on-chain ${verifiedStockToken.decimals}-decimal precision.`,
+        },
+      };
+    }
+    if (input.side === "SELL") {
+      from = verifiedStockToken;
+      to = usdc.token;
+      fromAmount = tokenAtomic;
+    } else {
+      // BUY 0.01 AAPLc = spend its live USD value in USDC. No price means
+      // no size — ask rather than invent one.
+      if (!impliedPriceUsd) {
+        return {
+          ok: false,
+          error: {
+            code: "LIQUIDITY_UNAVAILABLE",
+            message: `No live Chainlink price for ${catalog.ticker}, so a share-denominated buy cannot be converted to a USDC budget.`,
+          },
+        };
+      }
+      const usdAtomic = tokenAtomicToUsdAtomic(
+        tokenAtomic,
+        impliedPriceUsd,
+        verifiedStockToken.decimals,
+        usdc.token.decimals,
+      );
+      if (usdAtomic === null || usdAtomic <= 0n) {
+        return {
+          ok: false,
+          error: {
+            code: "INVALID_INPUT",
+            message: `Could not convert that ${catalog.ticker} size into a USDC budget.`,
+          },
+        };
+      }
+      fromAmount = usdAtomic;
+    }
+  } else if (input.side === "BUY") {
+    const parsed = parseHumanTokenAmount(amountText, usdc.token.decimals);
     if (parsed === null) {
       return { ok: false, error: { code: "INVALID_INPUT", message: "Could not convert that dollar amount to USDC units." } };
     }
     fromAmount = parsed;
   } else {
-    const px = onchain.impliedTokenPriceUsd ? Number(onchain.impliedTokenPriceUsd) : NaN;
-    if (!Number.isFinite(px) || px <= 0) {
+    if (!impliedPriceUsd) {
       return {
         ok: false,
         error: {
@@ -152,9 +218,15 @@ export async function prepareTokenizedStockSwap(input: {
         },
       };
     }
-    const tokenHuman = usd / px;
-    const parsed = parseHumanTokenAmount(String(tokenHuman), verifiedStockToken.decimals);
-    if (parsed === null || parsed <= 0n) {
+    // EXACT rational math (floor to the token's own decimals) instead of
+    // Number division: a float quotient like 5 / 337.595 expands past a
+    // B20's 8 decimals and made every "$N of my TICKER" sell unpricable.
+    const tokenAtomic = usdToTokenAtomic(
+      amountText,
+      impliedPriceUsd,
+      verifiedStockToken.decimals,
+    );
+    if (tokenAtomic === null || tokenAtomic <= 0n) {
       return {
         ok: false,
         error: { code: "INVALID_INPUT", message: "Could not convert that dollar amount into a B20 token size." },
@@ -162,7 +234,7 @@ export async function prepareTokenizedStockSwap(input: {
     }
     from = verifiedStockToken;
     to = usdc.token;
-    fromAmount = parsed;
+    fromAmount = tokenAtomic;
   }
 
   const quote = await createRoutedSwapQuote({

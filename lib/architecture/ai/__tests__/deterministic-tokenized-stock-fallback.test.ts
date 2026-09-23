@@ -87,7 +87,7 @@ describe("tokenized-stock research and prepare routing", () => {
     expect(runTool).toHaveBeenCalledTimes(1);
     expect(runTool).toHaveBeenCalledWith(
       "tokenized_stock_prepare_order",
-      { symbol: "AAPLc", amount: "50", side: "BUY" },
+      { symbol: "AAPLc", amount: "50", side: "BUY", amountUnit: "usd" },
       expect.any(Object),
     );
     expect(runTool).not.toHaveBeenCalledWith("trade_prepare_swap", expect.anything(), expect.anything());
@@ -145,7 +145,7 @@ describe("tokenized-stock research and prepare routing", () => {
     // MSTRc liquidation.
     expect(runTool).toHaveBeenCalledWith(
       "tokenized_stock_prepare_order",
-      { symbol: "MSTRc", amount: "100", side: "BUY" },
+      { symbol: "MSTRc", amount: "100", side: "BUY", amountUnit: "usd" },
       expect.any(Object),
     );
   });
@@ -155,7 +155,7 @@ describe("tokenized-stock research and prepare routing", () => {
     await new DeterministicAIProvider().generateReply(makeRequest("Sell 5 MSTRc"));
     expect(runTool).toHaveBeenCalledWith(
       "tokenized_stock_prepare_order",
-      { symbol: "MSTRc", amount: "5", side: "SELL" },
+      { symbol: "MSTRc", amount: "5", side: "SELL", amountUnit: "token" },
       expect.any(Object),
     );
   });
@@ -167,7 +167,7 @@ describe("tokenized-stock research and prepare routing", () => {
     );
     expect(runTool).toHaveBeenCalledWith(
       "tokenized_stock_prepare_order",
-      { symbol: "MSTRc", amount: "5", side: "SELL" },
+      { symbol: "MSTRc", amount: "5", side: "SELL", amountUnit: "token" },
       expect.any(Object),
     );
     expect(response.tradeProposal).toEqual(proposal);

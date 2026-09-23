@@ -144,6 +144,25 @@ describe("strict single-token wallet balance", () => {
     expect(runTool.mock.calls[0][1]).toEqual({ symbol: "MSTRc" });
   });
 
+  it("answers the single token for '<token> in my wallet', not a research card", async () => {
+    // Reported in the app: "How much AAPLc in my wallet" returned the
+    // tokenized-stock research card (oracle price / multiplier / DEX
+    // liquidity) instead of this wallet's AAPLc balance.
+    const reply = await answerFor("How much AAPLc in my wallet", {
+      wallet_balances: () => balances({ assets: [{ symbol: "AAPLc", human: "0.0421" }] }),
+    });
+
+    expect(reply).toContain("AAPLc");
+    expect(reply).toContain("0.0421");
+    expect(reply.toLowerCase()).toContain("wallet");
+    for (const forbidden of ["Oracle", "Multiplier", "liquidity", "staked", "locked", "XP"]) {
+      expect(reply, forbidden).not.toContain(forbidden);
+    }
+    expect(runTool).toHaveBeenCalledTimes(1);
+    expect(runTool.mock.calls[0][0]).toBe("wallet_balances");
+    expect(runTool.mock.calls[0][1]).toEqual({ symbol: "AAPLc" });
+  });
+
   it("answers ETH only for 'How much ETH do I have?'", async () => {
     const reply = await answerFor("How much ETH do I have?", {
       wallet_balances: () => balances({ eth: "0.25", assets: [{ symbol: "USDC", human: "120" }] }),
@@ -174,6 +193,27 @@ describe("strict single-token wallet balance", () => {
     });
     expect(reply).toContain("42.5 USDC");
     expect(reply).not.toContain("ETH");
+  });
+
+  it("reports a small B20 balance at on-chain precision, not rounded to 2dp", async () => {
+    // 0.0421 AAPLc is ~$14 — compact 2dp rounding said "0.04".
+    const reply = await answerFor("How much AAPLc in my wallet", {
+      wallet_balances: () => balances({ assets: [{ symbol: "AAPLc", human: "0.0421" }] }),
+    });
+    expect(reply).toContain("0.0421");
+
+    // Dust below readable precision still never becomes a bare "0".
+    const dusty = await answerFor("How much AAPLc in my wallet", {
+      wallet_balances: () => balances({ assets: [{ symbol: "AAPLc", human: "0.000000123456789" }] }),
+    });
+    expect(dusty).not.toContain("0 AAPLc");
+    expect(dusty).toContain("0.000000123456789");
+
+    // Whole-token amounts keep the chain's own string.
+    const whole = await answerFor("How much AAPLc in my wallet", {
+      wallet_balances: () => balances({ assets: [{ symbol: "AAPLc", human: "12.5" }] }),
+    });
+    expect(whole).toContain("12.5");
   });
 
   it("says so when the on-chain read failed instead of printing a zero", async () => {

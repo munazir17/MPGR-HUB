@@ -100,6 +100,7 @@ const NON_TOKEN_WORDS = new Set([
   "any",
   "apy",
   "apr",
+  "are",
   "asset",
   "assets",
   "bag",
@@ -114,9 +115,12 @@ const NON_TOKEN_WORDS = new Set([
   "holding",
   "holdings",
   "i",
+  "in",
   "invite",
   "invites",
+  "is",
   "leaderboard",
+  "left",
   "level",
   "locked",
   "market",
@@ -134,10 +138,13 @@ const NON_TOKEN_WORDS = new Set([
   "rewards",
   "score",
   "season",
+  "sitting",
+  "stored",
   "staked",
   "stak",
   "staking",
   "streak",
+  "there",
   "tier",
   "token",
   "tokens",
@@ -145,6 +152,7 @@ const NON_TOKEN_WORDS = new Set([
   "tvl",
   "value",
   "volume",
+  "was",
   "wallet",
   "worth",
   "xp",
@@ -157,6 +165,16 @@ const NON_TOKEN_WORDS = new Set([
 const BALANCE_NOUN_RE = /\b(?:balance|balances|holdings?|bag|exposure)\b/;
 const HAVE_RE = /\b(?:do i (?:have|hold)|i (?:have|hold|own)|have i got)\b/;
 const HOW_MUCH_RE = /\bhow (?:much|many)\b/;
+
+/**
+ * "How much AAPLc in my wallet" — a quantity question that states the
+ * LOCATION instead of using the verbs/nouns above. Without this the
+ * prompt fell through to the tokenized-stock research path and answered
+ * a balance question with an oracle-price card. Requires both the
+ * quantity phrase and an explicit wallet reference, so it cannot claim
+ * unrelated prompts ("how much is AAPLc" stays a price question).
+ */
+const WALLET_LOCATION_RE = /\b(?:in|inside)\s+(?:my|our|the)\s+wallet\b/;
 
 const TOTAL_PATTERNS: readonly RegExp[] = [
   // "how much is my wallet worth", "what's my portfolio value"
@@ -201,7 +219,11 @@ function findTokenMention(rawPrompt: string): string | null {
   const afterNoun = rawPrompt.match(
     /\b(?:balance|balances|holdings?|bag)\s+(?:of|for)\s+([a-z][a-z0-9]{1,11})\b/i,
   );
-  const candidate = beforeNoun?.[1] ?? afterNoun?.[1] ?? null;
+  // "<symbol> in my wallet" — same purpose as above, for the location phrasing.
+  const beforeWallet = rawPrompt.match(
+    /\b([a-z][a-z0-9]{1,11})\s+(?:in|inside)\s+(?:my|our|the)\s+wallet\b/i,
+  );
+  const candidate = beforeNoun?.[1] ?? afterNoun?.[1] ?? beforeWallet?.[1] ?? null;
   if (candidate && !NON_TOKEN_WORDS.has(candidate.toLowerCase())) return candidate;
   return null;
 }
@@ -263,17 +285,27 @@ export function parseWalletBalanceRequest(rawPrompt: string): WalletBalanceReque
 
   const hasBalanceNoun = BALANCE_NOUN_RE.test(normalized);
   const hasHaveShape = HAVE_RE.test(normalized) && HOW_MUCH_RE.test(normalized);
+  // "How much AAPLc in my wallet" / "how many cbBTC do I have in my wallet"
+  // — the location phrase plus a quantity question is a balance read.
+  const hasWalletLocation = WALLET_LOCATION_RE.test(normalized) && HOW_MUCH_RE.test(normalized);
 
   for (const pattern of ALL_PATTERNS) {
     if (pattern.test(normalized)) return { kind: "all" };
   }
 
-  if (!hasBalanceNoun && !hasHaveShape) return null;
+  if (!hasBalanceNoun && !hasHaveShape && !hasWalletLocation) return null;
 
   // "how much ETH do I have" — a have-shape WITHOUT a balance noun has to
   // name a real catalog asset (see singleRequest), so "how much XP do I
   // have?" and every other non-asset noun keep their existing intent.
-  return singleRequest(findTokenMention(rawPrompt), normalized, hasBalanceNoun);
+  // An explicit "in my wallet" counts as the balance noun too: the user
+  // named the wallet, so an unresolvable token asks for a symbol instead
+  // of falling through.
+  return singleRequest(
+    findTokenMention(rawPrompt),
+    normalized,
+    hasBalanceNoun || hasWalletLocation,
+  );
 }
 
 /** Cheap boolean form for routing layers that only need a yes/no. */

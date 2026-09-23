@@ -6,6 +6,7 @@ import {
   extractCryptoSwapAmount,
   extractCryptoSwapPair,
   extractTradeHumanAmount,
+  extractTokenizedStockOrderAmount,
   extractTradeSymbol,
   extractTransferRequest,
   extractX402ResourceUrl,
@@ -415,18 +416,24 @@ async function prepareOrExplainTrade(
     const fundingSymbol =
       catalogSwap && catalogSwap.buy.symbol === symbol ? catalogSwap.sell.symbol : null;
 
-    const amount = extractTradeHumanAmount(request.prompt);
+    // Unit matters for B20 orders: "Sell 5 AAPLc" is 5 shares, while
+    // "Sell $5 of my AAPLc" is a dollar budget. Reading both as dollars
+    // is what made "Sell 5 AAPLc" prepare a wrong-sized (or unpricable)
+    // order.
+    const orderAmount = extractTokenizedStockOrderAmount(request.prompt, symbol);
+    const amount = orderAmount?.amount ?? null;
+    const amountUnit = orderAmount?.unit ?? "usd";
     if (!amount) {
       const question =
         side === "SELL"
           ? "How much " +
             symbol +
-            " do you want to sell? Give me a dollar amount (for example $10) and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet."
+            " do you want to sell? Give me an amount — dollars (for example $10) or a share count (for example 0.05) — and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet."
           : "How much " +
             (fundingSymbol ?? "USDC") +
             " do you want to spend on " +
             symbol +
-            "? Give me a dollar amount (for example $10) and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet.";
+            "? Give me an amount — dollars (for example $10) or a share count (for example 0.05) — and I will prepare the tokenized-stock swap with the live quote — minOut, route, price impact and fees — for you to review. Nothing is signed until you confirm in your wallet.";
       return helpResponse(
         wantsExecution
           ? question
@@ -440,6 +447,7 @@ async function prepareOrExplainTrade(
         symbol,
         amount,
         side,
+        amountUnit,
       },
       request,
     );

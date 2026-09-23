@@ -73,7 +73,20 @@ function formatBalance(human: string | null): string | null {
   if (!Number.isFinite(value)) return human;
   if (value === 0) return "0";
   if (value >= 1) return human;
-  return formatCompactNumber(value);
+  // Sub-1 balances keep the chain's own precision (trailing zeros trimmed)
+  // instead of being rounded to 2 dp: compact rounding turned a real
+  // 0.0421 AAPLc holding into "0.04", a ~5% misstatement on a token whose
+  // on-chain precision is 8 decimals. Only genuinely tiny dust — more
+  // decimals than a person can read — falls back to 6 significant figures
+  // (never to zero).
+  const trimmed = human.includes(".")
+    ? human.replace(/0+$/, "").replace(/\.$/, "")
+    : human;
+  const decimals = trimmed.split(".")[1]?.length ?? 0;
+  if (decimals <= 8) return trimmed;
+  const precise = value.toPrecision(6);
+  if (precise.includes("e") || precise.includes("E")) return trimmed;
+  return precise.includes(".") ? precise.replace(/0+$/, "").replace(/\.$/, "") : precise;
 }
 
 function formatUsd(value: number): string {

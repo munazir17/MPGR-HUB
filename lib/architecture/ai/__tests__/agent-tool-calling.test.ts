@@ -686,6 +686,7 @@ describe("AAPLc buy confirmation when the model skips the prepare tool", () => {
       symbol: "AAPLc",
       amount: "5",
       side: "BUY",
+      amountUnit: "usd",
     });
     expect(executeSpy.mock.calls[0]?.[2]).toEqual(
       expect.objectContaining({
