@@ -49,6 +49,10 @@ import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTr
 import { AgentTransferConfirmationModal } from "@/components/features/agent/AgentTransferConfirmationModal";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAgentChat } from "@/hooks/useAgentChat";
+import {
+  buildInstantSwapPrompt,
+  fetchInstantSwapProposal,
+} from "@/lib/trade/instant-swap";
 import { useX402Payment } from "@/hooks/useX402Payment";
 import { useTradeQuote } from "@/hooks/useTradeQuote";
 import { useTransferQuote } from "@/hooks/useTransferQuote";
@@ -70,8 +74,16 @@ export interface AgentExperienceProps {
   suggestions: readonly AgentPromptSuggestionItem[];
   /** Copy shown in the chat body before the first message. */
   emptyStateText: string;
-  /** Called with sendMessage once the chat controller is mounted (Home wires the tape's "Prepare swap" through it). */
-  onReady?: (api: { sendMessage: (prompt: string) => void }) => void;
+  /**
+   * Called once the chat controller is mounted. Home wires the tape
+   * through this: `sendMessage` drops a prompt into the thread and
+   * `prepareSwap` runs the tape's one-tap fast path (instant quote →
+   * the same trade confirmation modal, no retyping).
+   */
+  onReady?: (api: {
+    sendMessage: (prompt: string) => void;
+    prepareSwap: (symbol: string) => void;
+  }) => void;
 }
 
 export function AgentExperience({
@@ -133,14 +145,64 @@ export function AgentExperience({
     [isConnected, handleSend, openConnectModal],
   );
 
-  // Home wires the tape's "Prepare swap" action into the chat through
-  // this callback. The ref keeps re-renders from re-firing it when
-  // onReady isn't memoized.
+  // The trade controller's openProposal identity changes every render;
+  // the ref keeps the tape fast path stable so onReady fires once.
+  const openTradeProposalRef = useRef(tradeQuote.openProposal);
+  openTradeProposalRef.current = tradeQuote.openProposal;
+  // Monotonic run id: a newer "Prepare swap" tap (or a closed flow)
+  // supersedes an in-flight quote, so a slow response can never open the
+  // modal for the asset the user tapped before it.
+  const instantSwapRunRef = useRef(0);
+  // While a swap is actually being signed/submitted, a late one-tap quote
+  // must NOT replace the open proposal (that would drop the running flow
+  // and any transaction it already broadcast).
+  const tradeBusyRef = useRef(false);
+  tradeBusyRef.current = [
+    "REQUOTING",
+    "APPROVING",
+    "AWAITING_PERMIT",
+    "AWAITING_WALLET",
+    "PENDING",
+  ].includes(tradeQuote.executionState);
+
+  /**
+   * Tape → agent fast path (requirement: click an asset → Prepare Swap →
+   * the agent gets the intent instantly → the quote loads immediately).
+   *
+   * 1. the intent is posted to the thread immediately (the agent answers
+   *    with its normal streaming feedback — nothing is waited on)
+   * 2. the SAME proposal the agent's prepare tool would build is fetched
+   *    from the existing session-bound quote routes and opens the
+   *    existing trade confirmation modal (amount, minOut, route, price
+   *    impact, fees → wallet signs)
+   * Duplicate taps reuse one in-flight quote (lib/trade/instant-swap), and
+   * signing still only ever happens inside useTradeExecution.
+   */
+  const handlePrepareSwap = useCallback(
+    (symbol: string) => {
+      if (!isConnected) {
+        openConnectModal?.();
+        return;
+      }
+      handleSend(buildInstantSwapPrompt(symbol));
+      const runId = (instantSwapRunRef.current += 1);
+      void fetchInstantSwapProposal({ symbol }).then((result) => {
+        if (instantSwapRunRef.current !== runId) return;
+        if (!result.ok || tradeBusyRef.current) return;
+        openTradeProposalRef.current(result.proposal);
+      });
+    },
+    [isConnected, openConnectModal, handleSend],
+  );
+
+  // Home wires the tape's "Prepare swap" action through this callback.
+  // The ref keeps re-renders from re-firing it when onReady isn't
+  // memoized.
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
   useEffect(() => {
-    onReadyRef.current?.({ sendMessage: handleSend });
-  }, [handleSend]);
+    onReadyRef.current?.({ sendMessage: handleSend, prepareSwap: handlePrepareSwap });
+  }, [handleSend, handlePrepareSwap]);
 
   // Home entrance stagger: topbar 0 / core 80 / line 160 / chips+dock 240ms.
   const rise = (delay: number) => ({

@@ -1,4 +1,5 @@
 import {
+  extractBaseSwapIntent,
   extractCryptoSwapAmount,
   extractCryptoSwapPair,
   extractTradeHumanAmount,
@@ -12,6 +13,7 @@ import {
   isTradeSellPrompt,
   isTransferPrompt,
   isX402PaymentPrompt,
+  type BaseSwapIntent,
 } from "@/lib/agent-intelligence";
 import { getFollowUpPrompts } from "@/lib/agent-actions";
 import type { AIProvider, AIProviderRequest, AIProviderResponse } from "./ai-provider";
@@ -49,6 +51,15 @@ export class DeterministicAIProvider implements AIProvider {
 
     if (isCryptoSwapQuotePrompt(request.prompt)) {
       return quoteOrPrepareCryptoSwap(request);
+    }
+
+    // Extended catalog swaps — cbBTC/cbETH/cbDOGE/cbXRP/cbLTC/cbADA,
+    // official B20 tickers the earlier branches did not claim, and raw
+    // 0x addresses the user pasted instead of a symbol. Same quote/
+    // prepare routes as the API path; never signs.
+    const baseSwap = extractBaseSwapIntent(request.prompt);
+    if (baseSwap) {
+      return prepareOrExplainBaseSwap(request, baseSwap);
     }
 
     if (isTradePrompt(request.prompt)) {
@@ -229,6 +240,122 @@ async function quoteOrPrepareCryptoSwap(
       detail +
       " I will not invent a price. Nothing was signed or submitted.",
   );
+}
+
+/**
+ * Reference-price-only reply for a quote/price question over the
+ * extended catalog (no proposal, no signature).
+ */
+async function quoteBaseSwapSide(
+  request: AIProviderRequest,
+  intent: BaseSwapIntent,
+): Promise<AIProviderResponse> {
+  const result = await runRegisteredTool(
+    "trade_get_price",
+    {
+      fromToken: intent.sell.symbol ?? intent.sell.address,
+      toToken: intent.buy.symbol ?? intent.buy.address,
+      ...(intent.amount ? { amount: intent.amount } : {}),
+    },
+    request,
+  );
+
+  if (result.success) {
+    const price = (result.data as { price?: unknown; provider?: string } | undefined)?.price;
+    return {
+      intent: "general_help",
+      reply:
+        "Live Base quote for " +
+        intent.sell.input +
+        " → " +
+        intent.buy.input +
+        (price ? ": " + JSON.stringify(price) : " is ready from the trade price path") +
+        ". This is a quote only — nothing is signed or submitted.",
+      actions: [],
+      highlights: [],
+      followUps: getFollowUpPrompts("general_help"),
+    };
+  }
+
+  const detail =
+    typeof result.error?.message === "string" && result.error.message.trim()
+      ? result.error.message.trim()
+      : "Live Base quote tools are not available right now.";
+  return helpResponse(
+    "I could not fetch a live " +
+      intent.sell.input +
+      " → " +
+      intent.buy.input +
+      " quote. " +
+      detail +
+      " I will not invent a price. Nothing was signed or submitted.",
+  );
+}
+
+/**
+ * Natural "swap X to Y" over the existing supported token universe.
+ *
+ *   - no amount yet       → ask for it (no API call, no guessed unit)
+ *   - quote/price wording → trade_get_price (reference only)
+ *   - otherwise           → prepare_swap, which routes B20 legs through
+ *                           the Aerodrome path and everything else
+ *                           through the existing CDP → 0x quote route
+ *
+ * Never signs. The proposal it returns is review-only, exactly like the
+ * other prepare tools.
+ */
+async function prepareOrExplainBaseSwap(
+  request: AIProviderRequest,
+  intent: BaseSwapIntent,
+): Promise<AIProviderResponse> {
+  if (intent.quoteOnly) {
+    return quoteBaseSwapSide(request, intent);
+  }
+
+  if (!intent.amount) {
+    return helpResponse(
+      "How much " +
+        intent.sell.input +
+        " do you want to swap to " +
+        intent.buy.input +
+        "? Tell me the amount and I will prepare a Base swap proposal with the live quote (minimum received, route and fees) for you to review. Nothing is signed until you confirm in your wallet.",
+    );
+  }
+
+  const result = await runRegisteredTool(
+    "prepare_swap",
+    {
+      amount: intent.amount,
+      ...(intent.sell.symbol
+        ? { sellSymbol: intent.sell.symbol }
+        : { sellAddress: intent.sell.address }),
+      ...(intent.buy.symbol
+        ? { buySymbol: intent.buy.symbol }
+        : { buyAddress: intent.buy.address }),
+    },
+    request,
+  );
+
+  if (result.success) {
+    const proposal = (result.data as { proposal?: TradeProposal } | undefined)?.proposal;
+    if (proposal) {
+      return {
+        intent: "general_help",
+        reply:
+          "A Base swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.",
+        actions: [],
+        highlights: [],
+        followUps: getFollowUpPrompts("general_help"),
+        tradeProposal: proposal,
+      };
+    }
+  }
+
+  const detail =
+    typeof result.error?.message === "string" && result.error.message.trim()
+      ? result.error.message.trim()
+      : "No live Base swap quote is available for that pair right now.";
+  return helpResponse(detail + " Nothing was signed or submitted.");
 }
 
 async function prepareOrExplainTrade(

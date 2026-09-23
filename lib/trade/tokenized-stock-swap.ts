@@ -16,6 +16,7 @@ import "server-only";
 import { BASE_USDC } from "./trade-config";
 import { parseHumanTokenAmount } from "./trade-format";
 import { buildTradeProposal } from "./trade-proposal";
+import { estimateSwapPriceImpactBps } from "./trade-price-impact";
 import { createRoutedSwapQuote } from "./trade-swap-router";
 import { findTokenizedStock } from "./tokenized-stocks";
 import { readTokenizedStockOnchain } from "./tokenized-stocks-onchain";
@@ -173,6 +174,17 @@ export async function prepareTokenizedStockSwap(input: {
   });
   if (!quote.ok) return quote;
 
+  const priceImpactBps = await estimateSwapPriceImpactBps({
+    fromAddress: from.address,
+    toAddress: to.address,
+    amounts: {
+      fromAmount: quote.value.fromAmount,
+      toAmount: quote.value.toAmount,
+      fromDecimals: from.decimals,
+      toDecimals: to.decimals,
+    },
+  });
+
   const proposal = buildTradeProposal({
     from,
     to,
@@ -180,6 +192,7 @@ export async function prepareTokenizedStockSwap(input: {
     slippageBps: input.slippageBps ?? 100,
     taker: input.taker,
     provider: quote.provider,
+    priceImpactBps,
   });
   if (!proposal.ok) return proposal;
   return { ok: true, proposal: proposal.proposal };

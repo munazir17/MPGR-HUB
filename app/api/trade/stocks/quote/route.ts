@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server";
 
 import { prepareTokenizedStockSwap } from "@/lib/trade/tokenized-stock-swap";
+import { withTradeQuoteCache } from "@/lib/trade/trade-quote-cache";
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 import { readJsonBody, requestIdFromRequest, withRequestId, verifyTrustedOrigin } from "@/lib/api/request-guard";
 import { authenticateRequest } from "@/lib/auth/session-store";
@@ -18,6 +19,10 @@ export const dynamic = "force-dynamic";
 
 const RATE_LIMIT = 15;
 const RATE_WINDOW_MS = 60_000;
+// One upstream Aerodrome quote for an identical request inside this
+// window (the tape's one-tap prepare and the agent tool ask for the same
+// swap).
+const QUOTE_DEDUPE_MS = 6_000;
 
 function statusFor(code: string): number {
   if (code === "CREDENTIALS_MISSING") return 503;
@@ -71,12 +76,23 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await prepareTokenizedStockSwap({
-    symbol,
-    side,
-    amountHuman: amount,
-    taker: session.wallet,
-  });
+  const result = await withTradeQuoteCache(
+    [
+      "trade-stocks-quote",
+      session.wallet.toLowerCase(),
+      symbol.toUpperCase(),
+      side,
+      amount,
+    ].join(":"),
+    QUOTE_DEDUPE_MS,
+    () =>
+      prepareTokenizedStockSwap({
+        symbol,
+        side,
+        amountHuman: amount,
+        taker: session.wallet,
+      }),
+  );
   if (!result.ok) {
     return json(
       { error: result.error.message, code: result.error.code },

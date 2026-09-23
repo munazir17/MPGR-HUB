@@ -135,6 +135,13 @@ export interface TradeProposal {
   quotedAt: string;
   expiresAt: string;
   fees: CdpSwapFees;
+  /**
+   * Signed basis points vs. the app's own mid price (see
+   * lib/trade/trade-price-impact.ts): negative = worse than mid,
+   * positive = better, null = a leg has no live trusted price so
+   * nothing is reported. Never fabricated.
+   */
+  priceImpactBps?: number | null;
   issues: CdpSwapIssues;
   transaction: CdpSwapTransaction | null;
   permit2: CdpPermit2 | null;

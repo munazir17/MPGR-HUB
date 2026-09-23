@@ -121,7 +121,12 @@ export function normalizeSwapToken(raw: string): string {
 
 export function extractCryptoSwapPair(rawPrompt: string): { fromToken: string; toToken: string } | null {
   const text = rawPrompt.toLowerCase();
-  const token = "(?:\\$)?(eth|weth|usdc|mpgr)";
+  // Word boundaries matter: without them a wrapped ticker that merely
+  // CONTAINS a core symbol matched the wrong side — "swap 10 USDC to
+  // cbETH" parsed as USDC → ETH. The extended catalog parser
+  // (agent-intelligence/swap-intent.ts) now owns those tokens, so the
+  // core parser must decline them instead of mis-reading them.
+  const token = "(?:\\$)?\\b(eth|weth|usdc|mpgr)\\b";
 
   const howMuch = text.match(
     new RegExp("how much\\s+" + token + "[\\s\\w,]{0,48}?\\b(?:for|from)\\s+(?:[0-9]+(?:\\.[0-9]+)?)?\\s*" + token, "i"),

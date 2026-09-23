@@ -321,7 +321,11 @@ export async function runToolCallingLoop(
       directive.toolId === "x402_prepare_payment";
     const isTradePrepare =
       directive.toolId === "trade_prepare_swap" ||
-      directive.toolId === "tokenized_stock_prepare_order";
+      directive.toolId === "tokenized_stock_prepare_order" ||
+      // Base Stocks Agent alias: same quote route, same review-only
+      // proposal — it must get the short structured-proposal
+      // instruction instead of a free-form next turn.
+      directive.toolId === "prepare_swap";
     const isTransferPrepare =
       directive.toolId === "transfer_prepare_send";
 

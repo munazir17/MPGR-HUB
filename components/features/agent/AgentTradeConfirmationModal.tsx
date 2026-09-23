@@ -4,6 +4,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, ArrowLeftRight, CheckCircle2, Loader2, X } from "lucide-react";
 
 import { formatAddress } from "@/lib/format";
+import { formatAtomicAmount } from "@/lib/trade/trade-format";
+import { findKnownTradeToken } from "@/lib/trade/trade-tokens";
 import type { TradeConfirmationState } from "@/lib/trade/trade-confirmation";
 import type { TradeExecutionState } from "@/lib/trade/trade-execution";
 import type { TradeError, TradeProposal } from "@/lib/trade/trade-types";
@@ -20,6 +22,34 @@ interface AgentTradeConfirmationModalProps {
   swapHash: `0x${string}` | null;
   stepLabel: string | null;
   onConfirmAndSwap?: () => void;
+}
+
+/**
+ * Fee rows from the quote itself (CDP gas + protocol fee, or the 0x gas
+ * fee). Amounts arrive as atomic-unit strings; they are rendered with the
+ * fee token's real decimals when that token is in the app's catalog, and
+ * otherwise shown with the atomic value labelled as such — never
+ * re-scaled by a guessed decimals value.
+ */
+function feeRows(fees: TradeProposal["fees"]): Array<{ label: string; value: string }> {
+  const rows: Array<{ label: string; value: string }> = [];
+  const push = (label: string, fee: { amount: string; token: string } | undefined | null) => {
+    if (!fee || !fee.amount) return;
+    const known = findKnownTradeToken(fee.token);
+    const amount = known
+      ? `${formatAtomicAmount(fee.amount, known.decimals)} ${known.symbol}`
+      : `${fee.amount} ${fee.token || "atomic units"}`;
+    rows.push({ label, value: amount });
+  };
+  push("Protocol fee", fees.protocolFee);
+  push("Est. gas fee", fees.gasFee);
+  return rows;
+}
+
+function formatPriceImpact(bps: number | null | undefined): string | null {
+  if (typeof bps !== "number" || !Number.isFinite(bps)) return null;
+  const sign = bps > 0 ? "+" : "";
+  return `${sign}${(bps / 100).toFixed(2)}%`;
 }
 
 function isBusy(confirmationState: TradeConfirmationState, executionState: TradeExecutionState): boolean {
@@ -56,6 +86,8 @@ export function AgentTradeConfirmationModal({
     executionState === "IDLE" &&
     proposal.executionAvailable;
   const error = executionError ?? confirmationError;
+  const impact = formatPriceImpact(proposal.priceImpactBps);
+  const fees = feeRows(proposal.fees);
 
   return (
     <AnimatePresence>
@@ -111,6 +143,34 @@ export function AgentTradeConfirmationModal({
                 <dt className="text-zinc-500">Route</dt>
                 <dd className="text-white">{proposal.providerLabel}</dd>
               </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-zinc-500">Price impact</dt>
+                <dd
+                  className={
+                    impact === null
+                      ? "text-zinc-500"
+                      : (proposal.priceImpactBps ?? 0) < 0
+                        ? "text-amber-300"
+                        : "text-good"
+                  }
+                >
+                  {impact ?? "not reported"}
+                </dd>
+              </div>
+              {fees.map((fee) => (
+                <div key={fee.label} className="flex justify-between gap-3">
+                  <dt className="text-zinc-500">{fee.label}</dt>
+                  <dd className="text-white">{fee.value}</dd>
+                </div>
+              ))}
+              {fees.length === 0 && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-zinc-500">Fees</dt>
+                  <dd className="text-zinc-500">
+                    none reported by the route — your wallet shows network cost before you sign
+                  </dd>
+                </div>
+              )}
               {proposal.needsPermit2Approval && (
                 <div className="flex justify-between gap-3">
                   <dt className="text-zinc-500">Steps</dt>

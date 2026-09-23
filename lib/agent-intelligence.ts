@@ -38,6 +38,14 @@ export {
 } from "./agent-intelligence/prompt-parsers";
 
 export {
+  extractBaseSwapIntent,
+} from "./agent-intelligence/swap-intent";
+export type {
+  BaseSwapIntent,
+  BaseSwapIntentSide,
+} from "./agent-intelligence/swap-intent";
+
+export {
   detectIntent,
 } from "./agent-intelligence/intent-detector";
 

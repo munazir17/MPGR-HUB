@@ -149,15 +149,27 @@ export function captureX402Proposal(
   return data?.proposal ?? current;
 }
 
+/**
+ * Tools whose successful result carries a review-only TradeProposal.
+ *
+ * `prepare_swap` (the Base Stocks Agent alias for the same allowlisted
+ * quote route) MUST be in this list: it returns { proposal } exactly
+ * like trade_prepare_swap, and without it a prepared USDC → cbADA /
+ * cbBTC / B20 swap never reached the confirmation UI — the chat said a
+ * proposal was ready while no card and no modal existed.
+ */
+const TRADE_PROPOSAL_TOOL_IDS: readonly string[] = [
+  "trade_prepare_swap",
+  "tokenized_stock_prepare_order",
+  "prepare_swap",
+];
+
 export function captureTradeProposal(
   toolId: string,
   toolResult: AgentToolResult,
   current: TradeProposal | undefined,
 ): TradeProposal | undefined {
-  if (
-    (toolId !== "trade_prepare_swap" && toolId !== "tokenized_stock_prepare_order") ||
-    !toolResult.success
-  ) {
+  if (!TRADE_PROPOSAL_TOOL_IDS.includes(toolId) || !toolResult.success) {
     return current;
   }
   const data = toolResult.data as { proposal?: TradeProposal } | undefined;
