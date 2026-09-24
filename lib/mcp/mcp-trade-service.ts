@@ -254,7 +254,7 @@ export function getCapabilities(deps: McpDeps): ToolOutcome {
         PERMIT2: "One-time approve(Permit2), then sign a Permit2 SignatureTransfer per trade — ONE swap tx.",
       },
       providers: {
-        "mpgr-executor": "Custom audited-style executor: typed Aerodrome Slipstream + Uniswap V3 adapters, allowlisted routers/tokens, exact fee, atomic.",
+        "mpgr-executor": "Custom MPGR executor (NOT externally audited yet): typed Aerodrome Slipstream + Uniswap V3 adapters, allowlisted routers/tokens, exact fee, atomic.",
         "0x-native-fee": "0x Swap API (AllowanceHolder) with swapFeeToken=sellToken; quote rejected unless fee is exact. Base mainnet only, disabled by default.",
         "aerodrome-slipstream": "Via mpgr-executor (Base mainnet deployment pending; proven on a Base mainnet fork in CI).",
         "cdp-trade-api": "Not offered over MCP: CDP Swap API has no integrator-fee parameter and returns taker-bound calldata; the app UI keeps its existing flow.",
@@ -542,7 +542,7 @@ export async function finalizeTrade(deps: McpDeps, input: unknown): Promise<Tool
   }
   let signer: Address;
   try {
-    signer = await recoverTypedDataAddress({ ...(typedData as Parameters<typeof recoverTypedDataAddress>[0]), signature });
+    signer = await recoverTypedDataAddress({ ...(typedData as unknown as Parameters<typeof recoverTypedDataAddress>[0]), signature });
   } catch {
     return fail("INVALID_SIGNATURE", "Signature could not be recovered.");
   }
