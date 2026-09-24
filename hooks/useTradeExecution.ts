@@ -80,6 +80,8 @@ export function useTradeExecution() {
     swapHash: snapshot.swapHash,
     error: snapshot.error,
     stepLabel: snapshot.stepLabel,
+    feeHash: snapshot.feeHash,
+    feeError: snapshot.feeError,
     execute,
     reset,
   };

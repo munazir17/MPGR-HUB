@@ -21,6 +21,8 @@ interface AgentTradeConfirmationModalProps {
   approvalHash: `0x${string}` | null;
   swapHash: `0x${string}` | null;
   stepLabel: string | null;
+  feeHash?: `0x${string}` | null;
+  feeError?: TradeError | null;
   onConfirmAndSwap?: () => void;
 }
 
@@ -74,6 +76,8 @@ export function AgentTradeConfirmationModal({
   approvalHash,
   swapHash,
   stepLabel,
+  feeHash,
+  feeError,
   onConfirmAndSwap,
 }: AgentTradeConfirmationModalProps) {
   if (!proposal) return null;
@@ -163,6 +167,12 @@ export function AgentTradeConfirmationModal({
                   <dd className="text-white">{fee.value}</dd>
                 </div>
               ))}
+              {proposal.agentFee?.status === "applied" && proposal.agentFee.displayAmount && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-zinc-500">MPGR agent fee (0.25%)</dt>
+                  <dd className="text-white">{proposal.agentFee.displayAmount} (separate tx)</dd>
+                </div>
+              )}
               {fees.length === 0 && (
                 <div className="flex justify-between gap-3">
                   <dt className="text-zinc-500">Fees</dt>
@@ -220,7 +230,15 @@ export function AgentTradeConfirmationModal({
                   Swap settled
                   {swapHash ? ` — ${formatAddress(swapHash)}` : "."}
                   {approvalHash ? ` Approval ${formatAddress(approvalHash)}.` : ""}
+                  {feeHash ? ` Agent fee ${formatAddress(feeHash)}.` : ""}
                 </span>
+              </div>
+            )}
+
+            {settled && feeError && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-300/30 bg-amber-300/10 p-3 text-sm text-amber-300">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{feeError.message}</span>
               </div>
             )}
 

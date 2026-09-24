@@ -16,6 +16,7 @@ import {
   ZERO_EX_PROVIDER_ID,
   tradeProviderLabel,
 } from "./trade-config";
+import { MPGR_AGENT_FEE_PERCENT_LABEL, buildProposalAgentFee } from "./trade-agent-fee";
 import { formatAtomicAmount } from "./trade-format";
 import { buildSwapRiskFacts, riskToWarnings } from "./trade-risk";
 import { isTokenizedStockToken } from "./trade-tokens";
@@ -102,6 +103,16 @@ export function buildTradeProposal(
     liquidityAvailable && input.quote.transaction !== null;
   const provider = input.provider ?? CDP_TRADE_PROVIDER_ID;
 
+  // MPGR Agent fee (0.25% of the SELL amount). Pure derivation from the
+  // quoted fromAmount — quote amounts, calldata, and slippage are inputs,
+  // never modified. Skipped (not an error) whenever uncollectible.
+  const agentFee = buildProposalAgentFee({
+    fromAmount: input.quote.fromAmount,
+    from: input.from,
+    taker: input.taker,
+    executionAvailable,
+  });
+
   const risk = buildSwapRiskFacts({
     kind,
     from: input.from,
@@ -109,6 +120,7 @@ export function buildTradeProposal(
     quote: input.quote,
     slippageBps: input.slippageBps,
     provider,
+    agentFee,
   });
 
   const displayFrom = formatAtomicAmount(input.quote.fromAmount, input.from.decimals);
@@ -147,6 +159,11 @@ export function buildTradeProposal(
           ? ["Your wallet will sign a one-time Permit2 authorization for this swap only."]
           : []),
         "Your wallet will sign the swap transaction on Base.",
+        ...(agentFee.status === "applied" && agentFee.displayAmount
+          ? [
+              `After the swap settles, your wallet will send a separate ${MPGR_AGENT_FEE_PERCENT_LABEL} agent fee (${agentFee.displayAmount}) to the MPGR fee wallet.`,
+            ]
+          : []),
         "Nothing broadcasts until you approve each wallet prompt.",
       ]
     : [
@@ -184,6 +201,7 @@ export function buildTradeProposal(
       quotedAt: quotedAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
       fees: input.quote.fees ?? {},
+      agentFee,
       priceImpactBps: input.priceImpactBps ?? null,
       issues,
       transaction: input.quote.transaction,

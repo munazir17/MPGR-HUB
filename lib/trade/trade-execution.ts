@@ -28,6 +28,7 @@ import {
 
 import { erc20Abi } from "@/lib/erc20-abi";
 import { config } from "@/lib/wagmi";
+import { buildAgentFeeTransfer, resolveExecutionAgentFee } from "./trade-agent-fee";
 import {
   TRADE_CHAIN_ID,
   TRADE_QUOTE_MAX_AGE_MS,
@@ -58,6 +59,13 @@ export interface TradeExecutionSnapshot {
   swapHash: Hash | null;
   error: TradeError | null;
   stepLabel: string | null;
+  /**
+   * MPGR Agent fee (0.25%) settlement, sent as a separate transfer AFTER
+   * the swap settles. Non-blocking by design: a fee failure never flips
+   * a settled swap to ERROR — it is recorded here instead.
+   */
+  feeHash: Hash | null;
+  feeError: TradeError | null;
 }
 
 export function idleTradeExecutionSnapshot(): TradeExecutionSnapshot {
@@ -67,6 +75,8 @@ export function idleTradeExecutionSnapshot(): TradeExecutionSnapshot {
     swapHash: null,
     error: null,
     stepLabel: null,
+    feeHash: null,
+    feeError: null,
   };
 }
 
@@ -77,6 +87,8 @@ function fail(code: TradeError["code"], message: string): TradeExecutionSnapshot
     swapHash: null,
     error: { code, message },
     stepLabel: null,
+    feeHash: null,
+    feeError: null,
   };
 }
 
@@ -335,6 +347,8 @@ export async function executeTrade(
         swapHash: null,
         error: null,
         stepLabel: refreshQuoteLabel(proposal.provider),
+        feeHash: null,
+        feeError: null,
       });
       let fresh: TradeProposal;
       try {
@@ -427,6 +441,8 @@ export async function executeTrade(
           swapHash: null,
           error: null,
           stepLabel: approvalStepLabel(proposal),
+          feeHash: null,
+          feeError: null,
         });
         try {
           const data = encodeFunctionData({
@@ -464,6 +480,8 @@ export async function executeTrade(
         swapHash: null,
         error: null,
         stepLabel: "Sign the Permit2 authorization…",
+        feeHash: null,
+        feeError: null,
       });
       try {
         const signature = await signPermit2(proposal.permit2.eip712, account);
@@ -482,6 +500,8 @@ export async function executeTrade(
       swapHash: null,
       error: null,
       stepLabel: "Sign the swap transaction…",
+      feeHash: null,
+      feeError: null,
     });
 
     let swapHash: Hash;
@@ -507,6 +527,8 @@ export async function executeTrade(
       swapHash,
       error: null,
       stepLabel: "Waiting for Base confirmation…",
+      feeHash: null,
+      feeError: null,
     });
 
     const receipt = await waitForTransactionReceipt(config, { hash: swapHash });
@@ -516,15 +538,106 @@ export async function executeTrade(
       return { ...snapshot, approvalHash, swapHash };
     }
 
-    const success: TradeExecutionSnapshot = {
-      state: "SUCCESS",
+    // MPGR Agent fee (0.25%): a SEPARATE wallet-signed transfer, only
+    // after the swap settled. The swap calldata, approvals, and min-out
+    // above are untouched by the fee. Only the exact fee displayed on
+    // the proposal is sent (resolveExecutionAgentFee re-validates it);
+    // anything else means no fee transfer. A fee failure NEVER flips a
+    // settled swap to ERROR — it is recorded as feeError instead.
+    const agentFee = resolveExecutionAgentFee(proposal);
+    if (!agentFee.send) {
+      const success: TradeExecutionSnapshot = {
+        state: "SUCCESS",
+        approvalHash,
+        swapHash,
+        error: null,
+        stepLabel: "Swap settled on Base.",
+        feeHash: null,
+        feeError: null,
+      };
+      onChange(success);
+      return success;
+    }
+
+    onChange({
+      state: "PENDING",
       approvalHash,
       swapHash,
       error: null,
-      stepLabel: "Swap settled on Base.",
-    };
-    onChange(success);
-    return success;
+      stepLabel: "Sending the MPGR agent fee (0.25%)…",
+      feeHash: null,
+      feeError: null,
+    });
+
+    const feeTransfer = buildAgentFeeTransfer({
+      fromAddress: proposal.from.address,
+      recipient: agentFee.recipient,
+      amount: agentFee.amount,
+    });
+    try {
+      const feeHash: Hash =
+        feeTransfer.kind === "native"
+          ? await sendTransaction(config, {
+              account,
+              chainId: TRADE_CHAIN_ID,
+              to: feeTransfer.to,
+              value: feeTransfer.value,
+            })
+          : await sendTransaction(config, {
+              account,
+              chainId: TRADE_CHAIN_ID,
+              to: feeTransfer.to,
+              data: feeTransfer.data,
+              value: 0n,
+            });
+      const feeReceipt = await waitForTransactionReceipt(config, { hash: feeHash });
+      if (feeReceipt.status !== "success") {
+        const success: TradeExecutionSnapshot = {
+          state: "SUCCESS",
+          approvalHash,
+          swapHash,
+          error: null,
+          stepLabel: "Swap settled on Base.",
+          feeHash,
+          feeError: {
+            code: "SEND_FAILED",
+            message: "The swap settled, but the separate agent-fee transfer failed on Base.",
+          },
+        };
+        onChange(success);
+        return success;
+      }
+      const success: TradeExecutionSnapshot = {
+        state: "SUCCESS",
+        approvalHash,
+        swapHash,
+        error: null,
+        stepLabel: "Swap settled on Base.",
+        feeHash,
+        feeError: null,
+      };
+      onChange(success);
+      return success;
+    } catch (err) {
+      const classified = classifyWalletError(err, "SEND_FAILED");
+      const success: TradeExecutionSnapshot = {
+        state: "SUCCESS",
+        approvalHash,
+        swapHash,
+        error: null,
+        stepLabel: "Swap settled on Base.",
+        feeHash: null,
+        feeError: {
+          code: classified.code,
+          message:
+            classified.code === "WALLET_REJECTED"
+              ? "The swap settled, but the separate agent-fee transfer was cancelled in your wallet."
+              : "The swap settled, but the separate agent-fee transfer could not be completed.",
+        },
+      };
+      onChange(success);
+      return success;
+    }
   } finally {
     inFlight.delete(key);
   }

@@ -62,4 +62,27 @@ Chainlink Coinbase equity feeds already publish **total return** (underlying pri
 
 Signing happens only after **Confirm & Swap** in the agent modal. Network in that modal always shows **Base**.
 
+## MPGR Agent fee (0.25% / 25 bps)
+
+Every supported swap carries a 0.25% MPGR Agent fee on the SELL leg:
+
+- Amount: `floor(fromAmount * 25 / 10_000)` in sell-token atomic units
+  (exact integer math in `lib/trade/trade-agent-fee.ts` — no float step,
+  so all token decimals are exact by construction; decimals are used for
+  display only).
+- Recipient: `NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT` (validated as a
+  non-zero Base address; never a private key — signing stays with the
+  user's connected wallet).
+- Collection: a SEPARATE wallet-signed transfer AFTER the swap settles
+  (ERC-20 `transfer` on the sell token, or a native value transfer when
+  selling ETH). The swap quote, calldata, approvals, slippage, routing,
+  min-out, price impact, and gas estimate are never modified by the fee.
+- Disclosure: quoted fee, recipient, and post-confirmation steps are on
+  the `TradeProposal` (`agentFee`), shown in the confirmation modal, and
+  re-validated before execution — only the exact displayed fee is sent.
+- Safety: fail-open for the swap, fail-closed for the fee. Unconfigured/
+  invalid recipient, dust (fee rounds to 0), taker-equals-recipient, or a
+  failed/cancelled fee transfer never blocks or fails the swap; the fee
+  outcome is recorded on the execution snapshot (`feeHash` / `feeError`).
+
 ## Env
