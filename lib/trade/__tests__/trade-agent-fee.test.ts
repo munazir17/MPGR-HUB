@@ -39,6 +39,7 @@ const {
   buildProposalAgentFee,
   calculateAgentFeeAmount,
   getAgentFeeRecipient,
+  resetAgentFeeConfigWarningForTests,
   resolveExecutionAgentFee,
 } = await import("../trade-agent-fee");
 const {
@@ -183,6 +184,37 @@ describe("MPGR Agent fee — recipient configuration", () => {
     const result = getAgentFeeRecipient();
     expect(result).toEqual({ ok: true, recipient: FEE_WALLET });
   });
+
+  it("7b. server var is preferred, public var is the fallback", () => {
+    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET);
+    vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", "0x3333333333333333333333333333333333333333");
+    expect(getAgentFeeRecipient()).toEqual({
+      ok: true,
+      recipient: "0x3333333333333333333333333333333333333333",
+    });
+
+    vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", "");
+    expect(getAgentFeeRecipient()).toEqual({ ok: true, recipient: FEE_WALLET });
+
+    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
+    vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET);
+    expect(getAgentFeeRecipient()).toEqual({ ok: true, recipient: FEE_WALLET });
+  });
+
+  it("7c. missing recipient warns once per process (diagnosable, not silent)", () => {
+    resetAgentFeeConfigWarningForTests();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
+      expect(getAgentFeeRecipient().ok).toBe(false);
+      expect(getAgentFeeRecipient().ok).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/not configured/);
+    } finally {
+      warn.mockRestore();
+      resetAgentFeeConfigWarningForTests();
+    }
+  });
 });
 
 describe("MPGR Agent fee — proposal fee", () => {
@@ -274,6 +306,20 @@ describe("MPGR Agent fee — proposal fee", () => {
       executionAvailable: true,
     });
     expect(invalid.status).toBe("skipped");
+  });
+
+  it("10b. server var alone quotes the fee (public var unset)", () => {
+    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
+    vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET);
+    const fee = buildProposalAgentFee({
+      fromAmount: "5000000",
+      from: usdc,
+      taker: TAKER,
+      executionAvailable: true,
+    });
+    expect(fee.status).toBe("applied");
+    expect(fee.recipient).toBe(FEE_WALLET);
+    expect(fee.amountAtomic).toBe("12500");
   });
 });
 
@@ -514,24 +560,42 @@ describe("MPGR Agent fee — pre-execution validation", () => {
     expect(resolveExecutionAgentFee(p).send).toBe(false);
   });
 
-  it("18. config drift after quoting (recipient changed) → no fee", () => {
+  it("18. STALE CLIENT (2026-09-24 incident): server-quoted fee sends even when the client bundle has no env", () => {
+    const p = quotedProposal(); // server quoted while configured
+    vi.unstubAllEnvs(); // ...but the running client bundle predates the env var
+    const resolved = resolveExecutionAgentFee(p);
+    expect(resolved).toEqual({ send: true, recipient: FEE_WALLET, amount: 25_000n });
+  });
+
+  it("19. ROTATION SKEW: server-quoted fee sends even when client env differs — server is source of truth", () => {
     const p = quotedProposal();
     vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "0x3333333333333333333333333333333333333333");
     const resolved = resolveExecutionAgentFee(p);
-    expect(resolved.send).toBe(false);
-    if (!resolved.send) expect(resolved.reason).toMatch(/no longer matches/);
-  });
-
-  it("19. recipient removed after quoting → no fee", () => {
-    const p = quotedProposal();
-    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
-    expect(resolveExecutionAgentFee(p).send).toBe(false);
+    expect(resolved).toEqual({ send: true, recipient: FEE_WALLET, amount: 25_000n });
   });
 
   it("20. tampered fee amount on the proposal → no fee", () => {
     const p = quotedProposal();
     p.agentFee = { ...p.agentFee!, amountAtomic: "999999999" };
     expect(resolveExecutionAgentFee(p).send).toBe(false);
+  });
+
+  it("20b. invalid quoted recipient (garbage, zero address, taker) → no fee", () => {
+    for (const recipient of ["not-an-address", zeroAddress, TAKER]) {
+      const p = quotedProposal();
+      p.agentFee = { ...p.agentFee!, recipient: recipient as `0x${string}` };
+      expect(resolveExecutionAgentFee(p).send).toBe(false);
+    }
+  });
+
+  it("20c. zero quoted amount or non-executable proposal → no fee", () => {
+    const zero = quotedProposal();
+    zero.agentFee = { ...zero.agentFee!, amountAtomic: "0" };
+    expect(resolveExecutionAgentFee(zero).send).toBe(false);
+
+    const notExecutable = quotedProposal();
+    notExecutable.executionAvailable = false;
+    expect(resolveExecutionAgentFee(notExecutable).send).toBe(false);
   });
 
   it("21. fee transfer encoding: ERC-20 transfer vs native value", () => {
@@ -685,6 +749,29 @@ describe("MPGR Agent fee — execution", () => {
     expect(result.feeHash).toBeNull();
     expect(result.feeError).toBeNull();
     expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("24b. STALE CLIENT (incident reproduction): env present at quote, missing at execution → fee still settles", async () => {
+    const p = quotedProposal(); // server quoted with the recipient configured
+    vi.unstubAllEnvs(); // client bundle predates the env var entirely
+    mockSend.mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBe("0xswap");
+    expect(result.feeHash).toBe("0xfee");
+    expect(result.feeError).toBeNull();
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    const feeCall = mockSend.mock.calls[1][1] as { to: string; data: `0x${string}`; value: bigint };
+    expect(getAddress(feeCall.to)).toBe(getAddress(BASE_USDC));
+    const decoded = decodeFunctionData({ abi: erc20Abi, data: feeCall.data });
+    expect(decoded.functionName).toBe("transfer");
+    expect((decoded.args as readonly [string, bigint])[0]).toBe(getAddress(FEE_WALLET));
+    expect((decoded.args as readonly [string, bigint])[1]).toBe(25_000n);
   });
 
   it("25. fee rejection is non-blocking: swap stands SUCCESS with feeError recorded", async () => {

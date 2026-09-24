@@ -17,10 +17,24 @@
 //     fee transfer itself fails, the swap proceeds/stands exactly as it
 //     does today. The fee is informational and non-blocking by design —
 //     there is no custodial signing flow and nothing is ever forced.
-//   - Execution only sends the fee that was DISPLAYED on the proposal
-//     and re-validated against current config (resolveExecutionAgentFee).
-//     A legacy proposal without a fee, or config drift after quoting,
-//     means no fee transfer.
+//   - The SERVER is the source of truth for the fee. Execution only sends
+//     the fee that was DISPLAYED on the proposal, after STRUCTURAL
+//     re-validation that needs no client-side env (resolveExecutionAgentFee
+//     recomputes the exact amount from the proposal's fromAmount and
+//     validates the recipient address). A legacy proposal without a fee,
+//     or a tampered/invalid fee, means no fee transfer.
+//   - Incident 2026-09-24: a production swap settled with no fee because
+//     the production deployment was BUILT before the fee-recipient env var
+//     was added — NEXT_PUBLIC_* values are inlined at build time
+//     (verified in the shipped client bundle), and Vercel does not backfill
+//     env into running deployments. The running build therefore quoted
+//     `skipped` and settled no fee. Fix: the client no longer depends on
+//     its own build-time env to settle a server-quoted fee, the server
+//     also honors a server-only MPGR_AGENT_FEE_RECIPIENT, a missing
+//     recipient emits a one-time warning (server log / console) instead of
+//     failing silently, and the docs state the redeploy requirement. The
+//     swap flow itself (routing, quote, calldata, approvals, slippage,
+//     execution) is unchanged.
 //
 // Import-safe: used by both server routes (proposal building) and the
 // client (execution + confirmation modal). No `server-only`, no fetches,
@@ -39,12 +53,34 @@ export const MPGR_AGENT_FEE_BPS = 25;
 export const MPGR_AGENT_FEE_DENOMINATOR = 10_000n;
 export const MPGR_AGENT_FEE_PERCENT_LABEL = "0.25%";
 /**
- * Public env var carrying the fee-recipient wallet. Public (not
- * server-only) because the CLIENT builds the fee transfer the user's
- * wallet signs — a recipient address is not a secret. No private key is
- * ever read here; signing stays with the connected wallet.
+ * Server-only env var carrying the fee-recipient wallet (preferred on the
+ * server: quote-time is the source of truth for the fee). A recipient
+ * address is not a secret; no private key is ever read here.
+ */
+export const MPGR_AGENT_FEE_RECIPIENT_SERVER_ENV = "MPGR_AGENT_FEE_RECIPIENT";
+/**
+ * Public fallback carrying the fee-recipient wallet. NEXT_PUBLIC_* values
+ * are inlined at BUILD time — after adding or rotating this variable the
+ * deployment MUST be rebuilt, otherwise the running build keeps the old
+ * (or missing) value. Signing always stays with the connected wallet.
  */
 export const MPGR_AGENT_FEE_RECIPIENT_ENV = "NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT";
+
+let warnedMissingRecipient = false;
+
+/** Test hook — resets the one-time missing-recipient warning. */
+export function resetAgentFeeConfigWarningForTests(): void {
+  warnedMissingRecipient = false;
+}
+
+function warnMissingRecipientOnce(): void {
+  if (warnedMissingRecipient) return;
+  warnedMissingRecipient = true;
+  console.warn(
+    "[mpgr-agent-fee] fee-recipient wallet is not configured — swaps proceed with no fee. " +
+      "Set MPGR_AGENT_FEE_RECIPIENT (server) or NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT and redeploy.",
+  );
+}
 
 function parsePositiveAtomic(raw: string): bigint | null {
   if (typeof raw !== "string") return null;
@@ -74,10 +110,22 @@ export type AgentFeeRecipientResult =
   | { ok: true; recipient: Address }
   | { ok: false; reason: string };
 
-/** Validated fee-recipient wallet, or a safe skip reason. */
+/**
+ * Validated fee-recipient wallet, or a safe skip reason.
+ * Server-only MPGR_AGENT_FEE_RECIPIENT wins when set; the public
+ * NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT is the fallback (the only one a
+ * browser bundle can see). A missing recipient warns once per process
+ * (server log / console) so a silently uncollected fee is diagnosable.
+ */
 export function getAgentFeeRecipient(): AgentFeeRecipientResult {
-  const raw = (process.env[MPGR_AGENT_FEE_RECIPIENT_ENV] ?? "").trim();
+  // First non-empty value wins: an empty/whitespace var behaves as unset
+  // rather than shadowing the fallback (an explicit "" must never act as
+  // a kill-switch for a configured fallback).
+  const serverRaw = (process.env[MPGR_AGENT_FEE_RECIPIENT_SERVER_ENV] ?? "").trim();
+  const publicRaw = (process.env[MPGR_AGENT_FEE_RECIPIENT_ENV] ?? "").trim();
+  const raw = serverRaw || publicRaw;
   if (!raw) {
+    warnMissingRecipientOnce();
     return {
       ok: false,
       reason: "MPGR agent-fee wallet is not configured — no fee is charged.",
@@ -154,47 +202,55 @@ export type ExecutionAgentFee =
 
 /**
  * Pre-execution validation. Only the fee that was DISPLAYED on the
- * proposal is ever sent, and only after re-validating it against the
- * current configuration. Anything else (legacy proposal without a fee,
- * config drift after quoting, tampered amount/recipient) means no fee
- * transfer — the swap itself is unaffected.
+ * proposal is ever sent, and only after STRUCTURAL re-validation that
+ * deliberately needs no client-side env: the server is the source of
+ * truth for the fee, and the client already trusts server-provided swap
+ * calldata for 100% of the funds, so requiring the client's own
+ * build-time env to match for the 0.25% fee would be both incoherent and
+ * fragile (stale tabs, CDN-cached bundles, and deploy skew would silently
+ * suppress a quoted fee — the 2026-09-24 incident).
+ *
+ * Checks: proposal is executable, fee was displayed as applied, recipient
+ * is a valid non-zero address different from the taker, and the displayed
+ * amount EXACTLY equals floor(fromAmount * 25 / 10_000) recomputed from
+ * the proposal (any tampered amount fails this equality). Anything else —
+ * legacy proposal without a fee, invalid recipient, amount mismatch —
+ * means no fee transfer. The swap itself is unaffected either way.
  */
 export function resolveExecutionAgentFee(proposal: TradeProposal): ExecutionAgentFee {
   const displayed = proposal.agentFee;
   if (!displayed || displayed.status !== "applied") {
     return { send: false, reason: displayed?.reason ?? "No agent fee on this proposal." };
   }
-  const expected = buildProposalAgentFee({
-    fromAmount: proposal.fromAmount,
-    from: proposal.from,
-    taker: proposal.taker,
-    executionAvailable: proposal.executionAvailable,
-  });
-  if (expected.status !== "applied" || !expected.recipient) {
-    return {
-      send: false,
-      reason: expected.reason ?? "Agent fee is no longer collectible.",
-    };
+  if (!proposal.executionAvailable) {
+    return { send: false, reason: "No executable swap — no fee is charged." };
   }
+  const recipient = displayed.recipient;
   if (
-    expected.recipient.toLowerCase() !== displayed.recipient?.toLowerCase() ||
-    expected.amountAtomic !== displayed.amountAtomic
+    typeof recipient !== "string" ||
+    !isAddress(recipient) ||
+    recipient.toLowerCase() === zeroAddress.toLowerCase()
   ) {
-    return {
-      send: false,
-      reason: "Quoted agent fee no longer matches current configuration — no fee is charged.",
-    };
+    return { send: false, reason: "Quoted agent-fee wallet address is invalid — no fee is charged." };
   }
+  if (proposal.taker.trim().toLowerCase() === recipient.toLowerCase()) {
+    return { send: false, reason: "MPGR agent-fee wallet matches the taker — no fee is charged." };
+  }
+  const fromAmount = parsePositiveAtomic(proposal.fromAmount);
+  const expected = calculateAgentFeeAmount(proposal.fromAmount);
   let amount: bigint;
   try {
     amount = BigInt(displayed.amountAtomic);
   } catch {
     return { send: false, reason: "Quoted agent fee amount is invalid — no fee is charged." };
   }
-  if (amount <= 0n) {
+  if (fromAmount === null || expected === null || expected <= 0n || amount <= 0n || amount >= fromAmount) {
     return { send: false, reason: "Quoted agent fee amount is invalid — no fee is charged." };
   }
-  return { send: true, recipient: expected.recipient, amount };
+  if (amount !== expected) {
+    return { send: false, reason: "Quoted agent fee does not match the swap amount — no fee is charged." };
+  }
+  return { send: true, recipient: recipient as Address, amount };
 }
 
 export type AgentFeeTransfer =

@@ -92,6 +92,10 @@ export function AgentTradeConfirmationModal({
   const error = executionError ?? confirmationError;
   const impact = formatPriceImpact(proposal.priceImpactBps);
   const fees = feeRows(proposal.fees);
+  // Compact risk display: safety-critical facts keep their full detail;
+  // warnings show as one-line titles (no long technical paragraphs).
+  const criticalRisk = proposal.risk.filter((fact) => fact.severity === "critical");
+  const warningRisk = proposal.risk.filter((fact) => fact.severity === "warning");
 
   return (
     <AnimatePresence>
@@ -173,39 +177,18 @@ export function AgentTradeConfirmationModal({
                   <dd className="text-white">{proposal.agentFee.displayAmount} (separate tx)</dd>
                 </div>
               )}
-              {fees.length === 0 && (
-                <div className="flex justify-between gap-3">
-                  <dt className="text-zinc-500">Fees</dt>
-                  <dd className="text-zinc-500">
-                    none reported by the route — your wallet shows network cost before you sign
-                  </dd>
-                </div>
-              )}
-              {proposal.needsPermit2Approval && (
-                <div className="flex justify-between gap-3">
-                  <dt className="text-zinc-500">Steps</dt>
-                  <dd className="text-white">
-                    {proposal.permit2
-                      ? "Sign Permit2, then swap"
-                      : proposal.provider === "aerodrome-slipstream"
-                        ? "Approve Aerodrome SwapRouter, then swap"
-                      : proposal.provider === "0x-swap-api"
-                        ? "Approve AllowanceHolder, then swap"
-                        : "Approve token spending, then swap"}
-                  </dd>
-                </div>
-              )}
             </dl>
 
-            {proposal.risk.length > 0 && (
+            {(criticalRisk.length > 0 || warningRisk.length > 0) && (
               <ul className="mb-4 max-h-32 space-y-1 overflow-y-auto text-[11px] text-amber-300">
-                {proposal.risk
-                  .filter((fact) => fact.severity !== "info")
-                  .map((fact) => (
-                    <li key={fact.id}>
-                      {fact.title}: {fact.detail}
-                    </li>
-                  ))}
+                {criticalRisk.map((fact) => (
+                  <li key={fact.id}>
+                    {fact.title}: {fact.detail}
+                  </li>
+                ))}
+                {warningRisk.map((fact) => (
+                  <li key={fact.id}>{fact.title}</li>
+                ))}
               </ul>
             )}
 
