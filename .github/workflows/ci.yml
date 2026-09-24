@@ -64,6 +64,8 @@ jobs:
       - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
       # Real Uniswap V3 + Permit2 bytecode (pinned) so the Base Sepolia deploy
       # script is dry-run end-to-end in test/script/ instead of skipping.
+      - name: Executor ABI in lib/executor is in sync with the contract
+        run: node script/gen-executor-abi.mjs --check
       - run: bash script/prepare-uniswap-artifacts.sh
       - run: forge test -vvv
         env:
@@ -90,8 +92,11 @@ jobs:
         run: |
           set -uo pipefail
           forge build >/dev/null
-          forge test --match-path 'test/fork/*' --json > fork-results.json
+          forge test --match-path 'test/fork/*' --json > fork-results.json 2> fork-stderr.txt
           STATUS=$?
+          if [ "$STATUS" != "0" ] && ! jq -e 'type == "object"' fork-results.json >/dev/null 2>&1; then
+            echo "::error title=forge test (fork) did not produce results::$(tail -c 1500 fork-stderr.txt | tr '\n' ' ')"
+          fi
           # Surface every result as an annotation + step summary (readable without raw logs).
           jq -r '
             to_entries[] | .value.test_results | to_entries[]
