@@ -165,12 +165,26 @@ function parseFees(raw: unknown): CdpSwapPrice["fees"] {
 }
 
 /**
- * 0x reports our integrator fee as `fees.integratorFee.amount` (in
- * sellToken base units) whenever `swapFeeRecipient`/`swapFeeBps`/
- * `swapFeeToken` were accepted. A newer multi-fee response shape
- * (`integratorFees[]`) is tolerated by summing, so a provider-side
- * format change degrades to "fee reported, possibly split" instead of
- * silently reading as "no fee".
+ * 0x reports our integrator fee whenever `swapFeeRecipient`/`swapFeeBps`/
+ * `swapFeeToken` were accepted. The CURRENT documented response schema
+ * (see the getQuote Allowance-Holder example in the 0x API reference)
+ * carries BOTH shapes at once:
+ *
+ *   "fees": {
+ *     "integratorFee": { "amount": "25000", "token": "0x…", "type": "volume" },
+ *     "integratorFees": [ { "amount": "25000", "token": "0x…", "type": "volume" } ],
+ *     "zeroExFee": null,
+ *     "gasFee": null
+ *   }
+ *
+ * with `integratorFee` nullable and `integratorFees` an array. So
+ * `integratorFee` is read first (the single-fee case), and the array is
+ * summed as a fallback — not as a speculative future format.
+ *
+ * A non-numeric amount is treated as "no fee reported": it is not
+ * something we can display as "25 bps of the sell amount", and the app
+ * then collects the fee itself rather than quoting a number we cannot
+ * stand behind.
  */
 function parseIntegratorFee(raw: Record<string, unknown>): CdpSwapFee | undefined {
   const single = isPlainObject(raw.integratorFee) ? raw.integratorFee : null;

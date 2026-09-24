@@ -289,6 +289,64 @@ describe("0x native fee — returned fee parsing", () => {
     expect(result.value.fees?.integratorFee).toEqual({ amount: "25000", token: USDC });
   });
 
+  it("parses the documented live schema (integratorFee null + integratorFees array)", async () => {
+    // The 0x API reference's getQuote example shows BOTH keys present, with
+    // integratorFee nullable and integratorFees an array of entries whose
+    // amount may be null. This is the real response shape, not a guess.
+    vi.stubEnv("ZERO_EX_API_KEY", "test-key");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify(
+            await priceWithFees({
+              integratorFee: null,
+              integratorFees: [
+                { amount: "25000", token: USDC, type: "volume" },
+                { amount: null, token: USDC, type: "volume" },
+              ],
+              zeroExFee: null,
+              gasFee: null,
+            }),
+          ),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await getZeroExSwapPrice(
+      baseRequest({ agentFee: { recipient: FEE_WALLET, bps: 25 } }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.fees?.integratorFee).toEqual({ amount: "25000", token: USDC });
+  });
+
+  it("reports no fee when both integratorFee and integratorFees are empty/null", async () => {
+    vi.stubEnv("ZERO_EX_API_KEY", "test-key");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify(
+            await priceWithFees({
+              integratorFee: null,
+              integratorFees: [{ amount: null, token: USDC, type: "volume" }],
+            }),
+          ),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await getZeroExSwapPrice(
+      baseRequest({ agentFee: { recipient: FEE_WALLET, bps: 25 } }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.fees?.integratorFee).toBeUndefined();
+  });
+
   it("leaves integratorFee undefined when 0x reports none", async () => {
     vi.stubEnv("ZERO_EX_API_KEY", "test-key");
     vi.stubGlobal(

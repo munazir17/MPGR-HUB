@@ -131,11 +131,46 @@ Every supported swap carries a 0.25% MPGR Agent fee on the SELL leg:
   `send: false`, so the atomic batch is never built and the fee cannot be
   charged twice. `trade-execution.ts` gates `feeSkippedReason` on
   `!providerNativeFee` for the same reason.
-- Requires live verification (not verifiable offline): whether 0x's
-  `buyAmount`/`minBuyAmount` are already net of the integrator fee, and
-  whether the taker must hold `sellAmount` or `sellAmount + fee`. The
-  implementation treats the provider's returned amounts as authoritative
-  and never adjusts them.
+- Verified against the live 0x docs (fetched 2026-09-24):
+  - **Taker balance requirement**: "The taker ... should hold at *least*
+    the `sellAmount` of `sellToken`", and should approve
+    `issues.allowance.spender` "to spend at least the same amount"
+    (0x *Troubleshooting Swap API*). So the taker needs **`fromAmount`**
+    — NOT `fromAmount + fee`. The fee comes out of the sell amount, so on
+    the 0x native path the user needs **less** balance than on the
+    app-side batch path (which needs `fromAmount + fee`). No change was
+    required: `trade-execution.ts` never adds the fee to the balance check
+    on the native path, because the fee is not a separate call there.
+  - **Fee formula**: `amount = (swapFeeBps / 10000) * sellAmount` in
+    `sellToken` base units (0x *Monetize Your App on EVM* + FAQ) — exactly
+    `floor(fromAmount * 25 / 10_000)`.
+  - **`swapFeeToken`**: "The contract address of the token to receive
+    trading fees in. This must be set to either the value of `buyToken` or
+    the `sellToken`." If omitted, 0x picks the token itself ("preference
+    to stablecoins and highly liquid assets") — which is why this app
+    **always** sets it explicitly to the sell token.
+  - **`swapFeeBps`**: integer, 0–1000 (0–10%), with a default 1000 Bps
+    security limit. Matches the 1–1000 eligibility gate.
+  - **Response schema**: the current getQuote example shows `fees` with
+    BOTH `integratorFee` (nullable) and `integratorFees` (an array whose
+    entries may have `amount: null`), plus `zeroExFee` and `gasFee`.
+    `parseIntegratorFee` reads `integratorFee` first and sums
+    `integratorFees` as the fallback, so the real shape is handled rather
+    than guessed. Example from the docs:
+    `"integratorFee": { "amount": "1000000", "token": "0x8335…2913", "type": "volume" }`
+    (note the token address is lowercased — this app compares it
+    case-insensitively).
+  - **`swapFeeRecipient`/`swapFeeToken` schema regexes** explicitly
+    exclude the zero address (`0x(?!0{40})…`), confirming the
+    zero-address rejection in `zeroExNativeFeeEligible`.
+- Still unverified (no sandbox egress to `api.0x.org`): the exact
+  relationship between 0x's `buyAmount`/`minBuyAmount` and the fee. The
+  docs state "the additional affiliate fee will impact the price for the
+  end user", so the amounts are assumed to be net of the fee. This app
+  treats the provider's returned amounts as authoritative, never adjusts
+  them, and re-validates the fee structurally at execution — so a wrong
+  assumption would surface as a fee amount that fails reconciliation,
+  not as a silent mis-charge.
 - Atomicity trade-off (deliberate): inside an atomic batch the fee leg and
   the swap succeed or revert together, so a fee-leg revert reverts the
   swap. The eligibility gates above (atomic capability + sell + fee
