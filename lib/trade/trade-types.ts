@@ -53,6 +53,32 @@ export interface CdpSwapFees {
   protocolFee?: CdpSwapFee;
 }
 
+/**
+ * MPGR Agent swap fee (0.25% / 25 bps on the sell leg).
+ *
+ * Informational and non-blocking by design: the fee is collected as a
+ * SEPARATE wallet-signed transfer after the swap settles, so it never
+ * changes the quote, calldata, approvals, slippage, or min-out.
+ * `status: "skipped"` (with `reason`) preserves today's behavior exactly
+ * whenever the fee wallet is unconfigured/invalid or the fee is dust.
+ * Optional on TradeProposal so legacy/hand-built proposals stay valid.
+ */
+export type TradeAgentFeeStatus = "applied" | "skipped";
+
+export interface TradeAgentFee {
+  status: TradeAgentFeeStatus;
+  /** 25 when applied, null when skipped. */
+  bps: number | null;
+  /** Validated fee-recipient wallet, null when skipped. */
+  recipient: Address | null;
+  /** Fee in sell-token atomic units; "0" when skipped. */
+  amountAtomic: string;
+  /** Human display, e.g. "0.0125 USDC"; null when skipped. */
+  displayAmount: string | null;
+  /** Skip reason when skipped; null when applied. */
+  reason: string | null;
+}
+
 export interface CdpAllowanceIssue {
   currentAllowance: string;
   spender: string;
@@ -135,6 +161,12 @@ export interface TradeProposal {
   quotedAt: string;
   expiresAt: string;
   fees: CdpSwapFees;
+  /**
+   * MPGR Agent fee (0.25% of the sell amount, separate post-swap
+   * transfer). Optional for backward compatibility; absent means no fee
+   * was quoted (legacy proposal) and execution sends no fee transfer.
+   */
+  agentFee?: TradeAgentFee;
   /**
    * Signed basis points vs. the app's own mid price (see
    * lib/trade/trade-price-impact.ts): negative = worse than mid,

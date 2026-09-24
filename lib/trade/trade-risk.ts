@@ -8,8 +8,10 @@ import {
   TRADE_DEFAULT_SLIPPAGE_BPS,
 } from "./trade-config";
 import { balanceShortfallMessage, tradeBalanceShortfall } from "./trade-balance";
+import { MPGR_AGENT_FEE_PERCENT_LABEL } from "./trade-agent-fee";
 import type {
   CdpSwapQuote,
+  TradeAgentFee,
   TradeKind,
   TradeProvider,
   TradeRiskFact,
@@ -24,8 +26,24 @@ export function buildSwapRiskFacts(input: {
   quote: Pick<CdpSwapQuote, "liquidityAvailable" | "issues" | "fees" | "minToAmount" | "toAmount">;
   slippageBps: number;
   provider?: TradeProvider;
+  agentFee?: TradeAgentFee | null;
 }): TradeRiskFact[] {
   const facts: TradeRiskFact[] = [];
+
+  // MPGR Agent fee disclosure (info only — never a blocker). Absent when
+  // the fee is skipped, so unconfigured deployments read exactly as before.
+  if (input.agentFee?.status === "applied" && input.agentFee.displayAmount && input.agentFee.recipient) {
+    facts.push({
+      id: "mpgr-agent-fee",
+      severity: "info",
+      title: `MPGR agent fee ${MPGR_AGENT_FEE_PERCENT_LABEL}`,
+      detail:
+        `A separate wallet-signed transfer of ${input.agentFee.displayAmount} ` +
+        `(${MPGR_AGENT_FEE_PERCENT_LABEL} of the sell amount) goes to the MPGR fee wallet ` +
+        `${input.agentFee.recipient} after the swap settles. It is not part of the swap ` +
+        `route, quote, or slippage protection.`,
+    });
+  }
 
   if (!input.from.verified) {
     facts.push({
