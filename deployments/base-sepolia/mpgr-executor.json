@@ -1,0 +1,47 @@
+{
+  "chainId": 84532,
+  "network": "base-sepolia",
+  "executor": "0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4",
+  "deployTx": "0xcfba1186b37aec5022621cabf3eebb3a0acfeffc059847bb0befe9954378831d",
+  "deployBlock": 47262106,
+  "owner": "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
+  "feeRecipient": "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
+  "feeBps": 25,
+  "maxFeeBps": 100,
+  "weth": "0x4200000000000000000000000000000000000006",
+  "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+  "uniswapV3SwapRouter02": "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4",
+  "uniswapV3Factory": "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24",
+  "uniswapV3QuoterV2": "0xC5290058841028F1614F3A6F0F5816cAd0df5E27",
+  "uniswapV3PoolFee": 3000,
+  "testTokenUSD": "0xc5C9F70A7F3EB18FC33406275Bffe31a922fcde5",
+  "testTokenStock": "0x9102c5B535d25A9265e2793174701BdaCeEAAfC4",
+  "allowedTokens": [
+    { "symbol": "WETH", "address": "0x4200000000000000000000000000000000000006", "decimals": 18 },
+    { "symbol": "tUSD", "address": "0xc5C9F70A7F3EB18FC33406275Bffe31a922fcde5", "decimals": 6 },
+    { "symbol": "tSTOCK", "address": "0x9102c5B535d25A9265e2793174701BdaCeEAAfC4", "decimals": 18 }
+  ],
+  "swaps": [
+    { "kind": "APPROVAL", "tokenIn": "tUSD", "tokenOut": "tSTOCK", "grossAmountIn": "100000000", "feeAmount": "250000", "amountOut": "992533336306087147", "txHash": "0xb608b440cfc89fb9bbab3e6f62cd04ad81ad7444e918f1c4dd657ca215022b49", "status": "0x1" },
+    { "kind": "APPROVAL", "tokenIn": "tSTOCK", "tokenOut": "tUSD", "grossAmountIn": "500000000000000000", "feeAmount": "1250000000000000", "amountOut": "49873682", "txHash": "0x9d46476d2d6ea66744fd536e904c522ac982c325f83a3c97692cfd698e900a1d", "status": "0x1" },
+    { "kind": "EIP2612", "tokenIn": "tUSD", "tokenOut": "tSTOCK", "grossAmountIn": "50000000", "feeAmount": "125000", "amountOut": "495776554279852677", "txHash": "0xfaeaf495e1eb33e7c638fb5bf74f3aa4e65de706f3c91aa9d4905fae763c82a0", "status": "0x1" },
+    { "kind": "PERMIT2", "tokenIn": "tUSD", "tokenOut": "tSTOCK", "grossAmountIn": "25000000", "feeAmount": "62500", "amountOut": "247519398064513653", "txHash": "0x71eb8f2674ec8c60083eaec4ad87db84d55746ebd719bd12da71cf7934b13c6a", "status": "0x1" },
+    { "kind": "NATIVE_IN", "tokenIn": "ETH", "tokenOut": "tUSD", "grossAmountIn": "100000000000000", "feeAmount": "250000000000", "amountOut": "192519", "txHash": "0xee5f9dec77f40e0a1f9fef9df42ed086a21e5fbf88f192a6f0dd20d4d52cba5b", "status": "0x1" },
+    { "kind": "NATIVE_OUT", "tokenIn": "tUSD", "tokenOut": "ETH", "grossAmountIn": "200000", "feeAmount": "500", "amountOut": "102638143567132", "txHash": "0x338e1738c269031b396e3e5b20156fdcb44088e7879aca47918583b59704d5f7", "status": "0x1" }
+  ],
+  "verification": {
+    "sourcify": { "status": "exact_match", "url": "https://repo.sourcify.dev/84532/0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4" },
+    "blockscout": { "verified": true, "url": "https://base-sepolia.blockscout.com/address/0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4?tab=contract" },
+    "basescan": { "step": "success", "url": "https://sepolia.basescan.org/address/0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4#code" }
+  },
+  "sourceCommit": "d426b08e59291efda796009616c802e54983687b",
+  "provenance": {
+    "workflow": "Deploy MPGR Executor (Base Sepolia)",
+    "runId": 36067982010,
+    "runAttempt": 2,
+    "headSha": "07dbc35b9fe2ed36980dc998766144318567eb94",
+    "artifactId": 10838902745,
+    "prComment": "https://github.com/munazir17/MPGR-HUB/pull/57#issuecomment-5823971223",
+    "note": "Values transcribed from the workflow's own PR comment (generated from this artifact). sourceCommit is the pull_request merge commit of headSha onto main 38b66fd. The post-deploy on-chain checks step (owner, pendingOwner == 0, feeBps, MAX_FEE_BPS, feeRecipient, paused, router kind, token allowlist, zero balances, code present) passed in this run, and the contracts-fork CI job re-verifies this record against Base Sepolia on every push (test/fork/MPGRExecutorBaseSepoliaDeployment.t.sol)."
+  }
+}

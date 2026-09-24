@@ -89,6 +89,9 @@ jobs:
         env:
           # Optional secret for a dedicated RPC; falls back to the public endpoint.
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          # Re-verifies the committed Base Sepolia deployment record against the live chain
+          # (test/fork/MPGRExecutorBaseSepoliaDeployment.t.sol). Read-only; nothing is broadcast.
+          BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
         run: |
           set +e -uo pipefail
           forge build >/dev/null

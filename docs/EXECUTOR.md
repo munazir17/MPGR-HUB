@@ -163,15 +163,38 @@ Workflow: `.github/workflows/deploy-executor-base-sepolia.yml`. It runs when the
    - test tokens tUSD (6d, EIP-2612) and tSTOCK (18d);
    - Uniswap V3 pools tUSD/tSTOCK and WETH/tUSD at fee 3000.
 4. **Six real swaps**: APPROVAL buy, APPROVAL sell-back, EIP-2612, Permit2, native-ETH in, native-ETH out.
-5. Ownership is transferred to `MPGR_EXECUTOR_OWNER`, who then calls `acceptOwnership()`.
+5. The executor is constructed with `initialOwner = MPGR_EXECUTOR_OWNER`, so the owner holds admin rights immediately. There is no pending transfer to accept, and the post-deploy checks assert `pendingOwner() == 0`.
 6. Source verification on Sourcify, Blockscout and Basescan.
 7. Post-deploy `cast` checks.
 8. The artifact `deployments/base-sepolia/mpgr-executor.json` is uploaded (address, tx, block, owner, fee recipient, routers, ABI, swap tx hashes, verification status). A PR comment is posted.
 
 **After the run:**
-- Commit `deployments/base-sepolia/*`.
+- Commit `deployments/base-sepolia/mpgr-executor.json`.
 - Fill the `84532` entry in `lib/executor/executor-config.ts` (`MPGR_EXECUTOR_DEPLOYMENTS`). The MCP tools and `/llm.txt` then go live on Sepolia automatically.
-- The owner wallet must call `acceptOwnership()` (Ownable2Step).
+
+### Live deployment (Base Sepolia, chainId 84532)
+
+Deployed by workflow run `36067982010` from commit `07dbc35` (merge commit `d426b08`). Recorded in `deployments/base-sepolia/mpgr-executor.json` and mirrored by `BASE_SEPOLIA_EXECUTOR_DEPLOYMENT` in `lib/executor/executor-config.ts`.
+
+| field | value |
+|---|---|
+| Executor | [`0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4`](https://sepolia.basescan.org/address/0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4) |
+| Deploy tx / block | `0xcfba1186…4378831d` / 47262106 |
+| Owner | `0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e` |
+| Fee recipient | `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4` |
+| Fee | 25 bps (cap 100) |
+| Router | Uniswap V3 SwapRouter02 `0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4`. QuoterV2 `0xC5290058841028F1614F3A6F0F5816cAd0df5E27`. Pools at fee 3000. |
+| Tokens | WETH `0x4200…0006`, tUSD `0xc5C9F70A7F3EB18FC33406275Bffe31a922fcde5` (6d, EIP-2612), tSTOCK `0x9102c5B535d25A9265e2793174701BdaCeEAAfC4` (18d) |
+| Verification | Sourcify exact_match, Blockscout verified, Basescan submitted |
+
+**Continuous verification.** On every push, the `contracts-fork` CI job runs `test/fork/MPGRExecutorBaseSepoliaDeployment.t.sol` against live Base Sepolia. It checks that:
+- the address's runtime bytecode is byte-identical to a fresh build of this repo's `MPGRExecutor` with the same immutables;
+- the owner, `pendingOwner == 0`, fee recipient, fee, cap, pause state, WETH/Permit2, router kind and token allowlist match the record;
+- the executor holds no funds;
+- the pools and quoter are live;
+- a real exact-fee swap through the deployed executor succeeds on a local fork (nothing is broadcast).
+
+**Execution path.** Only the MCP / agent executor path uses this deployment. `mpgr_get_quote` and `mpgr_prepare_trade` with `chainId` 84532 (the default) return transactions to this executor. The in-app swap UI is Base-mainnet-only and unchanged.
 
 ## Tests
 
@@ -195,7 +218,7 @@ Workflow: `.github/workflows/deploy-executor-base-sepolia.yml`. It runs when the
 
 1. External security audit of `MPGRExecutor.sol`; fix and re-test.
 2. Base Sepolia deployment exercised by real users through the MCP flow (all three auth modes, native in and out).
-3. Owner = **multisig** (e.g. Safe). Fee recipient confirmed. `acceptOwnership()` executed.
+3. Owner = **multisig** (e.g. Safe), set as `initialOwner` at deployment. Fee recipient confirmed.
 4. Mainnet allowlist reviewed:
    - Slipstream router `0x698C…` / factory `0xf8f2…`;
    - Uniswap SwapRouter02 `0x2626…e481`;

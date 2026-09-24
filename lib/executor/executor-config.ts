@@ -91,14 +91,62 @@ export const BASE_SEPOLIA_UNISWAP_V3 = {
   positionManager: "0x27F971cb582BF9E50F397e4d29a5C7A34f11faA2",
 } as const satisfies Record<string, Address>;
 
+/** Test tokens created by the Base Sepolia deploy script (no mint function; supply held by the deployer). */
+export const BASE_SEPOLIA_TUSD: Address = "0xc5C9F70A7F3EB18FC33406275Bffe31a922fcde5";
+export const BASE_SEPOLIA_TSTOCK: Address = "0x9102c5B535d25A9265e2793174701BdaCeEAAfC4";
+
+/**
+ * MPGR Executor on Base Sepolia — deployed by the `Deploy MPGR Executor (Base Sepolia)`
+ * workflow (run 36067982010). Mirrors deployments/base-sepolia/mpgr-executor.json field for
+ * field (enforced by lib/executor/__tests__/executor-registry.test.ts) and is re-verified
+ * against the live chain — bytecode, owner, fee recipient, fee, router, tokens — by
+ * test/fork/MPGRExecutorBaseSepoliaDeployment.t.sol in the `contracts-fork` CI job.
+ */
+export const BASE_SEPOLIA_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
+  chainId: BASE_SEPOLIA_CHAIN_ID,
+  network: "base-sepolia",
+  executor: "0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4",
+  owner: "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
+  feeRecipient: "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
+  feeBps: EXECUTOR_DEFAULT_FEE_BPS,
+  weth: CANONICAL_WETH,
+  permit2: CANONICAL_PERMIT2,
+  deployTx: "0xcfba1186b37aec5022621cabf3eebb3a0acfeffc059847bb0befe9954378831d",
+  deployBlock: 47262106,
+  explorerUrl: "https://sepolia.basescan.org/address/0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4",
+  tokens: [
+    { address: CANONICAL_WETH, symbol: "WETH", decimals: 18, isWeth: true },
+    { address: BASE_SEPOLIA_TUSD, symbol: "tUSD", decimals: 6, testnet: true },
+    { address: BASE_SEPOLIA_TSTOCK, symbol: "tSTOCK", decimals: 18, testnet: true },
+  ],
+  routes: [
+    {
+      kind: RouterKind.UNISWAP_V3_ROUTER02,
+      router: BASE_SEPOLIA_UNISWAP_V3.swapRouter02,
+      quoter: BASE_SEPOLIA_UNISWAP_V3.quoterV2,
+      poolFee: 3000,
+      tokenA: BASE_SEPOLIA_TUSD,
+      tokenB: BASE_SEPOLIA_TSTOCK,
+    },
+    {
+      kind: RouterKind.UNISWAP_V3_ROUTER02,
+      router: BASE_SEPOLIA_UNISWAP_V3.swapRouter02,
+      quoter: BASE_SEPOLIA_UNISWAP_V3.quoterV2,
+      poolFee: 3000,
+      tokenA: CANONICAL_WETH,
+      tokenB: BASE_SEPOLIA_TUSD,
+    },
+  ],
+};
+
 /**
  * Deployment registry.
  * - 8453: `null` — mainnet deployment is NOT allowed yet (see mainnet checklist in docs/EXECUTOR.md).
- * - 84532: populated after the Base Sepolia deployment run.
+ * - 84532: the Base Sepolia deployment above.
  */
 export const MPGR_EXECUTOR_DEPLOYMENTS: Record<ExecutorChainId, ExecutorDeployment | null> = {
   [BASE_MAINNET_CHAIN_ID]: null,
-  [BASE_SEPOLIA_CHAIN_ID]: null,
+  [BASE_SEPOLIA_CHAIN_ID]: BASE_SEPOLIA_EXECUTOR_DEPLOYMENT,
 };
 
 export const EXECUTOR_CHAIN_NAMES: Record<ExecutorChainId, string> = {
