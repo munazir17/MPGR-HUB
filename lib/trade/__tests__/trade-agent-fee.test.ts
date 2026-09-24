@@ -5,20 +5,37 @@
 //   2. fee-recipient configuration handling
 //   3. proposal integration: buy, sell, different decimals, quote intact
 //   4. pre-execution validation (displayed-only, drift-safe)
-//   5. execution: separate post-swap transfer, non-blocking failures
+//   5. execution: ATOMIC with the swap via an EIP-5792 batch
+//      ([swapCall, feeCall]) — never a separate fee transaction
 //
 // The fee must NEVER change the swap itself: quote amounts, calldata,
 // approvals, slippage, routing, min-out, price impact, and gas stay
-// byte-for-byte identical with and without the fee.
+// byte-for-byte identical with and without the fee. And the swap must
+// NEVER fail because the fee could not be collected: a wallet without
+// atomic-batch support, or one that cannot fund sell + fee, still swaps
+// normally with the fee skipped.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, getAddress, zeroAddress } from "viem";
 
-const { mockSend, mockSign, mockWait, mockRead } = vi.hoisted(() => ({
+const {
+  mockSend,
+  mockSign,
+  mockWait,
+  mockRead,
+  mockSendCalls,
+  mockCallsStatus,
+  mockCapabilities,
+  mockBalance,
+} = vi.hoisted(() => ({
   mockSend: vi.fn(),
   mockSign: vi.fn(),
   mockWait: vi.fn(),
   mockRead: vi.fn(),
+  mockSendCalls: vi.fn(),
+  mockCallsStatus: vi.fn(),
+  mockCapabilities: vi.fn(),
+  mockBalance: vi.fn(),
 }));
 
 vi.mock("wagmi/actions", () => ({
@@ -26,6 +43,10 @@ vi.mock("wagmi/actions", () => ({
   signTypedData: (...args: unknown[]) => mockSign(...args),
   waitForTransactionReceipt: (...args: unknown[]) => mockWait(...args),
   readContract: (...args: unknown[]) => mockRead(...args),
+  sendCalls: (...args: unknown[]) => mockSendCalls(...args),
+  getCallsStatus: (...args: unknown[]) => mockCallsStatus(...args),
+  getCapabilities: (...args: unknown[]) => mockCapabilities(...args),
+  getBalance: (...args: unknown[]) => mockBalance(...args),
 }));
 
 vi.mock("@/lib/wagmi", () => ({ config: {} }));
@@ -43,12 +64,18 @@ const {
   resolveExecutionAgentFee,
 } = await import("../trade-agent-fee");
 const {
+  TRADE_CALLS_POLL_INTERVAL_MS,
+  TRADE_CALLS_STATUS_TIMEOUT_MS,
+  setCallsBatchTimingForTests,
+} = await import("../trade-calls-batch");
+const {
   AERODROME_SLIPSTREAM_PROVIDER_ID,
   AERODROME_SLIPSTREAM_SWAP_ROUTER,
   BASE_USDC,
   CDP_TRADE_PROVIDER_ID,
   NATIVE_ETH_SENTINEL,
   PERMIT2_ADDRESS,
+  ZERO_EX_PROVIDER_ID,
 } = await import("../trade-config");
 const { MPGR_TOKEN_CONFIG } = await import("@/lib/token/token-config");
 const { erc20Abi } = await import("@/lib/erc20-abi");
@@ -417,7 +444,8 @@ describe("MPGR Agent fee — proposal integration (buy/sell, quote intact)", () 
     const p = built.proposal;
     expect(p.agentFee?.status).toBe("applied");
     expect(p.agentFee?.displayAmount).toBe("0.0025 ETH");
-    // Swap still sends exactly 1 ETH — the fee is a separate transfer.
+    // Swap still sends exactly 1 ETH; the fee is a separate CALL in the
+    // same transaction, not a separate transaction.
     expect(p.transaction?.value).toBe("1000000000000000000");
   });
 
@@ -622,7 +650,125 @@ describe("MPGR Agent fee — pre-execution validation", () => {
   });
 });
 
-describe("MPGR Agent fee — execution", () => {
+// ---------------------------------------------------------------------------
+// Execution — the fee is settled ATOMICALLY inside the swap transaction via
+// an EIP-5792 batch of [swapCall, feeCall]. There is never a third
+// transaction, and the swap is never put at risk by the fee.
+// ---------------------------------------------------------------------------
+
+const SWAP_HASH = "0x" + "aa".repeat(32);
+const FEE_HASH = "0x" + "bb".repeat(32);
+
+/** `wallet_getCapabilities` answer that advertises atomic batches on Base. */
+function advertiseAtomicBatches(): void {
+  mockCapabilities.mockResolvedValue({ "8453": { atomic: { supported: true } } });
+}
+
+/** `wallet_getCallsStatus` answer: both legs confirmed. */
+function batchConfirmed(overrides?: {
+  swapHash?: string | null;
+  feeHash?: string | null;
+  status?: "success" | "failure";
+  swapStatus?: "success" | "reverted";
+  feeStatus?: "success" | "reverted";
+}): void {
+  const swapHash = overrides?.swapHash === undefined ? SWAP_HASH : overrides.swapHash;
+  const feeHash = overrides?.feeHash === undefined ? FEE_HASH : overrides.feeHash;
+  const receipts: unknown[] = [];
+  if (swapHash) {
+    receipts.push({
+      transactionHash: swapHash,
+      status: overrides?.swapStatus ?? "success",
+      blockNumber: 1n,
+      gasUsed: 21_000n,
+    });
+  }
+  if (feeHash) {
+    receipts.push({
+      transactionHash: feeHash,
+      status: overrides?.feeStatus ?? "success",
+      blockNumber: 1n,
+      gasUsed: 21_000n,
+    });
+  }
+  mockCallsStatus.mockResolvedValue({
+    atomic: true,
+    chainId: 8453,
+    version: "2.0.0",
+    statusCode: (overrides?.status ?? "success") === "success" ? 200 : 500,
+    status: overrides?.status ?? "success",
+    receipts,
+  });
+}
+
+interface BatchCall {
+  to?: string;
+  data?: string;
+  value?: bigint;
+}
+
+function batchCalls(): BatchCall[] {
+  const params = mockSendCalls.mock.calls[0]?.[1] as {
+    calls?: BatchCall[];
+    forceAtomic?: boolean;
+    experimental_fallback?: unknown;
+    chainId?: number;
+    account?: string;
+  };
+  return params.calls ?? [];
+}
+
+function batchParams(): {
+  calls: BatchCall[];
+  forceAtomic?: boolean;
+  experimental_fallback?: unknown;
+  chainId?: number;
+  account?: string;
+} {
+  return mockSendCalls.mock.calls[0]?.[1] as {
+    calls: BatchCall[];
+    forceAtomic?: boolean;
+    experimental_fallback?: unknown;
+    chainId?: number;
+    account?: string;
+  };
+}
+
+function decodeTransfer(data: string | undefined): { fn: string; to: string; amount: bigint } {
+  const decoded = decodeFunctionData({ abi: erc20Abi, data: data as `0x${string}` });
+  const args = decoded.args as readonly [string, bigint];
+  return { fn: decoded.functionName, to: getAddress(args[0]), amount: args[1] };
+}
+
+describe("MPGR Agent fee — atomic execution", () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockSign.mockReset();
+    mockWait.mockReset();
+    mockRead.mockReset();
+    mockSendCalls.mockReset();
+    mockCallsStatus.mockReset();
+    mockCapabilities.mockReset();
+    mockBalance.mockReset();
+    setCallsBatchTimingForTests({
+      pollIntervalMs: TRADE_CALLS_POLL_INTERVAL_MS,
+      statusTimeoutMs: TRADE_CALLS_STATUS_TIMEOUT_MS,
+    });
+    mockWait.mockResolvedValue({ status: "success" });
+    // Default: the wallet does NOT advertise atomic batches, so every test
+    // that does not opt in exercises the plain swap path.
+    mockCapabilities.mockResolvedValue(undefined);
+    // Live balance covers the 10 USDC sell PLUS the 0.025 USDC fee, and the
+    // allowance covers the swap (no approve step). Both legs of the atomic
+    // batch must be fundable, so the default fixture is deliberately funded
+    // for sell + fee; the underfunded tests below narrow it on purpose.
+    mockRead.mockImplementation(async (_config: unknown, params: { functionName?: string }) => {
+      if (params?.functionName === "balanceOf") return 20_000_000n;
+      if (params?.functionName === "allowance") return 10_000_000n;
+      throw new Error(`unexpected read: ${String(params?.functionName)}`);
+    });
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -641,23 +787,11 @@ describe("MPGR Agent fee — execution", () => {
     return built.proposal;
   }
 
-  beforeEach(() => {
-    mockSend.mockReset();
-    mockSign.mockReset();
-    mockWait.mockReset();
-    mockRead.mockReset();
-    mockWait.mockResolvedValue({ status: "success" });
-    // Live balance covers the 10 USDC sell; allowance covers (no approve step).
-    mockRead.mockImplementation(async (_config: unknown, params: { functionName?: string }) => {
-      if (params?.functionName === "balanceOf") return 10_000_000n;
-      if (params?.functionName === "allowance") return 10_000_000n;
-      throw new Error(`unexpected read: ${String(params?.functionName)}`);
-    });
-  });
-
-  it("22. fee is a separate post-swap transfer; swap calldata + approval untouched", async () => {
+  it("22. ATOMIC: fee rides inside the swap transaction — one signature, two calls", async () => {
+    advertiseAtomicBatches();
+    batchConfirmed();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
     const p = quotedProposal();
-    mockSend.mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
 
     const result = await executeTrade(
       { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
@@ -665,29 +799,45 @@ describe("MPGR Agent fee — execution", () => {
     );
 
     expect(result.state).toBe("SUCCESS");
-    expect(result.swapHash).toBe("0xswap");
-    expect(result.feeHash).toBe("0xfee");
-    expect(result.feeError).toBeNull();
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    // NO separate fee transaction was ever broadcast.
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockSendCalls).toHaveBeenCalledTimes(1);
 
-    // Call 1: the swap itself — exactly the quoted transaction.
-    const swapCall = mockSend.mock.calls[0][1] as { to: string; data: string; value: bigint };
-    expect(getAddress(swapCall.to)).toBe(getAddress(PERMIT2_ADDRESS));
-    expect(swapCall.data).toBe("0xabcdef");
-    expect(swapCall.value).toBe(0n);
+    const params = batchParams();
+    expect(params.forceAtomic).toBe(true);
+    expect(params.chainId).toBe(8453);
+    expect(params.account).toBe(TAKER);
+    // viem's non-atomic fallback is deliberately never requested.
+    expect(params.experimental_fallback).toBeUndefined();
+
+    const calls = batchCalls();
+    expect(calls).toHaveLength(2);
+
+    // Call 1: the swap — exactly the quoted transaction, untouched.
+    expect(getAddress(calls[0].to as string)).toBe(getAddress(PERMIT2_ADDRESS));
+    expect(calls[0].data).toBe("0xabcdef");
+    expect(calls[0].value).toBe(0n);
 
     // Call 2: the fee — USDC.transfer(feeWallet, 25000), nothing else.
-    const feeCall = mockSend.mock.calls[1][1] as { to: string; data: `0x${string}`; value: bigint };
-    expect(getAddress(feeCall.to)).toBe(getAddress(BASE_USDC));
-    expect(feeCall.value).toBe(0n);
-    const decoded = decodeFunctionData({ abi: erc20Abi, data: feeCall.data });
-    expect(decoded.functionName).toBe("transfer");
-    expect((decoded.args as readonly [string, bigint])[0]).toBe(getAddress(FEE_WALLET));
-    expect((decoded.args as readonly [string, bigint])[1]).toBe(25_000n);
+    expect(getAddress(calls[1].to as string)).toBe(getAddress(BASE_USDC));
+    expect(calls[1].value).toBe(0n);
+    const fee = decodeTransfer(calls[1].data);
+    expect(fee.fn).toBe("transfer");
+    expect(fee.to).toBe(getAddress(FEE_WALLET));
+    expect(fee.amount).toBe(25_000n);
+
+    // Both hashes come from the SAME batch.
+    expect(result.swapHash).toBe(SWAP_HASH);
+    expect(result.feeHash).toBe(FEE_HASH);
+    expect(result.feeError).toBeNull();
+    expect(result.feeSkippedReason).toBeNull();
   });
 
-  it("23. approval covers the swap amount only — never the fee", async () => {
+  it("22b. approval is unchanged and still covers the swap amount only", async () => {
     withFeeEnv();
+    advertiseAtomicBatches();
+    batchConfirmed();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
     const built = buildTradeProposal({
       from: usdc,
       to: mpgr,
@@ -695,11 +845,7 @@ describe("MPGR Agent fee — execution", () => {
         fromAmount: "10000000",
         toAmount: "5000000000000000000",
         minToAmount: "4950000000000000000",
-        issues: {
-          allowance: { currentAllowance: "0", spender: PERMIT2_ADDRESS },
-          balance: null,
-          simulationIncomplete: false,
-        },
+        issues: { allowance: { currentAllowance: "0", spender: PERMIT2_ADDRESS }, balance: null, simulationIncomplete: false },
       }),
       slippageBps: 100,
       taker: TAKER,
@@ -707,11 +853,11 @@ describe("MPGR Agent fee — execution", () => {
     });
     if (!built.ok) throw new Error(built.error.message);
     mockRead.mockImplementation(async (_config: unknown, params: { functionName?: string }) => {
-      if (params?.functionName === "balanceOf") return 10_000_000n;
+      if (params?.functionName === "balanceOf") return 20_000_000n;
       if (params?.functionName === "allowance") return 0n;
       throw new Error("unexpected read");
     });
-    mockSend.mockResolvedValueOnce("0xapprove").mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
+    mockSend.mockResolvedValueOnce("0xapprove");
 
     const result = await executeTrade(
       { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
@@ -719,26 +865,63 @@ describe("MPGR Agent fee — execution", () => {
     );
 
     expect(result.state).toBe("SUCCESS");
-    expect(mockSend).toHaveBeenCalledTimes(3); // approve → swap → fee
+    expect(result.approvalHash).toBe("0xapprove");
+    // Exactly two on-chain steps: the approval, then the atomic swap+fee.
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSendCalls).toHaveBeenCalledTimes(1);
     const approveCall = mockSend.mock.calls[0][1] as { data: `0x${string}` };
     const decoded = decodeFunctionData({ abi: erc20Abi, data: approveCall.data });
     expect(decoded.functionName).toBe("approve");
-    // Exactly fromAmount — the fee needs no approval (direct transfer).
+    // Exactly fromAmount — the fee leg needs no approval (direct transfer).
     expect((decoded.args as readonly [string, bigint])[1]).toBe(10_000_000n);
   });
 
-  it("24. recipient unconfigured at execution → single swap tx, SUCCESS, no fee", async () => {
-    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
+  it("23. BUY: fee is charged in the SELL token (USDC) and routed to the fee wallet", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    batchConfirmed();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
+    const p = quotedProposal();
+    expect(p.agentFee?.displayAmount).toBe("0.025 USDC");
+
+    await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    const fee = decodeTransfer(batchCalls()[1].data);
+    expect(fee.to).toBe(getAddress(FEE_WALLET));
+    expect(fee.amount).toBe(25_000n);
+    // The buy-token leg is untouched.
+    expect(batchCalls()[0].data).toBe("0xabcdef");
+  });
+
+  it("23b. SELL: fee is charged in the SELL token (MPGR, 18dp)", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    batchConfirmed();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
     const built = buildTradeProposal({
-      from: usdc,
-      to: mpgr,
-      quote: cdpQuote({ fromAmount: "10000000", toAmount: "5000000000000000000", minToAmount: "4950000000000000000" }),
+      from: mpgr,
+      to: usdc,
+      quote: cdpQuote({
+        fromToken: MPGR_TOKEN_CONFIG.address,
+        toToken: BASE_USDC,
+        fromAmount: "5000000000000000000",
+        toAmount: "10000000",
+        minToAmount: "9900000",
+      }),
       slippageBps: 100,
       taker: TAKER,
       provider: CDP_TRADE_PROVIDER_ID,
     });
     if (!built.ok) throw new Error(built.error.message);
-    mockSend.mockResolvedValue("0xswap");
+    // 10 MPGR — covers the 5 MPGR sell plus the 0.0125 MPGR fee.
+    mockRead.mockImplementation(async (_config: unknown, params: { functionName?: string }) => {
+      if (params?.functionName === "balanceOf") return 10_000_000_000_000_000_000n;
+      if (params?.functionName === "allowance") return 0n;
+      throw new Error("unexpected read");
+    });
 
     const result = await executeTrade(
       { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
@@ -746,83 +929,20 @@ describe("MPGR Agent fee — execution", () => {
     );
 
     expect(result.state).toBe("SUCCESS");
-    expect(result.feeHash).toBeNull();
-    expect(result.feeError).toBeNull();
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    // Fee is a transfer of the SELL token (MPGR), not USDC.
+    expect(getAddress(batchCalls()[1].to as string)).toBe(getAddress(MPGR_TOKEN_CONFIG.address));
+    const fee = decodeTransfer(batchCalls()[1].data);
+    expect(fee.amount).toBe(12_500_000_000_000_000n);
+    expect(fee.to).toBe(getAddress(FEE_WALLET));
+    // Swap calldata untouched.
+    expect(batchCalls()[0].data).toBe("0xabcdef");
   });
 
-  it("24b. STALE CLIENT (incident reproduction): env present at quote, missing at execution → fee still settles", async () => {
-    const p = quotedProposal(); // server quoted with the recipient configured
-    vi.unstubAllEnvs(); // client bundle predates the env var entirely
-    mockSend.mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
-
-    const result = await executeTrade(
-      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
-      () => {},
-    );
-
-    expect(result.state).toBe("SUCCESS");
-    expect(result.swapHash).toBe("0xswap");
-    expect(result.feeHash).toBe("0xfee");
-    expect(result.feeError).toBeNull();
-    expect(mockSend).toHaveBeenCalledTimes(2);
-    const feeCall = mockSend.mock.calls[1][1] as { to: string; data: `0x${string}`; value: bigint };
-    expect(getAddress(feeCall.to)).toBe(getAddress(BASE_USDC));
-    const decoded = decodeFunctionData({ abi: erc20Abi, data: feeCall.data });
-    expect(decoded.functionName).toBe("transfer");
-    expect((decoded.args as readonly [string, bigint])[0]).toBe(getAddress(FEE_WALLET));
-    expect((decoded.args as readonly [string, bigint])[1]).toBe(25_000n);
-  });
-
-  it("25. fee rejection is non-blocking: swap stands SUCCESS with feeError recorded", async () => {
-    const p = quotedProposal();
-    mockSend.mockResolvedValueOnce("0xswap").mockRejectedValueOnce(new Error("User rejected the request"));
-
-    const result = await executeTrade(
-      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
-      () => {},
-    );
-
-    expect(result.state).toBe("SUCCESS");
-    expect(result.swapHash).toBe("0xswap");
-    expect(result.feeHash).toBeNull();
-    expect(result.feeError?.code).toBe("WALLET_REJECTED");
-    expect(result.feeError?.message).toMatch(/swap settled/i);
-  });
-
-  it("26. failed fee receipt is non-blocking: SUCCESS with feeHash + feeError", async () => {
-    const p = quotedProposal();
-    mockSend.mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
-    mockWait.mockResolvedValueOnce({ status: "success" }).mockResolvedValueOnce({ status: "reverted" });
-
-    const result = await executeTrade(
-      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
-      () => {},
-    );
-
-    expect(result.state).toBe("SUCCESS");
-    expect(result.feeHash).toBe("0xfee");
-    expect(result.feeError?.code).toBe("SEND_FAILED");
-  });
-
-  it("27. failed swap → ERROR with NO fee transfer attempted", async () => {
-    const p = quotedProposal();
-    mockSend.mockResolvedValue("0xswap");
-    mockWait.mockResolvedValue({ status: "reverted" });
-
-    const result = await executeTrade(
-      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
-      () => {},
-    );
-
-    expect(result.state).toBe("ERROR");
-    expect(result.feeHash).toBeNull();
-    expect(result.feeError).toBeNull();
-    expect(mockSend).toHaveBeenCalledTimes(1); // swap only — fee never attempted
-  });
-
-  it("28. native ETH sell: fee is a plain value transfer to the fee wallet", async () => {
+  it("23c. native ETH sell: both legs carry value in ONE transaction", async () => {
     withFeeEnv();
+    advertiseAtomicBatches();
+    batchConfirmed();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
     const built = buildTradeProposal({
       from: eth,
       to: usdc,
@@ -839,7 +959,8 @@ describe("MPGR Agent fee — execution", () => {
       provider: CDP_TRADE_PROVIDER_ID,
     });
     if (!built.ok) throw new Error(built.error.message);
-    mockSend.mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
+    // Wallet holds the swap amount plus the fee.
+    mockBalance.mockResolvedValue(2_000_000_000_000_000_000n);
 
     const result = await executeTrade(
       { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
@@ -847,16 +968,66 @@ describe("MPGR Agent fee — execution", () => {
     );
 
     expect(result.state).toBe("SUCCESS");
-    expect(result.feeHash).toBe("0xfee");
-    const feeCall = mockSend.mock.calls[1][1] as { to: string; data?: string; value: bigint };
-    expect(getAddress(feeCall.to)).toBe(getAddress(FEE_WALLET));
-    expect(feeCall.value).toBe(2_500_000_000_000_000n);
-    expect(feeCall.data).toBeUndefined();
+    const calls = batchCalls();
+    expect(calls).toHaveLength(2);
+    // Swap still sends exactly 1 ETH.
+    expect(calls[0].value).toBe(1_000_000_000_000_000_000n);
+    // Fee leg is a plain value transfer — no calldata, no approval.
+    expect(getAddress(calls[1].to as string)).toBe(getAddress(FEE_WALLET));
+    expect(calls[1].value).toBe(2_500_000_000_000_000n);
+    expect(calls[1].data).toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it("29. tampered proposal fee amount → swap succeeds, no fee sent", async () => {
+  it("23d. native ETH sell with an underfunded wallet: swap proceeds, fee skipped", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
+    const built = buildTradeProposal({
+      from: eth,
+      to: usdc,
+      quote: cdpQuote({
+        fromToken: NATIVE_ETH_SENTINEL,
+        toToken: BASE_USDC,
+        fromAmount: "1000000000000000000",
+        toAmount: "3000000000",
+        minToAmount: "2970000000",
+        transaction: { to: getAddress(PERMIT2_ADDRESS), data: "0xabcdef", value: "1000000000000000000" },
+      }),
+      slippageBps: 100,
+      taker: TAKER,
+      provider: CDP_TRADE_PROVIDER_ID,
+    });
+    if (!built.ok) throw new Error(built.error.message);
+    // Only enough for the swap itself — the fee leg would revert the batch.
+    mockBalance.mockResolvedValue(1_000_000_000_000_000_000n);
+    mockSend.mockResolvedValue("0xswap");
+
+    const result = await executeTrade(
+      { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBe("0xswap");
+    expect(result.feeHash).toBeNull();
+    expect(result.feeSkippedReason).toMatch(/does not hold the swap amount plus the agent fee/);
+    // No batch, and above all no third transaction.
+    expect(mockSendCalls).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("23e. ERC-20 sell with an underfunded wallet: swap proceeds, fee skipped", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
     const p = quotedProposal();
-    p.agentFee = { ...p.agentFee!, amountAtomic: "999999999" };
+    // Wallet holds exactly the swap amount, nothing for the fee.
+    mockRead.mockImplementation(async (_config: unknown, params: { functionName?: string }) => {
+      if (params?.functionName === "balanceOf") return 10_000_000n;
+      if (params?.functionName === "allowance") return 10_000_000n;
+      throw new Error("unexpected read");
+    });
     mockSend.mockResolvedValue("0xswap");
 
     const result = await executeTrade(
@@ -865,7 +1036,444 @@ describe("MPGR Agent fee — execution", () => {
     );
 
     expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBe("0xswap");
     expect(result.feeHash).toBeNull();
+    expect(result.feeSkippedReason).toMatch(/does not hold the swap amount plus the agent fee/);
+    expect(mockSendCalls).not.toHaveBeenCalled();
     expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("24. UNSUPPORTED WALLET: plain swap, no batch, fee skipped — never a third tx", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET);
+    // wallet_getCapabilities is missing / answers without atomic support.
+    mockCapabilities.mockRejectedValue(new Error("MethodNotFoundRpcError: wallet_getCapabilities"));
+    mockSend.mockResolvedValue("0xswap");
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBe("0xswap");
+    expect(result.feeHash).toBeNull();
+    expect(result.feeError).toBeNull();
+    expect(result.feeSkippedReason).toMatch(/does not support atomic batch calls/);
+    expect(mockSendCalls).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("24b. UNSUPPORTED WALLET (capabilities answer without atomic): same safe path", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET);
+    mockCapabilities.mockResolvedValue({ "8453": { atomic: { supported: false } } });
+    mockSend.mockResolvedValue("0xswap");
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBe("0xswap");
+    expect(result.feeSkippedReason).toMatch(/does not support atomic batch calls/);
+    expect(mockSendCalls).not.toHaveBeenCalled();
+  });
+
+  it("24c. no fee quoted at all (unconfigured wallet): plain swap, silent", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
+    mockSend.mockResolvedValue("0xswap");
+    const built = buildTradeProposal({
+      from: usdc,
+      to: mpgr,
+      quote: cdpQuote({ fromAmount: "10000000", toAmount: "5000000000000000000", minToAmount: "4950000000000000000" }),
+      slippageBps: 100,
+      taker: TAKER,
+      provider: CDP_TRADE_PROVIDER_ID,
+    });
+    if (!built.ok) throw new Error(built.error.message);
+
+    const result = await executeTrade(
+      { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.feeHash).toBeNull();
+    expect(result.feeError).toBeNull();
+    // Silent — exactly as an unconfigured fee wallet behaves today.
+    expect(result.feeSkippedReason).toBeNull();
+    expect(mockSendCalls).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("24d. STALE CLIENT: server-quoted fee still batches when the client bundle has no env", async () => {
+    const p = quotedProposal(); // server quoted while configured
+    vi.unstubAllEnvs(); // ...but the running client bundle predates the env var
+    advertiseAtomicBatches();
+    batchConfirmed();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.feeHash).toBe(FEE_HASH);
+    const fee = decodeTransfer(batchCalls()[1].data);
+    expect(fee.to).toBe(getAddress(FEE_WALLET));
+    expect(fee.amount).toBe(25_000n);
+  });
+
+  it("24e. tampered fee amount on the proposal → no fee leg, plain swap", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    mockSend.mockResolvedValue("0xswap");
+    const p = quotedProposal();
+    // Below fromAmount, so it is the EXACT-AMOUNT re-validation that rejects it.
+    p.agentFee = { ...p.agentFee!, amountAtomic: "123456" };
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.feeHash).toBeNull();
+    expect(result.feeSkippedReason).toMatch(/does not match the swap amount/);
+    expect(mockSendCalls).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("25. wallet CANNOT batch despite advertising it → swap falls back, fee skipped", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    mockSendCalls.mockRejectedValue(
+      Object.assign(new Error("atomicRequired is not supported"), {
+        name: "AtomicityNotSupportedError",
+      }),
+    );
+    mockSend.mockResolvedValue("0xswap");
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBe("0xswap");
+    expect(result.feeHash).toBeNull();
+    expect(result.feeSkippedReason).toMatch(/could not run an atomic batch/);
+    // The swap still went out as a plain transaction.
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("25b. wallet_sendCalls method missing → swap falls back, fee skipped", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    mockSendCalls.mockRejectedValue(new Error("MethodNotFoundRpcError: wallet_sendCalls"));
+    mockSend.mockResolvedValue("0xswap");
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBe("0xswap");
+    expect(result.feeSkippedReason).toMatch(/could not run an atomic batch/);
+  });
+
+  it("26. user cancels the atomic batch → ERROR, no swap, never retried", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    mockSendCalls.mockRejectedValue(new Error("User rejected the request."));
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("ERROR");
+    expect(result.error?.code).toBe("WALLET_REJECTED");
+    expect(result.swapHash).toBeNull();
+    expect(result.feeHash).toBeNull();
+    // No fallback prompt was raised for the swap.
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("26b. generic batch send failure → ERROR, nothing broadcast", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    mockSendCalls.mockRejectedValue(new Error("wallet exploded"));
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("ERROR");
+    expect(result.error?.code).toBe("SEND_FAILED");
+    expect(result.swapHash).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("27. the atomic batch reverts → ERROR (atomic means the swap did not settle)", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
+    batchConfirmed({ status: "failure", swapStatus: "reverted", feeStatus: "reverted" });
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("ERROR");
+    expect(result.error?.code).toBe("SEND_FAILED");
+    expect(result.error?.message).toMatch(/failed on Base/);
+    expect(result.swapHash).toBe(SWAP_HASH);
+    expect(result.feeHash).toBeNull();
+    // Nothing was broadcast a second time.
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("27b. only the fee leg reverted inside the batch → whole batch failed", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
+    batchConfirmed({ swapStatus: "success", feeStatus: "reverted" });
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("ERROR");
+    expect(result.error?.code).toBe("SEND_FAILED");
+    expect(result.swapHash).toBe(SWAP_HASH);
+    expect(result.feeHash).toBeNull();
+  });
+
+  it("27c. pending → confirmed: the batch is polled until it settles", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    setCallsBatchTimingForTests({ pollIntervalMs: 1, statusTimeoutMs: 2_000 });
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
+    mockCallsStatus
+      .mockResolvedValueOnce({
+        atomic: true,
+        chainId: 8453,
+        version: "2.0.0",
+        statusCode: 100,
+        status: "pending",
+        receipts: [],
+      })
+      .mockResolvedValue({
+        atomic: true,
+        chainId: 8453,
+        version: "2.0.0",
+        statusCode: 200,
+        status: "success",
+        receipts: [
+          { transactionHash: SWAP_HASH, status: "success", blockNumber: 1n, gasUsed: 21_000n },
+          { transactionHash: FEE_HASH, status: "success", blockNumber: 1n, gasUsed: 21_000n },
+        ],
+      });
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBe(SWAP_HASH);
+    expect(result.feeHash).toBe(FEE_HASH);
+    expect(mockCallsStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("27d. batch status unresolvable → SUCCESS with an explicit, honest warning", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    setCallsBatchTimingForTests({ pollIntervalMs: 1, statusTimeoutMs: 20 });
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
+    mockCallsStatus.mockRejectedValue(new Error("wallet_getCallsStatus unavailable"));
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    // The batch WAS submitted, so this is not an error — but no hash is
+    // claimed either.
+    expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBeNull();
+    expect(result.feeHash).toBeNull();
+    expect(result.feeError?.code).toBe("SEND_FAILED");
+    expect(result.feeError?.message).toMatch(/could not be confirmed/);
+    expect(result.feeError?.message).toContain("0xbatch");
+  });
+
+  it("28. plain swap path still reverted → ERROR and no fee was ever attempted", async () => {
+    withFeeEnv();
+    // No atomic support: the swap goes out on its own.
+    mockSend.mockResolvedValue("0xswap");
+    mockWait.mockResolvedValue({ status: "reverted" });
+    const p = quotedProposal();
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("ERROR");
+    expect(result.feeHash).toBeNull();
+    expect(result.feeError).toBeNull();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSendCalls).not.toHaveBeenCalled();
+  });
+
+  it("29. Aerodrome B20 provider: swap call targets the Slipstream SwapRouter, fee leg in USDC", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    batchConfirmed();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
+    const buyQuote: CdpSwapQuote = {
+      liquidityAvailable: true,
+      fromToken: BASE_USDC,
+      toToken: MSTRC,
+      fromAmount: "5000000",
+      toAmount: "3020310",
+      minToAmount: "2990106",
+      issues: { allowance: null, balance: null, simulationIncomplete: false },
+      transaction: {
+        to: ROUTER,
+        data: encodeAerodromeExactInputSingle({
+          tokenIn: getAddress(BASE_USDC),
+          tokenOut: MSTRC,
+          recipient: TAKER,
+          deadline: 1_790_177_105n,
+          amountIn: 5_000_000n,
+          amountOutMinimum: 2_990_106n,
+        }),
+        value: "0",
+      },
+      permit2: null,
+    };
+    const built = buildTradeProposal({
+      from: usdc,
+      to: mstrc,
+      quote: buyQuote,
+      slippageBps: 100,
+      taker: TAKER,
+      provider: AERODROME_SLIPSTREAM_PROVIDER_ID,
+    });
+    if (!built.ok) throw new Error(built.error.message);
+
+    const result = await executeTrade(
+      { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    const calls = batchCalls();
+    expect(getAddress(calls[0].to as string)).toBe(ROUTER);
+    expect(calls[0].data).toBe(buyQuote.transaction!.data);
+    expect(getAddress(calls[1].to as string)).toBe(getAddress(BASE_USDC));
+    const fee = decodeTransfer(calls[1].data);
+    expect(fee.amount).toBe(12_500n);
+    expect(fee.to).toBe(getAddress(FEE_WALLET));
+  });
+
+  it("30. 0x provider: swap calldata is forwarded verbatim into the batch", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    batchConfirmed();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
+    const zxData = "0x" + "cd".repeat(40) as `0x${string}`;
+    const built = buildTradeProposal({
+      from: usdc,
+      to: mpgr,
+      quote: cdpQuote({
+        fromAmount: "10000000",
+        toAmount: "5000000000000000000",
+        minToAmount: "4950000000000000000",
+        transaction: { to: getAddress(PERMIT2_ADDRESS), data: zxData, value: "0", gas: "250000" },
+      }),
+      slippageBps: 100,
+      taker: TAKER,
+      provider: ZERO_EX_PROVIDER_ID,
+    });
+    if (!built.ok) throw new Error(built.error.message);
+
+    const result = await executeTrade(
+      { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(batchCalls()[0].data).toBe(zxData);
+    expect(batchCalls()[0].to).toBe(getAddress(PERMIT2_ADDRESS));
+    expect(decodeTransfer(batchCalls()[1].data).amount).toBe(25_000n);
+  });
+
+  it("31. Permit2 flow (CDP) is unaffected: signature appended, then one atomic batch", async () => {
+    withFeeEnv();
+    advertiseAtomicBatches();
+    batchConfirmed();
+    mockSendCalls.mockResolvedValue({ id: "0xbatch" });
+    mockSign.mockResolvedValue("0x" + "11".repeat(65));
+    const built = buildTradeProposal({
+      from: usdc,
+      to: mpgr,
+      quote: cdpQuote({
+        fromAmount: "10000000",
+        toAmount: "5000000000000000000",
+        minToAmount: "4950000000000000000",
+        permit2: {
+          eip712: {
+            domain: { name: "Permit2", chainId: 8453, verifyingContract: PERMIT2_ADDRESS },
+            types: {
+              EIP712Domain: [{ name: "name", type: "string" }],
+              PermitTransferFrom: [{ name: "spender", type: "address" }],
+            },
+            primaryType: "PermitTransferFrom",
+            message: { spender: PERMIT2_ADDRESS },
+          },
+        },
+      }),
+      slippageBps: 100,
+      taker: TAKER,
+      provider: CDP_TRADE_PROVIDER_ID,
+    });
+    if (!built.ok) throw new Error(built.error.message);
+
+    const result = await executeTrade(
+      { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(mockSign).toHaveBeenCalledTimes(1);
+    // The Permit2 signature is still appended to the swap calldata.
+    const swapData = batchCalls()[0].data as string;
+    expect(swapData.startsWith("0xabcdef")).toBe(true);
+    expect(swapData.length).toBeGreaterThan("0xabcdef".length);
+    expect(mockSendCalls).toHaveBeenCalledTimes(1);
+  });
+
+  it("32. the poll cadence constant is a sane, bounded default", () => {
+    expect(TRADE_CALLS_POLL_INTERVAL_MS).toBeGreaterThan(0);
+    expect(TRADE_CALLS_POLL_INTERVAL_MS).toBeLessThanOrEqual(5_000);
   });
 });

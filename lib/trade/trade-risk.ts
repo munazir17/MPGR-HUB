@@ -38,10 +38,11 @@ export function buildSwapRiskFacts(input: {
       severity: "info",
       title: `MPGR agent fee ${MPGR_AGENT_FEE_PERCENT_LABEL}`,
       detail:
-        `A separate wallet-signed transfer of ${input.agentFee.displayAmount} ` +
-        `(${MPGR_AGENT_FEE_PERCENT_LABEL} of the sell amount) goes to the MPGR fee wallet ` +
-        `${input.agentFee.recipient} after the swap settles. It is not part of the swap ` +
-        `route, quote, or slippage protection.`,
+        `${input.agentFee.displayAmount} (${MPGR_AGENT_FEE_PERCENT_LABEL} of the sell amount) ` +
+        `is collected inside the swap transaction and sent to the MPGR fee wallet ` +
+        `${input.agentFee.recipient}. It is not part of the swap route, quote, or ` +
+        `slippage protection, and it adds no extra signature. If your wallet cannot ` +
+        `settle it atomically the swap still executes and the fee is skipped.`,
     });
   }
 

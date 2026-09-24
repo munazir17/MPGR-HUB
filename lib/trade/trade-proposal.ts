@@ -161,7 +161,7 @@ export function buildTradeProposal(
         "Your wallet will sign the swap transaction on Base.",
         ...(agentFee.status === "applied" && agentFee.displayAmount
           ? [
-              `After the swap settles, your wallet will send a separate ${MPGR_AGENT_FEE_PERCENT_LABEL} agent fee (${agentFee.displayAmount}) to the MPGR fee wallet.`,
+              `The ${MPGR_AGENT_FEE_PERCENT_LABEL} agent fee (${agentFee.displayAmount}) is collected inside that same swap transaction — there is no separate fee signature.`,
             ]
           : []),
         "Nothing broadcasts until you approve each wallet prompt.",

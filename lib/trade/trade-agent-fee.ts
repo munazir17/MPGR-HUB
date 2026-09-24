@@ -8,21 +8,24 @@
 //     No decimals math is needed for the amount itself, so tokens with
 //     different decimals (USDC 6, ETH/WETH 18, B20 8, …) are exact by
 //     construction. Decimals are used for DISPLAY only.
-//   - The fee is collected as a SEPARATE wallet-signed transfer AFTER
-//     the swap settles (ERC-20 `transfer` to the fee wallet, or a native
-//     value transfer when selling ETH). It never touches the swap quote,
+//   - COLLECTION IS ATOMIC WITH THE SWAP. The fee is the second call of
+//     an EIP-5792 atomic batch — [swap, feeTransfer] — so the user's
+//     wallet signs ONE swap transaction and there is no third fee
+//     transaction or prompt. The fee never touches the swap quote,
 //     calldata, approvals, slippage, routing, or min-out.
-//   - Fail-open for the swap, fail-closed for the fee: when the fee
-//     wallet is unconfigured/invalid, the fee amount is dust (0), or the
-//     fee transfer itself fails, the swap proceeds/stands exactly as it
-//     does today. The fee is informational and non-blocking by design —
-//     there is no custodial signing flow and nothing is ever forced.
+//   - FAIL-OPEN FOR THE SWAP, FAIL-CLOSED FOR THE FEE. When the fee
+//     wallet is unconfigured/invalid, the fee amount is dust (0), the
+//     wallet does not support atomic batch calls, or the wallet does not
+//     hold sell + fee, the swap proceeds/stands exactly as it does today
+//     and NO fee is collected. There is never a fallback to a separate
+//     fee transaction. The reason is surfaced on the execution snapshot
+//     (`feeSkippedReason`) so an uncollected fee is diagnosable.
 //   - The SERVER is the source of truth for the fee. Execution only sends
 //     the fee that was DISPLAYED on the proposal, after STRUCTURAL
 //     re-validation that needs no client-side env (resolveExecutionAgentFee
 //     recomputes the exact amount from the proposal's fromAmount and
 //     validates the recipient address). A legacy proposal without a fee,
-//     or a tampered/invalid fee, means no fee transfer.
+//     or a tampered/invalid fee, means no fee.
 //   - Incident 2026-09-24: a production swap settled with no fee because
 //     the production deployment was BUILT before the fee-recipient env var
 //     was added — NEXT_PUBLIC_* values are inlined at build time
@@ -258,10 +261,11 @@ export type AgentFeeTransfer =
   | { kind: "native"; to: Address; value: bigint };
 
 /**
- * Unsigned fee-transfer parameters for the user's wallet to sign AFTER
- * the swap settles. ERC-20 sell → `transfer(recipient, fee)` on the sell
- * token (no approval needed — a direct transfer from the signer). Native
- * ETH sell → a plain value transfer. Never signs or broadcasts.
+ * Unsigned fee-leg parameters for the atomic batch. The wallet signs ONE
+ * transaction containing [swap, this fee leg] — see trade-calls-batch.ts.
+ * ERC-20 sell → `transfer(recipient, fee)` on the sell token (no approval
+ * needed — a direct transfer from the signer). Native ETH sell → a plain
+ * value transfer. Never signs or broadcasts.
  */
 export function buildAgentFeeTransfer(input: {
   fromAddress: Address;

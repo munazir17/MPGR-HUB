@@ -78,18 +78,34 @@ Every supported swap carries a 0.25% MPGR Agent fee on the SELL leg:
   (incident 2026-09-24). The server is the source of truth — execution
   re-validates the quoted fee structurally and never depends on the
   client's build-time env.
-- Collection: a SEPARATE wallet-signed transfer AFTER the swap settles
-  (ERC-20 `transfer` on the sell token, or a native value transfer when
-  selling ETH). The swap quote, calldata, approvals, slippage, routing,
-  min-out, price impact, and gas estimate are never modified by the fee.
+- Collection: **atomic with the swap**. The fee is the second call of an
+  EIP-5792 atomic batch — `[swapCall, feeCall]` — so the wallet signs ONE
+  swap transaction and there is no third fee transaction or prompt. The
+  provider's swap quote, calldata, approvals, slippage, routing, min-out,
+  price impact, and gas estimate are never modified by the fee
+  (`lib/trade/trade-calls-batch.ts`).
+- Why atomic (and not a separate transfer): CDP Trade API has no
+  integrator-fee parameter at all, 0x's `swapFee*` only covers the 0x
+  fallback path, and the Aerodrome Slipstream `exactInputSingle` this app
+  builds has no fee hook. An atomic batch is the only mechanism that is
+  uniform across all three providers, needs no new contract, and leaves
+  every provider route byte-identical.
+- Safety: fail-open for the swap, fail-closed for the fee. Unconfigured/
+  invalid recipient, dust (fee rounds to 0), taker-equals-recipient, a
+  wallet without `wallet_getCapabilities` atomic support on Base, or a
+  wallet that does not hold sell + fee all mean the swap is broadcast
+  exactly as before with **no** fee and **no** extra transaction; the
+  reason is surfaced on the execution snapshot (`feeSkippedReason`).
+  There is never a fallback to a separate fee transfer.
+- Atomicity trade-off (deliberate): inside an atomic batch the fee leg and
+  the swap succeed or revert together, so a fee-leg revert reverts the
+  swap. The eligibility gates above (atomic capability + sell + fee
+  balance, both fail-closed) exist precisely so that can only happen for a
+  genuinely broken fee leg, never for an underfunded or unsupported one.
 - Disclosure: quoted fee, recipient, and post-confirmation steps are on
   the `TradeProposal` (`agentFee`), shown in the confirmation modal, and
-  re-validated before execution — only the exact displayed fee is sent. A
-  missing recipient also warns once in the server log so an uncollected
+  re-validated before execution — only the exact displayed fee is batched.
+  A missing recipient also warns once in the server log so an uncollected
   fee is diagnosable instead of silent.
-- Safety: fail-open for the swap, fail-closed for the fee. Unconfigured/
-  invalid recipient, dust (fee rounds to 0), taker-equals-recipient, or a
-  failed/cancelled fee transfer never blocks or fails the swap; the fee
-  outcome is recorded on the execution snapshot (`feeHash` / `feeError`).
 
 ## Env

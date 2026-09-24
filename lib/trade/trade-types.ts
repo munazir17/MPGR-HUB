@@ -56,12 +56,15 @@ export interface CdpSwapFees {
 /**
  * MPGR Agent swap fee (0.25% / 25 bps on the sell leg).
  *
- * Informational and non-blocking by design: the fee is collected as a
- * SEPARATE wallet-signed transfer after the swap settles, so it never
- * changes the quote, calldata, approvals, slippage, or min-out.
- * `status: "skipped"` (with `reason`) preserves today's behavior exactly
- * whenever the fee wallet is unconfigured/invalid or the fee is dust.
- * Optional on TradeProposal so legacy/hand-built proposals stay valid.
+ * Collected ATOMICALLY inside the swap transaction: the fee is the second
+ * call of an EIP-5792 atomic batch, so it never changes the quote,
+ * calldata, approvals, slippage, or min-out, and there is no separate
+ * fee transaction. When the connected wallet cannot run an atomic batch
+ * (or does not hold sell + fee) the fee is skipped and the swap is
+ * broadcast exactly as before. `status: "skipped"` (with `reason`)
+ * preserves today's behavior exactly whenever the fee wallet is
+ * unconfigured/invalid or the fee is dust. Optional on TradeProposal so
+ * legacy/hand-built proposals stay valid.
  */
 export type TradeAgentFeeStatus = "applied" | "skipped";
 
@@ -162,9 +165,9 @@ export interface TradeProposal {
   expiresAt: string;
   fees: CdpSwapFees;
   /**
-   * MPGR Agent fee (0.25% of the sell amount, separate post-swap
-   * transfer). Optional for backward compatibility; absent means no fee
-   * was quoted (legacy proposal) and execution sends no fee transfer.
+   * MPGR Agent fee (0.25% of the sell amount, collected atomically inside
+   * the swap transaction). Optional for backward compatibility; absent
+   * means no fee was quoted (legacy proposal) and execution collects none.
    */
   agentFee?: TradeAgentFee;
   /**

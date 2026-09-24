@@ -7,7 +7,16 @@
 //   1. ERC-20 approve(Permit2) when issues.allowance is set
 //   2. Sign Permit2 EIP-712 when quote.permit2 is set
 //   3. Append signature to calldata
-//   4. sendTransaction(quote.transaction)
+//   4a. wallet_sendCalls([swap, fee]) — atomic, when the wallet and the
+//       funding both allow the MPGR Agent fee to ride along, OR
+//   4b. sendTransaction(quote.transaction) — the plain swap, with the fee
+//       skipped. Never a separate fee transaction.
+//
+// The user sees at most two steps — Approval, then Swap — because the
+// MPGR Agent fee (0.25%) is NOT a third transaction. It is settled as a
+// second call inside the swap transaction via an EIP-5792 atomic batch
+// ([swap, fee]), and is skipped entirely when the connected wallet
+// cannot do that. See trade-calls-batch.ts for the safety contract.
 //
 // Re-quotes if the stored quote is stale. Never invents calldata.
 
@@ -29,6 +38,13 @@ import {
 import { erc20Abi } from "@/lib/erc20-abi";
 import { config } from "@/lib/wagmi";
 import { buildAgentFeeTransfer, resolveExecutionAgentFee } from "./trade-agent-fee";
+import {
+  awaitAtomicSwapBatch,
+  isWalletRejectionError,
+  readNativeBalance,
+  sendAtomicSwapBatch,
+  supportsAtomicCallBatches,
+} from "./trade-calls-batch";
 import {
   TRADE_CHAIN_ID,
   TRADE_QUOTE_MAX_AGE_MS,
@@ -60,12 +76,18 @@ export interface TradeExecutionSnapshot {
   error: TradeError | null;
   stepLabel: string | null;
   /**
-   * MPGR Agent fee (0.25%) settlement, sent as a separate transfer AFTER
-   * the swap settles. Non-blocking by design: a fee failure never flips
-   * a settled swap to ERROR — it is recorded here instead.
+   * MPGR Agent fee (0.25%) settlement. With atomic batching the fee is a
+   * second call INSIDE the swap transaction, so `feeHash` is that leg's
+   * receipt hash from the same batch — never a separate transaction.
    */
   feeHash: Hash | null;
   feeError: TradeError | null;
+  /**
+   * Why a quoted fee was not collected. null when the fee was collected
+   * or when no fee was ever quoted. Surfaced so a silently uncollected
+   * fee is diagnosable instead of invisible.
+   */
+  feeSkippedReason: string | null;
 }
 
 export function idleTradeExecutionSnapshot(): TradeExecutionSnapshot {
@@ -77,6 +99,7 @@ export function idleTradeExecutionSnapshot(): TradeExecutionSnapshot {
     stepLabel: null,
     feeHash: null,
     feeError: null,
+    feeSkippedReason: null,
   };
 }
 
@@ -89,6 +112,7 @@ function fail(code: TradeError["code"], message: string): TradeExecutionSnapshot
     stepLabel: null,
     feeHash: null,
     feeError: null,
+    feeSkippedReason: null,
   };
 }
 
@@ -138,14 +162,7 @@ function approvalFailedMessage(proposal: TradeProposal): string {
 const inFlight = new Set<string>();
 
 function classifyWalletError(err: unknown, fallback: TradeError["code"]): TradeError {
-  const raw = err instanceof Error ? err.message : String(err);
-  const lower = raw.toLowerCase();
-  if (
-    lower.includes("user rejected") ||
-    lower.includes("user denied") ||
-    lower.includes("request rejected") ||
-    lower.includes("rejected the request")
-  ) {
+  if (isWalletRejectionError(err)) {
     return { code: "WALLET_REJECTED", message: "The wallet request was cancelled." };
   }
   return { code: fallback, message: "The wallet could not complete this trade step." };
@@ -231,6 +248,57 @@ function parsePositiveAmount(raw: string): bigint | null {
   } catch {
     return null;
   }
+}
+
+type AtomicAgentFeePlan =
+  | { mode: "batch"; recipient: Address; amount: bigint }
+  | { mode: "skip"; reason: string };
+
+/**
+ * Decides whether the quoted fee can ride along INSIDE the swap
+ * transaction. Fail-closed for the fee, fail-open for the swap: every
+ * "skip" here means the swap is broadcast exactly as it is today and no
+ * fee is collected — never a third transaction.
+ *
+ * Two gates, both cheap and both non-blocking for the swap:
+ *   1. the connected wallet advertises EIP-5792 ATOMIC batch support for
+ *      Base (`wallet_getCapabilities`);
+ *   2. the wallet holds the sell amount PLUS the fee, because the fee leg
+ *      moves sell tokens too. Without this an underfunded fee would
+ *      revert the whole atomic batch — the one way batching could hurt
+ *      the swap.
+ */
+async function planAtomicAgentFee(input: {
+  account: Address;
+  proposal: TradeProposal;
+  fee: { send: true; recipient: Address; amount: bigint };
+}): Promise<AtomicAgentFeePlan> {
+  if (!(await supportsAtomicCallBatches(input.account))) {
+    return {
+      mode: "skip",
+      reason:
+        "This wallet does not support atomic batch calls on Base, so the agent fee was not collected.",
+    };
+  }
+  const swapAmount = parsePositiveAmount(input.proposal.fromAmount);
+  if (swapAmount === null) {
+    return {
+      mode: "skip",
+      reason: "The swap amount could not be re-read, so the agent fee was not collected.",
+    };
+  }
+  const required = swapAmount + input.fee.amount;
+  const balance = isNativeEthSentinel(input.proposal.from.address)
+    ? await readNativeBalance(input.account)
+    : await readLiveBalance(input.account, input.proposal.from.address);
+  if (balance === null || balance < required) {
+    return {
+      mode: "skip",
+      reason:
+        "This wallet does not hold the swap amount plus the agent fee, so the fee was not collected.",
+    };
+  }
+  return { mode: "batch", recipient: input.fee.recipient, amount: input.fee.amount };
 }
 
 /**
@@ -349,6 +417,7 @@ export async function executeTrade(
         stepLabel: refreshQuoteLabel(proposal.provider),
         feeHash: null,
         feeError: null,
+        feeSkippedReason: null,
       });
       let fresh: TradeProposal;
       try {
@@ -443,6 +512,7 @@ export async function executeTrade(
           stepLabel: approvalStepLabel(proposal),
           feeHash: null,
           feeError: null,
+          feeSkippedReason: null,
         });
         try {
           const data = encodeFunctionData({
@@ -482,6 +552,7 @@ export async function executeTrade(
         stepLabel: "Sign the Permit2 authorization…",
         feeHash: null,
         feeError: null,
+        feeSkippedReason: null,
       });
       try {
         const signature = await signPermit2(proposal.permit2.eip712, account);
@@ -502,7 +573,116 @@ export async function executeTrade(
       stepLabel: "Sign the swap transaction…",
       feeHash: null,
       feeError: null,
+      feeSkippedReason: null,
     });
+
+    // ------------------------------------------------------------------
+    // MPGR Agent fee (0.25%): settled ATOMICALLY with the swap, or not at
+    // all. There is deliberately no third transaction and no third wallet
+    // prompt. Every branch below either batches the fee into the swap or
+    // falls back to the plain swap with the fee skipped.
+    // ------------------------------------------------------------------
+    const agentFee = resolveExecutionAgentFee(proposal);
+    // Only a fee the user actually REVIEWED can be "not collected" in a
+    // way worth reporting. No fee was ever quoted → stay silent, exactly
+    // as an unconfigured fee wallet behaves today.
+    let feeSkippedReason: string | null = null;
+    if (proposal.agentFee?.status === "applied" && !agentFee.send) {
+      feeSkippedReason = agentFee.reason;
+    }
+    let batchId: string | null = null;
+
+    if (agentFee.send) {
+      const plan = await planAtomicAgentFee({ account, proposal, fee: agentFee });
+      if (plan.mode === "batch") {
+        const feeTransfer = buildAgentFeeTransfer({
+          fromAddress: proposal.from.address,
+          recipient: plan.recipient,
+          amount: plan.amount,
+        });
+        const sent = await sendAtomicSwapBatch({
+          account,
+          swapCall: { to: tx.to, data, value: BigInt(tx.value || "0") },
+          feeCall:
+            feeTransfer.kind === "native"
+              ? { to: feeTransfer.to, value: feeTransfer.value }
+              : { to: feeTransfer.to, data: feeTransfer.data, value: 0n },
+        });
+        if (sent.ok) {
+          batchId = sent.id;
+        } else if (sent.reason === "wallet_rejected") {
+          // Cancelled is final — never retried, never re-prompted.
+          const snapshot = fail("WALLET_REJECTED", "The wallet request was cancelled.");
+          onChange({ ...snapshot, approvalHash });
+          return { ...snapshot, approvalHash };
+        } else if (sent.reason === "batch_unavailable") {
+          // The wallet advertised atomic batching but could not run it.
+          // The swap still has to happen, so the fee is skipped.
+          feeSkippedReason =
+            "This wallet could not run an atomic batch, so the agent fee was not collected.";
+        } else {
+          const snapshot = fail("SEND_FAILED", "The wallet could not complete this trade step.");
+          onChange({ ...snapshot, approvalHash });
+          return { ...snapshot, approvalHash };
+        }
+      } else {
+        feeSkippedReason = plan.reason;
+      }
+    }
+
+    if (batchId) {
+      onChange({
+        state: "PENDING",
+        approvalHash,
+        swapHash: null,
+        error: null,
+        stepLabel: "Waiting for Base confirmation…",
+        feeHash: null,
+        feeError: null,
+        feeSkippedReason: null,
+      });
+
+      const batch = await awaitAtomicSwapBatch({ id: batchId });
+      if (batch.status === "failed") {
+        // Atomic means atomic: a fee-leg revert reverts the swap too.
+        const snapshot = fail("SEND_FAILED", "The swap transaction failed on Base.");
+        onChange({ ...snapshot, approvalHash, swapHash: batch.swapHash });
+        return { ...snapshot, approvalHash, swapHash: batch.swapHash };
+      }
+      if (batch.status === "unresolved") {
+        // Submitted but unconfirmed. Not an error: the swap may well have
+        // settled, and claiming otherwise would be a lie.
+        const success: TradeExecutionSnapshot = {
+          state: "SUCCESS",
+          approvalHash,
+          swapHash: null,
+          error: null,
+          stepLabel: "Swap batch submitted on Base.",
+          feeHash: null,
+          feeError: {
+            code: "SEND_FAILED",
+            message:
+              "The swap batch was submitted, but its status could not be confirmed yet. " +
+              `Check it on Base before trying again (batch ${batch.batchId}).`,
+          },
+          feeSkippedReason: null,
+        };
+        onChange(success);
+        return success;
+      }
+      const success: TradeExecutionSnapshot = {
+        state: "SUCCESS",
+        approvalHash,
+        swapHash: batch.swapHash,
+        error: null,
+        stepLabel: "Swap settled on Base.",
+        feeHash: batch.feeHash,
+        feeError: null,
+        feeSkippedReason: null,
+      };
+      onChange(success);
+      return success;
+    }
 
     let swapHash: Hash;
     try {
@@ -529,6 +709,7 @@ export async function executeTrade(
       stepLabel: "Waiting for Base confirmation…",
       feeHash: null,
       feeError: null,
+      feeSkippedReason: null,
     });
 
     const receipt = await waitForTransactionReceipt(config, { hash: swapHash });
@@ -538,106 +719,22 @@ export async function executeTrade(
       return { ...snapshot, approvalHash, swapHash };
     }
 
-    // MPGR Agent fee (0.25%): a SEPARATE wallet-signed transfer, only
-    // after the swap settled. The swap calldata, approvals, and min-out
-    // above are untouched by the fee. Only the exact fee displayed on
-    // the proposal is sent (resolveExecutionAgentFee re-validates it);
-    // anything else means no fee transfer. A fee failure NEVER flips a
-    // settled swap to ERROR — it is recorded as feeError instead.
-    const agentFee = resolveExecutionAgentFee(proposal);
-    if (!agentFee.send) {
-      const success: TradeExecutionSnapshot = {
-        state: "SUCCESS",
-        approvalHash,
-        swapHash,
-        error: null,
-        stepLabel: "Swap settled on Base.",
-        feeHash: null,
-        feeError: null,
-      };
-      onChange(success);
-      return success;
-    }
-
-    onChange({
-      state: "PENDING",
+    // Plain swap path: the fee was not batchable (no atomic-batch support,
+    // or the wallet does not hold sell + fee). It is SKIPPED — never sent
+    // as a separate transaction, so the user still sees only
+    // Approval → Swap.
+    const success: TradeExecutionSnapshot = {
+      state: "SUCCESS",
       approvalHash,
       swapHash,
       error: null,
-      stepLabel: "Sending the MPGR agent fee (0.25%)…",
+      stepLabel: "Swap settled on Base.",
       feeHash: null,
       feeError: null,
-    });
-
-    const feeTransfer = buildAgentFeeTransfer({
-      fromAddress: proposal.from.address,
-      recipient: agentFee.recipient,
-      amount: agentFee.amount,
-    });
-    try {
-      const feeHash: Hash =
-        feeTransfer.kind === "native"
-          ? await sendTransaction(config, {
-              account,
-              chainId: TRADE_CHAIN_ID,
-              to: feeTransfer.to,
-              value: feeTransfer.value,
-            })
-          : await sendTransaction(config, {
-              account,
-              chainId: TRADE_CHAIN_ID,
-              to: feeTransfer.to,
-              data: feeTransfer.data,
-              value: 0n,
-            });
-      const feeReceipt = await waitForTransactionReceipt(config, { hash: feeHash });
-      if (feeReceipt.status !== "success") {
-        const success: TradeExecutionSnapshot = {
-          state: "SUCCESS",
-          approvalHash,
-          swapHash,
-          error: null,
-          stepLabel: "Swap settled on Base.",
-          feeHash,
-          feeError: {
-            code: "SEND_FAILED",
-            message: "The swap settled, but the separate agent-fee transfer failed on Base.",
-          },
-        };
-        onChange(success);
-        return success;
-      }
-      const success: TradeExecutionSnapshot = {
-        state: "SUCCESS",
-        approvalHash,
-        swapHash,
-        error: null,
-        stepLabel: "Swap settled on Base.",
-        feeHash,
-        feeError: null,
-      };
-      onChange(success);
-      return success;
-    } catch (err) {
-      const classified = classifyWalletError(err, "SEND_FAILED");
-      const success: TradeExecutionSnapshot = {
-        state: "SUCCESS",
-        approvalHash,
-        swapHash,
-        error: null,
-        stepLabel: "Swap settled on Base.",
-        feeHash: null,
-        feeError: {
-          code: classified.code,
-          message:
-            classified.code === "WALLET_REJECTED"
-              ? "The swap settled, but the separate agent-fee transfer was cancelled in your wallet."
-              : "The swap settled, but the separate agent-fee transfer could not be completed.",
-        },
-      };
-      onChange(success);
-      return success;
-    }
+      feeSkippedReason,
+    };
+    onChange(success);
+    return success;
   } finally {
     inFlight.delete(key);
   }

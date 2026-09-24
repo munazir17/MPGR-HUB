@@ -30,6 +30,7 @@ export function useTradeQuote(
     stepLabel,
     feeHash,
     feeError,
+    feeSkippedReason,
     execute,
     reset: resetExecution,
   } = useTradeExecution();
@@ -72,6 +73,7 @@ export function useTradeQuote(
     stepLabel,
     feeHash,
     feeError,
+    feeSkippedReason,
     openProposal,
     confirmAndSwap,
     close,

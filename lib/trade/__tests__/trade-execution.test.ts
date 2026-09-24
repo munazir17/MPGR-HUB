@@ -1,17 +1,25 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockSend, mockSign, mockWait, mockRead } = vi.hoisted(() => ({
-  mockSend: vi.fn(),
-  mockSign: vi.fn(),
-  mockWait: vi.fn(),
-  mockRead: vi.fn(),
-}));
+const { mockSend, mockSign, mockWait, mockRead, mockSendCalls, mockCapabilities } = vi.hoisted(
+  () => ({
+    mockSend: vi.fn(),
+    mockSign: vi.fn(),
+    mockWait: vi.fn(),
+    mockRead: vi.fn(),
+    mockSendCalls: vi.fn(),
+    mockCapabilities: vi.fn(),
+  }),
+);
 
 vi.mock("wagmi/actions", () => ({
   sendTransaction: (...args: unknown[]) => mockSend(...args),
   signTypedData: (...args: unknown[]) => mockSign(...args),
   waitForTransactionReceipt: (...args: unknown[]) => mockWait(...args),
   readContract: (...args: unknown[]) => mockRead(...args),
+  sendCalls: (...args: unknown[]) => mockSendCalls(...args),
+  getCallsStatus: vi.fn(),
+  getCapabilities: (...args: unknown[]) => mockCapabilities(...args),
+  getBalance: vi.fn(),
 }));
 
 vi.mock("@/lib/wagmi", () => ({ config: {} }));
@@ -82,6 +90,11 @@ describe("executeTrade", () => {
     mockSign.mockReset();
     mockWait.mockReset();
     mockRead.mockReset();
+    mockSendCalls.mockReset();
+    mockCapabilities.mockReset();
+    // Default: the wallet does NOT advertise atomic batches on Base, so
+    // every case here exercises the plain swap path.
+    mockCapabilities.mockResolvedValue(undefined);
     // Pre-broadcast funds guard: the wallet is funded for every case here.
     // The allowance stays short so the approval steps these tests assert
     // still run (a covering allowance is covered by the funds-safety suite).
@@ -90,6 +103,10 @@ describe("executeTrade", () => {
       if (params?.functionName === "allowance") return 0n;
       throw new Error(`unexpected read: ${String(params?.functionName)}`);
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("does not touch the wallet when confirmation is not READY", async () => {
@@ -196,5 +213,46 @@ describe("executeTrade", () => {
     expect(mockSign).not.toHaveBeenCalled();
     const swapTx = mockSend.mock.calls[1][1] as { to: string };
     expect(swapTx.to.toLowerCase()).toBe(AERODROME_SLIPSTREAM_SWAP_ROUTER.toLowerCase());
+  });
+
+  // The 2-step UX invariant, locked at the execution layer: a quoted fee on
+  // a wallet that cannot batch must NOT add a third transaction, and must
+  // not change the swap calldata, the approval, or the outcome.
+  it("a quoted fee on a non-batching wallet never adds a third transaction", async () => {
+    vi.stubEnv(
+      "NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT",
+      "0x1111111111111111111111111111111111111111",
+    );
+    const withFee = makeProposal({ allowance: true });
+    mockSend.mockResolvedValueOnce("0xapprove").mockResolvedValueOnce("0xswap");
+    mockWait.mockResolvedValue({ status: "success" });
+
+    const result = await executeTrade(
+      {
+        proposal: withFee,
+        confirmationState: "READY_FOR_CONFIRMATION",
+        currentAccount: TAKER,
+        currentChainId: 8453,
+      },
+      () => {},
+    );
+
+    // The fee WAS quoted…
+    expect(withFee.agentFee?.status).toBe("applied");
+    expect(withFee.agentFee?.amountAtomic).toBe("2500"); // 0.25% of 1 USDC
+    // …but the wallet cannot batch, so the swap goes out unchanged.
+    expect(result.state).toBe("SUCCESS");
+    expect(result.approvalHash).toBe("0xapprove");
+    expect(result.swapHash).toBe("0xswap");
+    expect(result.feeHash).toBeNull();
+    expect(result.feeSkippedReason).toMatch(/does not support atomic batch calls/);
+    // Exactly two wallet interactions: the approval and the swap.
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSendCalls).not.toHaveBeenCalled();
+    // The swap transaction is still the quoted one, byte for byte.
+    const swapTx = mockSend.mock.calls[1][1] as { to: string; data: string; gas: bigint };
+    expect(swapTx.to).toBe(PERMIT2_ADDRESS);
+    expect(swapTx.data).toBe("0xabcd");
+    expect(swapTx.gas).toBe(210000n);
   });
 });
