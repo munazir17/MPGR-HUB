@@ -105,6 +105,13 @@ jobs:
               elif .value.status == "Skipped" then "::warning title=\(.key)::skipped \((.value.decoded_logs // []) | join(" ; "))"
               else "::notice title=\(.key)::passed \((.value.decoded_logs // []) | join(" ; "))" end
           ' fork-results.json || true
+          if [ "$STATUS" != "0" ]; then
+            # Attach the tail of a full trace for each failing test (logs are not always retrievable).
+            for T in $(jq -r 'to_entries[] | .value.test_results | to_entries[] | select(.value.status == "Failure") | .key | sub("\\(.*";"")' fork-results.json 2>/dev/null); do
+              forge test --match-path 'test/fork/*' --match-test "^${T}\$" -vvvv > "trace-${T}.txt" 2>&1 || true
+              echo "::error title=trace ${T}::$(tail -c 3500 "trace-${T}.txt" | tr '\n' ' ' | sed 's/  */ /g')"
+            done
+          fi
           {
             echo "### Base mainnet fork tests"
             jq -r 'to_entries[] | .value.test_results | to_entries[] | "- \(.value.status): `\(.key)` \(.value.reason // "")"' fork-results.json || true

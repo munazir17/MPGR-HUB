@@ -140,8 +140,8 @@ contract MPGRExecutorBaseForkTest is Test {
 
     function _tryPool(address token, int24 tick, uint256 netIn) internal returns (uint256) {
         if (token == address(0)) return 0;
-        if (ISlipstreamFactory(SLIP_FACTORY).getPool(USDC, token, tick) == address(0)) return 0;
-        try ISlipstreamQuoterV2(SLIP_QUOTER).quoteExactInputSingle(
+        if (ISlipstreamFactory(SLIP_FACTORY).getPool{gas: 200_000}(USDC, token, tick) == address(0)) return 0;
+        try ISlipstreamQuoterV2(SLIP_QUOTER).quoteExactInputSingle{gas: 8_000_000}(
             ISlipstreamQuoterV2.QuoteExactInputSingleParams(USDC, token, netIn, tick, 0)
         ) returns (uint256 out, uint160, uint32, uint256) {
             return out;
