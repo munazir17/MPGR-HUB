@@ -1,4 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Deterministic limiter (CI sets placeholder Upstash env vars, so the real
+// Redis-backed limiter would make network calls). Same pattern as the other
+// route tests; the real clientIpFromRequest is kept.
+const hits = new Map<string, number>();
+const checkRateLimit = vi.fn(async (key: string, limit: number, _windowMs: number) => {
+  const n = (hits.get(key) ?? 0) + 1;
+  hits.set(key, n);
+  return n > limit ? { allowed: false, remaining: 0, retryAfterSeconds: 60 } : { allowed: true, remaining: limit - n, retryAfterSeconds: 0 };
+});
+vi.mock("@/lib/trade/trade-rate-limit", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/trade/trade-rate-limit")>()),
+  checkRateLimit: (key: string, limit: number, windowMs: number) => checkRateLimit(key, limit, windowMs),
+}));
 
 import { DELETE, GET, POST } from "./route";
 
@@ -72,7 +86,8 @@ describe("POST /api/mcp", () => {
     expect(statuses.slice(0, 60).every((s) => s === 200)).toBe(true);
     const limited = await POST(req(ping, {}, ip));
     expect(limited.status).toBe(429);
-    expect(limited.headers.get("retry-after")).toBeTruthy();
+    expect(limited.headers.get("retry-after")).toBe("60");
+    expect(checkRateLimit).toHaveBeenCalledWith(`${ip}:mcp`, 60, 60_000);
   });
 
   it("GET and DELETE are 405 (stateless server, no SSE / sessions)", async () => {
