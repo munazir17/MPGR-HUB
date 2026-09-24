@@ -90,7 +90,7 @@ jobs:
           # Optional secret for a dedicated RPC; falls back to the public endpoint.
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           forge build >/dev/null
           forge test --match-path 'test/fork/*' --json > fork-results.json 2> fork-stderr.txt
           STATUS=$?
