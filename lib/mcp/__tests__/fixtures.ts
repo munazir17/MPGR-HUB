@@ -23,7 +23,8 @@ import type { ReceiptLike } from "@/lib/executor/executor-verify";
 import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
 import type { McpDeps } from "@/lib/mcp/mcp-trade-service";
 
-export const TEST_SECRET = "test-quote-secret-0123456789-abcdefghijklmnop";
+// Low-entropy, runtime-built test key (no secret-shaped literal in source).
+export const TEST_SECRET = "t".repeat(48);
 export const EXECUTOR = getAddress("0x00000000000000000000000000000000000e7ec0");
 export const OWNER = getAddress("0x00000000000000000000000000000000000000a1");
 export const FEE_RECIPIENT = OWNER;

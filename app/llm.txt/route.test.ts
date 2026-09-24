@@ -26,12 +26,14 @@ describe("/llm.txt", () => {
   });
 
   it("never contains secrets, even when they are present in the environment", async () => {
+    // Distinct marker values built at runtime (no secret-shaped literals in source).
+    const mark = (tag: string) => ["planted", tag, "z".repeat(24)].join("-");
     const planted: Record<string, string> = {
-      AUTH_SESSION_SECRET: "planted-auth-secret-value-0123456789abcdef",
-      ZERO_EX_API_KEY: "planted-0x-api-key",
-      CDP_API_KEY_SECRET: "planted-cdp-secret",
+      AUTH_SESSION_SECRET: mark("auth"),
+      ZERO_EX_API_KEY: mark("zeroex"),
+      CDP_API_KEY_SECRET: mark("cdp"),
       BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: "0x" + "9".repeat(64),
-      BASE_RPC_URL: "https://planted-rpc.example/v2/key123",
+      BASE_RPC_URL: `https://${mark("rpc")}.example/v2`,
     };
     const prev = Object.fromEntries(Object.keys(planted).map((k) => [k, process.env[k]]));
     Object.assign(process.env, planted);
