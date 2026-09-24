@@ -33,15 +33,22 @@ export function buildSwapRiskFacts(input: {
   // MPGR Agent fee disclosure (info only — never a blocker). Absent when
   // the fee is skipped, so unconfigured deployments read exactly as before.
   if (input.agentFee?.status === "applied" && input.agentFee.displayAmount && input.agentFee.recipient) {
+    const collection =
+      input.agentFee.collection === "provider-native"
+        ? `is charged by the swap provider inside the swap transaction and sent to the MPGR fee wallet ` +
+          `${input.agentFee.recipient}. It is part of the provider's own settlement, so it adds no ` +
+          `extra signature and cannot be skipped.`
+        : `is collected inside the swap transaction and sent to the MPGR fee wallet ` +
+          `${input.agentFee.recipient}. It is not part of the swap route, quote, or ` +
+          `slippage protection, and it adds no extra signature. If your wallet cannot ` +
+          `settle it atomically the swap still executes and the fee is skipped.`;
     facts.push({
       id: "mpgr-agent-fee",
       severity: "info",
       title: `MPGR agent fee ${MPGR_AGENT_FEE_PERCENT_LABEL}`,
       detail:
-        `A separate wallet-signed transfer of ${input.agentFee.displayAmount} ` +
-        `(${MPGR_AGENT_FEE_PERCENT_LABEL} of the sell amount) goes to the MPGR fee wallet ` +
-        `${input.agentFee.recipient} after the swap settles. It is not part of the swap ` +
-        `route, quote, or slippage protection.`,
+        `${input.agentFee.displayAmount} (${MPGR_AGENT_FEE_PERCENT_LABEL} of the sell amount) ` +
+        collection,
     });
   }
 

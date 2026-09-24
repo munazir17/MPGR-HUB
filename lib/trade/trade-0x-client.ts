@@ -13,9 +13,10 @@ import "server-only";
 // (B20 allowlist) or reports no liquidity. Does not replace
 // trade-cdp-client.ts for ETH/WETH/USDC/MPGR.
 
-import { isAddress } from "viem";
+import { isAddress, zeroAddress } from "viem";
 
 import {
+  NATIVE_ETH_SENTINEL,
   TRADE_CHAIN_ID,
   TRADE_DEFAULT_SLIPPAGE_BPS,
   ZERO_EX_API_HOST,
@@ -25,6 +26,7 @@ import {
 } from "./trade-config";
 import type {
   CdpPermit2,
+  CdpSwapFee,
   CdpSwapIssues,
   CdpSwapPrice,
   CdpSwapQuote,
@@ -32,12 +34,28 @@ import type {
   TradeError,
 } from "./trade-types";
 
+/**
+ * Native 0x fee configuration. When supplied, 0x embeds the fee in the
+ * swap transaction it generates, so the app never sends a separate fee.
+ */
+export interface ZeroExNativeFee {
+  /** Validated fee-recipient wallet. */
+  recipient: string;
+  /** Fee in basis points (25 = 0.25%). */
+  bps: number;
+}
+
 export interface ZeroExSwapRequest {
   fromToken: string;
   toToken: string;
   fromAmount: string;
   taker: string;
   slippageBps?: number;
+  /**
+   * Optional native fee. Applied ONLY when the SELL token is a real
+   * ERC-20 contract address — see `zeroExNativeFeeEligible`.
+   */
+  agentFee?: ZeroExNativeFee | null;
 }
 
 export type ZeroExResult<T> =
@@ -136,7 +154,69 @@ function parseFees(raw: unknown): CdpSwapPrice["fees"] {
         token: asString(gasSource.token) ?? "",
       }
     : undefined;
-  return { gasFee: gas };
+  const protocolSource = isPlainObject(raw.protocolFee) ? raw.protocolFee : null;
+  const protocolFee = protocolSource
+    ? {
+        amount: asString(protocolSource.amount) ?? "0",
+        token: asString(protocolSource.token) ?? "",
+      }
+    : undefined;
+  return { gasFee: gas, protocolFee, integratorFee: parseIntegratorFee(raw) };
+}
+
+/**
+ * 0x reports our integrator fee whenever `swapFeeRecipient`/`swapFeeBps`/
+ * `swapFeeToken` were accepted. The CURRENT documented response schema
+ * (see the getQuote Allowance-Holder example in the 0x API reference)
+ * carries BOTH shapes at once:
+ *
+ *   "fees": {
+ *     "integratorFee": { "amount": "25000", "token": "0x…", "type": "volume" },
+ *     "integratorFees": [ { "amount": "25000", "token": "0x…", "type": "volume" } ],
+ *     "zeroExFee": null,
+ *     "gasFee": null
+ *   }
+ *
+ * with `integratorFee` nullable and `integratorFees` an array. So
+ * `integratorFee` is read first (the single-fee case), and the array is
+ * summed as a fallback — not as a speculative future format.
+ *
+ * A non-numeric amount is treated as "no fee reported": it is not
+ * something we can display as "25 bps of the sell amount", and the app
+ * then collects the fee itself rather than quoting a number we cannot
+ * stand behind.
+ */
+function parseIntegratorFee(raw: Record<string, unknown>): CdpSwapFee | undefined {
+  const single = isPlainObject(raw.integratorFee) ? raw.integratorFee : null;
+  if (single) {
+    const amount = asString(single.amount);
+    const token = asString(single.token);
+    // A non-numeric amount is not something we can display as "25 bps of
+    // the sell amount" — report no provider fee so the app collects it
+    // itself, rather than quoting a number we cannot stand behind.
+    if (amount && token && /^\d+$/.test(amount)) return { amount, token };
+    return undefined;
+  }
+  if (Array.isArray(raw.integratorFees)) {
+    let total = 0n;
+    let token: string | null = null;
+    let ok = false;
+    for (const entry of raw.integratorFees) {
+      if (!isPlainObject(entry)) continue;
+      const amount = asString(entry.amount);
+      const entryToken = asString(entry.token);
+      if (!amount || !entryToken || !/^\d+$/.test(amount)) continue;
+      try {
+        total += BigInt(amount);
+      } catch {
+        continue;
+      }
+      token = entryToken;
+      ok = true;
+    }
+    return ok && token ? { amount: total.toString(), token } : undefined;
+  }
+  return undefined;
 }
 
 function parseTransaction(raw: unknown): CdpSwapTransaction | null {
@@ -273,8 +353,44 @@ async function zeroExFetch(
   }
 }
 
+/**
+ * Can the 0x native fee be used for this request?
+ *
+ * `swapFeeToken` MUST be a contract address equal to `buyToken` or
+ * `sellToken`. Our fee is denominated in the SELL token (0.25% of
+ * fromAmount), so the native fee is only faithful when the sell token is
+ * a real ERC-20:
+ *
+ *   - SELL is an ERC-20 (USDC, WETH, MPGR, B20, …) → eligible; the fee is
+ *     taken in the sell token, exactly matching the app's own
+ *     floor(fromAmount * 25 / 10_000) invariant.
+ *   - SELL is the native-ETH sentinel → NOT eligible. The only legal
+ *     `swapFeeToken` would then be the BUY token, which turns the fee
+ *     into a buy-side/output fee — a different economic model. 0x also
+ *     rejects the sentinel as a fee token. Falls back to the app's own
+ *     collection.
+ *
+ * Fail-closed in every other respect: no fee config, no recipient, a
+ * non-contract sell token, or a fee outside 0x's 0–1000 bps range all
+ * mean "no native fee" — the app's existing collection path is used.
+ */
+export function zeroExNativeFeeEligible(request: ZeroExSwapRequest): boolean {
+  const fee = request.agentFee;
+  if (!fee) return false;
+  if (!fee.recipient || !isAddress(fee.recipient)) return false;
+  if (fee.recipient.toLowerCase() === zeroAddress.toLowerCase()) return false;
+  if (!Number.isInteger(fee.bps) || fee.bps <= 0 || fee.bps > 1_000) return false;
+  const sellToken = request.fromToken;
+  if (!sellToken || !isAddress(sellToken)) return false;
+  if (sellToken.toLowerCase() === NATIVE_ETH_SENTINEL.toLowerCase()) return false;
+  // The buy token must also be a contract address for 0x to accept a
+  // swap at all; if it is the native sentinel the fee token stays the
+  // sell token, which is still valid.
+  return true;
+}
+
 function buildParams(request: ZeroExSwapRequest): URLSearchParams {
-  return new URLSearchParams({
+  const params = new URLSearchParams({
     chainId: String(TRADE_CHAIN_ID),
     sellToken: request.fromToken,
     buyToken: request.toToken,
@@ -282,6 +398,14 @@ function buildParams(request: ZeroExSwapRequest): URLSearchParams {
     taker: request.taker,
     slippageBps: String(request.slippageBps ?? TRADE_DEFAULT_SLIPPAGE_BPS),
   });
+  if (zeroExNativeFeeEligible(request) && request.agentFee) {
+    params.set("swapFeeRecipient", request.agentFee.recipient);
+    params.set("swapFeeBps", String(request.agentFee.bps));
+    // Always the SELL token: keeps the fee at exactly 25 bps of
+    // fromAmount in the sell token, never a buy-side/output fee.
+    params.set("swapFeeToken", request.fromToken);
+  }
+  return params;
 }
 
 export async function getZeroExSwapPrice(

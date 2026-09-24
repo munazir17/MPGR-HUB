@@ -400,6 +400,7 @@ export function AgentExperience({
         stepLabel={tradeQuote.stepLabel}
         feeHash={tradeQuote.feeHash}
         feeError={tradeQuote.feeError}
+        feeSkippedReason={tradeQuote.feeSkippedReason}
         onConfirmAndSwap={tradeQuote.confirmAndSwap}
       />
       <AgentTransferConfirmationModal

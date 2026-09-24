@@ -12,27 +12,34 @@
 // `STF`) because the wallet held ~2.49 USDC — while the quote already
 // knew, and nothing blocked the broadcast.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, getAddress } from "viem";
 
-const { mockSend, mockSign, mockWait, mockRead, rpc } = vi.hoisted(() => ({
-  mockSend: vi.fn(),
-  mockSign: vi.fn(),
-  mockWait: vi.fn(),
-  mockRead: vi.fn(),
-  rpc: {
-    /** Live `balanceOf` answer; null = the read itself fails (RPC blip). */
-    balance: null as bigint | null,
-    /** Live `allowance(owner, spender)` answer; null = the read fails. */
-    allowance: null as bigint | null,
-  },
-}));
+const { mockSend, mockSign, mockWait, mockRead, mockSendCalls, mockCapabilities, rpc } =
+  vi.hoisted(() => ({
+    mockSend: vi.fn(),
+    mockSign: vi.fn(),
+    mockWait: vi.fn(),
+    mockRead: vi.fn(),
+    mockSendCalls: vi.fn(),
+    mockCapabilities: vi.fn(),
+    rpc: {
+      /** Live `balanceOf` answer; null = the read itself fails (RPC blip). */
+      balance: null as bigint | null,
+      /** Live `allowance(owner, spender)` answer; null = the read fails. */
+      allowance: null as bigint | null,
+    },
+  }));
 
 vi.mock("wagmi/actions", () => ({
   sendTransaction: (...args: unknown[]) => mockSend(...args),
   signTypedData: (...args: unknown[]) => mockSign(...args),
   waitForTransactionReceipt: (...args: unknown[]) => mockWait(...args),
   readContract: (...args: unknown[]) => mockRead(...args),
+  sendCalls: (...args: unknown[]) => mockSendCalls(...args),
+  getCallsStatus: vi.fn(),
+  getCapabilities: (...args: unknown[]) => mockCapabilities(...args),
+  getBalance: vi.fn(),
 }));
 
 vi.mock("@/lib/wagmi", () => ({ config: {} }));
@@ -157,6 +164,11 @@ function decodeSwap(data: string) {
 
 describe("normal Base swap — funds safety (STF regression)", () => {
   beforeEach(() => {
+    mockSendCalls.mockReset();
+    mockCapabilities.mockReset();
+    // Default: the wallet does NOT advertise atomic batches on Base, so
+    // every case here exercises the plain swap path.
+    mockCapabilities.mockResolvedValue(undefined);
     mockSend.mockReset();
     mockSign.mockReset();
     mockWait.mockReset();
@@ -457,6 +469,9 @@ describe("normal Base swap — funds safety (STF regression)", () => {
     expect(fundedFacts.find((f) => f.id === "insufficient-balance")).toBeUndefined();
   });
 
+  // The atomic agent fee must never re-create the failure this whole suite
+  // guards against: a wallet funded for the swap but not for sell + fee
+  // still swaps, with the fee skipped and no extra transaction.
   it("11. a funded wallet needs no approval and no extra spend", async () => {
     const p = proposal(); // allowance + balance already cover the swap
     mockSend.mockReset();
@@ -472,4 +487,65 @@ describe("normal Base swap — funds safety (STF regression)", () => {
     expect(result.approvalHash).toBeNull();
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
+  it("12. an agent fee the wallet cannot fund never blocks or splits the swap", async () => {
+    vi.stubEnv(
+      "NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT",
+      "0x1111111111111111111111111111111111111111",
+    );
+    // The wallet DOES support atomic batches…
+    mockCapabilities.mockResolvedValue({ "8453": { atomic: { supported: true } } });
+    // …but holds exactly the sell amount, nothing for the fee.
+    rpc.balance = AMOUNT_IN;
+    const p = proposal();
+    expect(p.agentFee?.status).toBe("applied");
+    mockSend.mockReset();
+    mockSend.mockResolvedValue("0xswap");
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBe("0xswap");
+    expect(result.feeHash).toBeNull();
+    expect(result.feeSkippedReason).toMatch(/does not hold the swap amount plus the agent fee/);
+    // No batch, and above all no third transaction.
+    expect(mockSendCalls).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("13. an atomic batch failure on a wallet that advertised it degrades to a plain swap", async () => {
+    vi.stubEnv(
+      "NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT",
+      "0x1111111111111111111111111111111111111111",
+    );
+    mockCapabilities.mockResolvedValue({ "8453": { atomic: { supported: true } } });
+    // Funded for sell + fee, but the wallet refuses to batch anyway.
+    rpc.balance = AMOUNT_IN + 25_000n;
+    const p = proposal();
+    mockSend.mockReset();
+    mockSend.mockResolvedValue("0xswap");
+    mockSendCalls.mockRejectedValue(
+      Object.assign(new Error("atomicRequired is not supported"), {
+        name: "AtomicityNotSupportedError",
+      }),
+    );
+
+    const result = await executeTrade(
+      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      () => {},
+    );
+
+    expect(result.state).toBe("SUCCESS");
+    expect(result.swapHash).toBe("0xswap");
+    expect(result.feeHash).toBeNull();
+    expect(result.feeSkippedReason).toMatch(/could not run an atomic batch/);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });

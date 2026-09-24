@@ -23,6 +23,8 @@ interface AgentTradeConfirmationModalProps {
   stepLabel: string | null;
   feeHash?: `0x${string}` | null;
   feeError?: TradeError | null;
+  /** Why a quoted fee was not collected (null when it was, or none was quoted). */
+  feeSkippedReason?: string | null;
   onConfirmAndSwap?: () => void;
 }
 
@@ -78,6 +80,7 @@ export function AgentTradeConfirmationModal({
   stepLabel,
   feeHash,
   feeError,
+  feeSkippedReason,
   onConfirmAndSwap,
 }: AgentTradeConfirmationModalProps) {
   if (!proposal) return null;
@@ -174,10 +177,23 @@ export function AgentTradeConfirmationModal({
               {proposal.agentFee?.status === "applied" && proposal.agentFee.displayAmount && (
                 <div className="flex justify-between gap-3">
                   <dt className="text-zinc-500">MPGR agent fee (0.25%)</dt>
-                  <dd className="text-white">{proposal.agentFee.displayAmount} (separate tx)</dd>
+                  <dd className="text-right text-white">
+                    {proposal.agentFee.displayAmount}
+                    <span className="block text-[10px] text-zinc-500">
+                      {proposal.agentFee.collection === "provider-native"
+                        ? "charged by the swap provider"
+                        : "collected with the swap"}
+                    </span>
+                  </dd>
                 </div>
               )}
             </dl>
+
+            {feeSkippedReason && (
+              <p className="mb-4 rounded-lg border border-amber-300/30 bg-amber-300/10 p-3 text-[11px] text-amber-300">
+                {feeSkippedReason}
+              </p>
+            )}
 
             {(criticalRisk.length > 0 || warningRisk.length > 0) && (
               <ul className="mb-4 max-h-32 space-y-1 overflow-y-auto text-[11px] text-amber-300">
@@ -210,8 +226,9 @@ export function AgentTradeConfirmationModal({
               <div className="mb-4 flex items-start gap-2 rounded-lg border border-good/30 bg-good/10 p-3 text-sm text-good">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
-                  Swap settled
-                  {swapHash ? ` — ${formatAddress(swapHash)}` : "."}
+                  {swapHash
+                    ? `Swap settled — ${formatAddress(swapHash)}`
+                    : "Swap batch submitted on Base."}
                   {approvalHash ? ` Approval ${formatAddress(approvalHash)}.` : ""}
                   {feeHash ? ` Agent fee ${formatAddress(feeHash)}.` : ""}
                 </span>

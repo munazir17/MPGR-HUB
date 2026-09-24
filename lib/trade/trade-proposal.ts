@@ -106,11 +106,15 @@ export function buildTradeProposal(
   // MPGR Agent fee (0.25% of the SELL amount). Pure derivation from the
   // quoted fromAmount — quote amounts, calldata, and slippage are inputs,
   // never modified. Skipped (not an error) whenever uncollectible.
+  // When the provider already embedded the fee in its swap transaction
+  // (0x swapFee*), the provider's own reported fee is authoritative and
+  // the app must not collect it a second time.
   const agentFee = buildProposalAgentFee({
     fromAmount: input.quote.fromAmount,
     from: input.from,
     taker: input.taker,
     executionAvailable,
+    providerNativeFee: input.quote.fees?.integratorFee ?? null,
   });
 
   const risk = buildSwapRiskFacts({
@@ -161,7 +165,9 @@ export function buildTradeProposal(
         "Your wallet will sign the swap transaction on Base.",
         ...(agentFee.status === "applied" && agentFee.displayAmount
           ? [
-              `After the swap settles, your wallet will send a separate ${MPGR_AGENT_FEE_PERCENT_LABEL} agent fee (${agentFee.displayAmount}) to the MPGR fee wallet.`,
+              agentFee.collection === "provider-native"
+                ? `The ${MPGR_AGENT_FEE_PERCENT_LABEL} agent fee (${agentFee.displayAmount}) is charged by the swap provider inside that same swap transaction — there is no separate fee signature.`
+                : `The ${MPGR_AGENT_FEE_PERCENT_LABEL} agent fee (${agentFee.displayAmount}) is collected inside that same swap transaction — there is no separate fee signature.`,
             ]
           : []),
         "Nothing broadcasts until you approve each wallet prompt.",

@@ -82,6 +82,7 @@ export function useTradeExecution() {
     stepLabel: snapshot.stepLabel,
     feeHash: snapshot.feeHash,
     feeError: snapshot.feeError,
+    feeSkippedReason: snapshot.feeSkippedReason,
     execute,
     reset,
   };
