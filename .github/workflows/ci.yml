@@ -66,6 +66,8 @@ jobs:
       # script is dry-run end-to-end in test/script/ instead of skipping.
       - run: bash script/prepare-uniswap-artifacts.sh
       - run: forge test -vvv
+        env:
+          MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
 
   contracts-fork:
     # MPGR Executor against the REAL Aerodrome Slipstream router/pools,
@@ -85,7 +87,24 @@ jobs:
         env:
           # Optional secret for a dedicated RPC; falls back to the public endpoint.
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
-        run: forge test --match-path 'test/fork/*' -vvv
+        run: |
+          set -uo pipefail
+          forge build >/dev/null
+          forge test --match-path 'test/fork/*' --json > fork-results.json
+          STATUS=$?
+          # Surface every result as an annotation + step summary (readable without raw logs).
+          jq -r '
+            to_entries[] | .value.test_results | to_entries[]
+            | if .value.status == "Failure" then
+                "::error title=\(.key)::\((.value.reason // "failed")) | logs: \((.value.decoded_logs // []) | join(" ; "))"
+              elif .value.status == "Skipped" then "::warning title=\(.key)::skipped \((.value.decoded_logs // []) | join(" ; "))"
+              else "::notice title=\(.key)::passed \((.value.decoded_logs // []) | join(" ; "))" end
+          ' fork-results.json || true
+          {
+            echo "### Base mainnet fork tests"
+            jq -r 'to_entries[] | .value.test_results | to_entries[] | "- \(.value.status): `\(.key)` \(.value.reason // "")"' fork-results.json || true
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $STATUS
 
   secret-scan:
     runs-on: ubuntu-latest

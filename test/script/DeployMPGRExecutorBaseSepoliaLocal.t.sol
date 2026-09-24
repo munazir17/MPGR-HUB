@@ -56,7 +56,11 @@ contract DeployMPGRExecutorBaseSepoliaLocalTest is Test {
     address internal deployer;
 
     function setUp() public {
-        if (!vm.exists(string.concat(ART, "Permit2.json"))) return;
+        if (!vm.exists(string.concat(ART, "Permit2.json"))) {
+            // CI sets this so the dry-run can never silently skip there.
+            require(!vm.envOr("MPGR_REQUIRE_UNISWAP_ARTIFACTS", false), "uniswap artifacts required but missing");
+            return;
+        }
         vm.chainId(84532);
         vm.warp(1_800_000_000);
         deployer = vm.addr(DEPLOYER_KEY);
