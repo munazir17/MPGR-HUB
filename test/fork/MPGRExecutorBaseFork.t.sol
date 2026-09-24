@@ -67,17 +67,31 @@ contract MPGRExecutorBaseForkTest is Test {
     address internal constant UNI_ROUTER02 = 0x2626664c2603336E57B271c5C0b26F421741e481;
     address internal constant UNI_QUOTER = 0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a;
 
-    // Coinbase B20 tokenized stocks (lib/trade/tokenized-stocks.ts).
-    address[3] internal B20 = [
+    // Coinbase B20 tokenized stocks (lib/trade/tokenized-stocks.ts) — Slipstream tickSpacing 10 vs USDC.
+    address[15] internal B20 = [
         0xb200000000000000000000C2e324d24d7eEcd1fb, // AAPLc
         0xb200000000000000000000d9192b6B456483C2E8, // AMZNc
-        0xb200000000000000000000c85a31389D71F3ecfb // COINc
+        0xb200000000000000000000c85a31389D71F3ecfb, // COINc
+        0xB20000000000000000000019f6E7C675b73C2e4D, // CRCLc
+        0xb2000000000000000000002D0BA3164cc74f58B7, // GOOGLc
+        0xB2000000000000000000004AFF16039bA04bdFBc, // INTCc
+        0xb2000000000000000000008bC8786B856E61707C, // METAc
+        0xB200000000000000000000Ab99cFa739E253872B, // MSFTc
+        0xb2000000000000000000004884b426556b92883d, // MSTRc
+        0xb20000000000000000000078ee7ce2fE4908108C, // NVDAc
+        0xb200000000000000000000397293Cb8cda9a10c5, // SNDKc
+        0xb2000000000000000000007b9fcbd005511aCBd5, // SPCXc
+        0xb2000000000000000000001e800a7f5189430cD0, // TSLAc
+        address(0),
+        address(0)
     ];
+    // Fallback proof of the Slipstream adapter on this router/factory: WETH/USDC.
+    int24[5] internal WETH_TICKS = [int24(100), 50, 10, 200, 1];
 
     MPGRExecutor internal ex;
     address internal owner = makeAddr("fork-owner");
     address internal feeWallet = makeAddr("fork-fee-wallet");
-    uint256 internal takerKey = 0xC0FFEE;
+    uint256 internal takerKey = uint256(keccak256("mpgr-executor-fork-taker-v1"));
     address internal taker;
     bool internal forked;
 
@@ -94,12 +108,19 @@ contract MPGRExecutorBaseForkTest is Test {
         MPGRExecutor.RouterConfig[] memory routers = new MPGRExecutor.RouterConfig[](2);
         routers[0] = MPGRExecutor.RouterConfig(SLIP_ROUTER, MPGRExecutor.RouterKind.AERODROME_SLIPSTREAM);
         routers[1] = MPGRExecutor.RouterConfig(UNI_ROUTER02, MPGRExecutor.RouterKind.UNISWAP_V3_ROUTER02);
-        address[] memory tokens = new address[](5);
+        address[] memory tokens = new address[](2 + B20.length);
         tokens[0] = USDC;
         tokens[1] = WETH;
-        tokens[2] = B20[0];
-        tokens[3] = B20[1];
-        tokens[4] = B20[2];
+        uint256 n = 2;
+        for (uint256 i = 0; i < B20.length; ++i) {
+            if (B20[i] != address(0)) tokens[n++] = B20[i];
+        }
+        assembly {
+            mstore(tokens, n)
+        }
+        // A fork inherits live account state: make sure the taker is a plain EOA
+        // (public test keys are often EIP-7702-delegated to ETH sweepers on mainnets).
+        vm.etch(taker, "");
         ex = new MPGRExecutor(owner, feeWallet, 25, WETH, PERMIT2, routers, tokens);
     }
 
@@ -111,16 +132,46 @@ contract MPGRExecutorBaseForkTest is Test {
         _;
     }
 
-    function _findLiveB20(uint256 netIn) internal returns (address b20, uint256 quoteOut) {
-        for (uint256 i = 0; i < B20.length; ++i) {
-            if (ISlipstreamFactory(SLIP_FACTORY).getPool(USDC, B20[i], B20_TICK) == address(0)) continue;
-            try ISlipstreamQuoterV2(SLIP_QUOTER).quoteExactInputSingle(
-                ISlipstreamQuoterV2.QuoteExactInputSingleParams(USDC, B20[i], netIn, B20_TICK, 0)
-            ) returns (uint256 out, uint160, uint32, uint256) {
-                if (out > 0) return (B20[i], out);
-            } catch {}
+    struct Pick {
+        address token;
+        int24 tick;
+        uint256 quoteOut;
+    }
+
+    function _tryPool(address token, int24 tick, uint256 netIn) internal returns (uint256) {
+        if (token == address(0)) return 0;
+        if (ISlipstreamFactory(SLIP_FACTORY).getPool(USDC, token, tick) == address(0)) return 0;
+        try ISlipstreamQuoterV2(SLIP_QUOTER).quoteExactInputSingle(
+            ISlipstreamQuoterV2.QuoteExactInputSingleParams(USDC, token, netIn, tick, 0)
+        ) returns (uint256 out, uint160, uint32, uint256) {
+            return out;
+        } catch {
+            return 0;
         }
-        return (address(0), 0);
+    }
+
+    /// First live USDC/<token> Slipstream pool on the app's router/factory.
+    function _findSlipstream(uint256 netIn, bool b20Only) internal returns (Pick memory p) {
+        for (uint256 i = 0; i < B20.length; ++i) {
+            uint256 out = _tryPool(B20[i], B20_TICK, netIn);
+            if (out > 0) {
+                console2.log("slipstream pool: B20", B20[i], "tickSpacing 10");
+                return Pick(B20[i], B20_TICK, out);
+            }
+        }
+        if (b20Only) return p;
+        for (uint256 i = 0; i < WETH_TICKS.length; ++i) {
+            uint256 out = _tryPool(WETH, WETH_TICKS[i], netIn);
+            if (out > 0) {
+                console2.log("slipstream pool: WETH tickSpacing", uint256(uint24(WETH_TICKS[i])));
+                return Pick(WETH, WETH_TICKS[i], out);
+            }
+        }
+    }
+
+    function _requirePick(uint256 netIn) internal returns (Pick memory p) {
+        p = _findSlipstream(netIn, false);
+        require(p.token != address(0), "no live USDC pool on the app's Slipstream router/factory");
     }
 
     function _params(address router, address tokenIn, address tokenOut, uint256 gross, uint256 minOut)
@@ -157,68 +208,67 @@ contract MPGRExecutorBaseForkTest is Test {
     // Aerodrome Slipstream — the key requirement
     // ------------------------------------------------------------------
 
-    function test_Fork_Slipstream_USDC_to_B20_ExactSellTokenFee() public onlyFork {
-        uint256 gross = 10e6; // 10 USDC
-        uint256 fee = (gross * 25) / 10_000; // 0.025 USDC
-        (address b20, uint256 quoteOut) = _findLiveB20(gross - fee);
-        if (b20 == address(0)) {
-            console2.log("no live USDC/B20 Slipstream pool at this block - skipping");
-            vm.skip(true);
-            return;
-        }
+    function _buyViaSlipstream(Pick memory k, uint256 gross) internal returns (uint256 out) {
+        uint256 fee = (gross * 25) / 10_000;
         deal(USDC, taker, gross);
         vm.prank(taker);
         IERC20(USDC).approve(address(ex), gross);
-        MPGRExecutor.SwapParams memory p = _params(SLIP_ROUTER, USDC, b20, gross, (quoteOut * 99) / 100);
-
-        uint256 outBefore = IERC20(b20).balanceOf(taker);
+        MPGRExecutor.SwapParams memory p = _params(SLIP_ROUTER, USDC, k.token, gross, (k.quoteOut * 99) / 100);
+        uint256 outBefore = IERC20(k.token).balanceOf(taker);
+        uint256 feeBefore = IERC20(USDC).balanceOf(feeWallet);
         vm.prank(taker);
-        uint256 out = ex.swapSlipstreamExactInputSingle(p, B20_TICK, _approval());
-
-        assertEq(fee, 25_000, "exact 25 bps of 10 USDC");
-        assertEq(IERC20(USDC).balanceOf(feeWallet), fee, "fee wallet received exactly floor(G*25/10000) USDC");
+        out = ex.swapSlipstreamExactInputSingle(p, k.tick, _approval());
+        assertEq(IERC20(USDC).balanceOf(feeWallet) - feeBefore, fee, "fee wallet received exactly floor(G*25/10000) USDC");
         assertEq(IERC20(USDC).balanceOf(taker), 0, "taker paid exactly G");
-        assertEq(IERC20(b20).balanceOf(taker) - outBefore, out, "output delivered to taker");
+        assertEq(IERC20(k.token).balanceOf(taker) - outBefore, out, "output delivered to taker");
         assertGe(out, p.amountOutMinimum, "minOut honored");
-        _assertNoCustody(USDC, b20, SLIP_ROUTER);
-        console2.log("B20 out (atomic):", out);
+        _assertNoCustody(USDC, k.token, SLIP_ROUTER);
+        console2.log("slipstream out (atomic fee+swap):", out);
     }
 
-    function test_Fork_Slipstream_B20_to_USDC_FeeInB20() public onlyFork {
-        (address b20,) = _findLiveB20(9_975_000);
-        if (b20 == address(0)) {
+    /// Key requirement: tokenized stock (B20) via Aerodrome Slipstream with an exact USDC fee.
+    function test_Fork_Slipstream_USDC_to_B20_ExactSellTokenFee() public onlyFork {
+        uint256 gross = 10e6;
+        Pick memory k = _findSlipstream(gross - (gross * 25) / 10_000, true);
+        if (k.token == address(0)) {
+            console2.log("no live USDC/B20 tickSpacing-10 pool at this block - skipping (covered by the generic test)");
             vm.skip(true);
             return;
         }
-        // Acquire B20 through the executor first (no storage hacks on B20).
-        deal(USDC, taker, 10e6);
-        vm.startPrank(taker);
-        IERC20(USDC).approve(address(ex), 10e6);
-        ex.swapSlipstreamExactInputSingle(_params(SLIP_ROUTER, USDC, b20, 10e6, 1), B20_TICK, _approval());
-        uint256 gross = IERC20(b20).balanceOf(taker);
-        IERC20(b20).approve(address(ex), gross);
-        vm.stopPrank();
+        _buyViaSlipstream(k, gross);
+    }
 
+    /// The Slipstream adapter against the app's real router/factory (B20 or WETH/USDC pool).
+    function test_Fork_Slipstream_USDC_ExactSellTokenFee() public onlyFork {
+        uint256 gross = 10e6;
+        Pick memory k = _requirePick(gross - (gross * 25) / 10_000);
+        uint256 out = _buyViaSlipstream(k, gross);
+        assertGt(out, 0);
+        assertEq((gross * 25) / 10_000, 25_000, "exact 25 bps of 10 USDC");
+    }
+
+    function test_Fork_Slipstream_SellBack_FeeInSellToken() public onlyFork {
+        Pick memory k = _requirePick(9_975_000);
+        _buyViaSlipstream(k, 10e6);
+        uint256 gross = IERC20(k.token).balanceOf(taker);
+        vm.prank(taker);
+        IERC20(k.token).approve(address(ex), gross);
         uint256 fee = (gross * 25) / 10_000;
         (uint256 quoteOut,,,) = ISlipstreamQuoterV2(SLIP_QUOTER).quoteExactInputSingle(
-            ISlipstreamQuoterV2.QuoteExactInputSingleParams(b20, USDC, gross - fee, B20_TICK, 0)
+            ISlipstreamQuoterV2.QuoteExactInputSingleParams(k.token, USDC, gross - fee, k.tick, 0)
         );
-        MPGRExecutor.SwapParams memory p = _params(SLIP_ROUTER, b20, USDC, gross, (quoteOut * 99) / 100);
+        MPGRExecutor.SwapParams memory p = _params(SLIP_ROUTER, k.token, USDC, gross, (quoteOut * 99) / 100);
         uint256 feeWalletUsdc = IERC20(USDC).balanceOf(feeWallet);
         vm.prank(taker);
-        ex.swapSlipstreamExactInputSingle(p, B20_TICK, _approval());
-        assertEq(IERC20(b20).balanceOf(feeWallet), fee, "fee in the SELL token (B20)");
-        assertEq(IERC20(USDC).balanceOf(feeWallet), feeWalletUsdc, "no fee in buy token");
-        _assertNoCustody(b20, USDC, SLIP_ROUTER);
+        ex.swapSlipstreamExactInputSingle(p, k.tick, _approval());
+        assertEq(IERC20(k.token).balanceOf(feeWallet), fee, "fee in the SELL token");
+        assertEq(IERC20(USDC).balanceOf(feeWallet), feeWalletUsdc, "no fee in the buy token");
+        _assertNoCustody(k.token, USDC, SLIP_ROUTER);
     }
 
     function test_Fork_Slipstream_Permit2_OneTransaction() public onlyFork {
         uint256 gross = 5e6;
-        (address b20, uint256 quoteOut) = _findLiveB20(gross - (gross * 25) / 10_000);
-        if (b20 == address(0)) {
-            vm.skip(true);
-            return;
-        }
+        Pick memory k = _requirePick(gross - (gross * 25) / 10_000);
         deal(USDC, taker, gross);
         vm.prank(taker);
         IERC20(USDC).approve(PERMIT2, type(uint256).max); // pre-existing Permit2 approval (CDP users have this)
@@ -244,19 +294,15 @@ contract MPGRExecutorBaseForkTest is Test {
         a.signature = abi.encodePacked(r, s, v);
 
         vm.prank(taker);
-        ex.swapSlipstreamExactInputSingle(_params(SLIP_ROUTER, USDC, b20, gross, (quoteOut * 99) / 100), B20_TICK, a);
+        ex.swapSlipstreamExactInputSingle(_params(SLIP_ROUTER, USDC, k.token, gross, (k.quoteOut * 99) / 100), k.tick, a);
         assertEq(IERC20(USDC).balanceOf(feeWallet), (gross * 25) / 10_000);
-        assertEq(IERC20(USDC).allowance(taker, address(ex)), 0, "no approval to executor was ever needed");
-        _assertNoCustody(USDC, b20, SLIP_ROUTER);
+        assertEq(IERC20(USDC).allowance(taker, address(ex)), 0, "no approval to the executor was needed");
+        _assertNoCustody(USDC, k.token, SLIP_ROUTER);
     }
 
     function test_Fork_Slipstream_USDC_EIP2612_OneTransaction() public onlyFork {
         uint256 gross = 5e6;
-        (address b20, uint256 quoteOut) = _findLiveB20(gross - (gross * 25) / 10_000);
-        if (b20 == address(0)) {
-            vm.skip(true);
-            return;
-        }
+        Pick memory k = _requirePick(gross - (gross * 25) / 10_000);
         deal(USDC, taker, gross);
         MPGRExecutor.Authorization memory a;
         a.kind = MPGRExecutor.AuthKind.EIP2612;
@@ -274,25 +320,21 @@ contract MPGRExecutorBaseForkTest is Test {
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", IERC20PermitLike(USDC).DOMAIN_SEPARATOR(), structHash));
         (a.v, a.r, a.s) = vm.sign(takerKey, digest);
         vm.prank(taker);
-        ex.swapSlipstreamExactInputSingle(_params(SLIP_ROUTER, USDC, b20, gross, (quoteOut * 99) / 100), B20_TICK, a);
+        ex.swapSlipstreamExactInputSingle(_params(SLIP_ROUTER, USDC, k.token, gross, (k.quoteOut * 99) / 100), k.tick, a);
         assertEq(IERC20(USDC).balanceOf(feeWallet), (gross * 25) / 10_000);
-        _assertNoCustody(USDC, b20, SLIP_ROUTER);
+        _assertNoCustody(USDC, k.token, SLIP_ROUTER);
     }
 
     function test_Fork_Slipstream_SlippageFailure_AtomicRevert() public onlyFork {
         uint256 gross = 10e6;
-        (address b20, uint256 quoteOut) = _findLiveB20(gross - (gross * 25) / 10_000);
-        if (b20 == address(0)) {
-            vm.skip(true);
-            return;
-        }
+        Pick memory k = _requirePick(gross - (gross * 25) / 10_000);
         deal(USDC, taker, gross);
         vm.prank(taker);
         IERC20(USDC).approve(address(ex), gross);
-        MPGRExecutor.SwapParams memory p = _params(SLIP_ROUTER, USDC, b20, gross, quoteOut * 2); // impossible minOut
+        MPGRExecutor.SwapParams memory p = _params(SLIP_ROUTER, USDC, k.token, gross, k.quoteOut * 2); // impossible minOut
         vm.prank(taker);
         vm.expectRevert();
-        ex.swapSlipstreamExactInputSingle(p, B20_TICK, _approval());
+        ex.swapSlipstreamExactInputSingle(p, k.tick, _approval());
         assertEq(IERC20(USDC).balanceOf(taker), gross, "taker fully refunded by revert");
         assertEq(IERC20(USDC).balanceOf(feeWallet), 0, "no fee without a swap");
     }
@@ -328,6 +370,7 @@ contract MPGRExecutorBaseForkTest is Test {
         IERC20(USDC).approve(address(ex), gross);
         MPGRExecutor.SwapParams memory p = _params(UNI_ROUTER02, USDC, WETH, gross, (quoteOut * 99) / 100);
         p.unwrapNativeOut = true;
+        assertEq(taker.code.length, 0, "taker is a plain EOA on the fork");
         uint256 ethBefore = taker.balance;
         vm.prank(taker);
         uint256 out = ex.swapUniswapV3ExactInputSingle(p, 500, _approval());
