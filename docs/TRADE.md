@@ -70,16 +70,23 @@ Every supported swap carries a 0.25% MPGR Agent fee on the SELL leg:
   (exact integer math in `lib/trade/trade-agent-fee.ts` — no float step,
   so all token decimals are exact by construction; decimals are used for
   display only).
-- Recipient: `NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT` (validated as a
+- Recipient: `MPGR_AGENT_FEE_RECIPIENT` (preferred, server-only) with
+  `NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT` as fallback — validated as a
   non-zero Base address; never a private key — signing stays with the
-  user's connected wallet).
+  user's connected wallet. The public var is inlined at BUILD time: after
+  adding/rotating it you MUST redeploy or the running build quotes no fee
+  (incident 2026-09-24). The server is the source of truth — execution
+  re-validates the quoted fee structurally and never depends on the
+  client's build-time env.
 - Collection: a SEPARATE wallet-signed transfer AFTER the swap settles
   (ERC-20 `transfer` on the sell token, or a native value transfer when
   selling ETH). The swap quote, calldata, approvals, slippage, routing,
   min-out, price impact, and gas estimate are never modified by the fee.
 - Disclosure: quoted fee, recipient, and post-confirmation steps are on
   the `TradeProposal` (`agentFee`), shown in the confirmation modal, and
-  re-validated before execution — only the exact displayed fee is sent.
+  re-validated before execution — only the exact displayed fee is sent. A
+  missing recipient also warns once in the server log so an uncollected
+  fee is diagnosable instead of silent.
 - Safety: fail-open for the swap, fail-closed for the fee. Unconfigured/
   invalid recipient, dust (fee rounds to 0), taker-equals-recipient, or a
   failed/cancelled fee transfer never blocks or fails the swap; the fee
