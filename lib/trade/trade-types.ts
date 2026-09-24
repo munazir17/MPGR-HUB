@@ -51,6 +51,12 @@ export interface CdpSwapFee {
 export interface CdpSwapFees {
   gasFee?: CdpSwapFee;
   protocolFee?: CdpSwapFee;
+  /**
+   * Provider-collected integrator fee (0x Swap API `swapFee*`). Present
+   * only when the provider embedded our fee in the swap transaction it
+   * generated — in that case the app must NOT send a separate fee.
+   */
+  integratorFee?: CdpSwapFee;
 }
 
 /**
@@ -80,6 +86,16 @@ export interface TradeAgentFee {
   displayAmount: string | null;
   /** Skip reason when skipped; null when applied. */
   reason: string | null;
+  /**
+   * How the fee is collected. `"provider-native"` means the provider
+   * already embedded the fee in the swap transaction it generated (0x
+   * `swapFeeRecipient`/`swapFeeBps`/`swapFeeToken`), so there is NOTHING
+   * for this app to send — no separate transfer and no atomic batch.
+   * `"post-swap"` (or absent) means this app still collects it.
+   * Optional so legacy/hand-built proposals stay valid; absent behaves
+   * exactly as `"post-swap"`.
+   */
+  collection?: "provider-native" | "post-swap";
 }
 
 export interface CdpAllowanceIssue {

@@ -1477,3 +1477,114 @@ describe("MPGR Agent fee — atomic execution", () => {
     expect(TRADE_CALLS_POLL_INTERVAL_MS).toBeLessThanOrEqual(5_000);
   });
 });
+
+describe("MPGR Agent fee — provider-native disclosure", () => {
+  it("33. provider-native fee is disclosed as charged by the provider", () => {
+    withFeeEnv();
+    const built = buildTradeProposal({
+      from: usdc,
+      to: mpgr,
+      quote: cdpQuote({
+        fromToken: BASE_USDC,
+        toToken: MPGR_TOKEN_CONFIG.address,
+        fromAmount: "10000000",
+        toAmount: "5000000000000000000",
+        minToAmount: "4950000000000000000",
+        fees: {
+          gasFee: { amount: "3000", token: BASE_USDC },
+          integratorFee: { amount: "25000", token: BASE_USDC },
+        },
+      }),
+      slippageBps: 100,
+      taker: TAKER,
+      provider: ZERO_EX_PROVIDER_ID,
+    });
+    if (!built.ok) throw new Error(built.error.message);
+
+    const p = built.proposal;
+    expect(p.agentFee?.collection).toBe("provider-native");
+    expect(p.agentFee?.amountAtomic).toBe("25000");
+    // Quote intact — the fee never touches amounts.
+    expect(p.fromAmount).toBe("10000000");
+    expect(p.toAmount).toBe("5000000000000000000");
+    expect(p.minToAmount).toBe("4950000000000000000");
+
+    // The disclosure must NOT claim a separate fee transfer.
+    const fact = p.risk.find((f) => f.id === "mpgr-agent-fee");
+    expect(fact?.severity).toBe("info");
+    expect(fact?.detail).toContain("0.025 USDC");
+    expect(fact?.detail).toContain(FEE_WALLET);
+    expect(fact?.detail).toContain("charged by the swap provider");
+    // Nothing in the copy implies an extra signature or a skipped fee.
+    expect(fact?.detail).not.toContain("cannot settle it atomically");
+    expect(fact?.detail).not.toContain("collected inside the swap transaction");
+
+    // Post-confirmation step wording matches the provider-native reality.
+    const step = p.postConfirmationSteps.find((s) => s.includes("0.25%"));
+    expect(step).toBeDefined();
+    expect(step).toContain("0.025 USDC");
+    expect(step).toContain("charged by the swap provider");
+    // The step must never promise a second signature.
+    expect(step).toContain("no separate fee signature");
+  });
+
+  it("34. post-swap fee disclosure is unchanged for non-native providers", () => {
+    withFeeEnv();
+    const built = buildTradeProposal({
+      from: usdc,
+      to: mpgr,
+      quote: cdpQuote({
+        fromToken: BASE_USDC,
+        toToken: MPGR_TOKEN_CONFIG.address,
+        fromAmount: "10000000",
+        toAmount: "5000000000000000000",
+        minToAmount: "4950000000000000000",
+      }),
+      slippageBps: 100,
+      taker: TAKER,
+      provider: CDP_TRADE_PROVIDER_ID,
+    });
+    if (!built.ok) throw new Error(built.error.message);
+
+    const p = built.proposal;
+    expect(p.agentFee?.collection).toBe("post-swap");
+    const fact = p.risk.find((f) => f.id === "mpgr-agent-fee");
+    // Existing wording is preserved verbatim.
+    expect(fact?.detail).toContain("collected inside the swap transaction");
+    expect(fact?.detail).toContain("settle it atomically");
+    expect(fact?.detail).not.toContain("charged by the swap provider");
+    const step = p.postConfirmationSteps.find((s) => s.includes("0.25%"));
+    expect(step).toContain("is collected inside that same swap transaction");
+    expect(step).not.toContain("charged by the swap provider");
+  });
+
+  it("35. a provider fee in the wrong token falls back and keeps the honest copy", () => {
+    withFeeEnv();
+    const built = buildTradeProposal({
+      from: usdc,
+      to: mpgr,
+      quote: cdpQuote({
+        fromToken: BASE_USDC,
+        toToken: MPGR_TOKEN_CONFIG.address,
+        fromAmount: "10000000",
+        toAmount: "5000000000000000000",
+        minToAmount: "4950000000000000000",
+        fees: {
+          gasFee: { amount: "3000", token: BASE_USDC },
+          // Buy-side fee — NOT our economic model.
+          integratorFee: { amount: "99000", token: MPGR_TOKEN_CONFIG.address },
+        },
+      }),
+      slippageBps: 100,
+      taker: TAKER,
+      provider: ZERO_EX_PROVIDER_ID,
+    });
+    if (!built.ok) throw new Error(built.error.message);
+
+    expect(built.proposal.agentFee?.collection).toBe("post-swap");
+    expect(built.proposal.agentFee?.amountAtomic).toBe("25000");
+    expect(built.proposal.risk.find((f) => f.id === "mpgr-agent-fee")?.detail).toContain(
+      "collected inside the swap transaction",
+    );
+  });
+});

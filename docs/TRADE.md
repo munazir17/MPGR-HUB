@@ -78,25 +78,64 @@ Every supported swap carries a 0.25% MPGR Agent fee on the SELL leg:
   (incident 2026-09-24). The server is the source of truth — execution
   re-validates the quoted fee structurally and never depends on the
   client's build-time env.
-- Collection: **atomic with the swap**. The fee is the second call of an
-  EIP-5792 atomic batch — `[swapCall, feeCall]` — so the wallet signs ONE
-  swap transaction and there is no third fee transaction or prompt. The
-  provider's swap quote, calldata, approvals, slippage, routing, min-out,
-  price impact, and gas estimate are never modified by the fee
-  (`lib/trade/trade-calls-batch.ts`).
-- Why atomic (and not a separate transfer): CDP Trade API has no
-  integrator-fee parameter at all, 0x's `swapFee*` only covers the 0x
-  fallback path, and the Aerodrome Slipstream `exactInputSingle` this app
-  builds has no fee hook. An atomic batch is the only mechanism that is
-  uniform across all three providers, needs no new contract, and leaves
-  every provider route byte-identical.
+- Collection: **provider-aware, atomic with the swap either way**. The fee
+  is never a third transaction and never a second prompt:
+  - **0x Swap API v2 (fallback path) — provider-native.** The router sends
+    `swapFeeRecipient`, `swapFeeBps = 25`, `swapFeeToken = sellToken` on
+    the `/swap/allowance-holder/*` request, so 0x embeds the fee in the
+    swap transaction it generates. 0x's own documented formula is
+    `swapFeeBps / 10000 * sellAmount` **in the sell token**, i.e. exactly
+    `floor(fromAmount * 25 / 10_000)`. The returned
+    `fees.integratorFee.amount/.token` is parsed and becomes the
+    authoritative displayed amount, and `agentFee.collection` is
+    `"provider-native"` — execution then sends **only** the swap.
+  - **CDP Trade API and Aerodrome Slipstream — app-side atomic batch.**
+    The fee is the second call of an EIP-5792 atomic batch —
+    `[swapCall, feeCall]` — so the wallet signs ONE swap transaction. The
+    provider's swap quote, calldata, approvals, slippage, routing,
+    min-out, price impact, and gas estimate are never modified by the fee
+    (`lib/trade/trade-calls-batch.ts`).
+- Why this split (and not a single mechanism): CDP Trade API has **no**
+  integrator-fee parameter at all, and the Aerodrome Slipstream
+  `exactInputSingle` this app builds has no fee hook that preserves a
+  sell-token fee (its `sweepTokenWithFee` charges the fee on the router's
+  post-swap balance of the **output** token — a buy-side fee, which is a
+  different economic model and was deliberately not implemented). The
+  0x native fee is requested only where it is **faithful**: the sell token
+  must be a real ERC-20, because `swapFeeToken` must be `buyToken` or
+  `sellToken`. A **native-ETH sell is excluded** — the only legal fee token
+  would be the buy token, i.e. a buy-side fee. WETH is a normal ERC-20 and
+  is eligible. No provider route is ever mutated; the router only adds
+  fee params to its own 0x request.
+- Eligibility gates (all fail-closed → the app-side path, never a broken
+  fee): a valid non-zero recipient, `swapFeeBps` inside 0x's documented
+  1–1000 range, and an ERC-20 (non-sentinel) sell token. When any gate
+  fails, **no** `swapFee*` param is sent, 0x returns a plain quote, and
+  the existing app-side collection applies — exactly as before.
+- Trust boundary: `agentFee.collection === "provider-native"` is set only
+  when 0x actually reported an integrator fee **in the sell token** with a
+  positive amount smaller than `fromAmount`. A fee in another token, a
+  zero/oversized/unparseable amount, or no fee at all falls back to
+  `"post-swap"` with the app-derived amount, so a provider that silently
+  drops the fee params cannot cost revenue or mis-report to the user.
 - Safety: fail-open for the swap, fail-closed for the fee. Unconfigured/
   invalid recipient, dust (fee rounds to 0), taker-equals-recipient, a
   wallet without `wallet_getCapabilities` atomic support on Base, or a
   wallet that does not hold sell + fee all mean the swap is broadcast
   exactly as before with **no** fee and **no** extra transaction; the
   reason is surfaced on the execution snapshot (`feeSkippedReason`).
-  There is never a fallback to a separate fee transfer.
+  There is never a fallback to a separate fee transfer. A
+  provider-native fee is *not* reported as skipped — it was collected,
+  just by 0x inside the swap.
+- Never both: on the 0x native path `resolveExecutionAgentFee` returns
+  `send: false`, so the atomic batch is never built and the fee cannot be
+  charged twice. `trade-execution.ts` gates `feeSkippedReason` on
+  `!providerNativeFee` for the same reason.
+- Requires live verification (not verifiable offline): whether 0x's
+  `buyAmount`/`minBuyAmount` are already net of the integrator fee, and
+  whether the taker must hold `sellAmount` or `sellAmount + fee`. The
+  implementation treats the provider's returned amounts as authoritative
+  and never adjusts them.
 - Atomicity trade-off (deliberate): inside an atomic batch the fee leg and
   the swap succeed or revert together, so a fee-leg revert reverts the
   swap. The eligibility gates above (atomic capability + sell + fee

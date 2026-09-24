@@ -177,7 +177,14 @@ export function AgentTradeConfirmationModal({
               {proposal.agentFee?.status === "applied" && proposal.agentFee.displayAmount && (
                 <div className="flex justify-between gap-3">
                   <dt className="text-zinc-500">MPGR agent fee (0.25%)</dt>
-                  <dd className="text-white">{proposal.agentFee.displayAmount} (in the swap tx)</dd>
+                  <dd className="text-right text-white">
+                    {proposal.agentFee.displayAmount}
+                    <span className="block text-[10px] text-zinc-500">
+                      {proposal.agentFee.collection === "provider-native"
+                        ? "charged by the swap provider"
+                        : "collected with the swap"}
+                    </span>
+                  </dd>
                 </div>
               )}
             </dl>

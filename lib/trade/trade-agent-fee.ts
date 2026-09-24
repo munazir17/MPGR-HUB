@@ -161,9 +161,16 @@ function skipped(reason: string): TradeAgentFee {
  */
 export function buildProposalAgentFee(input: {
   fromAmount: string;
-  from: Pick<TradeProposal["from"], "symbol" | "decimals">;
+  from: Pick<TradeProposal["from"], "symbol" | "decimals" | "address">;
   taker: string;
   executionAvailable: boolean;
+  /**
+   * Provider-reported integrator fee (0x `fees.integratorFee`). When
+   * present and valid, the fee is ALREADY inside the provider's swap
+   * transaction, so the app must not collect it again. The provider's
+   * amount is authoritative — it is the amount actually charged.
+   */
+  providerNativeFee?: { amount: string; token: string } | null;
 }): TradeAgentFee {
   if (!input.executionAvailable) {
     return skipped("No executable swap — no fee is charged.");
@@ -189,6 +196,45 @@ export function buildProposalAgentFee(input: {
   if (fee >= fromAmount) {
     return skipped("Fee is not smaller than the swap amount — no fee is charged.");
   }
+
+  // Provider-native fee: 0x embedded the fee in the swap transaction it
+  // generated. The provider's own number is what will actually be
+  // charged, so it wins over our recomputation — but it must be a
+  // positive atomic amount in the SAME sell token, otherwise the quote
+  // is not one we understand and we fail closed to our own collection.
+  const native = input.providerNativeFee;
+  if (native && native.token && isAddress(native.token)) {
+    let nativeAmount: bigint;
+    try {
+      nativeAmount = BigInt(native.amount);
+    } catch {
+      nativeAmount = 0n;
+    }
+    if (
+      nativeAmount > 0n &&
+      nativeAmount < fromAmount &&
+      native.token.toLowerCase() === input.from.address.toLowerCase()
+    ) {
+      return {
+        status: "applied",
+        bps: MPGR_AGENT_FEE_BPS,
+        recipient: recipient.recipient,
+        amountAtomic: nativeAmount.toString(),
+        displayAmount: `${formatAtomicAmount(nativeAmount.toString(), input.from.decimals)} ${input.from.symbol}`,
+        reason: null,
+        collection: "provider-native",
+      };
+    }
+    // A fee the provider reported in a different token, or with an
+    // amount we cannot reconcile, is not something we can display as
+    // "25 bps of the sell amount". Fail closed to our own collection so
+    // the fee is still charged exactly as defined.
+    console.warn(
+      "[mpgr-agent-fee] provider reported an integrator fee this app cannot reconcile " +
+        `(token ${native.token}, amount ${native.amount}); collecting the fee ourselves.`,
+    );
+  }
+
   return {
     status: "applied",
     bps: MPGR_AGENT_FEE_BPS,
@@ -196,6 +242,7 @@ export function buildProposalAgentFee(input: {
     amountAtomic: fee.toString(),
     displayAmount: `${formatAtomicAmount(fee.toString(), input.from.decimals)} ${input.from.symbol}`,
     reason: null,
+    collection: "post-swap",
   };
 }
 
@@ -224,6 +271,15 @@ export function resolveExecutionAgentFee(proposal: TradeProposal): ExecutionAgen
   const displayed = proposal.agentFee;
   if (!displayed || displayed.status !== "applied") {
     return { send: false, reason: displayed?.reason ?? "No agent fee on this proposal." };
+  }
+  // Provider-native fee: 0x already embedded it in the swap transaction
+  // it generated, so there is nothing for this app to send. Sending
+  // anything here would double-charge the user.
+  if (displayed.collection === "provider-native") {
+    return {
+      send: false,
+      reason: "The provider embeds the agent fee in the swap transaction — nothing to send.",
+    };
   }
   if (!proposal.executionAvailable) {
     return { send: false, reason: "No executable swap — no fee is charged." };

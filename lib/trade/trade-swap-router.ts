@@ -18,6 +18,7 @@ import "server-only";
 // does not deliver B20 tokens to the user's Base wallet.
 
 import { createAerodromeSlipstreamQuote, getAerodromeSlipstreamPrice } from "./aerodrome-slipstream";
+import { getAgentFeeRecipient, MPGR_AGENT_FEE_BPS } from "./trade-agent-fee";
 import { createCdpSwapQuote, getCdpSwapPrice } from "./trade-cdp-client";
 import { createZeroExSwapQuote, getZeroExSwapPrice, hasZeroExApiKey } from "./trade-0x-client";
 import { involvesCoinbaseB20 } from "./tokenized-stocks";
@@ -29,6 +30,12 @@ export interface RoutedSwapRequest {
   fromAmount: string;
   taker: string;
   slippageBps?: number;
+  /**
+   * Optional provider-native fee. Resolved by this module (not by
+   * callers) and honoured by the 0x path only; CDP and Aerodrome ignore
+   * it entirely.
+   */
+  agentFee?: { recipient: string; bps: number } | null;
 }
 
 export type RoutedSwapResult<T> =
@@ -64,6 +71,26 @@ function isB20Swap(request: RoutedSwapRequest): boolean {
   return involvesCoinbaseB20(request.fromToken, request.toToken);
 }
 
+/**
+ * Native 0x fee config, resolved server-side from the fee-recipient env
+ * so no caller has to change. Returns null when the fee wallet is
+ * unconfigured/invalid — 0x is then asked for a plain quote and the app
+ * collects nothing, exactly as an unconfigured fee wallet behaves today.
+ *
+ * CDP and Aerodrome are deliberately NOT given this: neither provider
+ * supports a fee parameter, and neither is asked for one.
+ */
+function resolveZeroExNativeFee(): { recipient: string; bps: number } | null {
+  const recipient = getAgentFeeRecipient();
+  if (!recipient.ok) return null;
+  return { recipient: recipient.recipient, bps: MPGR_AGENT_FEE_BPS };
+}
+
+/** Same request, with the native 0x fee attached for the 0x calls only. */
+function withZeroExNativeFee(request: RoutedSwapRequest): RoutedSwapRequest {
+  return { ...request, agentFee: resolveZeroExNativeFee() };
+}
+
 export async function getRoutedSwapPrice(
   request: RoutedSwapRequest,
 ): Promise<RoutedSwapResult<CdpSwapPrice>> {
@@ -80,7 +107,7 @@ export async function getRoutedSwapPrice(
     return cdp;
   }
 
-  const zx = await getZeroExSwapPrice(request);
+  const zx = await getZeroExSwapPrice(withZeroExNativeFee(request));
   if (zx.ok && zx.value.liquidityAvailable) {
     return { ok: true, value: zx.value, provider: "0x-swap-api" };
   }
@@ -115,7 +142,7 @@ export async function createRoutedSwapQuote(
     return cdp;
   }
 
-  const zx = await createZeroExSwapQuote(request);
+  const zx = await createZeroExSwapQuote(withZeroExNativeFee(request));
   if (zx.ok && zx.value.liquidityAvailable && zx.value.transaction) {
     return { ok: true, value: zx.value, provider: "0x-swap-api" };
   }

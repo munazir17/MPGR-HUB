@@ -583,11 +583,15 @@ export async function executeTrade(
     // falls back to the plain swap with the fee skipped.
     // ------------------------------------------------------------------
     const agentFee = resolveExecutionAgentFee(proposal);
+    // True when the provider (0x) already embedded the fee in the swap
+    // transaction it generated. The fee WAS collected — just not by us —
+    // so it must not be reported as skipped, and nothing is sent.
+    const providerNativeFee = proposal.agentFee?.collection === "provider-native";
     // Only a fee the user actually REVIEWED can be "not collected" in a
     // way worth reporting. No fee was ever quoted → stay silent, exactly
     // as an unconfigured fee wallet behaves today.
     let feeSkippedReason: string | null = null;
-    if (proposal.agentFee?.status === "applied" && !agentFee.send) {
+    if (proposal.agentFee?.status === "applied" && !agentFee.send && !providerNativeFee) {
       feeSkippedReason = agentFee.reason;
     }
     let batchId: string | null = null;
