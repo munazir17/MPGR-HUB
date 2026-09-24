@@ -12,6 +12,12 @@ remappings = [
 ]
 fuzz = { runs = 256 }
 invariant = { runs = 64, depth = 32 }
+# Deploy script writes its record to ./deployments; the local deploy-script
+# harness reads real Uniswap V3 / Permit2 bytecode from ./.uniswap-artifacts.
+fs_permissions = [
+  { access = "read-write", path = "./deployments" },
+  { access = "read", path = "./.uniswap-artifacts" },
+]
 
 [fmt]
 line_length = 120

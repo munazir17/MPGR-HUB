@@ -17,3 +17,9 @@ cache/
 tsconfig.tsbuildinfo
 next-env.d.ts
 .forge-deps/
+
+# MPGR Executor: forge script broadcasts (uploaded as CI artifacts instead),
+# local deploy-script harness output, and locally prepared Uniswap artifacts
+broadcast/
+deployments/.local/
+.uniswap-artifacts/

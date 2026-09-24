@@ -62,7 +62,30 @@ jobs:
       - run: mkdir -p .forge-deps
       - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
       - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+      # Real Uniswap V3 + Permit2 bytecode (pinned) so the Base Sepolia deploy
+      # script is dry-run end-to-end in test/script/ instead of skipping.
+      - run: bash script/prepare-uniswap-artifacts.sh
       - run: forge test -vvv
+
+  contracts-fork:
+    # MPGR Executor against the REAL Aerodrome Slipstream router/pools,
+    # Uniswap V3, native USDC (EIP-2612) and Permit2 on a LOCAL Base mainnet
+    # fork. Nothing is deployed or broadcast to Base mainnet.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - run: mkdir -p .forge-deps
+      - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+      - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+      - name: Fork tests (Base mainnet fork)
+        env:
+          # Optional secret for a dedicated RPC; falls back to the public endpoint.
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+        run: forge test --match-path 'test/fork/*' -vvv
 
   secret-scan:
     runs-on: ubuntu-latest
