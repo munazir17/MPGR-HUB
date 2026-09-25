@@ -17,3 +17,14 @@ cache/
 tsconfig.tsbuildinfo
 next-env.d.ts
 .forge-deps/
+
+# MPGR Executor: forge script broadcasts (uploaded as CI artifacts instead),
+# local deploy-script harness output, and locally prepared Uniswap artifacts
+broadcast/
+deployments/.local/
+.uniswap-artifacts/
+
+# Local/CI dry-run output of the mainnet deploy script tests (never a real deployment record)
+deployments/base-mainnet/.fork-dry-run*.json
+rehearse-sim.txt
+rehearse-bc.txt

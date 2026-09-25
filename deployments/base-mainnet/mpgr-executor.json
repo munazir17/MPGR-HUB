@@ -1,0 +1,68 @@
+{
+  "allowedTokens": {
+    "AAPLc": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+    "AMZNc": "0xb200000000000000000000d9192b6B456483C2E8",
+    "COINc": "0xb200000000000000000000c85a31389D71F3ecfb",
+    "CRCLc": "0xB20000000000000000000019f6E7C675b73C2e4D",
+    "GOOGLc": "0xb2000000000000000000002D0BA3164cc74f58B7",
+    "INTCc": "0xB2000000000000000000004AFF16039bA04bdFBc",
+    "METAc": "0xb2000000000000000000008bC8786B856E61707C",
+    "MSFTc": "0xB200000000000000000000Ab99cFa739E253872B",
+    "MSTRc": "0xb2000000000000000000004884b426556b92883d",
+    "NVDAc": "0xb20000000000000000000078ee7ce2fE4908108C",
+    "SNDKc": "0xb200000000000000000000397293Cb8cda9a10c5",
+    "SPCXc": "0xb2000000000000000000007b9fcbd005511aCBd5",
+    "TSLAc": "0xb2000000000000000000001e800a7f5189430cD0",
+    "USDC": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "WETH": "0x4200000000000000000000000000000000000006"
+  },
+  "appRoutingEnabled": false,
+  "chainId": 8453,
+  "deployer": "0xB54900f2c355CB0A61c62f8220191D3aAA6f4455",
+  "executor": "0xD982726e28275661F8aB64054E6b17a70a63505A",
+  "feeBps": 25,
+  "feeRecipient": "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
+  "maxFeeBps": 100,
+  "network": "base",
+  "owner": "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
+  "paused": false,
+  "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+  "router": {
+    "b20TickSpacing": 10,
+    "factory": "0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef",
+    "kind": "AERODROME_SLIPSTREAM",
+    "quoterV2": "0x514c8B5f54112481E28028F1166Bd78501089259",
+    "router": "0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F"
+  },
+  "routerAllowlist": [
+    "0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F"
+  ],
+  "weth": "0x4200000000000000000000000000000000000006",
+  "deployTx": "0xf17fcaef66a8a67153114a8a14b7813ffaa7ec2877eb5e9e35171467aa999d01",
+  "deployBlock": 51767139,
+  "deployTxStatus": "0x1",
+  "deployGasUsed": 2805700,
+  "deployEffectiveGasPriceWei": 5250001,
+  "deployL1FeeWei": 149433695819,
+  "transactionCount": 1,
+  "sourceCommit": "167906f5e6138cef3e9da2aeecdb059184cdc99a",
+  "prHeadSha": "51ec6b9d147e950be216c0517a37073c04fb0395",
+  "workflowRun": "https://github.com/munazir17/MPGR-HUB/actions/runs/36110098967",
+  "abi": "deployments/base-mainnet/MPGRExecutor.abi.json",
+  "verification": {
+    "sourcify": {
+      "status": "exact_match",
+      "step": "success",
+      "url": "https://repo.sourcify.dev/8453/0xD982726e28275661F8aB64054E6b17a70a63505A"
+    },
+    "blockscout": {
+      "verified": true,
+      "step": "success",
+      "url": "https://base.blockscout.com/address/0xD982726e28275661F8aB64054E6b17a70a63505A?tab=contract"
+    },
+    "basescan": {
+      "step": "success",
+      "url": "https://basescan.org/address/0xD982726e28275661F8aB64054E6b17a70a63505A#code"
+    }
+  }
+}

@@ -62,7 +62,72 @@ jobs:
       - run: mkdir -p .forge-deps
       - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
       - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+      # Real Uniswap V3 + Permit2 bytecode (pinned) so the Base Sepolia deploy
+      # script is dry-run end-to-end in test/script/ instead of skipping.
+      - name: Executor ABI in lib/executor is in sync with the contract
+        run: node script/gen-executor-abi.mjs --check
+      - run: bash script/prepare-uniswap-artifacts.sh
       - run: forge test -vvv
+        env:
+          MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
+
+  contracts-fork:
+    # MPGR Executor against the REAL Aerodrome Slipstream router/pools,
+    # Uniswap V3, native USDC (EIP-2612) and Permit2 on a LOCAL Base mainnet
+    # fork. Nothing is deployed or broadcast to Base mainnet.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - run: mkdir -p .forge-deps
+      - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+      - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+      - name: Fork tests (Base mainnet fork + Base Sepolia deployment)
+        env:
+          # Optional secret for a dedicated RPC; falls back to the public endpoint.
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          # Re-verifies the committed Base Sepolia deployment record against the live chain
+          # (test/fork/MPGRExecutorBaseSepoliaDeployment.t.sol). Read-only; nothing is broadcast.
+          BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
+        run: |
+          set +e -uo pipefail
+          forge build >/dev/null
+          forge test --match-path 'test/fork/*' --json > fork-results.json 2> fork-stderr.txt
+          STATUS=$?
+          if [ "$STATUS" != "0" ] && ! jq -e 'type == "object"' fork-results.json >/dev/null 2>&1; then
+            echo "::error title=forge test (fork) did not produce results::$(tail -c 1500 fork-stderr.txt | tr '\n' ' ')"
+          fi
+          # Surface results as annotations + step summary (readable without raw logs).
+          # GitHub keeps at most 10 annotations per level per step, so failures get one
+          # error each while passes/skips are aggregated into one notice per suite.
+          jq -r '
+            to_entries[] | .value.test_results | to_entries[] | select(.value.status == "Failure")
+            | "::error title=\(.key)::\((.value.reason // "failed")) | logs: \((.value.decoded_logs // []) | join(" ; "))"
+          ' fork-results.json || true
+          jq -r '
+            to_entries[]
+            | (.key | split(":") | last) as $suite
+            | [.value.test_results | to_entries[]] as $t
+            | ([$t[] | select(.value.status == "Success") | .key | sub("\\(\\)$"; "")]) as $p
+            | ([$t[] | select(.value.status == "Skipped") | .key | sub("\\(\\)$"; "")]) as $s
+            | ([$t[] | select(.value.status == "Failure")] | length) as $f
+            | "::\(if $f > 0 then "error" elif ($s | length) > 0 then "warning" else "notice" end) title=\($suite)::\($p | length) passed, \($s | length) skipped, \($f) failed. passed: \($p | join(", ")). skipped: \($s | join(", "))"
+          ' fork-results.json || true
+          if [ "$STATUS" != "0" ]; then
+            # Attach the tail of a full trace for each failing test (logs are not always retrievable).
+            for T in $(jq -r 'to_entries[] | .value.test_results | to_entries[] | select(.value.status == "Failure") | .key | sub("\\(.*";"")' fork-results.json 2>/dev/null); do
+              forge test --match-path 'test/fork/*' --match-test "^${T}\$" -vvvv > "trace-${T}.txt" 2>&1 || true
+              echo "::error title=trace ${T}::$(tail -c 3500 "trace-${T}.txt" | tr '\n' ' ' | sed 's/  */ /g')"
+            done
+          fi
+          {
+            echo "### Fork tests (Base mainnet fork + Base Sepolia deployment)"
+            jq -r 'to_entries[] | .value.test_results | to_entries[] | "- \(.value.status): `\(.key)` \(.value.reason // "")"' fork-results.json || true
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $STATUS
 
   secret-scan:
     runs-on: ubuntu-latest

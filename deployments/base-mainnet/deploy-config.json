@@ -1,0 +1,9 @@
+{
+  "_comment": "Reviewed, committed pins for the ONE-TIME Base Mainnet MPGRExecutor deployment. DEPLOYED by run 36110098967 (executor 0xD982726e28275661F8aB64054E6b17a70a63505A, see mpgr-executor.json); mainnetDeployEnabled is now false and the record exists, so script/DeployMPGRExecutorBaseMainnet.s.sol and the workflow refuse any further deployment. Deploying did NOT enable app routing: lib/executor/executor-config.ts keeps chain 8453 null.",
+  "chainId": 8453,
+  "mainnetDeployEnabled": false,
+  "owner": "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
+  "feeRecipient": "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
+  "feeBps": 25,
+  "maxFeeBps": 100
+}

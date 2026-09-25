@@ -1,0 +1,19 @@
+# .gitleaksignore — exact-finding exemptions (commit:file:rule:line).
+#
+# Commit 5a8f0bc (PR #57) introduced two TEST PLACEHOLDER strings that the
+# generic-api-key rule matched. Neither is a credential: one was a fake
+# HMAC key for unit tests, the other a fake "planted" value used to prove
+# /llm.txt never echoes environment variables. Both literals were replaced
+# by runtime-built, low-entropy values in the following commit. Published
+# history is not rewritten (no force-push), so only these two exact
+# fingerprints are exempted — every rule, path and future commit stays scanned.
+5a8f0bc24b513d09714dc3186de6d4eb39d8ee07:lib/mcp/__tests__/fixtures.ts:generic-api-key:26
+5a8f0bc24b513d09714dc3186de6d4eb39d8ee07:app/llm.txt/route.test.ts:generic-api-key:31
+#
+# Commit 9e7e6b1 (PR #57) added the Base Sepolia deployment record. Its
+# "testTokenUSD"/"testTokenStock" keys are the deploy script's output schema
+# (read by the deploy workflow's jq steps and by tests), and their values are
+# public ERC-20 contract addresses, not credentials. The name contains "token",
+# so generic-api-key matches. Only these two exact fingerprints are exempted.
+9e7e6b1ae89b517606683fcd653cc1993120f9bc:deployments/base-sepolia/mpgr-executor.json:generic-api-key:17
+9e7e6b1ae89b517606683fcd653cc1993120f9bc:deployments/base-sepolia/mpgr-executor.json:generic-api-key:18

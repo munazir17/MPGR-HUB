@@ -1,0 +1,271 @@
+name: Deploy MPGR Executor (Base Sepolia)
+
+# BASE SEPOLIA ONLY. Base mainnet deployment is intentionally NOT supported here.
+#
+# Trigger: add the `deploy-base-sepolia` label to a PR from THIS repository
+# (fork PRs never receive secrets and are rejected below), or run manually.
+#
+# Required configuration (Settings -> Secrets and variables -> Actions):
+#   secret   BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY  funded Base Sepolia key (gas payer + test taker)
+#   variable MPGR_EXECUTOR_OWNER                the designated owner/admin wallet (REQUIRED)
+# Optional:
+#   variable MPGR_EXECUTOR_FEE_RECIPIENT        defaults to MPGR_EXECUTOR_OWNER
+#   secret   BASE_SEPOLIA_RPC_URL               defaults to https://sepolia.base.org
+#   secret   ETHERSCAN_API_KEY                  enables Basescan verification (Etherscan V2)
+#   environment `base-sepolia`                  add required reviewers to gate deploys
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: deploy-executor-base-sepolia
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.label.name == 'deploy-base-sepolia' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: base-sepolia
+    env:
+      FOUNDRY_PROFILE: default
+      EXPECTED_CHAIN_ID: "84532"
+      BLOCKSCOUT_API: https://base-sepolia.blockscout.com/api/
+      OUT_DIR: deployments/base-sepolia
+      BROADCAST: broadcast/DeployMPGRExecutorBaseSepolia.s.sol/84532/run-latest.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Install Solidity dependencies (pinned, same as CI)
+        run: |
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+
+      - name: Preflight - configuration present (values never printed)
+        env:
+          DEPLOYER_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+          OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
+          FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          RPC_SECRET: ${{ secrets.BASE_SEPOLIA_RPC_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOYER_KEY}" ]; then
+            echo "::error::Missing secret BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY"; exit 1
+          fi
+          if ! [[ "${OWNER}" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Repository variable MPGR_EXECUTOR_OWNER must be set to the designated owner wallet (0x + 40 hex). Refusing to deploy."; exit 1
+          fi
+          echo "MPGR_EXECUTOR_OWNER=${OWNER}" >> "$GITHUB_ENV"
+          if [ -n "${FEE_RECIPIENT}" ]; then
+            if ! [[ "${FEE_RECIPIENT}" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+              echo "::error::MPGR_EXECUTOR_FEE_RECIPIENT is not an address"; exit 1
+            fi
+            echo "MPGR_EXECUTOR_FEE_RECIPIENT=${FEE_RECIPIENT}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${RPC_SECRET}" ]; then
+            echo "::add-mask::${RPC_SECRET}"
+            echo "BASE_SEPOLIA_RPC_URL=${RPC_SECRET}" >> "$GITHUB_ENV"
+          else
+            echo "BASE_SEPOLIA_RPC_URL=https://sepolia.base.org" >> "$GITHUB_ENV"
+          fi
+
+      - name: Preflight - RPC is Base Sepolia (84532)
+        run: |
+          set -euo pipefail
+          CHAIN_ID="$(cast chain-id --rpc-url "$BASE_SEPOLIA_RPC_URL")"
+          echo "RPC chain id: ${CHAIN_ID}"
+          if [ "${CHAIN_ID}" != "${EXPECTED_CHAIN_ID}" ]; then
+            echo "::error::RPC chain id ${CHAIN_ID} != 84532. Refusing to deploy."; exit 1
+          fi
+
+      - name: Gate - executor unit, fuzz, invariant tests
+        run: forge test --match-path 'test/executor/*' -vv
+
+      - name: Deploy + real swaps (simulated in full first, then broadcast)
+        env:
+          BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          forge script script/DeployMPGRExecutorBaseSepolia.s.sol:DeployMPGRExecutorBaseSepolia \
+            --rpc-url "$BASE_SEPOLIA_RPC_URL" --broadcast --slow -vvv
+          test -f "$OUT_DIR/mpgr-executor.json"
+          test -f "$BROADCAST"
+
+      - name: Collect deployment metadata (tx hashes, blocks, ABI)
+        run: |
+          set -euo pipefail
+          EXEC="$(jq -r .executor "$OUT_DIR/mpgr-executor.json")"
+          echo "EXECUTOR=${EXEC}" >> "$GITHUB_ENV"
+          echo "TUSD=$(jq -r .testTokenUSD "$OUT_DIR/mpgr-executor.json")" >> "$GITHUB_ENV"
+          echo "TSTOCK=$(jq -r .testTokenStock "$OUT_DIR/mpgr-executor.json")" >> "$GITHUB_ENV"
+          echo "ROUTER=$(jq -r .uniswapV3SwapRouter02 "$OUT_DIR/mpgr-executor.json")" >> "$GITHUB_ENV"
+          echo "WETH=$(jq -r .weth "$OUT_DIR/mpgr-executor.json")" >> "$GITHUB_ENV"
+          forge inspect contracts/executor/MPGRExecutor.sol:MPGRExecutor abi --json > "$OUT_DIR/MPGRExecutor.abi.json"
+          jq --slurpfile b "$BROADCAST" '
+            def hex2num: ltrimstr("0x") | ascii_downcase | explode
+              | reduce .[] as $c (0; . * 16 + (if $c >= 97 then $c - 87 else $c - 48 end));
+            ($b[0]) as $bc
+            | ($bc.receipts | map({key: .transactionHash, value: .}) | from_entries) as $rc
+            | ($bc.transactions | map(select(.transactionType == "CREATE" and .contractName == "MPGRExecutor")) | first) as $dtx
+            | ($bc.transactions | map(select((.function // "") | startswith("swapUniswapV3ExactInputSingle")))) as $stx
+            | .swaps = (.swapsJson | fromjson)
+            | del(.swapsJson)
+            | .deployTx = $dtx.hash
+            | .deployBlock = ($rc[$dtx.hash].blockNumber | hex2num)
+            | .swaps = [ range(0; .swaps | length) as $i
+                | .swaps[$i] + {
+                    txHash: $stx[$i].hash,
+                    blockNumber: ($rc[$stx[$i].hash].blockNumber | hex2num),
+                    status: ($rc[$stx[$i].hash].status)
+                  } ]
+            | .allTransactions = [ $bc.transactions[] | {hash, type: .transactionType, contractName, contractAddress, function} ]
+            | .sourceCommit = env.GITHUB_SHA
+            | .abi = "deployments/base-sepolia/MPGRExecutor.abi.json"
+          ' "$OUT_DIR/mpgr-executor.json" > /tmp/deployment.json
+          mv /tmp/deployment.json "$OUT_DIR/mpgr-executor.json"
+          jq '{executor, deployTx, deployBlock, owner, feeRecipient, feeBps, swaps: [.swaps[] | {kind, txHash, status, feeAmount}]}' "$OUT_DIR/mpgr-executor.json"
+          # Every swap receipt must be successful (0x1).
+          jq -e '[.swaps[].status] | all(. == "0x1")' "$OUT_DIR/mpgr-executor.json" > /dev/null
+
+      - name: Verify source - Sourcify
+        id: sourcify
+        continue-on-error: true
+        run: |
+          forge verify-contract "$EXECUTOR" contracts/executor/MPGRExecutor.sol:MPGRExecutor \
+            --chain 84532 --verifier sourcify --watch
+          for T in "$TUSD" "$TSTOCK"; do
+            forge verify-contract "$T" contracts/testnet/MPGRTestnetToken.sol:MPGRTestnetToken \
+              --chain 84532 --verifier sourcify --watch || true
+          done
+
+      - name: Verify source - Blockscout
+        id: blockscout
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          DEPLOY_TX="$(jq -r .deployTx "$OUT_DIR/mpgr-executor.json")"
+          INPUT="$(cast tx "$DEPLOY_TX" input --rpc-url "$BASE_SEPOLIA_RPC_URL")"
+          CODE="$(forge inspect contracts/executor/MPGRExecutor.sol:MPGRExecutor bytecode)"
+          ARGS="0x${INPUT:${#CODE}}"
+          echo "$ARGS" > "$OUT_DIR/MPGRExecutor.constructor-args.txt"
+          forge verify-contract "$EXECUTOR" contracts/executor/MPGRExecutor.sol:MPGRExecutor \
+            --chain 84532 --verifier blockscout --verifier-url "$BLOCKSCOUT_API" \
+            --constructor-args "$ARGS" --watch
+
+      - name: Verify source - Basescan (only if ETHERSCAN_API_KEY is set)
+        id: basescan
+        continue-on-error: true
+        env:
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ETHERSCAN_API_KEY}" ]; then echo "skipped (no ETHERSCAN_API_KEY)"; exit 0; fi
+          forge verify-contract "$EXECUTOR" contracts/executor/MPGRExecutor.sol:MPGRExecutor \
+            --chain 84532 --verifier etherscan --etherscan-api-key "$ETHERSCAN_API_KEY" \
+            --constructor-args "$(cat "$OUT_DIR/MPGRExecutor.constructor-args.txt")" --watch
+
+      - name: Record verification status (queried from explorers)
+        run: |
+          set -uo pipefail
+          sleep 15
+          SOURCIFY="$(curl -fsS "https://sourcify.dev/server/v2/contract/84532/${EXECUTOR}" | jq -r '.match // "none"' || echo none)"
+          BLOCKSCOUT="$(curl -fsS "https://base-sepolia.blockscout.com/api/v2/smart-contracts/${EXECUTOR}" | jq -r '.is_verified // false' || echo false)"
+          echo "SOURCIFY_STATUS=${SOURCIFY}" >> "$GITHUB_ENV"
+          echo "BLOCKSCOUT_STATUS=${BLOCKSCOUT}" >> "$GITHUB_ENV"
+          jq --arg s "$SOURCIFY" --arg b "$BLOCKSCOUT" \
+             --arg sOut "${{ steps.sourcify.outcome }}" --arg bOut "${{ steps.blockscout.outcome }}" --arg eOut "${{ steps.basescan.outcome }}" \
+             '.verification = {
+                sourcify: {status: $s, step: $sOut, url: ("https://repo.sourcify.dev/84532/" + .executor)},
+                blockscout: {verified: ($b == "true"), step: $bOut, url: ("https://base-sepolia.blockscout.com/address/" + .executor + "?tab=contract")},
+                basescan: {step: $eOut, url: ("https://sepolia.basescan.org/address/" + .executor + "#code")}
+              }' "$OUT_DIR/mpgr-executor.json" > /tmp/d.json && mv /tmp/d.json "$OUT_DIR/mpgr-executor.json"
+
+      - name: Post-deploy on-chain checks (cast)
+        run: |
+          set -euo pipefail
+          R="--rpc-url $BASE_SEPOLIA_RPC_URL"
+          lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+          EXPECTED_FEE_RECIPIENT="${MPGR_EXECUTOR_FEE_RECIPIENT:-$MPGR_EXECUTOR_OWNER}"
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$(cast chain-id $R)" = "84532" ] || fail "chain id"
+          [ "$(lc "$(cast call "$EXECUTOR" 'owner()(address)' $R)")" = "$(lc "$MPGR_EXECUTOR_OWNER")" ] || fail "owner != MPGR_EXECUTOR_OWNER"
+          [ "$(cast call "$EXECUTOR" 'pendingOwner()(address)' $R)" = "0x0000000000000000000000000000000000000000" ] || fail "pendingOwner != 0"
+          [ "$(cast call "$EXECUTOR" 'feeBps()(uint16)' $R)" = "25" ] || fail "feeBps != 25"
+          [ "$(cast call "$EXECUTOR" 'MAX_FEE_BPS()(uint16)' $R)" = "100" ] || fail "MAX_FEE_BPS != 100"
+          [ "$(lc "$(cast call "$EXECUTOR" 'feeRecipient()(address)' $R)")" = "$(lc "$EXPECTED_FEE_RECIPIENT")" ] || fail "feeRecipient"
+          [ "$(cast call "$EXECUTOR" 'paused()(bool)' $R)" = "false" ] || fail "paused"
+          [ "$(cast call "$EXECUTOR" 'routerKind(address)(uint8)' "$ROUTER" $R)" = "2" ] || fail "router not UNISWAP_V3_ROUTER02"
+          for T in "$WETH" "$TUSD" "$TSTOCK"; do
+            [ "$(cast call "$EXECUTOR" 'isTokenAllowed(address)(bool)' "$T" $R)" = "true" ] || fail "token $T not allowed"
+          done
+          [ "$(cast balance "$EXECUTOR" $R)" = "0" ] || fail "executor holds ETH"
+          for T in "$WETH" "$TUSD" "$TSTOCK"; do
+            [ "$(cast call "$T" 'balanceOf(address)(uint256)' "$EXECUTOR" $R | awk '{print $1}')" = "0" ] || fail "executor holds $T"
+          done
+          [ -n "$(cast code "$EXECUTOR" $R | sed 's/^0x//')" ] || fail "no code"
+          echo "All post-deploy checks passed."
+
+      - name: Job summary
+        if: always()
+        run: |
+          F="$OUT_DIR/mpgr-executor.json"
+          {
+            echo "## MPGR Executor - Base Sepolia (84532)"
+            if [ -f "$F" ] && jq -e .deployTx "$F" >/dev/null 2>&1; then
+              echo ""
+              echo "| Field | Value |"
+              echo "|---|---|"
+              jq -r '
+                "| Executor | [`\(.executor)`](https://sepolia.basescan.org/address/\(.executor)) |",
+                "| Deploy tx | [`\(.deployTx)`](https://sepolia.basescan.org/tx/\(.deployTx)) |",
+                "| Block | \(.deployBlock) |",
+                "| Chain ID | \(.chainId) |",
+                "| Owner (admin) | `\(.owner)` |",
+                "| Fee recipient | `\(.feeRecipient)` |",
+                "| Fee | \(.feeBps) bps (hard cap \(.maxFeeBps) bps) |",
+                "| Router (Uniswap V3 SwapRouter02) | `\(.uniswapV3SwapRouter02)` |",
+                "| Allowed tokens | WETH `\(.weth)`, tUSD `\(.testTokenUSD)`, tSTOCK `\(.testTokenStock)` |",
+                "| Sourcify | \(.verification.sourcify.status // "n/a") |",
+                "| Blockscout verified | \(.verification.blockscout.verified // "n/a") |",
+                "| Basescan step | \(.verification.basescan.step // "n/a") |",
+                "| Source commit | `\(.sourceCommit)` |"
+              ' "$F"
+              echo ""
+              echo "### Real swaps through the executor"
+              echo "| Kind | Gross in | Fee (exact 25 bps) | Out | Tx |"
+              echo "|---|---|---|---|---|"
+              jq -r '.swaps[] | "| \(.kind) | \(.grossAmountIn) | \(.feeAmount) | \(.amountOut) | [`\(.txHash[0:12])…`](https://sepolia.basescan.org/tx/\(.txHash)) |"' "$F"
+            else
+              echo "Deployment did not complete - see logs."
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY" > /tmp/summary.md
+
+      - name: Upload deployment record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpgr-executor-base-sepolia
+          path: |
+            deployments/base-sepolia/
+            broadcast/DeployMPGRExecutorBaseSepolia.s.sol/84532/run-latest.json
+          if-no-files-found: warn
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --body-file /tmp/summary.md || true
