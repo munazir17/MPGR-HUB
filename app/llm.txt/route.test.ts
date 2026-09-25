@@ -29,7 +29,7 @@ describe("/llm.txt", () => {
     const text = buildLlmTxt(); // default = the production registry
     expect(text).toContain("0xD982726e28275661F8aB64054E6b17a70a63505A");
     expect(text).toContain("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
-    expect(text).toContain("aerodrome-slipstream tickSpacing 50");
+    expect(text).toContain("uniswap-v3 fee 3000");
     expect(text).toContain("MPGR_MCP_ENABLE_BASE_MAINNET=true");
     expect(text).not.toMatch(/chainId 8453[\s\S]{0,240}not deployed/);
   });

@@ -8,11 +8,35 @@ The project follows a milestone-based development roadmap.
 
 # Unreleased
 
+## MPGR Executor — Base Mainnet route migration: Aerodrome Slipstream → official Uniswap V3
+
+### Changed
+
+- The Base Mainnet (8453) executor route for **USDC <-> WETH** (incl. native ETH in/out) now targets the official Base Uniswap V3 deployment instead of the app's Aerodrome Slipstream pool: SwapRouter02 `0x2626664c2603336E57B271c5C0b26F421741e481`, QuoterV2 `0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a`, factory `0x33128a8fC17869897dcE68Ed026d694621f6FDfD`, WETH/USDC **0.30% (fee 3000)** pool `0x6c561B446416E1A00E8E93E221854d6eA4171372`. `mpgr_list_tokens`, `mpgr_get_quote` and `/llm.txt` now advertise `uniswap-v3 fee 3000`.
+- `lib/executor/uniswap-v3-pool.ts` derives the pool with CREATE2 (`keccak256(0xff ++ factory ++ keccak256(token0, token1, fee) ++ POOL_INIT_CODE_HASH)`) so the registered pool is proven against the factory instead of being copy-pasted. The derivation is cross-checked in the tests against the well-known Base WETH/USDC 0.05% pool.
+
+### Added
+
+- `lib/executor/__tests__/uniswap-v3-mainnet-route.test.ts` (offline): V3/3000 route selection in both directions, CREATE2 pool verification, byte-exact QuoterV2 quote calldata, exact 25 bps fee math incl. the `FEE_ROUNDS_TO_ZERO` refusal, byte-exact `swapUniswapV3ExactInputSingle` calldata, exact-amount approval (never unlimited), and the unchanged fallback of B20/other pairs to the 0x path.
+- `script/prepare-uniswap-v3-allowlist.mjs`: prepare-only owner tooling. It re-checks the committed deployment record, re-derives the pool, optionally verifies (read-only `eth_call`) that the router is bound to the official factory and which `routerKind` the live executor currently reports, and prints the unsigned `setRouter(SwapRouter02, 2)` transaction plus the `cast` commands to send and verify it. It never reads, accepts or uses a private key, never signs and never broadcasts.
+
+### Unchanged (explicitly)
+
+- `contracts/executor/MPGRExecutor.sol` is untouched — no redeploy; executor `0xD982726e28275661F8aB64054E6b17a70a63505A`, owner, fee recipient and the 15-token allowlist are unchanged.
+- The **exact 25 bps** sell-token fee (`floor(sellAmount * 25 / 10_000)`, collected inside the same transaction) is unchanged.
+- The non-custodial flow is unchanged: exact-amount `approve(executor, gross)`, EIP-2612 and Permit2 signing by the user's wallet, recipient == taker, single-hop `exactInputSingle`.
+- Fallback routes are unchanged: every non-proven pair (incl. B20 tokenized stocks) still goes through the 0x native-fee path, and the app UI keeps its CDP/B20 Slipstream flows.
+
+### Notes
+
+- **No owner transaction was executed.** The deployed executor still has the Aerodrome Slipstream router allowlisted (kind 1); the Uniswap V3 router is **not** allowlisted on chain yet, so the new registry route is inert until the owner sends `setRouter(0x2626664c…e481, 2)`. Mainnet MCP trading stays OFF regardless until `MPGR_MCP_ENABLE_BASE_MAINNET=true` is set.
+- Wording correction: the old Slipstream route's evidence was **fork/simulation** (CI Base-mainnet fork suite plus the smoke script, whose `rehearsal` mode runs on a local anvil fork and broadcasts nothing). No confirmed live mainnet trade through the executor was ever recorded, so it is no longer described as a live 71/71 mainnet smoke test.
+
 ## MPGR MCP — Base Mainnet go-live preparation
 
 ### Added
 
-- Registered the deployed Base Mainnet MPGR Executor (`0xD982726e28275661F8aB64054E6b17a70a63505A`, deploy tx `0xf17fcaef…99d01`, block 51767139) in `lib/executor/executor-config.ts` — a deployed fact mirrored field-for-field from `deployments/base-mainnet/mpgr-executor.json` (enforced by `lib/executor/__tests__/executor-registry.test.ts`). Only the proven **USDC <-> WETH** Aerodrome Slipstream route (tickSpacing 50, pool `0x3FE04A59…392A`) is registered; the contract's B20 tokenized-stock allowlist is deliberately excluded because no USDC<->B20 swap through the executor has ever been executed.
+- Registered the deployed Base Mainnet MPGR Executor (`0xD982726e28275661F8aB64054E6b17a70a63505A`, deploy tx `0xf17fcaef…99d01`, block 51767139) in `lib/executor/executor-config.ts` — a deployed fact mirrored field-for-field from `deployments/base-mainnet/mpgr-executor.json` (enforced by `lib/executor/__tests__/executor-registry.test.ts`). Only the proven **USDC <-> WETH** route is registered; the contract's B20 tokenized-stock allowlist is deliberately excluded because no USDC<->B20 swap through the executor has ever been executed. That route was the Aerodrome Slipstream pool (tickSpacing 50, pool `0x3FE04A59…392A`) at the time — superseded below by the official Base Uniswap V3 0.30% pool.
 - MCP Base mainnet provider dispatch: with `MPGR_MCP_ENABLE_BASE_MAINNET=true`, proven executor pairs (USDC <-> WETH, incl. native ETH in/out) quote through the executor (live on-chain fee, quoter, HMAC quoteId, exact-amount APPROVAL / EIP-2612 / Permit2, one atomic tx with the exact 25 bps sell-token fee); every other ERC-20 pair falls back to the existing 0x native-fee path (unchanged, exact-fee-verified). B20 addresses are never routed through the executor.
 - `mpgr_get_capabilities` / `mpgr_list_tokens` now report the deployed mainnet executor, the operator trading state (`tradingEnabled`), the proven mainnet pair and the dispatch rules. `/llm.txt` and `/llms.txt` advertise the deployed mainnet executor, its route and the operator gate (no stale "not deployed" claims; still built only from committed public config).
 

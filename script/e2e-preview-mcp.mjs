@@ -488,7 +488,7 @@ async function main() {
   const llm = await fetch(url("/llm.txt"), { headers: headers() });
   const llmText = await llm.text();
   check("executor", "/llm.txt advertises the Sepolia executor", llm.status === 200 && llmText.includes(`MPGR Executor: ${EXPECTED_EXECUTOR}`), `HTTP ${llm.status}`);
-  check("mainnet", "/llm.txt advertises the deployed Base mainnet executor", llm.status === 200 && llmText.includes(`MPGR Executor: ${EXPECTED_MAINNET_EXECUTOR}`) && llmText.includes("aerodrome-slipstream tickSpacing 50"), `HTTP ${llm.status}`);
+  check("mainnet", "/llm.txt advertises the deployed Base mainnet executor", llm.status === 200 && llmText.includes(`MPGR Executor: ${EXPECTED_MAINNET_EXECUTOR}`) && llmText.includes("uniswap-v3 fee 3000"), `HTTP ${llm.status}`);
 
   // ---------------------------------------------------------------- 6. nothing signed / broadcast server-side
   const nonceAfter = { latest: await client.getTransactionCount({ address: DEPLOYER }), pending: await client.getTransactionCount({ address: DEPLOYER, blockTag: "pending" }) };

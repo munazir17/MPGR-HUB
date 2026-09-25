@@ -21,9 +21,9 @@ import {
   EXECUTOR,
   FEE_RECIPIENT,
   MAINNET_EXECUTOR,
+  MAINNET_POOL_FEE,
   MAINNET_REGISTRY,
-  MAINNET_SLIP_ROUTER,
-  MAINNET_TICK_SPACING,
+  MAINNET_UNI_ROUTER02,
   MAINNET_USDC,
   MAINNET_WETH,
   PERMIT2,
@@ -381,12 +381,12 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
     expect(execOnly.tradingProviders).toEqual(["mpgr-executor"]);
   });
 
-  it("listTokens(8453) lists exactly USDC/WETH and the proven Slipstream pair", () => {
+  it("listTokens(8453) lists exactly USDC/WETH and the proven Uniswap V3 0.30% pair", () => {
     const d = ok(listTokens(mainnetDeps(), { chainId: 8453 }));
     expect(d.tradingEnabled).toBe(true);
     expect((d.tokens as Data[]).map((t) => t.symbol)).toEqual(["USDC", "WETH"]);
     expect(d.pairs).toEqual([
-      { tokenA: USDC, tokenB: MAINNET_WETH, venue: "aerodrome-slipstream", poolFee: null, tickSpacing: MAINNET_TICK_SPACING },
+      { tokenA: USDC, tokenB: MAINNET_WETH, venue: "uniswap-v3", poolFee: MAINNET_POOL_FEE, tickSpacing: null },
     ]);
     expect(d.nativeEth).toMatchObject({ symbol: "ETH", via: MAINNET_WETH });
     expect(String(d.note)).toContain("never routed through the executor");
@@ -412,10 +412,10 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
       balanceSufficient: true,
       route: {
         provider: "mpgr-executor",
-        venue: "aerodrome-slipstream",
+        venue: "uniswap-v3",
         executor: MAINNET_EXECUTOR,
-        router: MAINNET_SLIP_ROUTER,
-        tickSpacing: MAINNET_TICK_SPACING,
+        router: MAINNET_UNI_ROUTER02,
+        poolFee: MAINNET_POOL_FEE,
         hops: 1,
       },
     });
@@ -428,7 +428,7 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
     state.ethBalance = 10n ** 18n;
     const d = mainnetDeps();
     const weth = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: "WETH", buyToken: "USDC", sellAmount: "1000000000000000000" }));
-    expect(weth).toMatchObject({ sellNative: false, buyNative: false, route: { venue: "aerodrome-slipstream" } });
+    expect(weth).toMatchObject({ sellNative: false, buyNative: false, route: { venue: "uniswap-v3" } });
     const ethIn = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: "ETH", buyToken: "USDC", sellAmount: "1000000000000000000" }));
     expect(ethIn).toMatchObject({ sellNative: true, feeToken: "ETH", feeAmount: "2500000000000000" });
     const ethOut = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: "USDC", buyToken: "ETH", sellAmount: "10000000" }));
@@ -438,7 +438,7 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
     expect((decoded.args?.[0] as Data).unwrapNativeOut).toBe(true);
   });
 
-  it("APPROVAL: exact approval to the mainnet executor, then the Slipstream swap calldata", async () => {
+  it("APPROVAL: exact approval to the mainnet executor, then the Uniswap V3 swap calldata", async () => {
     setBalance(state, USDC, TAKER, 10_000_000n);
     const d = mainnetDeps();
     const q = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: MAINNET_WETH, sellAmount: "10000000" }));
@@ -451,9 +451,9 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
     const tx = p.transactionRequest as { to: string; data: Hex; value: string; chainId: number };
     expect(tx).toMatchObject({ to: MAINNET_EXECUTOR, value: "0", chainId: 8453 });
     const decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: tx.data });
-    expect(decoded.functionName).toBe("swapSlipstreamExactInputSingle");
+    expect(decoded.functionName).toBe("swapUniswapV3ExactInputSingle");
     expect(decoded.args?.[0]).toMatchObject({
-      router: MAINNET_SLIP_ROUTER,
+      router: MAINNET_UNI_ROUTER02,
       tokenIn: USDC,
       tokenOut: MAINNET_WETH,
       grossAmountIn: 10_000_000n,
@@ -461,7 +461,7 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
       recipient: TAKER,
       unwrapNativeOut: false,
     });
-    expect(decoded.args?.[1]).toBe(MAINNET_TICK_SPACING);
+    expect(decoded.args?.[1]).toBe(MAINNET_POOL_FEE);
   });
 
   it("native ETH sells need no approval and send value == gross", async () => {
@@ -493,7 +493,8 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
     const tx = fin.transactionRequest as { to: string; data: Hex };
     expect(tx.to).toBe(MAINNET_EXECUTOR);
     const decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: tx.data });
-    expect(decoded.functionName).toBe("swapSlipstreamExactInputSingle");
+    expect(decoded.functionName).toBe("swapUniswapV3ExactInputSingle");
+    expect(decoded.args?.[1]).toBe(MAINNET_POOL_FEE);
     const auth = decoded.args?.[2] as Data;
     expect(auth.kind).toBe(authorization === "EIP2612" ? 1 : 2);
     expect(auth.nonce).toBe(BigInt(permit.nonce));
@@ -510,7 +511,7 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
       logs: [
         swapExecutedLog(MAINNET_EXECUTOR, {
           taker: TAKER,
-          router: MAINNET_SLIP_ROUTER,
+          router: MAINNET_UNI_ROUTER02,
           intentId: params.intentId,
           tokenIn: USDC,
           tokenOut: MAINNET_WETH,
@@ -520,7 +521,7 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
           amountOut: 19_900_000n,
           feeRecipient: FEE_RECIPIENT,
           feeBps: 25,
-          routerKind: RouterKind.AERODROME_SLIPSTREAM,
+          routerKind: RouterKind.UNISWAP_V3_ROUTER02,
           flags: 0,
         }),
       ],
@@ -552,9 +553,9 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
       to: MAINNET_EXECUTOR,
       logs: [
         swapExecutedLog(MAINNET_EXECUTOR, {
-          taker: TAKER, router: MAINNET_SLIP_ROUTER, intentId: params.intentId, tokenIn: USDC, tokenOut: MAINNET_WETH,
+          taker: TAKER, router: MAINNET_UNI_ROUTER02, intentId: params.intentId, tokenIn: USDC, tokenOut: MAINNET_WETH,
           grossAmountIn: 10_000_000n, feeAmount: 24_999n, swapAmountIn: 9_975_001n, amountOut: 19_900_000n,
-          feeRecipient: TAKER, feeBps: 25, routerKind: RouterKind.AERODROME_SLIPSTREAM, flags: 0,
+          feeRecipient: TAKER, feeBps: 25, routerKind: RouterKind.UNISWAP_V3_ROUTER02, flags: 0,
         }),
       ],
     };
