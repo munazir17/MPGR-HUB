@@ -7,6 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ChainReader } from "@/lib/executor/executor-chain";
 import {
   BASE_MAINNET_CHAIN_ID,
+  BASE_MAINNET_UNISWAP_V3,
+  BASE_MAINNET_USDC_WETH_POOL,
+  BASE_MAINNET_USDC_WETH_POOL_FEE,
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_EXECUTOR_DEPLOYMENT,
   BASE_MAINNET_EXECUTOR_DEPLOYMENT,
@@ -14,6 +17,7 @@ import {
   RouterKind,
   getExecutorDeployment,
 } from "@/lib/executor/executor-config";
+import { computeUniswapV3PoolAddress } from "@/lib/executor/uniswap-v3-pool";
 import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
 import { buildLlmTxt } from "@/lib/mcp/llm-txt";
 import { createMcpDeps, isMcpMainnetEnabled } from "@/lib/mcp/mcp-deps";
@@ -128,17 +132,24 @@ describe("Base Mainnet executor registry", () => {
     expect(dMain.explorerUrl).toContain(dMain.executor);
   });
 
-  it("registers ONLY the proven USDC <-> WETH Slipstream route (no invented B20 routes)", () => {
+  it("registers ONLY the proven USDC <-> WETH Uniswap V3 route (no invented B20 routes)", () => {
     expect(dMain.tokens.map((t) => ({ symbol: t.symbol, address: t.address, decimals: t.decimals }))).toEqual([
       { symbol: "USDC", address: MAINNET_RECORD.allowedTokens.USDC, decimals: 6 },
       { symbol: "WETH", address: MAINNET_RECORD.allowedTokens.WETH, decimals: 18 },
     ]);
     expect(dMain.routes).toHaveLength(1);
     const r = dMain.routes[0];
-    expect(r.kind).toBe(RouterKind.AERODROME_SLIPSTREAM);
-    expect(r.router).toBe(MAINNET_RECORD.router.router);
-    expect(r.quoter).toBe(MAINNET_RECORD.router.quoterV2);
-    expect(r.tickSpacing).toBe(50); // the proven WETH/USDC ts=50 pool (live smoke test 71/71)
+    expect(r.kind).toBe(RouterKind.UNISWAP_V3_ROUTER02);
+    // The production venue migrated from Aerodrome Slipstream (the record's router) to the
+    // official Base Uniswap V3 deployment; the record still describes the deployed contract.
+    expect(r.router).toBe(BASE_MAINNET_UNISWAP_V3.swapRouter02);
+    expect(r.quoter).toBe(BASE_MAINNET_UNISWAP_V3.quoterV2);
+    expect(r.poolFee).toBe(BASE_MAINNET_USDC_WETH_POOL_FEE);
+    expect(r.poolFee).toBe(3000); // official Base Uniswap V3 WETH/USDC 0.30% pool
+    expect(r.tickSpacing).toBeUndefined();
+    expect(computeUniswapV3PoolAddress(BASE_MAINNET_UNISWAP_V3.factory, dMain.weth, getAddress(MAINNET_RECORD.allowedTokens.USDC), 3000)).toBe(
+      BASE_MAINNET_USDC_WETH_POOL,
+    );
     expect([lc(r.tokenA), lc(r.tokenB)].sort()).toEqual([lc(MAINNET_RECORD.allowedTokens.USDC), lc(MAINNET_RECORD.weth)].sort());
     // The contract allowlists 13 B20 tokenized stocks; none may be routable over MCP.
     const b20 = Object.entries(MAINNET_RECORD.allowedTokens).filter(([, a]) => lc(a).startsWith("0xb2"));
@@ -298,7 +309,7 @@ describe("production MCP wiring", () => {
     expect(text).toContain(`MPGR Executor: ${RECORD.executor}`);
     expect(text).toContain(`MPGR Executor: ${MAINNET_RECORD.executor}`);
     expect(text).toContain(`Fee recipient: ${RECORD.feeRecipient}`);
-    expect(text).toContain("aerodrome-slipstream tickSpacing 50");
+    expect(text).toContain("uniswap-v3 fee 3000");
     expect(text).toContain("MPGR_MCP_ENABLE_BASE_MAINNET=true");
     expect(text).not.toMatch(/chainId 8453[\s\S]{0,200}not deployed/);
   });

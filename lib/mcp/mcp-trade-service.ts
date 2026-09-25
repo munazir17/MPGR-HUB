@@ -270,8 +270,10 @@ export function getCapabilities(deps: McpDeps): ToolOutcome {
       providers: {
         "mpgr-executor": "Custom MPGR executor (NOT externally audited yet): typed Aerodrome Slipstream + Uniswap V3 adapters, allowlisted routers/tokens, exact fee, atomic. Deployed on Base mainnet and Base Sepolia.",
         "0x-native-fee": "0x Swap API (AllowanceHolder) with swapFeeToken=sellToken; quote rejected unless the integrator fee is exactly floor(sellAmount*25/10000) of the sell token. Base mainnet only, for pairs without a proven executor route; disabled by default.",
-        "aerodrome-slipstream": "Venue used by mpgr-executor on Base mainnet (USDC<->WETH, tickSpacing 50). Proven by the live mainnet smoke test (71/71 checks) and the CI Base-mainnet fork suite.",
-        "uniswap-v3": "Venue used by mpgr-executor on Base Sepolia (tUSD/tSTOCK and WETH/tUSD, fee 3000).",
+        "uniswap-v3":
+          "Venue used by mpgr-executor on Base mainnet (USDC<->WETH, fee 3000 — the official Base Uniswap V3 0.30% pool) and on Base Sepolia (tUSD/tSTOCK and WETH/tUSD, fee 3000). Swaps go through Uniswap V3 SwapRouter02 exactInputSingle; the pool is verified by CREATE2 against the official factory.",
+        "aerodrome-slipstream":
+          "The app UI's venue for Coinbase B20 tokenized stocks, and the executor's PREVIOUS Base mainnet venue (USDC<->WETH, tickSpacing 50) before this route migrated to Uniswap V3. Its recorded evidence is fork/simulation only (CI Base-mainnet fork suite plus the scripted smoke run in script/smoke-executor-base-mainnet.mjs, which also has an anvil-fork rehearsal mode) — no confirmed live mainnet trade is on record for it.",
         "cdp-trade-api": "Not offered over MCP: CDP Swap API has no integrator-fee parameter and returns taker-bound calldata; the app UI keeps its existing flow (incl. B20 tokenized stocks).",
       },
       chains,

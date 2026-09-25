@@ -11,6 +11,8 @@ import {
 import type { ChainReader } from "@/lib/executor/executor-chain";
 import {
   BASE_MAINNET_CHAIN_ID,
+  BASE_MAINNET_UNISWAP_V3,
+  BASE_MAINNET_USDC_WETH_POOL_FEE,
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_UNISWAP_V3,
   CANONICAL_PERMIT2,
@@ -41,9 +43,10 @@ export const QUOTER = getAddress(BASE_SEPOLIA_UNISWAP_V3.quoterV2);
 export const MAINNET_EXECUTOR = getAddress("0xD982726e28275661F8aB64054E6b17a70a63505A");
 export const MAINNET_USDC = getAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
 export const MAINNET_WETH = CANONICAL_WETH;
-export const MAINNET_SLIP_ROUTER = getAddress("0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F");
-export const MAINNET_SLIP_QUOTER = getAddress("0x514c8B5f54112481E28028F1166Bd78501089259");
-export const MAINNET_TICK_SPACING = 50;
+// The production mainnet venue: official Base Uniswap V3 (0.30% WETH/USDC pool).
+export const MAINNET_UNI_ROUTER02 = getAddress(BASE_MAINNET_UNISWAP_V3.swapRouter02);
+export const MAINNET_UNI_QUOTER = getAddress(BASE_MAINNET_UNISWAP_V3.quoterV2);
+export const MAINNET_POOL_FEE = BASE_MAINNET_USDC_WETH_POOL_FEE;
 
 export const SEPOLIA_DEPLOYMENT: ExecutorDeployment = {
   chainId: BASE_SEPOLIA_CHAIN_ID,
@@ -68,7 +71,7 @@ export const SEPOLIA_DEPLOYMENT: ExecutorDeployment = {
   ],
 };
 
-/** Mirrors BASE_MAINNET_EXECUTOR_DEPLOYMENT: USDC <-> WETH on Slipstream only (no B20). */
+/** Mirrors BASE_MAINNET_EXECUTOR_DEPLOYMENT: USDC <-> WETH on Uniswap V3 only (no B20). */
 export const MAINNET_DEPLOYMENT: ExecutorDeployment = {
   chainId: BASE_MAINNET_CHAIN_ID,
   network: "base",
@@ -87,10 +90,10 @@ export const MAINNET_DEPLOYMENT: ExecutorDeployment = {
   ],
   routes: [
     {
-      kind: RouterKind.AERODROME_SLIPSTREAM,
-      router: MAINNET_SLIP_ROUTER,
-      quoter: MAINNET_SLIP_QUOTER,
-      tickSpacing: MAINNET_TICK_SPACING,
+      kind: RouterKind.UNISWAP_V3_ROUTER02,
+      router: MAINNET_UNI_ROUTER02,
+      quoter: MAINNET_UNI_QUOTER,
+      poolFee: MAINNET_POOL_FEE,
       tokenA: MAINNET_USDC,
       tokenB: MAINNET_WETH,
     },

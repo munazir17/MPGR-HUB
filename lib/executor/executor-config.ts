@@ -15,11 +15,14 @@
 // Base mainnet (8453) is mirrored from
 // deployments/base-mainnet/mpgr-executor.json (one-time deployment, workflow
 // run 36110098967). Only routes that are actually proven are registered:
-// USDC <-> WETH on the allowlisted Aerodrome Slipstream router (proven by the
-// live 71/71 smoke test and the CI Base-mainnet fork suite). The contract
-// also allowlists the B20 tokenized stocks, but no USDC<->B20 swap through
-// the executor has ever been executed, so B20 tokens/routes are deliberately
-// NOT registered here and are never routed through the executor by MCP.
+// USDC <-> WETH on the OFFICIAL Base Uniswap V3 deployment (SwapRouter02 +
+// QuoterV2, 0.30% pool). That is the route migrated FROM the app's Aerodrome
+// Slipstream venue, whose only recorded evidence was the CI Base-mainnet FORK
+// suite and a scripted smoke run — never a confirmed live mainnet trade. The
+// contract also allowlists the B20 tokenized stocks, but no USDC<->B20 swap
+// through the executor has ever been executed, so B20 tokens/routes are
+// deliberately NOT registered here and are never routed through the executor
+// by MCP.
 
 import type { Address } from "viem";
 
@@ -160,22 +163,48 @@ export const BASE_SEPOLIA_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
  * fee, cap, router kind, token allowlist).
  *
  * `tokens`/`routes` are the MCP-routable subset: only USDC and WETH, and only
- * the proven USDC<->WETH Slipstream pool (tickSpacing 50, pool
- * 0x3FE04A59Ebd38cF06080a6F60a98D124eb59392A). The contract's B20 tokenized
- * stock allowlist is intentionally excluded — no USDC<->B20 swap through the
- * executor has been executed, so the executor must not be advertised or
- * routed for those pairs (they stay on the app UI's CDP path; over MCP they
- * fall through to the 0x path like any other non-executor pair).
+ * the official Base Uniswap V3 WETH/USDC 0.30% pool (fee 3000, pool
+ * 0x6c561B446416E1A00E8E93E221854d6eA4171372, CREATE2-derived from the
+ * Uniswap V3 factory). The contract's B20 tokenized stock allowlist is
+ * intentionally excluded — no USDC<->B20 swap through the executor has been
+ * executed, so the executor must not be advertised or routed for those pairs
+ * (they stay on the app UI's CDP path; over MCP they fall through to the 0x
+ * path like any other non-executor pair).
+ *
+ * MIGRATION NOTE (no redeploy, no owner transaction): this entry is the
+ * app-side route registry. The live contract still has the Aerodrome
+ * Slipstream router allowlisted (kind 1) until the owner executes
+ * `setRouter(0x2626664c…e481, 2)`. `script/prepare-uniswap-v3-allowlist.mjs`
+ * prints — never sends — that transaction. Until it is executed, mainnet MCP
+ * trading stays gated off by MPGR_MCP_ENABLE_BASE_MAINNET anyway.
  */
 export const BASE_MAINNET_USDC: Address = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
-/** Aerodrome Slipstream on Base Mainnet (Gauges V3): the app's production router/factory. */
+/** Uniswap V3 on Base Mainnet — the official v3 deployment (Uniswap deployments list; all
+ *  three contracts are Basescan-verified). This is the executor's production venue for
+ *  USDC <-> WETH; the pool is derived from the factory with CREATE2 (see
+ *  lib/executor/uniswap-v3-pool.ts) and asserted by
+ *  lib/executor/__tests__/uniswap-v3-mainnet-route.test.ts. */
+export const BASE_MAINNET_UNISWAP_V3 = {
+  factory: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+  quoterV2: "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+  swapRouter02: "0x2626664c2603336E57B271c5C0b26F421741e481",
+} as const satisfies Record<string, Address>;
+
+/** The Uniswap V3 fee tier used for the production USDC <-> WETH route (0.30%). */
+export const BASE_MAINNET_USDC_WETH_POOL_FEE = 3000;
+/** The official Base Uniswap V3 WETH/USDC 0.30% pool (CREATE2-derived from the factory above). */
+export const BASE_MAINNET_USDC_WETH_POOL: Address = "0x6c561B446416E1A00E8E93E221854d6eA4171372";
+
+/** Aerodrome Slipstream on Base Mainnet (Gauges V3): the app UI's B20 tokenized-stock venue
+ *  (lib/trade/trade-config.ts) and the executor's PREVIOUS mainnet route. It is no longer
+ *  registered as an executor route: the migrate-to-Uniswap-V3 change pointed the registry at
+ *  the official Base Uniswap V3 0.30% pool instead. Kept here as the documented pre-migration
+ *  value; no executor route below references it. */
 export const BASE_MAINNET_SLIPSTREAM = {
   factory: "0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef",
   quoterV2: "0x514c8B5f54112481E28028F1166Bd78501089259",
   swapRouter: "0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F",
 } as const satisfies Record<string, Address>;
-/** The proven USDC/WETH Slipstream pool on the app's factory. */
-export const BASE_MAINNET_USDC_WETH_TICK_SPACING = 50;
 
 export const BASE_MAINNET_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
   chainId: BASE_MAINNET_CHAIN_ID,
@@ -195,10 +224,10 @@ export const BASE_MAINNET_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
   ],
   routes: [
     {
-      kind: RouterKind.AERODROME_SLIPSTREAM,
-      router: BASE_MAINNET_SLIPSTREAM.swapRouter,
-      quoter: BASE_MAINNET_SLIPSTREAM.quoterV2,
-      tickSpacing: BASE_MAINNET_USDC_WETH_TICK_SPACING,
+      kind: RouterKind.UNISWAP_V3_ROUTER02,
+      router: BASE_MAINNET_UNISWAP_V3.swapRouter02,
+      quoter: BASE_MAINNET_UNISWAP_V3.quoterV2,
+      poolFee: BASE_MAINNET_USDC_WETH_POOL_FEE,
       tokenA: BASE_MAINNET_USDC,
       tokenB: CANONICAL_WETH,
     },
