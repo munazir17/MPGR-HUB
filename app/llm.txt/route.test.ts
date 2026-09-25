@@ -25,6 +25,15 @@ describe("/llm.txt", () => {
     expect(text).toContain("tUSD");
   });
 
+  it("advertises the deployed Base mainnet executor, its proven route and the operator gate", () => {
+    const text = buildLlmTxt(); // default = the production registry
+    expect(text).toContain("0xD982726e28275661F8aB64054E6b17a70a63505A");
+    expect(text).toContain("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
+    expect(text).toContain("aerodrome-slipstream tickSpacing 50");
+    expect(text).toContain("MPGR_MCP_ENABLE_BASE_MAINNET=true");
+    expect(text).not.toMatch(/chainId 8453[\s\S]{0,240}not deployed/);
+  });
+
   it("never contains secrets, even when they are present in the environment", async () => {
     // Distinct marker values built at runtime (no secret-shaped literals in source).
     const mark = (tag: string) => ["planted", tag, "z".repeat(24)].join("-");

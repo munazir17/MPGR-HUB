@@ -13,6 +13,7 @@ import {
   EXECUTOR_EXPLORERS,
   EXECUTOR_MAX_FEE_BPS,
   MPGR_EXECUTOR_DEPLOYMENTS,
+  RouterKind,
   type ExecutorChainId,
   type ExecutorDeployment,
 } from "@/lib/executor/executor-config";
@@ -23,17 +24,31 @@ import { MCP_LATEST_PROTOCOL_VERSION } from "./mcp-server";
 function chainBlock(chainId: ExecutorChainId, d: ExecutorDeployment | null): string[] {
   const head = `- ${EXECUTOR_CHAIN_NAMES[chainId]} (chainId ${chainId})`;
   if (!d) {
-    return chainId === BASE_MAINNET_CHAIN_ID
-      ? [head, "  - MPGR Executor: not deployed (mainnet deployment pending security review)."]
-      : [head, "  - MPGR Executor: deployment pending."];
+    return [head, "  - MPGR Executor: deployment pending."];
   }
+  const isMainnet = chainId === BASE_MAINNET_CHAIN_ID;
   return [
     head,
-    `  - MPGR Executor: ${d.executor} (${EXECUTOR_EXPLORERS[chainId]}/address/${d.executor})`,
+    `  - MPGR Executor: ${d.executor} (${EXECUTOR_EXPLORERS[chainId]}/address/${d.executor}) — deployed`,
     `  - Owner: ${d.owner}`,
     `  - Fee recipient: ${d.feeRecipient}`,
     `  - Permit2: ${d.permit2}`,
     `  - Tokens: ${d.tokens.map((t) => `${t.symbol} ${t.address} (${t.decimals}d)`).join("; ") || "none"}`,
+    `  - Proven routes: ${
+      d.routes
+        .map(
+          (r) =>
+            `${r.tokenA} <-> ${r.tokenB} (${r.kind === RouterKind.AERODROME_SLIPSTREAM ? `aerodrome-slipstream tickSpacing ${r.tickSpacing}` : `uniswap-v3 fee ${r.poolFee}`})`,
+        )
+        .join("; ") || "none"
+    }`,
+    ...(isMainnet
+      ? [
+          "  - Mainnet MCP trading: OFF by default; the operator enables it with MPGR_MCP_ENABLE_BASE_MAINNET=true. " +
+            "Enabled: proven executor pairs (USDC <-> WETH, incl. native ETH) route through the executor; other ERC-20 pairs use the 0x native-fee path. " +
+            "B20 tokenized stocks are never routed through the executor.",
+        ]
+      : []),
   ];
 }
 
