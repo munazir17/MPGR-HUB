@@ -1,0 +1,167 @@
+# Direct MPGR Executor smoke test on BASE MAINNET (real funds, tiny amount).
+#
+# Exactly 1 USDC -> WETH through the deployed MPGRExecutor
+# (0xD982726e28275661F8aB64054E6b17a70a63505A) via swapSlipstreamExactInputSingle,
+# 25 bps MPGR fee taken atomically inside the same swap tx. Signer MUST be the
+# dedicated test wallet 0xB54900f2c355CB0A61c62f8220191D3aAA6f4455 (the script
+# aborts before any network call otherwise). See script/smoke-executor-base-mainnet.mjs.
+#
+# Trigger: add the `smoke-base-mainnet` label to a PR from this repository.
+#   Job 1 `rehearse` - NO secrets, NO key. Runs the exact script against a LOCAL anvil
+#                      fork of Base Mainnet with the test wallet impersonated. Nothing is
+#                      broadcast to Base Mainnet. Publishes the planned parameters.
+#   Job 2 `live`     - Only after `rehearse` passes. Uses environment `base-mainnet`, whose
+#                      required reviewer must APPROVE the deployment in the Actions UI
+#                      before the job starts; the signer key is only injected after that.
+#                      Sends: (1) USDC.approve(executor, 1000000)  (2) the executor swap.
+#                      Then verifies the confirmed receipt/logs/transfers/balances on-chain.
+#
+# This workflow does not touch app routing, MCP, production config or the deploy workflow.
+name: Executor smoke test (Base Mainnet)
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: smoke-executor-base-mainnet
+  cancel-in-progress: false
+
+jobs:
+  rehearse:
+    name: Rehearse on a local Base Mainnet fork (no key, nothing broadcast)
+    if: github.event.label.name == 'smoke-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Full smoke sequence on a LOCAL anvil fork (wallet impersonated, no key)
+        id: rehearse
+        env:
+          UPSTREAM_RPC: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+        run: |
+          set +e
+          FORK_BLOCK=""
+          for a in 1 2 3 4 5 6; do FORK_BLOCK="$(cast block-number --rpc-url "$UPSTREAM_RPC" 2>/dev/null)"; [ -n "$FORK_BLOCK" ] && break; sleep $((a * 3)); done
+          if [ -z "$FORK_BLOCK" ]; then echo "::error::could not read the Base Mainnet block number"; echo "status=1" >> "$GITHUB_OUTPUT"; exit 0; fi
+          anvil --fork-url "$UPSTREAM_RPC" --fork-block-number "$FORK_BLOCK" --host 127.0.0.1 --port 8545 \
+            --auto-impersonate --retries 10 --fork-retry-backoff 2000 --timeout 60000 > anvil.log 2>&1 &
+          ANVIL_PID=$!
+          trap 'kill $ANVIL_PID 2>/dev/null || true' EXIT
+          CID=""
+          for _ in $(seq 1 120); do CID="$(cast chain-id --rpc-url http://127.0.0.1:8545 2>/dev/null)"; [ -n "$CID" ] && break; sleep 1; done
+          if [ "$CID" != "8453" ]; then
+            echo "::error title=anvil fork did not start::chain-id='${CID}' log: $(grep -v -iE 'private key|0x[0-9a-f]{64}' anvil.log | tail -c 800 | tr '\n' ' ')"
+            echo "status=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "Forked Base Mainnet at block $FORK_BLOCK"
+          SMOKE_MODE=rehearsal SMOKE_RPC_URL=http://127.0.0.1:8545 \
+          SMOKE_JSON=smoke-rehearsal.json SMOKE_MD=smoke-rehearsal.md \
+            node script/smoke-executor-base-mainnet.mjs
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Report (summary + PR comment)
+        if: always() && hashFiles('smoke-rehearsal.json') != ''
+        run: |
+          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) == 0 then "::notice title=Fork rehearsal::\(.status) - \(.checks | length) checks passed" else ($f[0:9][] | "::error title=Fork rehearsal FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-rehearsal.json
+          if [ "$(jq -r .status smoke-rehearsal.json)" = "passed" ]; then
+            NEXT="**Next:** the \`live\` job is now waiting for approval of environment \`base-mainnet\`. Approving it sends 2 real Base Mainnet txs from the test wallet (approve exactly 1 USDC to the executor, then the executor swap) with a FRESH quote/minOut/deadline computed at that time."
+          else
+            NEXT="**Rehearsal did not pass - the \`live\` job will NOT run.**"
+          fi
+          { echo "<!-- mpgr-smoke-executor-mainnet-rehearsal -->"; cat smoke-rehearsal.md; echo; echo "$NEXT"; } > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          ID=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("<!-- mpgr-smoke-executor-mainnet-rehearsal -->"))][0].id // empty')
+          if [ -n "$ID" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@comment.md >/dev/null
+          else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('smoke-rehearsal.json') != ''
+        with:
+          name: smoke-rehearsal
+          path: |
+            smoke-rehearsal.json
+            smoke-rehearsal.md
+
+      - name: Result
+        if: always()
+        run: exit "${{ steps.rehearse.outputs.status || 1 }}"
+
+  live:
+    name: LIVE on Base Mainnet (requires base-mainnet environment approval)
+    needs: rehearse
+    if: needs.rehearse.result == 'success' && github.event.label.name == 'smoke-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Required reviewer gate: the job (and access to the key) starts only after approval.
+    environment: base-mainnet
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Approve 1 USDC + executor swap on Base Mainnet, then verify on-chain
+        id: live
+        env:
+          # Key is passed to this single step only, via env (never argv), and is never printed.
+          SMOKE_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
+          SMOKE_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          SMOKE_MODE: live
+          SMOKE_JSON: smoke-live.json
+          SMOKE_MD: smoke-live.md
+        run: |
+          set +e
+          node script/smoke-executor-base-mainnet.mjs
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Report (annotations, summary, PR comment)
+        if: always() && hashFiles('smoke-live.json') != ''
+        run: |
+          jq -r '"::notice title=Mainnet smoke txs::approve=\(.txs.approve.hash // (if .txs.approve.skipped then "skipped" else "not sent" end)) swap=\(.txs.swap.hash // "not sent") status=\(.status)"' smoke-live.json
+          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) == 0 then "::notice title=Mainnet smoke checks::\(.checks | length) passed, 0 failed" else ($f[0:9][] | "::error title=Mainnet smoke FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-live.json
+          { echo "<!-- mpgr-smoke-executor-mainnet-live -->"; cat smoke-live.md; } > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          ID=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("<!-- mpgr-smoke-executor-mainnet-live -->"))][0].id // empty')
+          if [ -n "$ID" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@comment.md >/dev/null
+          else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('smoke-live.json') != ''
+        with:
+          name: smoke-live
+          path: |
+            smoke-live.json
+            smoke-live.md
+
+      - name: Result
+        if: always()
+        run: exit "${{ steps.live.outputs.status || 1 }}"
