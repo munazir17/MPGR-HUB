@@ -93,7 +93,7 @@ There is **no** generic `execute(target, data)`. The router calldata is built *i
 
 | provider | how the 25 bps fee is collected | status |
 |---|---|---|
-| **Aerodrome Slipstream** | MPGR Executor, fee on the sell token, on-chain exact | Base mainnet fork tests pass in CI against the live router/factory the app already uses (`0x698C…`/`0xf8f2…`) on the WETH/USDC pools. `sweepTokenWithFee` is **not used**: it takes the fee from the *output* token, based on a router-computed amount, so it can't be proven exact on the sell token. |
+| **Aerodrome Slipstream** | MPGR Executor, fee on the sell token, on-chain exact | **Deployed on Base mainnet** (`0xD982…505A`) with the live router/factory the app already uses (`0x698C…`/`0xf8f2…`); proven by the CI Base-mainnet fork suite and a live 71/71 smoke test on the WETH/USDC ts=50 pool. MCP mainnet trading through it is gated by `MPGR_MCP_ENABLE_BASE_MAINNET`. `sweepTokenWithFee` is **not used**: it takes the fee from the *output* token, based on a router-computed amount, so it can't be proven exact on the sell token. |
 | **Uniswap V3** | MPGR Executor | Real swaps run on Base Sepolia by the deploy workflow (Slipstream has no Sepolia deployment). |
 | **0x Swap API** | Native integrator fee: `swapFeeRecipient`, `swapFeeBps=25`, `swapFeeToken=sellToken` | `lib/trade/zero-ex-native-fee.ts` rejects any quote unless `fees.integratorFee` is exactly `floor(G*25/10000)` in the sell token, there is only one integrator fee, and both the spender and `to` are AllowanceHolder (never Settler). MCP only, Base mainnet, **off** unless `MPGR_MCP_ENABLE_BASE_MAINNET=true`. The existing UI 0x client is unchanged. |
 | **CDP Trade API** | none | The CDP Swap API has **no integrator-fee parameter**; CDP charges its own fee. Its calldata is taker-bound and can't be wrapped. It is not offered over MCP, and the UI keeps its existing flow. |
@@ -253,9 +253,11 @@ The owner explicitly authorised a one-time Base Mainnet deployment of the execut
   3. Delete `MPGR_MAINNET_DEPLOY_ENABLED` from the environment.
   4. Verify the deployment independently before any routing change.
 
-### Live deployment (Base Mainnet, chainId 8453). App routing is OFF
+### Live deployment (Base Mainnet, chainId 8453). MCP trading is OFF until the flag is set
 
 Deployed by workflow run [36110098967](https://github.com/munazir17/MPGR-HUB/actions/runs/36110098967) from PR head `51ec6b9`, after owner approval in the `base-mainnet` environment. Record: `deployments/base-mainnet/mpgr-executor.json`. It is re-verified against the live chain by `test/fork/MPGRExecutorBaseMainnetDeployment.t.sol`, which checks bytecode == repo source, config, fee cap and a fork-only swap.
+
+**Registry + MCP routing.** `lib/executor/executor-config.ts` now records this deployment in the `8453` entry of `MPGR_EXECUTOR_DEPLOYMENTS` (deployed fact, mirrored field-for-field and enforced by `lib/executor/__tests__/executor-registry.test.ts`). Registering the entry does **not** switch trading on: Base mainnet MCP quotes are still refused with `BASE_MAINNET_DISABLED` until the operator sets `MPGR_MCP_ENABLE_BASE_MAINNET=true`. Only the proven **USDC <-> WETH** Slipstream route (tickSpacing 50, incl. native ETH in/out) is registered — the contract's B20 tokenized-stock allowlist is deliberately excluded from the registry, so those pairs are never routed through the executor (over MCP they fall through to the 0x path like any other non-executor pair; in the app UI they keep the CDP flow). A live Base Mainnet smoke test exercised exactly one real `1 USDC -> WETH` trade through this deployment with the exact 25 bps fee paid atomically (`script/smoke-executor-base-mainnet.mjs`, 71/71 checks).
 
 | field | value |
 |---|---|
@@ -274,12 +276,27 @@ Deployed by workflow run [36110098967](https://github.com/munazir17/MPGR-HUB/act
 
 The one-time enablement is switched off: `mainnetDeployEnabled: false` in the pins file, and the record exists. The script and workflow refuse any further mainnet deployment.
 
-### Before switching Mainnet execution on (NOT done)
+### Before switching Mainnet execution on
 
 1. External security audit of `MPGRExecutor.sol` (recommended).
 2. Consider moving ownership to a multisig (`transferOwnership` + `acceptOwnership`, 2-step).
-3. Fill the `8453` registry entry with the deployed address. Only then set `MPGR_MCP_ENABLE_BASE_MAINNET=true`. The 0x path also needs `ZERO_EX_API_KEY` and `MPGR_AGENT_FEE_RECIPIENT`.
+3. ~~Fill the `8453` registry entry with the deployed address.~~ **DONE** — the entry is registered (deployed fact only). Set `MPGR_MCP_ENABLE_BASE_MAINNET=true` in the Vercel **Production** environment and redeploy to switch mainnet MCP trading on. The 0x fallback path additionally needs `ZERO_EX_API_KEY` (secret) and `MPGR_AGENT_FEE_RECIPIENT` (fee wallet). Without the fee wallet, only the proven executor pair is available and every other mainnet pair is refused cleanly.
 4. Monitoring on `SwapExecuted`, admin events and `Paused`, plus an incident runbook (pause first).
+
+**Mainnet MCP environment variables (Vercel Production).**
+
+| variable | required | secret | used for |
+|---|---|---|---|
+| `MPGR_MCP_ENABLE_BASE_MAINNET` | for go-live (set `true`) | no | Operator switch for ALL Base mainnet MCP trading (executor + 0x). |
+| `MPGR_AGENT_FEE_RECIPIENT` | for the 0x fallback | no (address) | 0x native integrator-fee wallet. Set to the canonical fee wallet `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4`. Executor quotes use the on-chain `feeRecipient()` and do not need this. |
+| `ZERO_EX_API_KEY` (or `ZEROX_API_KEY`) | for the 0x fallback | **yes** | 0x Swap API auth for the non-executor mainnet pairs. |
+| `AUTH_SESSION_SECRET` | yes (already required) | **yes** | HMAC key for the signed `quoteId` (≥ 32 chars) and auth sessions. |
+| `BASE_RPC_URL` | optional | no | Mainnet RPC for chain reads. Defaults to `https://mainnet.base.org`. |
+| `BASE_SEPOLIA_RPC_URL` | optional | no | Sepolia RPC (keeps Sepolia working). Defaults to `https://sepolia.base.org`. |
+| `MPGR_MCP_ALLOWED_ORIGINS` | optional | no | Extra browser origins for the MCP endpoint (comma separated). |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_*`) | optional | token is a secret | Shared rate limiting / storage; without it the in-memory per-instance limiter is used. |
+
+**Do NOT set:** `MPGR_MAINNET_DEPLOY_ENABLED` (one-time deploy switch — must stay off), any `*_PRIVATE_KEY`/`*_SEED` (the server never signs), and do not put a key-shaped value in `MPGR_MCP_ALLOWED_ORIGINS`.
 
 ## Rollback
 

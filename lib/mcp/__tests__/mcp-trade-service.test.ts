@@ -2,7 +2,7 @@ import { decodeFunctionData, getAddress, parseAbi, recoverTypedDataAddress, type
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { RouterKind } from "@/lib/executor/executor-config";
+import { BASE_MAINNET_CHAIN_ID, RouterKind } from "@/lib/executor/executor-config";
 import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
 import {
   finalizeTrade,
@@ -12,6 +12,7 @@ import {
   listTokens,
   prepareTrade,
   verifyTrade,
+  type McpDeps,
   type ToolOutcome,
 } from "@/lib/mcp/mcp-trade-service";
 import { ZERO_EX_ALLOWANCE_HOLDER_BASE } from "@/lib/trade/zero-ex-native-fee";
@@ -19,11 +20,18 @@ import { ZERO_EX_ALLOWANCE_HOLDER_BASE } from "@/lib/trade/zero-ex-native-fee";
 import {
   EXECUTOR,
   FEE_RECIPIENT,
+  MAINNET_EXECUTOR,
+  MAINNET_REGISTRY,
+  MAINNET_SLIP_ROUTER,
+  MAINNET_TICK_SPACING,
+  MAINNET_USDC,
+  MAINNET_WETH,
   PERMIT2,
   ROUTER,
   TSTOCK,
   TUSD,
   WETH,
+  fakeReader,
   newFakeState,
   setAllowance,
   setBalance,
@@ -339,6 +347,319 @@ describe("end-to-end AI flow (discover → quote → prepare → user signs → 
     expect(ok(await getTradeStatus(deps, { txHash: `0x${"ef".repeat(32)}` }))).toMatchObject({ status: "pending_or_unknown" });
     expect(errCode(await getTradeStatus(deps, { txHash: "0x12" }))).toBe("INVALID_TX_HASH");
     expect(errCode(await verifyTrade(deps, { quoteId: "q1.x.y", txHash: `0x${"ef".repeat(32)}` }))).toBe("QUOTE_ID_INVALID");
+  });
+});
+
+describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
+  // USDC (6d) / WETH (18d) at the real deployed addresses; the fake reader
+  // answers for MAINNET_EXECUTOR and the Slipstream quoter.
+  const USDC = MAINNET_USDC;
+
+  function mainnetDeps(over: Partial<McpDeps> = {}): ReturnType<typeof testDeps> {
+    return testDeps(state, {
+      registry: MAINNET_REGISTRY,
+      reader: (chainId) => fakeReader(state, chainId, chainId === BASE_MAINNET_CHAIN_ID ? MAINNET_EXECUTOR : EXECUTOR),
+      mainnetEnabled: true,
+      mainnetFeeRecipient: FEE_RECIPIENT,
+      ...over,
+    });
+  }
+
+  it("capabilities report the deployed mainnet executor and the operator gate", () => {
+    const off = mainnetDeps({ mainnetEnabled: false });
+    const offChains = (ok(getCapabilities(off)).chains as Data[])[1];
+    expect(offChains).toMatchObject({
+      chainId: 8453,
+      tradingEnabled: false,
+      tradingProviders: [],
+      executor: { status: "deployed", address: MAINNET_EXECUTOR, deployBlock: 51767139 },
+    });
+    const on = (ok(getCapabilities(mainnetDeps())).chains as Data[])[1];
+    expect(on).toMatchObject({ tradingEnabled: true, tradingProviders: ["mpgr-executor", "0x-native-fee"] });
+    // Without the 0x fee wallet only the executor provider is advertised.
+    const execOnly = (ok(getCapabilities(mainnetDeps({ mainnetFeeRecipient: null }))).chains as Data[])[1];
+    expect(execOnly.tradingProviders).toEqual(["mpgr-executor"]);
+  });
+
+  it("listTokens(8453) lists exactly USDC/WETH and the proven Slipstream pair", () => {
+    const d = ok(listTokens(mainnetDeps(), { chainId: 8453 }));
+    expect(d.tradingEnabled).toBe(true);
+    expect((d.tokens as Data[]).map((t) => t.symbol)).toEqual(["USDC", "WETH"]);
+    expect(d.pairs).toEqual([
+      { tokenA: USDC, tokenB: MAINNET_WETH, venue: "aerodrome-slipstream", poolFee: null, tickSpacing: MAINNET_TICK_SPACING },
+    ]);
+    expect(d.nativeEth).toMatchObject({ symbol: "ETH", via: MAINNET_WETH });
+    expect(String(d.note)).toContain("never routed through the executor");
+  });
+
+  it("quotes the proven USDC -> WETH pair through the executor with the exact live fee", async () => {
+    setBalance(state, USDC, TAKER, 10_000_000n);
+    const d = mainnetDeps();
+    const q = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: "USDC", buyToken: "WETH", sellAmount: "10000000", slippageBps: 100 }));
+    expect(q).toMatchObject({
+      provider: "mpgr-executor",
+      chainId: 8453,
+      executor: MAINNET_EXECUTOR,
+      sellAmount: "10000000",
+      feeBps: 25,
+      feeAmount: "25000", // floor(10000000 * 25 / 10000)
+      feeToken: USDC,
+      feeRecipient: FEE_RECIPIENT,
+      swapAmount: "9975000",
+      expectedBuyAmount: "19950000", // fake quoter: out = 2 * swapAmount
+      minBuyAmount: "19750500",
+      recipient: TAKER,
+      balanceSufficient: true,
+      route: {
+        provider: "mpgr-executor",
+        venue: "aerodrome-slipstream",
+        executor: MAINNET_EXECUTOR,
+        router: MAINNET_SLIP_ROUTER,
+        tickSpacing: MAINNET_TICK_SPACING,
+        hops: 1,
+      },
+    });
+    expect(String(q.quoteId)).toMatch(/^q1\./);
+  });
+
+  it("quotes the reverse WETH -> USDC direction and native ETH in/out", async () => {
+    setBalance(state, MAINNET_WETH, TAKER, 10n ** 18n);
+    setBalance(state, USDC, TAKER, 10_000_000n);
+    state.ethBalance = 10n ** 18n;
+    const d = mainnetDeps();
+    const weth = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: "WETH", buyToken: "USDC", sellAmount: "1000000000000000000" }));
+    expect(weth).toMatchObject({ sellNative: false, buyNative: false, route: { venue: "aerodrome-slipstream" } });
+    const ethIn = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: "ETH", buyToken: "USDC", sellAmount: "1000000000000000000" }));
+    expect(ethIn).toMatchObject({ sellNative: true, feeToken: "ETH", feeAmount: "2500000000000000" });
+    const ethOut = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: "USDC", buyToken: "ETH", sellAmount: "10000000" }));
+    expect(ethOut).toMatchObject({ buyNative: true });
+    const fin = ok(await prepareTrade(d, { quoteId: String(ethOut.quoteId) }));
+    const decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: (fin.transactionRequest as { data: Hex }).data });
+    expect((decoded.args?.[0] as Data).unwrapNativeOut).toBe(true);
+  });
+
+  it("APPROVAL: exact approval to the mainnet executor, then the Slipstream swap calldata", async () => {
+    setBalance(state, USDC, TAKER, 10_000_000n);
+    const d = mainnetDeps();
+    const q = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: MAINNET_WETH, sellAmount: "10000000" }));
+    const p = ok(await prepareTrade(d, { quoteId: q.quoteId, authorization: "APPROVAL" }));
+    const steps = p.steps as Data[];
+    expect(steps.map((s) => s.step)).toEqual(["sendApprovalTransaction", "sendSwapTransaction"]);
+    const approve = steps[0].transactionRequest as { to: string; data: Hex };
+    expect(approve.to).toBe(USDC);
+    expect(decodeFunctionData({ abi: parseAbi(["function approve(address,uint256)"]), data: approve.data }).args).toEqual([MAINNET_EXECUTOR, 10_000_000n]);
+    const tx = p.transactionRequest as { to: string; data: Hex; value: string; chainId: number };
+    expect(tx).toMatchObject({ to: MAINNET_EXECUTOR, value: "0", chainId: 8453 });
+    const decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: tx.data });
+    expect(decoded.functionName).toBe("swapSlipstreamExactInputSingle");
+    expect(decoded.args?.[0]).toMatchObject({
+      router: MAINNET_SLIP_ROUTER,
+      tokenIn: USDC,
+      tokenOut: MAINNET_WETH,
+      grossAmountIn: 10_000_000n,
+      expectedFeeAmount: 25_000n,
+      recipient: TAKER,
+      unwrapNativeOut: false,
+    });
+    expect(decoded.args?.[1]).toBe(MAINNET_TICK_SPACING);
+  });
+
+  it("native ETH sells need no approval and send value == gross", async () => {
+    state.ethBalance = 10n ** 18n;
+    const d = mainnetDeps();
+    const q = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: "ETH", buyToken: "USDC", sellAmount: "1000000000000000000" }));
+    const p = ok(await prepareTrade(d, { quoteId: q.quoteId }));
+    expect((p.steps as Data[]).map((s) => s.step)).toEqual(["sendSwapTransaction"]);
+    expect((p.transactionRequest as Data).value).toBe("1000000000000000000");
+  });
+
+  async function mainnetPermitFlow(authorization: "EIP2612" | "PERMIT2") {
+    setBalance(state, USDC, TAKER, 10_000_000n);
+    state.permitTokens.add(USDC.toLowerCase()); // Circle USDC on Base exposes EIP-2612 (proven in the CI mainnet fork)
+    const d = mainnetDeps();
+    if (authorization === "PERMIT2") setAllowance(state, USDC, TAKER, PERMIT2, 10_000_000n);
+    const q = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: MAINNET_WETH, sellAmount: "10000000" }));
+    const quoteId = String(q.quoteId);
+    const prep = ok(await prepareTrade(d, { quoteId, authorization }));
+    expect(prep.transactionRequest).toBeNull();
+    const typedData = prep.typedData as Data;
+    const permit = prep.permit as { nonce: string; deadline: number };
+    expect((typedData.message as Data).spender).toBe(MAINNET_EXECUTOR);
+
+    // The USER's wallet signs (simulated locally; the server never sees the key).
+    const signature = await account.signTypedData(reviveTypedData(typedData));
+    d.clock.now += 300; // past the 120s quote TTL, inside the 600s intent deadline
+    const fin = ok(await finalizeTrade(d, { quoteId, authorization, signature, permitNonce: permit.nonce }));
+    const tx = fin.transactionRequest as { to: string; data: Hex };
+    expect(tx.to).toBe(MAINNET_EXECUTOR);
+    const decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: tx.data });
+    expect(decoded.functionName).toBe("swapSlipstreamExactInputSingle");
+    const auth = decoded.args?.[2] as Data;
+    expect(auth.kind).toBe(authorization === "EIP2612" ? 1 : 2);
+    expect(auth.nonce).toBe(BigInt(permit.nonce));
+
+    // The user sends it; the receipt carries the mainnet executor's SwapExecuted.
+    const txHash = `0x${"91".repeat(32)}` as Hex;
+    const params = decoded.args?.[0] as { intentId: Hex };
+    state.receipts.set(txHash, {
+      status: "success",
+      transactionHash: txHash,
+      blockNumber: 100n,
+      from: TAKER,
+      to: MAINNET_EXECUTOR,
+      logs: [
+        swapExecutedLog(MAINNET_EXECUTOR, {
+          taker: TAKER,
+          router: MAINNET_SLIP_ROUTER,
+          intentId: params.intentId,
+          tokenIn: USDC,
+          tokenOut: MAINNET_WETH,
+          grossAmountIn: 10_000_000n,
+          feeAmount: 25_000n,
+          swapAmountIn: 9_975_000n,
+          amountOut: 19_900_000n,
+          feeRecipient: FEE_RECIPIENT,
+          feeBps: 25,
+          routerKind: RouterKind.AERODROME_SLIPSTREAM,
+          flags: 0,
+        }),
+      ],
+    });
+    expect(ok(await getTradeStatus(d, { chainId: 8453, txHash }))).toMatchObject({ status: "confirmed", blockNumber: "100" });
+    expect(ok(await verifyTrade(d, { quoteId, txHash })).verified).toBe(true);
+  }
+
+  it("EIP-2612: one swap transaction after a wallet signature (mainnet)", async () => {
+    await mainnetPermitFlow("EIP2612");
+  });
+
+  it("Permit2: one swap transaction after a wallet signature (mainnet)", async () => {
+    await mainnetPermitFlow("PERMIT2");
+  });
+
+  it("verify_trade(8453) flags a short or redirected fee", async () => {
+    setBalance(state, USDC, TAKER, 10_000_000n);
+    const d = mainnetDeps();
+    const q = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: MAINNET_WETH, sellAmount: "10000000" }));
+    const p = ok(await prepareTrade(d, { quoteId: q.quoteId }));
+    const params = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: (p.transactionRequest as { data: Hex }).data }).args?.[0] as { intentId: Hex };
+    const txHash = `0x${"92".repeat(32)}` as Hex;
+    const receipt = {
+      status: "success" as const,
+      transactionHash: txHash,
+      blockNumber: 1n,
+      from: TAKER,
+      to: MAINNET_EXECUTOR,
+      logs: [
+        swapExecutedLog(MAINNET_EXECUTOR, {
+          taker: TAKER, router: MAINNET_SLIP_ROUTER, intentId: params.intentId, tokenIn: USDC, tokenOut: MAINNET_WETH,
+          grossAmountIn: 10_000_000n, feeAmount: 24_999n, swapAmountIn: 9_975_001n, amountOut: 19_900_000n,
+          feeRecipient: TAKER, feeBps: 25, routerKind: RouterKind.AERODROME_SLIPSTREAM, flags: 0,
+        }),
+      ],
+    };
+    state.receipts.set(txHash, receipt);
+    const v = ok(await verifyTrade(d, { quoteId: q.quoteId, txHash }));
+    expect(v.verified).toBe(false);
+    const failed = (v.checks as { name: string; ok: boolean }[]).filter((c) => !c.ok).map((c) => c.name);
+    expect(failed).toEqual(expect.arrayContaining(["feeAmount (exact)", "feeRecipient"]));
+  });
+
+  it("mainnet fee math: floor rounding, rounds-to-zero refusal, minBuyAmount", async () => {
+    setBalance(state, USDC, TAKER, 10_000n);
+    const d = mainnetDeps();
+    const q = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: MAINNET_WETH, sellAmount: "400", slippageBps: 300 }));
+    expect(q).toMatchObject({ sellAmount: "400", feeAmount: "1", swapAmount: "399", minBuyAmount: String((798n * 9700n) / 10_000n) });
+    setBalance(state, USDC, TAKER, 399n);
+    expect(errCode(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: MAINNET_WETH, sellAmount: "399" }))).toBe("FEE_ROUNDS_TO_ZERO");
+  });
+
+  it("quote expiry and tampering still apply on the mainnet executor path", async () => {
+    setBalance(state, USDC, TAKER, 10_000_000n);
+    const d = mainnetDeps();
+    const q = ok(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: MAINNET_WETH, sellAmount: "10000000" }));
+    const quoteId = String(q.quoteId);
+    expect(errCode(await prepareTrade(d, { quoteId: quoteId.slice(0, -2) + "AA" }))).toBe("QUOTE_ID_INVALID");
+    d.clock.now += 121;
+    expect(errCode(await prepareTrade(d, { quoteId }))).toBe("QUOTE_EXPIRED");
+  });
+
+  it("refuses the fee recipient as taker on mainnet", async () => {
+    setBalance(state, USDC, FEE_RECIPIENT, 10_000_000n);
+    expect(errCode(await getQuote(mainnetDeps(), { chainId: 8453, taker: FEE_RECIPIENT, sellToken: USDC, buyToken: MAINNET_WETH, sellAmount: "10000000" }))).toBe(
+      "TAKER_IS_FEE_RECIPIENT",
+    );
+  });
+});
+
+describe("Base mainnet dispatch: non-proven pairs fall back to 0x, never to the executor", () => {
+  const USDC = MAINNET_USDC;
+  const OTHER = getAddress("0x0000000000000000000000000000000000004321");
+  const B20_AAPL = getAddress("0xb200000000000000000000C2e324d24d7eEcd1fb");
+
+  function zeroExBodyFor(sellToken: string, buyToken: string, sellAmount: string) {
+    return {
+      liquidityAvailable: true,
+      sellToken,
+      buyToken,
+      sellAmount,
+      buyAmount: "3000000000000000",
+      minBuyAmount: "2970000000000000",
+      fees: { integratorFee: { amount: "25000", token: sellToken } },
+      issues: { allowance: { spender: ZERO_EX_ALLOWANCE_HOLDER_BASE } },
+      transaction: { to: ZERO_EX_ALLOWANCE_HOLDER_BASE, data: "0xabcdef", value: "0" },
+    };
+  }
+
+  function dispatchDeps(fetcher: ReturnType<typeof vi.fn>, over: Partial<McpDeps> = {}): ReturnType<typeof testDeps> {
+    return testDeps(state, {
+      registry: MAINNET_REGISTRY,
+      reader: (chainId) => fakeReader(state, chainId, chainId === BASE_MAINNET_CHAIN_ID ? MAINNET_EXECUTOR : EXECUTOR),
+      mainnetEnabled: true,
+      mainnetFeeRecipient: FEE_RECIPIENT,
+      zeroExFetch: fetcher as unknown as typeof fetch,
+      ...over,
+    });
+  }
+
+  it("an arbitrary ERC-20 pair quotes via 0x (AllowanceHolder), not the executor", async () => {
+    process.env.ZERO_EX_API_KEY = "k";
+    try {
+      const fetcher = vi.fn(async () => new Response(JSON.stringify(zeroExBodyFor(USDC, OTHER, "10000000")), { status: 200 }));
+      const q = ok(await getQuote(dispatchDeps(fetcher), { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: OTHER, sellAmount: "10000000" }));
+      expect(q).toMatchObject({ provider: "0x-native-fee", feeAmount: "25000", feeToken: USDC, spender: ZERO_EX_ALLOWANCE_HOLDER_BASE });
+      const p = ok(await prepareTrade(dispatchDeps(fetcher), { quoteId: q.quoteId }));
+      expect((p.transactionRequest as Data).to).toBe(ZERO_EX_ALLOWANCE_HOLDER_BASE);
+    } finally {
+      delete process.env.ZERO_EX_API_KEY;
+    }
+  });
+
+  it("B20 tokenized-stock addresses are NEVER routed through the executor", async () => {
+    process.env.ZERO_EX_API_KEY = "k";
+    try {
+      const fetcher = vi.fn(async () => new Response(JSON.stringify(zeroExBodyFor(USDC, B20_AAPL, "10000000")), { status: 200 }));
+      const q = ok(await getQuote(dispatchDeps(fetcher), { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: B20_AAPL, sellAmount: "10000000" }));
+      expect(q.provider).toBe("0x-native-fee");
+      expect(q).not.toHaveProperty("executor");
+    } finally {
+      delete process.env.ZERO_EX_API_KEY;
+    }
+  });
+
+  it("falls back cleanly when the 0x fee wallet is not configured (no silent executor routing)", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(zeroExBodyFor(USDC, OTHER, "10000000")), { status: 200 }));
+    const d = dispatchDeps(fetcher, { mainnetFeeRecipient: null });
+    expect(errCode(await getQuote(d, { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: OTHER, sellAmount: "10000000" }))).toBe(
+      "FEE_RECIPIENT_NOT_CONFIGURED",
+    );
+  });
+
+  it("a native ETH sell for a non-proven pair is refused by the 0x path (never invented)", async () => {
+    const fetcher = vi.fn();
+    expect(errCode(await getQuote(dispatchDeps(fetcher), { chainId: 8453, taker: TAKER, sellToken: "ETH", buyToken: OTHER, sellAmount: "1000000000000000000" }))).toBe(
+      "INVALID_TOKEN",
+    );
   });
 });
 

@@ -8,6 +8,23 @@ The project follows a milestone-based development roadmap.
 
 # Unreleased
 
+## MPGR MCP — Base Mainnet go-live preparation
+
+### Added
+
+- Registered the deployed Base Mainnet MPGR Executor (`0xD982726e28275661F8aB64054E6b17a70a63505A`, deploy tx `0xf17fcaef…99d01`, block 51767139) in `lib/executor/executor-config.ts` — a deployed fact mirrored field-for-field from `deployments/base-mainnet/mpgr-executor.json` (enforced by `lib/executor/__tests__/executor-registry.test.ts`). Only the proven **USDC <-> WETH** Aerodrome Slipstream route (tickSpacing 50, pool `0x3FE04A59…392A`) is registered; the contract's B20 tokenized-stock allowlist is deliberately excluded because no USDC<->B20 swap through the executor has ever been executed.
+- MCP Base mainnet provider dispatch: with `MPGR_MCP_ENABLE_BASE_MAINNET=true`, proven executor pairs (USDC <-> WETH, incl. native ETH in/out) quote through the executor (live on-chain fee, quoter, HMAC quoteId, exact-amount APPROVAL / EIP-2612 / Permit2, one atomic tx with the exact 25 bps sell-token fee); every other ERC-20 pair falls back to the existing 0x native-fee path (unchanged, exact-fee-verified). B20 addresses are never routed through the executor.
+- `mpgr_get_capabilities` / `mpgr_list_tokens` now report the deployed mainnet executor, the operator trading state (`tradingEnabled`), the proven mainnet pair and the dispatch rules. `/llm.txt` and `/llms.txt` advertise the deployed mainnet executor, its route and the operator gate (no stale "not deployed" claims; still built only from committed public config).
+
+### Fixed
+
+- `script/e2e-preview-mcp.mjs` mainnet assertions updated for the new reality: the 8453 registry entry is a deployed fact while MCP trading stays off (`BASE_MAINNET_DISABLED` until the flag is set).
+
+### Notes
+
+- Trading stays OFF: the flag is not set by this change. Enabling requires the operator to set `MPGR_MCP_ENABLE_BASE_MAINNET=true` (plus `ZERO_EX_API_KEY` + `MPGR_AGENT_FEE_RECIPIENT` for the 0x fallback) in Vercel Production and redeploy — see the environment table in `docs/EXECUTOR.md`.
+- Base Sepolia behavior is unchanged (Sepolia regression suite green); the app UI and the 0x client are untouched.
+
 ## Task 8 — referral abuse hardening
 
 ### Fixed

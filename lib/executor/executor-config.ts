@@ -5,13 +5,21 @@
 // Rules (AGENTS.md): typed chain config, no secrets, bigint math, no
 // NEXT_PUBLIC secrets. Nothing here fetches or signs.
 //
-// Base mainnet (8453) is intentionally `null`: the executor IS deployed on mainnet
-// (0xD982726e28275661F8aB64054E6b17a70a63505A, deployments/base-mainnet/
-// mpgr-executor.json) but app/MCP routing through it is NOT enabled yet. It is
-// switched on separately, after independent verification, by filling this entry.
-// Base Sepolia (84532) is filled from
+// Filling a registry entry records a DEPLOYED fact only; it does not switch
+// trading on. Base mainnet MCP trading stays OFF until the operator sets
+// MPGR_MCP_ENABLE_BASE_MAINNET=true (see lib/mcp/mcp-deps.ts).
+//
+// Base Sepolia (84532) is mirrored from
 // deployments/base-sepolia/mpgr-executor.json after the label-triggered
 // GitHub Actions deployment (.github/workflows/deploy-executor-base-sepolia.yml).
+// Base mainnet (8453) is mirrored from
+// deployments/base-mainnet/mpgr-executor.json (one-time deployment, workflow
+// run 36110098967). Only routes that are actually proven are registered:
+// USDC <-> WETH on the allowlisted Aerodrome Slipstream router (proven by the
+// live 71/71 smoke test and the CI Base-mainnet fork suite). The contract
+// also allowlists the B20 tokenized stocks, but no USDC<->B20 swap through
+// the executor has ever been executed, so B20 tokens/routes are deliberately
+// NOT registered here and are never routed through the executor by MCP.
 
 import type { Address } from "viem";
 
@@ -143,12 +151,68 @@ export const BASE_SEPOLIA_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
 };
 
 /**
- * Deployment registry.
- * - 8453: `null` — mainnet deployment is NOT allowed yet (see mainnet checklist in docs/EXECUTOR.md).
+ * MPGR Executor on Base Mainnet — one-time deployment by workflow run
+ * 36110098967 (see deployments/base-mainnet/mpgr-executor.json). Mirrors the
+ * committed record field for field (enforced by
+ * lib/executor/__tests__/executor-registry.test.ts) and is re-verified against
+ * the live chain by test/fork/MPGRExecutorBaseMainnetDeployment.t.sol in the
+ * `contracts-fork` CI job (bytecode == repo source, owner, fee recipient,
+ * fee, cap, router kind, token allowlist).
+ *
+ * `tokens`/`routes` are the MCP-routable subset: only USDC and WETH, and only
+ * the proven USDC<->WETH Slipstream pool (tickSpacing 50, pool
+ * 0x3FE04A59Ebd38cF06080a6F60a98D124eb59392A). The contract's B20 tokenized
+ * stock allowlist is intentionally excluded — no USDC<->B20 swap through the
+ * executor has been executed, so the executor must not be advertised or
+ * routed for those pairs (they stay on the app UI's CDP path; over MCP they
+ * fall through to the 0x path like any other non-executor pair).
+ */
+export const BASE_MAINNET_USDC: Address = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+/** Aerodrome Slipstream on Base Mainnet (Gauges V3): the app's production router/factory. */
+export const BASE_MAINNET_SLIPSTREAM = {
+  factory: "0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef",
+  quoterV2: "0x514c8B5f54112481E28028F1166Bd78501089259",
+  swapRouter: "0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F",
+} as const satisfies Record<string, Address>;
+/** The proven USDC/WETH Slipstream pool on the app's factory. */
+export const BASE_MAINNET_USDC_WETH_TICK_SPACING = 50;
+
+export const BASE_MAINNET_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
+  chainId: BASE_MAINNET_CHAIN_ID,
+  network: "base",
+  executor: "0xD982726e28275661F8aB64054E6b17a70a63505A",
+  owner: "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
+  feeRecipient: "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
+  feeBps: EXECUTOR_DEFAULT_FEE_BPS,
+  weth: CANONICAL_WETH,
+  permit2: CANONICAL_PERMIT2,
+  deployTx: "0xf17fcaef66a8a67153114a8a14b7813ffaa7ec2877eb5e9e35171467aa999d01",
+  deployBlock: 51767139,
+  explorerUrl: "https://basescan.org/address/0xD982726e28275661F8aB64054E6b17a70a63505A",
+  tokens: [
+    { address: BASE_MAINNET_USDC, symbol: "USDC", decimals: 6 },
+    { address: CANONICAL_WETH, symbol: "WETH", decimals: 18, isWeth: true },
+  ],
+  routes: [
+    {
+      kind: RouterKind.AERODROME_SLIPSTREAM,
+      router: BASE_MAINNET_SLIPSTREAM.swapRouter,
+      quoter: BASE_MAINNET_SLIPSTREAM.quoterV2,
+      tickSpacing: BASE_MAINNET_USDC_WETH_TICK_SPACING,
+      tokenA: BASE_MAINNET_USDC,
+      tokenB: CANONICAL_WETH,
+    },
+  ],
+};
+
+/**
+ * Deployment registry (deployed facts only — NOT a trading switch; MCP mainnet
+ * trading is gated by MPGR_MCP_ENABLE_BASE_MAINNET in lib/mcp/mcp-deps.ts).
+ * - 8453: the Base Mainnet deployment above.
  * - 84532: the Base Sepolia deployment above.
  */
 export const MPGR_EXECUTOR_DEPLOYMENTS: Record<ExecutorChainId, ExecutorDeployment | null> = {
-  [BASE_MAINNET_CHAIN_ID]: null,
+  [BASE_MAINNET_CHAIN_ID]: BASE_MAINNET_EXECUTOR_DEPLOYMENT,
   [BASE_SEPOLIA_CHAIN_ID]: BASE_SEPOLIA_EXECUTOR_DEPLOYMENT,
 };
 

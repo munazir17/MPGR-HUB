@@ -43,6 +43,7 @@ import { baseSepolia } from "viem/chains";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const EXPECTED_EXECUTOR = "0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4";
+const EXPECTED_MAINNET_EXECUTOR = "0xD982726e28275661F8aB64054E6b17a70a63505A";
 const BASE_MAINNET_WETH = "0x4200000000000000000000000000000000000006";
 const BASE_MAINNET_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const PREVIEW_URL = (process.env.PREVIEW_URL ?? "").replace(/\/$/, "");
@@ -301,8 +302,10 @@ async function main() {
   check("executor", "capabilities deployTx == record", sep?.executor?.deployTx === REC.deployTx, sep?.executor?.deployTx);
   check("fee", "capabilities fee.bps == 25, maxBps == 100", caps.data?.fee?.bps === 25 && caps.data?.fee?.maxBps === 100, JSON.stringify({ bps: caps.data?.fee?.bps, max: caps.data?.fee?.maxBps }));
   check("nosign", "capabilities custody: never holds keys / signs / broadcasts", /never holds keys, never signs, never broadcasts/i.test(caps.data?.custody ?? ""), caps.data?.custody);
-  check("mainnet", "capabilities 8453 executor.status == not_deployed_mainnet_disabled", main?.executor?.status === "not_deployed_mainnet_disabled", main?.executor?.status);
-  check("mainnet", "capabilities 8453 tradingProviders == []", Array.isArray(main?.tradingProviders) && main.tradingProviders.length === 0, JSON.stringify(main?.tradingProviders));
+  check("mainnet", "capabilities 8453 executor.status == deployed (recorded fact)", main?.executor?.status === "deployed", main?.executor?.status);
+  check("mainnet", "capabilities 8453 executor.address == 0xD982…505A", main?.executor?.address === EXPECTED_MAINNET_EXECUTOR, main?.executor?.address);
+  check("mainnet", "capabilities 8453 tradingEnabled == false (flag off in preview)", main?.tradingEnabled === false, String(main?.tradingEnabled));
+  check("mainnet", "capabilities 8453 tradingProviders == [] while the flag is off", Array.isArray(main?.tradingProviders) && main.tradingProviders.length === 0, JSON.stringify(main?.tradingProviders));
 
   const toks = await tool("mpgr_list_tokens");
   check("chain", "list_tokens default chainId == 84532", toks.data?.chainId === 84532, String(toks.data?.chainId));
@@ -475,17 +478,17 @@ async function main() {
   const vT = await tool("mpgr_verify_trade", { quoteId: A.quoteId.slice(0, -3) + "xyz", txHash: REC.swaps[0].txHash });
   check("flow", "verify_trade rejects a forged quoteId", vT.isError, errCode(vT));
 
-  // ---------------------------------------------------------------- 9. mainnet
+  // ---------------------------------------------------------------- 9. mainnet (deployed; trading still off)
   const mq = await tool("mpgr_get_quote", { chainId: 8453, taker: DEPLOYER, sellToken: BASE_MAINNET_WETH, buyToken: BASE_MAINNET_USDC, sellAmount: "1000000000000000" });
-  check("mainnet", "get_quote chainId 8453 -> BASE_MAINNET_DISABLED", mq.isError && errCode(mq) === "BASE_MAINNET_DISABLED", errCode(mq));
+  check("mainnet", "get_quote chainId 8453 -> BASE_MAINNET_DISABLED (flag off)", mq.isError && errCode(mq) === "BASE_MAINNET_DISABLED", errCode(mq));
   const ml = await tool("mpgr_list_tokens", { chainId: 8453 });
-  check("mainnet", "list_tokens chainId 8453 -> EXECUTOR_NOT_DEPLOYED_MAINNET", ml.isError && errCode(ml) === "EXECUTOR_NOT_DEPLOYED_MAINNET", errCode(ml));
+  check("mainnet", "list_tokens chainId 8453 -> deployed tokens USDC,WETH", !ml.isError && (ml.data?.tokens ?? []).map((t) => t.symbol).join(",") === "USDC,WETH" && ml.data?.tradingEnabled === false, ml.isError ? errCode(ml) : `${(ml.data?.tokens ?? []).map((t) => t.symbol).join(",")} tradingEnabled=${ml.data?.tradingEnabled}`);
   const bad1 = await tool("mpgr_get_quote", { chainId: 1, taker: DEPLOYER, sellToken: "ETH", buyToken: "tUSD", sellAmount: "1" });
   check("mainnet", "unsupported chain (1) rejected", bad1.isError, errCode(bad1));
   const llm = await fetch(url("/llm.txt"), { headers: headers() });
   const llmText = await llm.text();
   check("executor", "/llm.txt advertises the Sepolia executor", llm.status === 200 && llmText.includes(`MPGR Executor: ${EXPECTED_EXECUTOR}`), `HTTP ${llm.status}`);
-  check("mainnet", "/llm.txt: Base (8453) executor not deployed", /Base \(chainId 8453\)\n {2}- MPGR Executor: not deployed/.test(llmText), "");
+  check("mainnet", "/llm.txt advertises the deployed Base mainnet executor", llm.status === 200 && llmText.includes(`MPGR Executor: ${EXPECTED_MAINNET_EXECUTOR}`) && llmText.includes("aerodrome-slipstream tickSpacing 50"), `HTTP ${llm.status}`);
 
   // ---------------------------------------------------------------- 6. nothing signed / broadcast server-side
   const nonceAfter = { latest: await client.getTransactionCount({ address: DEPLOYER }), pending: await client.getTransactionCount({ address: DEPLOYER, blockTag: "pending" }) };

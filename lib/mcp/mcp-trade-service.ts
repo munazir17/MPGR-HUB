@@ -88,9 +88,13 @@ export interface McpDeps {
   reader: (chainId: ExecutorChainId) => ChainReader;
   nowSeconds: () => number;
   quoteSecret?: string;
-  /** Base mainnet MCP trading (0x native fee). OFF unless MPGR_MCP_ENABLE_BASE_MAINNET=true. */
+  /**
+   * Base mainnet MCP trading (executor path AND 0x fallback). OFF unless
+   * MPGR_MCP_ENABLE_BASE_MAINNET=true. The registry entry is a deployed fact;
+   * this flag is the operator's trading switch.
+   */
   mainnetEnabled: boolean;
-  /** Validated MPGR fee wallet for the 0x path (null => mainnet quotes refused). */
+  /** Validated MPGR fee wallet for the 0x fallback path (null => non-executor mainnet quotes refused). */
   mainnetFeeRecipient: Address | null;
   zeroExFetch?: typeof fetch;
 }
@@ -209,21 +213,29 @@ function intentView(intent: ExecutorSwapIntent, quoteId: string) {
 export function getCapabilities(deps: McpDeps): ToolOutcome {
   const chains = ([BASE_SEPOLIA_CHAIN_ID, BASE_MAINNET_CHAIN_ID] as const).map((chainId) => {
     const d = deps.registry[chainId];
+    const isMainnet = chainId === BASE_MAINNET_CHAIN_ID;
+    // Mainnet: both providers are behind the operator flag; the executor path
+    // needs the registered deployment, the 0x fallback needs the fee wallet.
+    const tradingProviders: string[] = isMainnet
+      ? deps.mainnetEnabled
+        ? [
+            ...(d ? ["mpgr-executor"] : []),
+            ...(deps.mainnetFeeRecipient ? ["0x-native-fee"] : []),
+          ]
+        : []
+      : d
+        ? ["mpgr-executor"]
+        : [];
     return {
       chainId,
       name: EXECUTOR_CHAIN_NAMES[chainId],
       explorer: EXECUTOR_EXPLORERS[chainId],
       executor: d
         ? { status: "deployed", address: d.executor, owner: d.owner, feeRecipient: d.feeRecipient, deployTx: d.deployTx, deployBlock: d.deployBlock }
-        : { status: chainId === BASE_MAINNET_CHAIN_ID ? "not_deployed_mainnet_disabled" : "not_deployed" },
-      tradingProviders:
-        chainId === BASE_SEPOLIA_CHAIN_ID
-          ? d
-            ? ["mpgr-executor"]
-            : []
-          : deps.mainnetEnabled && deps.mainnetFeeRecipient
-            ? ["0x-native-fee"]
-            : [],
+        : { status: "not_deployed" },
+      /** Operator trading switch: mainnet follows MPGR_MCP_ENABLE_BASE_MAINNET, Sepolia the deployment. */
+      tradingEnabled: isMainnet ? deps.mainnetEnabled : d !== null,
+      tradingProviders,
       tokens: d ? d.tokens.map(tokenView) : [],
     };
   });
@@ -253,11 +265,14 @@ export function getCapabilities(deps: McpDeps): ToolOutcome {
         EIP2612: "Sign an EIP-2612 permit (typed data) — permit + fee + swap happen in ONE tx. Token must support permit.",
         PERMIT2: "One-time approve(Permit2), then sign a Permit2 SignatureTransfer per trade — ONE swap tx.",
       },
+      baseMainnetDispatch:
+        "Proven executor pairs (USDC<->WETH, incl. native ETH) route through the MPGR Executor. Any other ERC-20 pair falls back to the 0x native-fee path. B20 tokenized stocks are never routed through the executor (no proven executor pool); over MCP they use the 0x path like any other pair, and in the app UI they keep the existing CDP flow.",
       providers: {
-        "mpgr-executor": "Custom MPGR executor (NOT externally audited yet): typed Aerodrome Slipstream + Uniswap V3 adapters, allowlisted routers/tokens, exact fee, atomic.",
-        "0x-native-fee": "0x Swap API (AllowanceHolder) with swapFeeToken=sellToken; quote rejected unless fee is exact. Base mainnet only, disabled by default.",
-        "aerodrome-slipstream": "Via mpgr-executor (Base mainnet deployment pending; proven on a Base mainnet fork in CI).",
-        "cdp-trade-api": "Not offered over MCP: CDP Swap API has no integrator-fee parameter and returns taker-bound calldata; the app UI keeps its existing flow.",
+        "mpgr-executor": "Custom MPGR executor (NOT externally audited yet): typed Aerodrome Slipstream + Uniswap V3 adapters, allowlisted routers/tokens, exact fee, atomic. Deployed on Base mainnet and Base Sepolia.",
+        "0x-native-fee": "0x Swap API (AllowanceHolder) with swapFeeToken=sellToken; quote rejected unless the integrator fee is exactly floor(sellAmount*25/10000) of the sell token. Base mainnet only, for pairs without a proven executor route; disabled by default.",
+        "aerodrome-slipstream": "Venue used by mpgr-executor on Base mainnet (USDC<->WETH, tickSpacing 50). Proven by the live mainnet smoke test (71/71 checks) and the CI Base-mainnet fork suite.",
+        "uniswap-v3": "Venue used by mpgr-executor on Base Sepolia (tUSD/tSTOCK and WETH/tUSD, fee 3000).",
+        "cdp-trade-api": "Not offered over MCP: CDP Swap API has no integrator-fee parameter and returns taker-bound calldata; the app UI keeps its existing flow (incl. B20 tokenized stocks).",
       },
       chains,
     },
@@ -282,6 +297,8 @@ export function listTokens(deps: McpDeps, input: unknown): ToolOutcome {
     data: {
       chainId,
       executor: d.executor,
+      /** Operator trading switch: mainnet follows MPGR_MCP_ENABLE_BASE_MAINNET, Sepolia the deployment. */
+      tradingEnabled: chainId === BASE_MAINNET_CHAIN_ID ? deps.mainnetEnabled : true,
       nativeEth: { symbol: "ETH", via: d.weth, note: "Use \"ETH\" as sellToken/buyToken for native ETH." },
       tokens: d.tokens.map(tokenView),
       pairs: d.routes.map((r) => ({
@@ -291,6 +308,11 @@ export function listTokens(deps: McpDeps, input: unknown): ToolOutcome {
         poolFee: r.poolFee ?? null,
         tickSpacing: r.tickSpacing ?? null,
       })),
+      ...(chainId === BASE_MAINNET_CHAIN_ID
+        ? {
+            note: "Only pairs with a proven executor route are listed. Other ERC-20 pairs on Base mainnet use the 0x native-fee path when the operator has enabled mainnet trading. B20 tokenized stocks are never routed through the executor.",
+          }
+        : {}),
     },
   };
 }
@@ -306,12 +328,49 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
   const slippage = parseSlippage(args.slippageBps);
   if (typeof slippage === "string") return fail("INVALID_SLIPPAGE", slippage);
 
-  if (chainId === BASE_MAINNET_CHAIN_ID) return quoteZeroEx(deps, args, taker, slippage);
+  // ---- Base mainnet provider dispatch -------------------------------------
+  // 1. Operator switch: nothing is quoted on 8453 while mainnet MCP trading
+  //    is disabled (MPGR_MCP_ENABLE_BASE_MAINNET unset/false).
+  // 2. Proven executor pairs (both tokens in the registered deployment AND a
+  //    proven route between them — today: USDC <-> WETH, incl. native ETH)
+  //    quote through the MPGR Executor: live on-chain fee, quoter, exact
+  //    floor math, HMAC quoteId.
+  // 3. Everything else (e.g. B20 tokenized stocks or any other ERC-20 pair)
+  //    falls through to the 0x native-fee path, which refuses unless the
+  //    operator also configured the fee wallet. Nothing is ever routed to the
+  //    executor without a registered, proven route.
+  if (chainId === BASE_MAINNET_CHAIN_ID) {
+    if (!deps.mainnetEnabled) {
+      return fail("BASE_MAINNET_DISABLED", "Base mainnet trading over MCP is disabled. Use chainId 84532 (Base Sepolia).");
+    }
+    const mainnet = deps.registry[BASE_MAINNET_CHAIN_ID];
+    if (mainnet) {
+      const sell = resolveToken(mainnet, args.sellToken);
+      const buy = resolveToken(mainnet, args.buyToken);
+      if (sell && buy && findExecutorRoute(mainnet, sell.token.address, buy.token.address)) {
+        return quoteExecutor(deps, BASE_MAINNET_CHAIN_ID, mainnet, args, sell, buy, taker, slippage);
+      }
+    }
+    return quoteZeroEx(deps, args, taker, slippage);
+  }
 
-  const d = deps.registry[chainId];
+  return quoteExecutor(deps, chainId, deps.registry[chainId] as ExecutorDeployment, args, null, null, taker, slippage);
+}
+
+/** Executor-path quote, shared by Base Sepolia and the proven Base mainnet route. */
+async function quoteExecutor(
+  deps: McpDeps,
+  chainId: ExecutorChainId,
+  d: ExecutorDeployment,
+  args: Record<string, unknown>,
+  sell: { token: ExecutorToken; native: boolean } | null,
+  buy: { token: ExecutorToken; native: boolean } | null,
+  taker: Address,
+  slippage: number,
+): Promise<ToolOutcome> {
   if (!d) return fail("EXECUTOR_NOT_DEPLOYED", "The MPGR Executor is not yet deployed on Base Sepolia.");
-  const sell = resolveToken(d, args.sellToken);
-  const buy = resolveToken(d, args.buyToken);
+  if (!sell) sell = resolveToken(d, args.sellToken);
+  if (!buy) buy = resolveToken(d, args.buyToken);
   if (!sell) return fail("TOKEN_NOT_ALLOWED", "sellToken is not in the executor allowlist (see mpgr_list_tokens).");
   if (!buy) return fail("TOKEN_NOT_ALLOWED", "buyToken is not in the executor allowlist (see mpgr_list_tokens).");
   const amount = parseSellAmount(args, sell.token.decimals);
@@ -364,6 +423,7 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
     ok: true,
     data: {
       ...intentView(built.intent, signed.quoteId),
+      provider: "mpgr-executor",
       expiresAt: payload.exp,
       balanceSufficient: balance >= amount,
       takerBalance: balance.toString(),
@@ -667,7 +727,10 @@ async function quoteZeroEx(deps: McpDeps, args: Record<string, unknown>, taker: 
   };
   const signed = signQuoteId(payload, deps.quoteSecret);
   if (!signed.ok) return fail(signed.error.code, signed.error.message);
-  return { ok: true, data: { ...zeroExView(q.value, signed.quoteId), expiresAt: payload.exp, nextStep: "Call mpgr_prepare_trade with this quoteId." } };
+  return {
+    ok: true,
+    data: { ...zeroExView(q.value, signed.quoteId), provider: "0x-native-fee", expiresAt: payload.exp, nextStep: "Call mpgr_prepare_trade with this quoteId." },
+  };
 }
 
 function zeroExView(q: ZeroExNativeFeeQuote, quoteId: string) {

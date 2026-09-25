@@ -9,6 +9,7 @@ import {
   BASE_MAINNET_CHAIN_ID,
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_EXECUTOR_DEPLOYMENT,
+  BASE_MAINNET_EXECUTOR_DEPLOYMENT,
   MPGR_EXECUTOR_DEPLOYMENTS,
   RouterKind,
   getExecutorDeployment,
@@ -37,8 +38,29 @@ const RECORD = JSON.parse(readFileSync(path.resolve(__dirname, "../../../deploym
   allowedTokens: { symbol: string; address: string; decimals: number }[];
 };
 
+/** The deployment record committed from the one-time Base Mainnet deploy. */
+const MAINNET_RECORD = JSON.parse(
+  readFileSync(path.resolve(__dirname, "../../../deployments/base-mainnet/mpgr-executor.json"), "utf8"),
+) as {
+  chainId: number;
+  executor: string;
+  owner: string;
+  feeRecipient: string;
+  feeBps: number;
+  maxFeeBps: number;
+  weth: string;
+  permit2: string;
+  network: string;
+  paused: boolean;
+  deployTx: string;
+  deployBlock: number;
+  router: { kind: string; router: string; quoterV2: string; factory: string };
+  allowedTokens: Record<string, string>;
+};
+
 const lc = (a: string) => a.toLowerCase();
 const d = BASE_SEPOLIA_EXECUTOR_DEPLOYMENT;
+const dMain = BASE_MAINNET_EXECUTOR_DEPLOYMENT;
 
 describe("Base Sepolia executor registry", () => {
   it("mirrors the committed deployment record exactly", () => {
@@ -81,11 +103,68 @@ describe("Base Sepolia executor registry", () => {
     expect(lc(d.feeRecipient)).not.toBe(lc(d.executor));
   });
 
-  it("selects the Sepolia executor for 84532 and keeps Base mainnet null", () => {
+  it("selects the Sepolia executor for 84532 and the mainnet executor for 8453", () => {
     expect(MPGR_EXECUTOR_DEPLOYMENTS[BASE_SEPOLIA_CHAIN_ID]).toBe(d);
     expect(getExecutorDeployment(BASE_SEPOLIA_CHAIN_ID)?.executor).toBe(RECORD.executor);
-    expect(MPGR_EXECUTOR_DEPLOYMENTS[BASE_MAINNET_CHAIN_ID]).toBeNull();
-    expect(getExecutorDeployment(BASE_MAINNET_CHAIN_ID)).toBeNull();
+    expect(MPGR_EXECUTOR_DEPLOYMENTS[BASE_MAINNET_CHAIN_ID]).toBe(dMain);
+    expect(getExecutorDeployment(BASE_MAINNET_CHAIN_ID)?.executor).toBe(MAINNET_RECORD.executor);
+  });
+});
+
+describe("Base Mainnet executor registry", () => {
+  it("mirrors the committed deployment record exactly", () => {
+    expect(MAINNET_RECORD.chainId).toBe(8453);
+    expect(MAINNET_RECORD.paused).toBe(false);
+    expect(dMain.chainId).toBe(BASE_MAINNET_CHAIN_ID);
+    expect(dMain.network).toBe("base");
+    expect(dMain.executor).toBe(MAINNET_RECORD.executor);
+    expect(dMain.owner).toBe(MAINNET_RECORD.owner);
+    expect(dMain.feeRecipient).toBe(MAINNET_RECORD.feeRecipient);
+    expect(dMain.feeBps).toBe(MAINNET_RECORD.feeBps);
+    expect(dMain.weth).toBe(MAINNET_RECORD.weth);
+    expect(dMain.permit2).toBe(MAINNET_RECORD.permit2);
+    expect(dMain.deployTx).toBe(MAINNET_RECORD.deployTx);
+    expect(dMain.deployBlock).toBe(MAINNET_RECORD.deployBlock);
+    expect(dMain.explorerUrl).toContain(dMain.executor);
+  });
+
+  it("registers ONLY the proven USDC <-> WETH Slipstream route (no invented B20 routes)", () => {
+    expect(dMain.tokens.map((t) => ({ symbol: t.symbol, address: t.address, decimals: t.decimals }))).toEqual([
+      { symbol: "USDC", address: MAINNET_RECORD.allowedTokens.USDC, decimals: 6 },
+      { symbol: "WETH", address: MAINNET_RECORD.allowedTokens.WETH, decimals: 18 },
+    ]);
+    expect(dMain.routes).toHaveLength(1);
+    const r = dMain.routes[0];
+    expect(r.kind).toBe(RouterKind.AERODROME_SLIPSTREAM);
+    expect(r.router).toBe(MAINNET_RECORD.router.router);
+    expect(r.quoter).toBe(MAINNET_RECORD.router.quoterV2);
+    expect(r.tickSpacing).toBe(50); // the proven WETH/USDC ts=50 pool (live smoke test 71/71)
+    expect([lc(r.tokenA), lc(r.tokenB)].sort()).toEqual([lc(MAINNET_RECORD.allowedTokens.USDC), lc(MAINNET_RECORD.weth)].sort());
+    // The contract allowlists 13 B20 tokenized stocks; none may be routable over MCP.
+    const b20 = Object.entries(MAINNET_RECORD.allowedTokens).filter(([, a]) => lc(a).startsWith("0xb2"));
+    expect(b20.length).toBe(13);
+    const registered = new Set(dMain.tokens.map((t) => lc(t.address)));
+    for (const [symbol, addr] of b20) expect(registered.has(lc(addr))).toBe(false), expect(symbol).toMatch(/c$/);
+  });
+
+  it("uses EIP-55 checksummed addresses and only routes allowlisted tokens", () => {
+    const addrs = [
+      dMain.executor,
+      dMain.owner,
+      dMain.feeRecipient,
+      dMain.weth,
+      dMain.permit2,
+      ...dMain.tokens.map((t) => t.address),
+      ...dMain.routes.flatMap((r) => [r.router, r.quoter, r.tokenA, r.tokenB]),
+    ];
+    for (const a of addrs) expect(getAddress(a)).toBe(a);
+    const allowed = new Set(dMain.tokens.map((t) => lc(t.address)));
+    for (const r of dMain.routes) {
+      expect(allowed.has(lc(r.tokenA))).toBe(true);
+      expect(allowed.has(lc(r.tokenB))).toBe(true);
+    }
+    expect(dMain.tokens.filter((t) => t.isWeth).map((t) => t.address)).toEqual([dMain.weth]);
+    expect(lc(dMain.feeRecipient)).not.toBe(lc(dMain.executor));
   });
 });
 
@@ -140,14 +219,31 @@ function code(o: ToolOutcome) {
 }
 
 describe("MCP execution path uses the deployed Sepolia executor", () => {
-  it("capabilities: Sepolia executor deployed, mainnet disabled", () => {
+  it("capabilities: Sepolia executor deployed, mainnet deployed but trading disabled", () => {
     const chains = ok(getCapabilities(prodDeps())).chains as Record<string, unknown>[];
     expect(chains[0]).toMatchObject({
       chainId: 84532,
+      tradingEnabled: true,
       tradingProviders: ["mpgr-executor"],
       executor: { status: "deployed", address: RECORD.executor, owner: RECORD.owner, feeRecipient: RECORD.feeRecipient, deployTx: RECORD.deployTx },
     });
-    expect(chains[1]).toMatchObject({ chainId: 8453, tradingProviders: [], executor: { status: "not_deployed_mainnet_disabled" } });
+    expect(chains[1]).toMatchObject({
+      chainId: 8453,
+      tradingEnabled: false,
+      tradingProviders: [],
+      executor: {
+        status: "deployed",
+        address: MAINNET_RECORD.executor,
+        owner: MAINNET_RECORD.owner,
+        feeRecipient: MAINNET_RECORD.feeRecipient,
+        deployTx: MAINNET_RECORD.deployTx,
+        deployBlock: MAINNET_RECORD.deployBlock,
+      },
+      tokens: expect.arrayContaining([
+        expect.objectContaining({ symbol: "USDC", address: MAINNET_RECORD.allowedTokens.USDC }),
+        expect.objectContaining({ symbol: "WETH", address: MAINNET_RECORD.allowedTokens.WETH }),
+      ]),
+    });
   });
 
   it("quote → prepare on the default chain produce a tx to the deployed executor via the recorded router", async () => {
@@ -166,10 +262,16 @@ describe("MCP execution path uses the deployed Sepolia executor", () => {
     expect(decoded.args?.[1]).toBe(RECORD.uniswapV3PoolFee);
   });
 
-  it("Base mainnet stays disabled: no quotes, no tokens, no chain reads", async () => {
+  it("Base mainnet stays disabled while the flag is off: no quotes and no chain reads (prodDeps' reader throws for 8453)", async () => {
     const deps = prodDeps();
-    expect(code(await getQuote(deps, { chainId: 8453, taker: TAKER, sellToken: RECORD.weth, buyToken: RECORD.testTokenUSD, sellAmount: "1000000" }))).toBe("BASE_MAINNET_DISABLED");
-    expect(code(listTokens(deps, { chainId: 8453 }))).toBe("EXECUTOR_NOT_DEPLOYED_MAINNET");
+    expect(
+      code(await getQuote(deps, { chainId: 8453, taker: TAKER, sellToken: MAINNET_RECORD.allowedTokens.USDC, buyToken: MAINNET_RECORD.allowedTokens.WETH, sellAmount: "1000000" })),
+    ).toBe("BASE_MAINNET_DISABLED");
+    // listTokens stays informational: it shows the deployed tokens but tradingEnabled=false.
+    const d = ok(listTokens(deps, { chainId: 8453 }));
+    expect(d.tradingEnabled).toBe(false);
+    expect((d.tokens as Record<string, unknown>[]).map((t) => t.symbol)).toEqual(["USDC", "WETH"]);
+    expect((d.pairs as Record<string, unknown>[])).toHaveLength(1);
   });
 });
 
@@ -191,10 +293,13 @@ describe("production MCP wiring", () => {
     }
   });
 
-  it("/llm.txt advertises the Sepolia executor and no mainnet executor", () => {
+  it("/llm.txt advertises BOTH deployed executors, the mainnet route and the operator gate", () => {
     const text = buildLlmTxt();
     expect(text).toContain(`MPGR Executor: ${RECORD.executor}`);
+    expect(text).toContain(`MPGR Executor: ${MAINNET_RECORD.executor}`);
     expect(text).toContain(`Fee recipient: ${RECORD.feeRecipient}`);
-    expect(text).toMatch(/Base \(chainId 8453\)\n {2}- MPGR Executor: not deployed/);
+    expect(text).toContain("aerodrome-slipstream tickSpacing 50");
+    expect(text).toContain("MPGR_MCP_ENABLE_BASE_MAINNET=true");
+    expect(text).not.toMatch(/chainId 8453[\s\S]{0,200}not deployed/);
   });
 });

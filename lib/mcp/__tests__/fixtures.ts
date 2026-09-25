@@ -35,6 +35,16 @@ export const PERMIT2 = CANONICAL_PERMIT2;
 export const ROUTER = getAddress(BASE_SEPOLIA_UNISWAP_V3.swapRouter02);
 export const QUOTER = getAddress(BASE_SEPOLIA_UNISWAP_V3.quoterV2);
 
+// Base mainnet (8453) — the real deployed values (mirrored by
+// BASE_MAINNET_EXECUTOR_DEPLOYMENT in executor-config.ts, enforced there by
+// executor-registry.test.ts against deployments/base-mainnet/mpgr-executor.json).
+export const MAINNET_EXECUTOR = getAddress("0xD982726e28275661F8aB64054E6b17a70a63505A");
+export const MAINNET_USDC = getAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
+export const MAINNET_WETH = CANONICAL_WETH;
+export const MAINNET_SLIP_ROUTER = getAddress("0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F");
+export const MAINNET_SLIP_QUOTER = getAddress("0x514c8B5f54112481E28028F1166Bd78501089259");
+export const MAINNET_TICK_SPACING = 50;
+
 export const SEPOLIA_DEPLOYMENT: ExecutorDeployment = {
   chainId: BASE_SEPOLIA_CHAIN_ID,
   network: "base-sepolia",
@@ -58,8 +68,43 @@ export const SEPOLIA_DEPLOYMENT: ExecutorDeployment = {
   ],
 };
 
+/** Mirrors BASE_MAINNET_EXECUTOR_DEPLOYMENT: USDC <-> WETH on Slipstream only (no B20). */
+export const MAINNET_DEPLOYMENT: ExecutorDeployment = {
+  chainId: BASE_MAINNET_CHAIN_ID,
+  network: "base",
+  executor: MAINNET_EXECUTOR,
+  owner: OWNER,
+  feeRecipient: FEE_RECIPIENT,
+  feeBps: 25,
+  weth: MAINNET_WETH,
+  permit2: PERMIT2,
+  deployTx: `0x${"22".repeat(32)}`,
+  deployBlock: 51767139,
+  explorerUrl: "https://basescan.org",
+  tokens: [
+    { address: MAINNET_USDC, symbol: "USDC", decimals: 6 },
+    { address: MAINNET_WETH, symbol: "WETH", decimals: 18, isWeth: true },
+  ],
+  routes: [
+    {
+      kind: RouterKind.AERODROME_SLIPSTREAM,
+      router: MAINNET_SLIP_ROUTER,
+      quoter: MAINNET_SLIP_QUOTER,
+      tickSpacing: MAINNET_TICK_SPACING,
+      tokenA: MAINNET_USDC,
+      tokenB: MAINNET_WETH,
+    },
+  ],
+};
+
 export const TEST_REGISTRY: Record<ExecutorChainId, ExecutorDeployment | null> = {
   [BASE_MAINNET_CHAIN_ID]: null,
+  [BASE_SEPOLIA_CHAIN_ID]: SEPOLIA_DEPLOYMENT,
+};
+
+/** The production-shaped registry: BOTH chains have a deployed executor. */
+export const MAINNET_REGISTRY: Record<ExecutorChainId, ExecutorDeployment | null> = {
+  [BASE_MAINNET_CHAIN_ID]: MAINNET_DEPLOYMENT,
   [BASE_SEPOLIA_CHAIN_ID]: SEPOLIA_DEPLOYMENT,
 };
 
@@ -110,13 +155,17 @@ export function setAllowance(s: FakeChainState, token: Address, owner: Address, 
   s.allowances.set(k(token, owner, spender), amount);
 }
 
-export function fakeReader(s: FakeChainState, chainId: number = BASE_SEPOLIA_CHAIN_ID): ChainReader {
+export function fakeReader(
+  s: FakeChainState,
+  chainId: number = BASE_SEPOLIA_CHAIN_ID,
+  executorAddr: Address = EXECUTOR,
+): ChainReader {
   return {
     chainId,
     async readContract({ address, functionName, args }) {
       s.calls.push(`read:${functionName}`);
       const a = (args ?? []) as unknown[];
-      if (address.toLowerCase() === EXECUTOR.toLowerCase()) {
+      if (address.toLowerCase() === executorAddr.toLowerCase()) {
         switch (functionName) {
           case "feeBps":
             return s.feeBps;
