@@ -26,6 +26,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import {
   createPublicClient,
   createWalletClient,
+  custom,
   decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionData,
@@ -105,7 +106,25 @@ const SWAP_EXECUTED_EVENT = EXECUTOR_ABI.find((x) => x.type === "event" && x.nam
 // Environment
 // ---------------------------------------------------------------------------
 const MODE = (process.env.SMOKE_MODE ?? "").trim();
-const RPC_URL = (process.env.SMOKE_RPC_URL ?? "").trim();
+const RPC_URL = (process.env.SMOKE_RPC_URL ?? "").trim(); // optional in live mode (private RPC secret)
+// Public Base Mainnet fallbacks used in LIVE mode after the (optional) secret RPC.
+// Every value the script acts on is re-checked on-chain afterwards, and the raw
+// signed txs are public anyway; a failing/lagging endpoint is simply skipped.
+const PUBLIC_BASE_RPCS = [
+  "https://mainnet.base.org",
+  "https://base-rpc.publicnode.com",
+  "https://base.drpc.org",
+  "https://base.llamarpc.com",
+  "https://1rpc.io/base",
+];
+const RPC_URLS = LIVE_MODE_FROM_ENV()
+  ? [...new Set([RPC_URL, ...PUBLIC_BASE_RPCS].filter((u) => u.length > 0))]
+  : RPC_URL.length > 0
+    ? [RPC_URL]
+    : [];
+function LIVE_MODE_FROM_ENV() {
+  return (process.env.SMOKE_MODE ?? "").trim() === "live";
+}
 const OUT_JSON = process.env.SMOKE_JSON ?? "smoke-results.json";
 const OUT_MD = process.env.SMOKE_MD ?? "smoke-report.md";
 const LIVE = MODE === "live";
@@ -200,6 +219,165 @@ function resolveAccount() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// RPC transport: sticky endpoint, retry with backoff, failover, concurrency cap
+// ---------------------------------------------------------------------------
+// Public Base RPCs rate-limit bursts with JSON-RPC errors (e.g. -32016 "over rate
+// limit") that viem does not retry. This pool:
+//   * sends every request to ONE active endpoint while it keeps working (sticky),
+//   * retries transient failures with exponential backoff + jitter,
+//   * rotates to the next endpoint after repeated failures, but only once that
+//     endpoint's head has reached the highest block already observed (so a
+//     lagging node can never serve pre-approval state after the approve),
+//   * never retries deterministic failures (execution reverted),
+//   * treats eth_sendRawTransaction idempotently: the same signed bytes may be
+//     re-sent, and "already known" / tx-found-by-hash counts as success,
+//   * caps in-flight requests to avoid bursts.
+// The secret RPC URL (which may embed an API key) is never printed.
+const RPC_MAX_ATTEMPTS = 12;
+const RPC_MAX_IN_FLIGHT = 2;
+const RPC_FAILS_BEFORE_ROTATE = 2;
+const RPC_TIMEOUT_MS = 30_000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function rpcLabel(url) {
+  if (url === RPC_URL && LIVE_MODE_FROM_ENV()) return "BASE_MAINNET_RPC_URL (secret)";
+  try {
+    return new URL(url).host;
+  } catch {
+    return "invalid-url";
+  }
+}
+
+function redact(text) {
+  let out = String(text);
+  if (RPC_URL.length > 0) out = out.split(RPC_URL).join("<secret-rpc>");
+  return out;
+}
+
+function errText(err) {
+  return [err?.shortMessage, err?.details, err?.message, err?.cause?.message].filter(Boolean).join(" | ");
+}
+
+function isRevert(err) {
+  return err?.code === 3 || /revert/i.test(errText(err));
+}
+
+class RpcPool {
+  constructor(urls) {
+    this.endpoints = urls.map((url) => ({
+      url,
+      label: rpcLabel(url),
+      transport: http(url, { retryCount: 0, timeout: RPC_TIMEOUT_MS })({ chain: base, retryCount: 0 }),
+      needsSyncCheck: false,
+    }));
+    this.active = 0;
+    this.fails = 0;
+    this.highWater = 0n;
+    this.inFlight = 0;
+    this.waiters = [];
+  }
+
+  async acquire() {
+    if (this.inFlight < RPC_MAX_IN_FLIGHT) {
+      this.inFlight++;
+      return;
+    }
+    await new Promise((r) => this.waiters.push(r));
+    this.inFlight++;
+  }
+
+  release() {
+    this.inFlight--;
+    const next = this.waiters.shift();
+    if (next) next();
+  }
+
+  observe(method, result) {
+    let bn = null;
+    try {
+      if (method === "eth_blockNumber" && typeof result === "string") bn = BigInt(result);
+      else if ((method === "eth_getTransactionReceipt" || method === "eth_getBlockByNumber" || method === "eth_getBlockByHash") && result?.blockNumber) bn = BigInt(result.blockNumber);
+      else if ((method === "eth_getBlockByNumber" || method === "eth_getBlockByHash") && result?.number) bn = BigInt(result.number);
+    } catch {
+      bn = null;
+    }
+    if (bn !== null && bn > this.highWater) this.highWater = bn;
+  }
+
+  rotate(reason) {
+    if (this.endpoints.length < 2) return;
+    const from = this.endpoints[this.active].label;
+    this.active = (this.active + 1) % this.endpoints.length;
+    this.endpoints[this.active].needsSyncCheck = true;
+    this.fails = 0;
+    console.log(`RPC   switching ${from} -> ${this.endpoints[this.active].label} (${redact(reason).slice(0, 160)})`);
+  }
+
+  async request(args) {
+    await this.acquire();
+    try {
+      return await this.requestInner(args);
+    } finally {
+      this.release();
+    }
+  }
+
+  async requestInner({ method, params }) {
+    let lastErr;
+    for (let attempt = 1; attempt <= RPC_MAX_ATTEMPTS; attempt++) {
+      const ep = this.endpoints[this.active];
+      try {
+        if (ep.needsSyncCheck && this.highWater > 0n) {
+          const head = BigInt(await ep.transport.request({ method: "eth_blockNumber" }));
+          if (head < this.highWater) throw new Error(`endpoint lagging: head ${head} < observed ${this.highWater}`);
+        }
+        ep.needsSyncCheck = false;
+        const result = await ep.transport.request({ method, params });
+        this.observe(method, result);
+        this.fails = 0;
+        return result;
+      } catch (err) {
+        lastErr = err;
+        if (method === "eth_sendTransaction") {
+          throw err; // node-signed send (local fork rehearsal only): never blindly re-sent
+        }
+        if (method === "eth_sendRawTransaction") {
+          const known = await this.sentTxHashIfKnown(params?.[0], err);
+          if (known) return known;
+          if (/nonce too low|insufficient funds|underpriced|exceeds the configured cap|intrinsic gas/i.test(errText(err))) throw err;
+        } else if (isRevert(err)) {
+          throw err; // deterministic: never retried, never masked
+        }
+        this.fails++;
+        if (this.fails >= RPC_FAILS_BEFORE_ROTATE) this.rotate(`${method}: ${errText(err)}`);
+        if (attempt < RPC_MAX_ATTEMPTS) {
+          const backoff = Math.min(8_000, 400 * 2 ** Math.min(attempt - 1, 5)) + Math.floor(Math.random() * 300);
+          console.log(`RPC   retry ${attempt}/${RPC_MAX_ATTEMPTS - 1} ${method} on ${ep.label} in ${backoff}ms: ${redact(errText(err)).slice(0, 160)}`);
+          await sleep(backoff);
+        }
+      }
+    }
+    throw lastErr;
+  }
+
+  /** After a send error: the same signed tx may already be in the mempool / mined. */
+  async sentTxHashIfKnown(rawTx, err) {
+    if (typeof rawTx !== "string") return null;
+    const hash = keccak256(rawTx);
+    if (/already known|known transaction|already imported/i.test(errText(err))) return hash;
+    for (const ep of this.endpoints) {
+      try {
+        const tx = await ep.transport.request({ method: "eth_getTransactionByHash", params: [hash] });
+        if (tx && tx.hash) return hash;
+      } catch {
+        // endpoint unavailable; try the next one
+      }
+    }
+    return null;
+  }
+}
+
 /**
  * Finds the storage key of a Solidity mapping entry by eth_call state override
  * (read-only): writes `expected` to the candidate key in call state only and
@@ -224,12 +402,12 @@ async function probeMappingSlot(pub, token, callData, expected, keyForSlot) {
 async function main() {
   stage("0. environment guards");
   must("SMOKE_MODE is 'rehearsal' or 'live'", MODE === "rehearsal" || MODE === "live", `got '${MODE}'`);
-  must("RPC URL provided", RPC_URL.length > 0);
+  must("RPC endpoint(s) provided", RPC_URLS.length > 0);
   if (LIVE) {
     must("live mode runs only inside GitHub Actions", process.env.GITHUB_ACTIONS === "true");
-    must("live mode RPC is NOT a local fork", !isLocalRpc(RPC_URL));
+    must("live mode RPCs are NOT a local fork", RPC_URLS.every((u) => !isLocalRpc(u)), RPC_URLS.map(rpcLabel).join(", "));
   } else {
-    must("rehearsal RPC is a local anvil fork (127.0.0.1/localhost)", isLocalRpc(RPC_URL));
+    must("rehearsal RPC is a local anvil fork (127.0.0.1/localhost)", RPC_URLS.length === 1 && isLocalRpc(RPC_URLS[0]));
   }
 
   const account = resolveAccount();
@@ -237,7 +415,10 @@ async function main() {
   report.signer = signer;
   must("signer is exactly the dedicated test wallet", eq(signer, WALLET), `signer ${signer}`);
 
-  const transport = http(RPC_URL, { retryCount: 6, retryDelay: 1_500, timeout: 60_000 });
+  // Transport only: sticky endpoint + retry/backoff + failover + concurrency cap.
+  // No effect on what is quoted, simulated, signed or verified.
+  const rpcPool = new RpcPool(RPC_URLS);
+  const transport = custom({ request: (args) => rpcPool.request(args) }, { retryCount: 0 });
   const pub = createPublicClient({ chain: base, transport });
   const wallet = createWalletClient({ account, chain: base, transport });
   const confirmations = LIVE ? 2 : 1;
@@ -689,9 +870,9 @@ try {
   // Error messages come from our own guards or from viem RPC errors; the key is
   // never part of either (it is only held inside the local viem account).
   const msg = err instanceof Abort ? err.message : (err?.shortMessage ?? err?.message ?? String(err));
-  report.abortReason = String(msg).split("\n")[0].slice(0, 500);
+  report.abortReason = redact(String(msg).split("\n")[0].slice(0, 500));
   console.error(`\nABORTED at stage '${report.stage}': ${report.abortReason}`);
-  if (!(err instanceof Abort) && err?.stack) console.error(String(err.stack).split("\n").slice(0, 8).join("\n"));
+  if (!(err instanceof Abort) && err?.stack) console.error(redact(String(err.stack).split("\n").slice(0, 8).join("\n")));
   exitCode = 1;
 } finally {
   report.finishedAt = new Date().toISOString();
