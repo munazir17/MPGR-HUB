@@ -125,6 +125,7 @@ jobs:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
         run: |
           set -euo pipefail
+          trap 'echo "::error title=forge script rehearsal failed::line ${LINENO}: ${BASH_COMMAND}"' ERR
           # Pin the fork block (fewer upstream calls) and let anvil retry the rate-limited public RPC.
           FORK_BLOCK=""
           for a in 1 2 3 4 5 6; do FORK_BLOCK="$(cast block-number --rpc-url "$BASE_MAINNET_RPC_URL" 2>/dev/null || true)"; [ -n "$FORK_BLOCK" ] && break; sleep $((a * 3)); done
@@ -140,9 +141,8 @@ jobs:
             echo "::error title=anvil fork did not start::chain-id='${CID}' alive=$(kill -0 "$ANVIL_PID" 2>/dev/null && echo yes || echo no) log: $(grep -v -iE 'private key|0x[0-9a-f]{64}' anvil.log | tail -c 1200 | tr '\n' ' ')"
             exit 1
           fi
-          W="$(cast wallet new --json)"
-          KEY="$(echo "$W" | jq -r '.[0].private_key')"; echo "::add-mask::${KEY}"
-          ADDR="$(echo "$W" | jq -r '.[0].address')"
+          KEY="0x$(openssl rand -hex 32)"; echo "::add-mask::${KEY}"
+          ADDR="$(cast wallet address --private-key "$KEY")"
           cast rpc anvil_setBalance "$ADDR" 0x2386F26FC10000 --rpc-url "$LOCAL" >/dev/null
           F=deployments/base-mainnet/deploy-config.json
           export BASE_MAINNET_DEPLOYER_PRIVATE_KEY="$KEY" MPGR_MAINNET_DEPLOY_ENABLED=true
