@@ -43,7 +43,7 @@ jobs:
       OUT_DIR: deployments/base-sepolia
       BROADCAST: broadcast/DeployMPGRExecutorBaseSepolia.s.sol/84532/run-latest.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: foundry-rs/foundry-toolchain@v1
         with:
