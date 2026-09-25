@@ -1,0 +1,99 @@
+# End-to-end check of the DEPLOYED Vercel Preview MCP endpoint against live Base Sepolia.
+# Read-only: it never signs server-side and never broadcasts. Permit-mode finalize uses a
+# throwaway, unfunded wallet generated inside the job as a stand-in for the user's wallet.
+# Unsigned txs are proven by simulation (eth_simulateV1 / eth_call with state overrides).
+#
+# Runs on PRs carrying the `e2e-preview-sepolia` label, after Vercel reports the Preview
+# for the PR head commit as ready. See script/e2e-preview-mcp.mjs.
+name: MCP Preview E2E (Base Sepolia)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  statuses: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: e2e-preview-mcp-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    if: contains(github.event.pull_request.labels.*.name, 'e2e-preview-sepolia') && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Wait for the Vercel Preview of this exact commit
+        run: |
+          for i in $(seq 1 80); do
+            STATE=$(gh api "repos/$REPO/commits/$HEAD_SHA/statuses?per_page=100" --jq '[.[] | select(.context == "Vercel")][0].state // "none"')
+            echo "Vercel status for ${HEAD_SHA:0:7}: $STATE"
+            case "$STATE" in
+              success) exit 0 ;;
+              failure|error) echo "::error title=Vercel Preview::Preview deployment for ${HEAD_SHA:0:7} is '$STATE'"; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "::error title=Vercel Preview::Timed out waiting for the Preview of ${HEAD_SHA:0:7}"; exit 1
+
+      - name: Resolve the Preview URL (from the Vercel bot's PR comment metadata)
+        run: |
+          META=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.user.login | test("vercel"; "i")) | .body | select(startswith("[vc]: #"))] | last // ""' | head -1 | sed -E 's/^\[vc\]: #[^:]*://')
+          HOST=$(echo "$META" | base64 -d 2>/dev/null | jq -r '.projects[0].previewUrl // empty')
+          if [ -z "$HOST" ]; then echo "::error title=Preview URL::Could not read previewUrl from the Vercel comment"; exit 1; fi
+          echo "PREVIEW_URL=https://$HOST" >> "$GITHUB_ENV"
+          echo "Preview: https://$HOST"
+
+      - name: Run MCP E2E against the Preview
+        id: e2e
+        env:
+          BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          set +e
+          node script/e2e-preview-mcp.mjs | tee e2e-log.txt
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Report (annotations, step summary, PR comment)
+        if: always() && hashFiles('e2e-results.json') != ''
+        run: |
+          # One annotation per area (GitHub keeps <= 10 per level per step).
+          jq -r '
+            .results | group_by(.group)[] |
+            (map(select(.ok | not))) as $f |
+            (map(select(.ok and .level == "check")) | length) as $p |
+            if ($f | length) > 0 then
+              "::error title=E2E \(.[0].group)::\($p) passed, \($f | length) FAILED: \($f | map(.name + " [" + (.detail[0:160]) + "]") | join(" | "))"
+            else
+              "::notice title=E2E \(.[0].group)::\($p) passed: \(map(select(.level == "check") | .name) | join(" | "))"
+            end
+          ' e2e-results.json
+          cat e2e-report.md >> "$GITHUB_STEP_SUMMARY"
+          ID=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("<!-- mpgr-e2e-preview -->"))][0].id // empty')
+          if [ -n "$ID" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@e2e-report.md >/dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@e2e-report.md >/dev/null
+          fi
+
+      - name: Result
+        if: always()
+        run: exit "${{ steps.e2e.outputs.status || 1 }}"
