@@ -186,8 +186,16 @@ contract MPGRExecutorBaseMainnetDeploymentTest is Test {
         });
         MPGRExecutor.Authorization memory a;
         a.kind = MPGRExecutor.AuthKind.APPROVAL;
+        uint256 out;
         vm.prank(taker);
-        uint256 out = ex.swapSlipstreamExactInputSingle(p, tick, a);
+        try ex.swapSlipstreamExactInputSingle(p, tick, a) returns (uint256 o) {
+            out = o;
+        } catch (bytes memory err) {
+            revert(string.concat(
+                "live executor swap reverted (tickSpacing ", vm.toString(int256(tick)), ", quote ", vm.toString(quoteOut), "): ",
+                err.length == 0 ? "<empty revert data>" : vm.toString(err)
+            ));
+        }
         assertEq(IERC20(USDC).balanceOf(feeRecipient) - feeBefore, fee, "exact 25 bps to the recorded fee recipient");
         assertEq(fee, 250_000);
         assertGe(out, p.amountOutMinimum, "minOut");
