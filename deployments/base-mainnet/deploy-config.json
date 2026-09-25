@@ -1,0 +1,9 @@
+{
+  "_comment": "Reviewed, committed pins for the ONE-TIME Base Mainnet MPGRExecutor deployment. script/DeployMPGRExecutorBaseMainnet.s.sol aborts unless the base-mainnet environment variables MPGR_EXECUTOR_OWNER / MPGR_EXECUTOR_FEE_RECIPIENT equal these values, MPGR_MAINNET_DEPLOY_ENABLED is 'true', mainnetDeployEnabled is true here, and deployments/base-mainnet/mpgr-executor.json does not exist yet. Set mainnetDeployEnabled to false after the deployment. Deploying does NOT enable app routing: lib/executor/executor-config.ts keeps chain 8453 null.",
+  "chainId": 8453,
+  "mainnetDeployEnabled": true,
+  "owner": "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
+  "feeRecipient": "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
+  "feeBps": 25,
+  "maxFeeBps": 100
+}
