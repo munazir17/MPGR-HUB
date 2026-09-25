@@ -209,13 +209,23 @@ contract MPGRExecutorBaseMainnetDeployForkTest is Test {
         return vm.toString(err);
     }
 
-    /// Facts about every production token on live Base Mainnet, surfaced in the failure reason.
-    function test_Fork_ProductionTokens_AreLiveErc20() public onlyFork {
+    /// USDC/WETH answer ERC-20 calls in the local EVM; every B20 stock has code + the 0xb2 prefix.
+    /// (B20 are Base-native precompiles the local EVM cannot execute; the deploy workflow checks
+    /// them with real-node eth_call.) Facts are surfaced in the failure reason.
+    function test_Fork_ProductionTokens_Present() public onlyFork {
         (address[] memory tokens, string[] memory symbols) = h.productionTokens();
         string memory report;
         bool allOk = true;
         for (uint256 i = 0; i < tokens.length; ++i) {
-            (bool ok, string memory entry) = _probe(tokens[i], symbols[i]);
+            bool ok;
+            string memory entry;
+            if (i < 2) {
+                (ok, entry) = _probe(tokens[i], symbols[i]);
+                ok = ok && !h.isB20(tokens[i]);
+            } else {
+                ok = h.isB20(tokens[i]) && tokens[i].code.length > 0;
+                entry = string.concat(symbols[i], ok ? "=b20" : "=MISSING", "(code ", vm.toString(tokens[i].code.length), ") ");
+            }
             allOk = allOk && ok;
             report = string.concat(report, entry);
         }
@@ -224,9 +234,9 @@ contract MPGRExecutorBaseMainnetDeployForkTest is Test {
     }
 
     function _probe(address token, string memory symbol) internal view returns (bool ok, string memory entry) {
-        (bool okDec, bytes memory dec) = token.staticcall(abi.encodeWithSignature("decimals()"));
-        (bool okSup, bytes memory sup) = token.staticcall(abi.encodeWithSignature("totalSupply()"));
-        (bool okBal, bytes memory bal) = token.staticcall(abi.encodeWithSignature("balanceOf(address)", address(this)));
+        (bool okDec, bytes memory dec) = token.staticcall{gas: 100_000}(abi.encodeWithSignature("decimals()"));
+        (bool okSup, bytes memory sup) = token.staticcall{gas: 100_000}(abi.encodeWithSignature("totalSupply()"));
+        (bool okBal, bytes memory bal) = token.staticcall{gas: 100_000}(abi.encodeWithSignature("balanceOf(address)", address(this)));
         ok = okDec && dec.length >= 32 && okSup && sup.length >= 32 && okBal && bal.length >= 32;
         string memory details = ok
             ? string.concat(", dec ", vm.toString(abi.decode(dec, (uint256))), ", supply ", vm.toString(abi.decode(sup, (uint256))))

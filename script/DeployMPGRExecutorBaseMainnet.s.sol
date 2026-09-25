@@ -41,7 +41,9 @@ interface IERC20View {
 ///           - the deployer is dedicated: not the owner, not the fee recipient, not the
 ///             Base Sepolia deployer
 ///           - no Base Sepolia / test-token address anywhere in the config
-///           - every router/token/WETH/Permit2 address has code on 8453, USDC has 6 decimals,
+///           - every router/token/WETH/Permit2 address has code on 8453; USDC/WETH answer ERC-20
+///             calls; B20 stocks carry the 0xb2 prefix (they are native precompiles the local EVM
+///             cannot execute - the workflow verifies them with real-node eth_call); USDC has 6 decimals,
 ///             the Slipstream router + quoter are bound to the app's factory and WETH
 ///
 ///         Environment (populated by .github/workflows/deploy-executor-base-mainnet.yml):
@@ -190,6 +192,14 @@ contract DeployMPGRExecutorBaseMainnet is Script {
         return (true, abi.decode(ret, (uint256)));
     }
 
+    /// @dev Coinbase B20 tokens are Base-native precompiles (Rust, in the node), not EVM contracts.
+    ///      Foundry's local EVM (fork tests AND `forge script` simulation) cannot execute them, so
+    ///      the script never calls them: it checks the code marker + the 0xb2 asset prefix only.
+    ///      Their ERC-20 liveness is verified with real-node eth_call in the deploy workflow.
+    function isB20(address token) public pure returns (bool) {
+        return uint160(token) >> 152 == 0xb2;
+    }
+
     function _requireLiveErc20(address token, string memory symbol) internal view {
         (bool okDec,) = _erc20Call(token, abi.encodeWithSignature("decimals()"));
         (bool okSup,) = _erc20Call(token, abi.encodeWithSignature("totalSupply()"));
@@ -229,7 +239,12 @@ contract DeployMPGRExecutorBaseMainnet is Script {
         for (uint256 i = 0; i < tokens.length; ++i) {
             _notSepolia(tokens[i], "token");
             require(tokens[i].code.length > 0, string.concat("MPGR: ", symbols[i], " has no code on 8453"));
-            _requireLiveErc20(tokens[i], symbols[i]);
+            if (i < 2) {
+                require(!isB20(tokens[i]), "MPGR: USDC/WETH must not be B20");
+                _requireLiveErc20(tokens[i], symbols[i]);
+            } else {
+                require(isB20(tokens[i]), string.concat("MPGR: ", symbols[i], " is not a B20 (0xb2) address"));
+            }
         }
         MPGRExecutor.RouterConfig[] memory routers = productionRouters();
         for (uint256 i = 0; i < routers.length; ++i) {
@@ -265,8 +280,11 @@ contract DeployMPGRExecutorBaseMainnet is Script {
         (address[] memory tokens, string[] memory symbols) = productionTokens();
         for (uint256 i = 0; i < tokens.length; ++i) {
             require(ex.isTokenAllowed(tokens[i]), string.concat("MPGR: ", symbols[i], " not allowlisted"));
-            (bool ok, uint256 bal) = _erc20Call(tokens[i], abi.encodeWithSignature("balanceOf(address)", address(ex)));
-            require(ok && bal == 0, string.concat("MPGR: executor ", symbols[i], " balance check failed"));
+            if (!isB20(tokens[i])) {
+                // B20 balances are checked by real-node eth_call in the workflow (see isB20).
+                (bool ok, uint256 bal) = _erc20Call(tokens[i], abi.encodeWithSignature("balanceOf(address)", address(ex)));
+                require(ok && bal == 0, string.concat("MPGR: executor ", symbols[i], " balance check failed"));
+            }
         }
         address[] memory d = sepoliaDenylist();
         for (uint256 i = 0; i < d.length; ++i) {
@@ -280,6 +298,14 @@ contract DeployMPGRExecutorBaseMainnet is Script {
     // ------------------------------------------------------------------
     // Entry point
     // ------------------------------------------------------------------
+
+    /// Prints the production token set (used by the workflow's real-node eth_call checks).
+    function printTokens() external pure {
+        (address[] memory tokens, string[] memory symbols) = productionTokens();
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            console2.log(string.concat("TOKEN ", symbols[i], " ", vm.toString(tokens[i])));
+        }
+    }
 
     function run() external returns (MPGRExecutor ex) {
         require(block.chainid == BASE_MAINNET_CHAIN_ID, "MPGR: BASE MAINNET (8453) ONLY - refusing to run");

@@ -123,10 +123,29 @@ contract DeployMPGRExecutorBaseMainnetScriptTest is Test {
         h.run();
     }
 
-    function test_Offline_Run_RefusesTokenWithCodeButNoErc20() public {
-        // e.g. an uninitialised proxy at a B20 address: has code, answers no ERC-20 call.
-        vm.etch(0xb2000000000000000000001e800a7f5189430cD0, hex"00");
-        vm.expectRevert(bytes("MPGR: TSLAc is not a live ERC-20 on 8453 (decimals/totalSupply/balanceOf failed)"));
+    function test_Offline_Run_RefusesUsdcWithCodeButNoErc20() public {
+        vm.etch(0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913, hex"00");
+        vm.expectRevert(bytes("MPGR: USDC is not a live ERC-20 on 8453 (decimals/totalSupply/balanceOf failed)"));
+        h.run();
+    }
+
+    function test_Offline_Run_B20PrecompileMarkerIsNeverCalled() public {
+        // Like real Base, B20 addresses carry non-executable placeholder code (the node runs the
+        // precompile). The script must deploy without ever calling them.
+        (address[] memory tokens,) = h.productionTokens();
+        for (uint256 i = 2; i < tokens.length; ++i) {
+            vm.etch(tokens[i], hex"fe");
+        }
+        MPGRExecutor ex = h.run();
+        vm.removeFile(OUT);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            assertTrue(ex.isTokenAllowed(tokens[i]));
+        }
+    }
+
+    function test_Offline_Run_RefusesB20WithoutCode() public {
+        vm.etch(0xb2000000000000000000001e800a7f5189430cD0, "");
+        vm.expectRevert(bytes("MPGR: TSLAc has no code on 8453"));
         h.run();
     }
 

@@ -83,6 +83,34 @@ jobs:
           [ "$STATUS" = "0" ] || { echo "::error::forge test failed: $(tail -c 800 unit-stderr.txt | tr '\n' ' ')"; exit 1; }
           jq -e '[to_entries[] | .value.test_results | to_entries[] | select(.value.status == "Failure")] | length == 0' unit-results.json >/dev/null
 
+      - name: Gate - production tokens are live on Base Mainnet (real-node eth_call; B20 are native precompiles)
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+        run: |
+          set -euo pipefail
+          forge build >/dev/null
+          forge script script/DeployMPGRExecutorBaseMainnet.s.sol:DeployMPGRExecutorBaseMainnet --sig 'printTokens()' \
+            | awk '/TOKEN /{print $2, $3}' > tokens.txt
+          [ "$(wc -l < tokens.txt)" = "15" ] || { echo "::error::expected 15 production tokens"; exit 1; }
+          R="--rpc-url $BASE_MAINNET_RPC_URL"
+          REPORT=""; BAD=0
+          while read -r SYM ADDR; do
+            DEC="$(cast call "$ADDR" 'decimals()(uint8)' $R 2>/dev/null || true)"
+            SUP="$(cast call "$ADDR" 'totalSupply()(uint256)' $R 2>/dev/null | awk '{print $1}' || true)"
+            BAL="$(cast call "$ADDR" 'balanceOf(address)(uint256)' 0x000000000000000000000000000000000000dEaD $R 2>/dev/null | awk '{print $1}' || true)"
+            ONCHAIN="$(cast call "$ADDR" 'symbol()(string)' $R 2>/dev/null | tr -d '"' || true)"
+            if [ -z "$DEC" ] || [ -z "$SUP" ] || [ -z "$BAL" ]; then
+              BAD=1; REPORT="${REPORT}${SYM}=NOT-LIVE "
+              echo "::error title=Token not live on Base Mainnet::${SYM} ${ADDR} did not answer decimals/totalSupply/balanceOf via eth_call"
+              continue
+            fi
+            [ "$ONCHAIN" = "$SYM" ] || echo "::warning title=Token symbol differs::${ADDR} config=${SYM} onchain=${ONCHAIN}"
+            REPORT="${REPORT}${SYM}(onchain ${ONCHAIN}, dec ${DEC}, supply ${SUP}) "
+          done < tokens.txt
+          [ "$(cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 'decimals()(uint8)' $R)" = "6" ] || { echo "::error::USDC decimals != 6"; exit 1; }
+          echo "::notice title=Production tokens live on Base Mainnet (real-node eth_call)::${REPORT}"
+          [ "$BAD" = "0" ]
+
       - name: Gate - Base Mainnet fork tests (deploy-script dry run + real swap must PASS)
         env:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
@@ -190,6 +218,32 @@ jobs:
             echo "::error::RPC chain id ${CHAIN_ID} != 8453. Refusing to deploy."; exit 1
           fi
           echo "::notice title=Mainnet preflight (chain)::RPC chain id ${CHAIN_ID}, block $(cast block-number --rpc-url "$BASE_MAINNET_RPC_URL")"
+
+      - name: Preflight - production tokens are live on Base Mainnet (real-node eth_call)
+        run: |
+          set -euo pipefail
+          forge build >/dev/null
+          forge script script/DeployMPGRExecutorBaseMainnet.s.sol:DeployMPGRExecutorBaseMainnet --sig 'printTokens()' \
+            | awk '/TOKEN /{print $2, $3}' > tokens.txt
+          [ "$(wc -l < tokens.txt)" = "15" ] || { echo "::error::expected 15 production tokens"; exit 1; }
+          R="--rpc-url $BASE_MAINNET_RPC_URL"
+          REPORT=""; BAD=0
+          while read -r SYM ADDR; do
+            DEC="$(cast call "$ADDR" 'decimals()(uint8)' $R 2>/dev/null || true)"
+            SUP="$(cast call "$ADDR" 'totalSupply()(uint256)' $R 2>/dev/null | awk '{print $1}' || true)"
+            BAL="$(cast call "$ADDR" 'balanceOf(address)(uint256)' 0x000000000000000000000000000000000000dEaD $R 2>/dev/null | awk '{print $1}' || true)"
+            ONCHAIN="$(cast call "$ADDR" 'symbol()(string)' $R 2>/dev/null | tr -d '"' || true)"
+            if [ -z "$DEC" ] || [ -z "$SUP" ] || [ -z "$BAL" ]; then
+              BAD=1; REPORT="${REPORT}${SYM}=NOT-LIVE "
+              echo "::error title=Token not live on Base Mainnet::${SYM} ${ADDR} did not answer decimals/totalSupply/balanceOf via eth_call"
+              continue
+            fi
+            [ "$ONCHAIN" = "$SYM" ] || echo "::warning title=Token symbol differs::${ADDR} config=${SYM} onchain=${ONCHAIN}"
+            REPORT="${REPORT}${SYM}(onchain ${ONCHAIN}, dec ${DEC}, supply ${SUP}) "
+          done < tokens.txt
+          [ "$(cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 'decimals()(uint8)' $R)" = "6" ] || { echo "::error::USDC decimals != 6"; exit 1; }
+          echo "::notice title=Production tokens live on Base Mainnet (real-node eth_call)::${REPORT}"
+          [ "$BAD" = "0" ]
 
       - name: Simulate against live Base Mainnet (no broadcast) - runs every preflight check
         env:

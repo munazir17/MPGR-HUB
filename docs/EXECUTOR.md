@@ -210,7 +210,12 @@ Deployed by workflow run `36067982010` from commit `07dbc35` (merge commit `d426
 ## Known limitations
 
 - **UI wiring.** The in-app swap UI still uses its existing flows. The executor path is exposed via MCP only; wiring the UI is a follow-up so current flows stay untouched.
-- **Slipstream.** No Base Sepolia deployment exists, so Slipstream is proven on a mainnet fork only. No B20 tokenized stock currently has a USDC pool on the app's Slipstream factory, so that fork case skips. B20 routing through the executor would need a multi-hop adapter, which is not included.
+- **Slipstream.** No Base Sepolia deployment exists, so Slipstream is proven on a mainnet fork only (USDC/WETH pools).
+- **B20 tokenized stocks cannot be simulated locally.** Coinbase B20 tokens are Base-native precompiles that run in the node, not EVM contracts. Foundry's local EVM (fork tests and `forge script` simulation) cannot execute them; calls burn all forwarded gas. So:
+  - the USDC↔B20 fork case skips;
+  - the mainnet deploy script never calls B20 tokens (it checks code plus the `0xb2` prefix);
+  - the workflow verifies them with real-node `eth_call`.
+  - A USDC↔B20 swap through the executor has therefore never been executed. Validate it with one small real mainnet trade before routing B20 through the executor.
 - **Single-hop only** (`exactInputSingle`). Multi-hop needs a typed path adapter and is deferred.
 - **Permit2 without a witness.** The signature binds token, amount, nonce, deadline and spender, but not minOut. This is acceptable because only the signer can submit it (owner = msg.sender) and minOut is in the tx they sign.
 - **Rate limiter.** The in-memory fallback is per instance when Redis is not configured.
@@ -236,7 +241,8 @@ The owner explicitly authorised a one-time Base Mainnet deployment of the execut
   - fee 25 bps, cap 100 bps;
   - dedicated deployer: not the owner, the fee recipient, or the Base Sepolia deployer;
   - no Base Sepolia or test-token address anywhere (the denylist is cross-checked against `deployments/base-sepolia/mpgr-executor.json`);
-  - every address has code on 8453, and USDC has 6 decimals.
+  - every address has code on 8453; USDC and WETH answer ERC-20 calls; each B20 carries the `0xb2` prefix; USDC has 6 decimals;
+  - every production token answers `decimals`/`totalSupply`/`balanceOf`/`symbol` via real-node `eth_call` (both jobs).
 - **Why nonce == 0:** it makes the executor address `CREATE(deployer, 0)` deterministic, and a re-run can never deploy a second executor.
 - **Owner decisions:**
   - Owner is the same EOA as on Sepolia; a multisig was recommended.
