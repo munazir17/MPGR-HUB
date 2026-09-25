@@ -203,6 +203,8 @@ Deployed by workflow run `36067982010` from commit `07dbc35` (merge commit `d426
 | `test/executor/*.t.sol` | Unit, fuzz and invariant tests covering: 25 bps and floor; tiny/zero amounts; allowance/balance; fee recipient ≠ taker; router/token/recipient validation; minOut; router failure and atomic revert; reentrancy (malicious token/router); fee bypass and double fee; output redirection; ERC-20/WETH/native in and out; all three auth modes against real Permit2 and Uniswap V3 bytecode; admin and caps. |
 | `test/fork/MPGRExecutorBaseFork.t.sol` | Live Base mainnet fork (CI job `contracts-fork`): Slipstream exact sell-token fee (buy, sell-back, Permit2, EIP-2612 USDC), slippage atomic revert, Uniswap V3 native in and out. |
 | `test/script/DeployMPGRExecutorBaseSepoliaLocal.t.sol` | Deploy-script rehearsal. |
+| `test/script/DeployMPGRExecutorBaseMainnet.t.sol` | Offline run of the real mainnet deploy script (stand-in bytecode at production addresses): exact config, JSON record, refuses when not enabled, on Base Sepolia, a second deploy from the same key, or a wrong router binding. |
+| `test/fork/MPGRExecutorBaseMainnetDeploy.t.sol` | Base mainnet fork: full dry run of the real mainnet deploy script against the committed pins, then a real USDC swap on the production Slipstream router through that instance (exact 25 bps to the pinned fee recipient). Every preflight guard is proven to trip. |
 | `lib/executor/__tests__`, `lib/mcp/__tests__`, `lib/trade/__tests__/zero-ex-native-fee.test.ts`, `app/api/mcp/route.test.ts`, `app/llm.txt/route.test.ts` | Fee/intent/encoding; verification from synthetic receipts; quoteId tamper and expiry; 0x validator (mocked fetch); MCP protocol, origin and rate limit; the full AI flow with a wallet signing EIP-2612 and Permit2 typed data; llm.txt contains no secrets. |
 
 ## Known limitations
@@ -214,19 +216,43 @@ Deployed by workflow run `36067982010` from commit `07dbc35` (merge commit `d426
 - **Rate limiter.** The in-memory fallback is per instance when Redis is not configured.
 - **Audit.** The executor has **not** been externally audited.
 
-## Mainnet checklist (NOT done: mainnet deployment is not authorised yet)
+## Base Mainnet deployment (deploy only; app routing stays OFF)
 
-1. External security audit of `MPGRExecutor.sol`; fix and re-test.
-2. Base Sepolia deployment exercised by real users through the MCP flow (all three auth modes, native in and out).
-3. Owner = **multisig** (e.g. Safe), set as `initialOwner` at deployment. Fee recipient confirmed.
-4. Mainnet allowlist reviewed:
-   - Slipstream router `0x698C…` / factory `0xf8f2…`;
-   - Uniswap SwapRouter02 `0x2626…e481`;
-   - tokens USDC, WETH and the specific B20 tickers with verified pools.
-5. A mainnet deploy script and workflow gated on a separate protected environment with required reviewers (the current script refuses any chain other than 84532).
-6. Fork tests are green against the exact deployment config. Gas limits reviewed.
-7. Fill the `8453` registry entry. Only then set `MPGR_MCP_ENABLE_BASE_MAINNET=true` (the 0x path also needs `ZERO_EX_API_KEY` and `MPGR_AGENT_FEE_RECIPIENT`).
-8. Monitoring on `SwapExecuted`, admin events and `Paused`, plus an incident runbook (pause first).
+The owner explicitly authorised a one-time Base Mainnet deployment of the executor. The deployment itself does **not** switch any trading onto it: `lib/executor/executor-config.ts` keeps chain `8453` = `null` and `MPGR_MCP_ENABLE_BASE_MAINNET` stays unset. Switching mainnet execution on is a separate, later step.
+
+- **Script:** `script/DeployMPGRExecutorBaseMainnet.s.sol`. It deploys the executor and nothing else (no tokens, pools or swaps).
+- **Workflow:** `.github/workflows/deploy-executor-base-mainnet.yml`. Label `deploy-base-mainnet` on a same-repo PR; no manual or push trigger.
+  - Job `gates` (no secrets): ABI sync, unit/fuzz/invariant/script tests, the Base mainnet fork suite (the deploy dry run must pass, not skip), Slither (fail on high), Gitleaks.
+  - Job `deploy`: environment `base-mainnet` with required reviewers. Steps: config preflight, RPC chain id, full simulation against live mainnet, broadcast, Sourcify/Blockscout/Basescan verification, independent `cast` checks, PR comment with the full record.
+- **Pins:** `deployments/base-mainnet/deploy-config.json` (reviewed in the PR). Owner `0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e`, fee recipient `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4`, 25 bps, cap 100 bps.
+- **Allowlist.** Copied verbatim from the production trade config:
+  - Router: Aerodrome Slipstream SwapRouter `0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F`. Preflight proves it is bound to factory `0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef` and WETH. The quoter `0x514c8B5f54112481E28028F1166Bd78501089259` is bound to the same factory.
+  - Tokens: USDC, WETH and the 13 B20 stocks from `lib/trade/tokenized-stocks.ts`.
+  - Uniswap V3 is **not** in the production trade config, so it is **not** allowlisted. The owner can add it later with `setRouter`.
+- **Preflight** (any failure aborts before broadcast):
+  - chain id 8453;
+  - explicit enablement for this deployment only: `MPGR_MAINNET_DEPLOY_ENABLED=true` in the environment, `mainnetDeployEnabled: true` in the pins file, no existing `deployments/base-mainnet/mpgr-executor.json`, and the deployer nonce == 0;
+  - environment owner and fee recipient equal the committed pins;
+  - fee 25 bps, cap 100 bps;
+  - dedicated deployer: not the owner, the fee recipient, or the Base Sepolia deployer;
+  - no Base Sepolia or test-token address anywhere (the denylist is cross-checked against `deployments/base-sepolia/mpgr-executor.json`);
+  - every address has code on 8453, and USDC has 6 decimals.
+- **Why nonce == 0:** it makes the executor address `CREATE(deployer, 0)` deterministic, and a re-run can never deploy a second executor.
+- **Owner decisions:**
+  - Owner is the same EOA as on Sepolia; a multisig was recommended.
+  - No external audit yet. The owner accepted this for deploy-only, with routing staying off.
+- **After deployment:**
+  1. Commit the record.
+  2. Set `mainnetDeployEnabled` to `false`.
+  3. Delete `MPGR_MAINNET_DEPLOY_ENABLED` from the environment.
+  4. Verify the deployment independently before any routing change.
+
+### Before switching Mainnet execution on (NOT done)
+
+1. External security audit of `MPGRExecutor.sol` (recommended).
+2. Consider moving ownership to a multisig (`transferOwnership` + `acceptOwnership`, 2-step).
+3. Fill the `8453` registry entry with the deployed address. Only then set `MPGR_MCP_ENABLE_BASE_MAINNET=true`. The 0x path also needs `ZERO_EX_API_KEY` and `MPGR_AGENT_FEE_RECIPIENT`.
+4. Monitoring on `SwapExecuted`, admin events and `Paused`, plus an incident runbook (pause first).
 
 ## Rollback
 

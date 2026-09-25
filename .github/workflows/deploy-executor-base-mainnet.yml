@@ -1,0 +1,393 @@
+name: Deploy MPGR Executor (Base Mainnet)
+
+# ONE-TIME Base Mainnet (8453) deployment of MPGRExecutor. Deploys the executor ONLY;
+# it does NOT enable app routing (lib/executor/executor-config.ts keeps chain 8453 null).
+#
+# Trigger: add the `deploy-base-mainnet` label to a PR from THIS repository. No
+# workflow_dispatch, no push trigger. Fork PRs are rejected.
+#
+# Job 1 `gates` (no secrets): executor unit/fuzz/invariant + script tests, Base mainnet
+#   fork tests incl. a full dry run of the real deploy script followed by a real
+#   Slipstream swap through the fork-deployed executor, Slither (fail on high), Gitleaks.
+# Job 2 `deploy` (environment `base-mainnet`, required reviewers => waits for approval):
+#   preflight -> full simulation against live Base Mainnet -> broadcast -> source
+#   verification -> independent on-chain checks -> PR comment with the full record.
+#
+# Configuration (environment `base-mainnet`):
+#   secret   BASE_MAINNET_DEPLOYER_PRIVATE_KEY  dedicated, never-used key (nonce must be 0)
+#   variable MPGR_EXECUTOR_OWNER                must equal deployments/base-mainnet/deploy-config.json .owner
+#   variable MPGR_EXECUTOR_FEE_RECIPIENT        must equal deploy-config.json .feeRecipient
+#   variable MPGR_MAINNET_DEPLOY_ENABLED        must be "true" (delete it after the deployment)
+# Optional: secret BASE_MAINNET_RPC_URL (defaults to https://mainnet.base.org),
+#           secret ETHERSCAN_API_KEY (Basescan verification via Etherscan V2).
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: deploy-executor-base-mainnet
+  cancel-in-progress: false
+
+env:
+  FOUNDRY_PROFILE: default
+
+jobs:
+  gates:
+    if: >-
+      github.event.label.name == 'deploy-base-mainnet' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Install Solidity dependencies (pinned, same as CI)
+        run: |
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+
+      - name: Gate - committed pins are the reviewed mainnet values
+        run: |
+          set -euo pipefail
+          F=deployments/base-mainnet/deploy-config.json
+          jq -e '.chainId == 8453 and .mainnetDeployEnabled == true and .feeBps == 25 and .maxFeeBps == 100' "$F" >/dev/null
+          test ! -f deployments/base-mainnet/mpgr-executor.json || { echo "::error::Base Mainnet record already exists - refusing a second deployment"; exit 1; }
+          echo "::notice title=Mainnet pins::owner=$(jq -r .owner "$F") feeRecipient=$(jq -r .feeRecipient "$F") fee=25 bps cap=100 bps"
+
+      - name: Gate - executor ABI in lib/executor is in sync with the contract
+        run: node script/gen-executor-abi.mjs --check
+
+      - name: Gate - unit, fuzz, invariant and deploy-script tests
+        env:
+          MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
+        run: |
+          set +e -uo pipefail
+          bash script/prepare-uniswap-artifacts.sh || exit 1
+          forge test --no-match-path 'test/fork/*' --json > unit-results.json 2> unit-stderr.txt
+          STATUS=$?
+          echo "::notice title=Unit/fuzz/invariant/script tests::$(jq -r '[to_entries[] | .value.test_results | to_entries[] | .value.status] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' unit-results.json 2>/dev/null)"
+          jq -r 'to_entries[] | .value.test_results | to_entries[] | select(.value.status == "Failure") | "::error title=\(.key)::\(.value.reason // "failed")"' unit-results.json 2>/dev/null || true
+          [ "$STATUS" = "0" ] || { echo "::error::forge test failed: $(tail -c 800 unit-stderr.txt | tr '\n' ' ')"; exit 1; }
+          jq -e '[to_entries[] | .value.test_results | to_entries[] | select(.value.status == "Failure")] | length == 0' unit-results.json >/dev/null
+
+      - name: Gate - Base Mainnet fork tests (deploy-script dry run + real swap must PASS)
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
+        run: |
+          set +e -uo pipefail
+          forge build >/dev/null
+          forge test --match-path 'test/fork/*' --json > fork-results.json 2> fork-stderr.txt
+          STATUS=$?
+          jq -r '
+            to_entries[] | .value.test_results | to_entries[] | select(.value.status == "Failure")
+            | "::error title=\(.key)::\((.value.reason // "failed")) | logs: \((.value.decoded_logs // []) | join(" ; "))"
+          ' fork-results.json || true
+          jq -r '
+            to_entries[] | (.key | split(":") | last) as $suite | [.value.test_results | to_entries[]] as $t
+            | "::notice title=\($suite)::\([$t[] | select(.value.status == "Success")] | length) passed, \([$t[] | select(.value.status == "Skipped")] | length) skipped, \([$t[] | select(.value.status == "Failure")] | length) failed"
+          ' fork-results.json || true
+          [ "$STATUS" = "0" ] || exit "$STATUS"
+          # The mainnet deploy suite must have really run (not skipped) and fully passed.
+          jq -e '
+            [to_entries[] | select(.key | endswith(":MPGRExecutorBaseMainnetDeployForkTest")) | .value.test_results | to_entries[]] as $t
+            | ($t | length) > 0 and ($t | all(.value.status == "Success"))
+          ' fork-results.json >/dev/null || { echo "::error::MPGRExecutorBaseMainnetDeployForkTest did not fully pass"; exit 1; }
+          jq -r '
+            to_entries[] | select(.key | endswith(":MPGRExecutorBaseMainnetDeployForkTest")) | .value.test_results
+            | to_entries[] | select(.key | startswith("test_Fork_MainnetDeployScript_DryRun"))
+            | "::notice title=Mainnet deploy dry run::\((.value.decoded_logs // []) | join(" ; "))"
+          ' fork-results.json || true
+
+      - name: Gate - Slither (fail on high)
+        uses: crytic/slither-action@v0.4.1
+        with:
+          target: "."
+          solc-version: "0.8.24"
+          fail-on: high
+          slither-args: --filter-paths "openzeppelin|forge-std"
+
+      - name: Gate - Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    needs: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: base-mainnet
+    env:
+      EXPECTED_CHAIN_ID: "8453"
+      BLOCKSCOUT_API: https://base.blockscout.com/api/
+      OUT_DIR: deployments/base-mainnet
+      BROADCAST: broadcast/DeployMPGRExecutorBaseMainnet.s.sol/8453/run-latest.json
+      SCRIPT: script/DeployMPGRExecutorBaseMainnet.s.sol:DeployMPGRExecutorBaseMainnet
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Install Solidity dependencies (pinned, same as CI)
+        run: |
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+
+      - name: Preflight - configuration present and explicitly enabled (key never printed)
+        env:
+          DEPLOYER_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
+          OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
+          FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          ENABLED: ${{ vars.MPGR_MAINNET_DEPLOY_ENABLED }}
+          RPC_SECRET: ${{ secrets.BASE_MAINNET_RPC_URL }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error title=Mainnet preflight::$1"; exit 1; }
+          [ -n "${DEPLOYER_KEY}" ] || fail "Missing secret BASE_MAINNET_DEPLOYER_PRIVATE_KEY in environment base-mainnet"
+          [ "${ENABLED}" = "true" ] || fail "MPGR_MAINNET_DEPLOY_ENABLED is not 'true' in environment base-mainnet"
+          [[ "${OWNER}" =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "MPGR_EXECUTOR_OWNER is not set to an address"
+          [[ "${FEE_RECIPIENT}" =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "MPGR_EXECUTOR_FEE_RECIPIENT is not set to an address"
+          lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+          F="$OUT_DIR/deploy-config.json"
+          [ "$(lc "$OWNER")" = "$(lc "$(jq -r .owner "$F")")" ] || fail "MPGR_EXECUTOR_OWNER ($OWNER) != committed pin $(jq -r .owner "$F")"
+          [ "$(lc "$FEE_RECIPIENT")" = "$(lc "$(jq -r .feeRecipient "$F")")" ] || fail "MPGR_EXECUTOR_FEE_RECIPIENT ($FEE_RECIPIENT) != committed pin $(jq -r .feeRecipient "$F")"
+          {
+            echo "MPGR_EXECUTOR_OWNER=${OWNER}"
+            echo "MPGR_EXECUTOR_FEE_RECIPIENT=${FEE_RECIPIENT}"
+            echo "MPGR_MAINNET_DEPLOY_ENABLED=${ENABLED}"
+          } >> "$GITHUB_ENV"
+          if [ -n "${RPC_SECRET}" ]; then
+            echo "::add-mask::${RPC_SECRET}"
+            echo "BASE_MAINNET_RPC_URL=${RPC_SECRET}" >> "$GITHUB_ENV"
+          else
+            echo "BASE_MAINNET_RPC_URL=https://mainnet.base.org" >> "$GITHUB_ENV"
+          fi
+          echo "::notice title=Mainnet preflight (config)::enabled=true owner=${OWNER} feeRecipient=${FEE_RECIPIENT} (both equal the committed pins)"
+
+      - name: Preflight - RPC is Base Mainnet (8453)
+        run: |
+          set -euo pipefail
+          CHAIN_ID="$(cast chain-id --rpc-url "$BASE_MAINNET_RPC_URL")"
+          if [ "${CHAIN_ID}" != "${EXPECTED_CHAIN_ID}" ]; then
+            echo "::error::RPC chain id ${CHAIN_ID} != 8453. Refusing to deploy."; exit 1
+          fi
+          echo "::notice title=Mainnet preflight (chain)::RPC chain id ${CHAIN_ID}, block $(cast block-number --rpc-url "$BASE_MAINNET_RPC_URL")"
+
+      - name: Simulate against live Base Mainnet (no broadcast) - runs every preflight check
+        env:
+          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
+        run: |
+          set +e -uo pipefail
+          forge script "$SCRIPT" --rpc-url "$BASE_MAINNET_RPC_URL" -vv > simulate.txt 2>&1
+          STATUS=$?
+          echo "::notice title=Mainnet simulation::$(grep -E 'preflight:|deployer \(dedicated\)|owner:|feeRecipient:|predicted executor:|Estimated|MPGR:' simulate.txt | sed 's/^ *//' | tr '\n' ' ')"
+          if [ "$STATUS" != "0" ]; then
+            echo "::error title=Mainnet simulation failed::$(grep -E 'MPGR:|Error|revert' simulate.txt | head -5 | tr '\n' ' ')"
+            exit "$STATUS"
+          fi
+          rm -f "$OUT_DIR/mpgr-executor.json"
+
+      - name: Broadcast deployment to Base Mainnet
+        env:
+          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
+        run: |
+          set +e -uo pipefail
+          forge script "$SCRIPT" --rpc-url "$BASE_MAINNET_RPC_URL" --broadcast --slow -vv > broadcast.txt 2>&1
+          STATUS=$?
+          if [ "$STATUS" != "0" ]; then
+            echo "::error title=Mainnet broadcast failed::$(grep -E 'MPGR:|Error|revert' broadcast.txt | head -5 | tr '\n' ' ')"
+            exit "$STATUS"
+          fi
+          test -f "$OUT_DIR/mpgr-executor.json"
+          test -f "$BROADCAST"
+
+      - name: Collect deployment metadata (tx, block, gas, ABI)
+        run: |
+          set -euo pipefail
+          EXEC="$(jq -r .executor "$OUT_DIR/mpgr-executor.json")"
+          echo "EXECUTOR=${EXEC}" >> "$GITHUB_ENV"
+          forge inspect contracts/executor/MPGRExecutor.sol:MPGRExecutor abi --json > "$OUT_DIR/MPGRExecutor.abi.json"
+          jq --slurpfile b "$BROADCAST" '
+            def hex2num: ltrimstr("0x") | ascii_downcase | explode
+              | reduce .[] as $c (0; . * 16 + (if $c >= 97 then $c - 87 else $c - 48 end));
+            ($b[0]) as $bc
+            | ($bc.transactions | map(select(.transactionType == "CREATE" and .contractName == "MPGRExecutor")) | first) as $dtx
+            | ($bc.receipts | map(select(.transactionHash == $dtx.hash)) | first) as $r
+            | .deployTx = $dtx.hash
+            | .deployBlock = ($r.blockNumber | hex2num)
+            | .deployTxStatus = $r.status
+            | .deployGasUsed = ($r.gasUsed | hex2num)
+            | .deployEffectiveGasPriceWei = ($r.effectiveGasPrice | hex2num)
+            | .deployL1FeeWei = (if $r.l1Fee then ($r.l1Fee | hex2num) else null end)
+            | .transactionCount = ($bc.transactions | length)
+            | .sourceCommit = env.GITHUB_SHA
+            | .prHeadSha = "${{ github.event.pull_request.head.sha }}"
+            | .workflowRun = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            | .abi = "deployments/base-mainnet/MPGRExecutor.abi.json"
+          ' "$OUT_DIR/mpgr-executor.json" > /tmp/deployment.json
+          mv /tmp/deployment.json "$OUT_DIR/mpgr-executor.json"
+          jq -e '.deployTxStatus == "0x1" and .transactionCount == 1' "$OUT_DIR/mpgr-executor.json" >/dev/null \
+            || { echo "::error::deploy receipt not successful or unexpected extra transactions"; exit 1; }
+          echo "::notice title=MPGR Executor deployed on Base Mainnet::$(jq -c '{executor, deployTx, deployBlock, deployGasUsed, owner, feeRecipient, feeBps, maxFeeBps}' "$OUT_DIR/mpgr-executor.json")"
+
+      - name: Verify source - Sourcify
+        id: sourcify
+        continue-on-error: true
+        run: |
+          forge verify-contract "$EXECUTOR" contracts/executor/MPGRExecutor.sol:MPGRExecutor \
+            --chain 8453 --verifier sourcify --watch
+
+      - name: Verify source - Blockscout
+        id: blockscout
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          DEPLOY_TX="$(jq -r .deployTx "$OUT_DIR/mpgr-executor.json")"
+          INPUT="$(cast tx "$DEPLOY_TX" input --rpc-url "$BASE_MAINNET_RPC_URL")"
+          CODE="$(forge inspect contracts/executor/MPGRExecutor.sol:MPGRExecutor bytecode)"
+          ARGS="0x${INPUT:${#CODE}}"
+          echo "$ARGS" > "$OUT_DIR/MPGRExecutor.constructor-args.txt"
+          forge verify-contract "$EXECUTOR" contracts/executor/MPGRExecutor.sol:MPGRExecutor \
+            --chain 8453 --verifier blockscout --verifier-url "$BLOCKSCOUT_API" \
+            --constructor-args "$ARGS" --watch
+
+      - name: Verify source - Basescan (only if ETHERSCAN_API_KEY is set)
+        id: basescan
+        continue-on-error: true
+        env:
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ETHERSCAN_API_KEY}" ]; then echo "skipped (no ETHERSCAN_API_KEY)"; exit 0; fi
+          forge verify-contract "$EXECUTOR" contracts/executor/MPGRExecutor.sol:MPGRExecutor \
+            --chain 8453 --verifier etherscan --etherscan-api-key "$ETHERSCAN_API_KEY" \
+            --constructor-args "$(cat "$OUT_DIR/MPGRExecutor.constructor-args.txt")" --watch
+
+      - name: Record verification status (queried from explorers)
+        run: |
+          set -uo pipefail
+          sleep 15
+          SOURCIFY="$(curl -fsS "https://sourcify.dev/server/v2/contract/8453/${EXECUTOR}" | jq -r '.match // "none"' || echo none)"
+          BLOCKSCOUT="$(curl -fsS "https://base.blockscout.com/api/v2/smart-contracts/${EXECUTOR}" | jq -r '.is_verified // false' || echo false)"
+          jq --arg s "$SOURCIFY" --arg b "$BLOCKSCOUT" \
+             --arg sOut "${{ steps.sourcify.outcome }}" --arg bOut "${{ steps.blockscout.outcome }}" --arg eOut "${{ steps.basescan.outcome }}" \
+             '.verification = {
+                sourcify: {status: $s, step: $sOut, url: ("https://repo.sourcify.dev/8453/" + .executor)},
+                blockscout: {verified: ($b == "true"), step: $bOut, url: ("https://base.blockscout.com/address/" + .executor + "?tab=contract")},
+                basescan: {step: $eOut, url: ("https://basescan.org/address/" + .executor + "#code")}
+              }' "$OUT_DIR/mpgr-executor.json" > /tmp/d.json && mv /tmp/d.json "$OUT_DIR/mpgr-executor.json"
+          echo "::notice title=Source verification::sourcify=${SOURCIFY} blockscout=${BLOCKSCOUT} basescan-step=${{ steps.basescan.outcome }}"
+
+      - name: Post-deploy on-chain checks (independent of the script, via cast)
+        run: |
+          set -euo pipefail
+          R="--rpc-url $BASE_MAINNET_RPC_URL"
+          lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+          fail() { echo "::error title=Post-deploy check failed::$1"; exit 1; }
+          ZERO=0x0000000000000000000000000000000000000000
+          [ "$(cast chain-id $R)" = "8453" ] || fail "chain id"
+          [ -n "$(cast code "$EXECUTOR" $R | sed 's/^0x//')" ] || fail "no code"
+          [ "$(lc "$(cast call "$EXECUTOR" 'owner()(address)' $R)")" = "$(lc "$MPGR_EXECUTOR_OWNER")" ] || fail "owner"
+          [ "$(cast call "$EXECUTOR" 'pendingOwner()(address)' $R)" = "$ZERO" ] || fail "pendingOwner != 0"
+          [ "$(lc "$(cast call "$EXECUTOR" 'feeRecipient()(address)' $R)")" = "$(lc "$MPGR_EXECUTOR_FEE_RECIPIENT")" ] || fail "feeRecipient"
+          [ "$(cast call "$EXECUTOR" 'feeBps()(uint16)' $R)" = "25" ] || fail "feeBps != 25"
+          [ "$(cast call "$EXECUTOR" 'MAX_FEE_BPS()(uint16)' $R)" = "100" ] || fail "MAX_FEE_BPS != 100"
+          [ "$(cast call "$EXECUTOR" 'paused()(bool)' $R)" = "false" ] || fail "paused"
+          [ "$(lc "$(cast call "$EXECUTOR" 'WETH()(address)' $R)")" = "0x4200000000000000000000000000000000000006" ] || fail "WETH"
+          [ "$(lc "$(cast call "$EXECUTOR" 'PERMIT2()(address)' $R)")" = "0x000000000022d473030f116ddee9f6b43ac78ba3" ] || fail "PERMIT2"
+          [ "$(cast call "$EXECUTOR" 'routerKind(address)(uint8)' 0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F $R)" = "1" ] || fail "Slipstream router not AERODROME_SLIPSTREAM"
+          for NOT in 0x2626664c2603336E57B271c5C0b26F421741e481 0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4; do
+            [ "$(cast call "$EXECUTOR" 'routerKind(address)(uint8)' "$NOT" $R)" = "0" ] || fail "unexpected router $NOT allowlisted"
+          done
+          N=0
+          for T in $(jq -r '.allowedTokens | to_entries[] | .value' "$OUT_DIR/mpgr-executor.json"); do
+            [ "$(cast call "$EXECUTOR" 'isTokenAllowed(address)(bool)' "$T" $R)" = "true" ] || fail "token $T not allowed"
+            [ "$(cast call "$T" 'balanceOf(address)(uint256)' "$EXECUTOR" $R | awk '{print $1}')" = "0" ] || fail "executor holds $T"
+            N=$((N+1))
+          done
+          [ "$N" = "15" ] || fail "expected 15 allowlisted tokens, got $N"
+          for NOT in 0xc5C9F70A7F3EB18FC33406275Bffe31a922fcde5 0x9102c5B535d25A9265e2793174701BdaCeEAAfC4; do
+            [ "$(cast call "$EXECUTOR" 'isTokenAllowed(address)(bool)' "$NOT" $R)" = "false" ] || fail "Sepolia test token $NOT allowlisted"
+          done
+          [ "$(cast balance "$EXECUTOR" $R)" = "0" ] || fail "executor holds ETH"
+          echo "::notice title=Post-deploy on-chain checks::all passed (owner, pendingOwner=0, feeRecipient, fee 25/100 bps, not paused, WETH, PERMIT2, Slipstream router kind 1, Uniswap/Sepolia routers not allowlisted, 15 tokens allowlisted, Sepolia test tokens not allowlisted, zero balances)"
+
+      - name: Job summary + PR comment body
+        if: always()
+        run: |
+          F="$OUT_DIR/mpgr-executor.json"
+          {
+            echo "<!-- mpgr-deploy-base-mainnet -->"
+            echo "## MPGR Executor - Base Mainnet (8453)"
+            if [ -f "$F" ] && jq -e .deployTx "$F" >/dev/null 2>&1; then
+              echo ""
+              echo "App routing through this executor is **NOT enabled** (lib/executor/executor-config.ts keeps 8453 null)."
+              echo ""
+              echo "| Field | Value |"
+              echo "|---|---|"
+              jq -r '
+                "| Executor | [`\(.executor)`](https://basescan.org/address/\(.executor)) |",
+                "| Deploy tx | [`\(.deployTx)`](https://basescan.org/tx/\(.deployTx)) |",
+                "| Block | \(.deployBlock) |",
+                "| Gas used | \(.deployGasUsed) |",
+                "| Chain ID | \(.chainId) |",
+                "| Deployer (dedicated) | `\(.deployer)` |",
+                "| Owner (admin) | `\(.owner)` |",
+                "| Fee recipient | `\(.feeRecipient)` |",
+                "| Fee | \(.feeBps) bps (hard cap \(.maxFeeBps) bps) |",
+                "| Router allowlist | Aerodrome Slipstream SwapRouter `\(.router.router)` (factory `\(.router.factory)`) |",
+                "| Token allowlist | \(.allowedTokens | to_entries | map("\(.key) `\(.value)`") | join(", ")) |",
+                "| WETH / Permit2 | `\(.weth)` / `\(.permit2)` |",
+                "| Sourcify | \(.verification.sourcify.status // "n/a") |",
+                "| Blockscout verified | \(.verification.blockscout.verified // "n/a") |",
+                "| Basescan step | \(.verification.basescan.step // "n/a") |",
+                "| Source commit | `\(.prHeadSha)` |"
+              ' "$F"
+              echo ""
+              echo "<details><summary>Full deployment record (deployments/base-mainnet/mpgr-executor.json)</summary>"
+              echo ""
+              echo '```json'
+              jq . "$F"
+              echo '```'
+              echo "</details>"
+            else
+              echo ""
+              echo "Deployment did not complete - nothing was deployed unless a deploy tx is shown in the run annotations."
+              grep -hE "MPGR:" simulate.txt broadcast.txt 2>/dev/null | head -5 | sed 's/^/    /'
+            fi
+          } > /tmp/summary.md
+          cat /tmp/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deployment record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpgr-executor-base-mainnet
+          path: |
+            deployments/base-mainnet/
+            broadcast/DeployMPGRExecutorBaseMainnet.s.sol/8453/run-latest.json
+          if-no-files-found: warn
+
+      - name: Comment on PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --body-file /tmp/summary.md || true

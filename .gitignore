@@ -23,3 +23,6 @@ next-env.d.ts
 broadcast/
 deployments/.local/
 .uniswap-artifacts/
+
+# Local/CI dry-run output of the mainnet deploy script tests (never a real deployment record)
+deployments/base-mainnet/.fork-dry-run.json

@@ -311,7 +311,10 @@ contract DeployMPGRExecutorBaseMainnet is Script {
         vm.serializeBool(k, "paused", ex.paused());
         vm.serializeAddress(k, "weth", address(ex.WETH()));
         vm.serializeAddress(k, "permit2", address(ex.PERMIT2()));
-        vm.serializeString(k, "routers", string.concat("[", routerJson, "]"));
+        vm.serializeString(k, "router", routerJson);
+        address[] memory routerAllowlist = new address[](1);
+        routerAllowlist[0] = SLIP_ROUTER;
+        vm.serializeAddress(k, "routerAllowlist", routerAllowlist);
         vm.serializeBool(k, "appRoutingEnabled", false);
         string memory out = vm.serializeString(k, "allowedTokens", tokensJson);
         vm.writeJson(out, _outFile());
