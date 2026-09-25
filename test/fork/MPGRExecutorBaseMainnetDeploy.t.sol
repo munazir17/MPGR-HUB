@@ -134,7 +134,12 @@ contract MPGRExecutorBaseMainnetDeployForkTest is Test {
     // ------------------------------------------------------------------
 
     function test_Fork_MainnetDeployScript_DryRun_ThenRealSwap() public onlyFork {
-        MPGRExecutor ex = h.run();
+        MPGRExecutor ex;
+        try h.run() returns (MPGRExecutor e) {
+            ex = e;
+        } catch (bytes memory err) {
+            revert(string.concat("deploy script run() reverted: ", _reason(err)));
+        }
         vm.removeFile("deployments/base-mainnet/.fork-dry-run.json");
 
         assertEq(address(ex), vm.computeCreateAddress(deployer, 0), "CREATE(deployer, 0)");
@@ -175,8 +180,13 @@ contract MPGRExecutorBaseMainnetDeployForkTest is Test {
         });
         MPGRExecutor.Authorization memory a;
         a.kind = MPGRExecutor.AuthKind.APPROVAL;
+        uint256 out;
         vm.prank(taker);
-        uint256 out = ex.swapSlipstreamExactInputSingle(p, tick, a);
+        try ex.swapSlipstreamExactInputSingle(p, tick, a) returns (uint256 o) {
+            out = o;
+        } catch (bytes memory err) {
+            revert(string.concat("swap through the script-deployed executor reverted: ", _reason(err)));
+        }
         assertEq(IERC20(USDC).balanceOf(pins.feeRecipient) - feeBefore, fee, "exact 25 bps USDC fee to the pinned recipient");
         assertEq(fee, 250_000);
         assertGe(out, p.amountOutMinimum);
@@ -185,6 +195,43 @@ contract MPGRExecutorBaseMainnetDeployForkTest is Test {
         assertEq(IERC20(tokenOut).balanceOf(address(ex)), 0);
         assertEq(IERC20(USDC).allowance(address(ex), SLIP_ROUTER), 0);
         console2.log("dry-run swap out:", out);
+    }
+
+    function _reason(bytes memory err) internal pure returns (string memory) {
+        if (err.length == 0) return "<empty revert data>";
+        if (err.length >= 68 && bytes4(err) == bytes4(keccak256("Error(string)"))) {
+            bytes memory body = new bytes(err.length - 4);
+            for (uint256 i = 4; i < err.length; ++i) {
+                body[i - 4] = err[i];
+            }
+            return abi.decode(body, (string));
+        }
+        return vm.toString(err);
+    }
+
+    /// Facts about every production token on live Base Mainnet, surfaced in the failure reason.
+    function test_Fork_ProductionTokens_AreLiveErc20() public onlyFork {
+        (address[] memory tokens, string[] memory symbols) = h.productionTokens();
+        string memory report;
+        bool allOk = true;
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            (bool ok, string memory entry) = _probe(tokens[i], symbols[i]);
+            allOk = allOk && ok;
+            report = string.concat(report, entry);
+        }
+        console2.log(report);
+        assertTrue(allOk, report);
+    }
+
+    function _probe(address token, string memory symbol) internal view returns (bool ok, string memory entry) {
+        (bool okDec, bytes memory dec) = token.staticcall(abi.encodeWithSignature("decimals()"));
+        (bool okSup, bytes memory sup) = token.staticcall(abi.encodeWithSignature("totalSupply()"));
+        (bool okBal, bytes memory bal) = token.staticcall(abi.encodeWithSignature("balanceOf(address)", address(this)));
+        ok = okDec && dec.length >= 32 && okSup && sup.length >= 32 && okBal && bal.length >= 32;
+        string memory details = ok
+            ? string.concat(", dec ", vm.toString(abi.decode(dec, (uint256))), ", supply ", vm.toString(abi.decode(sup, (uint256))))
+            : "";
+        entry = string.concat(symbol, ok ? "=ok" : "=NOT-ERC20", "(code ", vm.toString(token.code.length), details, ") ");
     }
 
     function _findPool(uint256 netIn) internal returns (address, int24, uint256) {

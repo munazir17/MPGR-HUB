@@ -182,6 +182,21 @@ contract DeployMPGRExecutorBaseMainnet is Script {
         }
     }
 
+    /// @dev Low-level ERC-20 probe: an address can have code and still not answer ERC-20 calls
+    ///      (e.g. an uninitialised proxy), which a high-level call reports only as an empty revert.
+    function _erc20Call(address token, bytes memory data) internal view returns (bool ok, uint256 value) {
+        (bool success, bytes memory ret) = token.staticcall(data);
+        if (!success || ret.length < 32) return (false, 0);
+        return (true, abi.decode(ret, (uint256)));
+    }
+
+    function _requireLiveErc20(address token, string memory symbol) internal view {
+        (bool okDec,) = _erc20Call(token, abi.encodeWithSignature("decimals()"));
+        (bool okSup,) = _erc20Call(token, abi.encodeWithSignature("totalSupply()"));
+        (bool okBal,) = _erc20Call(token, abi.encodeWithSignature("balanceOf(address)", address(this)));
+        require(okDec && okSup && okBal, string.concat("MPGR: ", symbol, " is not a live ERC-20 on 8453 (decimals/totalSupply/balanceOf failed)"));
+    }
+
     function preflight(Config memory c, Pins memory p) public view {
         require(block.chainid == BASE_MAINNET_CHAIN_ID, "MPGR: BASE MAINNET (8453) ONLY - refusing to run");
 
@@ -210,10 +225,11 @@ contract DeployMPGRExecutorBaseMainnet is Script {
         // No Base Sepolia / test address anywhere.
         _notSepolia(c.owner, "owner");
         _notSepolia(c.feeRecipient, "fee recipient");
-        (address[] memory tokens,) = productionTokens();
+        (address[] memory tokens, string[] memory symbols) = productionTokens();
         for (uint256 i = 0; i < tokens.length; ++i) {
             _notSepolia(tokens[i], "token");
-            require(tokens[i].code.length > 0, "MPGR: allowlisted token has no code on 8453");
+            require(tokens[i].code.length > 0, string.concat("MPGR: ", symbols[i], " has no code on 8453"));
+            _requireLiveErc20(tokens[i], symbols[i]);
         }
         MPGRExecutor.RouterConfig[] memory routers = productionRouters();
         for (uint256 i = 0; i < routers.length; ++i) {
@@ -246,10 +262,11 @@ contract DeployMPGRExecutorBaseMainnet is Script {
         require(address(ex.PERMIT2()) == PERMIT2, "MPGR: PERMIT2 mismatch");
         require(ex.routerKind(SLIP_ROUTER) == MPGRExecutor.RouterKind.AERODROME_SLIPSTREAM, "MPGR: Slipstream router not allowlisted");
         require(ex.routerKind(MAINNET_UNI_ROUTER02) == MPGRExecutor.RouterKind.NONE, "MPGR: Uniswap V3 unexpectedly allowlisted");
-        (address[] memory tokens,) = productionTokens();
+        (address[] memory tokens, string[] memory symbols) = productionTokens();
         for (uint256 i = 0; i < tokens.length; ++i) {
-            require(ex.isTokenAllowed(tokens[i]), "MPGR: production token not allowlisted");
-            require(IERC20View(tokens[i]).balanceOf(address(ex)) == 0, "MPGR: executor holds tokens");
+            require(ex.isTokenAllowed(tokens[i]), string.concat("MPGR: ", symbols[i], " not allowlisted"));
+            (bool ok, uint256 bal) = _erc20Call(tokens[i], abi.encodeWithSignature("balanceOf(address)", address(ex)));
+            require(ok && bal == 0, string.concat("MPGR: executor ", symbols[i], " balance check failed"));
         }
         address[] memory d = sepoliaDenylist();
         for (uint256 i = 0; i < d.length; ++i) {

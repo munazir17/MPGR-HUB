@@ -30,6 +30,10 @@ contract StubToken6 {
     function balanceOf(address) external pure returns (uint256) {
         return 0;
     }
+
+    function totalSupply() external pure returns (uint256) {
+        return 1e18;
+    }
 }
 
 /// Offline (no RPC) run of the real mainnet deploy script: stand-in bytecode is etched at the
@@ -116,6 +120,13 @@ contract DeployMPGRExecutorBaseMainnetScriptTest is Test {
         h.run();
         vm.removeFile(OUT);
         vm.expectRevert(bytes("MPGR: deployer nonce != 0 - use a fresh dedicated key (prevents a 2nd deploy)"));
+        h.run();
+    }
+
+    function test_Offline_Run_RefusesTokenWithCodeButNoErc20() public {
+        // e.g. an uninitialised proxy at a B20 address: has code, answers no ERC-20 call.
+        vm.etch(0xb2000000000000000000001e800a7f5189430cD0, hex"00");
+        vm.expectRevert(bytes("MPGR: TSLAc is not a live ERC-20 on 8453 (decimals/totalSupply/balanceOf failed)"));
         h.run();
     }
 

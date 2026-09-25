@@ -90,7 +90,7 @@ jobs:
         run: |
           set +e -uo pipefail
           forge build >/dev/null
-          forge test --match-path 'test/fork/*' --json > fork-results.json 2> fork-stderr.txt
+          forge test --match-path 'test/fork/*' -vv --json > fork-results.json 2> fork-stderr.txt
           STATUS=$?
           jq -r '
             to_entries[] | .value.test_results | to_entries[] | select(.value.status == "Failure")
