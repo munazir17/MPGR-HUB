@@ -129,9 +129,21 @@ async function sweep() {
       facts.sweepTx = `nothing to sweep (${bal} wei)`;
       return;
     }
-    const h = await walletClient.sendTransaction({ to: funder.address, value: bal - cost, gas: 21_000n, maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas });
-    await pub.waitForTransactionReceipt({ hash: h, timeout: 120_000 });
-    facts.sweepTx = h;
+    // OP-stack chains (Base) also charge an L1 data fee on top of gas * maxFeePerGas,
+    // so leave headroom for it; retry with larger buffers if the node still rejects.
+    let lastErr;
+    for (const l1Buffer of [2_000_000_000_000n, 10_000_000_000_000n, bal / 4n]) {
+      if (bal <= cost + l1Buffer) continue;
+      try {
+        const h = await walletClient.sendTransaction({ to: funder.address, value: bal - cost - l1Buffer, gas: 21_000n, maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas });
+        await pub.waitForTransactionReceipt({ hash: h, timeout: 120_000 });
+        facts.sweepTx = h;
+        return;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr ?? new Error("balance too small to sweep");
   } catch (e) {
     facts.sweepTx = `sweep failed (dust left in throwaway): ${String(e?.shortMessage ?? e?.message).slice(0, 120)}`;
   }
