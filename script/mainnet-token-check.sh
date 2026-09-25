@@ -47,8 +47,7 @@ while read -r SYM ADDR; do
     echo "::error title=Token check failed::${SYM} ${ADDR}: eth_call failed after retries: $(cat "$LAST_ERR_FILE")"
     continue
   fi
-  # symbol() uses the non-uint decoder path; strip cast's quotes for comparison.
-  ONCHAIN="$(cast call "$ADDR" 'symbol()(string)' --rpc-url "$BASE_MAINNET_RPC_URL" 2>/dev/null | tr -d '"' || true)"
+  ONCHAIN="$(rcall "$ADDR" 'symbol()(string)' || true)"
   if [ "$ONCHAIN" != "$SYM" ]; then
     echo "::warning title=Token symbol differs::${ADDR} config=${SYM} onchain=${ONCHAIN:-<none>}"
   fi

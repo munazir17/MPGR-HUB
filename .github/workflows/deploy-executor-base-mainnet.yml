@@ -118,6 +118,44 @@ jobs:
             | "::notice title=Mainnet deploy dry run::\((.value.decoded_logs // []) | join(" ; "))"
           ' fork-results.json || true
 
+      - name: Gate - rehearse the exact forge script (simulate + broadcast) on a LOCAL anvil fork of Base Mainnet
+        # Catches script-mode-only failures that tests cannot (e.g. forge's script restrictions).
+        # Throwaway key generated here; broadcasts go to 127.0.0.1 only, never to Base Mainnet.
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+        run: |
+          set -euo pipefail
+          anvil --fork-url "$BASE_MAINNET_RPC_URL" --port 8545 --silent &
+          ANVIL_PID=$!
+          trap 'kill $ANVIL_PID 2>/dev/null || true' EXIT
+          LOCAL=http://127.0.0.1:8545
+          for _ in $(seq 1 30); do cast chain-id --rpc-url "$LOCAL" >/dev/null 2>&1 && break; sleep 1; done
+          [ "$(cast chain-id --rpc-url "$LOCAL")" = "8453" ] || { echo "::error::anvil fork is not 8453"; exit 1; }
+          W="$(cast wallet new --json)"
+          KEY="$(echo "$W" | jq -r '.[0].private_key')"; echo "::add-mask::${KEY}"
+          ADDR="$(echo "$W" | jq -r '.[0].address')"
+          cast rpc anvil_setBalance "$ADDR" 0x2386F26FC10000 --rpc-url "$LOCAL" >/dev/null
+          F=deployments/base-mainnet/deploy-config.json
+          export BASE_MAINNET_DEPLOYER_PRIVATE_KEY="$KEY" MPGR_MAINNET_DEPLOY_ENABLED=true
+          MPGR_EXECUTOR_OWNER="$(jq -r .owner "$F")"; export MPGR_EXECUTOR_OWNER
+          MPGR_EXECUTOR_FEE_RECIPIENT="$(jq -r .feeRecipient "$F")"; export MPGR_EXECUTOR_FEE_RECIPIENT
+          S=script/DeployMPGRExecutorBaseMainnet.s.sol:DeployMPGRExecutorBaseMainnet
+          set +e
+          forge script "$S" --rpc-url "$LOCAL" -vv > rehearse-sim.txt 2>&1; SIM=$?
+          rm -f deployments/base-mainnet/mpgr-executor.json
+          [ "$SIM" = "0" ] && forge script "$S" --rpc-url "$LOCAL" --broadcast --slow -vv > rehearse-bc.txt 2>&1; BC=$?
+          set -e
+          if [ "$SIM" != "0" ] || [ "$BC" != "0" ]; then
+            echo "::error title=forge script rehearsal failed::$(grep -hE 'MPGR:|Error|revert' rehearse-sim.txt rehearse-bc.txt 2>/dev/null | head -5 | tr '\n' ' ')"
+            exit 1
+          fi
+          EXEC="$(jq -r .executor deployments/base-mainnet/mpgr-executor.json)"
+          [ "$(cast call "$EXEC" 'feeBps()(uint16)' --rpc-url "$LOCAL")" = "25" ]
+          [ "$(cast call "$EXEC" 'routerKind(address)(uint8)' 0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F --rpc-url "$LOCAL")" = "1" ]
+          GAS="$(jq -r '.receipts[0].gasUsed' broadcast/DeployMPGRExecutorBaseMainnet.s.sol/8453/run-latest.json)"
+          echo "::notice title=forge script rehearsal (local anvil fork)::simulate + broadcast OK; executor ${EXEC} (throwaway deployer); deploy gasUsed $((GAS))"
+          rm -rf deployments/base-mainnet/mpgr-executor.json broadcast/DeployMPGRExecutorBaseMainnet.s.sol
+
       - name: Gate - Slither (fail on high)
         uses: crytic/slither-action@v0.4.1
         with:

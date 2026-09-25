@@ -57,6 +57,9 @@ contract DeployMPGRExecutorBaseMainnet is Script {
     uint16 internal constant EXPECTED_MAX_FEE_BPS = 100;
     uint256 internal constant MIN_DEPLOYER_BALANCE = 0.001 ether;
 
+    /// Fixed holder for read-only balanceOf probes (forge forbids address(this) in scripts).
+    address internal constant PROBE_HOLDER = 0x000000000000000000000000000000000000dEaD;
+
     string internal constant CONFIG_FILE = "deployments/base-mainnet/deploy-config.json";
     string internal constant OUT_FILE = "deployments/base-mainnet/mpgr-executor.json";
 
@@ -203,7 +206,7 @@ contract DeployMPGRExecutorBaseMainnet is Script {
     function _requireLiveErc20(address token, string memory symbol) internal view {
         (bool okDec,) = _erc20Call(token, abi.encodeWithSignature("decimals()"));
         (bool okSup,) = _erc20Call(token, abi.encodeWithSignature("totalSupply()"));
-        (bool okBal,) = _erc20Call(token, abi.encodeWithSignature("balanceOf(address)", address(this)));
+        (bool okBal,) = _erc20Call(token, abi.encodeWithSignature("balanceOf(address)", PROBE_HOLDER));
         require(okDec && okSup && okBal, string.concat("MPGR: ", symbol, " is not a live ERC-20 on 8453 (decimals/totalSupply/balanceOf failed)"));
     }
 
