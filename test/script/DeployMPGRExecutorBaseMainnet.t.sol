@@ -44,7 +44,7 @@ contract DeployMPGRExecutorBaseMainnetScriptTest is Test {
     uint256 internal deployerKey = uint256(keccak256("mpgr-mainnet-deploy-offline-v1"));
     address internal deployer;
     DeployMPGRExecutorBaseMainnet.Pins internal pins;
-    string internal constant OUT = "deployments/base-mainnet/.fork-dry-run.json";
+    string internal OUT;
 
     function setUp() public {
         vm.chainId(8453);
@@ -58,9 +58,12 @@ contract DeployMPGRExecutorBaseMainnetScriptTest is Test {
         vm.etch(0x514c8B5f54112481E28028F1166Bd78501089259, address(new StubSlipQuoter()).code);
 
         h = new MainnetDeployHarness();
+        _out("default");
         deployer = vm.addr(deployerKey);
         vm.deal(deployer, 0.003 ether);
         pins = h.committedPins();
+        pins.enabled = true; // committed pins are off after the real deployment; rehearse with them forced on
+        h.setPins(pins);
         DeployMPGRExecutorBaseMainnet.Config memory c;
         c.pk = deployerKey;
         c.deployer = deployer;
@@ -70,7 +73,14 @@ contract DeployMPGRExecutorBaseMainnetScriptTest is Test {
         h.setConfig(c);
     }
 
+    /// forge runs tests in parallel: every test that writes a record uses its own path.
+    function _out(string memory tag) internal {
+        OUT = string.concat("deployments/base-mainnet/.fork-dry-run-offline-", tag, ".json");
+        h.setOutFile(OUT);
+    }
+
     function test_Offline_Run_DeploysExactlyTheProductionConfig() public {
+        _out("deploys");
         MPGRExecutor ex = h.run();
         assertEq(address(ex), vm.computeCreateAddress(deployer, 0));
         assertEq(ex.owner(), 0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e);
@@ -117,6 +127,7 @@ contract DeployMPGRExecutorBaseMainnetScriptTest is Test {
     }
 
     function test_Offline_Run_RefusesSecondDeploymentFromSameKey() public {
+        _out("second");
         h.run();
         vm.removeFile(OUT);
         vm.expectRevert(bytes("MPGR: deployer nonce != 0 - use a fresh dedicated key (prevents a 2nd deploy)"));
@@ -130,6 +141,7 @@ contract DeployMPGRExecutorBaseMainnetScriptTest is Test {
     }
 
     function test_Offline_Run_B20PrecompileMarkerIsNeverCalled() public {
+        _out("b20");
         // Like real Base, B20 addresses carry non-executable placeholder code (the node runs the
         // precompile). The script must deploy without ever calling them.
         (address[] memory tokens,) = h.productionTokens();

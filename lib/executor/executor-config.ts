@@ -5,8 +5,11 @@
 // Rules (AGENTS.md): typed chain config, no secrets, bigint math, no
 // NEXT_PUBLIC secrets. Nothing here fetches or signs.
 //
-// Base mainnet (8453) is intentionally `null`: the executor is NOT deployed on
-// mainnet. Base Sepolia (84532) is filled from
+// Base mainnet (8453) is intentionally `null`: the executor IS deployed on mainnet
+// (0xD982726e28275661F8aB64054E6b17a70a63505A, deployments/base-mainnet/
+// mpgr-executor.json) but app/MCP routing through it is NOT enabled yet. It is
+// switched on separately, after independent verification, by filling this entry.
+// Base Sepolia (84532) is filled from
 // deployments/base-sepolia/mpgr-executor.json after the label-triggered
 // GitHub Actions deployment (.github/workflows/deploy-executor-base-sepolia.yml).
 

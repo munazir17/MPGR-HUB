@@ -31,7 +31,12 @@ contract MainnetDeployHarness is DeployMPGRExecutorBaseMainnet {
     bool internal pinsOverridden;
     Pins internal pinsOverride;
     bool public recordExistsFlag;
-    string internal constant FORK_OUT = "deployments/base-mainnet/.fork-dry-run.json";
+    // Each test sets its own output path: forge runs tests in parallel.
+    string public outFile = "deployments/base-mainnet/.fork-dry-run.json";
+
+    function setOutFile(string memory f) external {
+        outFile = f;
+    }
 
     function setConfig(Config memory c) external {
         cfg = c;
@@ -63,8 +68,8 @@ contract MainnetDeployHarness is DeployMPGRExecutorBaseMainnet {
         return recordExistsFlag;
     }
 
-    function _outFile() internal pure override returns (string memory) {
-        return FORK_OUT;
+    function _outFile() internal view override returns (string memory) {
+        return outFile;
     }
 }
 
@@ -96,7 +101,11 @@ contract MPGRExecutorBaseMainnetDeployForkTest is Test {
         vm.etch(deployer, "");
         vm.setNonceUnsafe(deployer, 0);
         vm.deal(deployer, 0.01 ether);
+        // The committed pins are switched off after the real deployment; rehearsals reuse the
+        // committed owner / fee recipient / fee policy with enablement forced on locally.
         pins = h.committedPins();
+        pins.enabled = true;
+        h.setPins(pins);
         h.setConfig(_goodConfig());
     }
 
@@ -121,12 +130,20 @@ contract MPGRExecutorBaseMainnetDeployForkTest is Test {
     // ------------------------------------------------------------------
 
     function test_Fork_CommittedPins() public onlyFork {
-        assertEq(pins.chainId, 8453);
-        assertTrue(pins.enabled, "deploy-config.json must enable exactly this deployment");
-        assertEq(pins.owner, 0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e, "owner pin");
-        assertEq(pins.feeRecipient, 0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4, "fee recipient pin");
-        assertEq(pins.feeBps, 25);
-        assertEq(pins.maxFeeBps, 100);
+        DeployMPGRExecutorBaseMainnet.Pins memory committed = h.committedPins();
+        assertEq(committed.chainId, 8453);
+        assertFalse(committed.enabled, "one-time enablement must be off after the deployment");
+        assertEq(committed.owner, 0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e, "owner pin");
+        assertEq(committed.feeRecipient, 0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4, "fee recipient pin");
+        assertEq(committed.feeBps, 25);
+        assertEq(committed.maxFeeBps, 100);
+    }
+
+    /// With the committed (disabled) pins and the real record present, the script refuses.
+    function test_Fork_CommittedState_RefusesAnotherDeployment() public onlyFork {
+        vm.expectRevert(bytes("MPGR: deploy-config.json mainnetDeployEnabled != true"));
+        h.preflight(_goodConfig(), h.committedPins());
+        assertTrue(vm.exists("deployments/base-mainnet/mpgr-executor.json"), "record committed");
     }
 
     // ------------------------------------------------------------------
@@ -134,13 +151,14 @@ contract MPGRExecutorBaseMainnetDeployForkTest is Test {
     // ------------------------------------------------------------------
 
     function test_Fork_MainnetDeployScript_DryRun_ThenRealSwap() public onlyFork {
+        h.setOutFile("deployments/base-mainnet/.fork-dry-run-fork.json");
         MPGRExecutor ex;
         try h.run() returns (MPGRExecutor e) {
             ex = e;
         } catch (bytes memory err) {
             revert(string.concat("deploy script run() reverted: ", _reason(err)));
         }
-        vm.removeFile("deployments/base-mainnet/.fork-dry-run.json");
+        vm.removeFile("deployments/base-mainnet/.fork-dry-run-fork.json");
 
         assertEq(address(ex), vm.computeCreateAddress(deployer, 0), "CREATE(deployer, 0)");
         assertEq(ex.owner(), pins.owner);

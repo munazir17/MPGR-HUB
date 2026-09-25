@@ -253,6 +253,27 @@ The owner explicitly authorised a one-time Base Mainnet deployment of the execut
   3. Delete `MPGR_MAINNET_DEPLOY_ENABLED` from the environment.
   4. Verify the deployment independently before any routing change.
 
+### Live deployment (Base Mainnet, chainId 8453). App routing is OFF
+
+Deployed by workflow run [36110098967](https://github.com/munazir17/MPGR-HUB/actions/runs/36110098967) from PR head `51ec6b9`, after owner approval in the `base-mainnet` environment. Record: `deployments/base-mainnet/mpgr-executor.json`. It is re-verified against the live chain by `test/fork/MPGRExecutorBaseMainnetDeployment.t.sol`, which checks bytecode == repo source, config, fee cap and a fork-only swap.
+
+| field | value |
+|---|---|
+| Executor | [`0xD982726e28275661F8aB64054E6b17a70a63505A`](https://basescan.org/address/0xD982726e28275661F8aB64054E6b17a70a63505A) |
+| Deploy tx | [`0xf17fcaef66a8a67153114a8a14b7813ffaa7ec2877eb5e9e35171467aa999d01`](https://basescan.org/tx/0xf17fcaef66a8a67153114a8a14b7813ffaa7ec2877eb5e9e35171467aa999d01) |
+| Block | 51767139 |
+| Gas | 2,805,700 at 0.00525 gwei, plus an L1 data fee of 0.000000149 ETH (about 0.0000149 ETH total) |
+| Deployer (dedicated, nonce 0 → executor = CREATE(deployer, 0)) | `0xB54900f2c355CB0A61c62f8220191D3aAA6f4455` |
+| Owner | `0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e` (pendingOwner = 0) |
+| Fee recipient | `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4` |
+| Fee | 25 bps, hard cap `MAX_FEE_BPS` = 100 bps; not paused |
+| Router allowlist | Aerodrome Slipstream SwapRouter `0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F` (kind 1). Factory `0xf8f2…61Ef`, QuoterV2 `0x514c…9259`. Uniswap V3 is **not** allowlisted. |
+| Token allowlist (15) | USDC `0x8335…2913`, WETH `0x4200…0006`, and the B20 stocks AAPLc, AMZNc, COINc, CRCLc, GOOGLc, INTCc, METAc, MSFTc, MSTRc, NVDAc, SNDKc, SPCXc, TSLAc (addresses in the record) |
+| WETH / Permit2 | `0x4200000000000000000000000000000000000006` / `0x000000000022D473030F116dDEE9F6B43aC78BA3` |
+| Source verification | Sourcify `exact_match`, Blockscout verified, Basescan step success |
+
+The one-time enablement is switched off: `mainnetDeployEnabled: false` in the pins file, and the record exists. The script and workflow refuse any further mainnet deployment.
+
 ### Before switching Mainnet execution on (NOT done)
 
 1. External security audit of `MPGRExecutor.sol` (recommended).
