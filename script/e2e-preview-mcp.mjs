@@ -102,13 +102,18 @@ const info = (group, name, detail) => check(group, name, true, detail, "info");
 // ------------------------------------------------------------------ transport
 const rawResponses = [];
 let rpcId = 0;
+let bypassViaQuery = false;
+function url(p) {
+  if (!BYPASS || !bypassViaQuery) return `${PREVIEW_URL}${p}`;
+  return `${PREVIEW_URL}${p}${p.includes("?") ? "&" : "?"}x-vercel-protection-bypass=${encodeURIComponent(BYPASS)}`;
+}
 function headers(extra = {}) {
   const h = { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...extra };
   if (BYPASS) h["x-vercel-protection-bypass"] = BYPASS;
   return h;
 }
 async function post(body, extraHeaders = {}) {
-  const res = await fetch(`${PREVIEW_URL}/api/mcp`, { method: "POST", headers: headers(extraHeaders), body: JSON.stringify(body) });
+  const res = await fetch(url("/api/mcp"), { method: "POST", headers: headers(extraHeaders), body: JSON.stringify(body) });
   const text = await res.text();
   rawResponses.push(text);
   let json = null;
@@ -251,7 +256,14 @@ async function main() {
   check("executor", "executor not paused", onPaused === false, String(onPaused));
 
   // ---------------------------------------------------------------- 1. endpoint
-  const init = await post({ jsonrpc: "2.0", id: ++rpcId, method: "initialize", params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "mpgr-e2e", version: "1" } } });
+  info("endpoint", "Vercel protection bypass secret available to this job", BYPASS ? `yes (length ${BYPASS.length}; value not logged)` : "NO (secret VERCEL_AUTOMATION_BYPASS_SECRET is empty/unset for this workflow)");
+  const initBody = () => ({ jsonrpc: "2.0", id: ++rpcId, method: "initialize", params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "mpgr-e2e", version: "1" } } });
+  let init = await post(initBody());
+  if (init.status === 401 && BYPASS) {
+    info("endpoint", "bypass header rejected (401); retrying with the query-parameter form", "");
+    bypassViaQuery = true;
+    init = await post(initBody());
+  }
   if (!check("endpoint", "POST initialize -> HTTP 200 JSON-RPC", init.status === 200 && init.json?.result, `HTTP ${init.status} ${init.text.slice(0, 160).replace(/\s+/g, " ")}`)) {
     if (init.status === 401 || init.status === 403 || /vercel/i.test(init.text.slice(0, 2000))) {
       check("endpoint", "Preview is publicly reachable (Vercel Deployment Protection?)", false, "Set VERCEL_AUTOMATION_BYPASS_SECRET as a repo secret, or disable protection for Preview");
@@ -271,7 +283,7 @@ async function main() {
   const expectedTools = ["mpgr_finalize_trade", "mpgr_get_capabilities", "mpgr_get_quote", "mpgr_get_trade_status", "mpgr_list_tokens", "mpgr_prepare_trade", "mpgr_verify_trade"];
   check("endpoint", "tools/list returns the 7 MPGR tools", JSON.stringify(names) === JSON.stringify(expectedTools), names.join(","));
   check("nosign", "every tool is non-destructive", (list.json?.result?.tools ?? []).every((t) => t.annotations?.destructiveHint === false), "");
-  const get = await fetch(`${PREVIEW_URL}/api/mcp`, { headers: headers() });
+  const get = await fetch(url("/api/mcp"), { headers: headers() });
   check("endpoint", "GET /api/mcp -> 405 (stateless, POST only)", get.status === 405, `HTTP ${get.status}`);
   const evil = await post({ jsonrpc: "2.0", id: ++rpcId, method: "ping" }, { Origin: "https://evil.example" });
   check("endpoint", "foreign browser Origin rejected (403)", evil.status === 403, `HTTP ${evil.status}`);
@@ -470,7 +482,7 @@ async function main() {
   check("mainnet", "list_tokens chainId 8453 -> EXECUTOR_NOT_DEPLOYED_MAINNET", ml.isError && errCode(ml) === "EXECUTOR_NOT_DEPLOYED_MAINNET", errCode(ml));
   const bad1 = await tool("mpgr_get_quote", { chainId: 1, taker: DEPLOYER, sellToken: "ETH", buyToken: "tUSD", sellAmount: "1" });
   check("mainnet", "unsupported chain (1) rejected", bad1.isError, errCode(bad1));
-  const llm = await fetch(`${PREVIEW_URL}/llm.txt`, { headers: headers() });
+  const llm = await fetch(url("/llm.txt"), { headers: headers() });
   const llmText = await llm.text();
   check("executor", "/llm.txt advertises the Sepolia executor", llm.status === 200 && llmText.includes(`MPGR Executor: ${EXPECTED_EXECUTOR}`), `HTTP ${llm.status}`);
   check("mainnet", "/llm.txt: Base (8453) executor not deployed", /Base \(chainId 8453\)\n {2}- MPGR Executor: not deployed/.test(llmText), "");
