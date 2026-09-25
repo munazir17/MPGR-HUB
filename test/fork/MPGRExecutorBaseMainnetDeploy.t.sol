@@ -141,8 +141,10 @@ contract MPGRExecutorBaseMainnetDeployForkTest is Test {
 
     /// With the committed (disabled) pins and the real record present, the script refuses.
     function test_Fork_CommittedState_RefusesAnotherDeployment() public onlyFork {
+        DeployMPGRExecutorBaseMainnet.Pins memory committed = h.committedPins();
+        DeployMPGRExecutorBaseMainnet.Config memory c = _goodConfig();
         vm.expectRevert(bytes("MPGR: deploy-config.json mainnetDeployEnabled != true"));
-        h.preflight(_goodConfig(), h.committedPins());
+        h.preflight(c, committed);
         assertTrue(vm.exists("deployments/base-mainnet/mpgr-executor.json"), "record committed");
     }
 
