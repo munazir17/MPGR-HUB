@@ -40,7 +40,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const EXPECTED_EXECUTOR = "0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4";
 const EXPECTED_FEE_RECIPIENT = "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4";
 const SELL_WEI = 200_000_000_000_000n; // 0.0002 ETH
-const EXPECTED_FEE = (SELL_WEI * 25n) / 10_000n; // 50_000_000_000 wei
+const EXPECTED_FEE = (SELL_WEI * 25n) / 10_000n; // 500_000_000_000 wei
 const PREVIEW_URL = (process.env.PREVIEW_URL ?? "").replace(/\/$/, "");
 const RPC_URL = process.env.BASE_SEPOLIA_RPC_URL?.trim() || "https://sepolia.base.org";
 const BYPASS = process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim() || "";
@@ -68,6 +68,27 @@ function check(name, ok, detail = "") {
   return Boolean(ok);
 }
 class Abort extends Error {}
+/** Load-balanced public RPC backends can lag: retry block-pinned reads until served. */
+async function retry(label, fn, tries = 15) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      await sleep(3000);
+    }
+  }
+  throw new Error(`${label}: ${String(last?.shortMessage ?? last?.message ?? last).slice(0, 200)}`);
+}
+/** Runs an independent verification section; an RPC error fails that section only. */
+async function section(label, fn) {
+  try {
+    await fn();
+  } catch (e) {
+    check(`${label} (section error)`, false, String(e?.shortMessage ?? e?.message ?? e).slice(0, 300));
+  }
+}
 function must(name, ok, detail) {
   if (!check(name, ok, detail)) throw new Abort(`aborted at: ${name}`);
 }
@@ -95,6 +116,27 @@ async function tool(name, args) {
 const errCode = (t) => t.data?.error?.code ?? `http ${t.http}`;
 
 // ------------------------------------------------------------------ run
+let sweepCtx = null;
+/** Always runs once the throwaway wallet was funded: return leftover ETH to the funder. */
+async function sweep() {
+  if (!sweepCtx) return;
+  const { walletClient, wallet, funder } = sweepCtx;
+  try {
+    const bal = await pub.getBalance({ address: wallet.address, blockTag: "pending" });
+    const fees = await pub.estimateFeesPerGas();
+    const cost = fees.maxFeePerGas * 21_000n;
+    if (bal <= cost * 2n) {
+      facts.sweepTx = `nothing to sweep (${bal} wei)`;
+      return;
+    }
+    const h = await walletClient.sendTransaction({ to: funder.address, value: bal - cost, gas: 21_000n, maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas });
+    await pub.waitForTransactionReceipt({ hash: h, timeout: 120_000 });
+    facts.sweepTx = h;
+  } catch (e) {
+    facts.sweepTx = `sweep failed (dust left in throwaway): ${String(e?.shortMessage ?? e?.message).slice(0, 120)}`;
+  }
+}
+
 const pub = createPublicClient({ chain: baseSepolia, transport: http(RPC_URL, { retryCount: 3, timeout: 30_000 }) });
 
 async function main() {
@@ -128,6 +170,7 @@ async function main() {
   facts.funderBalanceBefore = formatEther(funderBal);
   must("CI funder has enough Base Sepolia ETH", funderBal > fundWei + gasPrice * 2n * 21_000n, `${formatEther(funderBal)} ETH, need ~${formatEther(fundWei)}`);
   const funderClient = createWalletClient({ account: funder, chain: baseSepolia, transport: http(RPC_URL) });
+  sweepCtx = { walletClient: createWalletClient({ account: wallet, chain: baseSepolia, transport: http(RPC_URL) }), wallet, funder };
   const fundHash = await funderClient.sendTransaction({ to: wallet.address, value: fundWei });
   facts.fundingTx = fundHash;
   const fundRcpt = await pub.waitForTransactionReceipt({ hash: fundHash, timeout: 120_000 });
@@ -142,7 +185,7 @@ async function main() {
   facts.intentId = Q.intentId;
   facts.quote = { chainId: Q.chainId, executor: Q.executor, sellAmount: Q.sellAmount, feeBps: Q.feeBps, feeAmount: Q.feeAmount, feeRecipient: Q.feeRecipient, expectedBuyAmount: Q.expectedBuyAmount, minBuyAmount: Q.minBuyAmount };
   must("quote on chain 84532 via executor 0xDFcB…76C4", Q.chainId === 84532 && Q.executor === EXPECTED_EXECUTOR && Q.route?.executor === EXPECTED_EXECUTOR, `${Q.chainId} ${Q.executor}`);
-  must("quote fee == 25 bps of 0.0002 ETH = 50000000000 wei, to 0x96F7…64A4, in ETH", Q.feeBps === 25 && Q.feeAmount === EXPECTED_FEE.toString() && same(Q.feeRecipient, EXPECTED_FEE_RECIPIENT) && Q.feeToken === "ETH", `${Q.feeAmount} -> ${Q.feeRecipient}`);
+  must("quote fee == 25 bps of 0.0002 ETH = 500000000000 wei, to 0x96F7…64A4, in ETH", Q.feeBps === 25 && Q.feeAmount === EXPECTED_FEE.toString() && same(Q.feeRecipient, EXPECTED_FEE_RECIPIENT) && Q.feeToken === "ETH", `${Q.feeAmount} -> ${Q.feeRecipient}`);
   must("quote intentId == keccak256('mpgr-executor-intent:'+quoteId)", Q.intentId === intentIdOf(Q.quoteId), Q.intentId);
   must("quote sees funded throwaway balance", Q.balanceSufficient === true, `takerBalance=${Q.takerBalance}`);
 
@@ -198,7 +241,10 @@ async function main() {
   check("verify_trade: every check passed", vChecks.length > 0 && failedChecks.length === 0, failedChecks.map((c) => `${c.name}: expected ${c.expected} got ${c.actual}`).join("; ") || vChecks.map((c) => c.name).join(" | "));
   check("verify_trade event.intentId == quote trade ID", v.data?.event?.intentId === Q.intentId, v.data?.event?.intentId);
 
-  // 7. Independent receipt analysis.
+  // 7. Independent receipt analysis (wait until the RPC serves blocks past the swap block).
+  await retry("rpc catch-up", async () => {
+    if ((await pub.getBlockNumber()) < rcpt.blockNumber + 1n) throw new Error("rpc behind swap block");
+  }, 40);
   const swaps = [];
   const transfers = [];
   for (const l of rcpt.logs) {
@@ -222,22 +268,35 @@ async function main() {
   if (ev) {
     check("SwapExecuted.intentId == keccak256('mpgr-executor-intent:'+quoteId)", ev.intentId === intentIdOf(Q.quoteId), ev.intentId);
     check("SwapExecuted: taker = throwaway, tokenIn WETH, tokenOut tUSD, gross 0.0002 ETH", same(ev.taker, wallet.address) && same(ev.tokenIn, REC.weth) && same(ev.tokenOut, tUSD) && ev.grossAmountIn === SELL_WEI, "");
-    check("SwapExecuted: feeAmount == 50000000000 wei (exact 25 bps), feeBps 25, feeRecipient 0x96F7…64A4", ev.feeAmount === EXPECTED_FEE && Number(ev.feeBps) === 25 && same(ev.feeRecipient, EXPECTED_FEE_RECIPIENT), `${ev.feeAmount} bps=${ev.feeBps} -> ${ev.feeRecipient}`);
+    check("SwapExecuted: feeAmount == 500000000000 wei (exact 25 bps), feeBps 25, feeRecipient 0x96F7…64A4", ev.feeAmount === EXPECTED_FEE && Number(ev.feeBps) === 25 && same(ev.feeRecipient, EXPECTED_FEE_RECIPIENT), `${ev.feeAmount} bps=${ev.feeBps} -> ${ev.feeRecipient}`);
     check("SwapExecuted: fee + swapAmountIn == gross", ev.feeAmount + ev.swapAmountIn === ev.grossAmountIn, `${ev.feeAmount}+${ev.swapAmountIn}`);
     check("SwapExecuted: amountOut >= quoted minBuyAmount", ev.amountOut >= BigInt(Q.minBuyAmount), `${ev.amountOut} >= ${Q.minBuyAmount}`);
-    const tusdAfter = await pub.readContract({ address: tUSD, abi: ERC20_ABI, functionName: "balanceOf", args: [wallet.address], blockNumber: rcpt.blockNumber });
-    check("throwaway received exactly amountOut tUSD", tusdAfter - tusdBefore === ev.amountOut && transfers.some((t) => same(t.token, tUSD) && same(t.to, wallet.address) && t.value === ev.amountOut), `${tusdAfter - tusdBefore}`);
+    await section("tUSD received", async () => {
+      const tusdAfter = await retry("tUSD balance", () => pub.readContract({ address: tUSD, abi: ERC20_ABI, functionName: "balanceOf", args: [wallet.address], blockNumber: rcpt.blockNumber }));
+      check("throwaway received exactly amountOut tUSD", tusdAfter - tusdBefore === ev.amountOut && transfers.some((t) => same(t.token, tUSD) && same(t.to, wallet.address) && t.value === ev.amountOut), `${tusdAfter - tusdBefore}`);
+    });
   }
 
   // Fee actually paid: fee recipient's ETH balance delta across the swap block.
   const n = rcpt.blockNumber;
-  const [feeBefore, feeAfter] = await Promise.all([pub.getBalance({ address: EXPECTED_FEE_RECIPIENT, blockNumber: n - 1n }), pub.getBalance({ address: EXPECTED_FEE_RECIPIENT, blockNumber: n })]);
-  facts.feeRecipientDelta = (feeAfter - feeBefore).toString();
-  const block = await pub.getBlock({ blockNumber: n, includeTransactions: true });
-  const otherTouching = block.transactions.filter((t) => t.hash !== swapHash && (same(t.to, EXPECTED_FEE_RECIPIENT) || same(t.from, EXPECTED_FEE_RECIPIENT)));
-  check("fee recipient ETH balance rose by exactly 50000000000 wei in the swap block", feeAfter - feeBefore === EXPECTED_FEE, `delta ${feeAfter - feeBefore} wei (block ${n - 1n} -> ${n}); other txs touching recipient in block: ${otherTouching.length}`);
+  let feeDelta = null;
+  let otherTouching = null;
+  await section("fee recipient balance delta", async () => {
+    const feeBefore = await retry("fee recipient balance @n-1", () => pub.getBalance({ address: EXPECTED_FEE_RECIPIENT, blockNumber: n - 1n }));
+    const feeAfter = await retry("fee recipient balance @n", () => pub.getBalance({ address: EXPECTED_FEE_RECIPIENT, blockNumber: n }));
+    feeDelta = feeAfter - feeBefore;
+    facts.feeRecipientDelta = feeDelta.toString();
+    facts.feeRecipientBalance = { [`block ${n - 1n}`]: feeBefore.toString(), [`block ${n}`]: feeAfter.toString() };
+  });
+  await section("swap block transactions", async () => {
+    const block = await retry("swap block", () => pub.getBlock({ blockNumber: n, includeTransactions: true }));
+    otherTouching = block.transactions.filter((t) => t.hash !== swapHash && (same(t.to, EXPECTED_FEE_RECIPIENT) || same(t.from, EXPECTED_FEE_RECIPIENT)));
+    facts.swapBlockTxCount = block.transactions.length;
+  });
+  check("fee recipient ETH balance rose by exactly 500000000000 wei in the swap block", feeDelta === EXPECTED_FEE, `delta ${feeDelta ?? "n/a"} wei (block ${n - 1n} -> ${n}); other txs touching recipient in block: ${otherTouching?.length ?? "n/a"}`);
   // Internal call trace (if the RPC exposes debug_traceTransaction).
   try {
+    await sleep(2000);
     const res = await fetch(RPC_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "debug_traceTransaction", params: [swapHash, { tracer: "callTracer" }] }) });
     const j = await res.json();
     if (j.result) {
@@ -255,24 +314,13 @@ async function main() {
     facts.trace = `debug_traceTransaction unavailable: ${String(e.message).slice(0, 120)}`;
   }
   // No separate fee transaction.
-  const walletNonce = await pub.getTransactionCount({ address: wallet.address, blockTag: "pending" });
+  let walletNonce = null;
+  await section("throwaway nonce", async () => {
+    walletNonce = await retry("nonce", () => pub.getTransactionCount({ address: wallet.address, blockTag: "latest" }));
+  });
   check("no separate fee tx: throwaway wallet sent exactly ONE transaction (the swap)", walletNonce === 1, `nonce=${walletNonce}`);
-  check("no separate fee tx: no other tx to/from the fee recipient in the swap block", otherTouching.length === 0, otherTouching.map((t) => t.hash).join(",") || "none");
-  check("no separate fee tx: fee credited by the swap tx itself (balance delta == fee, single tx)", feeAfter - feeBefore === EXPECTED_FEE && walletNonce === 1 && otherTouching.length === 0, "");
-
-  // 8. Sweep leftover ETH back to the funder (hygiene; not part of pass/fail).
-  try {
-    const bal = await pub.getBalance({ address: wallet.address });
-    const fees = await pub.estimateFeesPerGas();
-    const cost = fees.maxFeePerGas * 21_000n;
-    if (bal > cost * 2n) {
-      const sweep = await walletClient.sendTransaction({ to: funder.address, value: bal - cost, gas: 21_000n, maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas });
-      await pub.waitForTransactionReceipt({ hash: sweep, timeout: 120_000 });
-      facts.sweepTx = sweep;
-    }
-  } catch (e) {
-    facts.sweepTx = `sweep failed (dust left in throwaway): ${String(e.message).slice(0, 120)}`;
-  }
+  check("no separate fee tx: no other tx to/from the fee recipient in the swap block", Array.isArray(otherTouching) && otherTouching.length === 0, otherTouching ? otherTouching.map((t) => t.hash).join(",") || "none" : "n/a");
+  check("no separate fee tx: fee credited by the swap tx itself (balance delta == fee, single tx)", feeDelta === EXPECTED_FEE && walletNonce === 1 && Array.isArray(otherTouching) && otherTouching.length === 0, "");
 }
 
 try {
@@ -280,6 +328,7 @@ try {
 } catch (e) {
   check(e instanceof Abort ? String(e.message) : "run completed without an exception", false, e instanceof Abort ? "" : String(e?.shortMessage ?? e?.message ?? e).slice(0, 500));
 }
+await sweep();
 
 const failed = results.filter((r) => !r.ok);
 writeFileSync(OUT_JSON, JSON.stringify({ previewUrl: PREVIEW_URL, facts, results }, big, 2));
