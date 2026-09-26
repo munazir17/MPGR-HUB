@@ -1,4 +1,4 @@
-import { decodeFunctionData, maxUint256, parseAbi, type Hex } from "viem";
+import { decodeFunctionData, getAddress, maxUint256, parseAbi, type Hex } from "viem";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, MPGR_EXECUTOR_DEPLOYMENTS, findExecutorRoute } from "@/lib/executor/executor-config";
@@ -13,6 +13,9 @@ import { ZERO_EX_ALLOWANCE_HOLDER_BASE } from "@/lib/trade/zero-ex-native-fee";
 
 import { LIVE_PINS as P, LIVE_TRADES, historicalReceipt, type LiveTradeFixture } from "./base-mainnet-live-fixtures";
 import { fakeReader, newFakeState, setAllowance, setBalance, testDeps } from "./fixtures";
+
+/** The live-allowlisted B20 stock used by the executor routing regression below. */
+const B20_AAPL = getAddress("0xb200000000000000000000C2e324d24d7eEcd1fb");
 
 function ok(outcome: ToolOutcome) {
   if (!outcome.ok) throw new Error(`${outcome.error.code}: ${outcome.error.message}`);
@@ -240,12 +243,38 @@ it.each([
   else expect(result).toEqual({ ok: true, value: { grossAmountIn: gross, feeBps: 25, feeAmount: fee, swapAmountIn: net } });
 });
 
-it.each([
-  ["arbitrary ERC-20", "0x0000000000000000000000000000000000004321"],
-  ["B20 stock", "0xb200000000000000000000C2e324d24d7eEcd1fb"],
-])("preserves the 0x fallback for %s with the REAL production registry", async (_, buyToken) => {
+it("routes a live-allowlisted B20 stock through the executor (Slipstream, fee in the swap)", async () => {
   vi.stubEnv("ZERO_EX_API_KEY", "offline-test-placeholder");
   const s = setup(LIVE_TRADES[0]);
+  const zeroExFetch = vi.fn<typeof fetch>(() => { throw new Error("B20 must never fall back to 0x"); });
+  setBalance(s.state, P.usdc, P.taker, 1_000_000n);
+  const deps = { ...s.deps, mainnetFeeRecipient: null, zeroExFetch };
+  const args = { ...s.args, sellToken: P.usdc, buyToken: B20_AAPL, sellAmount: "1000000" };
+  const q = ok(await getQuote(deps, args));
+  // 1 USDC gross: 25 bps = 2500 atomic units, taken inside the executor swap.
+  expect(q).toMatchObject({ provider: "mpgr-executor", feeBps: 25, feeAmount: "2500", feeRecipient: P.feeRecipient, spender: P.executor });
+  expect(zeroExFetch).not.toHaveBeenCalled();
+  const p = ok(await prepareTrade(deps, { quoteId: q.quoteId, authorization: "APPROVAL" }));
+  expect(p.transactionRequest).toMatchObject({ chainId: 8453, to: P.executor });
+  const decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: (p.transactionRequest as { data: Hex }).data });
+  expect(decoded.functionName).toBe("swapSlipstreamExactInputSingle");
+  if (decoded.functionName !== "swapSlipstreamExactInputSingle") throw new Error("wrong entrypoint");
+  const [params, tickSpacing] = decoded.args;
+  expect(tickSpacing).toBe(10);
+  expect(params.tokenIn).toBe(P.usdc);
+  expect(params.tokenOut).toBe(B20_AAPL);
+  expect(params.grossAmountIn).toBe(1_000_000n);
+  expect(params.expectedFeeAmount).toBe(2_500n);
+  expect(params.recipient).toBe(P.taker);
+  // Exactly one executor transaction to sign; no separate fee transaction exists anywhere.
+  const steps = p.steps as { transactionRequest: { to: string } }[];
+  expect(steps.filter((step) => step.transactionRequest.to === P.executor)).toHaveLength(1);
+});
+
+it("preserves the 0x fallback for an arbitrary ERC-20 with the REAL production registry", async () => {
+  vi.stubEnv("ZERO_EX_API_KEY", "offline-test-placeholder");
+  const s = setup(LIVE_TRADES[0]);
+  const buyToken = "0x0000000000000000000000000000000000004321";
   const zeroExFetch = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
     liquidityAvailable: true,
     sellToken: P.usdc, buyToken, sellAmount: "1000000", buyAmount: "2000000", minBuyAmount: "1980000",

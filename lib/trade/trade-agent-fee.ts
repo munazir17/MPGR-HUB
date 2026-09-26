@@ -1,68 +1,70 @@
 // lib/trade/trade-agent-fee.ts
 //
-// MPGR Agent swap fee: 0.25% (25 bps) on the SELL leg.
+// MPGR Agent swap fee: 0.25% (25 bps) on the SELL leg — collected by the
+// MPGR Executor INSIDE the swap transaction.
 //
-// Design (safest compatible approach — see docs/TRADE.md "MPGR Agent fee"):
+// Design (see docs/TRADE.md "MPGR Agent fee" and docs/EXECUTOR.md):
 //   - The fee is computed ONLY from the proposal's `fromAmount`
-//     (sell-token atomic units): floor(fromAmount * 25 / 10_000).
+//     (GROSS sell-token atomic units): floor(fromAmount * 25 / 10_000).
 //     No decimals math is needed for the amount itself, so tokens with
 //     different decimals (USDC 6, ETH/WETH 18, B20 8, …) are exact by
 //     construction. Decimals are used for DISPLAY only.
-//   - The fee is collected as a SEPARATE wallet-signed transfer AFTER
-//     the swap settles (ERC-20 `transfer` to the fee wallet, or a native
-//     value transfer when selling ETH). It never touches the swap quote,
-//     calldata, approvals, slippage, routing, or min-out.
-//   - Fail-open for the swap, fail-closed for the fee: when the fee
-//     wallet is unconfigured/invalid, the fee amount is dust (0), or the
-//     fee transfer itself fails, the swap proceeds/stands exactly as it
-//     does today. The fee is informational and non-blocking by design —
-//     there is no custodial signing flow and nothing is ever forced.
-//   - The SERVER is the source of truth for the fee. Execution only sends
-//     the fee that was DISPLAYED on the proposal, after STRUCTURAL
-//     re-validation that needs no client-side env (resolveExecutionAgentFee
-//     recomputes the exact amount from the proposal's fromAmount and
-//     validates the recipient address). A legacy proposal without a fee,
-//     or a tampered/invalid fee, means no fee transfer.
-//   - Incident 2026-09-24: a production swap settled with no fee because
-//     the production deployment was BUILT before the fee-recipient env var
-//     was added — NEXT_PUBLIC_* values are inlined at build time
-//     (verified in the shipped client bundle), and Vercel does not backfill
-//     env into running deployments. The running build therefore quoted
-//     `skipped` and settled no fee. Fix: the client no longer depends on
-//     its own build-time env to settle a server-quoted fee, the server
-//     also honors a server-only MPGR_AGENT_FEE_RECIPIENT, a missing
-//     recipient emits a one-time warning (server log / console) instead of
-//     failing silently, and the docs state the redeploy requirement. The
-//     swap flow itself (routing, quote, calldata, approvals, slippage,
-//     execution) is unchanged.
+//   - The fee is taken by the MPGR Executor in the SAME transaction as
+//     the swap: the user's wallet sends `grossAmountIn` to the executor,
+//     the executor forwards `floor(gross * feeBps / 10_000)` to its own
+//     configured `feeRecipient()` and swaps `gross - fee`. One approval
+//     (when the allowance is short) plus one swap — never a third
+//     transaction. This module intentionally exposes NO transfer builder:
+//     there is no supported way to pay this fee out-of-band.
+//   - The recipient is the EXECUTOR's configured `feeRecipient()`
+//     (mirrored in lib/executor/executor-config.ts, read live at quote
+//     time). It is never the connected/taker wallet — the contract
+//     reverts with `TakerIsFeeRecipient` if it ever were — and never a
+//     frontend-supplied address.
+//   - `status: "applied"` therefore only ever describes an executor
+//     proposal. Every other route (CDP Trade API, 0x, Aerodrome
+//     Slipstream) is quoted `status: "skipped"` with a reason: those
+//     routes cannot carry an executor fee, and charging it separately is
+//     not supported.
+//   - 0x integrator fees: the MCP 0x fallback path configures its fee in
+//     the 0x quote itself (`swapFeeToken` = sell token, still inside the
+//     swap transaction) and uses getAgentFeeRecipient() below. That path
+//     never touches the browser flow.
 //
 // Import-safe: used by both server routes (proposal building) and the
 // client (execution + confirmation modal). No `server-only`, no fetches,
 // no signing.
 
-import { encodeFunctionData, isAddress, zeroAddress, type Address, type Hex } from "viem";
+import { isAddress, zeroAddress, type Address } from "viem";
 
-import { erc20Abi } from "@/lib/erc20-abi";
-import { isNativeEthSentinel } from "./trade-config";
+import { BASE_MAINNET_EXECUTOR_DEPLOYMENT } from "@/lib/executor/executor-config";
 import { formatAtomicAmount } from "./trade-format";
-import type { TradeAgentFee, TradeProposal } from "./trade-types";
+import type { TradeAgentFee, TradeProposal, TradeTokenRef } from "./trade-types";
 
 /** 25 basis points = 0.25%. Compile-time constant, never env-configured. */
 export const MPGR_AGENT_FEE_BPS = 25;
 /** Basis-point denominator. */
 export const MPGR_AGENT_FEE_DENOMINATOR = 10_000n;
 export const MPGR_AGENT_FEE_PERCENT_LABEL = "0.25%";
+
 /**
- * Server-only env var carrying the fee-recipient wallet (preferred on the
- * server: quote-time is the source of truth for the fee). A recipient
- * address is not a secret; no private key is ever read here.
+ * Why a non-executor route carries no fee. Shown in the proposal's
+ * `agentFee.reason`; the UI simply omits the fee row for skipped fees.
+ */
+export const AGENT_FEE_EXECUTOR_ONLY_REASON =
+  "The MPGR fee is collected inside the swap transaction by the MPGR Executor, which does not route this pair — no fee is charged.";
+
+/**
+ * Server-only env var carrying the 0x fallback fee wallet used by the MCP
+ * 0x-native-fee path (never by the browser trade flow, which uses the
+ * executor's on-chain `feeRecipient()`). A recipient address is not a
+ * secret; no private key is ever read here.
  */
 export const MPGR_AGENT_FEE_RECIPIENT_SERVER_ENV = "MPGR_AGENT_FEE_RECIPIENT";
 /**
- * Public fallback carrying the fee-recipient wallet. NEXT_PUBLIC_* values
+ * Public fallback carrying the 0x fallback fee wallet. NEXT_PUBLIC_* values
  * are inlined at BUILD time — after adding or rotating this variable the
- * deployment MUST be rebuilt, otherwise the running build keeps the old
- * (or missing) value. Signing always stays with the connected wallet.
+ * deployment MUST be rebuilt. Signing always stays with the connected wallet.
  */
 export const MPGR_AGENT_FEE_RECIPIENT_ENV = "NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT";
 
@@ -77,8 +79,9 @@ function warnMissingRecipientOnce(): void {
   if (warnedMissingRecipient) return;
   warnedMissingRecipient = true;
   console.warn(
-    "[mpgr-agent-fee] fee-recipient wallet is not configured — swaps proceed with no fee. " +
-      "Set MPGR_AGENT_FEE_RECIPIENT (server) or NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT and redeploy.",
+    "[mpgr-agent-fee] 0x fallback fee-recipient wallet is not configured — 0x quotes proceed with no fee. " +
+      "Set MPGR_AGENT_FEE_RECIPIENT (server) or NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT and redeploy. " +
+      "Executor quotes do not use this variable.",
   );
 }
 
@@ -111,11 +114,15 @@ export type AgentFeeRecipientResult =
   | { ok: false; reason: string };
 
 /**
- * Validated fee-recipient wallet, or a safe skip reason.
+ * Validated 0x-fallback fee-recipient wallet, or a safe skip reason.
  * Server-only MPGR_AGENT_FEE_RECIPIENT wins when set; the public
  * NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT is the fallback (the only one a
  * browser bundle can see). A missing recipient warns once per process
  * (server log / console) so a silently uncollected fee is diagnosable.
+ *
+ * NOTE: this is the 0x integrator-fee wallet for the MCP 0x fallback path
+ * only. The browser trade flow charges through the MPGR Executor, whose
+ * recipient is read from the executor contract — see executorFeeRecipient().
  */
 export function getAgentFeeRecipient(): AgentFeeRecipientResult {
   // First non-empty value wins: an empty/whitespace var behaves as unset
@@ -128,19 +135,33 @@ export function getAgentFeeRecipient(): AgentFeeRecipientResult {
     warnMissingRecipientOnce();
     return {
       ok: false,
-      reason: "MPGR agent-fee wallet is not configured — no fee is charged.",
+      reason: "MPGR 0x fallback fee wallet is not configured — no fee is charged.",
     };
   }
   if (!isAddress(raw) || raw.toLowerCase() === zeroAddress.toLowerCase()) {
     return {
       ok: false,
-      reason: "MPGR agent-fee wallet address is invalid — no fee is charged.",
+      reason: "MPGR 0x fallback fee wallet address is invalid — no fee is charged.",
     };
   }
   return { ok: true, recipient: raw as Address };
 }
 
-function skipped(reason: string): TradeAgentFee {
+/**
+ * The executor's configured fee recipient — the ONLY address this app ever
+ * pays the MPGR fee to. The recorded deployment value is the fallback; the
+ * quote path prefers the live on-chain `feeRecipient()` read.
+ */
+export function recordedExecutorFeeRecipient(): Address {
+  return BASE_MAINNET_EXECUTOR_DEPLOYMENT.feeRecipient;
+}
+
+/** The MPGR Executor that must carry an applied fee (Base Mainnet). */
+export function recordedExecutorAddress(): Address {
+  return BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor;
+}
+
+export function skippedAgentFee(reason: string): TradeAgentFee {
   return {
     status: "skipped",
     bps: null,
@@ -148,82 +169,90 @@ function skipped(reason: string): TradeAgentFee {
     amountAtomic: "0",
     displayAmount: null,
     reason,
+    collection: null,
   };
 }
 
+export type ExecutorFeeBuild =
+  | { ok: true; fee: TradeAgentFee }
+  | { ok: false; reason: string };
+
 /**
- * Fee for a TradeProposal, built at quote time from the quoted
- * `fromAmount`. Pure: quote amounts, calldata, and slippage are inputs,
- * never modified.
+ * Fee for an executor-routed swap, built from the GROSS sell amount that
+ * the executor will pull. Fails closed (returns a reason) whenever the fee
+ * could not be taken inside the executor transaction, so a quote can never
+ * advertise a fee that the swap does not collect.
+ *
+ * Rejects: non-positive/invalid gross, taker == fee recipient (the
+ * contract reverts `TakerIsFeeRecipient`), zero-address/invalid recipient,
+ * a fee that rounds to zero (the contract reverts `FeeRoundsToZero`), and
+ * a fee that is not strictly smaller than the gross amount.
  */
-export function buildProposalAgentFee(input: {
-  fromAmount: string;
-  from: Pick<TradeProposal["from"], "symbol" | "decimals">;
+export function buildExecutorAgentFee(input: {
+  grossAmountIn: string;
+  feeBps: number;
+  feeRecipient: string | null | undefined;
+  from: Pick<TradeTokenRef, "symbol" | "decimals">;
   taker: string;
-  executionAvailable: boolean;
-}): TradeAgentFee {
-  if (!input.executionAvailable) {
-    return skipped("No executable swap — no fee is charged.");
+}): ExecutorFeeBuild {
+  const recipient = typeof input.feeRecipient === "string" ? input.feeRecipient.trim() : "";
+  if (!recipient || !isAddress(recipient) || recipient.toLowerCase() === zeroAddress.toLowerCase()) {
+    return { ok: false, reason: "The executor's fee recipient is not configured — no fee is charged." };
   }
-  const recipient = getAgentFeeRecipient();
-  if (!recipient.ok) return skipped(recipient.reason);
-  if (input.taker.trim().toLowerCase() === recipient.recipient.toLowerCase()) {
-    return skipped("MPGR agent-fee wallet matches the taker — no fee is charged.");
+  if (input.taker.trim().toLowerCase() === recipient.toLowerCase()) {
+    return { ok: false, reason: "The executor's fee recipient is the trading wallet — no fee is charged." };
   }
-  const fromAmount = parsePositiveAtomic(input.fromAmount);
-  if (fromAmount === null) {
-    return skipped("Swap amount is not a valid positive amount — no fee is charged.");
+  const gross = parsePositiveAtomic(input.grossAmountIn);
+  if (gross === null) {
+    return { ok: false, reason: "Swap amount is not a valid positive amount — no fee is charged." };
   }
-  const fee = calculateAgentFeeAmount(input.fromAmount);
-  if (fee === null) {
-    return skipped("Swap amount is not a valid positive amount — no fee is charged.");
+  if (!Number.isInteger(input.feeBps) || input.feeBps <= 0) {
+    return { ok: false, reason: "The executor fee is not configured — no fee is charged." };
   }
+  const fee = (gross * BigInt(input.feeBps)) / MPGR_AGENT_FEE_DENOMINATOR;
   if (fee <= 0n) {
-    return skipped("Fee rounds to zero at this size — no fee is charged.");
+    return { ok: false, reason: "Fee rounds to zero at this size — no fee is charged." };
   }
-  // Mathematically impossible at 25 bps (fee < fromAmount for every
-  // positive input), but fail closed rather than trust the arithmetic.
-  if (fee >= fromAmount) {
-    return skipped("Fee is not smaller than the swap amount — no fee is charged.");
+  if (fee >= gross) {
+    return { ok: false, reason: "Fee is not smaller than the swap amount — no fee is charged." };
   }
   return {
-    status: "applied",
-    bps: MPGR_AGENT_FEE_BPS,
-    recipient: recipient.recipient,
-    amountAtomic: fee.toString(),
-    displayAmount: `${formatAtomicAmount(fee.toString(), input.from.decimals, input.from.decimals)} ${input.from.symbol}`,
-    reason: null,
+    ok: true,
+    fee: {
+      status: "applied",
+      bps: input.feeBps,
+      recipient: recipient as Address,
+      amountAtomic: fee.toString(),
+      // Sell-token precision for display only — never for the amount itself.
+      displayAmount: `${formatAtomicAmount(fee.toString(), input.from.decimals, input.from.decimals)} ${input.from.symbol}`,
+      reason: null,
+      collection: "mpgr-executor",
+    },
   };
 }
 
-export type ExecutionAgentFee =
-  | { send: true; recipient: Address; amount: bigint }
-  | { send: false; reason: string };
+export type AgentFeeSwapInvariant =
+  | { ok: true; fee: { recipient: Address; amount: bigint } }
+  | { ok: true; fee: null }
+  | { ok: false; reason: string };
 
 /**
- * Pre-execution validation. Only the fee that was DISPLAYED on the
- * proposal is ever sent, and only after STRUCTURAL re-validation that
- * deliberately needs no client-side env: the server is the source of
- * truth for the fee, and the client already trusts server-provided swap
- * calldata for 100% of the funds, so requiring the client's own
- * build-time env to match for the 0.25% fee would be both incoherent and
- * fragile (stale tabs, CDN-cached bundles, and deploy skew would silently
- * suppress a quoted fee — the 2026-09-24 incident).
+ * Pre-broadcast invariant for the swap flow: an APPLIED fee must be
+ * collected by the executor inside the transaction that is about to be
+ * signed. If a proposal claims a fee but its transaction does not target
+ * the MPGR Executor (or the fee cannot be witnessed inside that swap), the
+ * execution path stops BEFORE any wallet prompt rather than resolving the
+ * fee some other way — there is no other way.
  *
- * Checks: proposal is executable, fee was displayed as applied, recipient
- * is a valid non-zero address different from the taker, and the displayed
- * amount EXACTLY equals floor(fromAmount * 25 / 10_000) recomputed from
- * the proposal (any tampered amount fails this equality). Anything else —
- * legacy proposal without a fee, invalid recipient, amount mismatch —
- * means no fee transfer. The swap itself is unaffected either way.
+ * Returns `{ ok: true, fee: null }` for fee-less proposals (legacy
+ * payloads and non-executor routes): nothing extra is sent, ever.
  */
-export function resolveExecutionAgentFee(proposal: TradeProposal): ExecutionAgentFee {
+export function verifyAgentFeeInSwapTransaction(proposal: TradeProposal): AgentFeeSwapInvariant {
   const displayed = proposal.agentFee;
-  if (!displayed || displayed.status !== "applied") {
-    return { send: false, reason: displayed?.reason ?? "No agent fee on this proposal." };
-  }
-  if (!proposal.executionAvailable) {
-    return { send: false, reason: "No executable swap — no fee is charged." };
+  if (!displayed || displayed.status !== "applied") return { ok: true, fee: null };
+
+  if (displayed.collection !== "mpgr-executor") {
+    return { ok: false, reason: "This proposal quoted an MPGR fee outside the MPGR Executor — nothing was signed." };
   }
   const recipient = displayed.recipient;
   if (
@@ -231,54 +260,26 @@ export function resolveExecutionAgentFee(proposal: TradeProposal): ExecutionAgen
     !isAddress(recipient) ||
     recipient.toLowerCase() === zeroAddress.toLowerCase()
   ) {
-    return { send: false, reason: "Quoted agent-fee wallet address is invalid — no fee is charged." };
+    return { ok: false, reason: "The quoted MPGR fee recipient is invalid — nothing was signed." };
   }
   if (proposal.taker.trim().toLowerCase() === recipient.toLowerCase()) {
-    return { send: false, reason: "MPGR agent-fee wallet matches the taker — no fee is charged." };
+    return { ok: false, reason: "The quoted MPGR fee recipient is the trading wallet — nothing was signed." };
   }
-  const fromAmount = parsePositiveAtomic(proposal.fromAmount);
+  const executor = recordedExecutorAddress();
+  const target = proposal.transaction?.to;
+  if (typeof target !== "string" || !isAddress(target) || target.toLowerCase() !== executor.toLowerCase()) {
+    return { ok: false, reason: "The quoted MPGR fee is not collected by the MPGR Executor — nothing was signed." };
+  }
+  const gross = parsePositiveAtomic(proposal.fromAmount);
   const expected = calculateAgentFeeAmount(proposal.fromAmount);
   let amount: bigint;
   try {
     amount = BigInt(displayed.amountAtomic);
   } catch {
-    return { send: false, reason: "Quoted agent fee amount is invalid — no fee is charged." };
+    return { ok: false, reason: "The quoted MPGR fee amount is invalid — nothing was signed." };
   }
-  if (fromAmount === null || expected === null || expected <= 0n || amount <= 0n || amount >= fromAmount) {
-    return { send: false, reason: "Quoted agent fee amount is invalid — no fee is charged." };
+  if (gross === null || expected === null || expected <= 0n || amount !== expected || amount <= 0n || amount >= gross) {
+    return { ok: false, reason: "The quoted MPGR fee does not match the swap amount — nothing was signed." };
   }
-  if (amount !== expected) {
-    return { send: false, reason: "Quoted agent fee does not match the swap amount — no fee is charged." };
-  }
-  return { send: true, recipient: recipient as Address, amount };
-}
-
-export type AgentFeeTransfer =
-  | { kind: "erc20"; to: Address; data: Hex; value: bigint }
-  | { kind: "native"; to: Address; value: bigint };
-
-/**
- * Unsigned fee-transfer parameters for the user's wallet to sign AFTER
- * the swap settles. ERC-20 sell → `transfer(recipient, fee)` on the sell
- * token (no approval needed — a direct transfer from the signer). Native
- * ETH sell → a plain value transfer. Never signs or broadcasts.
- */
-export function buildAgentFeeTransfer(input: {
-  fromAddress: Address;
-  recipient: Address;
-  amount: bigint;
-}): AgentFeeTransfer {
-  if (isNativeEthSentinel(input.fromAddress)) {
-    return { kind: "native", to: input.recipient, value: input.amount };
-  }
-  return {
-    kind: "erc20",
-    to: input.fromAddress,
-    data: encodeFunctionData({
-      abi: erc20Abi,
-      functionName: "transfer",
-      args: [input.recipient, input.amount],
-    }),
-    value: 0n,
-  };
+  return { ok: true, fee: { recipient: recipient as Address, amount } };
 }

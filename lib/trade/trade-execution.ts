@@ -4,10 +4,23 @@
 // Invoked solely from an explicit Confirm click (hooks/useTradeQuote).
 //
 // Multi-step, matching CDP BYO-wallet docs:
-//   1. ERC-20 approve(Permit2) when issues.allowance is set
+//   1. ERC-20 approve(spender) when issues.allowance is set
 //   2. Sign Permit2 EIP-712 when quote.permit2 is set
 //   3. Append signature to calldata
 //   4. sendTransaction(quote.transaction)
+//
+// MPGR Executor swaps (provider "mpgr-executor") use the SAME steps, with
+// `quote.transaction` targeting MPGRExecutor: approve(gross) when the
+// standing allowance to the executor is short, then the executor swap,
+// which takes the 25 bps fee from the gross sell amount and swaps the
+// remainder. Maximum wallet flow: approve + swap (ERC-20 first time),
+// swap only afterwards.
+//
+// There is NO fee transaction. This module never builds a transfer to a fee
+// wallet, never prompts for one, and, when a proposal claims an applied fee,
+// it refuses to sign unless the swap transaction provably targets the MPGR
+// Executor and commits to the exact displayed fee (see
+// verifyAgentFeeInSwapTransaction + inspectExecutorSwapTransaction).
 //
 // Re-quotes if the stored quote is stale. Never invents calldata.
 
@@ -28,8 +41,10 @@ import {
 
 import { erc20Abi } from "@/lib/erc20-abi";
 import { config } from "@/lib/wagmi";
-import { buildAgentFeeTransfer, resolveExecutionAgentFee } from "./trade-agent-fee";
+import { inspectExecutorSwapTransaction } from "@/lib/executor/executor-intent";
+import { verifyAgentFeeInSwapTransaction } from "./trade-agent-fee";
 import {
+  MPGR_EXECUTOR_PROVIDER_ID,
   TRADE_CHAIN_ID,
   TRADE_QUOTE_MAX_AGE_MS,
   isNativeEthSentinel,
@@ -59,13 +74,6 @@ export interface TradeExecutionSnapshot {
   swapHash: Hash | null;
   error: TradeError | null;
   stepLabel: string | null;
-  /**
-   * MPGR Agent fee (0.25%) settlement, sent as a separate transfer AFTER
-   * the swap settles. Non-blocking by design: a fee failure never flips
-   * a settled swap to ERROR — it is recorded here instead.
-   */
-  feeHash: Hash | null;
-  feeError: TradeError | null;
 }
 
 export function idleTradeExecutionSnapshot(): TradeExecutionSnapshot {
@@ -75,8 +83,6 @@ export function idleTradeExecutionSnapshot(): TradeExecutionSnapshot {
     swapHash: null,
     error: null,
     stepLabel: null,
-    feeHash: null,
-    feeError: null,
   };
 }
 
@@ -87,8 +93,6 @@ function fail(code: TradeError["code"], message: string): TradeExecutionSnapshot
     swapHash: null,
     error: { code, message },
     stepLabel: null,
-    feeHash: null,
-    feeError: null,
   };
 }
 
@@ -107,18 +111,23 @@ export interface ExecuteTradeInput {
 }
 
 function refreshQuoteLabel(provider: TradeProposal["provider"]): string {
+  if (provider === MPGR_EXECUTOR_PROVIDER_ID) return "Refreshing the MPGR Executor quote…";
   if (provider === "aerodrome-slipstream") return "Refreshing Aerodrome quote…";
   if (provider === "0x-swap-api") return "Refreshing 0x quote…";
   return "Refreshing Coinbase CDP quote…";
 }
 
 function refreshQuoteFailedMessage(provider: TradeProposal["provider"]): string {
+  if (provider === MPGR_EXECUTOR_PROVIDER_ID) return "Could not refresh the MPGR Executor quote.";
   if (provider === "aerodrome-slipstream") return "Could not refresh the Aerodrome quote.";
   if (provider === "0x-swap-api") return "Could not refresh the 0x quote.";
   return "Could not refresh the Coinbase CDP quote.";
 }
 
 function approvalStepLabel(proposal: TradeProposal): string {
+  if (proposal.provider === MPGR_EXECUTOR_PROVIDER_ID) {
+    return "Approve the MPGR Executor in your wallet…";
+  }
   if (proposal.provider === "aerodrome-slipstream") {
     return "Approve Aerodrome SwapRouter in your wallet…";
   }
@@ -129,6 +138,9 @@ function approvalStepLabel(proposal: TradeProposal): string {
 }
 
 function approvalFailedMessage(proposal: TradeProposal): string {
+  if (proposal.provider === MPGR_EXECUTOR_PROVIDER_ID) {
+    return "The MPGR Executor approval transaction failed on Base.";
+  }
   if (proposal.provider === "aerodrome-slipstream") {
     return "Aerodrome SwapRouter approval transaction failed on Base.";
   }
@@ -348,8 +360,6 @@ export async function executeTrade(
         swapHash: null,
         error: null,
         stepLabel: refreshQuoteLabel(proposal.provider),
-        feeHash: null,
-        feeError: null,
       });
       let fresh: TradeProposal;
       try {
@@ -423,6 +433,40 @@ export async function executeTrade(
       return snapshot;
     }
 
+    // MPGR fee invariant, enforced BEFORE the first wallet prompt. When a
+    // proposal claims an applied fee, the transaction about to be signed
+    // must provably target the MPGR Executor and commit to exactly the
+    // displayed fee inside the swap. Otherwise nothing is signed: this app
+    // has no out-of-band way to pay that fee, and must never invent one.
+    const feeInvariant = verifyAgentFeeInSwapTransaction(proposal);
+    if (!feeInvariant.ok) {
+      const snapshot = fail("INVALID_INPUT", feeInvariant.reason);
+      onChange(snapshot);
+      return snapshot;
+    }
+    if (feeInvariant.fee) {
+      const grossAmountIn = parsePositiveAmount(proposal.fromAmount);
+      const inspected = inspectExecutorSwapTransaction({ to: tx.to, data: tx.data });
+      const nativeSell = isNativeEthSentinel(proposal.from.address);
+      const value = BigInt(tx.value || "0");
+      if (
+        proposal.permit2 !== null ||
+        !inspected.ok ||
+        grossAmountIn === null ||
+        inspected.value.grossAmountIn !== grossAmountIn ||
+        inspected.value.expectedFeeAmount !== feeInvariant.fee.amount ||
+        inspected.value.recipient.toLowerCase() !== account.toLowerCase() ||
+        value !== (nativeSell ? grossAmountIn : 0n)
+      ) {
+        const snapshot = fail(
+          "INVALID_INPUT",
+          "The swap transaction does not match the quoted MPGR fee collected by the Executor — nothing was signed.",
+        );
+        onChange(snapshot);
+        return snapshot;
+      }
+    }
+
     if (proposal.needsPermit2Approval && proposal.permit2Spender && !isNativeEthSentinel(proposal.from.address)) {
       // The quote flag was computed when the quote was built. Re-read the
       // allowance for this exact spender on-chain: when it already covers
@@ -445,8 +489,6 @@ export async function executeTrade(
           swapHash: null,
           error: null,
           stepLabel: approvalStepLabel(proposal),
-          feeHash: null,
-          feeError: null,
         });
         try {
           const data = encodeFunctionData({
@@ -484,8 +526,6 @@ export async function executeTrade(
         swapHash: null,
         error: null,
         stepLabel: "Sign the Permit2 authorization…",
-        feeHash: null,
-        feeError: null,
       });
       try {
         const signature = await signPermit2(proposal.permit2.eip712, account);
@@ -504,8 +544,6 @@ export async function executeTrade(
       swapHash: null,
       error: null,
       stepLabel: "Sign the swap transaction…",
-      feeHash: null,
-      feeError: null,
     });
 
     try {
@@ -530,8 +568,6 @@ export async function executeTrade(
       swapHash,
       error: null,
       stepLabel: "Waiting for Base confirmation…",
-      feeHash: null,
-      feeError: null,
     });
 
     const receipt = await waitForTransactionReceipt(config, { hash: swapHash });
@@ -541,110 +577,23 @@ export async function executeTrade(
       return { ...snapshot, approvalHash, swapHash };
     }
 
-    // MPGR Agent fee (0.25%): a SEPARATE wallet-signed transfer, only
-    // after the swap settled. The swap calldata, approvals, and min-out
-    // above are untouched by the fee. Only the exact fee displayed on
-    // the proposal is sent (resolveExecutionAgentFee re-validates it);
-    // anything else means no fee transfer. A fee failure NEVER flips a
-    // settled swap to ERROR — it is recorded as feeError instead.
-    const agentFee = resolveExecutionAgentFee(proposal);
-    if (!agentFee.send) {
-      const success: TradeExecutionSnapshot = {
-        state: "SUCCESS",
-        approvalHash,
-        swapHash,
-        error: null,
-        stepLabel: "Swap settled on Base.",
-        feeHash: null,
-        feeError: null,
-      };
-      onChange(success);
-      return success;
-    }
-
-    onChange({
-      state: "PENDING",
+    // The swap SETTLED. The MPGR fee (0.25%) was already taken by the
+    // executor inside this very transaction — nothing else is signed,
+    // broadcast or collected here. There is no post-swap fee transfer.
+    const success: TradeExecutionSnapshot = {
+      state: "SUCCESS",
       approvalHash,
       swapHash,
       error: null,
-      stepLabel: "Sending the MPGR agent fee (0.25%)…",
-      feeHash: null,
-      feeError: null,
-    });
-
-    const feeTransfer = buildAgentFeeTransfer({
-      fromAddress: proposal.from.address,
-      recipient: agentFee.recipient,
-      amount: agentFee.amount,
-    });
-    try {
-      const feeHash: Hash =
-        feeTransfer.kind === "native"
-          ? await sendTransaction(config, {
-              account,
-              chainId: TRADE_CHAIN_ID,
-              to: feeTransfer.to,
-              value: feeTransfer.value,
-            })
-          : await sendTransaction(config, {
-              account,
-              chainId: TRADE_CHAIN_ID,
-              to: feeTransfer.to,
-              data: feeTransfer.data,
-              value: 0n,
-            });
-      const feeReceipt = await waitForTransactionReceipt(config, { hash: feeHash });
-      if (feeReceipt.status !== "success") {
-        const success: TradeExecutionSnapshot = {
-          state: "SUCCESS",
-          approvalHash,
-          swapHash,
-          error: null,
-          stepLabel: "Swap settled on Base.",
-          feeHash,
-          feeError: {
-            code: "SEND_FAILED",
-            message: "The swap settled, but the separate agent-fee transfer failed on Base.",
-          },
-        };
-        onChange(success);
-        return success;
-      }
-      const success: TradeExecutionSnapshot = {
-        state: "SUCCESS",
-        approvalHash,
-        swapHash,
-        error: null,
-        stepLabel: "Swap settled on Base.",
-        feeHash,
-        feeError: null,
-      };
-      onChange(success);
-      return success;
-    } catch (err) {
-      const classified = classifyWalletError(err, "SEND_FAILED");
-      const success: TradeExecutionSnapshot = {
-        state: "SUCCESS",
-        approvalHash,
-        swapHash,
-        error: null,
-        stepLabel: "Swap settled on Base.",
-        feeHash: null,
-        feeError: {
-          code: classified.code,
-          message:
-            classified.code === "WALLET_REJECTED"
-              ? "The swap settled, but the separate agent-fee transfer was cancelled in your wallet."
-              : "The swap settled, but the separate agent-fee transfer could not be completed.",
-        },
-      };
-      onChange(success);
-      return success;
-    }
+      stepLabel: "Swap settled on Base.",
+    };
+    onChange(success);
+    return success;
   } catch {
     // Receipt RPC failures are NOT proof of a reverted transaction. Keep the
-    // submitted hashes visible and stop here (including any fee transfer).
-    // Never leave the UI stuck in PENDING or expose a raw provider error.
+    // submitted hashes visible and stop here (no further transaction is ever
+    // added after the swap, fee or otherwise). Never leave the UI stuck in
+    // PENDING or expose a raw provider error.
     const snapshot = {
       ...fail("PROVIDER_ERROR", swapHash
         ? "Swap submitted, but confirmation is unavailable. Its status is unknown. Check BaseScan before retrying."

@@ -14,15 +14,22 @@
 // GitHub Actions deployment (.github/workflows/deploy-executor-base-sepolia.yml).
 // Base mainnet (8453) is mirrored from
 // deployments/base-mainnet/mpgr-executor.json (one-time deployment, workflow
-// run 36110098967). Only routes that are actually proven are registered:
-// USDC <-> WETH on the OFFICIAL Base Uniswap V3 deployment (SwapRouter02 +
-// QuoterV2, 0.30% pool). That is the route migrated FROM the app's Aerodrome
-// Slipstream venue, whose only recorded evidence was the CI Base-mainnet FORK
-// suite and a scripted smoke run — never a confirmed live mainnet trade. The
-// contract also allowlists the B20 tokenized stocks, but no USDC<->B20 swap
-// through the executor has ever been executed, so B20 tokens/routes are
-// deliberately NOT registered here and are never routed through the executor
-// by MCP.
+// run 36110098967) plus the live contract allowlist, and registers exactly what
+// the deployed executor can execute today — nothing more:
+//   - USDC <-> WETH on the OFFICIAL Base Uniswap V3 deployment (SwapRouter02 +
+//     QuoterV2, 0.30% pool), allowlisted by the owner tx
+//     0x2341ff2234d9a58401fc3c3e0a4e3d26aa56cb62fd574ce48f8c3929dab964d1
+//     (setRouter(SwapRouter02, 2), block 51792513, 2026-09-25 — confirmed on
+//     chain; the record's routerAllowlist field still shows the deploy-time
+//     Slipstream router because it is a deployment snapshot).
+//   - USDC <-> each of the 13 Coinbase B20 tokenized stocks on the Aerodrome
+//     Slipstream router (kind 1, allowlisted at construction — the SAME router,
+//     pool key (tickSpacing 10) and tokens the app's executed B20 swap uses),
+//     so every supported B20 swap takes its 25 bps fee inside the swap
+//     transaction instead of a separate post-swap transfer.
+// A pair with no registered route (an arbitrary ERC-20, WETH <-> B20,
+// B20 <-> B20) is never routed through the executor — its provider keeps
+// charging its own exact 25 bps.
 
 import type { Address } from "viem";
 
@@ -162,21 +169,29 @@ export const BASE_SEPOLIA_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
  * `contracts-fork` CI job (bytecode == repo source, owner, fee recipient,
  * fee, cap, router kind, token allowlist).
  *
- * `tokens`/`routes` are the MCP-routable subset: only USDC and WETH, and only
- * the official Base Uniswap V3 WETH/USDC 0.30% pool (fee 3000, pool
- * 0x6c561B446416E1A00E8E93E221854d6eA4171372, CREATE2-derived from the
- * Uniswap V3 factory). The contract's B20 tokenized stock allowlist is
- * intentionally excluded — no USDC<->B20 swap through the executor has been
- * executed, so the executor must not be advertised or routed for those pairs
- * (they stay on the app UI's CDP path; over MCP they fall through to the 0x
- * path like any other non-executor pair).
+ * `tokens`/`routes` are the routable subset and mirror the LIVE contract
+ * allowlist, verified against Base Mainnet:
+ *   - tokens: USDC, WETH and all 13 Coinbase B20 tokenized stocks (the
+ *     constructor's allowlist; re-verified live by
+ *     test/fork/MPGRExecutorBaseMainnetDeployment.t.sol).
+ *   - routers: Aerodrome Slipstream (kind 1, constructor) and the official
+ *     Base Uniswap V3 SwapRouter02 (kind 2, owner tx
+ *     0x2341ff2234d9a58401fc3c3e0a4e3d26aa56cb62fd574ce48f8c3929dab964d1,
+ *     confirmed on chain 2026-09-25, block 51792513).
  *
- * MIGRATION NOTE (no redeploy, no owner transaction): this entry is the
- * app-side route registry. The live contract still has the Aerodrome
- * Slipstream router allowlisted (kind 1) until the owner executes
- * `setRouter(0x2626664c…e481, 2)`. `script/prepare-uniswap-v3-allowlist.mjs`
- * prints — never sends — that transaction. Until it is executed, mainnet MCP
- * trading stays gated off by MPGR_MCP_ENABLE_BASE_MAINNET anyway.
+ * Every registered route therefore executes on the deployed contract with the
+ * 25 bps fee taken inside the swap transaction:
+ *   - USDC <-> WETH: official Base Uniswap V3 WETH/USDC 0.30% pool (fee 3000,
+ *     pool 0x6c561B446416E1A00E8E93E221854d6eA4171372, CREATE2-derived from
+ *     the Uniswap V3 factory).
+ *   - USDC <-> each B20 stock: the Aerodrome Slipstream USDC pool the app's
+ *     tokenized-stock flow already trades (tickSpacing 10) — the same pool,
+ *     same tickSpacing and same router, only with the fee collected in-swap
+ *     by the executor instead of by a separate post-swap transfer.
+ *
+ * Anything not registered here (a B20<->B20 pair, WETH<->B20, an arbitrary
+ * ERC-20) is NOT executor-routable and keeps its existing provider, so no
+ * route is ever invented for the executor.
  */
 export const BASE_MAINNET_USDC: Address = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 /** Uniswap V3 on Base Mainnet — the official v3 deployment (Uniswap deployments list; all
@@ -195,16 +210,47 @@ export const BASE_MAINNET_USDC_WETH_POOL_FEE = 3000;
 /** The official Base Uniswap V3 WETH/USDC 0.30% pool (CREATE2-derived from the factory above). */
 export const BASE_MAINNET_USDC_WETH_POOL: Address = "0x6c561B446416E1A00E8E93E221854d6eA4171372";
 
-/** Aerodrome Slipstream on Base Mainnet (Gauges V3): the app UI's B20 tokenized-stock venue
- *  (lib/trade/trade-config.ts) and the executor's PREVIOUS mainnet route. It is no longer
- *  registered as an executor route: the migrate-to-Uniswap-V3 change pointed the registry at
- *  the official Base Uniswap V3 0.30% pool instead. Kept here as the documented pre-migration
- *  value; no executor route below references it. */
+/** Aerodrome Slipstream on Base Mainnet (Gauges V3): the venue for every USDC <-> B20 tokenized
+ *  stock route below (tickSpacing 10), allowlisted on the deployed executor as kind 1 since the
+ *  constructor (no owner transaction needed). Re-verified live by
+ *  test/fork/MPGRExecutorBaseMainnetDeployment.t.sol. */
 export const BASE_MAINNET_SLIPSTREAM = {
   factory: "0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef",
   quoterV2: "0x514c8B5f54112481E28028F1166Bd78501089259",
   swapRouter: "0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F",
 } as const satisfies Record<string, Address>;
+
+/** Aerodrome Slipstream B20/USDC pools are tickSpacing 10 (0.05% fee) — the same pool key the
+ *  app's tokenized-stock flow quotes and the one the live executor swap is proven against
+ *  (tx 0x0f52a3b3a13e8fabf79f9185bc3198e60275223ceb4225b24c84782aa43551de: USDC -> AAPLc,
+ *  tickSpacing 10, 2 USDC). Mirrored by lib/trade/trade-config.ts AERODROME_B20_TICK_SPACING. */
+export const BASE_MAINNET_B20_TICK_SPACING = 10;
+
+/**
+ * Coinbase B20 tokenized stocks on Base Mainnet — every one is allowlisted on the deployed
+ * executor and priced through the executor's Aerodrome Slipstream USDC pool.
+ *
+ * `decimals` is 8 for every issued B20 stock: read live from each token contract (AAPLc, AMZNc,
+ * GOOGLc, METAc, MSFTc, MSTRc, NVDAc, SNDKc, SPCXc, TSLAc) and consistent with the on-chain
+ * transfer amounts this app has executed. It is a display/parse default only — the swap path
+ * re-reads `decimals()` live and fails closed if it cannot be verified
+ * (lib/trade/tokenized-stocks-onchain.ts).
+ */
+export const BASE_MAINNET_B20_TOKENS = [
+  { address: "0xb200000000000000000000C2e324d24d7eEcd1fb", symbol: "AAPLc", decimals: 8 },
+  { address: "0xb200000000000000000000d9192b6B456483C2E8", symbol: "AMZNc", decimals: 8 },
+  { address: "0xb200000000000000000000c85a31389D71F3ecfb", symbol: "COINc", decimals: 8 },
+  { address: "0xB20000000000000000000019f6E7C675b73C2e4D", symbol: "CRCLc", decimals: 8 },
+  { address: "0xb2000000000000000000002D0BA3164cc74f58B7", symbol: "GOOGLc", decimals: 8 },
+  { address: "0xB2000000000000000000004AFF16039bA04bdFBc", symbol: "INTCc", decimals: 8 },
+  { address: "0xb2000000000000000000008bC8786B856E61707C", symbol: "METAc", decimals: 8 },
+  { address: "0xB200000000000000000000Ab99cFa739E253872B", symbol: "MSFTc", decimals: 8 },
+  { address: "0xb2000000000000000000004884b426556b92883d", symbol: "MSTRc", decimals: 8 },
+  { address: "0xb20000000000000000000078ee7ce2fE4908108C", symbol: "NVDAc", decimals: 8 },
+  { address: "0xb200000000000000000000397293Cb8cda9a10c5", symbol: "SNDKc", decimals: 8 },
+  { address: "0xb2000000000000000000007b9fcbd005511aCBd5", symbol: "SPCXc", decimals: 8 },
+  { address: "0xb2000000000000000000001e800a7f5189430cD0", symbol: "TSLAc", decimals: 8 },
+] as const satisfies readonly ExecutorToken[];
 
 export const BASE_MAINNET_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
   chainId: BASE_MAINNET_CHAIN_ID,
@@ -221,6 +267,7 @@ export const BASE_MAINNET_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
   tokens: [
     { address: BASE_MAINNET_USDC, symbol: "USDC", decimals: 6 },
     { address: CANONICAL_WETH, symbol: "WETH", decimals: 18, isWeth: true },
+    ...BASE_MAINNET_B20_TOKENS.map((token) => ({ ...token })),
   ],
   routes: [
     {
@@ -231,6 +278,16 @@ export const BASE_MAINNET_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
       tokenA: BASE_MAINNET_USDC,
       tokenB: CANONICAL_WETH,
     },
+    // USDC <-> each B20 tokenized stock through the registered Slipstream router, exactly the
+    // pool the app's B20 flow already trades — now with the fee collected inside the swap.
+    ...BASE_MAINNET_B20_TOKENS.map((token) => ({
+      kind: RouterKind.AERODROME_SLIPSTREAM,
+      router: BASE_MAINNET_SLIPSTREAM.swapRouter,
+      quoter: BASE_MAINNET_SLIPSTREAM.quoterV2,
+      tickSpacing: BASE_MAINNET_B20_TICK_SPACING,
+      tokenA: BASE_MAINNET_USDC,
+      tokenB: token.address as Address,
+    })),
   ],
 };
 

@@ -26,7 +26,7 @@ Quotes older than 30s are re-fetched. A worse `minToAmount` aborts as `QUOTE_CHA
 
 If CDP rejects the token or reports no liquidity, the 0x Swap API v2 AllowanceHolder path on Base is tried next. Same unsigned-proposal + wallet-confirm contract.
 
-### 2. Coinbase Tokenized Stocks on Base (B20) — Aerodrome Slipstream
+### 2. Coinbase Tokenized Stocks on Base (B20) — MPGR Executor on Aerodrome Slipstream
 
 - Product: https://www.coinbase.com/tokenize
 - Spec: https://docs.base.org/specifications/b20/tokenized-stocks-on-base
@@ -44,8 +44,8 @@ Buy/sell in this app = a single-hop Aerodrome Slipstream (Gauges V3) USDC pool s
 | QuoterV2 | `0x514c8B5f54112481E28028F1166Bd78501089259` |
 
 - tickSpacing **10** (0.05% fee). Not the legacy Aerodrome factory `0x5e7BB1…` — that public quoter reverts on these pools.
-- Quote: `QuoterV2.quoteExactInputSingle({tokenIn, tokenOut, amountIn, tickSpacing, sqrtPriceLimitX96:0})`
-- Execution: unsigned `SwapRouter.exactInputSingle` (struct with `tickSpacing`, not `fee`). ERC-20 `approve` the SwapRouter, then the user signs the swap. No Permit2.
+- Quote: `QuoterV2.quoteExactInputSingle({tokenIn, tokenOut, amountIn, tickSpacing, sqrtPriceLimitX96:0})` (research price + the executor route's pool quote, always for the **post-fee** amount).
+- Execution: through the **MPGR Executor** — the user signs the executor's `swapSlipstreamExactInputSingle` (same router/pool key/tickSpacing, allowlisted kind 1 since the constructor). First-time ERC-20 = ERC-20 `approve(executor, gross)` + that swap; afterwards = swap only. The 0.25% fee is taken inside that same swap (see the fee section below). No Permit2 is used on this path.
 - ETH/WETH ↔ B20 is rejected: convert to USDC first. v1 does not invent a multi-hop.
 - Tickers without a live USDC pool (e.g. some newer listings) stay research-only.
 
@@ -64,32 +64,62 @@ Signing happens only after **Confirm & Swap** in the agent modal. Network in tha
 
 ## MPGR Agent fee (0.25% / 25 bps)
 
-Every supported swap carries a 0.25% MPGR Agent fee on the SELL leg:
+Every swap routed through the **MPGR Executor** carries a 0.25% MPGR Agent
+fee on the SELL leg. The fee is **taken by the Executor inside the swap
+transaction** — there is no fee transaction, no fee signature, and no
+post-swap step:
 
-- Amount: `floor(fromAmount * 25 / 10_000)` in sell-token atomic units
-  (exact integer math in `lib/trade/trade-agent-fee.ts` — no float step,
-  so all token decimals are exact by construction; decimals are used for
-  display only).
-- Recipient: `MPGR_AGENT_FEE_RECIPIENT` (preferred, server-only) with
-  `NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT` as fallback — validated as a
-  non-zero Base address; never a private key — signing stays with the
-  user's connected wallet. The public var is inlined at BUILD time: after
-  adding/rotating it you MUST redeploy or the running build quotes no fee
-  (incident 2026-09-24). The server is the source of truth — execution
-  re-validates the quoted fee structurally and never depends on the
-  client's build-time env.
-- Collection: a SEPARATE wallet-signed transfer AFTER the swap settles
-  (ERC-20 `transfer` on the sell token, or a native value transfer when
-  selling ETH). The swap quote, calldata, approvals, slippage, routing,
-  min-out, price impact, and gas estimate are never modified by the fee.
-- Disclosure: quoted fee, recipient, and post-confirmation steps are on
-  the `TradeProposal` (`agentFee`), shown in the confirmation modal, and
-  re-validated before execution — only the exact displayed fee is sent. A
-  missing recipient also warns once in the server log so an uncollected
-  fee is diagnosable instead of silent.
-- Safety: fail-open for the swap, fail-closed for the fee. Unconfigured/
-  invalid recipient, dust (fee rounds to 0), taker-equals-recipient, or a
-  failed/cancelled fee transfer never blocks or fails the swap; the fee
-  outcome is recorded on the execution snapshot (`feeHash` / `feeError`).
+```
+user wallet ──grossAmountIn──▶ MPGRExecutor          (one signed tx;
+              + approve(executor, gross) when the    approve is a second
+                standing allowance is short)         tx only when needed
+     executor ──fee = floor(gross * feeBps / 10_000)──▶ feeRecipient()
+     executor ──(gross - fee)──▶ allowlisted router ──▶ output to the taker
+```
+
+- Amount: `floor(fromAmount * 25 / 10_000)` in sell-token atomic units on
+  the **gross** sell amount (exact integer math in
+  `lib/trade/trade-agent-fee.ts`; the split itself uses the executor's
+  own `computeExecutorFee`, identical to `MPGRExecutor._begin`). The pool
+  is quoted for `gross - fee` and the calldata commits to
+  `expectedFeeAmount`, so the contract reverts (`FeeMismatch`) if the
+  on-chain fee ever moved between quote and execution.
+- Recipient: the **executor's configured `feeRecipient()`**, read live at
+  quote time and mirrored in `lib/executor/executor-config.ts`. It is
+  never the connected (taker) wallet — the contract reverts
+  `TakerIsFeeRecipient` — and never a browser-supplied address. The
+  `MPGR_AGENT_FEE_RECIPIENT` / `NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT`
+  variables are **not** used by the browser flow (they belong to the MCP
+  0x-native-fee fallback, whose fee also settles inside the 0x quote).
+- Wallet flow: first-time ERC-20 = **approve + swap** (the approval is for
+  the gross amount, to the executor); with a sufficient allowance =
+  **swap only**. Nothing is ever sent after the swap.
+- **B20 tokenized stocks now use this architecture too**: each
+  USDC <-> B20 pair is registered as an executor route (Aerodrome
+  Slipstream, tickSpacing 10 — the venue the app already traded), so its
+  fee is taken inside the swap exactly like USDC <-> WETH. Approve + swap
+  is still the maximum first-time flow; there is no fee transaction on
+  either path.
+- Routes with **no registered executor route** (an arbitrary ERC-20,
+  WETH <-> B20, B20 <-> B20) are quoted with **no MPGR fee**
+  (`agentFee.status = "skipped"`): the UI shows no fee row and no MPGR fee
+  is collected by this app. Their own provider's charge (e.g. the 0x
+  native-integrator fee) is that provider's business. An MPGR fee can only
+  exist where the executor can take it in-transaction — never as a
+  separate transfer, and never silently dropped for a pair that is
+  supposed to carry it.
+- Disclosure & enforcement: the quoted fee, its recipient and the
+  post-confirmation steps are on the `TradeProposal` (`agentFee`) and shown
+  in the confirmation modal ("MPGR fee (0.25%) — 0.005 USDC"). Before any
+  wallet prompt, execution re-verifies that an **applied** fee belongs to
+  a transaction targeting the MPGR Executor, that the encoded
+  `grossAmountIn` equals the reviewed amount, that
+  `expectedFeeAmount == floor(gross * 25 / 10_000)`, that the recipient is
+  the taker and that the value matches a native sell. Any mismatch aborts
+  with nothing signed.
+- Safety: fail-closed for the quote (a fee that rounds to zero, a paused
+  executor, or `feeRecipient == taker` refuses the quote instead of
+  signing a transaction that would revert), and no fall-back fee path
+  exists by design.
 
 ## Env

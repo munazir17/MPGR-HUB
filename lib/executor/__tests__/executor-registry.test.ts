@@ -6,10 +6,13 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { ChainReader } from "@/lib/executor/executor-chain";
 import {
+  BASE_MAINNET_B20_TICK_SPACING,
   BASE_MAINNET_CHAIN_ID,
   BASE_MAINNET_UNISWAP_V3,
+  BASE_MAINNET_SLIPSTREAM,
   BASE_MAINNET_USDC_WETH_POOL,
   BASE_MAINNET_USDC_WETH_POOL_FEE,
+  findExecutorRoute,
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_EXECUTOR_DEPLOYMENT,
   BASE_MAINNET_EXECUTOR_DEPLOYMENT,
@@ -132,16 +135,31 @@ describe("Base Mainnet executor registry", () => {
     expect(dMain.explorerUrl).toContain(dMain.executor);
   });
 
-  it("registers ONLY the proven USDC <-> WETH Uniswap V3 route (no invented B20 routes)", () => {
-    expect(dMain.tokens.map((t) => ({ symbol: t.symbol, address: t.address, decimals: t.decimals }))).toEqual([
-      { symbol: "USDC", address: MAINNET_RECORD.allowedTokens.USDC, decimals: 6 },
-      { symbol: "WETH", address: MAINNET_RECORD.allowedTokens.WETH, decimals: 18 },
+  it("registers exactly the live contract's allowlisted routes, and nothing else", () => {
+    // Tokens: the record's full allowlist (USDC, WETH and the 13 B20 stocks), in that order.
+    const recordTokens = Object.entries(MAINNET_RECORD.allowedTokens);
+    expect(recordTokens).toHaveLength(15);
+    expect(dMain.tokens.map((t) => ({ symbol: t.symbol, address: t.address }))).toEqual([
+      { symbol: "USDC", address: MAINNET_RECORD.allowedTokens.USDC },
+      { symbol: "WETH", address: MAINNET_RECORD.allowedTokens.WETH },
+      ...recordTokens
+        .filter(([, a]) => lc(a).startsWith("0xb2"))
+        .map(([symbol, address]) => ({ symbol, address })),
     ]);
-    expect(dMain.routes).toHaveLength(1);
-    const r = dMain.routes[0];
-    expect(r.kind).toBe(RouterKind.UNISWAP_V3_ROUTER02);
-    // The production venue migrated from Aerodrome Slipstream (the record's router) to the
-    // official Base Uniswap V3 deployment; the record still describes the deployed contract.
+    // Every B20 stock is a real 8-decimal token (verified live on chain), never a guess.
+    for (const t of dMain.tokens.filter((t) => lc(t.address).startsWith("0xb2"))) {
+      expect(t.decimals).toBe(8);
+      expect(t.symbol).toMatch(/c$/);
+    }
+
+    // Routes: exactly one Uniswap V3 USDC/WETH route plus one Slipstream route per B20 stock.
+    const uni = dMain.routes.filter((r) => r.kind === RouterKind.UNISWAP_V3_ROUTER02);
+    const slip = dMain.routes.filter((r) => r.kind === RouterKind.AERODROME_SLIPSTREAM);
+    expect(dMain.routes).toHaveLength(14);
+    expect(uni).toHaveLength(1);
+    expect(slip).toHaveLength(13);
+
+    const r = uni[0];
     expect(r.router).toBe(BASE_MAINNET_UNISWAP_V3.swapRouter02);
     expect(r.quoter).toBe(BASE_MAINNET_UNISWAP_V3.quoterV2);
     expect(r.poolFee).toBe(BASE_MAINNET_USDC_WETH_POOL_FEE);
@@ -151,11 +169,26 @@ describe("Base Mainnet executor registry", () => {
       BASE_MAINNET_USDC_WETH_POOL,
     );
     expect([lc(r.tokenA), lc(r.tokenB)].sort()).toEqual([lc(MAINNET_RECORD.allowedTokens.USDC), lc(MAINNET_RECORD.weth)].sort());
-    // The contract allowlists 13 B20 tokenized stocks; none may be routable over MCP.
-    const b20 = Object.entries(MAINNET_RECORD.allowedTokens).filter(([, a]) => lc(a).startsWith("0xb2"));
-    expect(b20.length).toBe(13);
-    const registered = new Set(dMain.tokens.map((t) => lc(t.address)));
-    for (const [symbol, addr] of b20) expect(registered.has(lc(addr))).toBe(false), expect(symbol).toMatch(/c$/);
+
+    // Each Slipstream route is the live-allowlisted router (kind 1 since the constructor) and
+    // the B20/USDC pool key the app's executed swaps already use.
+    for (const route of slip) {
+      expect(route.router).toBe(BASE_MAINNET_SLIPSTREAM.swapRouter);
+      expect(route.quoter).toBe(BASE_MAINNET_SLIPSTREAM.quoterV2);
+      expect(route.tickSpacing).toBe(BASE_MAINNET_B20_TICK_SPACING);
+      expect(route.tickSpacing).toBe(10);
+      expect(route.poolFee).toBeUndefined();
+      expect(lc(route.tokenA)).toBe(lc(MAINNET_RECORD.allowedTokens.USDC));
+      expect(lc(route.tokenB).startsWith("0xb2")).toBe(true);
+    }
+    const slipTokens = new Set(slip.map((route) => lc(route.tokenB)));
+    const b20 = Object.values(MAINNET_RECORD.allowedTokens).filter((a) => lc(a).startsWith("0xb2"));
+    expect(slipTokens.size).toBe(13);
+    for (const addr of b20) expect(slipTokens.has(lc(addr))).toBe(true);
+
+    // Nothing was invented: the pairs the app does not support stay unroutable.
+    expect(findExecutorRoute(dMain, MAINNET_RECORD.allowedTokens.WETH, b20[0])).toBeNull();
+    expect(findExecutorRoute(dMain, b20[0], b20[1])).toBeNull();
   });
 
   it("uses EIP-55 checksummed addresses and only routes allowlisted tokens", () => {
@@ -281,8 +314,12 @@ describe("MCP execution path uses the deployed Sepolia executor", () => {
     // listTokens stays informational: it shows the deployed tokens but tradingEnabled=false.
     const d = ok(listTokens(deps, { chainId: 8453 }));
     expect(d.tradingEnabled).toBe(false);
-    expect((d.tokens as Record<string, unknown>[]).map((t) => t.symbol)).toEqual(["USDC", "WETH"]);
-    expect((d.pairs as Record<string, unknown>[])).toHaveLength(1);
+    expect((d.tokens as Record<string, unknown>[]).map((t) => t.symbol)).toEqual([
+      "USDC",
+      "WETH",
+      ...Object.keys(MAINNET_RECORD.allowedTokens).filter((symbol) => symbol.endsWith("c")),
+    ]);
+    expect((d.pairs as Record<string, unknown>[])).toHaveLength(14);
   });
 });
 

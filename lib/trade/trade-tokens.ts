@@ -66,14 +66,21 @@ export const KNOWN_TRADE_TOKENS: readonly KnownTradeToken[] = [
     address: stock.address,
     symbol: stock.symbol,
     name: stock.name,
-    decimals: 18,
+    // 8 decimals — read live from every issued B20 token contract (AAPLc, AMZNc, GOOGLc,
+    // METAc, MSFTc, MSTRc, NVDAc, SNDKc, SPCXc, TSLAc) and consistent with the on-chain
+    // transfer amounts this app has executed. This is the display/parse default only: the
+    // tokenized-stock swap path re-reads `decimals()` live and fails closed if it cannot be
+    // verified (lib/trade/tokenized-stocks-onchain.ts), and the executor/proposal path is
+    // atomic-unit exact, so a wrong default can never move funds — only a label.
+    decimals: 8,
     kind: "b20-tokenized-stock" as const,
   })),
   // Coinbase wrapped assets from the typed Base pairs allowlist
   // (lib/markets/base-pairs.ts). USDC already has its entry above, so
   // `stable` pairs are skipped here. Decimals are the officially
-  // documented values (Basescan-verified); B20 decimals are never
-  // hardcoded and are re-verified on-chain by the swap path.
+  // documented values (Basescan-verified). B20 decimals are fixed at 8
+  // (live-verified above) and are STILL re-read on-chain — fail closed —
+  // by every path that actually prepares a B20 trade.
   ...BASE_PAIRS.filter(
     (pair): pair is typeof pair & { decimals: number } =>
       pair.kind === "wrapped" && pair.decimals !== null,

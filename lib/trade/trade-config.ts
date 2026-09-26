@@ -98,16 +98,24 @@ export const ZERO_EX_PROVIDER_ID = "0x-swap-api" as const;
 export const ZERO_EX_PROVIDER_LABEL = "0x Swap API (Base)";
 export const AERODROME_SLIPSTREAM_PROVIDER_ID = "aerodrome-slipstream" as const;
 export const AERODROME_SLIPSTREAM_PROVIDER_LABEL = "Aerodrome Slipstream";
+/**
+ * The MPGR Executor: the only route that collects the MPGR Agent fee, and
+ * it collects it inside the swap transaction (see lib/trade/trade-agent-fee.ts).
+ * Pairs without a proven executor route keep their existing provider.
+ */
+export const MPGR_EXECUTOR_PROVIDER_ID = "mpgr-executor" as const;
+export const MPGR_EXECUTOR_PROVIDER_LABEL = "MPGR Executor";
 export const ZERO_EX_API_HOST = "api.0x.org";
 export const ZERO_EX_PRICE_PATH = "/swap/allowance-holder/price";
 export const ZERO_EX_QUOTE_PATH = "/swap/allowance-holder/quote";
 export const ZERO_EX_REQUEST_TIMEOUT_MS = 15_000;
 
 export function tradeProviderLabel(
-  provider: "cdp-trade-api" | "0x-swap-api" | "aerodrome-slipstream",
+  provider: "cdp-trade-api" | "0x-swap-api" | "aerodrome-slipstream" | "mpgr-executor",
 ): string {
   if (provider === "aerodrome-slipstream") return AERODROME_SLIPSTREAM_PROVIDER_LABEL;
   if (provider === "0x-swap-api") return ZERO_EX_PROVIDER_LABEL;
+  if (provider === "mpgr-executor") return MPGR_EXECUTOR_PROVIDER_LABEL;
   return CDP_TRADE_PROVIDER_LABEL;
 }
 

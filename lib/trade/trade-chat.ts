@@ -45,7 +45,7 @@ export function formatTradeReview(proposal: TradeProposal): string {
     `Minimum received: ${amount(proposal.minToAmount, proposal.to)}`,
     "Network: Base",
     `Slippage: ${proposal.slippageBps / 100}%`,
-    ...(fee?.status === "applied" ? [`MPGR fee${fee.bps !== null ? ` (${fee.bps / 100}%)` : ""}: ${amount(fee.amountAtomic, proposal.from)} (paid separately after the swap)`] : []),
+    ...(fee?.status === "applied" ? [`MPGR fee${fee.bps !== null ? ` (${fee.bps / 100}%)` : ""}: ${amount(fee.amountAtomic, proposal.from)} (taken from the swap amount in the same transaction)`] : []),
     "Your wallet signs and sends the transaction. MPGR never controls your funds.",
     "Confirm swap?",
   ].join("\n");

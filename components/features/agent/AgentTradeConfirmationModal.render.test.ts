@@ -12,11 +12,37 @@ import type { TradeProposal } from "@/lib/trade/trade-types";
 const TAKER = "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e";
 const FEE_WALLET = "0x1111111111111111111111111111111111111111";
 const EXECUTOR = "0xD982726e28275661F8aB64054E6b17a70a63505A";
+const EXECUTOR_FEE_RECIPIENT = "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4";
 const ROUTER = "0x2626664c2603336E57B271c5C0b26F421741e481";
 const HASH = `0x${"ab".repeat(32)}` as const;
 const APPROVAL_HASH = `0x${"cd".repeat(32)}` as const;
-const FEE_HASH = `0x${"ef".repeat(32)}` as const;
 type Props = ComponentProps<typeof AgentTradeConfirmationModal>;
+
+/**
+ * The MPGR Executor flow the modal must present: the wallet signs ONE
+ * transaction to the executor, which takes the 0.25% fee from the gross
+ * sell amount inside that swap. 2 USDC gross → 0.005 USDC fee.
+ */
+function executorProposal(): TradeProposal {
+  const from = { address: BASE_USDC, symbol: "USDC", name: "USD Coin", decimals: 6, kind: "erc20" as const, verified: true };
+  const to = { address: BASE_WETH, symbol: "WETH", name: "Wrapped Ether", decimals: 18, kind: "erc20" as const, verified: true };
+  const result = buildTradeProposal({
+    from, to, taker: TAKER, slippageBps: 100,
+    provider: "mpgr-executor",
+    agentFee: {
+      status: "applied", bps: 25, recipient: EXECUTOR_FEE_RECIPIENT,
+      amountAtomic: "5000", displayAmount: "0.005 USDC", reason: null, collection: "mpgr-executor",
+    },
+    quote: {
+      liquidityAvailable: true, fromToken: from.address, toToken: to.address,
+      fromAmount: "2000000", toAmount: "800000000000000", minToAmount: "792000000000000",
+      transaction: { to: EXECUTOR, data: "0xabcd", value: "0" }, permit2: null,
+      issues: { allowance: { spender: EXECUTOR, currentAllowance: "0" }, balance: null, simulationIncomplete: false },
+    },
+  });
+  if (!result.ok) throw new Error(result.error.message);
+  return result.proposal;
+}
 
 // Offline presentation fixtures. These are not live quotes.
 function proposal(reverse = false, stock = false): TradeProposal {
@@ -66,37 +92,61 @@ beforeEach(() => vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET));
 afterEach(() => vi.unstubAllEnvs());
 
 describe("consumer swap confirmation (presentation only; no wallet calls)", () => {
-  it("shows exact trade amounts, fee, network, slippage and short recipient", () => {
-    const html = render();
+  it("shows the executor fee as a plain 'MPGR fee (0.25%)  0.005 USDC' row", () => {
+    const html = render({ proposal: executorProposal() });
     expect(html).toContain("Confirm swap");
-    expect(html).toContain("1 USDC");
-    expect(html).toContain("~0.000370006219589809 WETH");
+    expect(html).toContain("2 USDC");
+    expect(html).toContain("~0.0008 WETH");
     expect(html).toContain("Minimum received");
-    expect(html).toContain("0.00036630615739391 WETH");
+    expect(html).toContain("0.000792 WETH");
     expect(html).toContain("Base");
     expect(html).toContain("1%");
     expect(html).toContain("MPGR fee (0.25%)");
-    expect(html).toContain("0.0025 USDC");
-    expect(html).toContain("Paid separately after the swap");
+    expect(html).toContain("0.005 USDC");
     expect(html).toContain("0xE0e0…486e");
     expect(html).toContain("Your wallet signs and sends this transaction. MPGR never has access to your private key.");
     expect(html).toContain("Confirm &amp; Swap");
     expectConsumerCopy(html);
   });
 
+  it("never mentions a separate or post-swap fee payment (fails the old copy)", () => {
+    const html = render({ proposal: executorProposal() });
+    expect(html).not.toContain("Paid separately after the swap");
+    expect(html).not.toContain("Paid separately");
+    expect(html).not.toContain("Pay fee");
+    expect(html).not.toContain("separate fee");
+    expect(html).not.toContain("after the swap");
+    // The fee itself is still disclosed, exactly once, next to its amount.
+    expect(html.match(/MPGR fee/g)).toHaveLength(1);
+  });
+
+  it("shows a non-executor route without inventing an MPGR fee", () => {
+    const html = render(); // CDP/0x proposal from the shared fixture
+    expect(html).not.toContain("MPGR fee");
+    expect(html).not.toContain("0.0025 USDC");
+    expectConsumerCopy(html);
+  });
+
   it("preserves tiny WETH fees and reverse-direction amounts without rounding to zero", () => {
-    const html = render({ proposal: proposal(true) });
+    const p = proposal(true);
+    p.agentFee = {
+      status: "applied", bps: 25, recipient: EXECUTOR_FEE_RECIPIENT,
+      amountAtomic: "250000000000", displayAmount: "0.00000025 WETH", reason: null, collection: "mpgr-executor",
+    };
+    p.provider = "mpgr-executor";
+    p.transaction = { to: EXECUTOR, data: "0xabcd", value: "0" };
+    const html = render({ proposal: p });
     for (const value of ["0.0001 WETH", "~0.267304 USDC", "0.26463 USDC", "0.00000025 WETH"]) expect(html).toContain(value);
     expect(html).not.toContain(">0 WETH");
     expectConsumerCopy(html);
   });
 
-  it("reproduces the AAPLc screen without leaking missing-fee configuration or router warnings", () => {
+  it("reproduces the AAPLc screen without leaking fee configuration or router warnings", () => {
     vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", "");
     vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
     const p = proposal(false, true);
     expect(p.agentFee?.status).toBe("skipped");
-    expect(p.agentFee?.reason).toContain("not configured");
+    expect(p.agentFee?.reason).toContain("does not route this pair");
     expect(p.risk.some((risk) => risk.title === "Aerodrome router approval required")).toBe(true);
     const html = render({ proposal: p });
     for (const value of ["1 USDC", "~0.00293205 AAPLc", "0.00290272 AAPLc", "Token approval required"]) expect(html).toContain(value);
@@ -108,7 +158,7 @@ describe("consumer swap confirmation (presentation only; no wallet calls)", () =
 
   it.each(["absent", "skipped"] as const)("omits the MPGR fee row when %s without hiding other applicable fees", (state) => {
     const p = proposal();
-    p.agentFee = state === "absent" ? undefined : { status: "skipped", bps: null, recipient: null, amountAtomic: "0", displayAmount: null, reason: "MPGR agent-fee wallet is not configured" };
+    p.agentFee = state === "absent" ? undefined : { status: "skipped", bps: null, recipient: null, amountAtomic: "0", displayAmount: null, reason: "The MPGR fee is collected inside the swap transaction by the MPGR Executor, which does not route this pair — no fee is charged." };
     p.fees = { protocolFee: { amount: "500", token: BASE_USDC }, gasFee: { amount: "250000000000", token: BASE_WETH } };
     const html = render({ proposal: p });
     expect(html).not.toContain("MPGR fee");
@@ -219,21 +269,16 @@ describe("consumer swap confirmation (presentation only; no wallet calls)", () =
     expect(html).toContain(`https://basescan.org/tx/${HASH}`);
   });
 
-  it("keeps the confirmed swap and all explorer links, without printing raw hashes in the summary", () => {
-    const html = render({ executionState: "SUCCESS", swapHash: HASH, approvalHash: APPROVAL_HASH, feeHash: FEE_HASH });
+  it("keeps the confirmed swap and both explorer links, with no fee-payment UI", () => {
+    const html = render({ executionState: "SUCCESS", swapHash: HASH, approvalHash: APPROVAL_HASH });
     expect(html).toContain("Swap confirmed");
-    for (const hash of [HASH, APPROVAL_HASH, FEE_HASH]) expect(html).toContain(`href="https://basescan.org/tx/${hash}"`);
+    for (const hash of [HASH, APPROVAL_HASH]) expect(html).toContain(`href="https://basescan.org/tx/${hash}"`);
     expect(html).not.toContain(`>${HASH}<`);
     expect(html).not.toContain("Confirm &amp; Swap");
-    expectConsumerCopy(html);
-  });
-
-  it.each(["WALLET_REJECTED", "SEND_FAILED"] as const)("keeps fee-payment %s visible without undoing swap success", (code) => {
-    const html = render({ executionState: "SUCCESS", swapHash: HASH, feeHash: FEE_HASH, feeError: { code, message: `Internal Executor fee diagnostic ${EXECUTOR}` } });
-    expect(html).toContain("Swap confirmed");
-    expect(html).toContain('role="alert"');
-    expect(html).toContain(code === "WALLET_REJECTED" ? "declined the separate fee payment" : "fee payment could not be confirmed");
-    expect(html).toContain(`https://basescan.org/tx/${FEE_HASH}`);
+    // A settled swap is final: there is nothing left to pay or retry.
+    expect(html).not.toContain("View fee");
+    expect(html).not.toContain("fee payment");
+    expect(html).not.toContain('role="alert"');
     expectConsumerCopy(html);
   });
 

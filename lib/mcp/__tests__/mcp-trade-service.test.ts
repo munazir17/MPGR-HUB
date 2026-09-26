@@ -25,6 +25,8 @@ import {
   MAINNET_REGISTRY,
   MAINNET_UNI_ROUTER02,
   MAINNET_USDC,
+  MAINNET_B20_TICK_SPACING,
+  MAINNET_B20_TOKENS,
   MAINNET_WETH,
   PERMIT2,
   ROUTER,
@@ -381,15 +383,28 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
     expect(execOnly.tradingProviders).toEqual(["mpgr-executor"]);
   });
 
-  it("listTokens(8453) lists exactly USDC/WETH and the proven Uniswap V3 0.30% pair", () => {
+  it("listTokens(8453) lists every live-allowlisted token and route (USDC/WETH + the B20 stocks)", () => {
     const d = ok(listTokens(mainnetDeps(), { chainId: 8453 }));
     expect(d.tradingEnabled).toBe(true);
-    expect((d.tokens as Data[]).map((t) => t.symbol)).toEqual(["USDC", "WETH"]);
+    expect((d.tokens as Data[]).map((t) => t.symbol)).toEqual([
+      "USDC",
+      "WETH",
+      ...MAINNET_B20_TOKENS.map(([symbol]) => symbol),
+    ]);
     expect(d.pairs).toEqual([
       { tokenA: USDC, tokenB: MAINNET_WETH, venue: "uniswap-v3", poolFee: MAINNET_POOL_FEE, tickSpacing: null },
+      ...MAINNET_B20_TOKENS.map(([, address]) => ({
+        tokenA: USDC,
+        tokenB: getAddress(address),
+        venue: "aerodrome-slipstream",
+        poolFee: null,
+        tickSpacing: MAINNET_B20_TICK_SPACING,
+      })),
     ]);
     expect(d.nativeEth).toMatchObject({ symbol: "ETH", via: MAINNET_WETH });
-    expect(String(d.note)).toContain("never routed through the executor");
+    // The old "B20 is never executor-routed" note must not come back.
+    expect(String(d.note)).toMatch(/25 bps fee inside the swap transaction/);
+    expect(String(d.note)).not.toContain("never routed through the executor");
   });
 
   it("quotes the proven USDC -> WETH pair through the executor with the exact live fee", async () => {
@@ -593,7 +608,7 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
   });
 });
 
-describe("Base mainnet dispatch: non-proven pairs fall back to 0x, never to the executor", () => {
+describe("Base mainnet dispatch: registered pairs use the executor, everything else falls back to 0x", () => {
   const USDC = MAINNET_USDC;
   const OTHER = getAddress("0x0000000000000000000000000000000000004321");
   const B20_AAPL = getAddress("0xb200000000000000000000C2e324d24d7eEcd1fb");
@@ -636,13 +651,64 @@ describe("Base mainnet dispatch: non-proven pairs fall back to 0x, never to the 
     }
   });
 
-  it("B20 tokenized-stock addresses are NEVER routed through the executor", async () => {
+  it("a B20 tokenized stock routes through the executor (Slipstream) and never touches 0x", async () => {
     process.env.ZERO_EX_API_KEY = "k";
     try {
       const fetcher = vi.fn(async () => new Response(JSON.stringify(zeroExBodyFor(USDC, B20_AAPL, "10000000")), { status: 200 }));
+      setBalance(state, USDC, TAKER, 10_000_000n);
       const q = ok(await getQuote(dispatchDeps(fetcher), { chainId: 8453, taker: TAKER, sellToken: USDC, buyToken: B20_AAPL, sellAmount: "10000000" }));
-      expect(q.provider).toBe("0x-native-fee");
-      expect(q).not.toHaveProperty("executor");
+      // 25 bps of 10 USDC, collected inside the executor swap (never by 0x, never separately).
+      expect(q).toMatchObject({
+        provider: "mpgr-executor",
+        feeBps: 25,
+        feeAmount: "25000",
+        feeRecipient: FEE_RECIPIENT,
+        spender: MAINNET_EXECUTOR,
+      });
+      expect(q).toHaveProperty("executor");
+      expect(fetcher).not.toHaveBeenCalled();
+
+      const p = ok(await prepareTrade(dispatchDeps(fetcher), { quoteId: q.quoteId, authorization: "APPROVAL" }));
+      expect(p.transactionRequest).toMatchObject({ chainId: 8453, to: MAINNET_EXECUTOR });
+      const decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: (p.transactionRequest as { data: Hex }).data });
+      expect(decoded.functionName).toBe("swapSlipstreamExactInputSingle");
+      if (decoded.functionName !== "swapSlipstreamExactInputSingle") throw new Error("wrong entrypoint");
+      const [params, tickSpacing] = decoded.args;
+      expect(tickSpacing).toBe(10);
+      expect(params.grossAmountIn).toBe(10_000_000n);
+      expect(params.expectedFeeAmount).toBe(25_000n);
+      expect(params.recipient).toBe(TAKER);
+      // Exactly one transaction to sign (plus the approval step when the allowance is short).
+      const steps = p.steps as { transactionRequest: { to: string } }[];
+      expect(steps.filter((step) => step.transactionRequest.to === MAINNET_EXECUTOR)).toHaveLength(1);
+    } finally {
+      delete process.env.ZERO_EX_API_KEY;
+    }
+  });
+
+  it("a WETH <-> B20 pair has no registered executor route and still carries the exact 25 bps fee", async () => {
+    process.env.ZERO_EX_API_KEY = "k";
+    const sellAmount = "1000000000000000000"; // 1 WETH
+    const exactFee = "2500000000000000"; // floor(1e18 * 25 / 10_000)
+    try {
+      const body = { ...zeroExBodyFor(MAINNET_WETH, B20_AAPL, sellAmount), fees: { integratorFee: { amount: exactFee, token: MAINNET_WETH } } };
+      const fetcher = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+      const quote = ok(await getQuote(dispatchDeps(fetcher), {
+        chainId: 8453,
+        taker: TAKER,
+        sellToken: MAINNET_WETH,
+        buyToken: B20_AAPL,
+        sellAmount,
+      }));
+      // Not executor-routable, so the registered non-executor provider serves it — with the
+      // same exact 25 bps fee. It is never a fee-less route.
+      expect(quote).toMatchObject({
+        provider: "0x-native-fee",
+        feeBps: 25,
+        feeAmount: exactFee,
+        feeRecipient: FEE_RECIPIENT,
+        spender: ZERO_EX_ALLOWANCE_HOLDER_BASE,
+      });
     } finally {
       delete process.env.ZERO_EX_API_KEY;
     }

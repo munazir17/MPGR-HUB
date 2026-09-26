@@ -46,8 +46,9 @@ const D: ExecutorDeployment = BASE_MAINNET_EXECUTOR_DEPLOYMENT;
 const USDC: Address = BASE_MAINNET_USDC;
 const WETH: Address = CANONICAL_WETH;
 const TAKER = getAddress("0x1234567890123456789012345678901234567890");
-/** A Coinbase B20 tokenized stock the CONTRACT allowlists but the registry must never route. */
+/** A Coinbase B20 tokenized stock the live contract allowlists AND the registry routes (Slipstream). */
 const B20_AAPL = getAddress("0xb200000000000000000000C2e324d24d7eEcd1fb");
+const lc = (a: string) => a.toLowerCase();
 /** An arbitrary ERC-20 with no executor route at all. */
 const OTHER_ERC20 = getAddress("0x0000000000000000000000000000000000004321");
 
@@ -201,35 +202,81 @@ describe("Base Mainnet route: official Uniswap V3 (fee 3000)", () => {
     expect(forward?.tickSpacing).toBeUndefined();
   });
 
-  it("registers exactly one route, and it is no longer the old Slipstream one", () => {
-    expect(D.routes).toHaveLength(1);
-    for (const r of D.routes) {
-      expect(r.kind).toBe(RouterKind.UNISWAP_V3_ROUTER02);
-      expect(r.kind).not.toBe(RouterKind.AERODROME_SLIPSTREAM);
-    }
-    // Only the two proven tokens are routable.
-    expect(D.tokens.map((t) => t.symbol)).toEqual(["USDC", "WETH"]);
-    // The executor, owner, fee policy and WETH/Permit2 are untouched by the migration.
+  it("registers the UniV3 USDC/WETH route plus one Slipstream route per live-allowlisted B20 token", () => {
+    // The old USDC/WETH Slipstream route is gone; the USDC/WETH route is Uniswap V3.
+    const uni = D.routes.filter((r) => [lc(r.tokenA), lc(r.tokenB)].sort().join() === [lc(USDC), lc(WETH)].sort().join());
+    expect(uni).toHaveLength(1);
+    expect(uni[0].kind).toBe(RouterKind.UNISWAP_V3_ROUTER02);
+    expect(D.routes.every((r) => r.kind !== RouterKind.AERODROME_SLIPSTREAM || lc(r.tokenA) === lc(USDC))).toBe(true);
+
+    // Every B20 stock the contract allowlists has exactly one USDC Slipstream route.
+    const b20 = getAddress(B20_AAPL);
+    const b20Route = findExecutorRoute(D, USDC, b20);
+    expect(b20Route).not.toBeNull();
+    expect(b20Route?.kind).toBe(RouterKind.AERODROME_SLIPSTREAM);
+    expect(b20Route?.kind).toBe(1);
+    expect(b20Route?.router).toBe("0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F");
+    expect(b20Route?.quoter).toBe("0x514c8B5f54112481E28028F1166Bd78501089259");
+    expect(b20Route?.tickSpacing).toBe(10);
+    expect(b20Route?.poolFee).toBeUndefined();
+    expect(findExecutorRoute(D, b20, USDC)).toBe(b20Route); // order independent
+
+    // The executor, owner, fee policy and WETH/Permit2 are untouched.
     expect(D.executor).toBe("0xD982726e28275661F8aB64054E6b17a70a63505A");
     expect(D.feeBps).toBe(25);
     expect(D.weth).toBe(WETH);
   });
 
-  it("never routes a B20 tokenized stock or an arbitrary ERC-20 through the executor", () => {
-    expect(findExecutorRoute(D, USDC, B20_AAPL)).toBeNull();
-    expect(findExecutorRoute(D, USDC, OTHER_ERC20)).toBeNull();
-    expect(findExecutorRoute(D, WETH, B20_AAPL)).toBeNull();
-    const refused = buildExecutorIntent({
+  it("routes a B20 tokenized stock through the executor, and still refuses an arbitrary ERC-20", () => {
+    // B20: routable, and the intent/encoder use the Slipstream entrypoint with tickSpacing 10.
+    const built = buildExecutorIntent({
       deployment: D,
       taker: TAKER,
       sellToken: USDC,
       buyToken: B20_AAPL,
       sellAmount: 10_000_000n,
-      expectedBuyAmount: 1n,
+      expectedBuyAmount: 587_536n,
       slippageBps: 100,
       authorization: "APPROVAL",
       nowSeconds: 1_800_000_000,
       quoteId: "q1.b20",
+      feeBps: 25,
+      feeRecipient: D.feeRecipient,
+    });
+    if (!built.ok) throw new Error(`${built.error.code}: ${built.error.message}`);
+    expect(built.value.routerKind).toBe(RouterKind.AERODROME_SLIPSTREAM);
+    expect(built.value.tickSpacing).toBe(10);
+    expect(built.value.poolFee).toBeUndefined();
+    expect(built.value.feeAmount).toBe("25000"); // 25 bps of 10 USDC
+    expect(built.value.swapAmount).toBe("9975000");
+    const tx = encodeExecutorSwap(built.value, approvalAuthorization());
+    expect(tx.to).toBe(D.executor);
+    const decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: tx.data });
+    expect(decoded.functionName).toBe("swapSlipstreamExactInputSingle");
+    if (decoded.functionName !== "swapSlipstreamExactInputSingle") throw new Error("wrong entrypoint");
+    const [params, tickSpacing] = decoded.args;
+    expect(tickSpacing).toBe(10);
+    expect(params.tokenIn).toBe(USDC);
+    expect(params.tokenOut).toBe(B20_AAPL);
+    expect(params.grossAmountIn).toBe(10_000_000n);
+    expect(params.expectedFeeAmount).toBe(25_000n);
+    expect(params.amountOutMinimum).toBe((587_536n * 9_900n) / 10_000n);
+    expect(params.recipient).toBe(TAKER);
+
+    // An arbitrary ERC-20 is still refused — nothing is invented for the executor.
+    expect(findExecutorRoute(D, USDC, OTHER_ERC20)).toBeNull();
+    expect(findExecutorRoute(D, WETH, B20_AAPL)).toBeNull(); // WETH <-> B20 is not a supported pair
+    const refused = buildExecutorIntent({
+      deployment: D,
+      taker: TAKER,
+      sellToken: USDC,
+      buyToken: OTHER_ERC20,
+      sellAmount: 10_000_000n,
+      expectedBuyAmount: 1n,
+      slippageBps: 100,
+      authorization: "APPROVAL",
+      nowSeconds: 1_800_000_000,
+      quoteId: "q1.other",
       feeBps: 25,
       feeRecipient: D.feeRecipient,
     });
@@ -409,7 +456,7 @@ describe("fallback behaviour is unchanged", () => {
     expect(zeroEx).not.toHaveBeenCalled();
   });
 
-  it("an unregistered pair (B20 or any other ERC-20) falls back to 0x, never to the Uniswap V3 route", async () => {
+  it("an unregistered pair (any ERC-20 without a route) falls back to 0x, never to a registered route", async () => {
     const body = (buyToken: string) => ({
       liquidityAvailable: true,
       sellToken: MAINNET_USDC,
@@ -424,7 +471,7 @@ describe("fallback behaviour is unchanged", () => {
     const prevKey = process.env.ZERO_EX_API_KEY;
     process.env.ZERO_EX_API_KEY = "k";
     try {
-      for (const buyToken of [B20_AAPL, OTHER_ERC20]) {
+      for (const buyToken of [OTHER_ERC20]) {
         const zeroEx = vi.fn(async () => new Response(JSON.stringify(body(buyToken)), { status: 200 }));
         const deps = mainnetDeps({
           mainnetFeeRecipient: getAddress("0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4"),

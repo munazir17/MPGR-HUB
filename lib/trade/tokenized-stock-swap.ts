@@ -13,6 +13,7 @@ import "server-only";
 // issuer mint/redeem is Authorized Participant only.
 // CDP Trade API / 0x reject B20 — they are not used on this path.
 
+import { buildExecutorSwapProposal } from "./trade-executor-quote";
 import { BASE_USDC } from "./trade-config";
 import {
   parseHumanTokenAmount,
@@ -237,6 +238,38 @@ export async function prepareTokenizedStockSwap(input: {
     fromAmount = tokenAtomic;
   }
 
+  const slippageBps = input.slippageBps ?? 100;
+
+  // MPGR Executor first. Every USDC <-> B20 pair this catalog supports has a LIVE-allowlisted
+  // executor route (Aerodrome Slipstream, tickSpacing 10 — the same pool the direct route
+  // used), so the swap the wallet signs is the executor transaction and the 25 bps MPGR fee
+  // is taken inside it: approve (only when the standing allowance is short) + swap, never a
+  // third transaction. Falling back to the direct Slipstream route would silently drop the
+  // fee, so a failed executor quote is returned as an error, never retried fee-less.
+  const executorQuote = await buildExecutorSwapProposal({
+    from,
+    to,
+    fromAmount: fromAmount.toString(),
+    taker: input.taker,
+    slippageBps,
+  });
+  if (executorQuote.ok) {
+    const priceImpactBps = await estimateSwapPriceImpactBps({
+      fromAddress: from.address,
+      toAddress: to.address,
+      amounts: {
+        fromAmount: executorQuote.proposal.fromAmount,
+        toAmount: executorQuote.proposal.toAmount,
+        fromDecimals: from.decimals,
+        toDecimals: to.decimals,
+      },
+    });
+    return { ok: true, proposal: { ...executorQuote.proposal, priceImpactBps } };
+  }
+  if (executorQuote.supported) return { ok: false, error: executorQuote.error };
+
+  // No registered executor route for this pair (e.g. a pair that is not a USDC <-> B20 pair):
+  // keep the existing provider. Nothing here is fee-bearing.
   const quote = await createRoutedSwapQuote({
     fromToken: from.address,
     toToken: to.address,
@@ -261,7 +294,7 @@ export async function prepareTokenizedStockSwap(input: {
     from,
     to,
     quote: quote.value,
-    slippageBps: input.slippageBps ?? 100,
+    slippageBps,
     taker: input.taker,
     provider: quote.provider,
     priceImpactBps,

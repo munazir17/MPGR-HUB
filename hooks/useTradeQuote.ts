@@ -28,8 +28,6 @@ export function useTradeQuote(
     swapHash,
     error: executionError,
     stepLabel,
-    feeHash,
-    feeError,
     execute,
     reset: resetExecution,
   } = useTradeExecution();
@@ -73,8 +71,6 @@ export function useTradeQuote(
     approvalHash,
     swapHash,
     stepLabel,
-    feeHash,
-    feeError,
     openProposal,
     confirmAndSwap,
     close,

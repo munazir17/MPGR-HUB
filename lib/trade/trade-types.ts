@@ -16,7 +16,7 @@ export const TRADE_PROPOSAL_PHASES = [
 ] as const;
 export type TradeProposalPhase = (typeof TRADE_PROPOSAL_PHASES)[number];
 
-export const TRADE_PROVIDERS = ["cdp-trade-api", "0x-swap-api", "aerodrome-slipstream"] as const;
+export const TRADE_PROVIDERS = ["cdp-trade-api", "0x-swap-api", "aerodrome-slipstream", "mpgr-executor"] as const;
 export type TradeProvider = (typeof TRADE_PROVIDERS)[number];
 
 export function isSupportedTradeProvider(value: unknown): value is TradeProvider {
@@ -56,20 +56,34 @@ export interface CdpSwapFees {
 /**
  * MPGR Agent swap fee (0.25% / 25 bps on the sell leg).
  *
- * Informational and non-blocking by design: the fee is collected as a
- * SEPARATE wallet-signed transfer after the swap settles, so it never
- * changes the quote, calldata, approvals, slippage, or min-out.
- * `status: "skipped"` (with `reason`) preserves today's behavior exactly
- * whenever the fee wallet is unconfigured/invalid or the fee is dust.
- * Optional on TradeProposal so legacy/hand-built proposals stay valid.
+ * Collected by the MPGR Executor INSIDE the swap transaction: the user's
+ * wallet sends one transaction to the executor with the GROSS sell amount,
+ * the executor takes `floor(gross * feeBps / 10_000)` for its configured
+ * `feeRecipient()` and swaps the remainder. There is no separate fee
+ * transfer, no second signature for a fee, and the fee is never sent to
+ * the connected (taker) wallet.
+ *
+ * Therefore `status: "applied"` only ever describes an executor-routed
+ * proposal. Any other route (CDP / 0x / Aerodrome) is quoted with
+ * `status: "skipped"` and no fee is charged — a fee can never be
+ * collected out-of-band. Optional on TradeProposal so legacy/hand-built
+ * proposals stay valid (absent = no fee).
  */
 export type TradeAgentFeeStatus = "applied" | "skipped";
 
+/**
+ * Where an applied fee is collected. Only one value exists: the MPGR
+ * Executor, in the same transaction as the swap. Kept explicit so any
+ * future collection point has to be declared (and cannot be a silent
+ * separate transfer).
+ */
+export type TradeAgentFeeCollection = "mpgr-executor";
+
 export interface TradeAgentFee {
   status: TradeAgentFeeStatus;
-  /** 25 when applied, null when skipped. */
+  /** Executor feeBps when applied, null when skipped. */
   bps: number | null;
-  /** Validated fee-recipient wallet, null when skipped. */
+  /** Executor's configured feeRecipient, null when skipped. */
   recipient: Address | null;
   /** Fee in sell-token atomic units; "0" when skipped. */
   amountAtomic: string;
@@ -77,6 +91,8 @@ export interface TradeAgentFee {
   displayAmount: string | null;
   /** Skip reason when skipped; null when applied. */
   reason: string | null;
+  /** "mpgr-executor" when applied; null/absent when skipped. */
+  collection?: TradeAgentFeeCollection | null;
 }
 
 export interface CdpAllowanceIssue {
@@ -162,9 +178,10 @@ export interface TradeProposal {
   expiresAt: string;
   fees: CdpSwapFees;
   /**
-   * MPGR Agent fee (0.25% of the sell amount, separate post-swap
-   * transfer). Optional for backward compatibility; absent means no fee
-   * was quoted (legacy proposal) and execution sends no fee transfer.
+   * MPGR Agent fee (0.25% of the gross sell amount). Applied only on
+   * executor-routed proposals, where it is taken inside the swap
+   * transaction itself. Optional for backward compatibility; absent
+   * means no fee was quoted (legacy proposal) and none is charged.
    */
   agentFee?: TradeAgentFee;
   /**
