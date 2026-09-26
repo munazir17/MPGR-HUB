@@ -1,5 +1,8 @@
 "use client";
 
+import { useId } from "react";
+import { BASE_USDC, BASE_WETH } from "@/lib/trade/trade-config";
+
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, ArrowLeftRight, CheckCircle2, Loader2, X } from "lucide-react";
 
@@ -80,6 +83,7 @@ export function AgentTradeConfirmationModal({
   feeError,
   onConfirmAndSwap,
 }: AgentTradeConfirmationModalProps) {
+  const titleId = useId();
   if (!proposal) return null;
 
   const busy = isBusy(confirmationState, executionState);
@@ -90,6 +94,14 @@ export function AgentTradeConfirmationModal({
     executionState === "IDLE" &&
     proposal.executionAvailable;
   const error = executionError ?? confirmationError;
+  const progress = settled ? 5
+    : executionState === "PENDING" ? 4
+    : executionState === "AWAITING_WALLET" || executionState === "AWAITING_PERMIT" ? 3
+    : executionState === "APPROVING" ? 2
+    : executionState === "REQUOTING" || confirmationState === "VALIDATING" ? 0 : 1;
+  const stages = ["Quote", "Prepare", "Approval (if needed)", "User signature", "Executing", "Confirmed"];
+  const isExecutorPair = [proposal.from.address.toLowerCase(), proposal.to.address.toLowerCase()].sort().join(":") ===
+    [BASE_USDC.toLowerCase(), BASE_WETH.toLowerCase()].sort().join(":");
   const impact = formatPriceImpact(proposal.priceImpactBps);
   const fees = feeRows(proposal.fees);
   // Compact risk display: safety-critical facts keep their full detail;
@@ -107,7 +119,11 @@ export function AgentTradeConfirmationModal({
           exit={{ opacity: 0 }}
         >
           <motion.div
-            className="w-full max-w-[440px] rounded-t-3xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-3xl sm:p-8"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            aria-busy={busy}
+            className="max-h-[90dvh] w-full max-w-[440px] overflow-y-auto overscroll-contain rounded-t-3xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-3xl sm:p-8"
             initial={{ y: 40, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 20, opacity: 0 }}
@@ -115,41 +131,51 @@ export function AgentTradeConfirmationModal({
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ArrowLeftRight className="h-5 w-5 text-good" />
-                <h2 className="text-sm font-semibold text-white">
+                <h2 id={titleId} className="text-sm font-semibold text-white">
                   {proposal.kind === "tokenized-stock-swap" ? "Confirm tokenized-stock swap" : "Confirm swap"}
                 </h2>
               </div>
-              <button onClick={onClose} className="text-zinc-500 hover:text-white" aria-label="Close">
+              <button type="button" onClick={onClose} disabled={busy} className="flex h-11 w-11 shrink-0 items-center justify-center text-zinc-400 hover:text-white disabled:opacity-40" aria-label="Close" title={busy ? "Keep this progress visible until the wallet operation finishes" : "Close"}>
                 <X className="h-4 w-4" />
               </button>
             </div>
 
             <p className="mb-3 text-sm text-zinc-300">{proposal.description}</p>
 
+            <p className="mb-3 text-xs text-zinc-400">Your wallet signs and sends. MPGR never signs for you or controls your wallet.</p>
+            <ol aria-label="Trade progress" className="mb-4 grid grid-cols-3 gap-2 text-[10px]">
+              {stages.map((stage, index) => (
+                <li key={stage} aria-current={!failed && index === progress ? "step" : undefined}
+                  className={`rounded-lg border p-2 ${!failed && index === progress ? "border-primary/40 text-primary-glow" : "border-white/10 text-zinc-400"}`}>
+                  {stage}
+                </li>
+              ))}
+            </ol>
+
             <dl className="mb-4 space-y-2 rounded-xl border border-white/10 bg-white/5 p-3 text-xs">
               <div className="flex justify-between gap-3">
                 <dt className="text-zinc-500">You sell</dt>
-                <dd className="text-white">{proposal.displayFromAmount}</dd>
+                <dd className="min-w-0 break-words text-right text-white">{formatAtomicAmount(proposal.fromAmount, proposal.from.decimals, proposal.from.decimals)} {proposal.from.symbol}</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-zinc-500">You receive (est.)</dt>
-                <dd className="text-white">{proposal.displayToAmount}</dd>
+                <dd className="min-w-0 break-words text-right text-white">{formatAtomicAmount(proposal.toAmount, proposal.to.decimals, proposal.to.decimals)} {proposal.to.symbol}</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-zinc-500">Minimum out</dt>
-                <dd className="text-white">{proposal.displayMinToAmount}</dd>
+                <dd className="min-w-0 break-words text-right text-white">{formatAtomicAmount(proposal.minToAmount, proposal.to.decimals, proposal.to.decimals)} {proposal.to.symbol}</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-zinc-500">Network</dt>
-                <dd className="text-white">Base</dd>
+                <dd className="min-w-0 break-words text-right text-white">Base</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-zinc-500">Slippage</dt>
-                <dd className="text-white">{proposal.slippageBps / 100}%</dd>
+                <dd className="min-w-0 break-words text-right text-white">{proposal.slippageBps / 100}%</dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-zinc-500">Route</dt>
-                <dd className="text-white">{proposal.providerLabel}</dd>
+                <dt className="text-zinc-500">This quote’s route</dt>
+                <dd className="min-w-0 break-words text-right text-white">{proposal.providerLabel}</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-zinc-500">Price impact</dt>
@@ -165,19 +191,40 @@ export function AgentTradeConfirmationModal({
                   {impact ?? "not reported"}
                 </dd>
               </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-zinc-500">Recipient / wallet</dt>
+                <dd className="min-w-0 break-all text-right font-mono text-white" title={proposal.taker}>{proposal.taker}</dd>
+              </div>
+              {proposal.permit2Spender && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-zinc-500">Approval spender</dt>
+                  <dd className="min-w-0 break-all text-right font-mono text-white">{proposal.permit2Spender}</dd>
+                </div>
+              )}
               {fees.map((fee) => (
                 <div key={fee.label} className="flex justify-between gap-3">
                   <dt className="text-zinc-500">{fee.label}</dt>
-                  <dd className="text-white">{fee.value}</dd>
+                  <dd className="min-w-0 break-words text-right text-white">{fee.value}</dd>
                 </div>
               ))}
               {proposal.agentFee?.status === "applied" && proposal.agentFee.displayAmount && (
                 <div className="flex justify-between gap-3">
-                  <dt className="text-zinc-500">MPGR agent fee (0.25%)</dt>
-                  <dd className="text-white">{proposal.agentFee.displayAmount} (separate tx)</dd>
+                  <dt className="text-zinc-500">MPGR fee · 25 bps (0.25%)</dt>
+                  <dd className="min-w-0 break-words text-right text-white">{formatAtomicAmount(proposal.agentFee.amountAtomic, proposal.from.decimals, proposal.from.decimals)} {proposal.from.symbol} (separate tx)</dd>
                 </div>
               )}
+              {proposal.agentFee?.status === "skipped" && (
+                <div className="text-amber-300"><dt>MPGR fee not applied</dt><dd>{proposal.agentFee.reason ?? "Unavailable"}. No fee transfer is prepared.</dd></div>
+              )}
             </dl>
+            {proposal.agentFee?.status === "applied" && (
+              <p className="mb-3 text-[11px] text-zinc-400">For this in-app route, the fee is an additional sell-token transfer after the swap, with a separate wallet confirmation. It is not deducted from the amount above.</p>
+            )}
+            {isExecutorPair && (
+              <p className="mb-4 rounded-lg border border-white/10 p-3 text-[11px] text-zinc-400">
+                Separate MCP flow: MPGR Executor uses Uniswap V3 on Base for USDC ↔ WETH (pool fee 3000 / 0.30%), with the 25 bps fee deducted from the sell amount in the same transaction. This in-app quote uses the route shown above, not the MCP Executor.
+              </p>
+            )}
 
             {(criticalRisk.length > 0 || warningRisk.length > 0) && (
               <ul className="mb-4 max-h-32 space-y-1 overflow-y-auto text-[11px] text-amber-300">
@@ -193,24 +240,24 @@ export function AgentTradeConfirmationModal({
             )}
 
             {busy && (
-              <div className="mb-4 flex items-center gap-2 text-sm text-zinc-300">
+              <div role="status" aria-live="polite" className="mb-4 flex items-center gap-2 text-sm text-zinc-300">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                {stepLabel ?? "Working…"}
+                {stepLabel ?? (confirmationState === "VALIDATING" ? "Checking quote and wallet…" : `${stages[progress]}…`)}
               </div>
             )}
 
             {failed && error && (
-              <div className="mb-4 flex items-start gap-2 rounded-lg border border-bad/30 bg-bad/10 p-3 text-sm text-bad">
+              <div role="alert" className="mb-4 flex items-start gap-2 rounded-lg border border-bad/30 bg-bad/10 p-3 text-sm text-bad">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>{error.message}</span>
               </div>
             )}
 
             {settled && (
-              <div className="mb-4 flex items-start gap-2 rounded-lg border border-good/30 bg-good/10 p-3 text-sm text-good">
+              <div role="status" className="mb-4 flex items-start gap-2 rounded-lg border border-good/30 bg-good/10 p-3 text-sm text-good">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
-                  Swap settled
+                  Swap confirmed on Base
                   {swapHash ? ` — ${formatAddress(swapHash)}` : "."}
                   {approvalHash ? ` Approval ${formatAddress(approvalHash)}.` : ""}
                   {feeHash ? ` Agent fee ${formatAddress(feeHash)}.` : ""}
@@ -225,13 +272,22 @@ export function AgentTradeConfirmationModal({
               </div>
             )}
 
+            {(approvalHash || swapHash || feeHash) && (
+              <div className="mb-4 flex flex-wrap gap-3 text-xs">
+                {([["Approval", approvalHash], ["Swap", swapHash], ["Fee", feeHash]] as const).map(([label, hash]) => hash && (
+                  <a key={label} href={`https://basescan.org/tx/${hash}`} target="_blank" rel="noopener noreferrer" className="text-primary-glow underline">View {label.toLowerCase()} on BaseScan</a>
+                ))}
+              </div>
+            )}
+            {failed && <p className="mb-3 text-xs text-zinc-400">Close and request a fresh quote to try again. Check any submitted transaction above before retrying.</p>}
+
             {!settled && (
               <button
                 onClick={onConfirmAndSwap}
                 disabled={!canConfirm}
                 className="btn-primary w-full text-sm"
               >
-                {proposal.executionAvailable ? "Confirm & Swap" : "Execution unavailable"}
+                {busy ? "Awaiting your wallet / confirmation…" : failed ? "Request a fresh quote" : proposal.executionAvailable ? "Confirm & Swap" : "Execution unavailable"}
               </button>
             )}
           </motion.div>

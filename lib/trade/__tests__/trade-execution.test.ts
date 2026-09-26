@@ -197,4 +197,40 @@ describe("executeTrade", () => {
     const swapTx = mockSend.mock.calls[1][1] as { to: string };
     expect(swapTx.to.toLowerCase()).toBe(AERODROME_SLIPSTREAM_SWAP_ROUTER.toLowerCase());
   });
+
+  it.each([
+    ["wrong chain", { chainId: 1 }, "UNSUPPORTED_NETWORK"],
+    ["missing confirmation", { requiresConfirmation: false }, "INVALID_INPUT"],
+    ["invalid slippage", { slippageBps: 9999 }, "INVALID_INPUT"],
+    ["unfunded refreshed quote", { issues: { allowance: null, balance: { token: BASE_USDC, currentBalance: "0", requiredBalance: "1000000" }, simulationIncomplete: false } }, "INSUFFICIENT_BALANCE"],
+  ])("validates the refreshed proposal before any wallet calls: %s", async (_name, changed, code) => {
+    const old = { ...makeProposal(), quotedAt: new Date(0).toISOString(), expiresAt: new Date(1).toISOString() };
+    const fresh = { ...makeProposal(), ...changed } as typeof old;
+    const result = await executeTrade({
+      proposal: old,
+      confirmationState: "READY_FOR_CONFIRMATION",
+      currentAccount: TAKER,
+      currentChainId: 8453,
+      refreshQuote: async () => fresh,
+    }, () => {});
+    expect(result).toMatchObject({ state: "ERROR", error: { code } });
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockSign).not.toHaveBeenCalled();
+  });
+
+
+  it("preserves a submitted swap hash and reports unknown confirmation without resending or charging a fee", async () => {
+    mockSend.mockResolvedValue("0xswap");
+    mockWait.mockRejectedValue(new Error("RPC timeout https://rpc.invalid/private-credential"));
+    const result = await executeTrade({
+      proposal: makeProposal(), confirmationState: "READY_FOR_CONFIRMATION",
+      currentAccount: TAKER, currentChainId: 8453,
+    }, () => {});
+    expect(result).toMatchObject({ state: "ERROR", swapHash: "0xswap", error: { code: "PROVIDER_ERROR" } });
+    expect(result.error?.message).toContain("status is unknown");
+    expect(result.error?.message).not.toContain("private-credential");
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSign).not.toHaveBeenCalled();
+  });
+
 });

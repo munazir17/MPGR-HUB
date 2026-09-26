@@ -116,6 +116,21 @@ function withFeeEnv(): void {
 }
 
 describe("MPGR Agent fee — calculation", () => {
+  it("never displays a nonzero 18-decimal sell-token fee as zero", () => {
+    vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET);
+    try {
+      const fee = buildProposalAgentFee({
+        fromAmount: "100000000000000",
+        from: { symbol: "WETH", decimals: 18 },
+        taker: TAKER,
+        executionAvailable: true,
+      });
+      expect(fee.amountAtomic).toBe("250000000000");
+      expect(fee.displayAmount).toBe("0.00000025 WETH");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it("1. fee rate is exactly 0.25% (25 bps)", () => {
     expect(MPGR_AGENT_FEE_BPS).toBe(25);
     expect(MPGR_AGENT_FEE_PERCENT_LABEL).toBe("0.25%");
