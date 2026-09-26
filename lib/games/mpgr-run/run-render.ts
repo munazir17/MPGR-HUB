@@ -18,7 +18,13 @@ import {
   POWERUP_SPRITES,
   CHECKPOINT_SPRITE,
   CITY_ENVIRONMENT,
+  ENVIRONMENT_SETS,
+  AIRSHIP_SPRITE,
 } from "@/lib/games/mpgr-run/run-assets";
+import {
+  resolveRunWorldFromPx,
+  RUN_WORLD_THEMES,
+} from "@/lib/games/mpgr-run/run-environments";
 import {
   LANE_GAP_PX,
   PLAYER_X,
@@ -258,66 +264,114 @@ export function drawRunFrame(
   }
   ctx.clearRect(-40, -40, W + 80, H + 80);
 
+  // --- World theme (presentation-only distance cycle: city/ice/desert) ---
+  const worldState = resolveRunWorldFromPx(world.traveledPx);
+  const theme = RUN_WORLD_THEMES[worldState.current];
+  const envSet = ENVIRONMENT_SETS[worldState.current];
+
   // --- Sky ---------------------------------------------------------------
   const skyGradient = ctx.createLinearGradient(0, 0, 0, HORIZON_Y + 20);
-  skyGradient.addColorStop(0, "#0A0B0D");
-  skyGradient.addColorStop(0.55, "#0D1420");
-  skyGradient.addColorStop(1, "#16233A");
+  skyGradient.addColorStop(0, theme.sky[0]);
+  skyGradient.addColorStop(0.55, theme.sky[1]);
+  skyGradient.addColorStop(1, theme.sky[2]);
   ctx.fillStyle = skyGradient;
   ctx.fillRect(-40, -40, W + 80, HORIZON_Y + 60);
+  // Emissive city glow hugging the horizon.
+  const glowBand = ctx.createLinearGradient(0, HORIZON_Y - H * 0.14, 0, HORIZON_Y);
+  glowBand.addColorStop(0, "rgba(0,0,0,0)");
+  glowBand.addColorStop(1, theme.horizonGlow);
+  ctx.fillStyle = glowBand;
+  ctx.fillRect(-40, HORIZON_Y - H * 0.14, W + 80, H * 0.14 + 4);
 
-  // --- City skyline on the horizon (real parallax art, distance-banded) ---
-  const cityBg = getSprite(CITY_ENVIRONMENT.background);
-  const cityMid = getSprite(CITY_ENVIRONMENT.midground);
-  const cityFg = getSprite(CITY_ENVIRONMENT.foreground);
-  const cityReady = !!(cityBg && cityMid && cityFg);
-  if (cityReady && cityBg && cityMid && cityFg) {
-    const layers: Array<[CanvasImageSource, number, number, number]> = [
-      [cityBg, 0.46, 0.5, 0.1],
-      [cityMid, 0.66, 0.68, 0.2],
-      [cityFg, 0.92, 0.85, 0.34],
+  // --- Skyline panoramas on the horizon (two depth layers) ---------------
+  const skylineImg = getSprite(envSet.skyline);
+  if (skylineImg) {
+    const aspect = spriteAspect(skylineImg);
+    const layers: Array<[number, number, number]> = [
+      [0.52, 0.55, 0.05],
+      [0.92, 0.96, 0.12],
     ];
-    for (const [img, bandFrac, alpha, camFactor] of layers) {
+    for (const [bandFrac, alpha, camFactor] of layers) {
       const bandH = HORIZON_Y * bandFrac;
-      const layerW = bandH * RUN_CITY_ART_ASPECT;
+      const layerW = bandH * aspect;
       // Lateral camera parallax only — the skyline sits at infinity along
       // the running direction, so forward scroll must not slide it sideways.
       const offset = ((camLat * camFactor) % layerW + layerW) % layerW;
       ctx.globalAlpha = alpha;
       for (let x = -offset - layerW; x < W + layerW; x += layerW) {
-        ctx.drawImage(img, x, HORIZON_Y - bandH + 2, layerW, bandH);
+        ctx.drawImage(skylineImg, x, HORIZON_Y - bandH + 2, layerW, bandH);
       }
       ctx.globalAlpha = 1;
     }
   } else {
-    // Procedural skyline fallback until the city set is decode-ready.
-    ctx.globalAlpha = 0.14;
-    ctx.fillStyle = "#3B82F6";
-    const gap = 90;
-    const drift = (camLat * 0.2) % gap;
-    for (let bx = -drift - gap; bx < W + gap; bx += gap) {
-      const bh = HORIZON_Y * (0.3 + ((Math.floor(bx / gap) % 3) + 2) * 0.12);
-      ctx.fillRect(bx, HORIZON_Y - bh, gap * 0.45, bh);
+    // Legacy street panoramas / procedural blocks until the new skyline
+    // for this world is decode-ready.
+    const cityBg = getSprite(CITY_ENVIRONMENT.background);
+    const cityMid = getSprite(CITY_ENVIRONMENT.midground);
+    const cityFg = getSprite(CITY_ENVIRONMENT.foreground);
+    if (cityBg && cityMid && cityFg) {
+      const layers: Array<[CanvasImageSource, number, number, number]> = [
+        [cityBg, 0.46, 0.5, 0.1],
+        [cityMid, 0.66, 0.68, 0.2],
+        [cityFg, 0.92, 0.85, 0.34],
+      ];
+      for (const [img, bandFrac, alpha, camFactor] of layers) {
+        const bandH = HORIZON_Y * bandFrac;
+        const layerW = bandH * RUN_CITY_ART_ASPECT;
+        const offset = ((camLat * camFactor) % layerW + layerW) % layerW;
+        ctx.globalAlpha = alpha;
+        for (let x = -offset - layerW; x < W + layerW; x += layerW) {
+          ctx.drawImage(img, x, HORIZON_Y - bandH + 2, layerW, bandH);
+        }
+        ctx.globalAlpha = 1;
+      }
+    } else {
+      ctx.globalAlpha = 0.14;
+      ctx.fillStyle = "#3B82F6";
+      const gap = 90;
+      const drift = (camLat * 0.2) % gap;
+      for (let bx = -drift - gap; bx < W + gap; bx += gap) {
+        const bh = HORIZON_Y * (0.3 + ((Math.floor(bx / gap) % 3) + 2) * 0.12);
+        ctx.fillRect(bx, HORIZON_Y - bh, gap * 0.45, bh);
+      }
+      ctx.globalAlpha = 1;
     }
+  }
+
+  // --- Distant MPGR airship (sky life) ------------------------------------
+  const airship = getSprite(AIRSHIP_SPRITE);
+  if (airship) {
+    const airH = H * 0.055;
+    const airW = airH * spriteAspect(airship);
+    const ax = W * (0.5 + 0.34 * Math.sin(world.elapsedMs / 23000));
+    const ay = HORIZON_Y * 0.34 + Math.sin(world.elapsedMs / 5200) * H * 0.012;
+    ctx.globalAlpha = 0.9;
+    ctx.drawImage(airship, ax - airW / 2, ay - airH / 2, airW, airH);
     ctx.globalAlpha = 1;
   }
-  // Distance haze softening the skyline bases into the track.
-  const haze = ctx.createLinearGradient(0, HORIZON_Y - H * 0.09, 0, HORIZON_Y + 4);
-  haze.addColorStop(0, "rgba(13,20,32,0)");
-  haze.addColorStop(1, "rgba(13,20,32,0.92)");
-  ctx.fillStyle = haze;
-  ctx.fillRect(-40, HORIZON_Y - H * 0.09, W + 80, H * 0.09 + 8);
 
-  // --- Ground plane -------------------------------------------------------
+  // --- Ground plane (world surface, full width — no void) -----------------
   const groundGradient = ctx.createLinearGradient(0, HORIZON_Y, 0, H);
-  groundGradient.addColorStop(0, "#0B0F16");
-  groundGradient.addColorStop(0.35, "#0D1219");
-  groundGradient.addColorStop(1, "#08090C");
+  groundGradient.addColorStop(0, theme.groundFar);
+  groundGradient.addColorStop(0.45, theme.groundNear);
+  groundGradient.addColorStop(1, theme.groundNear);
   ctx.fillStyle = groundGradient;
   ctx.fillRect(-40, HORIZON_Y, W + 80, H - HORIZON_Y + 40);
 
+  // --- Horizon haze (both sides of the horizon line) ----------------------
+  // Melts the skyline bases AND the far track edge into one atmospheric
+  // seam so the road visibly connects to the world horizon.
+  const hazeUp = ctx.createLinearGradient(0, HORIZON_Y - H * 0.1, 0, HORIZON_Y);
+  hazeUp.addColorStop(0, "rgba(0,0,0,0)");
+  hazeUp.addColorStop(1, theme.haze);
+  ctx.fillStyle = hazeUp;
+  ctx.fillRect(-40, HORIZON_Y - H * 0.1, W + 80, H * 0.1 + 1);
+
+
   const sNear = S_MAX;
-  const sFar = sOf(Z_FAR);
+  // The ROAD surface converges all the way into the horizon haze (visual
+  // only); gameplay entities still cull at Z_FAR.
+  const sFar = sOf(9000);
 
   // Track trapezoid (converges to the vanishing point). Plain ctx paths
   // (no Path2D) so the frame also renders under minimal canvas stubs.
@@ -331,10 +385,21 @@ export function drawRunFrame(
   };
   traceTrack();
   const asphalt = ctx.createLinearGradient(0, groundYAt(sFar), 0, groundYAt(Math.min(sNear, 1.4)));
-  asphalt.addColorStop(0, "#141B26");
-  asphalt.addColorStop(1, "#1B2432");
+  asphalt.addColorStop(0, theme.trackFar);
+  asphalt.addColorStop(1, theme.trackNear);
   ctx.fillStyle = asphalt;
   ctx.fill();
+  // Wet-look reflective sheen: a soft light column down the track centre.
+  const sheen = ctx.createLinearGradient(0, groundYAt(sFar), 0, groundYAt(Math.min(sNear, 1.5)));
+  sheen.addColorStop(0, "rgba(255,255,255,0.10)");
+  sheen.addColorStop(0.5, "rgba(255,255,255,0.03)");
+  sheen.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.save();
+  traceTrack();
+  ctx.clip();
+  ctx.fillStyle = sheen;
+  ctx.fillRect(W / 2 - trackHalf * 0.5, groundYAt(sFar), trackHalf, H);
+  ctx.restore();
 
   // World-locked scrolling texture inside the track: cross stripes + lane
   // dashes tied to traveledPx, so the ground rushes toward the camera at
@@ -354,7 +419,7 @@ export function drawRunFrame(
     const sB = sOf(zB);
     const fade = 1 - Math.max(0, z) / Z_FAR;
     ctx.globalAlpha = 0.05 + fade * 0.1;
-    ctx.fillStyle = COLORS.laneLine;
+    ctx.fillStyle = theme.rail;
     ctx.beginPath();
     ctx.moveTo(xAt(-trackHalf, sA), groundYAt(sA));
     ctx.lineTo(xAt(trackHalf, sA), groundYAt(sA));
@@ -374,14 +439,31 @@ export function drawRunFrame(
       ctx.closePath();
       ctx.fill();
     }
+    // Center-lane chevron markings (pointing up-track), same scroll phase.
+    ctx.globalAlpha = 0.24 + fade * 0.42;
+    ctx.fillStyle = theme.chevron;
+    const cw = laneGap * 0.17;
+    const cA = z + 10;
+    const cB = z + 34;
+    for (const arm of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(xAt(arm * cw, sOf(cA)), groundYAt(sOf(cA)));
+      ctx.lineTo(xAt(arm * (cw - 4), sOf(cA)), groundYAt(sOf(cA)));
+      ctx.lineTo(xAt(arm * 4 - arm * 0, sOf(cB)), groundYAt(sOf(cB)));
+      ctx.lineTo(xAt(0, sOf(cB)), groundYAt(sOf(cB)));
+      ctx.closePath();
+      ctx.fill();
+    }
   }
   ctx.globalAlpha = 1;
   ctx.restore();
 
-  // Glowing outer rails.
+  // Glowing outer rails (world-themed emissive edges).
   const railGradient = ctx.createLinearGradient(0, groundYAt(sFar), 0, groundYAt(Math.min(sNear, 1.5)));
-  railGradient.addColorStop(0, "rgba(59,130,246,0.05)");
-  railGradient.addColorStop(1, "rgba(59,130,246,0.75)");
+  railGradient.addColorStop(0, "rgba(0,0,0,0)");
+  railGradient.addColorStop(0.25, theme.rail);
+  railGradient.addColorStop(1, theme.rail);
+  ctx.globalAlpha = 0.8;
   ctx.fillStyle = railGradient;
   for (const side of [-1, 1]) {
     const inner = trackHalf * side;
@@ -394,6 +476,7 @@ export function drawRunFrame(
     ctx.closePath();
     ctx.fill();
   }
+  ctx.globalAlpha = 1;
 
   // --- Checkpoint flash (screen-space, unchanged behaviour) ---------------
   if (world.elapsedMs < world.checkpointFlashUntilMs) {
@@ -448,6 +531,63 @@ export function drawRunFrame(
     const s = sOf(z);
     return s > S_MAX ? null : s;
   };
+
+  // Deterministic per-instance variation (no per-frame allocation).
+  const unitHash = (k: number, salt: number): number => {
+    const h = Math.sin(k * 127.1 + salt * 311.7) * 43758.5453;
+    return h - Math.floor(h);
+  };
+
+  // --- Street-side scenery instanced into the perspective field ----------
+  // Two columns per side (near props/buildings + a farther building line)
+  // scroll with the world at exactly the entity speed, so the runner is
+  // surrounded by the city/ice/desert instead of running past a backdrop.
+  for (const side of [-1, 1] as const) {
+    for (let col = 0; col < 2; col++) {
+      const spacing = col === 0 ? 150 : 230;
+      const residue =
+        ((-world.traveledPx - playerDepthX) % spacing + spacing) % spacing;
+      for (let z = residue - spacing; z < 3400; z += spacing) {
+        if (z < -120) continue;
+        const s0 = sOf(z);
+        if (s0 > S_MAX) continue;
+        const k = Math.round((z + playerDepthX + world.traveledPx) / spacing);
+        const r = unitHash(k, side * 3 + col + 1);
+        const useSide = col === 1 || r < 0.55;
+        const img = getSprite(useSide ? envSet.side : envSet.prop);
+        if (!img) continue;
+        const baseH = (useSide ? (col === 1 ? 330 : 240) : 95) * (0.9 + r * 0.3);
+        const lat = side * (trackHalf + (col === 0 ? 48 : 170) + r * 30);
+        const flip = unitHash(k, side * 7 + col + 51) > 0.5;
+        const farLimit = col === 0 ? 3200 : 2400;
+        if (z > farLimit) continue;
+        const depthFade = Math.max(0, 1 - Math.max(0, z) / (farLimit + 300));
+        items.push({
+          z,
+          draw: () => {
+            const s = sOf(z);
+            const aspect = spriteAspect(img);
+            const dh = baseH * s;
+            const dw = dh * aspect;
+            const sx = xAt(lat, s);
+            const gy = groundYAt(s);
+            // Distant column gets a touch of atmospheric fade.
+            ctx.globalAlpha = (col === 1 ? 0.9 : 1) * depthFade;
+            if (flip) {
+              ctx.save();
+              ctx.translate(sx, 0);
+              ctx.scale(-1, 1);
+              ctx.drawImage(img, -dw / 2, gy - dh, dw, dh);
+              ctx.restore();
+            } else {
+              ctx.drawImage(img, sx - dw / 2, gy - dh, dw, dh);
+            }
+            ctx.globalAlpha = 1;
+          },
+        });
+      }
+    }
+  }
 
   // Power-ups.
   for (const pu of world.powerups) {
@@ -750,6 +890,55 @@ export function drawRunFrame(
     );
   }
   ctx.globalAlpha = 1;
+
+  // --- Lower horizon haze (after world-space art, melts the far road tip) --
+  const hazeDown = ctx.createLinearGradient(0, HORIZON_Y - 1, 0, HORIZON_Y + H * 0.08);
+  hazeDown.addColorStop(0, theme.haze);
+  hazeDown.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = hazeDown;
+  ctx.fillRect(-40, HORIZON_Y - 1, W + 80, H * 0.08 + 2);
+
+  // --- Live weather (procedural, allocation-free, per-world) --------------
+  const WEATHER_COUNT = 34;
+  ctx.fillStyle = theme.particleColor;
+  for (let i = 0; i < WEATHER_COUNT; i++) {
+    const f1 = unitHash(i, 11);
+    const f2 = unitHash(i, 23);
+    const f3 = unitHash(i, 37);
+    let px = 0;
+    let py = 0;
+    let size = 1;
+    let alpha = 0.3;
+    if (theme.particle === "snow") {
+      px = ((i * 167.3 + Math.sin(world.elapsedMs / 1400 + i) * 26 + world.elapsedMs * 0.012 * (0.5 + f1)) % W + W) % W;
+      py = ((i * 211.7 + world.elapsedMs * 0.055 * (0.5 + f2)) % (H + 30)) - 15;
+      size = 1 + f3 * 1.8;
+      alpha = 0.3 + f1 * 0.4;
+    } else if (theme.particle === "dust") {
+      px = ((i * 143.9 - world.elapsedMs * 0.05 * (0.4 + f1)) % W + W) % W;
+      py = H * (0.45 + 0.55 * f2) + Math.sin(world.elapsedMs / 900 + i) * 8;
+      size = 0.8 + f3 * 1.4;
+      alpha = 0.16 + f1 * 0.2;
+    } else {
+      px = ((i * 121.7 + Math.sin(world.elapsedMs / 1800 + i * 1.7) * 34) % W + W) % W;
+      py = H - ((world.elapsedMs * 0.018 * (0.4 + f2) + i * 89.3) % (H * 0.85));
+      size = 0.7 + f3 * 1.1;
+      alpha = 0.14 + f1 * 0.2;
+    }
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(px, py, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // --- World-transition fog wall (hides the environment swap) -------------
+  if (worldState.fade > 0.01) {
+    ctx.globalAlpha = worldState.fade * 0.92;
+    ctx.fillStyle = theme.fog;
+    ctx.fillRect(-40, -40, W + 80, H + 80);
+    ctx.globalAlpha = 1;
+  }
 
   // --- Cinematic vignette + hit flash (screen space, unchanged) -----------
   const vignette = ctx.createRadialGradient(
