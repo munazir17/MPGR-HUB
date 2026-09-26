@@ -57,7 +57,7 @@ export interface BaseSwapIntent {
 }
 
 const SYMBOL = "[a-z][a-z0-9]{1,15}";
-const TOKEN = `(${SYMBOL}|0x[a-f0-9]{40})`;
+const TOKEN = `("[^"\\n]{1,128}"|0x[a-z0-9]{1,64}|${SYMBOL})(?![a-z0-9])`;
 const NUMBER = "([0-9]+(?:\\.[0-9]+)?)";
 
 // The link between the sell and buy side. "of" and "worth of" are how
@@ -131,6 +131,8 @@ const BUY_FOR_RE = new RegExp(
   "i",
 );
 
+const BUY_WITH_RE = new RegExp("\\bbuy\\s+" + TOKEN + "\\s+(?:with|using|for)\\s+(\\$\\s*)?" + NUMBER + "\\s*" + TOKEN, "i");
+
 /** "buy $10 of cbADA" / "buy 25 cbDOGE" */
 const BUY_RE = new RegExp(
   "\\bbuy\\s+(?:of\\s+|some\\s+)?" +
@@ -172,7 +174,7 @@ function toSide(result: Extract<ResolveTradeTokenResult, { ok: true }>, rawInput
 }
 
 function resolveSide(rawInput: string): BaseSwapIntentSide | null {
-  const cleaned = rawInput.trim().replace(/^\$/, "");
+  const cleaned = rawInput.trim().replace(/^"|"$/g, "").replace(/^\$/, "");
   if (!cleaned) return null;
   // "USD" is the dollar stable the user means on Base; the catalog's
   // native dollar token is USDC, and it is the only dollar entry there.
@@ -233,10 +235,13 @@ export interface UnresolvedSwapOrder {
  */
 export function extractUnresolvedSwapOrder(prompt: string): UnresolvedSwapOrder | null {
   if (typeof prompt !== "string" || !prompt.trim()) return null;
-  const text = prompt.trim();
-  if (!/[0-9]/.test(text)) return null;
+  const text = prompt.trim().replace(/\b(swap|trade|convert|exchange)\.(?=\d)/gi, "$1 ");
+
+  // Unsized unknown one-token conversational requests are not trade orders.
+  if (!/[0-9]/.test(text) && !/\b(?:swap|sell|trade|convert|exchange)\b.*\b(?:to|for|into)\b/i.test(text) && !/^buy\s+(?!me\b)(?:"[^"\n]+"|[a-z][a-z0-9]{1,31})[.!?]?$/i.test(text)) return null;
 
   const shape = (sell: string, buy: string, amount: string | null, dollar: boolean) => {
+    sell = sell.replace(/^"|"$/g, ""); buy = buy.replace(/^"|"$/g, "");
     if (buildIntent(sell, buy, amount, dollar, text)) return null;
     const unresolved = [sell, buy].filter((operand) => resolveSide(operand) === null);
     // Both sides resolved (e.g. "swap 10 USDC to USDC") — that is not an
@@ -244,6 +249,9 @@ export function extractUnresolvedSwapOrder(prompt: string): UnresolvedSwapOrder 
     if (unresolved.length === 0) return null;
     return { sell, buy, amount, unresolved };
   };
+
+  const buyWith = text.match(BUY_WITH_RE);
+  if (buyWith) return shape(buyWith[4], buyWith[1], buyWith[3], Boolean(buyWith[2]));
 
   const swap = text.match(SWAP_RE);
   if (swap) {
@@ -274,7 +282,10 @@ export function extractUnresolvedSwapOrder(prompt: string): UnresolvedSwapOrder 
  */
 export function extractBaseSwapIntent(prompt: string): BaseSwapIntent | null {
   if (typeof prompt !== "string" || !prompt.trim()) return null;
-  const text = prompt.trim();
+  const text = prompt.trim().replace(/\b(swap|trade|convert|exchange)\.(?=\d)/gi, "$1 ");
+
+  const buyWith = text.match(BUY_WITH_RE);
+  if (buyWith) return buildIntent(buyWith[4], buyWith[1], buyWith[3], Boolean(buyWith[2]), text);
 
   const howMuch = text.match(HOW_MUCH_RE);
   if (howMuch) {

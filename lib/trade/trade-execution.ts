@@ -363,7 +363,10 @@ export async function executeTrade(
         fresh.from.address.toLowerCase() !== proposal.from.address.toLowerCase() ||
         fresh.to.address.toLowerCase() !== proposal.to.address.toLowerCase() ||
         fresh.fromAmount !== proposal.fromAmount ||
-        fresh.taker.toLowerCase() !== proposal.taker.toLowerCase()
+        fresh.taker.toLowerCase() !== proposal.taker.toLowerCase() ||
+        fresh.slippageBps !== proposal.slippageBps ||
+        fresh.provider !== proposal.provider ||
+        fresh.transaction?.to.toLowerCase() !== proposal.transaction?.to.toLowerCase()
       ) {
         const snapshot = fail("QUOTE_CHANGED", "The refreshed quote no longer matches this proposal.");
         onChange(snapshot);

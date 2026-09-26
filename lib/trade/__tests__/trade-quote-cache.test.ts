@@ -48,3 +48,22 @@ describe("withTradeQuoteCache", () => {
     expect(compute.mock.calls.map((call) => call[0])).toEqual(["a", "b"]);
   });
 });
+
+describe("quote cache failure and age boundaries", () => {
+  it("never reuses ok:false values", async () => {
+    resetTradeQuoteCache();
+    const compute = vi.fn(async () => ({ ok: false, error: "no route" }));
+    await withTradeQuoteCache("failure", 6000, compute);
+    await withTradeQuoteCache("failure", 6000, compute);
+    expect(compute).toHaveBeenCalledTimes(2);
+  });
+  it("does not cache a computation that took longer than its freshness window", async () => {
+    resetTradeQuoteCache(); vi.useFakeTimers();
+    const compute = vi.fn(async () => { vi.advanceTimersByTime(7000); return { ok: true }; });
+    try {
+      await withTradeQuoteCache("slow", 6000, compute);
+      await withTradeQuoteCache("slow", 6000, compute);
+      expect(compute).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+});

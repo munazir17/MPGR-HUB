@@ -103,22 +103,11 @@ describe("DeterministicAIProvider — supported-catalog swap fallback", () => {
     expect(response.tradeProposal).toBeUndefined();
   });
 
-  it("keeps the existing core ETH/USDC quote path untouched", async () => {
-    runTool.mockResolvedValue(
-      toolSuccess("trade_get_price", { price: { amount: "1" }, provider: "cdp-trade-api" }),
-    );
-
-    const response = await new DeterministicAIProvider().generateReply(
-      makeRequest("Swap USDC to ETH"),
-    );
-
-    expect(runTool).toHaveBeenCalledWith(
-      "trade_get_price",
-      { fromToken: "USDC", toToken: "ETH" },
-      expect.any(Object),
-    );
+  it("asks for a missing core-token swap amount instead of doing a guessed quote", async () => {
+    const response = await new DeterministicAIProvider().generateReply(makeRequest("Swap USDC to ETH"));
+    expect(runTool).not.toHaveBeenCalled();
     expect(response.tradeProposal).toBeUndefined();
-    expect(response.reply.toLowerCase()).toContain("quote");
+    expect(response.reply).toContain("How much");
   });
 
   it("surfaces a grounded prepare failure and never invents a quote", async () => {

@@ -96,6 +96,6 @@ describe("runToolCallingLoop — prepare_swap", () => {
     );
 
     expect(response.tradeProposal).toEqual(proposal);
-    expect(sendCompletion).toHaveBeenCalledTimes(2);
+    expect(sendCompletion).toHaveBeenCalledTimes(1); // stop once the review-only proposal exists
   });
 });

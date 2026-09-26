@@ -262,3 +262,11 @@ describe("consumer swap confirmation (presentation only; no wallet calls)", () =
     expect(render({ proposal: null })).toBe("");
   });
 });
+
+it("shows a confirmed on-chain failure without raw errors or hiding the transaction link", () => {
+  const html = render({ executionState: "ERROR", executionError: { code: "SEND_FAILED", message: "The swap transaction failed on Base." }, swapHash: HASH });
+  expect(html).toContain("Transaction failed on-chain.");
+  expect(html).toContain(`href="https://basescan.org/tx/${HASH}"`);
+  expect(html).not.toContain("Swap confirmed");
+  expectConsumerCopy(html);
+});

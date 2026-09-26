@@ -1,3 +1,4 @@
+import { extractBaseSwapIntent, extractUnresolvedSwapOrder, extractTradeSymbol, isTradeExecutionPrompt, isTransferPrompt } from "@/lib/agent-intelligence";
 import type { AIProvider } from "./ai-provider";
 import type { AIProviderKind } from "./ai-provider-config";
 import { createAIProvider } from "./ai-provider-factory";
@@ -39,6 +40,12 @@ class TaskRoutedAIProvider implements AIProvider {
   lastChain: ProviderChainAIProvider | null = null;
 
   async generateReply(request: Parameters<AIProvider["generateReply"]>[0]) {
+    // Clear execution intents take the existing deterministic prepare-only path.
+    // No model capability/list/balance loop is needed to parse a sized order.
+    if (!isTransferPrompt(request.prompt) && isTradeExecutionPrompt(request.prompt) &&
+      (extractBaseSwapIntent(request.prompt) || extractUnresolvedSwapOrder(request.prompt) || extractTradeSymbol(request.prompt))) {
+      return safetyNet.generateReply(request);
+    }
     const task = classifyAgentTask(request.prompt);
     const order = resolveProviderKindOrder(task);
     const networkProviders = order

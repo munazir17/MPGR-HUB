@@ -211,7 +211,7 @@ export function extractTradeSymbol(rawPrompt: string): string | null {
  * trading, not orders.
  */
 export function isTradeExecutionPrompt(rawPrompt: string): boolean {
-  const text = normalizePrompt(rawPrompt);
+  const text = normalizePrompt(rawPrompt.replace(/\b(swap|trade|convert|exchange)\.(?=\d)/gi, "$1 "));
   if (!/\b(buy|sell|swap|trade|order|convert|exchange)\b/.test(text)) return false;
   const advice =
     /^(should|why|when)\b|\bshould (?:i|we)\b|\bhow (?:do|does|can|to|would|much do)\b|\bis it (?:a )?good\b|\b(?:good|right) time to\b|\bworth (?:buying|selling)\b|\bthoughts on\b|\bwhat do you think\b|\btrade ideas?\b/;

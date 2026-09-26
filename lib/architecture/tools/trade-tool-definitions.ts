@@ -1,3 +1,4 @@
+import { publicTradeError } from "@/lib/trade/trade-chat";
 // lib/architecture/tools/trade-tool-definitions.ts
 //
 // Agent-facing trade / tokenized-stock tools.
@@ -39,7 +40,7 @@ function tradeEndpoint(path: string): string {
 }
 
 function toolFailureCode(code: unknown): "INVALID_INPUT" | "WALLET_NOT_CONNECTED" | "DATA_UNAVAILABLE" | "PROVIDER_ERROR" {
-  if (code === "INVALID_INPUT" || code === "UNSUPPORTED_ASSET") return "INVALID_INPUT";
+  if (["INVALID_INPUT", "UNSUPPORTED_ASSET", "INVALID_ADDRESS", "TOKEN_NOT_CONTRACT", "TOKEN_NOT_ERC20", "TOKEN_AMBIGUOUS", "TOKEN_NOT_FOUND"].includes(String(code))) return "INVALID_INPUT";
   if (code === "WALLET_REQUIRED" || code === "WALLET_NOT_CONNECTED") return "WALLET_NOT_CONNECTED";
   if (code === "CREDENTIALS_MISSING" || code === "LIQUIDITY_UNAVAILABLE" || code === "EXECUTION_UNAVAILABLE") {
     return "DATA_UNAVAILABLE";
@@ -132,13 +133,13 @@ export const tradeGetPriceTool: AgentTool = {
       if (!ok || !payload) {
         return toolError("trade_get_price", {
           code: toolFailureCode(payload?.code),
-          message: typeof payload?.error === "string" ? payload.error : "Could not fetch a Base swap price.",
+          message: publicTradeError({ code: payload?.code, message: payload?.error }),
           retryable: true,
         });
       }
       return toolSuccess(
         "trade_get_price",
-        { price: payload.price, provider: payload.provider, network: "base" },
+        { price: payload.price, from: payload.from, to: payload.to, provider: payload.provider, network: "base" },
         { source: typeof payload.provider === "string" ? payload.provider : "cdp-trade-api", chainId: 8453 },
       );
     } catch {
@@ -170,7 +171,7 @@ export const tradePrepareSwapTool: AgentTool = {
       if (!ok || !payload) {
         return toolError("trade_prepare_swap", {
           code: toolFailureCode(payload?.code),
-          message: typeof payload?.error === "string" ? payload.error : "Could not prepare a Base swap quote.",
+          message: publicTradeError({ code: payload?.code, message: payload?.error }),
         });
       }
       const proposal = payload.proposal as { provider?: string } | undefined;
@@ -320,7 +321,7 @@ export const tokenizedStockPrepareOrderTool: AgentTool = {
       if (!ok || !payload) {
         return toolError("tokenized_stock_prepare_order", {
           code: toolFailureCode(payload?.code),
-          message: typeof payload?.error === "string" ? payload.error : "Could not prepare a tokenized-stock Base swap.",
+          message: publicTradeError({ code: payload?.code, message: payload?.error }),
         });
       }
       const proposal = payload.proposal as { provider?: string } | undefined;

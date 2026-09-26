@@ -1,3 +1,4 @@
+import { publicTradeError } from "@/lib/trade/trade-chat";
 import { NextResponse } from "next/server";
 
 import { getRoutedSwapPrice } from "@/lib/trade/trade-swap-router";
@@ -66,7 +67,7 @@ export async function POST(request: Request) {
           ? 401
           : 502;
     return json(
-      { error: result.error.message, code: result.error.code },
+      { error: publicTradeError(result.error), code: result.error.code },
       { status, headers: { "Cache-Control": "no-store" } },
     );
   }

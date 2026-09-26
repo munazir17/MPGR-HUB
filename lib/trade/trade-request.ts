@@ -10,7 +10,7 @@ import {
 } from "./trade-config";
 import { parseAtomicAmount, parseHumanTokenAmount } from "./trade-format";
 import { resolveTradeToken, type ResolveTradeTokenResult } from "./trade-tokens";
-import { readB20Decimals } from "./tokenized-stocks-onchain";
+import { resolveSwapToken } from "./trade-token-resolution";
 import type { TradeError, TradeTokenRef } from "./trade-types";
 
 export interface ParsedTradeSwapRequest {
@@ -35,41 +35,9 @@ function resolveFromAmount(raw: Record<string, unknown>, decimals: number): bigi
   }
   const fromAmount = raw.fromAmount;
   if (fromAmount == null) return null;
-  const text = String(fromAmount).trim();
-  if (/[.$]/.test(text) || text.startsWith("$")) {
-    return parseHumanTokenAmount(text, decimals);
-  }
-  const digits = text.replace(/,/g, "");
-  if (/^[0-9]+$/.test(digits) && digits.length < decimals) {
-    return parseHumanTokenAmount(digits, decimals);
-  }
+  // Wire contract: amount = human units; fromAmount = atomic units.
+  // Never guess from digit count (80000 atomic USDC is 0.08, not 80,000).
   return parseAtomicAmount(fromAmount);
-}
-
-// SAFETY: neither a B20 token nor an arbitrary/unverified ERC-20
-// address should ever get its decimals from a hardcoded guess when
-// that value feeds an amount conversion — that is a real-funds unit
-// error (e.g. a catalog default of 18 against an actual on-chain
-// value of 8 is a 10^10x amount error). This verifies live decimals
-// on-chain for either side of the pair whenever the value isn't
-// already known-authoritative (a catalog-verified token like
-// USDC/ETH/MPGR keeps its known decimals unchanged), and fails
-// closed — it never falls back to a guess — if that read does not
-// succeed.
-async function withVerifiedB20Decimals(token: TradeTokenRef): Promise<{ ok: true; token: TradeTokenRef } | { ok: false; error: TradeError }> {
-  const needsVerification = token.kind === "b20-tokenized-stock" || (token.kind === "erc20" && token.verified === false);
-  if (!needsVerification) return { ok: true, token };
-  const decimals = await readB20Decimals(token.address as `0x${string}`);
-  if (decimals === null) {
-    return {
-      ok: false,
-      error: {
-        code: "PROVIDER_ERROR",
-        message: `Could not verify ${token.symbol}'s on-chain decimals — refusing to guess for a real-funds trade. Try again shortly.`,
-      },
-    };
-  }
-  return { ok: true, token: { ...token, decimals } };
 }
 
 export async function parseTradeSwapRequest(
@@ -80,27 +48,15 @@ export async function parseTradeSwapRequest(
     return { ok: false, error: { code: "INVALID_INPUT", message: "Request body must be a JSON object." } };
   }
 
-  const fromResolved = resolveTradeToken(raw.fromToken ?? raw.from);
-  const toResolved = resolveTradeToken(raw.toToken ?? raw.to);
-  if (!fromResolved.ok) {
-    return { ok: false, error: { code: "UNSUPPORTED_ASSET", message: fromResolved.message } };
-  }
-  if (!toResolved.ok) {
-    return { ok: false, error: { code: "UNSUPPORTED_ASSET", message: toResolved.message } };
-  }
-  if (fromResolved.token.address.toLowerCase() === toResolved.token.address.toLowerCase()) {
-    return {
-      ok: false,
-      error: { code: "INVALID_INPUT", message: "Sell token and buy token must be different." },
-    };
-  }
-
   const [from, to] = await Promise.all([
-    withVerifiedB20Decimals(fromResolved.token),
-    withVerifiedB20Decimals(toResolved.token),
+    resolveSwapToken(raw.fromToken ?? raw.from),
+    resolveSwapToken(raw.toToken ?? raw.to),
   ]);
   if (!from.ok) return { ok: false, error: from.error };
   if (!to.ok) return { ok: false, error: to.error };
+  if (from.token.address.toLowerCase() === to.token.address.toLowerCase()) {
+    return { ok: false, error: { code: "INVALID_INPUT", message: "Sell token and buy token must be different." } };
+  }
 
   const fromAmount = resolveFromAmount(raw, from.token.decimals);
   if (fromAmount === null) {
@@ -205,8 +161,8 @@ export function hydrateTradeSwapArguments(
     // for the real (async, on-chain-verified) parse to handle.
     return {
       ...next,
-      fromToken: from.token.symbol,
-      toToken: to.token.symbol,
+      fromToken: /^0x/i.test(String(next.fromToken ?? next.from)) || !from.token.verified ? from.token.address : from.token.symbol,
+      toToken: /^0x/i.test(String(next.toToken ?? next.to)) || !to.token.verified ? to.token.address : to.token.symbol,
       taker: (typeof next.taker === "string" && next.taker.trim()) || undefined,
     };
   }
@@ -219,8 +175,8 @@ export function hydrateTradeSwapArguments(
       : clampSlippageBps(next.slippageBps);
 
   return {
-    fromToken: from.token.symbol,
-    toToken: to.token.symbol,
+    fromToken: /^0x/i.test(String(next.fromToken ?? next.from)) || !from.token.verified ? from.token.address : from.token.symbol,
+    toToken: /^0x/i.test(String(next.toToken ?? next.to)) || !to.token.verified ? to.token.address : to.token.symbol,
     fromAmount: fromAmount.toString(),
     taker: (typeof next.taker === "string" && next.taker.trim()) || undefined,
     slippageBps: slippageBps ?? TRADE_DEFAULT_SLIPPAGE_BPS,

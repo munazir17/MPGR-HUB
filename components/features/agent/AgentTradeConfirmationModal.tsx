@@ -75,7 +75,8 @@ function userError(error: TradeError | null, submitted: boolean): string {
     case "QUOTE_CHANGED": return "The price changed. Request a fresh quote before confirming.";
     case "APPROVAL_FAILED": return "Token approval failed. Check your wallet before trying again.";
     case "SIGNING_FAILED": return "Your wallet could not confirm this swap. Please try again.";
-    case "SEND_FAILED": return "Swap failed. Check any submitted transaction before trying again.";
+    case "SEND_FAILED": return error.message === "The swap transaction failed on Base."
+      ? "Transaction failed on-chain." : "Swap failed. Check any submitted transaction before trying again.";
     case "PROVIDER_ERROR": return submitted
       ? "Confirmation is unavailable. Check the submitted transaction before trying again."
       : "Swap details are temporarily unavailable. Please try again.";

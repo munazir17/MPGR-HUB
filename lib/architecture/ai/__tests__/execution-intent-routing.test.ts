@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { extractBaseSwapIntent } from "@/lib/agent-intelligence";
-import { toolSuccess } from "@/lib/architecture/tools/agent-tool-result";
+import { toolSuccess, toolError } from "@/lib/architecture/tools/agent-tool-result";
 
 import type { AIProviderRequest } from "../ai-provider";
 import { DeterministicAIProvider } from "../deterministic-ai-provider";
@@ -198,24 +198,13 @@ describe("explicit orders route into the live execution flow", () => {
 });
 
 describe("unsupported assets can never become executable", () => {
-  it("refuses a sized order over an unknown ticker without calling any tool", async () => {
-    const response = await new DeterministicAIProvider().generateReply(
-      makeRequest("buy 10 USDC of FAKECOIN"),
-    );
-
-    expect(runTool).not.toHaveBeenCalled();
+  it.each(["buy 10 USDC of FAKECOIN", "sell 5 SCAMCOIN for USDC"])("discovers unknown symbols without inventing an executable token: %s", async (prompt) => {
+    runTool.mockResolvedValue(toolError("trade_prepare_swap", { code: "INVALID_INPUT", message: "No matching Base token was found in the discovery catalog. Provide the exact contract address to check it directly." }));
+    const response = await new DeterministicAIProvider().generateReply(makeRequest(prompt));
+    expect(runTool).toHaveBeenCalledTimes(1);
+    expect(runTool.mock.calls[0][0]).toBe("trade_prepare_swap");
     expect(response.tradeProposal).toBeUndefined();
-    expect(response.reply).toContain("FAKECOIN");
-    expect(response.reply.toLowerCase()).toContain("not an asset this app supports");
-    expect(response.reply).toContain("Nothing was signed");
-  });
-
-  it("refuses an unknown sell asset too", async () => {
-    const response = await new DeterministicAIProvider().generateReply(
-      makeRequest("sell 5 SCAMCOIN for USDC"),
-    );
-    expect(runTool).not.toHaveBeenCalled();
-    expect(response.reply).toContain("SCAMCOIN");
+    expect(response.reply).toContain("exact contract address");
   });
 
   it("still accepts an allowlisted contract address (verified, not guessed)", async () => {
