@@ -1,3 +1,5 @@
+import { findBasePair } from "@/lib/markets/base-pairs";
+import { BASE_USDC } from "@/lib/trade/trade-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -374,19 +376,17 @@ describe("describe_x402_tape", () => {
 });
 
 describe("prepare_swap", () => {
-  it("fails closed on off-allowlist symbols — never invents a contract", async () => {
+  it("passes literal unlisted symbols to discovery without inventing a contract", async () => {
+    stubJson(400, { code: "TOKEN_NOT_FOUND", error: "No match" });
     const runtime = makeRuntime();
-    const result = await runtime.executeTool(
-      "prepare_swap",
-      { sellSymbol: "USDC", buySymbol: "bNVDA", amount: "10" },
-      { confirmationMode: "always_confirm", requestId: "t-s1", walletAddress: WALLET },
-    );
+    const result = await runtime.executeTool("prepare_swap", { sellSymbol: "USDC", buySymbol: "bNVDA", amount: "10" },
+      { confirmationMode: "always_confirm", requestId: "t-s1", walletAddress: WALLET });
     expect(result.success).toBe(false);
-    // The deterministic router drops off-allowlist tickers, so the
-    // target tool's schema validation fails closed with INVALID_INPUT —
-    // no quote route is ever reached, no contract is invented.
     expect(result.error?.code).toBe("INVALID_INPUT");
-    expect(vi.mocked(fetch).mock.calls).toHaveLength(0);
+    expect(result.error?.message).toContain("exact contract address");
+    const call = vi.mocked(fetch).mock.calls[0];
+    expect(String(call[0])).toBe("/api/trade/quote");
+    expect(JSON.parse(String((call[1] as RequestInit).body)).toToken).toBe("bNVDA");
   });
 
   it("is refused without a wallet even for allowlisted pairs", async () => {
@@ -464,8 +464,8 @@ describe("prepare_swap", () => {
     // known-token symbols + atomic fromAmount + session taker — the
     // exact contract /api/trade/quote expects (same as trade_prepare_swap).
     const body = JSON.parse(String((called?.[1] as RequestInit).body));
-    expect(body.fromToken).toBe("USDC");
-    expect(body.toToken).toBe("cbBTC");
+    expect(body.fromToken.toLowerCase()).toBe(BASE_USDC.toLowerCase());
+    expect(body.toToken.toLowerCase()).toBe(findBasePair("cbBTC")!.address.toLowerCase());
     expect(body.fromAmount).toBe("25000000");
     expect(body.taker).toBe(WALLET);
     expect(result.data).toMatchObject({ proposal: { id: "cdp_x" } });

@@ -111,9 +111,11 @@ export async function handleMcpMessage(message: unknown, deps: McpDeps): Promise
             isError: !outcome.ok,
           },
         };
-      } catch (error) {
-        // Tool failures are reported in-band (isError) without leaking internals.
-        console.error("[mcp] tool_failed", { tool: tool.name, message: error instanceof Error ? error.message.slice(0, 200) : "unknown" });
+      } catch {
+        // Provider errors may embed authenticated RPC URLs, headers, request
+        // bodies or signatures. Even a truncated message/name is untrusted;
+        // log only server-owned fields, never the thrown value or its cause.
+        console.error("[mcp] tool_failed", { tool: tool.name, code: "UPSTREAM_ERROR" });
         const structured = { error: { code: "UPSTREAM_ERROR", message: "The tool failed while reading chain/provider data. Retry shortly." } };
         return {
           jsonrpc: "2.0",

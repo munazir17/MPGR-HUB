@@ -35,17 +35,13 @@ function normalizePrepareSwapArgs(args: Record<string, unknown>): Record<string,
     (typeof args.buyAddress === "string" && args.buyAddress.trim()) ||
     "";
 
-  // Resolve each side against the allowlists (Base pairs first, then the
-  // known trade token catalog: ETH/WETH/USDC/MPGR/B20). Anything that
-  // resolves to neither a known token nor a raw 0x address is DROPPED —
-  // the target tool's required-field validation then fails closed with
-  // INVALID_INPUT instead of an unknown ticker reaching a quote route.
+  // Keep literal unknown names/addresses for authoritative discovery and RPC
+  // validation at the quote API. Never drop or replace them with display labels.
   const resolveSide = (raw: string): string | undefined => {
     if (!raw) return undefined;
     const pair = findBasePair(raw);
     if (pair) return pair.address;
-    if (resolveTradeToken(raw).ok) return raw;
-    return undefined;
+    return raw;
   };
 
   const fromToken = resolveSide(sellRaw) ?? (typeof args.fromToken === "string" ? args.fromToken : undefined);

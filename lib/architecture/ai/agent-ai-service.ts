@@ -1,3 +1,4 @@
+import { createSingleFlight } from "@/lib/trade/trade-inflight";
 import {
   appendAssistantReply,
   appendCommandMessage,
@@ -64,6 +65,8 @@ export interface AgentAIServiceDeps {
 // lib/agent-engine.ts's setMessageFeedback() toggles a repeated click
 // off, and an "un-click" must not be recorded as a preference signal.
 export class AgentAIService {
+  private readonly pendingReplies = createSingleFlight<AgentState>();
+
   constructor(private readonly deps: AgentAIServiceDeps) {}
 
   async loadState(address: string): Promise<AgentState> {
@@ -84,6 +87,10 @@ export class AgentAIService {
   }
 
   async generateReply(address: string, userPrompt: string, context: AgentContext): Promise<AgentState> {
+    return this.pendingReplies(`${address.toLowerCase()}:${userPrompt.trim()}`, () => this.generateReplyOnce(address, userPrompt, context));
+  }
+
+  private async generateReplyOnce(address: string, userPrompt: string, context: AgentContext): Promise<AgentState> {
     const state = await this.deps.performanceMonitor.time("agent.generateReply", () =>
       appendAssistantReply(address, userPrompt, context)
     );

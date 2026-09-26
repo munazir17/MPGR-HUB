@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useTradeConfirmation } from "./useTradeConfirmation";
 import { useTradeExecution } from "./useTradeExecution";
@@ -49,8 +49,11 @@ export function useTradeQuote(
     execute(proposal, confirmationState);
   }, [proposal, confirmationState, execute]);
 
+  const reportedSwaps = useRef(new Set<string>());
   useEffect(() => {
     if (executionState !== "SUCCESS" || !proposal || !swapHash) return;
+    if (reportedSwaps.current.has(swapHash)) return;
+    reportedSwaps.current.add(swapHash);
     onSwapSuccess?.(proposal, swapHash, approvalHash);
   }, [executionState, proposal, swapHash, approvalHash, onSwapSuccess]);
 

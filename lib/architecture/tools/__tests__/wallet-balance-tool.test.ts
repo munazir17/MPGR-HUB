@@ -58,7 +58,7 @@ describe("wallet_balances tool", () => {
     const result = await walletBalancesTool.execute({ symbol: "FAKECOIN" }, context());
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe("INVALID_INPUT");
-    expect(result.error?.message).toContain("FAKECOIN");
+    expect(result.error?.message).toContain("exact Base token contract");
     expect(readContractsMock).not.toHaveBeenCalled();
   });
 

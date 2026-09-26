@@ -1,3 +1,5 @@
+import { formatTradeReview, formatTradePrice, publicAgentContent } from "@/lib/trade/trade-chat";
+import { hasNegativeTradeAmount } from "./tool-call-normalization";
 import {
   extractBaseSwapIntent,
   extractUnresolvedSwapOrder,
@@ -43,6 +45,7 @@ export class DeterministicAIProvider implements AIProvider {
   readonly requiresNetwork = false;
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
+    if (hasNegativeTradeAmount(request.prompt)) return helpResponse("The swap amount must be positive. Nothing was signed or submitted.");
     // Strict wallet-balance questions ("What is my MSTRc balance?", "How much
     // MPGR do I have?", "What's in my wallet?", "How much is my wallet
     // worth?") are answered from live reads — and ONLY what was asked. This
@@ -60,6 +63,11 @@ export class DeterministicAIProvider implements AIProvider {
     // prepare cannot fall into trade_prepare_swap.
     if (isTradePrompt(request.prompt) && extractTradeSymbol(request.prompt)) {
       return prepareOrExplainTrade(request);
+    }
+
+    const directSwap = extractBaseSwapIntent(request.prompt);
+    if (directSwap && !directSwap.quoteOnly && isTradeExecutionPrompt(request.prompt)) {
+      return prepareOrExplainBaseSwap(request, directSwap);
     }
 
     if (isCryptoSwapQuotePrompt(request.prompt)) {
@@ -89,13 +97,13 @@ export class DeterministicAIProvider implements AIProvider {
     // 0x-address route instead of being handed generic help.
     const unresolvedOrder = extractUnresolvedSwapOrder(request.prompt);
     if (unresolvedOrder) {
-      const named = unresolvedOrder.unresolved.map((operand) => '"' + operand + '"').join(" and ");
-      return helpResponse(
-        named +
-          " is not an asset this app supports, so I will not prepare that order — I never invent a contract from a symbol. " +
-          "Supported: ETH, WETH, USDC, MPGR, the Coinbase wrapped assets (cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA) and the official Coinbase Tokenized Stocks (AAPLc, COINc, TSLAc, …). " +
-          "If you mean a different Base token, paste its 0x contract address — that route quotes through Coinbase CDP/0x and stays unverified until you review and confirm. Nothing was signed or submitted.",
-      );
+      if (!unresolvedOrder.amount) return helpResponse("How much of the sell token do you want to swap? Include the token name or exact Base contract.");
+      const result = await runRegisteredTool("trade_prepare_swap", {
+        fromToken: unresolvedOrder.sell, toToken: unresolvedOrder.buy, amount: unresolvedOrder.amount,
+      }, request);
+      const proposal = result.success ? (result.data as { proposal?: TradeProposal } | undefined)?.proposal : undefined;
+      if (proposal) return { ...helpResponse(formatTradeReview(proposal)), tradeProposal: proposal };
+      return helpResponse(publicAgentContent(result.error?.message ?? "Could not resolve and prepare this swap. Please try again."));
     }
 
     return generateIntelligentReply(
@@ -215,7 +223,7 @@ async function quoteOrPrepareCryptoSwap(
         return {
           intent: "general_help",
           reply:
-            "A Base swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.",
+            formatTradeReview(proposal),
           actions: [],
           highlights: [],
           followUps: getFollowUpPrompts("general_help"),
@@ -239,16 +247,10 @@ async function quoteOrPrepareCryptoSwap(
   );
 
   if (result.success) {
-    const price = (result.data as { price?: unknown; provider?: string } | undefined)?.price;
     return {
       intent: "general_help",
       reply:
-        "Live Base quote for " +
-        pair.fromToken +
-        " → " +
-        pair.toToken +
-        (price ? ": " + JSON.stringify(price) : " is ready from the trade price path") +
-        ". This is a quote only — nothing is signed or submitted.",
+        formatTradePrice(result.data as Parameters<typeof formatTradePrice>[0]),
       actions: [],
       highlights: [],
       followUps: getFollowUpPrompts("general_help"),
@@ -289,16 +291,10 @@ async function quoteBaseSwapSide(
   );
 
   if (result.success) {
-    const price = (result.data as { price?: unknown; provider?: string } | undefined)?.price;
     return {
       intent: "general_help",
       reply:
-        "Live Base quote for " +
-        intent.sell.input +
-        " → " +
-        intent.buy.input +
-        (price ? ": " + JSON.stringify(price) : " is ready from the trade price path") +
-        ". This is a quote only — nothing is signed or submitted.",
+        formatTradePrice(result.data as Parameters<typeof formatTradePrice>[0]),
       actions: [],
       highlights: [],
       followUps: getFollowUpPrompts("general_help"),
@@ -370,7 +366,7 @@ async function prepareOrExplainBaseSwap(
       return {
         intent: "general_help",
         reply:
-          "A Base swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.",
+          formatTradeReview(proposal),
         actions: [],
         highlights: [],
         followUps: getFollowUpPrompts("general_help"),
@@ -459,7 +455,7 @@ async function prepareOrExplainTrade(
         return {
           intent: "general_help",
           reply:
-            "A tokenized-stock swap proposal is ready for you to review. Nothing is signed or submitted until you explicitly confirm.",
+            formatTradeReview(proposal),
           actions: [],
           highlights: [],
           followUps: getFollowUpPrompts("general_help"),
@@ -516,7 +512,7 @@ async function prepareOrExplainTrade(
 function helpResponse(reply: string): AIProviderResponse {
   return {
     intent: "general_help",
-    reply,
+    reply: publicAgentContent(reply),
     actions: [],
     highlights: [],
     followUps: getFollowUpPrompts("general_help"),

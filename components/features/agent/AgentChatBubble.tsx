@@ -1,5 +1,7 @@
 "use client";
 
+import { publicAgentContent } from "@/lib/trade/trade-chat";
+
 import { motion } from "framer-motion";
 import { User } from "lucide-react";
 import { clsx } from "clsx";
@@ -60,8 +62,9 @@ export function AgentChatBubble({
   onReviewTransferProposal,
 }: AgentChatBubbleProps) {
   const isUser = message.role === "user";
-  const { text: streamedContent, done: streamDone } = useStreamingText(message.content, !isUser && !!isStreaming);
-  const displayContent = !isUser && isStreaming ? streamedContent : message.content;
+  const safeContent = isUser ? message.content : publicAgentContent(message.content);
+  const { text: streamedContent, done: streamDone } = useStreamingText(safeContent, !isUser && !!isStreaming);
+  const displayContent = !isUser && isStreaming ? streamedContent : safeContent;
   const revealComplete = isUser || !isStreaming || streamDone;
 
   const hasHighlights = !isUser && revealComplete && !!message.highlights && message.highlights.length > 0;
@@ -98,13 +101,17 @@ export function AgentChatBubble({
 
         <div
           className={clsx(
-            "min-w-0 break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
+            "min-w-0 whitespace-pre-line break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
             isUser
               ? "rounded-br-md bg-gradient-blue font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_2px_0_#1E63DB]"
               : "rounded-bl-md border border-white/[0.08] bg-surface-2 text-white"
           )}
         >
-          {displayContent}
+          {isUser ? displayContent : displayContent.split(/(https:\/\/basescan\.org\/tx\/0x[a-fA-F0-9]{64})/g).map((part, index) =>
+            /^https:\/\/basescan\.org\/tx\/0x[a-fA-F0-9]{64}$/.test(part)
+              ? <a key={index} href={part} target="_blank" rel="noopener noreferrer" className="text-primary-glow underline">View on BaseScan</a>
+              : part,
+          )}
         </div>
 
         {hasActions && (
@@ -143,7 +150,7 @@ export function AgentChatBubble({
           <span className="font-mono text-[10px] tabular-nums text-muted">{formatTime(message.timestamp)}</span>
           {!isUser && onFeedback && revealComplete && (
             <AgentMessageToolbar
-              content={message.content}
+              content={safeContent}
               feedback={message.feedback}
               onFeedback={(feedback) => onFeedback(message.id, feedback)}
               showRegenerate={showRegenerate}

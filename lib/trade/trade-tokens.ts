@@ -89,21 +89,25 @@ export const KNOWN_TRADE_TOKENS: readonly KnownTradeToken[] = [
 
 function checksumOrAsGiven(address: string): Address {
   try {
-    return getAddress(address);
+    return getAddress(address.toLowerCase());
   } catch {
     return address as Address;
   }
+}
+
+export function findKnownTradeTokenMatches(input: string): KnownTradeToken[] {
+  const key = input.trim().toLowerCase();
+  return [...new Map(KNOWN_TRADE_TOKENS.filter(token => token.aliases.includes(key) || token.symbol.toLowerCase() === key || token.name.toLowerCase() === key).map(token => [token.address.toLowerCase(), token])).values()];
 }
 
 export function findKnownTradeToken(input: string): KnownTradeToken | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
   const alias = trimmed.toLowerCase();
-  const byAlias = KNOWN_TRADE_TOKENS.find((token) =>
-    token.aliases.includes(alias),
-  );
-  if (byAlias) return byAlias;
-  if (!isAddress(trimmed) && !isNativeEthSentinel(trimmed)) return null;
+  const matches = findKnownTradeTokenMatches(alias);
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) return null;
+  if (!isAddress(trimmed, { strict: false }) && !isNativeEthSentinel(trimmed)) return null;
   const lower = trimmed.toLowerCase();
   return (
     KNOWN_TRADE_TOKENS.find((token) => token.address.toLowerCase() === lower) ??
@@ -140,7 +144,7 @@ export function resolveTradeToken(input: unknown): ResolveTradeTokenResult {
       },
     };
   }
-  if (isAddress(trimmed) || isNativeEthSentinel(trimmed)) {
+  if (isAddress(trimmed, { strict: false }) || isNativeEthSentinel(trimmed)) {
     const address = checksumOrAsGiven(trimmed);
     const kind: TradeTokenKind = isNativeEthSentinel(trimmed) ? "native" : "erc20";
     return {
@@ -148,7 +152,9 @@ export function resolveTradeToken(input: unknown): ResolveTradeTokenResult {
       token: {
         address,
         symbol: `${address.slice(0, 6)}…${address.slice(-4)}`,
-        name: "Unknown token",
+        name: "Token metadata pending",
+        // Placeholder for synchronous intent parsing ONLY. The async swap
+        // resolver must replace this before any amount conversion or quote.
         decimals: 18,
         kind,
         verified: false,
@@ -157,7 +163,9 @@ export function resolveTradeToken(input: unknown): ResolveTradeTokenResult {
   }
   return {
     ok: false,
-    message: `"${trimmed}" is not a known Base token in this app and is not a 0x address. Refusing to invent a contract.`,
+    message: /^0x/i.test(trimmed)
+      ? "Invalid token address. Use 0x followed by exactly 40 hexadecimal characters."
+      : "No unique catalog match. Provide the exact Base token contract. Refusing to invent a contract.",
   };
 }
 

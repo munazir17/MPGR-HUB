@@ -1,3 +1,4 @@
+import { publicTradeError } from "@/lib/trade/trade-chat";
 // lib/architecture/tools/stocks-tool-definitions.ts
 //
 // Base Stocks Agent tools (read + prepare only):
@@ -487,9 +488,9 @@ const prepareSwapSchema: AgentToolSchema = {
 };
 
 /**
- * Resolves one side of the swap to an allowlisted address. Unknown
- * tickers fail closed here — the model can never make this tool quote an
- * arbitrary contract by symbol. Raw 0x addresses pass through to the
+ * Resolves known pairs locally; other literal names go to the quote API
+ * for Uniswap discovery and Base RPC validation. This tool never guesses
+ * a contract from a symbol. Raw 0x addresses pass through to the
  * quote routes, which mark them unverified and add risk warnings (the
  * existing, audited behavior).
  */
@@ -514,9 +515,9 @@ function resolveSwapSide(
     if (upper === "ETH" || upper === "WETH" || upper === "MPGR") {
       return { address: upper, symbol: upper };
     }
-    return {
-      error: `"${symbol}" is not on the official Base pairs allowlist (Coinbase wrapped assets, native USDC, official B20 stocks) and is not ETH/WETH/MPGR. Refusing to invent a contract.`,
-    };
+    // Discovery and RPC validation live at the existing quote API boundary.
+    // Passing the user's literal symbol is not inventing a contract.
+    return { address: symbol, symbol };
   }
   if (/^0x[a-fA-F0-9]{40}$/.test(address)) {
     return { address, symbol: address };
@@ -583,10 +584,7 @@ export const prepareSwapTool: AgentTool = {
         if (!ok || !payload?.proposal) {
           return toolError("prepare_swap", {
             code: toolFailureCode(payload?.code),
-            message:
-              typeof payload?.error === "string"
-                ? payload.error
-                : `Could not prepare the USDC → ${buyStock.symbol} swap.`,
+            message: publicTradeError({ code: payload?.code, message: payload?.error }),
           });
         }
         const stockBuyProposal = payload.proposal as { provider?: string } | undefined;
@@ -604,10 +602,7 @@ export const prepareSwapTool: AgentTool = {
         if (!ok || !payload?.proposal) {
           return toolError("prepare_swap", {
             code: toolFailureCode(payload?.code),
-            message:
-              typeof payload?.error === "string"
-                ? payload.error
-                : `Could not prepare the ${sellStock.symbol} → USDC swap.`,
+            message: publicTradeError({ code: payload?.code, message: payload?.error }),
           });
         }
         const stockSellProposal = payload.proposal as { provider?: string } | undefined;
@@ -626,10 +621,7 @@ export const prepareSwapTool: AgentTool = {
       if (!ok || !payload?.proposal) {
         return toolError("prepare_swap", {
           code: toolFailureCode(payload?.code),
-          message:
-            typeof payload?.error === "string"
-              ? payload.error
-              : `Could not prepare the ${sell.symbol} → ${buy.symbol} swap.`,
+          message: publicTradeError({ code: payload?.code, message: payload?.error }),
         });
       }
       const proposal = payload.proposal as { provider?: string } | undefined;

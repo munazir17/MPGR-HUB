@@ -330,6 +330,7 @@ export async function executeTrade(
 
   let proposal = input.proposal;
   let approvalHash: Hash | null = null;
+  let swapHash: Hash | null = null;
 
   try {
     if (!isTradeQuoteFresh(proposal)) {
@@ -362,7 +363,10 @@ export async function executeTrade(
         fresh.from.address.toLowerCase() !== proposal.from.address.toLowerCase() ||
         fresh.to.address.toLowerCase() !== proposal.to.address.toLowerCase() ||
         fresh.fromAmount !== proposal.fromAmount ||
-        fresh.taker.toLowerCase() !== proposal.taker.toLowerCase()
+        fresh.taker.toLowerCase() !== proposal.taker.toLowerCase() ||
+        fresh.slippageBps !== proposal.slippageBps ||
+        fresh.provider !== proposal.provider ||
+        fresh.transaction?.to.toLowerCase() !== proposal.transaction?.to.toLowerCase()
       ) {
         const snapshot = fail("QUOTE_CHANGED", "The refreshed quote no longer matches this proposal.");
         onChange(snapshot);
@@ -391,7 +395,7 @@ export async function executeTrade(
       // so every invariant — including the freshly re-read wallet
       // balance — must hold for it, not just for the quote the user
       // reviewed.
-      const revalidatedFresh = revalidateTradeProposal(proposal, account);
+      const revalidatedFresh = revalidateTradeProposal(fresh, account);
       if (revalidatedFresh.state !== "VALIDATED") {
         const snapshot = fail(
           revalidatedFresh.error?.code ?? "INVALID_INPUT",
@@ -504,7 +508,6 @@ export async function executeTrade(
       feeError: null,
     });
 
-    let swapHash: Hash;
     try {
       swapHash = await sendTransaction(config, {
         account,
@@ -638,6 +641,19 @@ export async function executeTrade(
       onChange(success);
       return success;
     }
+  } catch {
+    // Receipt RPC failures are NOT proof of a reverted transaction. Keep the
+    // submitted hashes visible and stop here (including any fee transfer).
+    // Never leave the UI stuck in PENDING or expose a raw provider error.
+    const snapshot = {
+      ...fail("PROVIDER_ERROR", swapHash
+        ? "Swap submitted, but confirmation is unavailable. Its status is unknown. Check BaseScan before retrying."
+        : "Could not complete trade preparation. No swap was submitted. Request a fresh quote."),
+      approvalHash,
+      swapHash,
+    };
+    onChange(snapshot);
+    return snapshot;
   } finally {
     inFlight.delete(key);
   }

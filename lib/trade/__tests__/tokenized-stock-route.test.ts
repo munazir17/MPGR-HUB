@@ -111,14 +111,14 @@ describe("resolveTokenizedStockPrepareRoute", () => {
       expect(routed.args.buySymbol).toBeUndefined();
     });
 
-    it("fails closed on off-allowlist tickers by dropping the unresolvable side", () => {
+    it("preserves unlisted symbols for quote API discovery without inventing addresses", () => {
       const routed = resolveTokenizedStockPrepareRoute("prepare_swap", {
         sellSymbol: "USDC",
         buySymbol: "bNVDA",
         amount: "10",
       });
       expect(routed.toolId).toBe("trade_prepare_swap");
-      expect(routed.args.toToken).toBeUndefined();
+      expect(routed.args.toToken).toBe("bNVDA");
     });
 
     it("fails closed on same-token swaps and non-positive amounts", () => {

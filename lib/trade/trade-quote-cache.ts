@@ -62,7 +62,11 @@ export async function withTradeQuoteCache<T>(
 
   const promise = compute()
     .then((value) => {
-      entries.set(key, { storedAtMs: Date.now(), value });
+      const failed = typeof value === "object" && value !== null && "ok" in value && value.ok === false;
+      if (!failed && Date.now() - nowMs < ttlMs) {
+        if (entries.size >= 256) entries.delete(entries.keys().next().value!);
+        entries.set(key, { storedAtMs: nowMs, value });
+      }
       return value;
     })
     .finally(() => {

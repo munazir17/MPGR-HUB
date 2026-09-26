@@ -1,3 +1,4 @@
+import { publicTradeError } from "@/lib/trade/trade-chat";
 import { NextResponse } from "next/server";
 
 import { createRoutedSwapQuote } from "@/lib/trade/trade-swap-router";
@@ -60,17 +61,42 @@ export async function POST(request: Request) {
       parsed.value.from.address.toLowerCase(),
       parsed.value.to.address.toLowerCase(),
       parsed.value.fromAmount,
+      parsed.value.from.decimals,
+      parsed.value.to.decimals,
       parsed.value.slippageBps,
     ].join(":"),
     QUOTE_DEDUPE_MS,
-    () =>
-      createRoutedSwapQuote({
+    async () => {
+      const quotedAt = new Date();
+      const quote = await createRoutedSwapQuote({
         fromToken: parsed.value.from.address,
         toToken: parsed.value.to.address,
         fromAmount: parsed.value.fromAmount,
         taker: session.wallet,
         slippageBps: parsed.value.slippageBps,
-      }),
+      });
+      if (!quote.ok) return quote;
+      if (quote.value.fromToken.toLowerCase() !== parsed.value.from.address.toLowerCase() ||
+          quote.value.toToken.toLowerCase() !== parsed.value.to.address.toLowerCase() ||
+          quote.value.fromAmount !== parsed.value.fromAmount) {
+        return { ok: false as const, error: { code: "QUOTE_CHANGED" as const, message: "Quote does not match the requested swap." } };
+      }
+      if (!quote.value.liquidityAvailable || !quote.value.transaction) {
+        return { ok: false as const, error: { code: "LIQUIDITY_UNAVAILABLE" as const, message: "No executable route." } };
+      }
+      const priceImpactBps = await estimateQuotePriceImpactBps({
+        quote: quote.value,
+        fromAddress: parsed.value.from.address,
+        toAddress: parsed.value.to.address,
+        fromDecimals: parsed.value.from.decimals,
+        toDecimals: parsed.value.to.decimals,
+      });
+      return buildTradeProposal({
+        from: parsed.value.from, to: parsed.value.to, quote: quote.value,
+        slippageBps: parsed.value.slippageBps, taker: session.wallet,
+        provider: quote.provider, quotedAt, priceImpactBps,
+      });
+    },
   );
 
   if (!result.ok) {
@@ -81,41 +107,13 @@ export async function POST(request: Request) {
           ? 401
           : 502;
     return json(
-      { error: result.error.message, code: result.error.code },
+      { error: publicTradeError(result.error), code: result.error.code },
       { status, headers: { "Cache-Control": "no-store" } },
     );
   }
 
-  // Price impact vs. the app's own mid price (tape). Null when a leg has
-  // no live trusted price — the confirmation modal then says so instead
-  // of showing a number nobody measured.
-  const priceImpactBps = await estimateQuotePriceImpactBps({
-    quote: result.value,
-    fromAddress: parsed.value.from.address,
-    toAddress: parsed.value.to.address,
-    fromDecimals: parsed.value.from.decimals,
-    toDecimals: parsed.value.to.decimals,
-  });
-
-  const proposal = buildTradeProposal({
-    from: parsed.value.from,
-    to: parsed.value.to,
-    quote: result.value,
-    slippageBps: parsed.value.slippageBps,
-    taker: session.wallet,
-    provider: result.provider,
-    priceImpactBps,
-  });
-
-  if (!proposal.ok) {
-    return json(
-      { error: proposal.error.message, code: proposal.error.code },
-      { status: 400, headers: { "Cache-Control": "no-store" } },
-    );
-  }
-
   return json(
-    { proposal: proposal.proposal },
+    { proposal: result.proposal },
     { status: 200, headers: { "Cache-Control": "no-store" } },
   );
 }

@@ -1,3 +1,4 @@
+import { publicAgentContent, formatTradeReview } from "@/lib/trade/trade-chat";
 import { clearMemory, readMigratedMemory, writeMemory } from "@/lib/architecture/memory/memory-keys";
 import type { AgentIntent } from "@/lib/agent-intelligence";
 import { buildAgentPromptContext } from "@/lib/agent-prompt-context";
@@ -200,8 +201,8 @@ export async function appendAssistantReply(
   const updated: AgentState = {
     ...state,
     messages: [
-      ...state.messages,
-      createMessage("assistant", reply, {
+      ...state.messages.map(message => tradeProposal && message.tradeProposal?.id === tradeProposal.id ? { ...message, tradeProposal: undefined } : message),
+      createMessage("assistant", tradeProposal ? formatTradeReview(tradeProposal) : publicAgentContent(reply), {
         intent,
         actions,
         highlights,
@@ -314,7 +315,7 @@ export async function regenerateLastReply(
     ...state,
     messages: [
       ...trimmedMessages,
-      createMessage("assistant", reply, {
+      createMessage("assistant", tradeProposal ? formatTradeReview(tradeProposal) : publicAgentContent(reply), {
         intent,
         actions,
         highlights,

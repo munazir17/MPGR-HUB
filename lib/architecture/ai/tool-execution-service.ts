@@ -1,3 +1,4 @@
+import { formatTradeReview, publicAgentContent } from "@/lib/trade/trade-chat";
 import type { AgentToolResult } from "@/lib/architecture/tools/agent-tool-result";
 import { toolError } from "@/lib/architecture/tools/agent-tool-result";
 import { getAgentToolRegistry } from "@/lib/architecture/tools/agent-tool-registry-instance";
@@ -81,7 +82,27 @@ export async function runRegisteredReadTool(
  *
  * Execute tools are rejected before reaching the runtime.
  */
-export async function runRegisteredTool(
+const turnToolResults = new WeakMap<AIProviderRequest, Map<string, { at: number; pending: boolean; promise: Promise<AgentToolResult> }>>();
+
+export async function runRegisteredTool(toolId: string, args: Record<string, unknown>, request: AIProviderRequest): Promise<AgentToolResult> {
+  const normalized = normalizeTradeToolArguments(toolId, normalizeX402ToolArguments(toolId, args), request.address);
+  // Only memoize trading lookups/prepares, not unrelated actions. Scope to a
+  // single provider request and wallet; expiry cannot extend a quote's lifetime.
+  if (!["trade_get_price", "trade_prepare_swap", "prepare_swap", "tokenized_stock_prepare_order"].includes(toolId)) return runRegisteredToolOnce(toolId, args, request);
+  let turn = turnToolResults.get(request);
+  if (!turn) { turn = new Map(); turnToolResults.set(request, turn); }
+  const key = `${request.address ?? ""}:${toolId}:${JSON.stringify(normalized, Object.keys(normalized).sort())}`;
+  const previous = turn.get(key);
+  if (previous && (previous.pending || Date.now() - previous.at < 6_000)) return previous.promise;
+  const entry = { at: Date.now(), pending: true, promise: runRegisteredToolOnce(toolId, normalized, request) };
+  turn.set(key, entry);
+  const result = await entry.promise;
+  entry.pending = false;
+  if (!result.success && turn.get(key) === entry) turn.delete(key);
+  return result;
+}
+
+async function runRegisteredToolOnce(
   toolId: string,
   args: Record<string, unknown>,
   request: AIProviderRequest,
@@ -253,7 +274,7 @@ export function buildLoopResponse(
 ): AIProviderResponse {
   return {
     intent,
-    reply,
+    reply: tradeProposal ? formatTradeReview(tradeProposal) : publicAgentContent(reply),
     actions: getAgentActions(
       intent,
       request.agentContext,
@@ -289,9 +310,7 @@ export function synthesizeFinalReplyFromToolResult(
   }
 
   if (capturedTradeProposal) {
-    return capturedTradeProposal.executionAvailable
-      ? "A Base swap proposal is ready for you to review in the app. I will not sign or submit anything until you explicitly confirm."
-      : "I looked up that pair on Base. No executable route is available right now — the research is on screen. I will not sign anything.";
+    return formatTradeReview(capturedTradeProposal);
   }
 
   if (capturedX402Proposal) {

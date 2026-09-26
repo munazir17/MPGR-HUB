@@ -191,7 +191,7 @@ export function buildProposalAgentFee(input: {
     bps: MPGR_AGENT_FEE_BPS,
     recipient: recipient.recipient,
     amountAtomic: fee.toString(),
-    displayAmount: `${formatAtomicAmount(fee.toString(), input.from.decimals)} ${input.from.symbol}`,
+    displayAmount: `${formatAtomicAmount(fee.toString(), input.from.decimals, input.from.decimals)} ${input.from.symbol}`,
     reason: null,
   };
 }

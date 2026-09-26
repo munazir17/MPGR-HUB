@@ -306,6 +306,12 @@ export async function runToolCallingLoop(
       toolResult,
       capturedTradeProposal,
     );
+    if (["trade_prepare_swap", "prepare_swap", "tokenized_stock_prepare_order"].includes(directive.toolId)) {
+      return buildLoopResponse(request, "general_help",
+        synthesizeFinalReplyFromToolResult(directive.toolId, toolResult, undefined, capturedTradeProposal),
+        capturedX402Proposal, capturedTradeProposal, capturedStockReport, capturedTransferProposal);
+    }
+
     capturedStockReport = captureTokenizedStockReport(
       directive.toolId,
       toolResult,

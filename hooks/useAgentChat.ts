@@ -1,5 +1,7 @@
 "use client";
 
+import { formatTradeSuccess } from "@/lib/trade/trade-chat";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAccount, useBalance } from "wagmi";
@@ -125,6 +127,7 @@ const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
 //      block now ALSO records a (failed) history entry — previously a
 //      failed command execution left no trace in Action History at all.
 export function useAgentChat() {
+  const sendingRef = useRef(false);
   const { address, isConnected } = useAccount();
   const { data: ethBalance } = useBalance({
     address,
@@ -165,6 +168,7 @@ export function useAgentChat() {
   const usableAssistantThisTurnRef = useRef(false);
 
   const stopGeneration = useCallback(() => {
+    sendingRef.current = false;
     loadTokenRef.current += 1;
 
     if (timeoutRef.current) {
@@ -240,6 +244,7 @@ export function useAgentChat() {
   );
 
   useEffect(() => {
+    sendingRef.current = false;
     loadTokenRef.current += 1;
     const token = loadTokenRef.current;
 
@@ -390,13 +395,14 @@ export function useAgentChat() {
     (content: string) => {
       if (!address) return;
       const trimmed = content.trim();
-      if (!trimmed || thinking) return;
+      if (!trimmed || thinking || sendingRef.current) return;
 
       if (isSlashCommand(trimmed)) {
         executeCommand(trimmed);
         return;
       }
 
+      sendingRef.current = true;
       const token = loadTokenRef.current;
       usableAssistantThisTurnRef.current = false;
       setThinking(true);
@@ -409,6 +415,7 @@ export function useAgentChat() {
           setMessages(afterUser.messages);
         } catch (err) {
           if (loadTokenRef.current !== token) return;
+          sendingRef.current = false;
           reportPrimaryAgentFailure("MPGR Agent: failed to persist message", err);
           return;
         }
@@ -432,7 +439,7 @@ export function useAgentChat() {
             if (loadTokenRef.current !== token) return;
             reportPrimaryAgentFailure("MPGR Agent: failed to generate a reply", err);
           } finally {
-            if (loadTokenRef.current === token) setThinking(false);
+            if (loadTokenRef.current === token) { sendingRef.current = false; setThinking(false); }
           }
         }, delay);
       })();
@@ -441,7 +448,8 @@ export function useAgentChat() {
   );
 
   const retryLastMessage = useCallback(() => {
-    if (!address || thinking) return;
+    if (!address || thinking || sendingRef.current) return;
+    sendingRef.current = true;
     const token = loadTokenRef.current;
     usableAssistantThisTurnRef.current = false;
     setThinking(true);
@@ -452,6 +460,7 @@ export function useAgentChat() {
       if (loadTokenRef.current !== token) return;
       const lastUser = [...current.messages].reverse().find((m) => m.role === "user");
       if (!lastUser) {
+        sendingRef.current = false;
         setThinking(false);
         return;
       }
@@ -471,14 +480,19 @@ export function useAgentChat() {
           if (loadTokenRef.current !== token) return;
           reportPrimaryAgentFailure("MPGR Agent: retry failed", err);
         } finally {
-          if (loadTokenRef.current === token) setThinking(false);
+          if (loadTokenRef.current === token) { sendingRef.current = false; setThinking(false); }
         }
       }, THINKING_DELAY_MIN_MS);
-    })();
+    })().catch((err) => {
+      if (loadTokenRef.current !== token) return;
+      sendingRef.current = false;
+      reportPrimaryAgentFailure("MPGR Agent: retry failed to load chat", err);
+    });
   }, [address, thinking, context, router, markAssistantReceived, reportPrimaryAgentFailure]);
 
   const regenerateLastMessage = useCallback(() => {
-    if (!address || thinking) return;
+    if (!address || thinking || sendingRef.current) return;
+    sendingRef.current = true;
     const token = loadTokenRef.current;
     usableAssistantThisTurnRef.current = false;
     setThinking(true);
@@ -498,7 +512,7 @@ export function useAgentChat() {
         if (loadTokenRef.current !== token) return;
         reportPrimaryAgentFailure("MPGR Agent: regenerate failed", err);
       } finally {
-        if (loadTokenRef.current === token) setThinking(false);
+        if (loadTokenRef.current === token) { sendingRef.current = false; setThinking(false); }
       }
     }, THINKING_DELAY_MIN_MS);
   }, [address, thinking, context, router, markAssistantReceived, reportPrimaryAgentFailure]);
@@ -551,21 +565,10 @@ export function useAgentChat() {
   const canRegenerate = !thinking && messages.length > 0 && messages[messages.length - 1]?.role === "assistant";
 
   const appendTradeExecutionResult = useCallback(
-    async (proposal: import("@/lib/trade/trade-types").TradeProposal, swapHash: `0x${string}`, approvalHash: `0x${string}` | null) => {
+    async (proposal: import("@/lib/trade/trade-types").TradeProposal, swapHash: `0x${string}`, _approvalHash: `0x${string}` | null) => {
       if (!address) return;
 
-      const explorerUrl = `https://basescan.org/tx/${swapHash}`;
-      const approvalLine = approvalHash
-        ? `\nApproval transaction: ${approvalHash}`
-        : "";
-
-      const content =
-        `✅ Swap successful\n\n` +
-        `${proposal.displayFromAmount} → ${proposal.displayToAmount}\n` +
-        `Status: Confirmed on Base\n` +
-        `Transaction: ${swapHash}` +
-        approvalLine +
-        `\nView on BaseScan: ${explorerUrl}`;
+      const content = formatTradeSuccess(proposal, swapHash);
 
       const state = await appendAssistantMessage(address, content);
       setMessages(state.messages);

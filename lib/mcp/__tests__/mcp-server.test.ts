@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { MCP_TOOLS } from "@/lib/mcp/mcp-tools";
 import { MCP_MAX_BATCH, handleMcpBody, handleMcpMessage, type JsonRpcResponse } from "@/lib/mcp/mcp-server";
@@ -59,18 +59,24 @@ describe("MCP JSON-RPC protocol", () => {
     expect((await call({ jsonrpc: "2.0", id: { x: 1 }, method: "ping" })).error?.code).toBe(-32600);
   });
 
-  it("tool exceptions become a generic in-band error without leaking internals", async () => {
-    const throwing = testDeps(newFakeState(), {
-      reader: () => {
-        throw new Error("secret rpc url https://key@rpc");
-      },
-    });
-    const r = (await handleMcpMessage(
-      { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "mpgr_get_quote", arguments: { taker: "0x1111111111111111111111111111111111111111", sellToken: "tUSD", buyToken: "tSTOCK", sellAmount: "1000000" } } },
-      throwing,
-    )) as JsonRpcResponse;
-    expect(r.result).toMatchObject({ isError: true, structuredContent: { error: { code: "UPSTREAM_ERROR" } } });
-    expect(JSON.stringify(r)).not.toContain("key@rpc");
+  it.each([
+    new Error("RPC failed https://user:credential-placeholder@rpc.invalid/v2/path-secret?apiKey=query-secret"),
+    Object.assign(new Error("Authorization: Bearer header-secret"), { name: "name-secret", cause: new Error("nested-secret") }),
+    { message: "object-secret", privateKey: "private-key-placeholder" },
+  ])("tool exceptions never expose provider credentials in logs or responses (%#)", async (error) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const throwing = testDeps(newFakeState(), { reader: () => { throw error; } });
+      const r = await handleMcpMessage(
+        { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "mpgr_get_quote", arguments: { taker: "0x1111111111111111111111111111111111111111", sellToken: "tUSD", buyToken: "tSTOCK", sellAmount: "1000000" } } },
+        throwing,
+      );
+      expect(r?.result).toMatchObject({ isError: true, structuredContent: { error: { code: "UPSTREAM_ERROR" } } });
+      expect(log).toHaveBeenCalledExactlyOnceWith("[mcp] tool_failed", { tool: "mpgr_get_quote", code: "UPSTREAM_ERROR" });
+      expect(JSON.stringify([r, log.mock.calls])).not.toMatch(/credential-placeholder|path-secret|query-secret|header-secret|name-secret|nested-secret|object-secret|private-key-placeholder/);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("batches: bounded size, notifications omitted", async () => {
