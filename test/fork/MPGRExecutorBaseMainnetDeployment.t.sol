@@ -123,7 +123,7 @@ contract MPGRExecutorBaseMainnetDeploymentTest is Test {
         assertEq(address(ex.WETH()), WETH, "WETH");
         assertEq(address(ex.PERMIT2()), PERMIT2, "PERMIT2");
         assertEq(uint8(ex.routerKind(SLIP_ROUTER)), uint8(MPGRExecutor.RouterKind.AERODROME_SLIPSTREAM), "Slipstream router");
-        assertEq(uint8(ex.routerKind(UNI_ROUTER02)), uint8(MPGRExecutor.RouterKind.NONE), "Uniswap V3 must not be allowlisted");
+        assertEq(uint8(ex.routerKind(UNI_ROUTER02)), uint8(MPGRExecutor.RouterKind.UNISWAP_V3_ROUTER02), "Uniswap V3 Router02");
         (address[] memory tokens,) = script.productionTokens();
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertTrue(ex.isTokenAllowed(tokens[i]), "production token not allowlisted");
