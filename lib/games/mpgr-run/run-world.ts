@@ -29,9 +29,22 @@ interface PlayerState {
   invulnerableUntilMs: number;
 }
 
+/**
+ * Cosmetic spark. Positions live in the SAME world space the simulation
+ * scrolls in, so the rear-camera renderer can project them with depth:
+ *   - `x`    : depth along the track (simulation x units, scrolls toward
+ *              the camera exactly like obstacles/collectibles do);
+ *   - `lane` : which of the 3 lanes the burst originated in (lateral);
+ *   - `lx`   : lateral offset from that lane's centre (world units);
+ *   - `y`    : height above the track surface (world units, positive up).
+ * `vx`/`vy` drive lateral/vertical spread respectively. Purely visual —
+ * the authoritative replay never simulates particles.
+ */
 interface Particle {
   id: number;
   x: number;
+  lane: number;
+  lx: number;
   y: number;
   vx: number;
   vy: number;
@@ -41,10 +54,11 @@ interface Particle {
   size: number;
 }
 
-/** A brief real-artwork overlay (hit explosion, coin/gem burst) — separate from the tiny procedural dot particles above. */
+/** A brief real-artwork overlay (hit explosion, coin/gem burst) — separate from the tiny procedural dot particles above. Same world-space position contract as Particle. */
 interface SpriteBurst {
   id: number;
   x: number;
+  lane: number;
   y: number;
   sprite: string;
   startMs: number;

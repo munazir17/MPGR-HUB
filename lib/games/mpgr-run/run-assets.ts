@@ -97,6 +97,36 @@ export const CHARACTER_SPRITES = {
   // here on purpose; jetpack visually reuses `jump` instead.
 } as const;
 
+/**
+ * Rear-facing character set (2026-09-26, Subway-Surfers-style rear-camera
+ * conversion). The classic side-view set above stays on disk and on the
+ * manifest (idle overlay, game card, banner and the locked catalog tests
+ * still use it), but the in-run canvas now draws the runner from BEHIND:
+ * four alternating run-cycle frames (right-kick, passing, left-kick,
+ * passing-mirror — frames 3/4 are built as mirrors of 1/2 with the MPGR
+ * back-logo restored un-mirrored), plus rear idle/jump/fall/slide poses.
+ * All eight are proper RGBA cutouts (magenta chroma-key removed at
+ * authoring time), so they need no runtime background strip.
+ */
+export const CHARACTER_REAR_SPRITES = {
+  idle: asset(`${BASE}/character/mpgr-runner-rear-idle.webp`),
+  run1: asset(`${BASE}/character/mpgr-runner-rear-run-1.webp`),
+  run2: asset(`${BASE}/character/mpgr-runner-rear-run-2.webp`),
+  run3: asset(`${BASE}/character/mpgr-runner-rear-run-3.webp`),
+  run4: asset(`${BASE}/character/mpgr-runner-rear-run-4.webp`),
+  jump: asset(`${BASE}/character/mpgr-runner-rear-jump.webp`),
+  fall: asset(`${BASE}/character/mpgr-runner-rear-fall.webp`),
+  slide: asset(`${BASE}/character/mpgr-runner-rear-slide.webp`),
+} as const;
+
+/** The four rear run-cycle frames in cycle order. */
+export const REAR_RUN_CYCLE: readonly string[] = [
+  CHARACTER_REAR_SPRITES.run1,
+  CHARACTER_REAR_SPRITES.run2,
+  CHARACTER_REAR_SPRITES.run3,
+  CHARACTER_REAR_SPRITES.run4,
+];
+
 export const OBSTACLE_SPRITES: Record<ObstacleType, string> = {
   spikes: asset(`${BASE}/obstacles/mpgr-run-spikes.webp`),
   crate: asset(`${BASE}/obstacles/mpgr-run-crate.webp`),
@@ -188,6 +218,7 @@ export const BACKGROUND_STRIP_TARGETS: string[] = [
 /** Every sprite path used by the live render loop, flattened for a one-time preload on mount. */
 export const ALL_SPRITE_PATHS: string[] = [
   ...Object.values(CHARACTER_SPRITES),
+  ...Object.values(CHARACTER_REAR_SPRITES),
   ...Object.values(OBSTACLE_SPRITES),
   ...Object.values(COLLECTIBLE_SPRITES),
   ...Object.values(POWERUP_SPRITES),
@@ -211,6 +242,10 @@ export const CRITICAL_SPRITE_PATHS: string[] = [
   CHARACTER_SPRITES.jump,
   CHARACTER_SPRITES.fall,
   CHARACTER_SPRITES.slide,
+  // Rear-camera conversion: the in-run hero art is now the rear run cycle;
+  // the rear jump/fall/slide poses ride the optional lane right behind it
+  // (the renderer holds a ready rear run frame until they decode).
+  ...REAR_RUN_CYCLE,
   CITY_ENVIRONMENT.background,
   CITY_ENVIRONMENT.midground,
   CITY_ENVIRONMENT.foreground,

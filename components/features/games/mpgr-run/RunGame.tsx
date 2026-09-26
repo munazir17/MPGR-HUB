@@ -20,7 +20,7 @@ import {
   type PowerupType,
 } from "@/lib/games/mpgr-run/run-config";
 import { type World, freshWorld } from "@/lib/games/mpgr-run/run-world";
-import { drawRunFrame, runViewScale } from "@/lib/games/mpgr-run/run-render";
+import { drawRunFrame } from "@/lib/games/mpgr-run/run-render";
 import { createRunInputTrace, type RunInputTrace } from "@/lib/games/mpgr-run/input-trace";
 
 import type { Phase, HudSnapshot, RunGameProps } from "./RunGameTypes";
@@ -224,8 +224,8 @@ export function RunGame({ address }: RunGameProps) {
   finishRunRef.current = finishRun;
 
   const step = useCallback(
-    (dt: number, canvasHeight: number) => {
-      stepSimulation(worldRef.current, dt, canvasHeight, nextId, runRngRef.current);
+    (dt: number) => {
+      stepSimulation(worldRef.current, dt, nextId, runRngRef.current);
     },
     [nextId]
   );
@@ -251,11 +251,10 @@ export function RunGame({ address }: RunGameProps) {
         steps < MAX_STEPS_PER_FRAME &&
         !worldRef.current.gameOver
       ) {
-        // canvasHeight is used ONLY for visual spawn positions (bursts),
-        // never physics/collision — the renderer draws in a uniform
-        // design space (canvas px / runViewScale), so the simulation
-        // must see that same design height to stay aligned.
-        step(FIXED_DT, sizeRef.current.height / runViewScale(sizeRef.current.width));
+        // The simulation is pure world-space (depth/lane/height) — the
+        // rear-camera renderer projects it onto the screen, so no canvas
+        // dimensions are needed here anymore.
+        step(FIXED_DT);
         fixedStepAccumulatorRef.current -= FIXED_DT;
         steps += 1;
       }

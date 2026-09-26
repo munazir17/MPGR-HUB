@@ -35,13 +35,19 @@ import {
   POWERUP_TYPES,
   type PowerupType,
 } from "@/lib/games/mpgr-run/run-config";
-import { laneBaselineScreenY, verticalOverlap } from "@/lib/games/mpgr-run/run-physics";
+import { verticalOverlap } from "@/lib/games/mpgr-run/run-physics";
 import type { World } from "@/lib/games/mpgr-run/run-world";
 import type { DeterministicRng } from "@/lib/games/mpgr-run/deterministic-rng";
 
+/**
+ * VFX burst positions are world-space (depth x, lane, height above the
+ * track) so the rear-camera perspective renderer can project them with
+ * depth. Purely cosmetic — collisions/stats/rewards never read particles.
+ */
 export function spawnBurst(
   world: World,
   x: number,
+  lane: number,
   y: number,
   color: string,
   count: number,
@@ -53,6 +59,8 @@ export function spawnBurst(
     world.particles.push({
       id: nextId(),
       x,
+      lane,
+      lx: 0,
       y,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
@@ -70,6 +78,7 @@ export function spawnBurst(
 export function spawnSpriteBurst(
   world: World,
   x: number,
+  lane: number,
   y: number,
   sprite: string,
   durationMs: number,
@@ -79,6 +88,7 @@ export function spawnSpriteBurst(
   world.spriteBursts.push({
     id: nextId(),
     x,
+    lane,
     y,
     sprite,
     startMs: world.elapsedMs,
@@ -93,7 +103,6 @@ export function spawnSpriteBurst(
 export function collectItem(
   world: World,
   c: CollectibleEntity,
-  height: number,
   nextId: () => number
 ) {
   c.collected = true;
@@ -122,20 +131,19 @@ export function collectItem(
       break;
   }
   if (world.activePowerups.score2x) world.bonusScore += cfg.scoreValue;
-  const cx = c.x;
-  const cy = laneBaselineScreenY(height, c.lane) - 14;
-  spawnBurst(world, cx, cy, cfg.color, c.type === "chest" ? 16 : 6, nextId);
+  // World-space burst origin: at the collectible's depth/lane, a little
+  // above the track surface (its floating height).
+  spawnBurst(world, c.x, c.lane, 14, cfg.color, c.type === "chest" ? 16 : 6, nextId);
   if (c.type === "coin" || c.type === "xpOrb" || c.type === "key") {
-    spawnSpriteBurst(world, cx, cy, EFFECT_SPRITES.coinBurst, 380, c.radius * 5, nextId);
+    spawnSpriteBurst(world, c.x, c.lane, 14, EFFECT_SPRITES.coinBurst, 380, c.radius * 5, nextId);
   } else if (c.type === "gem") {
-    spawnSpriteBurst(world, cx, cy, EFFECT_SPRITES.gemBurst, 420, c.radius * 5.5, nextId);
+    spawnSpriteBurst(world, c.x, c.lane, 14, EFFECT_SPRITES.gemBurst, 420, c.radius * 5.5, nextId);
   }
 }
 
 export function collectPowerup(
   world: World,
   pu: PowerupEntity,
-  height: number,
   nextId: () => number
 ) {
   pu.collected = true;
@@ -143,7 +151,7 @@ export function collectPowerup(
   world.activePowerups[pu.type] = world.elapsedMs + cfg.durationMs;
   world.stats.powerups += 1;
   getRunAudioHooks().onPowerupPickup(pu.type);
-  spawnBurst(world, pu.x, laneBaselineScreenY(height, pu.lane) - 20, cfg.color, 10, nextId);
+  spawnBurst(world, pu.x, pu.lane, 20, cfg.color, 10, nextId);
 }
 
 export function buildRunStats(world: World): RunStats {
@@ -168,7 +176,6 @@ export function buildRunStats(world: World): RunStats {
 export function stepSimulation(
   world: World,
   dt: number,
-  canvasHeight: number,
   nextId: () => number,
   rng: DeterministicRng | null
 ) {
@@ -216,11 +223,19 @@ export function stepSimulation(
   world.collectibles = world.collectibles.filter((c) => c.x > -40 && !c.collected);
   world.powerups = world.powerups.filter((pu) => pu.x > -40 && !pu.collected);
 
-  // Particles.
+  // Particles (world-space sparks: depth scrolls with the track, lateral
+  // and vertical spread integrate locally, slight gravity for arc).
   for (const part of world.particles) {
     part.life -= dt * 1000;
-    part.x -= world.effectiveSpeed * dt * 0.5 + part.vx * dt;
+    part.x -= world.effectiveSpeed * dt * 0.5;
+    part.lx += part.vx * dt;
     part.y += part.vy * dt;
+    part.vy -= 240 * dt;
+    // Sparks bounce off the track surface instead of sinking through it.
+    if (part.y < 0) {
+      part.y = 0;
+      part.vy = Math.abs(part.vy) * 0.4;
+    }
   }
   world.particles = world.particles.filter((part) => part.life > 0);
 
@@ -264,7 +279,7 @@ export function stepSimulation(
         world.stats.obstaclesPassed += 1;
       }
       if (damageImmune) {
-        spawnBurst(world, o.x, laneBaselineScreenY(canvasHeight, o.lane) - o.groundHeight - o.height / 2, "#60A5FA", 8, nextId);
+        spawnBurst(world, o.x, o.lane, o.groundHeight + o.height / 2, "#60A5FA", 8, nextId);
       } else {
         p.hp -= 1;
         world.stats.hits += 1;
@@ -272,9 +287,9 @@ export function stepSimulation(
         world.screenShake = 14;
         world.hitFlashUntilMs = world.elapsedMs + 220;
         const hitCx = playerScreenX + PLAYER_SIZE / 2;
-        const hitCy = laneBaselineScreenY(canvasHeight, p.lane) - p.playerY - PLAYER_SIZE / 2;
-        spawnBurst(world, playerScreenX, hitCy, "#F87171", 14, nextId);
-        spawnSpriteBurst(world, hitCx, hitCy, EFFECT_SPRITES.hit, 480, PLAYER_SIZE * 3.2, nextId);
+        const hitHeight = p.playerY + PLAYER_SIZE / 2;
+        spawnBurst(world, playerScreenX, p.lane, hitHeight, "#F87171", 14, nextId);
+        spawnSpriteBurst(world, hitCx, p.lane, hitHeight, EFFECT_SPRITES.hit, 480, PLAYER_SIZE * 3.2, nextId);
         hooks.onHit();
         if (p.hp <= 0) world.gameOver = true;
       }
@@ -296,10 +311,10 @@ export function stepSimulation(
     if (magnetActive && dx < MAGNET_RANGE_PX) {
       if (c.magnetizedAtMs === undefined) c.magnetizedAtMs = world.elapsedMs;
       if (world.elapsedMs - c.magnetizedAtMs >= MAGNET_ATTRACT_MS) {
-        collectItem(world, c, canvasHeight, nextId);
+        collectItem(world, c, nextId);
       }
     } else if (sameLane && dx < c.radius + 15) {
-      collectItem(world, c, canvasHeight, nextId);
+      collectItem(world, c, nextId);
     }
   }
 
@@ -309,7 +324,7 @@ export function stepSimulation(
     const sameLane = pu.lane === p.lane;
     const dx = Math.abs(pu.x - playerScreenX);
     if (sameLane && dx < pu.radius + PLAYER_SIZE / 2) {
-      collectPowerup(world, pu, canvasHeight, nextId);
+      collectPowerup(world, pu, nextId);
     }
   }
 
