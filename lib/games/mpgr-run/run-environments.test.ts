@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { drawRunFrame } from "@/lib/games/mpgr-run/run-render";
+import { drawRunFrame, runViewScale, RUN_FRAME_ALIGN_X } from "@/lib/games/mpgr-run/run-render";
 import { freshWorld, type World } from "@/lib/games/mpgr-run/run-world";
 import { ENVIRONMENT_SETS } from "@/lib/games/mpgr-run/run-assets";
 import {
@@ -8,7 +8,13 @@ import {
   resolveRunWorldFromPx,
   RUN_WORLD_LENGTH_M,
   RUN_WORLD_ORDER,
+  RUN_WORLD_THEMES,
 } from "@/lib/games/mpgr-run/run-environments";
+import { stepSimulation } from "@/components/features/games/mpgr-run/RunGameSimulation";
+import { JUMP_COIN_ARC_HEIGHTS } from "@/lib/games/mpgr-run/spawn-manager";
+import { COLLECTIBLE_TYPES, PLAYER_X } from "@/lib/games/mpgr-run/run-config";
+import { MPGR_RUN_SIMULATION_WIDTH } from "@/lib/games/mpgr-run/authoritative-replay";
+import { createDeterministicRng } from "@/lib/games/mpgr-run/deterministic-rng";
 import { PX_PER_METER } from "@/lib/games/mpgr-run/run-config";
 
 /**
@@ -40,6 +46,8 @@ interface Call {
 class EnvRecordingCtx {
   calls: Call[] = [];
   rects: Call[] = [];
+  polys: Call[] = [];
+  private pts: number[][] = [];
   numbers: number[] = [];
   private m = [1, 0, 0, 1, 0, 0];
   private stack: number[][] = [];
@@ -80,15 +88,25 @@ class EnvRecordingCtx {
     const cos = Math.cos(r), sin = Math.sin(r);
     this.m = [a * cos + c * sin, b * cos + d * sin, a * -sin + c * cos, b * -sin + d * cos, e, f];
   }
-  beginPath() {}
+  beginPath() { this.pts = []; }
   closePath() {}
-  moveTo() {}
-  lineTo() {}
+  moveTo(x: number, y: number) { this.pts.push(this.tx(x, y)); }
+  lineTo(x: number, y: number) { this.pts.push(this.tx(x, y)); }
   arc() {}
   ellipse() {}
   quadraticCurveTo() {}
-  fill() {}
-  stroke() {}
+  fill() {
+    if (this.pts.length > 2) {
+      const xs = this.pts.map((p) => p[0]);
+      const ys = this.pts.map((p) => p[1]);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      this.polys.push({ tag: "poly", x: minX, y: minY, w: maxX - minX, h: maxY - minY, alpha: this.globalAlpha, fill: this.fillStyle });
+      this.numbers.push(minX, maxX, minY, maxY);
+    }
+    this.pts = [];
+  }
+  stroke() { this.pts = []; }
   clip() {}
   clearRect() {}
   fillRect(x: number, y: number, w: number, h: number) {
@@ -221,6 +239,109 @@ describe("world rendering surrounds the track (no black void)", () => {
       for (const n of ctx.numbers) {
         expect(Number.isFinite(n)).toBe(true);
       }
+    }
+  });
+});
+
+describe("world integration details (visual-polish pass)", () => {
+  const vw = 390;
+  const vh = 844;
+
+  function frame(meters: number): EnvRecordingCtx {
+    const ctx = new EnvRecordingCtx();
+    drawRunFrame(ctx as unknown as CanvasRenderingContext2D, worldAt(meters), vw, vh, makeGetSprite());
+    return ctx;
+  }
+
+  it("lays themed curb/shoulder strips on both sides of the track", () => {
+    for (const [meters, worldId] of [
+      [120, "city"],
+      [620, "ice"],
+      [1060, "desert"],
+    ] as Array<[number, keyof typeof RUN_WORLD_THEMES]>) {
+      const ctx = frame(meters);
+      const curbs = ctx.polys.filter((p) => p.fill === RUN_WORLD_THEMES[worldId].curb);
+      expect(curbs.length, `${worldId} curbs`).toBe(2);
+      const left = curbs.some((c) => c.x + c.w / 2 < vw / 2);
+      const right = curbs.some((c) => c.x + c.w / 2 > vw / 2);
+      expect(left && right).toBe(true);
+    }
+  });
+
+  it("spawns airborne coin arcs over jump obstacles as real collectibles", () => {
+    const world = worldAt(0);
+    const rng = createDeterministicRng(7);
+    let nextId = 9000;
+    for (let i = 0; i < 60 * 90; i++) stepSimulation(world, 1 / 60, () => nextId++, rng);
+    const air = world.collectibles.filter((c) => (c.airHeight ?? 0) > 0);
+    expect(air.length).toBeGreaterThan(0);
+    // Real collectibles through the existing system, arc profile intact.
+    for (const c of air) {
+      expect(c.type).toBe("coin");
+      expect(c.radius).toBe(COLLECTIBLE_TYPES.coin.radius);
+      expect([...JUMP_COIN_ARC_HEIGHTS]).toContain(c.airHeight);
+    }
+    // Arc shape: consecutive arc coins share a lane and step in depth.
+    const first = air[0];
+    const arc = air.filter((c) => c.lane === first.lane && Math.abs(c.x - first.x) < 120);
+    expect(arc.length).toBe(JUMP_COIN_ARC_HEIGHTS.length);
+  });
+
+  it("renders airborne coins above the grounded track line", () => {
+    const world = worldAt(0);
+    const rng = createDeterministicRng(7);
+    let nextId = 9000;
+    // Advance until an arc coin is in the near-depth window (s >= ~0.5),
+    // i.e. clearly visible above the track in front of the runner.
+    const playerDepth = MPGR_RUN_SIMULATION_WIDTH * PLAYER_X;
+    let placed = false;
+    for (let i = 0; i < 60 * 90 && !placed; i++) {
+      stepSimulation(world, 1 / 60, () => nextId++, rng);
+      placed = world.collectibles.some((c) => {
+        if ((c.airHeight ?? 0) <= 0) return false;
+        const z = c.x - playerDepth;
+        return z > 20 && z < 240;
+      });
+    }
+    expect(placed, "arc coin reached near depth").toBe(true);
+    const ctx = new EnvRecordingCtx();
+    drawRunFrame(ctx as unknown as CanvasRenderingContext2D, world, vw, vh, makeGetSprite());
+    const radius = COLLECTIBLE_TYPES.coin.radius;
+    const coins = ctx.calls.filter((c) => c.tag.includes("collectible") || c.tag.includes("coin"));
+    // Recover each coin's perspective scale from its drawn size, then compare
+    // its centre height against the lane baseline at that same scale:
+    // grounded coins sit 8..20*s above it, airborne arc coins >= 34*s.
+    const u = runViewScale(vw);
+    const airborne = coins.filter((c) => {
+      const sc = c.h / (radius * 2.9 * u); // recover perspective scale
+      if (sc < 0.45 || sc > 2.6) return false;
+      const gy = vh * (0.36 + 0.46 * sc);
+      return gy - (c.y + c.h / 2) > 24 * sc * u;
+    });
+    expect(airborne.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the run cycle head-stable: feet grounded, shifts bounded by the alignment table", () => {
+    const vw2 = 900;
+    const vh2 = 600;
+    const boxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+    for (let f = 0; f < 4; f++) {
+      const world = worldAt(120);
+      world.elapsedMs = 1760 + f * 110 + 10; // cycle index == f
+      const ctx = new EnvRecordingCtx();
+      drawRunFrame(ctx as unknown as CanvasRenderingContext2D, world, vw2, vh2, makeGetSprite());
+      const p = ctx.calls.find((c) => c.tag.includes("/character/mpgr-runner-rear-run-"));
+      expect(p, `frame ${f}`).toBeTruthy();
+      boxes.push({ x: p!.x, y: p!.y, w: p!.w, h: p!.h });
+    }
+    for (let f = 1; f < 4; f++) {
+      // Feet stay exactly grounded across the whole cycle.
+      expect(boxes[f].y + boxes[f].h).toBeCloseTo(boxes[0].y + boxes[0].h, 6);
+      // Horizontal shift between consecutive frames is exactly the measured
+      // head-sway correction (no other oscillation source).
+      const expected = (RUN_FRAME_ALIGN_X[f] - RUN_FRAME_ALIGN_X[f - 1]) * boxes[f].w;
+      expect(boxes[f].x - boxes[f - 1].x).toBeCloseTo(expected, 6);
+      expect(Math.abs(boxes[f].x - boxes[f - 1].x)).toBeLessThan(boxes[f].w * 0.04);
     }
   });
 });

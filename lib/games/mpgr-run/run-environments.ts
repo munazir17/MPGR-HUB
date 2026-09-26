@@ -42,6 +42,11 @@ export interface RunWorldTheme {
   fog: string;
   particle: "motes" | "snow" | "dust";
   particleColor: string;
+  /** Sidewalk/shoulder strip colors that embed the road in the world. */
+  curb: string;
+  curbEdge: string;
+  /** Blinking window/sign light colors on the skyline. */
+  twinkle: [string, string];
 }
 
 export const RUN_WORLD_THEMES: Record<RunWorldId, RunWorldTheme> = {
@@ -59,6 +64,9 @@ export const RUN_WORLD_THEMES: Record<RunWorldId, RunWorldTheme> = {
     fog: "#33547F",
     particle: "motes",
     particleColor: "rgba(125,195,255,0.55)",
+    curb: "#232F42",
+    curbEdge: "#3B82F6",
+    twinkle: ["#7DD3FC", "#F0ABFC"],
   },
   ice: {
     id: "ice",
@@ -74,6 +82,9 @@ export const RUN_WORLD_THEMES: Record<RunWorldId, RunWorldTheme> = {
     fog: "#E6F4FA",
     particle: "snow",
     particleColor: "rgba(255,255,255,0.8)",
+    curb: "#DDEDF6",
+    curbEdge: "#67E8F9",
+    twinkle: ["#A5F3FC", "#E0F2FE"],
   },
   desert: {
     id: "desert",
@@ -89,6 +100,9 @@ export const RUN_WORLD_THEMES: Record<RunWorldId, RunWorldTheme> = {
     fog: "#F0C084",
     particle: "dust",
     particleColor: "rgba(255,214,150,0.5)",
+    curb: "#C99A62",
+    curbEdge: "#FBBF24",
+    twinkle: ["#FCD34D", "#FDBA74"],
   },
 };
 

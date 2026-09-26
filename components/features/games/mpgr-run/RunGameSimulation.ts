@@ -6,6 +6,8 @@ import { resolveDifficulty } from "@/lib/games/mpgr-run/difficulty";
 import {
   maybeSpawnObstacles,
   maybeSpawnCollectible,
+  JUMP_COIN_ARC_HEIGHTS,
+  JUMP_COIN_ARC_SPACING_PX,
   maybeSpawnPowerup,
   type CollectibleEntity,
   type PowerupEntity,
@@ -32,6 +34,7 @@ import {
   MAGNET_ATTRACT_MS,
   SPEED_BOOST_MULTIPLIER,
   COLLECTIBLE_TYPES,
+  OBSTACLE_TYPES,
   POWERUP_TYPES,
   type PowerupType,
 } from "@/lib/games/mpgr-run/run-config";
@@ -250,6 +253,29 @@ export function stepSimulation(
   // Spawn.
   const newObstacles = rng ? maybeSpawnObstacles(world.obstacles, MPGR_RUN_SIMULATION_WIDTH, band, nextId, rng) : [];
   if (newObstacles.length) world.obstacles.push(...newObstacles);
+
+  // Airborne coin formations (visual-polish pass): when a jump-type obstacle
+  // spawns, lay a small coin arc over it at airborne heights so the jump
+  // reads as rewarded. These are REAL collectibles through the existing
+  // system (same pickup rules, same rewards); `airHeight` only lifts their
+  // presentation so the arc is visible above the track.
+  if (rng && newObstacles.length) {
+    for (const o of newObstacles) {
+      if (OBSTACLE_TYPES[o.type].avoidedBy !== "jump") continue;
+      if (rng.next() >= 0.6) continue;
+      for (let i = 0; i < JUMP_COIN_ARC_HEIGHTS.length; i++) {
+        world.collectibles.push({
+          id: nextId(),
+          type: "coin",
+          lane: o.lane,
+          x: o.x + 14 + i * JUMP_COIN_ARC_SPACING_PX,
+          radius: COLLECTIBLE_TYPES.coin.radius,
+          collected: false,
+          airHeight: JUMP_COIN_ARC_HEIGHTS[i],
+        });
+      }
+    }
+  }
   const newCollectible = rng ? maybeSpawnCollectible(world.collectibles, MPGR_RUN_SIMULATION_WIDTH, band, nextId, rng) : null;
   if (newCollectible) world.collectibles.push(newCollectible);
   const newPowerup = rng ? maybeSpawnPowerup(world.powerups, MPGR_RUN_SIMULATION_WIDTH, band, nextId, rng) : null;

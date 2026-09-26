@@ -222,16 +222,22 @@ export const ENVIRONMENT_SETS = {
   city: {
     skyline: asset(`${BASE}/environment/city/city-skyline.webp`),
     side: asset(`${BASE}/environment/city/city-side.webp`),
+    sideMid: asset(`${BASE}/environment/city/city-side-mid.webp`),
+    sideFar: asset(`${BASE}/environment/city/city-side-far.webp`),
     prop: asset(`${BASE}/environment/city/city-props.webp`),
   },
   ice: {
     skyline: asset(`${BASE}/environment/ice/ice-skyline.webp`),
     side: asset(`${BASE}/environment/ice/ice-side.webp`),
+    sideMid: asset(`${BASE}/environment/ice/ice-side-mid.webp`),
+    sideFar: asset(`${BASE}/environment/ice/ice-side-far.webp`),
     prop: asset(`${BASE}/environment/ice/ice-props.webp`),
   },
   desert: {
     skyline: asset(`${BASE}/environment/desert/desert-skyline.webp`),
     side: asset(`${BASE}/environment/desert/desert-side.webp`),
+    sideMid: asset(`${BASE}/environment/desert/desert-side-mid.webp`),
+    sideFar: asset(`${BASE}/environment/desert/desert-side-far.webp`),
     prop: asset(`${BASE}/environment/desert/desert-props.webp`),
   },
 } as const;
