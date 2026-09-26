@@ -9,6 +9,7 @@
 // skip/duplicate the fee, or target a non-allowlisted router/token.
 
 import {
+  decodeFunctionData,
   encodeFunctionData,
   getAddress,
   isAddress,
@@ -350,5 +351,79 @@ export function encodeExactApproval(
       args: [spender, amount],
     }),
     value: "0",
+  };
+}
+
+// ---------------------------------------------------------------------
+// Pre-signature inspection (client-safe)
+// ---------------------------------------------------------------------
+
+export interface ExecutorSwapInspection {
+  router: Address;
+  tokenIn: Address;
+  tokenOut: Address;
+  grossAmountIn: bigint;
+  expectedFeeAmount: bigint;
+  swapAmountIn: bigint;
+  amountOutMinimum: bigint;
+  recipient: Address;
+  deadline: bigint;
+  intentId: Hex;
+  unwrapNativeOut: boolean;
+  routerKind: "UNISWAP_V3_ROUTER02" | "AERODROME_SLIPSTREAM";
+  poolFee: number | null;
+  tickSpacing: number | null;
+}
+
+export type ExecutorSwapInspectionResult =
+  | { ok: true; value: ExecutorSwapInspection }
+  | { ok: false; reason: string };
+
+/**
+ * Decodes a prepared swap transaction and reports the fee-relevant fields.
+ * Used by the confirmation/execution layer to prove — before any signature —
+ * that the transaction targets the MPGR Executor and commits to the exact
+ * `floor(gross * feeBps / 10_000)` fee the UI displayed. Pure; never signs.
+ */
+export function inspectExecutorSwapTransaction(input: {
+  to: string;
+  data: string;
+}): ExecutorSwapInspectionResult {
+  let decoded: { functionName: string; args: unknown } ;
+  try {
+    decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: input.data as Hex }) as unknown as {
+      functionName: string;
+      args: unknown;
+    };
+  } catch {
+    return { ok: false, reason: "The swap transaction does not contain MPGR Executor calldata." };
+  }
+  if (
+    decoded.functionName !== "swapUniswapV3ExactInputSingle" &&
+    decoded.functionName !== "swapSlipstreamExactInputSingle"
+  ) {
+    return { ok: false, reason: "The swap transaction does not call an MPGR Executor swap function." };
+  }
+  const [params, routeParam] = decoded.args as readonly [Record<string, unknown>, bigint];
+  const swapAmountIn = (params.grossAmountIn as bigint) - (params.expectedFeeAmount as bigint);
+  return {
+    ok: true,
+    value: {
+      router: params.router as Address,
+      tokenIn: params.tokenIn as Address,
+      tokenOut: params.tokenOut as Address,
+      grossAmountIn: params.grossAmountIn as bigint,
+      expectedFeeAmount: params.expectedFeeAmount as bigint,
+      swapAmountIn,
+      amountOutMinimum: params.amountOutMinimum as bigint,
+      recipient: params.recipient as Address,
+      deadline: params.deadline as bigint,
+      intentId: params.intentId as Hex,
+      unwrapNativeOut: Boolean(params.unwrapNativeOut),
+      routerKind:
+        decoded.functionName === "swapUniswapV3ExactInputSingle" ? "UNISWAP_V3_ROUTER02" : "AERODROME_SLIPSTREAM",
+      poolFee: decoded.functionName === "swapUniswapV3ExactInputSingle" ? Number(routeParam) : null,
+      tickSpacing: decoded.functionName === "swapSlipstreamExactInputSingle" ? Number(routeParam) : null,
+    },
   };
 }

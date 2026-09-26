@@ -2,6 +2,7 @@ import { publicTradeError } from "@/lib/trade/trade-chat";
 import { NextResponse } from "next/server";
 
 import { createRoutedSwapQuote } from "@/lib/trade/trade-swap-router";
+import { buildExecutorSwapProposal, isExecutorRoutablePair } from "@/lib/trade/trade-executor-quote";
 import { buildTradeProposal } from "@/lib/trade/trade-proposal";
 import { withTradeQuoteCache } from "@/lib/trade/trade-quote-cache";
 import { estimateQuotePriceImpactBps } from "@/lib/trade/trade-price-impact";
@@ -68,6 +69,35 @@ export async function POST(request: Request) {
     QUOTE_DEDUPE_MS,
     async () => {
       const quotedAt = new Date();
+
+      // 0. MPGR Executor first. It is the only route that collects the MPGR
+      //    Agent fee, and it collects it inside the swap transaction (the
+      //    wallet sends one tx to the executor — never a fee transfer). For
+      //    pairs with a proven executor route this is authoritative: falling
+      //    back to a non-executor venue would silently drop the fee, so a
+      //    failed executor quote is returned as an error instead.
+      if (isExecutorRoutablePair(parsed.value.from.address, parsed.value.to.address)) {
+        const executorQuote = await buildExecutorSwapProposal({
+          from: parsed.value.from,
+          to: parsed.value.to,
+          fromAmount: parsed.value.fromAmount,
+          taker: session.wallet,
+          slippageBps: parsed.value.slippageBps,
+          quotedAt,
+        });
+        if (executorQuote.ok) {
+          const priceImpactBps = await estimateQuotePriceImpactBps({
+            quote: executorQuote.proposal,
+            fromAddress: parsed.value.from.address,
+            toAddress: parsed.value.to.address,
+            fromDecimals: parsed.value.from.decimals,
+            toDecimals: parsed.value.to.decimals,
+          });
+          return { ok: true as const, proposal: { ...executorQuote.proposal, priceImpactBps } };
+        }
+        if (executorQuote.supported) return { ok: false as const, error: executorQuote.error };
+      }
+
       const quote = await createRoutedSwapQuote({
         fromToken: parsed.value.from.address,
         toToken: parsed.value.to.address,

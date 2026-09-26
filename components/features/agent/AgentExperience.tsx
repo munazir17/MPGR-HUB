@@ -398,8 +398,6 @@ export function AgentExperience({
         approvalHash={tradeQuote.approvalHash}
         swapHash={tradeQuote.swapHash}
         stepLabel={tradeQuote.stepLabel}
-        feeHash={tradeQuote.feeHash}
-        feeError={tradeQuote.feeError}
         onConfirmAndSwap={tradeQuote.confirmAndSwap}
       />
       <AgentTransferConfirmationModal

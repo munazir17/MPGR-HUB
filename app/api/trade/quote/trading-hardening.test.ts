@@ -40,7 +40,10 @@ describe("RPC-resolved token → existing quote/prepare route", () => {
     expect(proposal.requiresConfirmation).toBe(true);
     expect(proposal.executionAvailable).toBe(true);
     expect(proposal.fromAmount).toBe("1000000");
-    expect(proposal.agentFee).toMatchObject({ status: "applied", bps: 25, amountAtomic: "2500" });
+    // Not an executor pair: no MPGR fee is quoted and none is charged (the
+    // fee is only ever taken inside an MPGR Executor swap).
+    expect(proposal.provider).toBe("0x-swap-api");
+    expect(proposal.agentFee).toMatchObject({ status: "skipped", bps: null, amountAtomic: "0" });
     expect(mocks.quote).toHaveBeenCalledWith(expect.objectContaining({ fromToken: BASE_USDC, toToken: proposal.to.address, fromAmount: "1000000", taker: mocks.wallet }));
   });
   it.each(["no-liquidity", "no-transaction", "provider-no-route"])("reports a found token but no executable route: %s", async scenario => {

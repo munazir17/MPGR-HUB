@@ -31,17 +31,18 @@ export function buildSwapRiskFacts(input: {
   const facts: TradeRiskFact[] = [];
 
   // MPGR Agent fee disclosure (info only — never a blocker). Absent when
-  // the fee is skipped, so unconfigured deployments read exactly as before.
+  // the fee is skipped (every non-executor route), so a fee is only ever
+  // disclosed when the swap transaction itself collects it.
   if (input.agentFee?.status === "applied" && input.agentFee.displayAmount && input.agentFee.recipient) {
     facts.push({
       id: "mpgr-agent-fee",
       severity: "info",
       title: `MPGR agent fee ${MPGR_AGENT_FEE_PERCENT_LABEL}`,
       detail:
-        `A separate wallet-signed transfer of ${input.agentFee.displayAmount} ` +
-        `(${MPGR_AGENT_FEE_PERCENT_LABEL} of the sell amount) goes to the MPGR fee wallet ` +
-        `${input.agentFee.recipient} after the swap settles. It is not part of the swap ` +
-        `route, quote, or slippage protection.`,
+        `The MPGR Executor takes ${input.agentFee.displayAmount} ` +
+        `(${MPGR_AGENT_FEE_PERCENT_LABEL} of the gross sell amount) for its fee wallet ` +
+        `${input.agentFee.recipient} inside the swap transaction you sign — the remainder is ` +
+        `swapped. There is no separate fee transaction, and the fee is never sent to your wallet.`,
     });
   }
 
@@ -70,9 +71,11 @@ export function buildSwapRiskFacts(input: {
       severity: "critical",
       title: "No liquidity",
       detail:
-        input.provider === "aerodrome-slipstream"
-          ? "Aerodrome Slipstream reported no USDC pool liquidity for this B20 token on Base. Nothing will be signed."
-          : "Coinbase CDP Trade API reported no available liquidity for this pair on Base. Nothing will be signed.",
+        input.provider === "mpgr-executor"
+          ? "The MPGR Executor reported no available liquidity for this pair on Base. Nothing will be signed."
+          : input.provider === "aerodrome-slipstream"
+            ? "Aerodrome Slipstream reported no USDC pool liquidity for this B20 token on Base. Nothing will be signed."
+            : "Coinbase CDP Trade API reported no available liquidity for this pair on Base. Nothing will be signed.",
     });
   }
 
@@ -107,7 +110,15 @@ export function buildSwapRiskFacts(input: {
 
   if (input.quote.issues?.allowance) {
     facts.push(
-      input.provider === "aerodrome-slipstream"
+      input.provider === "mpgr-executor"
+        ? {
+            id: "executor-approval",
+            severity: "warning",
+            title: "Executor spending approval required",
+            detail:
+              "Your wallet must first approve the MPGR Executor for the gross sell amount so the swap can pull it (the executor takes its fee from that amount and swaps the rest). Approval is a separate Base transaction you will sign once; later swaps with a sufficient allowance go straight to the swap.",
+          }
+      : input.provider === "aerodrome-slipstream"
         ? {
             id: "router-approval",
             severity: "warning",
@@ -153,7 +164,15 @@ export function buildSwapRiskFacts(input: {
   });
 
   facts.push(
-    input.provider === "aerodrome-slipstream"
+    input.provider === "mpgr-executor"
+      ? {
+          id: "provider",
+          severity: "info",
+          title: "Route via the MPGR Executor",
+          detail:
+            "This pair is executed by the MPGR Executor contract on Base: it takes its fee from the gross sell amount and swaps the remainder through an allowlisted router, all in one transaction. You sign unsigned executor calldata from your connected Base wallet — MPGR does not custody or broadcast.",
+        }
+    : input.provider === "aerodrome-slipstream"
       ? {
           id: "provider",
           severity: "info",

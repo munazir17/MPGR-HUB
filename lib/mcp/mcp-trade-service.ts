@@ -266,14 +266,14 @@ export function getCapabilities(deps: McpDeps): ToolOutcome {
         PERMIT2: "One-time approve(Permit2), then sign a Permit2 SignatureTransfer per trade — ONE swap tx.",
       },
       baseMainnetDispatch:
-        "Proven executor pairs (USDC<->WETH, incl. native ETH) route through the MPGR Executor. Any other ERC-20 pair falls back to the 0x native-fee path. B20 tokenized stocks are never routed through the executor (no proven executor pool); over MCP they use the 0x path like any other pair, and in the app UI they keep the existing CDP flow.",
+        "Registered executor pairs route through the MPGR Executor: USDC<->WETH (Uniswap V3, fee 3000) and USDC<->each B20 tokenized stock (Aerodrome Slipstream, tickSpacing 10), all incl. native ETH where applicable and all with the 25 bps fee taken inside the swap transaction. Any other pair (arbitrary ERC-20, WETH<->B20, B20<->B20) falls back to the 0x native-fee path.",
       providers: {
         "mpgr-executor": "Custom MPGR executor (NOT externally audited yet): typed Aerodrome Slipstream + Uniswap V3 adapters, allowlisted routers/tokens, exact fee, atomic. Deployed on Base mainnet and Base Sepolia.",
         "0x-native-fee": "0x Swap API (AllowanceHolder) with swapFeeToken=sellToken; quote rejected unless the integrator fee is exactly floor(sellAmount*25/10000) of the sell token. Base mainnet only, for pairs without a proven executor route; disabled by default.",
         "uniswap-v3":
           "Venue used by mpgr-executor on Base mainnet (USDC<->WETH, fee 3000 — the official Base Uniswap V3 0.30% pool) and on Base Sepolia (tUSD/tSTOCK and WETH/tUSD, fee 3000). Swaps go through Uniswap V3 SwapRouter02 exactInputSingle; the pool is verified by CREATE2 against the official factory.",
         "aerodrome-slipstream":
-          "The app UI's venue for Coinbase B20 tokenized stocks, and the executor's PREVIOUS Base mainnet venue (USDC<->WETH, tickSpacing 50) before this route migrated to Uniswap V3. Its recorded evidence is fork/simulation only (CI Base-mainnet fork suite plus the scripted smoke run in script/smoke-executor-base-mainnet.mjs, which also has an anvil-fork rehearsal mode) — no confirmed live mainnet trade is on record for it.",
+          "The executor's Base mainnet venue for every USDC <-> B20 tokenized stock (tickSpacing 10), allowlisted as kind 1 since the constructor. The app's executed USDC<->AAPLc swaps (tx 0x0f52a3b3a13e8fabf79f9185bc3198e60275223ceb4225b24c84782aa43551de) use exactly this router, pool key and tickSpacing. The old USDC<->WETH Slipstream route (tickSpacing 50) is no longer registered — USDC<->WETH runs on official Uniswap V3.",
         "cdp-trade-api": "Not offered over MCP: CDP Swap API has no integrator-fee parameter and returns taker-bound calldata; the app UI keeps its existing flow (incl. B20 tokenized stocks).",
       },
       chains,
@@ -312,7 +312,7 @@ export function listTokens(deps: McpDeps, input: unknown): ToolOutcome {
       })),
       ...(chainId === BASE_MAINNET_CHAIN_ID
         ? {
-            note: "Only pairs with a proven executor route are listed. Other ERC-20 pairs on Base mainnet use the 0x native-fee path when the operator has enabled mainnet trading. B20 tokenized stocks are never routed through the executor.",
+            note: "Every pair listed here is routable through the MPGR Executor, which takes the 25 bps fee inside the swap transaction (approve when needed + swap, never a separate fee transaction). Other ERC-20 pairs on Base mainnet use the 0x native-fee path when the operator has enabled mainnet trading.",
           }
         : {}),
     },
@@ -333,14 +333,17 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
   // ---- Base mainnet provider dispatch -------------------------------------
   // 1. Operator switch: nothing is quoted on 8453 while mainnet MCP trading
   //    is disabled (MPGR_MCP_ENABLE_BASE_MAINNET unset/false).
-  // 2. Proven executor pairs (both tokens in the registered deployment AND a
-  //    proven route between them — today: USDC <-> WETH, incl. native ETH)
-  //    quote through the MPGR Executor: live on-chain fee, quoter, exact
-  //    floor math, HMAC quoteId.
-  // 3. Everything else (e.g. B20 tokenized stocks or any other ERC-20 pair)
+  // 2. Registered executor pairs (both tokens in the deployed executor's
+  //    allowlist AND a registered route between them — USDC <-> WETH via
+  //    Uniswap V3, and USDC <-> each B20 tokenized stock via Aerodrome
+  //    Slipstream at tickSpacing 10) quote through the MPGR Executor: live
+  //    on-chain fee, quoter, exact floor math, HMAC quoteId, and the 25 bps
+  //    fee collected inside the swap transaction.
+  // 3. Everything else (an arbitrary ERC-20 pair, WETH <-> B20, B20 <-> B20)
   //    falls through to the 0x native-fee path, which refuses unless the
   //    operator also configured the fee wallet. Nothing is ever routed to the
-  //    executor without a registered, proven route.
+  //    executor without a registered route, and nothing registered is ever
+  //    silently routed fee-less.
   if (chainId === BASE_MAINNET_CHAIN_ID) {
     if (!deps.mainnetEnabled) {
       return fail("BASE_MAINNET_DISABLED", "Base mainnet trading over MCP is disabled. Use chainId 84532 (Base Sepolia).");

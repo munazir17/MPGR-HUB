@@ -15,9 +15,18 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockOnchain, mockQuote } = vi.hoisted(() => ({
+const { mockOnchain, mockQuote, mockExecutor } = vi.hoisted(() => ({
   mockOnchain: vi.fn(),
   mockQuote: vi.fn(),
+  mockExecutor: vi.fn(),
+}));
+
+// The B20 flow is executor-first (the fee is taken inside the executor swap). This suite is
+// about ORDER SIZING, so the executor quote is stubbed with a faithful echo of the real one:
+// same proposal shape, same 25 bps sell-token fee, same executor target. The real executor
+// quote path (chain reads, quoter, calldata) has its own suites.
+vi.mock("../trade-executor-quote", () => ({
+  buildExecutorSwapProposal: (...args: unknown[]) => mockExecutor(...args),
 }));
 
 vi.mock("../tokenized-stocks-onchain", () => ({
@@ -76,16 +85,62 @@ function quoteEcho(provider = AERODROME_SLIPSTREAM_PROVIDER_ID) {
   }));
 }
 
+interface ExecutorEchoInput {
+  from: { address: string; symbol: string; decimals: number };
+  to: { address: string; symbol: string; decimals: number };
+  fromAmount: string;
+  taker: string;
+  slippageBps: number;
+}
+
+/** Stand-in for the real executor quote: builds a real proposal with the real 25 bps fee. */
+async function useExecutorEcho() {
+  const { buildTradeProposal } = await import("../trade-proposal");
+  const { buildExecutorAgentFee } = await import("../trade-agent-fee");
+  const { BASE_MAINNET_EXECUTOR_DEPLOYMENT, EXECUTOR_DEFAULT_FEE_BPS } = await import("@/lib/executor/executor-config");
+  mockExecutor.mockImplementation(async (input: ExecutorEchoInput) => {
+    const fee = buildExecutorAgentFee({
+      grossAmountIn: input.fromAmount,
+      feeBps: EXECUTOR_DEFAULT_FEE_BPS,
+      feeRecipient: BASE_MAINNET_EXECUTOR_DEPLOYMENT.feeRecipient,
+      from: input.from as never,
+      taker: input.taker,
+    });
+    if (!fee.ok) return { ok: false, supported: true, error: { code: "EXECUTION_UNAVAILABLE", message: fee.reason } };
+    const built = buildTradeProposal({
+      from: input.from as never,
+      to: input.to as never,
+      slippageBps: input.slippageBps,
+      taker: input.taker,
+      provider: "mpgr-executor",
+      agentFee: fee.fee,
+      quote: {
+        liquidityAvailable: true,
+        fromToken: input.from.address,
+        toToken: input.to.address,
+        fromAmount: input.fromAmount,
+        toAmount: "1000000",
+        minToAmount: "990000",
+        issues: { allowance: null, balance: null, simulationIncomplete: false },
+        transaction: { to: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, data: "0xdead", value: "0" },
+        permit2: null,
+      },
+    });
+    if (!built.ok) return { ok: false, supported: true, error: built.error };
+    return { ok: true, proposal: built.proposal };
+  });
+}
+
 describe("tokenized-stock order sizing (amountUnit)", () => {
   beforeEach(() => {
     mockOnchain.mockReset();
     mockQuote.mockReset();
+    mockExecutor.mockReset();
   });
 
   it("sizes 'Sell 5 AAPLc' as 5 shares at the token's real 8 decimals", async () => {
     mockOnchain.mockResolvedValue(onchainState());
-    const quote = quoteEcho();
-    mockQuote.mockImplementation(quote);
+    await useExecutorEcho();
 
     const result = await prepareTokenizedStockSwap({
       symbol: "AAPLc",
@@ -102,15 +157,19 @@ describe("tokenized-stock order sizing (amountUnit)", () => {
     expect(result.proposal.from.symbol).toBe("AAPLc");
     expect(result.proposal.from.address).toBe(aaplcAddress());
     expect(result.proposal.to.address.toLowerCase()).toBe(BASE_USDC.toLowerCase());
-    expect(quote.mock.calls[0][0].fromAmount).toBe("500000000");
+    expect(mockExecutor.mock.calls[0][0].fromAmount).toBe("500000000");
     // Selling shares must send the TOKEN as tokenIn, USDC as tokenOut.
-    expect(quote.mock.calls[0][0].fromToken).toBe(aaplcAddress());
-    expect(quote.mock.calls[0][0].toToken.toLowerCase()).toBe(BASE_USDC.toLowerCase());
+    expect(mockExecutor.mock.calls[0][0].from.address).toBe(aaplcAddress());
+    expect(mockExecutor.mock.calls[0][0].to.address.toLowerCase()).toBe(BASE_USDC.toLowerCase());
+    // Routed through the executor with the 25 bps fee applied to the SELL leg.
+    expect(result.proposal.provider).toBe("mpgr-executor");
+    expect(result.proposal.agentFee).toMatchObject({ status: "applied", bps: 25, amountAtomic: "1250000" });
+    expect(mockQuote).not.toHaveBeenCalled();
   });
 
   it("sizes 'Sell 0.015 AAPLc' exactly", async () => {
     mockOnchain.mockResolvedValue(onchainState());
-    mockQuote.mockImplementation(quoteEcho());
+    await useExecutorEcho();
 
     const result = await prepareTokenizedStockSwap({
       symbol: "AAPLc",
@@ -127,7 +186,7 @@ describe("tokenized-stock order sizing (amountUnit)", () => {
 
   it("sizes 'Sell $5 of my AAPLc' without float precision loss", async () => {
     mockOnchain.mockResolvedValue(onchainState());
-    mockQuote.mockImplementation(quoteEcho());
+    await useExecutorEcho();
 
     const result = await prepareTokenizedStockSwap({
       symbol: "AAPLc",
@@ -146,8 +205,7 @@ describe("tokenized-stock order sizing (amountUnit)", () => {
 
   it("sizes 'Buy 0.01 AAPLc' as its live USD budget in USDC", async () => {
     mockOnchain.mockResolvedValue(onchainState());
-    const quote = quoteEcho();
-    mockQuote.mockImplementation(quote);
+    await useExecutorEcho();
 
     const result = await prepareTokenizedStockSwap({
       symbol: "AAPLc",
@@ -162,12 +220,12 @@ describe("tokenized-stock order sizing (amountUnit)", () => {
     // 0.01 shares × $337.595 = $3.37595 → 3,375,950 atomic USDC (6dp).
     expect(result.proposal.fromAmount).toBe("3375950");
     expect(result.proposal.from.address.toLowerCase()).toBe(BASE_USDC.toLowerCase());
-    expect(quote.mock.calls[0][0].fromAmount).toBe("3375950");
+    expect(mockExecutor.mock.calls[0][0].fromAmount).toBe("3375950");
   });
 
   it("keeps the default (no amountUnit) dollar behavior unchanged", async () => {
     mockOnchain.mockResolvedValue(onchainState());
-    mockQuote.mockImplementation(quoteEcho());
+    await useExecutorEcho();
 
     const result = await prepareTokenizedStockSwap({
       symbol: "AAPLc",
@@ -179,6 +237,32 @@ describe("tokenized-stock order sizing (amountUnit)", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.proposal.fromAmount).toBe("50000000"); // $50 of USDC
+  });
+
+  it("refuses the trade when the executor quote fails — never a fee-less fallback", async () => {
+    mockOnchain.mockResolvedValue(onchainState());
+    mockExecutor.mockResolvedValue({ ok: false, supported: true, error: { code: "PROVIDER_ERROR", message: "unavailable" } });
+
+    const result = await prepareTokenizedStockSwap({ symbol: "AAPLc", side: "BUY", amountHuman: "50", taker: TAKER });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("PROVIDER_ERROR");
+    // The direct (fee-less) Slipstream quote must NOT take over.
+    expect(mockQuote).not.toHaveBeenCalled();
+  });
+
+  it("keeps the existing non-executor provider for a pair with no registered executor route", async () => {
+    mockOnchain.mockResolvedValue(onchainState());
+    mockExecutor.mockResolvedValue({ ok: false, supported: false }); // not an executor pair
+    mockQuote.mockImplementation(quoteEcho());
+
+    const result = await prepareTokenizedStockSwap({ symbol: "AAPLc", side: "BUY", amountHuman: "50", taker: TAKER });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.proposal.provider).toBe(AERODROME_SLIPSTREAM_PROVIDER_ID);
+    expect(result.proposal.agentFee).toMatchObject({ status: "skipped" });
+    expect(mockQuote).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a token amount finer than the B20's on-chain precision", async () => {

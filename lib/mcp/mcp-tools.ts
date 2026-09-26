@@ -31,7 +31,7 @@ const CHAIN_ID = {
   type: "integer",
   enum: [84532, 8453],
   default: 84532,
-  description: "84532 = Base Sepolia (MPGR Executor). 8453 = Base mainnet (MPGR Executor / Uniswap V3 for USDC-WETH; 0x native-fee fallback for other pairs; disabled unless enabled by the operator).",
+  description: "84532 = Base Sepolia (MPGR Executor). 8453 = Base mainnet (MPGR Executor: Uniswap V3 for USDC-WETH, Aerodrome Slipstream for USDC <-> B20 tokenized stocks; 0x native-fee fallback for every other pair; disabled unless enabled by the operator).",
 };
 const ADDRESS = { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" };
 const TX_HASH = { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" };

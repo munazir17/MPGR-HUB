@@ -16,13 +16,14 @@ import {
   ZERO_EX_PROVIDER_ID,
   tradeProviderLabel,
 } from "./trade-config";
-import { MPGR_AGENT_FEE_PERCENT_LABEL, buildProposalAgentFee } from "./trade-agent-fee";
+import { AGENT_FEE_EXECUTOR_ONLY_REASON, skippedAgentFee } from "./trade-agent-fee";
 import { formatAtomicAmount } from "./trade-format";
 import { buildSwapRiskFacts, riskToWarnings } from "./trade-risk";
 import { isTokenizedStockToken } from "./trade-tokens";
 import type {
   CdpSwapIssues,
   CdpSwapQuote,
+  TradeAgentFee,
   TradeError,
   TradeKind,
   TradeProposal,
@@ -43,6 +44,15 @@ export interface BuildTradeProposalInput {
   provider?: TradeProvider;
   /** Signed bps vs. mid (lib/trade/trade-price-impact.ts), or null. */
   priceImpactBps?: number | null;
+  /**
+   * Fee already resolved by the caller. Only the executor quote path
+   * (lib/trade/trade-executor-quote.ts) supplies an APPLIED fee: it is
+   * taken from the gross sell amount inside the executor swap. Every
+   * other route leaves this undefined → the proposal is quoted with no
+   * fee at all (a separate fee transfer is not supported and does not
+   * exist in this codebase).
+   */
+  agentFee?: TradeAgentFee;
 }
 
 function checksum(address: string): Address {
@@ -57,7 +67,8 @@ function emptyIssues(): CdpSwapIssues {
   return { allowance: null, balance: null, simulationIncomplete: false };
 }
 
-function buildDeterministicId(input: {
+/** Stable proposal id for an identical (taker, pair, amount, slippage) swap. */
+export function tradeProposalId(input: {
   from: string;
   to: string;
   fromAmount: string;
@@ -103,15 +114,14 @@ export function buildTradeProposal(
     liquidityAvailable && input.quote.transaction !== null;
   const provider = input.provider ?? CDP_TRADE_PROVIDER_ID;
 
-  // MPGR Agent fee (0.25% of the SELL amount). Pure derivation from the
-  // quoted fromAmount — quote amounts, calldata, and slippage are inputs,
-  // never modified. Skipped (not an error) whenever uncollectible.
-  const agentFee = buildProposalAgentFee({
-    fromAmount: input.quote.fromAmount,
-    from: input.from,
-    taker: input.taker,
-    executionAvailable,
-  });
+  // MPGR Agent fee (0.25% of the GROSS sell amount). Only the executor
+  // route can carry it (in the swap transaction itself), so the caller
+  // supplies it there. Every other route is fee-less by construction:
+  // there is no supported out-of-band collection. Quote amounts, calldata,
+  // and slippage are inputs, never modified.
+  const agentFee = executionAvailable
+    ? input.agentFee ?? skippedAgentFee(AGENT_FEE_EXECUTOR_ONLY_REASON)
+    : skippedAgentFee(AGENT_FEE_EXECUTOR_ONLY_REASON);
 
   const risk = buildSwapRiskFacts({
     kind,
@@ -159,9 +169,9 @@ export function buildTradeProposal(
           ? ["Your wallet will sign a one-time Permit2 authorization for this swap only."]
           : []),
         "Your wallet will sign the swap transaction on Base.",
-        ...(agentFee.status === "applied" && agentFee.displayAmount
+        ...(agentFee.status === "applied" && agentFee.displayAmount && agentFee.bps !== null
           ? [
-              `After the swap settles, your wallet will send a separate ${MPGR_AGENT_FEE_PERCENT_LABEL} agent fee (${agentFee.displayAmount}) to the MPGR fee wallet.`,
+              `The ${agentFee.bps / 100}% MPGR fee (${agentFee.displayAmount}) is taken from the sell amount by the Executor inside that same swap transaction — no separate fee transaction is created or signed.`,
             ]
           : []),
         "Nothing broadcasts until you approve each wallet prompt.",
@@ -177,7 +187,7 @@ export function buildTradeProposal(
   return {
     ok: true,
     proposal: {
-      id: buildDeterministicId({
+      id: tradeProposalId({
         from: input.from.address,
         to: input.to.address,
         fromAmount: input.quote.fromAmount,

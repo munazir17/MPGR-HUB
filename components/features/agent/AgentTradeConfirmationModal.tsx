@@ -23,8 +23,6 @@ interface AgentTradeConfirmationModalProps {
   swapHash: `0x${string}` | null;
   // Retained for callers/diagnostics; internal execution copy is not presented.
   stepLabel: string | null;
-  feeHash?: `0x${string}` | null;
-  feeError?: TradeError | null;
   onConfirmAndSwap?: () => void;
 }
 
@@ -107,7 +105,7 @@ function userWarnings(proposal: TradeProposal): string[] {
 
 export function AgentTradeConfirmationModal({
   open, onClose, proposal, confirmationState, confirmationError,
-  executionState, executionError, approvalHash, swapHash, feeHash, feeError,
+  executionState, executionError, approvalHash, swapHash,
   onConfirmAndSwap,
 }: AgentTradeConfirmationModalProps) {
   const titleId = useId();
@@ -192,7 +190,6 @@ export function AgentTradeConfirmationModal({
                   <dt className="text-zinc-400">MPGR fee{proposal.agentFee.bps !== null ? ` (${proposal.agentFee.bps / 100}%)` : ""}</dt>
                   <dd className="min-w-0 break-words text-right text-white">
                     {amount(proposal.agentFee.amountAtomic, proposal.from)}
-                    <span className="mt-0.5 block text-[11px] text-zinc-400">Paid separately after the swap</span>
                   </dd>
                 </div>
               )}
@@ -230,16 +227,9 @@ export function AgentTradeConfirmationModal({
                 <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />Swap confirmed
               </div>
             )}
-            {settled && feeError && (
-              <div role="alert" className="mb-4 text-xs text-amber-300">
-                {feeError.code === "WALLET_REJECTED"
-                  ? "Your swap is confirmed, but you declined the separate fee payment."
-                  : "Your swap is confirmed, but the separate fee payment could not be confirmed. Check your wallet before retrying it."}
-              </div>
-            )}
-            {(approvalHash || swapHash || feeHash) && (
+            {(approvalHash || swapHash) && (
               <div className="mb-4 flex flex-wrap gap-3 text-xs">
-                {([["Approval", approvalHash], ["Swap", swapHash], ["Fee", feeHash]] as const).map(([label, hash]) => hash && (
+                {([["Approval", approvalHash], ["Swap", swapHash]] as const).map(([label, hash]) => hash && (
                   <a key={label} href={`https://basescan.org/tx/${hash}`} target="_blank" rel="noopener noreferrer" className="text-primary-glow underline">View {label.toLowerCase()} on BaseScan</a>
                 ))}
               </div>

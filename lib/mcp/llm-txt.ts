@@ -45,8 +45,7 @@ function chainBlock(chainId: ExecutorChainId, d: ExecutorDeployment | null): str
     ...(isMainnet
       ? [
           "  - Mainnet MCP trading: OFF by default; the operator enables it with MPGR_MCP_ENABLE_BASE_MAINNET=true. " +
-            "Enabled: proven executor pairs (USDC <-> WETH, incl. native ETH) route through the executor; other ERC-20 pairs use the 0x native-fee path. " +
-            "B20 tokenized stocks are never routed through the executor.",
+            "Enabled: registered executor pairs (USDC <-> WETH, incl. native ETH, and USDC <-> each B20 tokenized stock) route through the executor with the fee inside the swap; other ERC-20 pairs use the 0x native-fee path.",
         ]
       : []),
   ];

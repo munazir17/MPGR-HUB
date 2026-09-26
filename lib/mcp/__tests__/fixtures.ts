@@ -47,6 +47,27 @@ export const MAINNET_WETH = CANONICAL_WETH;
 export const MAINNET_UNI_ROUTER02 = getAddress(BASE_MAINNET_UNISWAP_V3.swapRouter02);
 export const MAINNET_UNI_QUOTER = getAddress(BASE_MAINNET_UNISWAP_V3.quoterV2);
 export const MAINNET_POOL_FEE = BASE_MAINNET_USDC_WETH_POOL_FEE;
+// The other live-allowlisted production venue: Aerodrome Slipstream (kind 1 since the
+// constructor), used for every USDC <-> B20 tokenized stock at tickSpacing 10.
+export const MAINNET_SLIP_ROUTER = getAddress("0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F");
+export const MAINNET_SLIP_QUOTER = getAddress("0x514c8B5f54112481E28028F1166Bd78501089259");
+export const MAINNET_B20_TICK_SPACING = 10;
+/** The 13 B20 tokenized stocks the deployed executor allowlists (8 decimals each). */
+export const MAINNET_B20_TOKENS = [
+  ["AAPLc", "0xb200000000000000000000C2e324d24d7eEcd1fb"],
+  ["AMZNc", "0xb200000000000000000000d9192b6B456483C2E8"],
+  ["COINc", "0xb200000000000000000000c85a31389D71F3ecfb"],
+  ["CRCLc", "0xB20000000000000000000019f6E7C675b73C2e4D"],
+  ["GOOGLc", "0xb2000000000000000000002D0BA3164cc74f58B7"],
+  ["INTCc", "0xB2000000000000000000004AFF16039bA04bdFBc"],
+  ["METAc", "0xb2000000000000000000008bC8786B856E61707C"],
+  ["MSFTc", "0xB200000000000000000000Ab99cFa739E253872B"],
+  ["MSTRc", "0xb2000000000000000000004884b426556b92883d"],
+  ["NVDAc", "0xb20000000000000000000078ee7ce2fE4908108C"],
+  ["SNDKc", "0xb200000000000000000000397293Cb8cda9a10c5"],
+  ["SPCXc", "0xb2000000000000000000007b9fcbd005511aCBd5"],
+  ["TSLAc", "0xb2000000000000000000001e800a7f5189430cD0"],
+] as const;
 
 export const SEPOLIA_DEPLOYMENT: ExecutorDeployment = {
   chainId: BASE_SEPOLIA_CHAIN_ID,
@@ -71,7 +92,10 @@ export const SEPOLIA_DEPLOYMENT: ExecutorDeployment = {
   ],
 };
 
-/** Mirrors BASE_MAINNET_EXECUTOR_DEPLOYMENT: USDC <-> WETH on Uniswap V3 only (no B20). */
+/**
+ * Mirrors BASE_MAINNET_EXECUTOR_DEPLOYMENT: USDC <-> WETH on Uniswap V3 plus USDC <-> each of the
+ * 13 B20 tokenized stocks on the live-allowlisted Aerodrome Slipstream router (tickSpacing 10).
+ */
 export const MAINNET_DEPLOYMENT: ExecutorDeployment = {
   chainId: BASE_MAINNET_CHAIN_ID,
   network: "base",
@@ -87,6 +111,11 @@ export const MAINNET_DEPLOYMENT: ExecutorDeployment = {
   tokens: [
     { address: MAINNET_USDC, symbol: "USDC", decimals: 6 },
     { address: MAINNET_WETH, symbol: "WETH", decimals: 18, isWeth: true },
+    ...MAINNET_B20_TOKENS.map(([symbol, address]) => ({
+      address: getAddress(address),
+      symbol,
+      decimals: 8,
+    })),
   ],
   routes: [
     {
@@ -97,6 +126,14 @@ export const MAINNET_DEPLOYMENT: ExecutorDeployment = {
       tokenA: MAINNET_USDC,
       tokenB: MAINNET_WETH,
     },
+    ...MAINNET_B20_TOKENS.map(([, address]) => ({
+      kind: RouterKind.AERODROME_SLIPSTREAM,
+      router: MAINNET_SLIP_ROUTER,
+      quoter: MAINNET_SLIP_QUOTER,
+      tickSpacing: MAINNET_B20_TICK_SPACING,
+      tokenA: MAINNET_USDC,
+      tokenB: getAddress(address),
+    })),
   ],
 };
 

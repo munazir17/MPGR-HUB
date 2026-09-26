@@ -205,18 +205,18 @@ Deployed by workflow run `36067982010` from commit `07dbc35` (merge commit `d426
 | `test/script/DeployMPGRExecutorBaseSepoliaLocal.t.sol` | Deploy-script rehearsal. |
 | `test/script/DeployMPGRExecutorBaseMainnet.t.sol` | Offline run of the real mainnet deploy script (stand-in bytecode at production addresses): exact config, JSON record, refuses when not enabled, on Base Sepolia, a second deploy from the same key, or a wrong router binding. |
 | `test/fork/MPGRExecutorBaseMainnetDeploy.t.sol` | Base mainnet fork: full dry run of the real mainnet deploy script against the committed pins, then a real USDC swap on the production Slipstream router through that instance (exact 25 bps to the pinned fee recipient). Every preflight guard is proven to trip. |
-| `lib/executor/__tests__/uniswap-v3-mainnet-route.test.ts` | Base mainnet Uniswap V3 route migration (offline, deterministic): V3/3000 route selection in both directions, CREATE2 pool verification against the official factory (cross-checked on the known 0.05% pool), byte-exact QuoterV2 quote calldata, exact 25 bps fee math (incl. the `FEE_ROUNDS_TO_ZERO` refusal), byte-exact `swapUniswapV3ExactInputSingle` calldata, exact-amount approval, and the unchanged fallback of B20/other pairs to 0x. |
+| `lib/executor/__tests__/uniswap-v3-mainnet-route.test.ts` | Base mainnet Uniswap V3 route migration (offline, deterministic): V3/3000 route selection in both directions, CREATE2 pool verification against the official factory (cross-checked on the known 0.05% pool), byte-exact QuoterV2 quote calldata, exact 25 bps fee math (incl. the `FEE_ROUNDS_TO_ZERO` refusal), byte-exact `swapUniswapV3ExactInputSingle` calldata, exact-amount approval, the USDC<->B20 Slipstream routes (tickSpacing 10, fee inside the swap), and the unchanged fallback of pairs with no registered route to 0x. |
 | `lib/executor/__tests__`, `lib/mcp/__tests__`, `lib/trade/__tests__/zero-ex-native-fee.test.ts`, `app/api/mcp/route.test.ts`, `app/llm.txt/route.test.ts` | Fee/intent/encoding; verification from synthetic receipts; quoteId tamper and expiry; 0x validator (mocked fetch); MCP protocol, origin and rate limit; the full AI flow with a wallet signing EIP-2612 and Permit2 typed data; llm.txt contains no secrets. |
 
 ## Known limitations
 
-- **UI wiring.** The in-app swap UI still uses its existing flows. The executor path is exposed via MCP only; wiring the UI is a follow-up so current flows stay untouched.
-- **Slipstream (executor path).** No Base Sepolia deployment exists, so the executor's old Slipstream route was only ever exercised on a mainnet fork (CI `contracts-fork`) or in the smoke script's fork `rehearsal` mode. It is no longer registered: the mainnet executor route is Uniswap V3.
+- **UI wiring.** The in-app swap UI quotes the executor first for every registered route (USDC<->WETH and USDC<->each B20 stock): confirm shows the approval (only when needed) and the swap, and the 0.25% fee is taken inside that swap. Pairs with no registered route keep their existing providers.
+- **Slipstream (executor path).** The Slipstream adapter is registered on Base mainnet (kind 1, at construction) for the USDC<->B20 stock routes; its USDC/WETH predecessor (tickSpacing 50) was replaced by Uniswap V3. There is no Base Sepolia Slipstream deployment; Sepolia uses Uniswap V3 only.
 - **B20 tokenized stocks cannot be simulated locally.** Coinbase B20 tokens are Base-native precompiles that run in the node, not EVM contracts. Foundry's local EVM (fork tests and `forge script` simulation) cannot execute them; calls burn all forwarded gas. So:
   - the USDC↔B20 fork case skips;
   - the mainnet deploy script never calls B20 tokens (it checks code plus the `0xb2` prefix);
   - the workflow verifies them with real-node `eth_call`.
-  - A USDC↔B20 swap through the executor has therefore never been executed. Validate it with one small real mainnet trade before routing B20 through the executor.
+  - A USDC<->B20 swap through the *executor* has not been executed yet (the app's direct-Slipstream B20 swaps prove the venue, pool key and tickSpacing for this exact pair; the fork suite proves the executor's Slipstream adapter + exact fee on the live router). B20 pairs are registered because the deployed contract already allowlists that router, those tokens and this pool key — but go-live should still start with one small real mainnet B20 trade before size.
 - **Single-hop only** (`exactInputSingle`). Multi-hop needs a typed path adapter and is deferred.
 - **Permit2 without a witness.** The signature binds token, amount, nonce, deadline and spender, but not minOut. This is acceptable because only the signer can submit it (owner = msg.sender) and minOut is in the tx they sign.
 - **Rate limiter.** The in-memory fallback is per instance when Redis is not configured.
@@ -224,7 +224,7 @@ Deployed by workflow run `36067982010` from commit `07dbc35` (merge commit `d426
 
 ## Base Mainnet deployment (deploy only; app routing stays OFF)
 
-The owner explicitly authorised a one-time Base Mainnet deployment of the executor. The deployment itself does **not** switch any trading onto it: `lib/executor/executor-config.ts` keeps chain `8453` = `null` and `MPGR_MCP_ENABLE_BASE_MAINNET` stays unset. Switching mainnet execution on is a separate, later step.
+The owner explicitly authorised a one-time Base Mainnet deployment of the executor. The deployment itself did **not** switch MCP trading onto it: `MPGR_MCP_ENABLE_BASE_MAINNET` stays unset (quotes are refused with `BASE_MAINNET_DISABLED` until the operator sets it). The registry entry for chain `8453` records the deployed facts, and the **app UI** quotes every registered route through this executor (in-swap fee); MCP execution remains gated by the flag.
 
 - **Script:** `script/DeployMPGRExecutorBaseMainnet.s.sol`. It deploys the executor and nothing else (no tokens, pools or swaps).
 - **Workflow:** `.github/workflows/deploy-executor-base-mainnet.yml`. Label `deploy-base-mainnet` on a same-repo PR; no manual or push trigger.
@@ -234,7 +234,7 @@ The owner explicitly authorised a one-time Base Mainnet deployment of the execut
 - **Allowlist.** Copied verbatim from the production trade config:
   - Router: Aerodrome Slipstream SwapRouter `0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F`. Preflight proves it is bound to factory `0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef` and WETH. The quoter `0x514c8B5f54112481E28028F1166Bd78501089259` is bound to the same factory.
   - Tokens: USDC, WETH and the 13 B20 stocks from `lib/trade/tokenized-stocks.ts`.
-  - Uniswap V3 is **not** in the app's production trade config, so it was **not** allowlisted at deploy time. The executor route has since migrated to Uniswap V3 (see "Live deployment (Base Mainnet, chainId 8453)"), so the owner must add the SwapRouter02 with `setRouter` before mainnet MCP trading is switched on — prepared (not sent) by `script/prepare-uniswap-v3-allowlist.mjs`.
+  - Uniswap V3 was not in the app's production trade config at deploy time, so it was **not** allowlisted at construction. The owner has since executed `setRouter(0x2626664c2603336E57B271c5C0b26F421741e481, 2)` (tx `0x2341ff2234d9a58401fc3c3e0a4e3d26aa56cb62fd574ce48f8c3929dab964d1`, block 51792513, 2026-09-25 — confirmed on chain), so the live router allowlist is Slipstream (kind 1) **and** Uniswap V3 Router02 (kind 2). `script/prepare-uniswap-v3-allowlist.mjs` now reports "already allowlisted".
 - **Preflight** (any failure aborts before broadcast):
   - chain id 8453;
   - explicit enablement for this deployment only: `MPGR_MAINNET_DEPLOY_ENABLED=true` in the environment, `mainnetDeployEnabled: true` in the pins file, no existing `deployments/base-mainnet/mpgr-executor.json`, and the deployer nonce == 0;
@@ -258,11 +258,16 @@ The owner explicitly authorised a one-time Base Mainnet deployment of the execut
 
 Deployed by workflow run [36110098967](https://github.com/munazir17/MPGR-HUB/actions/runs/36110098967) from PR head `51ec6b9`, after owner approval in the `base-mainnet` environment. Record: `deployments/base-mainnet/mpgr-executor.json`. It is re-verified against the live chain by `test/fork/MPGRExecutorBaseMainnetDeployment.t.sol`, which checks bytecode == repo source, config, fee cap and a fork-only swap.
 
-**Registry + MCP routing.** `lib/executor/executor-config.ts` now records this deployment in the `8453` entry of `MPGR_EXECUTOR_DEPLOYMENTS` (deployed fact, mirrored field-for-field and enforced by `lib/executor/__tests__/executor-registry.test.ts`). Registering the entry does **not** switch trading on: Base mainnet MCP quotes are still refused with `BASE_MAINNET_DISABLED` until the operator sets `MPGR_MCP_ENABLE_BASE_MAINNET=true`. Only the proven **USDC <-> WETH** route is registered, and it is now the **official Base Uniswap V3 0.30% pool** (SwapRouter02 `0x2626664c2603336E57B271c5C0b26F421741e481`, QuoterV2 `0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a`, factory `0x33128a8fC17869897dcE68Ed026d694621f6FDfD`, pool `0x6c561B446416E1A00E8E93E221854d6eA4171372`, incl. native ETH in/out). The contract's B20 tokenized-stock allowlist is deliberately excluded from the registry, so those pairs are never routed through the executor (over MCP they fall through to the 0x path like any other non-executor pair; in the app UI they keep the CDP flow).
+**Registry + MCP routing.** `lib/executor/executor-config.ts` now records this deployment in the `8453` entry of `MPGR_EXECUTOR_DEPLOYMENTS` (deployed fact, mirrored field-for-field and enforced by `lib/executor/__tests__/executor-registry.test.ts`). Registering the entry does **not** switch trading on: Base mainnet MCP quotes are still refused with `BASE_MAINNET_DISABLED` until the operator sets `MPGR_MCP_ENABLE_BASE_MAINNET=true`. The **app UI** quotes these same registered routes (`lib/trade/trade-executor-quote.ts`, reached from `/api/trade/quote` and the tokenized-stock prepare path): the swap the wallet signs IS the executor transaction, so the 0.25% fee is collected in-swap instead of by a separate wallet transfer. Registered routes — exactly what the live contract can execute:
+
+- **USDC <-> WETH** (incl. native ETH in/out): official Base Uniswap V3 0.30% pool — SwapRouter02 `0x2626664c2603336E57B271c5C0b26F421741e481`, QuoterV2 `0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a`, factory `0x33128a8fC17869897dcE68Ed026d694621f6FDfD`, pool `0x6c561B446416E1A00E8E93E221854d6eA4171372`, fee 3000.
+- **USDC <-> each of the 13 B20 tokenized stocks**: Aerodrome Slipstream router `0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F` (kind 1 since the constructor), QuoterV2 `0x514c8B5f54112481E28028F1166Bd78501089259`, **tickSpacing 10** — the same router, pool key and tokens the app's executed B20 swap uses (tx `0x0f52a3b3a13e8fabf79f9185bc3198e60275223ceb4225b24c84782aa43551de`: 2 USDC -> 0.00587536 AAPLc, tickSpacing 10). The fee now rides inside that swap.
+
+Pairs with **no** registered route (an arbitrary ERC-20, WETH <-> B20, B20 <-> B20) are never routed through the executor: over MCP they fall through to the 0x native-fee path (same exact 25 bps), and in the app UI they keep their existing provider — each charging its own exact fee, never a fee-less route.
 
 **Route migration (Aerodrome Slipstream → Uniswap V3), no redeploy.** The previously registered route was the app's Aerodrome Slipstream USDC/WETH pool (tickSpacing 50). It is replaced here by the official Base Uniswap V3 0.30% pool. The previous route's evidence was **fork/simulation only** — the CI Base-mainnet fork suite plus `script/smoke-executor-base-mainnet.mjs`, whose `rehearsal` mode runs against a local anvil fork and broadcasts nothing — and no confirmed live mainnet trade through the executor was ever recorded, so the old route must not be described as live-proven.
 
-Unchanged by the migration: the executor address, owner, fee recipient, the **exact 25 bps** sell-token fee, the non-custodial APPROVAL / EIP-2612 / Permit2 flow, the single-hop `exactInputSingle` shape, and the 0x fallback for every non-proven pair.
+Unchanged by the migration: the executor address, owner, fee recipient, the **exact 25 bps** sell-token fee, the non-custodial APPROVAL / EIP-2612 / Permit2 flow, the single-hop `exactInputSingle` shape, and the fallback of every pair with no registered route.
 
 | field | value |
 |---|---|
@@ -274,9 +279,9 @@ Unchanged by the migration: the executor address, owner, fee recipient, the **ex
 | Owner | `0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e` (pendingOwner = 0) |
 | Fee recipient | `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4` |
 | Fee | 25 bps, hard cap `MAX_FEE_BPS` = 100 bps; not paused |
-| Router allowlist (**live contract**) | Aerodrome Slipstream SwapRouter `0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F` (kind 1). Factory `0xf8f2…61Ef`, QuoterV2 `0x514c…9259`. Uniswap V3 is **not yet** allowlisted on chain — see the row below. |
+| Router allowlist (**live contract**) | Aerodrome Slipstream SwapRouter `0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F` (kind 1, constructor) **and** Uniswap V3 SwapRouter02 `0x2626664c2603336E57B271c5C0b26F421741e481` (kind 2, owner tx `0x2341ff22…64d1` at block 51792513 on 2026-09-25). |
 | Token allowlist (15) | USDC `0x8335…2913`, WETH `0x4200…0006`, and the B20 stocks AAPLc, AMZNc, COINc, CRCLc, GOOGLc, INTCc, METAc, MSFTc, MSTRc, NVDAc, SNDKc, SPCXc, TSLAc (addresses in the record) |
-| Pending owner action (**not executed**) | The app-side registry routes USDC<->WETH through Uniswap V3, so the deployed executor must allowlist `SwapRouter02 0x2626664c2603336E57B271c5C0b26F421741e481` as kind 2 before mainnet MCP trading is switched on. `node script/prepare-uniswap-v3-allowlist.mjs` prints (never sends) that transaction and the verification steps. |
+| Owner action (executed) | `setRouter(0x2626664c2603336E57B271c5C0b26F421741e481, 2)` — tx `0x2341ff2234d9a58401fc3c3e0a4e3d26aa56cb62fd574ce48f8c3929dab964d1`, block 51792513, 2026-09-25 22:12:53 UTC, status success (from the owner). The registry's Uniswap V3 route is live on chain; `node script/prepare-uniswap-v3-allowlist.mjs` reports "already allowlisted". |
 | WETH / Permit2 | `0x4200000000000000000000000000000000000006` / `0x000000000022D473030F116dDEE9F6B43aC78BA3` |
 | Source verification | Sourcify `exact_match`, Blockscout verified, Basescan step success |
 
@@ -287,7 +292,7 @@ The one-time enablement is switched off: `mainnetDeployEnabled: false` in the pi
 1. External security audit of `MPGRExecutor.sol` (recommended).
 2. Consider moving ownership to a multisig (`transferOwnership` + `acceptOwnership`, 2-step).
 3. Fill the `8453` registry entry with the deployed address — **DONE** (deployed fact only).
-4. Allowlist the production router on the deployed executor: `setRouter(0x2626664c2603336E57B271c5C0b26F421741e481, 2)` (Uniswap V3 SwapRouter02). **NOT executed.** Prepare it with `node script/prepare-uniswap-v3-allowlist.mjs` (prepare-only: prints the unsigned tx, never signs or broadcasts) and send it from the owner wallet. Until then the registry's Uniswap V3 route is inert on chain; mainnet MCP trading is off anyway.
+4. Allowlist the production router on the deployed executor: `setRouter(0x2626664c2603336E57B271c5C0b26F421741e481, 2)` (Uniswap V3 SwapRouter02). **DONE** — executed by the owner as tx `0x2341ff2234d9a58401fc3c3e0a4e3d26aa56cb62fd574ce48f8c3929dab964d1` (block 51792513, 2026-09-25); re-check with `node script/prepare-uniswap-v3-allowlist.mjs`, which prints "already allowlisted".
 5. Set `MPGR_MCP_ENABLE_BASE_MAINNET=true` in the Vercel **Production** environment and redeploy to switch mainnet MCP trading on. The 0x fallback path additionally needs `ZERO_EX_API_KEY` (secret) and `MPGR_AGENT_FEE_RECIPIENT` (fee wallet). Without the fee wallet, only the proven executor pair is available and every other mainnet pair is refused cleanly.
 6. Monitoring on `SwapExecuted`, admin events and `Paused`, plus an incident runbook (pause first).
 

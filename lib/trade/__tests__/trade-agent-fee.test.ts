@@ -1,18 +1,24 @@
 // lib/trade/__tests__/trade-agent-fee.test.ts
 //
-// MPGR Agent swap fee (0.25% / 25 bps on the sell leg) —
-//   1. fee calculation (exact, floor, dust, invalid)
-//   2. fee-recipient configuration handling
-//   3. proposal integration: buy, sell, different decimals, quote intact
-//   4. pre-execution validation (displayed-only, drift-safe)
-//   5. execution: separate post-swap transfer, non-blocking failures
+// MPGR Agent swap fee (0.25% / 25 bps on the sell leg) — the fee is
+// collected by the MPGR Executor INSIDE the swap transaction.
 //
-// The fee must NEVER change the swap itself: quote amounts, calldata,
-// approvals, slippage, routing, min-out, price impact, and gas stay
-// byte-for-byte identical with and without the fee.
+//   1. fee calculation (exact, floor, dust, invalid)
+//   2. 0x fallback fee-recipient configuration (MCP path only)
+//   3. executor fee quoting (recipient comes from the executor)
+//   4. non-executor routes carry no fee at all
+//   5. execution: approve + swap at most, never a third (fee) transaction
+//
+// REGRESSION GUARANTEES:
+//   - no separate fee transaction is ever created, signed or sent;
+//   - the fee recipient is the executor's configured feeRecipient, never
+//     the connected wallet;
+//   - first-time ERC-20 = approve + swap; sufficient allowance = swap only;
+//   - a proposal that claims a fee without an executor swap is refused
+//     before any wallet prompt.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { decodeFunctionData, getAddress, zeroAddress } from "viem";
+import { decodeFunctionData, getAddress, zeroAddress, type Address } from "viem";
 
 const { mockSend, mockSign, mockWait, mockRead } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -32,35 +38,42 @@ vi.mock("@/lib/wagmi", () => ({ config: {} }));
 
 const { executeTrade } = await import("../trade-execution");
 const { buildTradeProposal } = await import("../trade-proposal");
+const { buildExecutorSwapProposal } = await import("../trade-executor-quote");
 const {
+  AGENT_FEE_EXECUTOR_ONLY_REASON,
   MPGR_AGENT_FEE_BPS,
   MPGR_AGENT_FEE_PERCENT_LABEL,
-  buildAgentFeeTransfer,
-  buildProposalAgentFee,
+  buildExecutorAgentFee,
   calculateAgentFeeAmount,
   getAgentFeeRecipient,
   resetAgentFeeConfigWarningForTests,
-  resolveExecutionAgentFee,
+  recordedExecutorAddress,
+  recordedExecutorFeeRecipient,
+  skippedAgentFee,
+  verifyAgentFeeInSwapTransaction,
 } = await import("../trade-agent-fee");
 const {
-  AERODROME_SLIPSTREAM_PROVIDER_ID,
-  AERODROME_SLIPSTREAM_SWAP_ROUTER,
   BASE_USDC,
   CDP_TRADE_PROVIDER_ID,
+  MPGR_EXECUTOR_PROVIDER_ID,
   NATIVE_ETH_SENTINEL,
   PERMIT2_ADDRESS,
+  TRADE_CHAIN_ID,
 } = await import("../trade-config");
-const { MPGR_TOKEN_CONFIG } = await import("@/lib/token/token-config");
+const { BASE_MAINNET_EXECUTOR_DEPLOYMENT, CANONICAL_WETH } = await import("@/lib/executor/executor-config");
+const { MPGR_EXECUTOR_ABI } = await import("@/lib/executor/mpgr-executor-abi");
 const { erc20Abi } = await import("@/lib/erc20-abi");
-const { encodeAerodromeExactInputSingle } = await import("../aerodrome-slipstream");
+const { MPGR_TOKEN_CONFIG } = await import("@/lib/token/token-config");
 
 import type { CdpSwapQuote, TradeProposal, TradeTokenRef } from "../trade-types";
+import type { ChainReader } from "@/lib/executor/executor-chain";
 
-const TAKER = "0x2222222222222222222222222222222222222222" as const;
-const FEE_WALLET = "0x1111111111111111111111111111111111111111" as const;
-const ROUTER = getAddress(AERODROME_SLIPSTREAM_SWAP_ROUTER);
-// MSTRc — Coinbase tokenized stock (B20) on Base, 8 decimals on-chain.
-const MSTRC = getAddress("0xb2000000000000000000004884b426556b92883d");
+const TAKER = "0x2222222222222222222222222222222222222222";
+/** The connected owner wallet that runs the deployment — never a fee target. */
+const OWNER_WALLET = "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e";
+const FEE_WALLET = "0x1111111111111111111111111111111111111111" as Address;
+const EXECUTOR = getAddress(BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor);
+const EXECUTOR_FEE_RECIPIENT = getAddress(BASE_MAINNET_EXECUTOR_DEPLOYMENT.feeRecipient);
 
 const usdc: TradeTokenRef = {
   address: BASE_USDC,
@@ -80,6 +93,15 @@ const mpgr: TradeTokenRef = {
   verified: true,
 };
 
+const weth: TradeTokenRef = {
+  address: CANONICAL_WETH,
+  symbol: "WETH",
+  name: "Wrapped Ether",
+  decimals: 18,
+  kind: "erc20",
+  verified: true,
+};
+
 const eth: TradeTokenRef = {
   address: NATIVE_ETH_SENTINEL,
   symbol: "ETH",
@@ -89,15 +111,7 @@ const eth: TradeTokenRef = {
   verified: true,
 };
 
-const mstrc: TradeTokenRef = {
-  address: MSTRC,
-  symbol: "MSTRc",
-  name: "MicroStrategy (Coinbase Tokenized Stock)",
-  decimals: 8,
-  kind: "b20-tokenized-stock",
-  verified: true,
-};
-
+/** CDP/0x-style quote — a NON-executor route. */
 function cdpQuote(overrides: Partial<CdpSwapQuote> & Pick<CdpSwapQuote, "fromAmount" | "toAmount" | "minToAmount">): CdpSwapQuote {
   return {
     liquidityAvailable: true,
@@ -116,27 +130,14 @@ function withFeeEnv(): void {
 }
 
 describe("MPGR Agent fee — calculation", () => {
-  it("never displays a nonzero 18-decimal sell-token fee as zero", () => {
-    vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET);
-    try {
-      const fee = buildProposalAgentFee({
-        fromAmount: "100000000000000",
-        from: { symbol: "WETH", decimals: 18 },
-        taker: TAKER,
-        executionAvailable: true,
-      });
-      expect(fee.amountAtomic).toBe("250000000000");
-      expect(fee.displayAmount).toBe("0.00000025 WETH");
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
   it("1. fee rate is exactly 0.25% (25 bps)", () => {
     expect(MPGR_AGENT_FEE_BPS).toBe(25);
     expect(MPGR_AGENT_FEE_PERCENT_LABEL).toBe("0.25%");
   });
 
   it("2. exact fee on representative sizes", () => {
+    // 2 USDC (6dp) → 0.005 USDC (the required gross → fee example)
+    expect(calculateAgentFeeAmount("2000000")).toBe(5_000n);
     // 5 USDC (6dp) → 0.0125 USDC
     expect(calculateAgentFeeAmount("5000000")).toBe(12_500n);
     // 1 USDC → 2500 atomic
@@ -173,12 +174,12 @@ describe("MPGR Agent fee — calculation", () => {
   });
 });
 
-describe("MPGR Agent fee — recipient configuration", () => {
+describe("MPGR Agent fee — 0x fallback recipient config (MCP path only)", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  it("5. unset recipient → not ok (swap proceeds, fee skipped)", () => {
+  it("5. unset recipient → not ok (the browser flow does not use this at all)", () => {
     vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
     const result = getAgentFeeRecipient();
     expect(result.ok).toBe(false);
@@ -194,13 +195,10 @@ describe("MPGR Agent fee — recipient configuration", () => {
     if (!zero.ok) expect(zero.reason).toMatch(/invalid/);
   });
 
-  it("7. valid recipient is accepted", () => {
+  it("7. valid recipient is accepted; server var wins over the public one", () => {
     withFeeEnv();
-    const result = getAgentFeeRecipient();
-    expect(result).toEqual({ ok: true, recipient: FEE_WALLET });
-  });
+    expect(getAgentFeeRecipient()).toEqual({ ok: true, recipient: FEE_WALLET });
 
-  it("7b. server var is preferred, public var is the fallback", () => {
     vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET);
     vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", "0x3333333333333333333333333333333333333333");
     expect(getAgentFeeRecipient()).toEqual({
@@ -216,7 +214,7 @@ describe("MPGR Agent fee — recipient configuration", () => {
     expect(getAgentFeeRecipient()).toEqual({ ok: true, recipient: FEE_WALLET });
   });
 
-  it("7c. missing recipient warns once per process (diagnosable, not silent)", () => {
+  it("7b. missing recipient warns once per process (diagnosable, not silent)", () => {
     resetAgentFeeConfigWarningForTests();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -232,129 +230,71 @@ describe("MPGR Agent fee — recipient configuration", () => {
   });
 });
 
-describe("MPGR Agent fee — proposal fee", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("8. applied fee carries exact amount + human display (USDC 6dp)", () => {
-    withFeeEnv();
-    const fee = buildProposalAgentFee({
-      fromAmount: "5000000",
+describe("MPGR Agent fee — quoted from the executor", () => {
+  it("8. 2 USDC gross → 0.005 USDC fee, recipient = the executor's feeRecipient", () => {
+    const built = buildExecutorAgentFee({
+      grossAmountIn: "2000000",
+      feeBps: 25,
+      feeRecipient: EXECUTOR_FEE_RECIPIENT,
       from: usdc,
       taker: TAKER,
-      executionAvailable: true,
     });
-    expect(fee.status).toBe("applied");
-    expect(fee.bps).toBe(25);
-    expect(fee.recipient).toBe(FEE_WALLET);
-    expect(fee.amountAtomic).toBe("12500");
-    expect(fee.displayAmount).toBe("0.0125 USDC");
-    expect(fee.reason).toBeNull();
+    if (!built.ok) throw new Error(built.reason);
+    expect(built.fee).toEqual({
+      status: "applied",
+      bps: 25,
+      recipient: EXECUTOR_FEE_RECIPIENT,
+      amountAtomic: "5000",
+      displayAmount: "0.005 USDC",
+      reason: null,
+      collection: "mpgr-executor",
+    });
+    // Never the connected wallet, and never the recorded-owner wallet.
+    expect(built.fee.recipient!.toLowerCase()).not.toBe(TAKER.toLowerCase());
+    expect(built.fee.recipient!.toLowerCase()).not.toBe(OWNER_WALLET.toLowerCase());
+    expect(recordedExecutorFeeRecipient()).toBe(EXECUTOR_FEE_RECIPIENT);
+    expect(recordedExecutorAddress()).toBe(EXECUTOR);
   });
 
-  it("9. display respects token decimals (ETH 18dp, B20 8dp)", () => {
-    withFeeEnv();
-    const ethFee = buildProposalAgentFee({
-      fromAmount: "1000000000000000000",
+  it("9. display respects sell-token decimals (ETH 18dp)", () => {
+    const built = buildExecutorAgentFee({
+      grossAmountIn: "2000000000000000000",
+      feeBps: 25,
+      feeRecipient: EXECUTOR_FEE_RECIPIENT,
       from: eth,
       taker: TAKER,
-      executionAvailable: true,
     });
-    expect(ethFee.amountAtomic).toBe("2500000000000000");
-    expect(ethFee.displayAmount).toBe("0.0025 ETH");
-
-    const b20Fee = buildProposalAgentFee({
-      fromAmount: "30000000",
-      from: mstrc,
-      taker: TAKER,
-      executionAvailable: true,
-    });
-    expect(b20Fee.amountAtomic).toBe("75000");
-    expect(b20Fee.displayAmount).toBe("0.00075 MSTRc");
+    if (!built.ok) throw new Error(built.reason);
+    expect(built.fee.amountAtomic).toBe("5000000000000000");
+    expect(built.fee.displayAmount).toBe("0.005 ETH");
   });
 
-  it("10. skipped (never an error) when uncollectible", () => {
-    // No execution → skipped.
-    withFeeEnv();
-    expect(
-      buildProposalAgentFee({ fromAmount: "5000000", from: usdc, taker: TAKER, executionAvailable: false }).status,
-    ).toBe("skipped");
-
-    // No recipient → skipped.
-    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
-    const unconfigured = buildProposalAgentFee({
-      fromAmount: "5000000",
-      from: usdc,
-      taker: TAKER,
-      executionAvailable: true,
-    });
-    expect(unconfigured.status).toBe("skipped");
-    expect(unconfigured.amountAtomic).toBe("0");
-    expect(unconfigured.recipient).toBeNull();
-
-    // Taker == recipient → skipped (never self-charge).
-    withFeeEnv();
-    const self = buildProposalAgentFee({
-      fromAmount: "5000000",
-      from: usdc,
-      taker: FEE_WALLET,
-      executionAvailable: true,
-    });
-    expect(self.status).toBe("skipped");
-
-    // Dust → skipped.
-    const dust = buildProposalAgentFee({
-      fromAmount: "399",
-      from: usdc,
-      taker: TAKER,
-      executionAvailable: true,
-    });
-    expect(dust.status).toBe("skipped");
-    expect(dust.reason).toMatch(/zero/);
-
-    // Invalid amount → skipped.
-    const invalid = buildProposalAgentFee({
-      fromAmount: "abc",
-      from: usdc,
-      taker: TAKER,
-      executionAvailable: true,
-    });
-    expect(invalid.status).toBe("skipped");
-  });
-
-  it("10b. server var alone quotes the fee (public var unset)", () => {
-    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
-    vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET);
-    const fee = buildProposalAgentFee({
-      fromAmount: "5000000",
-      from: usdc,
-      taker: TAKER,
-      executionAvailable: true,
-    });
-    expect(fee.status).toBe("applied");
-    expect(fee.recipient).toBe(FEE_WALLET);
-    expect(fee.amountAtomic).toBe("12500");
+  it("10. fails closed (never an error, never a fee the swap cannot take)", () => {
+    const base = { grossAmountIn: "2000000", feeBps: 25, from: usdc, taker: TAKER };
+    // No recipient configured on the executor.
+    expect(buildExecutorAgentFee({ ...base, feeRecipient: null }).ok).toBe(false);
+    expect(buildExecutorAgentFee({ ...base, feeRecipient: zeroAddress }).ok).toBe(false);
+    expect(buildExecutorAgentFee({ ...base, feeRecipient: "not-an-address" }).ok).toBe(false);
+    // Recipient == taker → the contract reverts TakerIsFeeRecipient.
+    expect(buildExecutorAgentFee({ ...base, feeRecipient: TAKER }).ok).toBe(false);
+    // Dust → the contract reverts FeeRoundsToZero.
+    expect(buildExecutorAgentFee({ ...base, grossAmountIn: "399", feeRecipient: FEE_WALLET }).ok).toBe(false);
+    // Invalid amount / bps.
+    expect(buildExecutorAgentFee({ ...base, grossAmountIn: "abc", feeRecipient: FEE_WALLET }).ok).toBe(false);
+    expect(buildExecutorAgentFee({ ...base, feeBps: 0, feeRecipient: FEE_WALLET }).ok).toBe(false);
   });
 });
 
-describe("MPGR Agent fee — proposal integration (buy/sell, quote intact)", () => {
+describe("MPGR Agent fee — non-executor routes carry no fee", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  function buyProposal(): TradeProposal {
-    withFeeEnv();
+  function cdpProposal(): TradeProposal {
     const built = buildTradeProposal({
       from: usdc,
       to: mpgr,
-      quote: cdpQuote({
-        fromToken: BASE_USDC,
-        toToken: MPGR_TOKEN_CONFIG.address,
-        fromAmount: "10000000",
-        toAmount: "5000000000000000000",
-        minToAmount: "4950000000000000000",
-      }),
+      quote: cdpQuote({ fromAmount: "10000000", toAmount: "5000000000000000000", minToAmount: "4950000000000000000" }),
       slippageBps: 100,
       taker: TAKER,
       provider: CDP_TRADE_PROVIDER_ID,
@@ -363,291 +303,111 @@ describe("MPGR Agent fee — proposal integration (buy/sell, quote intact)", () 
     return built.proposal;
   }
 
-  function sellProposal(): TradeProposal {
-    withFeeEnv();
-    const built = buildTradeProposal({
-      from: mpgr,
-      to: usdc,
-      quote: cdpQuote({
-        fromToken: MPGR_TOKEN_CONFIG.address,
-        toToken: BASE_USDC,
-        fromAmount: "5000000000000000000",
-        toAmount: "10000000",
-        minToAmount: "9900000",
-      }),
-      slippageBps: 100,
-      taker: TAKER,
-      provider: CDP_TRADE_PROVIDER_ID,
-    });
-    if (!built.ok) throw new Error(built.error.message);
-    return built.proposal;
-  }
-
-  it("11. BUY attaches the fee without touching the quote", () => {
-    const p = buyProposal();
-    expect(p.agentFee?.status).toBe("applied");
-    expect(p.agentFee?.amountAtomic).toBe("25000"); // 0.25% of 10 USDC
-    expect(p.agentFee?.displayAmount).toBe("0.025 USDC");
-    // Quote intact.
-    expect(p.fromAmount).toBe("10000000");
-    expect(p.toAmount).toBe("5000000000000000000");
-    expect(p.minToAmount).toBe("4950000000000000000");
-    expect(p.slippageBps).toBe(100);
-    expect(p.transaction).toEqual({ to: getAddress(PERMIT2_ADDRESS), data: "0xabcdef", value: "0", gas: "210000" });
-    expect(p.fees.gasFee?.amount).toBe("3000");
-    // Disclosure present.
-    expect(p.risk.find((f) => f.id === "mpgr-agent-fee")?.severity).toBe("info");
-    expect(p.postConfirmationSteps.some((s) => s.includes("0.25%") && s.includes("0.025 USDC"))).toBe(true);
-    expect(p.description).toBe("Swap 10 USDC → ~5 MPGR on Base (min 4.95 MPGR).");
+  it("11. CDP/0x/Aerodrome proposals are fee-less even with the 0x fee wallet configured", () => {
+    withFeeEnv(); // the 0x fallback wallet is configured…
+    const p = cdpProposal();
+    // …and the browser flow still charges nothing out-of-band.
+    expect(p.agentFee).toEqual(skippedAgentFee(AGENT_FEE_EXECUTOR_ONLY_REASON));
+    expect(p.agentFee?.amountAtomic).toBe("0");
+    expect(p.risk.find((f) => f.id === "mpgr-agent-fee")).toBeUndefined();
+    expect(p.postConfirmationSteps.some((s) => s.toLowerCase().includes("agent fee"))).toBe(false);
+    expect(p.transaction?.to).toBe(getAddress(PERMIT2_ADDRESS));
   });
 
-  it("12. SELL attaches the fee in the SELL token (MPGR 18dp)", () => {
-    const p = sellProposal();
-    expect(p.agentFee?.status).toBe("applied");
-    expect(p.agentFee?.amountAtomic).toBe("12500000000000000"); // 0.25% of 5 MPGR
-    expect(p.agentFee?.displayAmount).toBe("0.0125 MPGR");
-    expect(p.fromAmount).toBe("5000000000000000000");
-    expect(p.minToAmount).toBe("9900000");
-    expect(p.transaction?.data).toBe("0xabcdef");
-  });
-
-  it("13. native ETH sell: fee quoted in ETH, swap value untouched", () => {
-    withFeeEnv();
-    const built = buildTradeProposal({
-      from: eth,
-      to: usdc,
-      quote: cdpQuote({
-        fromToken: NATIVE_ETH_SENTINEL,
-        toToken: BASE_USDC,
-        fromAmount: "1000000000000000000",
-        toAmount: "3000000000",
-        minToAmount: "2970000000",
-        transaction: { to: getAddress(PERMIT2_ADDRESS), data: "0xabcdef", value: "1000000000000000000" },
-      }),
-      slippageBps: 100,
-      taker: TAKER,
-      provider: CDP_TRADE_PROVIDER_ID,
-    });
-    if (!built.ok) throw new Error(built.error.message);
-    const p = built.proposal;
-    expect(p.agentFee?.status).toBe("applied");
-    expect(p.agentFee?.displayAmount).toBe("0.0025 ETH");
-    // Swap still sends exactly 1 ETH — the fee is a separate transfer.
-    expect(p.transaction?.value).toBe("1000000000000000000");
-  });
-
-  it("14. B20 buy AND sell (Aerodrome, 6dp↔8dp) keep calldata identical with/without fee", () => {
-    const buyQuote: CdpSwapQuote = {
-      liquidityAvailable: true,
-      fromToken: BASE_USDC,
-      toToken: MSTRC,
-      fromAmount: "5000000",
-      toAmount: "3020310",
-      minToAmount: "2990106",
-      issues: { allowance: null, balance: null, simulationIncomplete: false },
-      transaction: {
-        to: ROUTER,
-        data: encodeAerodromeExactInputSingle({
-          tokenIn: getAddress(BASE_USDC),
-          tokenOut: MSTRC,
-          recipient: TAKER,
-          deadline: 1_790_177_105n,
-          amountIn: 5_000_000n,
-          amountOutMinimum: 2_990_106n,
-        }),
-        value: "0",
-      },
-      permit2: null,
+  it("12. an applied fee without an executor transaction is rejected before signing", () => {
+    const p = cdpProposal();
+    // A tampered proposal that claims a fee but points at Permit2 (the old
+    // separate-transfer architecture) must never be signed.
+    p.agentFee = {
+      status: "applied",
+      bps: 25,
+      recipient: FEE_WALLET,
+      amountAtomic: "25000",
+      displayAmount: "0.025 USDC",
+      reason: null,
+      collection: "mpgr-executor",
     };
-
-    withFeeEnv();
-    const withFee = buildTradeProposal({
-      from: usdc,
-      to: mstrc,
-      quote: buyQuote,
-      slippageBps: 100,
-      taker: TAKER,
-      provider: AERODROME_SLIPSTREAM_PROVIDER_ID,
-    });
-    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
-    const withoutFee = buildTradeProposal({
-      from: usdc,
-      to: mstrc,
-      quote: buyQuote,
-      slippageBps: 100,
-      taker: TAKER,
-      provider: AERODROME_SLIPSTREAM_PROVIDER_ID,
-    });
-    if (!withFee.ok || !withoutFee.ok) throw new Error("proposal build failed");
-
-    // B20 BUY fee: 12_500 atomic USDC.
-    expect(withFee.proposal.agentFee?.status).toBe("applied");
-    expect(withFee.proposal.agentFee?.amountAtomic).toBe("12500");
-    // Everything the wallet signs/executes is identical.
-    expect(withFee.proposal.transaction).toEqual(withoutFee.proposal.transaction);
-    expect(withFee.proposal.fromAmount).toBe(withoutFee.proposal.fromAmount);
-    expect(withFee.proposal.minToAmount).toBe(withoutFee.proposal.minToAmount);
-    expect(withFee.proposal.displayMinToAmount).toBe(withoutFee.proposal.displayMinToAmount);
-
-    // B20 SELL (8dp in): fee in MSTRc atomic units.
-    withFeeEnv();
-    const sell = buildTradeProposal({
-      from: mstrc,
-      to: usdc,
-      quote: {
-        liquidityAvailable: true,
-        fromToken: MSTRC,
-        toToken: BASE_USDC,
-        fromAmount: "30000000",
-        toAmount: "4950000",
-        minToAmount: "4900500",
-        issues: { allowance: null, balance: null, simulationIncomplete: false },
-        transaction: {
-          to: ROUTER,
-          data: encodeAerodromeExactInputSingle({
-            tokenIn: MSTRC,
-            tokenOut: getAddress(BASE_USDC),
-            recipient: TAKER,
-            deadline: 1_790_177_105n,
-            amountIn: 30_000_000n,
-            amountOutMinimum: 4_900_500n,
-          }),
-          value: "0",
-        },
-        permit2: null,
-      },
-      slippageBps: 100,
-      taker: TAKER,
-      provider: AERODROME_SLIPSTREAM_PROVIDER_ID,
-    });
-    if (!sell.ok) throw new Error(sell.error.message);
-    expect(sell.proposal.agentFee?.status).toBe("applied");
-    expect(sell.proposal.agentFee?.amountAtomic).toBe("75000");
-    expect(sell.proposal.agentFee?.displayAmount).toBe("0.00075 MSTRc");
+    const invariant = verifyAgentFeeInSwapTransaction(p);
+    expect(invariant.ok).toBe(false);
+    if (!invariant.ok) expect(invariant.reason).toMatch(/not collected by the MPGR Executor/i);
   });
 
-  it("15. unconfigured fee wallet → proposal reads exactly as before (fee skipped, silent)", () => {
-    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
-    const built = buildTradeProposal({
-      from: usdc,
-      to: mpgr,
-      quote: cdpQuote({ fromAmount: "10000000", toAmount: "5000000000000000000", minToAmount: "4950000000000000000" }),
-      slippageBps: 100,
-      taker: TAKER,
-      provider: CDP_TRADE_PROVIDER_ID,
-    });
-    if (!built.ok) throw new Error(built.error.message);
-    expect(built.proposal.agentFee?.status).toBe("skipped");
-    expect(built.proposal.risk.find((f) => f.id === "mpgr-agent-fee")).toBeUndefined();
-    expect(built.proposal.postConfirmationSteps.some((s) => s.includes("agent fee"))).toBe(false);
+  it("13. tampered amounts/recipients are rejected; fee-less proposals pass untouched", () => {
+    const p = cdpProposal();
+    p.transaction = { to: EXECUTOR, data: "0x", value: "0" };
+    p.agentFee = {
+      status: "applied", bps: 25, recipient: EXECUTOR_FEE_RECIPIENT,
+      amountAtomic: "999999", displayAmount: "1 USDC", reason: null, collection: "mpgr-executor",
+    };
+    expect(verifyAgentFeeInSwapTransaction(p).ok).toBe(false);
+
+    p.agentFee = { ...p.agentFee!, amountAtomic: "25000" };
+    expect(verifyAgentFeeInSwapTransaction(p).ok).toBe(true);
+
+    p.agentFee = { ...p.agentFee!, recipient: TAKER as Address };
+    expect(verifyAgentFeeInSwapTransaction(p).ok).toBe(false);
+
+    p.agentFee = { ...p.agentFee!, recipient: EXECUTOR_FEE_RECIPIENT, collection: null };
+    expect(verifyAgentFeeInSwapTransaction(p).ok).toBe(false);
+
+    const legacy = cdpProposal();
+    delete legacy.agentFee;
+    expect(verifyAgentFeeInSwapTransaction(legacy)).toEqual({ ok: true, fee: null });
   });
 });
 
-describe("MPGR Agent fee — pre-execution validation", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  function quotedProposal(): TradeProposal {
-    withFeeEnv();
-    const built = buildTradeProposal({
-      from: usdc,
-      to: mpgr,
-      quote: cdpQuote({ fromAmount: "10000000", toAmount: "5000000000000000000", minToAmount: "4950000000000000000" }),
-      slippageBps: 100,
-      taker: TAKER,
-      provider: CDP_TRADE_PROVIDER_ID,
-    });
-    if (!built.ok) throw new Error(built.error.message);
-    return built.proposal;
+describe("MPGR Agent fee — execution never sends a separate fee transaction", () => {
+  function fakeExecutorReader(options: { allowance?: bigint; feeRecipient?: Address } = {}): ChainReader {
+    return {
+      chainId: TRADE_CHAIN_ID,
+      readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
+        switch (functionName) {
+          case "feeBps":
+            return 25n;
+          case "feeRecipient":
+            return options.feeRecipient ?? EXECUTOR_FEE_RECIPIENT;
+          case "paused":
+            return false;
+          case "MAX_FEE_BPS":
+            return 100n;
+          case "owner":
+            return OWNER_WALLET;
+          case "allowance":
+            return options.allowance ?? 0n;
+          case "balanceOf":
+            return 100_000_000n;
+          default:
+            throw new Error(`unexpected read: ${functionName}`);
+        }
+      }),
+      simulateContract: vi.fn(async () => ({ result: [800_000_000_000_000n, 0n, 0n, 100_000n] as unknown })),
+      getBalance: vi.fn(async () => 10n ** 18n),
+      getTransactionReceipt: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+    };
   }
 
-  it("16. displayed + re-validated fee resolves to send", () => {
-    const p = quotedProposal();
-    const resolved = resolveExecutionAgentFee(p);
-    expect(resolved).toEqual({ send: true, recipient: FEE_WALLET, amount: 25_000n });
-  });
-
-  it("17. legacy proposal (no agentFee) → never sends a fee the user did not review", () => {
-    withFeeEnv();
-    const p = quotedProposal();
-    delete p.agentFee;
-    expect(resolveExecutionAgentFee(p).send).toBe(false);
-  });
-
-  it("18. STALE CLIENT (2026-09-24 incident): server-quoted fee sends even when the client bundle has no env", () => {
-    const p = quotedProposal(); // server quoted while configured
-    vi.unstubAllEnvs(); // ...but the running client bundle predates the env var
-    const resolved = resolveExecutionAgentFee(p);
-    expect(resolved).toEqual({ send: true, recipient: FEE_WALLET, amount: 25_000n });
-  });
-
-  it("19. ROTATION SKEW: server-quoted fee sends even when client env differs — server is source of truth", () => {
-    const p = quotedProposal();
-    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "0x3333333333333333333333333333333333333333");
-    const resolved = resolveExecutionAgentFee(p);
-    expect(resolved).toEqual({ send: true, recipient: FEE_WALLET, amount: 25_000n });
-  });
-
-  it("20. tampered fee amount on the proposal → no fee", () => {
-    const p = quotedProposal();
-    p.agentFee = { ...p.agentFee!, amountAtomic: "999999999" };
-    expect(resolveExecutionAgentFee(p).send).toBe(false);
-  });
-
-  it("20b. invalid quoted recipient (garbage, zero address, taker) → no fee", () => {
-    for (const recipient of ["not-an-address", zeroAddress, TAKER]) {
-      const p = quotedProposal();
-      p.agentFee = { ...p.agentFee!, recipient: recipient as `0x${string}` };
-      expect(resolveExecutionAgentFee(p).send).toBe(false);
-    }
-  });
-
-  it("20c. zero quoted amount or non-executable proposal → no fee", () => {
-    const zero = quotedProposal();
-    zero.agentFee = { ...zero.agentFee!, amountAtomic: "0" };
-    expect(resolveExecutionAgentFee(zero).send).toBe(false);
-
-    const notExecutable = quotedProposal();
-    notExecutable.executionAvailable = false;
-    expect(resolveExecutionAgentFee(notExecutable).send).toBe(false);
-  });
-
-  it("21. fee transfer encoding: ERC-20 transfer vs native value", () => {
-    const erc20 = buildAgentFeeTransfer({
-      fromAddress: getAddress(BASE_USDC),
-      recipient: getAddress(FEE_WALLET),
-      amount: 25_000n,
+  /** A real executor proposal: 2 USDC gross, 0.005 USDC fee, executor tx. */
+  async function executorProposal(options: { allowance?: bigint } = {}): Promise<TradeProposal> {
+    const result = await buildExecutorSwapProposal({
+      from: usdc,
+      to: weth,
+      fromAmount: "2000000",
+      taker: TAKER,
+      slippageBps: 100,
+      reader: fakeExecutorReader({ allowance: options.allowance ?? 0n }),
+      quotedAt: new Date(),
     });
-    expect(erc20.kind).toBe("erc20");
-    if (erc20.kind !== "erc20") throw new Error("expected erc20");
-    expect(erc20.to).toBe(getAddress(BASE_USDC));
-    expect(erc20.value).toBe(0n);
-    const decoded = decodeFunctionData({ abi: erc20Abi, data: erc20.data });
-    expect(decoded.functionName).toBe("transfer");
-    expect((decoded.args as readonly [string, bigint])[0]).toBe(getAddress(FEE_WALLET));
-    expect((decoded.args as readonly [string, bigint])[1]).toBe(25_000n);
+    if (!result.ok) throw new Error("executor proposal setup failed");
+    return result.proposal;
+  }
 
-    const native = buildAgentFeeTransfer({
-      fromAddress: NATIVE_ETH_SENTINEL,
-      recipient: getAddress(FEE_WALLET),
-      amount: 2_500_000_000_000_000n,
-    });
-    expect(native).toEqual({ kind: "native", to: getAddress(FEE_WALLET), value: 2_500_000_000_000_000n });
-  });
-});
-
-describe("MPGR Agent fee — execution", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  function quotedProposal(): TradeProposal {
-    withFeeEnv();
+  function legacyCdpProposal(): TradeProposal {
     const built = buildTradeProposal({
       from: usdc,
       to: mpgr,
-      quote: cdpQuote({ fromAmount: "10000000", toAmount: "5000000000000000000", minToAmount: "4950000000000000000" }),
+      quote: cdpQuote({ fromAmount: "2000000", toAmount: "1000000000000000", minToAmount: "990000000000000" }),
       slippageBps: 100,
       taker: TAKER,
       provider: CDP_TRADE_PROVIDER_ID,
@@ -662,225 +422,160 @@ describe("MPGR Agent fee — execution", () => {
     mockWait.mockReset();
     mockRead.mockReset();
     mockWait.mockResolvedValue({ status: "success" });
-    // Live balance covers the 10 USDC sell; allowance covers (no approve step).
+    // Live balance covers the gross sell; the live allowance read decides
+    // whether the approval step runs at all.
     mockRead.mockImplementation(async (_config: unknown, params: { functionName?: string }) => {
-      if (params?.functionName === "balanceOf") return 10_000_000n;
-      if (params?.functionName === "allowance") return 10_000_000n;
+      if (params?.functionName === "balanceOf") return 2_000_000n;
+      if (params?.functionName === "allowance") return 0n;
       throw new Error(`unexpected read: ${String(params?.functionName)}`);
     });
   });
 
-  it("22. fee is a separate post-swap transfer; swap calldata + approval untouched", async () => {
-    const p = quotedProposal();
-    mockSend.mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
+  it("14. first-time ERC-20 flow is EXACTLY approve + swap (no fee transaction)", async () => {
+    const proposal = await executorProposal({ allowance: 0n });
+    expect(proposal.agentFee).toMatchObject({ status: "applied", amountAtomic: "5000", collection: "mpgr-executor" });
 
+    mockSend.mockResolvedValueOnce("0xapprove").mockResolvedValueOnce("0xswap");
     const result = await executeTrade(
-      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      { proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
       () => {},
     );
 
     expect(result.state).toBe("SUCCESS");
+    expect(result.approvalHash).toBe("0xapprove");
     expect(result.swapHash).toBe("0xswap");
-    expect(result.feeHash).toBe("0xfee");
-    expect(result.feeError).toBeNull();
+    // Two wallet transactions, maximum, and nothing after the swap.
     expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSign).not.toHaveBeenCalled();
 
-    // Call 1: the swap itself — exactly the quoted transaction.
-    const swapCall = mockSend.mock.calls[0][1] as { to: string; data: string; value: bigint };
-    expect(getAddress(swapCall.to)).toBe(getAddress(PERMIT2_ADDRESS));
-    expect(swapCall.data).toBe("0xabcdef");
-    expect(swapCall.value).toBe(0n);
+    // 1) approve(executor, GROSS) — the fee is part of the gross pull.
+    const approveTx = mockSend.mock.calls[0][1] as { to: string; data: `0x${string}`; value: bigint };
+    expect(getAddress(approveTx.to)).toBe(getAddress(BASE_USDC));
+    expect(approveTx.value).toBe(0n);
+    const approval = decodeFunctionData({ abi: erc20Abi, data: approveTx.data });
+    expect(approval.functionName).toBe("approve");
+    expect(getAddress((approval.args as readonly [string, bigint])[0])).toBe(EXECUTOR);
+    expect((approval.args as readonly [string, bigint])[1]).toBe(2_000_000n);
 
-    // Call 2: the fee — USDC.transfer(feeWallet, 25000), nothing else.
-    const feeCall = mockSend.mock.calls[1][1] as { to: string; data: `0x${string}`; value: bigint };
-    expect(getAddress(feeCall.to)).toBe(getAddress(BASE_USDC));
-    expect(feeCall.value).toBe(0n);
-    const decoded = decodeFunctionData({ abi: erc20Abi, data: feeCall.data });
-    expect(decoded.functionName).toBe("transfer");
-    expect((decoded.args as readonly [string, bigint])[0]).toBe(getAddress(FEE_WALLET));
-    expect((decoded.args as readonly [string, bigint])[1]).toBe(25_000n);
+    // 2) the executor swap: gross, expected fee, post-fee minimum.
+    const swapTx = mockSend.mock.calls[1][1] as { to: string; data: `0x${string}`; value: bigint };
+    expect(getAddress(swapTx.to)).toBe(EXECUTOR);
+    expect(swapTx.value).toBe(0n);
+    const swap = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: swapTx.data });
+    expect(swap.functionName).toBe("swapUniswapV3ExactInputSingle");
+    const [params] = swap.args as unknown as readonly [Record<string, unknown>, number];
+    expect(params.grossAmountIn).toBe(2_000_000n);
+    expect(params.expectedFeeAmount).toBe(5_000n);
+    expect(params.amountOutMinimum).toBe(792_000_000_000_000n);
+    expect(getAddress(params.recipient as string)).toBe(getAddress(TAKER));
+
+    // No third transaction exists anywhere — least of all an ERC-20
+    // transfer of the fee to a fee wallet.
+    for (const call of mockSend.mock.calls) {
+      const tx = call[1] as { to: string; data?: `0x${string}` };
+      if (tx.data?.startsWith("0xa9059cbb")) throw new Error(`unexpected ERC-20 transfer to ${tx.to}`);
+      expect(getAddress(tx.to)).not.toBe(EXECUTOR_FEE_RECIPIENT);
+      expect(getAddress(tx.to)).not.toBe(FEE_WALLET);
+      expect(getAddress(tx.to)).not.toBe(OWNER_WALLET);
+    }
   });
 
-  it("23. approval covers the swap amount only — never the fee", async () => {
-    withFeeEnv();
-    const built = buildTradeProposal({
-      from: usdc,
-      to: mpgr,
-      quote: cdpQuote({
-        fromAmount: "10000000",
-        toAmount: "5000000000000000000",
-        minToAmount: "4950000000000000000",
-        issues: {
-          allowance: { currentAllowance: "0", spender: PERMIT2_ADDRESS },
-          balance: null,
-          simulationIncomplete: false,
-        },
-      }),
-      slippageBps: 100,
-      taker: TAKER,
-      provider: CDP_TRADE_PROVIDER_ID,
-    });
-    if (!built.ok) throw new Error(built.error.message);
+  it("15. sufficient allowance → swap only (one wallet transaction)", async () => {
+    const proposal = await executorProposal({ allowance: 2_000_000n });
+    expect(proposal.needsPermit2Approval).toBe(false);
     mockRead.mockImplementation(async (_config: unknown, params: { functionName?: string }) => {
-      if (params?.functionName === "balanceOf") return 10_000_000n;
-      if (params?.functionName === "allowance") return 0n;
+      if (params?.functionName === "balanceOf") return 2_000_000n;
+      if (params?.functionName === "allowance") return 2_000_000n;
       throw new Error("unexpected read");
     });
-    mockSend.mockResolvedValueOnce("0xapprove").mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
-
-    const result = await executeTrade(
-      { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
-      () => {},
-    );
-
-    expect(result.state).toBe("SUCCESS");
-    expect(mockSend).toHaveBeenCalledTimes(3); // approve → swap → fee
-    const approveCall = mockSend.mock.calls[0][1] as { data: `0x${string}` };
-    const decoded = decodeFunctionData({ abi: erc20Abi, data: approveCall.data });
-    expect(decoded.functionName).toBe("approve");
-    // Exactly fromAmount — the fee needs no approval (direct transfer).
-    expect((decoded.args as readonly [string, bigint])[1]).toBe(10_000_000n);
-  });
-
-  it("24. recipient unconfigured at execution → single swap tx, SUCCESS, no fee", async () => {
-    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "");
-    const built = buildTradeProposal({
-      from: usdc,
-      to: mpgr,
-      quote: cdpQuote({ fromAmount: "10000000", toAmount: "5000000000000000000", minToAmount: "4950000000000000000" }),
-      slippageBps: 100,
-      taker: TAKER,
-      provider: CDP_TRADE_PROVIDER_ID,
-    });
-    if (!built.ok) throw new Error(built.error.message);
     mockSend.mockResolvedValue("0xswap");
 
     const result = await executeTrade(
-      { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      { proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
       () => {},
     );
-
     expect(result.state).toBe("SUCCESS");
-    expect(result.feeHash).toBeNull();
-    expect(result.feeError).toBeNull();
+    expect(result.approvalHash).toBeNull();
     expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(getAddress((mockSend.mock.calls[0][1] as { to: string }).to)).toBe(EXECUTOR);
   });
 
-  it("24b. STALE CLIENT (incident reproduction): env present at quote, missing at execution → fee still settles", async () => {
-    const p = quotedProposal(); // server quoted with the recipient configured
-    vi.unstubAllEnvs(); // client bundle predates the env var entirely
-    mockSend.mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
-
+  it("16. a stale approval is refreshed once, then the swap — still no fee tx", async () => {
+    const proposal = await executorProposal({ allowance: 1_999_999n });
+    expect(proposal.needsPermit2Approval).toBe(true);
+    mockSend.mockResolvedValueOnce("0xapprove").mockResolvedValueOnce("0xswap");
     const result = await executeTrade(
-      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      { proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
       () => {},
     );
-
     expect(result.state).toBe("SUCCESS");
-    expect(result.swapHash).toBe("0xswap");
-    expect(result.feeHash).toBe("0xfee");
-    expect(result.feeError).toBeNull();
     expect(mockSend).toHaveBeenCalledTimes(2);
-    const feeCall = mockSend.mock.calls[1][1] as { to: string; data: `0x${string}`; value: bigint };
-    expect(getAddress(feeCall.to)).toBe(getAddress(BASE_USDC));
-    const decoded = decodeFunctionData({ abi: erc20Abi, data: feeCall.data });
-    expect(decoded.functionName).toBe("transfer");
-    expect((decoded.args as readonly [string, bigint])[0]).toBe(getAddress(FEE_WALLET));
-    expect((decoded.args as readonly [string, bigint])[1]).toBe(25_000n);
   });
 
-  it("25. fee rejection is non-blocking: swap stands SUCCESS with feeError recorded", async () => {
-    const p = quotedProposal();
-    mockSend.mockResolvedValueOnce("0xswap").mockRejectedValueOnce(new Error("User rejected the request"));
-
+  it("17. tampered fee amount → nothing is signed (no fallback fee transfer)", async () => {
+    const proposal = await executorProposal({ allowance: 2_000_000n });
+    proposal.agentFee = { ...proposal.agentFee!, amountAtomic: "999999" };
+    const states: string[] = [];
     const result = await executeTrade(
-      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      { proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      (s) => states.push(s.state),
+    );
+    expect(result.state).toBe("ERROR");
+    expect(result.error?.code).toBe("INVALID_INPUT");
+    expect(states).not.toContain("APPROVING");
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("18. swap transaction retargeted away from the executor → nothing is signed", async () => {
+    const proposal = await executorProposal({ allowance: 2_000_000n });
+    proposal.transaction = { ...proposal.transaction!, to: getAddress(PERMIT2_ADDRESS) };
+    const result = await executeTrade(
+      { proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
       () => {},
     );
-
-    expect(result.state).toBe("SUCCESS");
-    expect(result.swapHash).toBe("0xswap");
-    expect(result.feeHash).toBeNull();
-    expect(result.feeError?.code).toBe("WALLET_REJECTED");
-    expect(result.feeError?.message).toMatch(/swap settled/i);
+    expect(result.state).toBe("ERROR");
+    expect(result.error?.code).toBe("INVALID_INPUT");
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it("26. failed fee receipt is non-blocking: SUCCESS with feeHash + feeError", async () => {
-    const p = quotedProposal();
-    mockSend.mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
-    mockWait.mockResolvedValueOnce({ status: "success" }).mockResolvedValueOnce({ status: "reverted" });
-
+  it("19. legacy fee-less proposals still execute as a single swap (unchanged)", async () => {
+    const proposal = legacyCdpProposal();
+    expect(proposal.agentFee?.status).toBe("skipped");
+    mockSend.mockResolvedValue("0xswap");
     const result = await executeTrade(
-      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      { proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
       () => {},
     );
-
     expect(result.state).toBe("SUCCESS");
-    expect(result.feeHash).toBe("0xfee");
-    expect(result.feeError?.code).toBe("SEND_FAILED");
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(getAddress((mockSend.mock.calls[0][1] as { to: string }).to)).toBe(getAddress(PERMIT2_ADDRESS));
   });
 
-  it("27. failed swap → ERROR with NO fee transfer attempted", async () => {
-    const p = quotedProposal();
+  it("20. a reverted swap stops there — no fee transaction after it", async () => {
+    const proposal = await executorProposal({ allowance: 2_000_000n });
     mockSend.mockResolvedValue("0xswap");
     mockWait.mockResolvedValue({ status: "reverted" });
-
     const result = await executeTrade(
-      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
+      { proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
       () => {},
     );
-
-    expect(result.state).toBe("ERROR");
-    expect(result.feeHash).toBeNull();
-    expect(result.feeError).toBeNull();
-    expect(mockSend).toHaveBeenCalledTimes(1); // swap only — fee never attempted
-  });
-
-  it("28. native ETH sell: fee is a plain value transfer to the fee wallet", async () => {
-    withFeeEnv();
-    const built = buildTradeProposal({
-      from: eth,
-      to: usdc,
-      quote: cdpQuote({
-        fromToken: NATIVE_ETH_SENTINEL,
-        toToken: BASE_USDC,
-        fromAmount: "1000000000000000000",
-        toAmount: "3000000000",
-        minToAmount: "2970000000",
-        transaction: { to: getAddress(PERMIT2_ADDRESS), data: "0xabcdef", value: "1000000000000000000" },
-      }),
-      slippageBps: 100,
-      taker: TAKER,
-      provider: CDP_TRADE_PROVIDER_ID,
-    });
-    if (!built.ok) throw new Error(built.error.message);
-    mockSend.mockResolvedValueOnce("0xswap").mockResolvedValueOnce("0xfee");
-
-    const result = await executeTrade(
-      { proposal: built.proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
-      () => {},
-    );
-
-    expect(result.state).toBe("SUCCESS");
-    expect(result.feeHash).toBe("0xfee");
-    const feeCall = mockSend.mock.calls[1][1] as { to: string; data?: string; value: bigint };
-    expect(getAddress(feeCall.to)).toBe(getAddress(FEE_WALLET));
-    expect(feeCall.value).toBe(2_500_000_000_000_000n);
-    expect(feeCall.data).toBeUndefined();
-  });
-
-  it("29. tampered proposal fee amount → swap succeeds, no fee sent", async () => {
-    const p = quotedProposal();
-    p.agentFee = { ...p.agentFee!, amountAtomic: "999999999" };
-    mockSend.mockResolvedValue("0xswap");
-
-    const result = await executeTrade(
-      { proposal: p, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: TAKER, currentChainId: 8453 },
-      () => {},
-    );
-
-    expect(result.state).toBe("SUCCESS");
-    expect(result.feeHash).toBeNull();
+    expect(result).toMatchObject({ state: "ERROR", swapHash: "0xswap", error: { code: "SEND_FAILED" } });
     expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("21. the fee never targets the connected wallet even when it owns the executor", async () => {
+    const result = await buildExecutorSwapProposal({
+      from: usdc,
+      to: weth,
+      fromAmount: "2000000",
+      taker: OWNER_WALLET,
+      slippageBps: 100,
+      reader: fakeExecutorReader(),
+      quotedAt: new Date(),
+    });
+    if (!result.ok) throw new Error("expected an executor proposal");
+    expect(result.proposal.agentFee!.recipient).toBe(EXECUTOR_FEE_RECIPIENT);
+    expect(result.proposal.agentFee!.recipient!.toLowerCase()).not.toBe(OWNER_WALLET.toLowerCase());
+    expect(result.proposal.provider).toBe(MPGR_EXECUTOR_PROVIDER_ID);
   });
 });
