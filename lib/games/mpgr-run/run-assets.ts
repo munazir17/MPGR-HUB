@@ -97,6 +97,36 @@ export const CHARACTER_SPRITES = {
   // here on purpose; jetpack visually reuses `jump` instead.
 } as const;
 
+/**
+ * Rear-facing character set (2026-09-26, Subway-Surfers-style rear-camera
+ * conversion). The classic side-view set above stays on disk and on the
+ * manifest (idle overlay, game card, banner and the locked catalog tests
+ * still use it), but the in-run canvas now draws the runner from BEHIND:
+ * four alternating run-cycle frames (right-kick, passing, left-kick,
+ * passing-mirror — frames 3/4 are built as mirrors of 1/2 with the MPGR
+ * back-logo restored un-mirrored), plus rear idle/jump/fall/slide poses.
+ * All eight are proper RGBA cutouts (magenta chroma-key removed at
+ * authoring time), so they need no runtime background strip.
+ */
+export const CHARACTER_REAR_SPRITES = {
+  idle: asset(`${BASE}/character/mpgr-runner-rear-idle.webp`),
+  run1: asset(`${BASE}/character/mpgr-runner-rear-run-1.webp`),
+  run2: asset(`${BASE}/character/mpgr-runner-rear-run-2.webp`),
+  run3: asset(`${BASE}/character/mpgr-runner-rear-run-3.webp`),
+  run4: asset(`${BASE}/character/mpgr-runner-rear-run-4.webp`),
+  jump: asset(`${BASE}/character/mpgr-runner-rear-jump.webp`),
+  fall: asset(`${BASE}/character/mpgr-runner-rear-fall.webp`),
+  slide: asset(`${BASE}/character/mpgr-runner-rear-slide.webp`),
+} as const;
+
+/** The four rear run-cycle frames in cycle order. */
+export const REAR_RUN_CYCLE: readonly string[] = [
+  CHARACTER_REAR_SPRITES.run1,
+  CHARACTER_REAR_SPRITES.run2,
+  CHARACTER_REAR_SPRITES.run3,
+  CHARACTER_REAR_SPRITES.run4,
+];
+
 export const OBSTACLE_SPRITES: Record<ObstacleType, string> = {
   spikes: asset(`${BASE}/obstacles/mpgr-run-spikes.webp`),
   crate: asset(`${BASE}/obstacles/mpgr-run-crate.webp`),
@@ -174,6 +204,50 @@ export const CITY_ENVIRONMENT = {
 } as const;
 
 /**
+ * Next-gen environment sets (2026-09-26 world-visual upgrade, PR #62
+ * follow-up). Each world is a trio of purpose-built, rear-camera-framed
+ * assets — a wide transparent skyline panorama (horizon layer) plus a
+ * tall street-side building cluster and a small roadside prop unit that
+ * the renderer instances INTO the perspective field along both track
+ * edges, so the runner is surrounded by the world instead of running
+ * past a flat backdrop. Branding uses the symmetric M-mark only, so
+ * left/right instancing never mirrors readable text.
+ *
+ * The legacy CITY_ENVIRONMENT street panoramas stay on disk and on the
+ * manifest (locked catalog tests + fallback art); the live renderer
+ * prefers the new sets and only falls back to them if a new skyline is
+ * not decode-ready yet.
+ */
+export const ENVIRONMENT_SETS = {
+  city: {
+    skyline: asset(`${BASE}/environment/city/city-skyline.webp`),
+    side: asset(`${BASE}/environment/city/city-side.webp`),
+    sideMid: asset(`${BASE}/environment/city/city-side-mid.webp`),
+    sideFar: asset(`${BASE}/environment/city/city-side-far.webp`),
+    prop: asset(`${BASE}/environment/city/city-props.webp`),
+  },
+  ice: {
+    skyline: asset(`${BASE}/environment/ice/ice-skyline.webp`),
+    side: asset(`${BASE}/environment/ice/ice-side.webp`),
+    sideMid: asset(`${BASE}/environment/ice/ice-side-mid.webp`),
+    sideFar: asset(`${BASE}/environment/ice/ice-side-far.webp`),
+    prop: asset(`${BASE}/environment/ice/ice-props.webp`),
+  },
+  desert: {
+    skyline: asset(`${BASE}/environment/desert/desert-skyline.webp`),
+    side: asset(`${BASE}/environment/desert/desert-side.webp`),
+    sideMid: asset(`${BASE}/environment/desert/desert-side-mid.webp`),
+    sideFar: asset(`${BASE}/environment/desert/desert-side-far.webp`),
+    prop: asset(`${BASE}/environment/desert/desert-props.webp`),
+  },
+} as const;
+
+export type RunWorldId = keyof typeof ENVIRONMENT_SETS;
+
+/** Distant MPGR airship shared by all worlds (sky life). */
+export const AIRSHIP_SPRITE = asset(`${BASE}/environment/city/mpgr-airship.webp`);
+
+/**
  * Assets confirmed to be baked onto a solid (near-uniform) background with
  * no alpha channel. RunGame.tsx runs a one-time edge flood-fill on exactly
  * these paths after they load, replacing the raw <img> in its sprite cache
@@ -188,6 +262,7 @@ export const BACKGROUND_STRIP_TARGETS: string[] = [
 /** Every sprite path used by the live render loop, flattened for a one-time preload on mount. */
 export const ALL_SPRITE_PATHS: string[] = [
   ...Object.values(CHARACTER_SPRITES),
+  ...Object.values(CHARACTER_REAR_SPRITES),
   ...Object.values(OBSTACLE_SPRITES),
   ...Object.values(COLLECTIBLE_SPRITES),
   ...Object.values(POWERUP_SPRITES),
@@ -196,6 +271,10 @@ export const ALL_SPRITE_PATHS: string[] = [
   UI_SPRITES.heart,
   UI_SPRITES.powerupFrame,
   ...Object.values(CITY_ENVIRONMENT),
+  ...Object.values(ENVIRONMENT_SETS.city),
+  ...Object.values(ENVIRONMENT_SETS.ice),
+  ...Object.values(ENVIRONMENT_SETS.desert),
+  AIRSHIP_SPRITE,
 ];
 
 /**
@@ -211,9 +290,17 @@ export const CRITICAL_SPRITE_PATHS: string[] = [
   CHARACTER_SPRITES.jump,
   CHARACTER_SPRITES.fall,
   CHARACTER_SPRITES.slide,
+  // Rear-camera conversion: the in-run hero art is now the rear run cycle;
+  // the rear jump/fall/slide poses ride the optional lane right behind it
+  // (the renderer holds a ready rear run frame until they decode).
+  ...REAR_RUN_CYCLE,
   CITY_ENVIRONMENT.background,
   CITY_ENVIRONMENT.midground,
   CITY_ENVIRONMENT.foreground,
+  // World 1 is the city, so its environment set is first-paint hero art;
+  // ice/desert ride the optional lane (they appear minutes into a run).
+  ...Object.values(ENVIRONMENT_SETS.city),
+  AIRSHIP_SPRITE,
   UI_SPRITES.heart,
   UI_SPRITES.powerupFrame,
 ];
