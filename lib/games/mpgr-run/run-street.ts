@@ -28,7 +28,7 @@ export function streetGround(height: number, z: number): number {
 }
 
 const MATERIALS = {
-  city: { front: "#30475d", side: "#172b40", roof: "#476078", window: "#9bd4e5", recess: "#0d1b2a", trim: "#668196" },
+  city: { front: "#172957", side: "#0d1839", roof: "#304473", window: "#4ea7d9", recess: "#09132d", trim: "#69539d" },
   ice: { front: "#b4d8e9", side: "#578ba9", roof: "#e8f5fa", window: "#d9f7ff", recess: "#366781", trim: "#d5edf5" },
   desert: { front: "#d6a36e", side: "#926445", roof: "#f2ca91", window: "#ffd795", recess: "#614432", trim: "#e4ba85" },
 } as const;

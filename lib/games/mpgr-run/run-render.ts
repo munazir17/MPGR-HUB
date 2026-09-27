@@ -319,7 +319,9 @@ export function drawRunFrame(
   ctx.fillRect(-40, HORIZON_Y - H * 0.14, W + 80, H * 0.14 + 4);
 
   // --- Skyline panoramas on the horizon (two depth layers) ---------------
-  const skylineImg = getSprite(envSet.skyline);
+  // City retains the original MPGR panorama treatment; other worlds keep
+  // their atmospheric skylines. Road/street projection is independent.
+  const skylineImg = theme.id === "city" ? null : getSprite(envSet.skyline);
   if (skylineImg) {
     const aspect = spriteAspect(skylineImg);
     for (const [bandFrac, alpha, camFactor] of SKYLINE_LAYERS) {

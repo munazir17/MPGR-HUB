@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { drawRunFrame, runViewScale, RUN_FRAME_ALIGN_X, RUN_FRAME_START_MS, RUN_STRIDE_MS } from "@/lib/games/mpgr-run/run-render";
 import { freshWorld, type World } from "@/lib/games/mpgr-run/run-world";
-import { ENVIRONMENT_SETS } from "@/lib/games/mpgr-run/run-assets";
+import { CITY_ENVIRONMENT, ENVIRONMENT_SETS } from "@/lib/games/mpgr-run/run-assets";
 import {
   resolveRunWorld,
   resolveRunWorldFromPx,
@@ -196,8 +196,18 @@ describe("world rendering surrounds the track (no black void)", () => {
       const right = sides.filter((c) => c.x + c.w / 2 > vw * 0.68);
       expect(left.length).toBeGreaterThan(0);
       expect(right.length).toBeGreaterThan(0);
-      // Skyline panorama sits on the horizon band.
-      const sky = ctx.calls.filter((c) => c.tag === set.skyline);
+      // City must retain all three original MPGR panorama layers, even
+      // when the alternate atmospheric skyline is already decode-ready.
+      const skyPaths: string[] = worldId === "city"
+        ? [CITY_ENVIRONMENT.background, CITY_ENVIRONMENT.midground, CITY_ENVIRONMENT.foreground]
+        : [set.skyline];
+      for (const path of skyPaths) {
+        expect(ctx.calls.some((c) => c.tag === path)).toBe(true);
+      }
+      if (worldId === "city") {
+        expect(ctx.calls.some((c) => c.tag === set.skyline)).toBe(false);
+      }
+      const sky = ctx.calls.filter((c) => skyPaths.includes(c.tag));
       expect(sky.length).toBeGreaterThan(0);
       for (const band of sky) {
         expect(band.y + band.h).toBeLessThan(vh * (STREET_HORIZON + 0.01));
