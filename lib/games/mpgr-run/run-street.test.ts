@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { drawStreetArchitecture, streetScale, streetGround, streetLaneGap, STREET_GROUND, STREET_HORIZON } from "./run-street";
 import { RUN_WORLD_THEMES } from "./run-environments";
-import { drawRunFrame } from "./run-render";
+import { drawRunFrame, runStrideFrame } from "./run-render";
 import { freshWorld } from "./run-world";
 import { collectiblePresentationHeight } from "./run-coin-presentation";
 
@@ -20,6 +20,24 @@ function recordingContext() {
 }
 
 describe("solid streets: projection, determinism and bounded work", () => {
+  it("never enables live sprite shadow blur (measured raster regression)", () => {
+    const {ctx, calls} = recordingContext();
+    const world = freshWorld(); world.elapsedMs = 5010; world.traveledPx = 3000;
+    world.activePowerups.jetpack = 10000;
+    world.collectibles.push({id:1, type:"coin", lane:1, x:300, radius:8, collected:false});
+    world.obstacles.push({id:2, type:"crate", lane:0, x:340, width:34, height:42, groundHeight:0, passed:false, hit:false});
+    world.powerups.push({id:3, type:"shield", lane:2, x:400, radius:13, collected:false});
+    drawRunFrame(ctx, world, 390, 844, () => null);
+    const writes = calls.filter(call => call[0] === "shadowBlur");
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes.every(call => call[1] === 0)).toBe(true);
+  });
+
+  it("keeps alternate kicks longer than passing poses, with a pause-stable cadence", () => {
+    expect([0,164,165,249,250,414,415,499,500].map(runStrideFrame)).toEqual([0,0,1,1,2,2,3,3,0]);
+    for (let t = 0; t < 500; t++) expect(runStrideFrame(t + 500)).toBe(runStrideFrame(t));
+  });
+
   it("projects vertical edges upright and grounds the player depth exactly", () => {
     expect(streetScale(0)).toBe(1);
     for (const height of [320, 720, 844, 1024]) {

@@ -1,7 +1,7 @@
 import { RUNNER_HEIGHT_FRACTION, STREET_GROUND } from "./run-street";
 import { describe, expect, it } from "vitest";
 
-import { drawRunFrame, RUN_FRAME_ALIGN_X, RUN_FRAME_MS } from "@/lib/games/mpgr-run/run-render";
+import { drawRunFrame, RUN_FRAME_ALIGN_X, runStrideFrame } from "@/lib/games/mpgr-run/run-render";
 import { freshWorld, type World } from "@/lib/games/mpgr-run/run-world";
 import { CHARACTER_REAR_SPRITES } from "@/lib/games/mpgr-run/run-assets";
 import { MPGR_RUN_SIMULATION_WIDTH } from "@/lib/games/mpgr-run/authoritative-replay";
@@ -156,7 +156,7 @@ describe("rear-camera projection (Subway Surfers style)", () => {
     const player = playerCall(ctx);
     // Centered: lane 1 with zero lane offset puts the runner on the centre
     // line, plus the measured per-frame head-sway art correction only.
-    const idx = Math.floor(5000 / RUN_FRAME_MS) % RUN_FRAME_ALIGN_X.length;
+    const idx = runStrideFrame(5000);
     expect(player.x + player.w / 2).toBeCloseTo(vw / 2 + RUN_FRAME_ALIGN_X[idx] * player.w, 1);
     // Grounded: feet exactly on the near track surface (0.82 * viewport height).
     expect(player.y + player.h).toBeCloseTo(vh * STREET_GROUND, 1);
@@ -314,7 +314,7 @@ describe("rear-camera projection (Subway Surfers style)", () => {
       [pPhone, 390, 700],
       [pDesk, 1280, 720],
     ] as const) {
-      const idx2 = Math.floor(5000 / RUN_FRAME_MS) % RUN_FRAME_ALIGN_X.length;
+      const idx2 = runStrideFrame(5000);
       expect(call.x + call.w / 2).toBeCloseTo(vw / 2 + RUN_FRAME_ALIGN_X[idx2] * call.w, 1);
       expect(call.y + call.h).toBeCloseTo(vh * STREET_GROUND, 1);
     }

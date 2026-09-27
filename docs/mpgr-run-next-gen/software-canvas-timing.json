@@ -5,15 +5,15 @@
       "format": "mobile",
       "width": 390,
       "height": 844,
-      "medianMs": 54.40987099999984,
-      "maxMs": 67.75825800000166
+      "medianMs": 25.00513300000057,
+      "maxMs": 28.96971300000041
     },
     {
       "format": "desktop",
       "width": 1280,
       "height": 720,
-      "medianMs": 126.39917199999763,
-      "maxMs": 139.249914
+      "medianMs": 42.8896079999995,
+      "maxMs": 62.22888799999964
     }
   ]
 }

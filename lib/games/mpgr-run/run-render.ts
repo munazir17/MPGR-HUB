@@ -158,9 +158,16 @@ export const RUN_MAX_VIEW_SCALE = 2.4;
 // column stays put while feet stay grounded — presentation only.
 export const RUN_FRAME_ALIGN_X = [0.0313, 0.0003, -0.0313, -0.0003];
 
-// Run-cycle cadence. 110ms/frame read as a busy "idle dance"; 165ms/frame
-// (~0.66s stride) reads as an actual forward run at game speed.
+// Keep the established 165ms kick poses, but spend only 85ms in each
+// upright passing pose so the cycle reads as forward running, not idle.
 export const RUN_FRAME_MS = 165;
+export const RUN_FRAME_START_MS = [0, 165, 250, 415] as const;
+export const RUN_STRIDE_MS = 500;
+/** Short passing poses avoid dwelling on the upright/idle-looking frames. */
+export function runStrideFrame(elapsedMs: number): number {
+  const phase = ((elapsedMs % RUN_STRIDE_MS) + RUN_STRIDE_MS) % RUN_STRIDE_MS;
+  return phase < 165 ? 0 : phase < 250 ? 1 : phase < 415 ? 2 : 3;
+}
 
 export function runViewScale(viewportWidth: number): number {
   return clamp(
@@ -273,6 +280,10 @@ export function drawRunFrame(
 
   ctx.save();
   ctx.scale(u, u);
+  // Live shadowBlur forces expensive intermediate sprite rasterization.
+  // Ground-contact ellipses and authored emissive pixels supply lighting;
+  // never Gaussian-blur decoded character/obstacle images every frame.
+  ctx.shadowBlur = 0;
   if (world.screenShake > 0.5) {
     ctx.translate((streetHash(Math.floor(world.elapsedMs / 16), 41) - 0.5) * world.screenShake, (streetHash(Math.floor(world.elapsedMs / 16), 42) - 0.5) * world.screenShake);
   }
@@ -781,8 +792,8 @@ export function drawRunFrame(
         const size = pu.radius * 3.0 * s * objectScale;
         drawGroundShadow(sx, gy, size * 0.4, 0.28 * s);
         const puImg = getSprite(POWERUP_SPRITES[pu.type]);
-        ctx.shadowColor = cfg.color;
-        ctx.shadowBlur = 12 * s;
+
+
         if (puImg) {
           ctx.drawImage(puImg, sx - size / 2, cy - size / 2, size, size);
         } else {
@@ -794,7 +805,7 @@ export function drawRunFrame(
           ctx.lineWidth = 1.5 * s;
           ctx.stroke();
         }
-        ctx.shadowBlur = 0;
+
       },
     });
   }
@@ -830,8 +841,8 @@ export function drawRunFrame(
         const size = c.radius * (air > 0 ? 3.4 : 2.9) * shrink * s * objectScale;
         drawGroundShadow(sx, gy, size * (air > 0 ? 0.26 : 0.42), 0.3 * s * (air > 0 ? 0.5 : 1));
         const cImg = getSprite(COLLECTIBLE_SPRITES[c.type]);
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 8 * s;
+
+
         if (cImg) {
           ctx.drawImage(cImg, sx - size / 2, cy - size / 2, size, size);
         } else {
@@ -843,7 +854,7 @@ export function drawRunFrame(
           ctx.lineWidth = 1 * s;
           ctx.stroke();
         }
-        ctx.shadowBlur = 0;
+
         if (attracting) {
           ctx.strokeStyle = "rgba(34,211,238,0.5)";
           ctx.lineWidth = 1;
@@ -881,20 +892,20 @@ export function drawRunFrame(
         }
         ctx.globalAlpha = o.hit ? 0.55 : 1;
         if (oImg) {
-          ctx.shadowColor = palette.fill;
-          ctx.shadowBlur = o.hit ? 0 : 6 * s;
+
+
           ctx.drawImage(oImg, sx - wW / 2, bottom - hW, wW, hW);
-          ctx.shadowBlur = 0;
+
         } else {
           const top = bottom - hW;
           const gradient = ctx.createLinearGradient(0, top, 0, bottom);
           gradient.addColorStop(0, palette.fill);
           gradient.addColorStop(1, palette.dark);
           ctx.fillStyle = gradient;
-          ctx.shadowColor = palette.fill;
-          ctx.shadowBlur = o.hit ? 0 : 6 * s;
+
+
           ctx.fillRect(sx - wW / 2, top, wW, hW);
-          ctx.shadowBlur = 0;
+
         }
         ctx.globalAlpha = 1;
         ctx.restore();
@@ -937,12 +948,12 @@ export function drawRunFrame(
           ctx.lineTo(sx + 7, bottom - 2 + layer * 2);
           ctx.closePath();
           ctx.fillStyle = layer === 0 ? "#FDE68A" : "#FB923C";
-          ctx.shadowColor = "#FB923C";
-          ctx.shadowBlur = 14 - layer * 4;
+
+
           ctx.globalAlpha = 0.85 - layer * 0.2;
           ctx.fill();
         }
-        ctx.shadowBlur = 0;
+
         ctx.globalAlpha = 1;
       }
 
@@ -956,7 +967,7 @@ export function drawRunFrame(
       else if (p.playerY > 0)
         spriteSrc = p.velocityY > 0 ? CHARACTER_REAR_SPRITES.jump : CHARACTER_REAR_SPRITES.fall;
       else {
-        runFrameIdx = Math.floor(world.elapsedMs / RUN_FRAME_MS) % REAR_RUN_CYCLE.length;
+        runFrameIdx = runStrideFrame(world.elapsedMs);
         spriteSrc = REAR_RUN_CYCLE[runFrameIdx];
       }
       let playerImg = getSprite(spriteSrc);
@@ -995,8 +1006,8 @@ export function drawRunFrame(
         ctx.save();
         ctx.translate(sx, bottom - drawH / 2);
         if (jetpackActiveNow) ctx.rotate(0.06);
-        ctx.shadowColor = "rgba(59,130,246,0.55)";
-        ctx.shadowBlur = 3;
+
+
         ctx.drawImage(
           playerImg,
           -drawW / 2 + (runFrameIdx >= 0 ? RUN_FRAME_ALIGN_X[runFrameIdx] * drawW : 0),
@@ -1004,7 +1015,7 @@ export function drawRunFrame(
           drawW,
           drawH
         );
-        ctx.shadowBlur = 0;
+
         ctx.restore();
       } else {
         // Procedural capsule fallback (rear silhouette: hood + head block).
@@ -1013,8 +1024,8 @@ export function drawRunFrame(
         grad.addColorStop(0, COLORS.player);
         grad.addColorStop(1, COLORS.playerCore);
         ctx.fillStyle = grad;
-        ctx.shadowColor = "rgba(59,130,246,0.55)";
-        ctx.shadowBlur = 14;
+
+
         const pw = drawH * 0.42;
         const pr = 7;
         ctx.beginPath();
@@ -1029,7 +1040,7 @@ export function drawRunFrame(
         ctx.quadraticCurveTo(sx - pw / 2, playerTop, sx - pw / 2 + pr, playerTop);
         ctx.closePath();
         ctx.fill();
-        ctx.shadowBlur = 0;
+
         ctx.fillStyle = "#FCD34D"; // hair block, seen from behind
         ctx.fillRect(sx - pw * 0.32, playerTop + drawH * 0.04, pw * 0.64, drawH * 0.2);
       }

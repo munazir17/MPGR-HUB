@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { drawRunFrame, runViewScale, RUN_FRAME_ALIGN_X, RUN_FRAME_MS } from "@/lib/games/mpgr-run/run-render";
+import { drawRunFrame, runViewScale, RUN_FRAME_ALIGN_X, RUN_FRAME_START_MS, RUN_STRIDE_MS } from "@/lib/games/mpgr-run/run-render";
 import { freshWorld, type World } from "@/lib/games/mpgr-run/run-world";
 import { ENVIRONMENT_SETS } from "@/lib/games/mpgr-run/run-assets";
 import {
@@ -204,7 +204,7 @@ describe("world rendering surrounds the track (no black void)", () => {
       }
       // Full-width ground fill covers the lower screen (no void rows).
       const ground = ctx.rects.filter(
-        (r) => r.x <= 0 && r.x + r.w >= vw && r.y < vh * 0.5 && r.y + r.h >= vh,
+        (r) => r.x <= 0 && r.x + r.w >= vw && r.y <= vh * STREET_HORIZON && r.y + r.h >= vh,
       );
       expect(ground.length).toBeGreaterThan(0);
       // Near scenery instances are big, far ones small (perspective).
@@ -324,7 +324,7 @@ describe("world integration details (visual-polish pass)", () => {
     const boxes: Array<{ x: number; y: number; w: number; h: number }> = [];
     for (let f = 0; f < 4; f++) {
       const world = worldAt(120);
-      world.elapsedMs = RUN_FRAME_MS * 4 + f * RUN_FRAME_MS + 10; // cycle index == f
+      world.elapsedMs = RUN_STRIDE_MS * 4 + RUN_FRAME_START_MS[f] + 10; // cycle index == f
       const ctx = new EnvRecordingCtx();
       drawRunFrame(ctx as unknown as CanvasRenderingContext2D, world, vw2, vh2, makeGetSprite());
       const p = ctx.calls.find((c) => c.tag.includes("/character/mpgr-runner-rear-run-"));

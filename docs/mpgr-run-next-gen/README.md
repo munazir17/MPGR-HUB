@@ -1,6 +1,6 @@
 # MPGR Run — next-generation presentation work (DRAFT)
 
-**2026-09-27. Not merge-ready.** This is a reviewable implementation checkpoint, not a claim that the final reference-quality/mobile-performance target has been met. The software-raster regression below must be resolved or convincingly ruled out through representative browser/device profiling before release. The attached reference guided composition/materials; it was not copied into the game.
+**2026-09-27. Not merge-ready.** This is a reviewable implementation checkpoint, not a claim that the final reference-quality/mobile-performance target has been met. The dominant software-raster regression has now been removed by the targeted continuation below; representative browser/device profiling and final art-direction acceptance are still required before release. The attached reference guided composition/materials; it was not copied into the game.
 
 ## Git baseline and scope
 
@@ -21,7 +21,7 @@ Two input gaps remained: a 7–39 px horizontal movement fell through to jump, a
 
 ## Implemented here
 
-- Runner height is 16.5% of game-canvas height, with shared object/jump scaling. Horizon at 43%, player ground at 84%; lane width is portrait-width/landscape-height bounded. Existing classic `runViewScale`/`runCameraOffsetX` contracts remain intact.
+- Runner height is 16.5% of game-canvas height, with shared object/jump scaling. Horizon at 54%, player ground at 84%; lane width is portrait-width/landscape-height bounded. Existing classic `runViewScale`/`runCameraOffsetX` contracts remain intact.
 - Building sides and near faces are projected solid prisms with grounded bases, separate wall depths, floor/window detail, key/fill shading, ground contact, depth fog, and roof visibility based on camera height. Buildings are not rotated PNG cutouts.
 - Three facade textures are mapped onto those walls with bounded strips and cached mip levels. A second outer district is landscape-only. Original branded street furniture and airships remain.
 - World-specific sky/surface palettes, world-locked asphalt grain, subdued lane markings, streaks, curb-light reflections, and existing bounded weather. Screen shake and jetpack flame flicker no longer call `Math.random()` in the renderer.
@@ -50,7 +50,7 @@ An automatic cleanup of the old skyline was rejected after inspection because it
 - [Worlds: mobile and desktop](worlds.jpg)
 - [Run, jump, slide, lane change and four stride frames](actions.jpg)
 
-Proofs invoke the **actual `drawRunFrame`** with decoded production assets under a native Canvas implementation. They are not generated concept art or recording-context-only tests. Full outputs include 30 PNG frames (three worlds × two viewports × run/jump/fall/slide/lane), plus the sheets and asset audit. Fixtures deliberately place real entity types at selected depths for review; they are **not evidence of authoritative spawn density**. Client/replay parity is verified separately.
+Proofs invoke the **actual `drawRunFrame`** with decoded production assets under a native Canvas implementation. They are not generated concept art or recording-context-only tests. Full outputs include 66 PNG frames (three worlds × two viewports × eleven deterministic states, including landing, all lanes, airborne collectible and obstacle approach), plus the sheets and asset audit. Fixtures deliberately place real entity types at selected depths for review; they are **not evidence of authoritative spawn density**. Client/replay parity is verified separately.
 
 Reproduce without adding production dependencies or an authentication-bypass route:
 
@@ -67,29 +67,45 @@ These are renderer proofs, not browser screenshots or authenticated end-to-end g
 | Gate | Result |
 | --- | --- |
 | `npx tsc --noEmit` | Pass, including final geometry change |
-| MPGR Run relevant suite | **21 files / 178 tests passed** |
+| MPGR Run relevant suite | **21 files / 180 tests passed** |
 | Client → authoritative replay | **16 seeded runs passed**, with and without recorded controls; exact result equality |
 | Input regressions | 10 classifier tests pass (short swipes, ownership, cancel, unmatched release, direction/tap semantics) |
 | Render contracts | Grounding, revised responsive framing, depth order, world coverage, finite coordinates, stable head registration, texture bounds, bounded work, deterministic render/no simulation mutation |
 | Asset references | All preload files exist/decode; material dimensions/size budgets checked; legacy files retained |
-| Full `npm test` | **195 files / 2,068 assertions passed**, but command exits 1 due to an unhandled TLS `ECONNRESET` to `cca-lite.coinbase.com` from untouched AgentKit tests. Earlier run had four such network errors. Not reported as a clean suite exit. |
+| Full `npm test` | **195 files / 2,070 assertions passed**, but command exits 1 due to three unhandled TLS `ECONNRESET` errors to `cca-lite.coinbase.com` from untouched AgentKit tests. Earlier runs also had network errors. Not reported as a clean suite exit. |
 | `npm run lint` | 0 errors, 59 repository-wide warnings; no warnings in the new renderer/helper/script files |
 | `npm run build` | Blocked by `next/font` failing to download Inter from `fonts.googleapis.com`; no unrelated font/config workarounds introduced |
 | Browser/mobile hardware QA | **Not completed** |
-| Performance gate | **Not passed**; see below |
+| Performance gate | Software regression substantially reduced; hardware gate remains open |
 
-### Performance — release blocker
+### Targeted performance/camera continuation
 
-The implementation bounds scenery, textures, particles and facade detail and caches mipmaps. It does not add a 3D engine. Nevertheless, the warm software-raster comparison regressed:
+No gameplay, inputs, simulation, rewards, authoritative replay, APIs or assets were changed in this continuation. It builds on `cdfc407` in the same PR #63; PR #62 remains untouched. A restored-workspace Git mismatch was resolved by first verifying all files exactly matched remote `cdfc407`, keeping a safety stash, then fast-forwarding the session branch. No work was duplicated or discarded.
 
-| Canvas | PR #62 renderer (median) | Current renderer (median) |
+Measured ablations on the same host, 25 frames each, native Canvas with a forced raster flush (milliseconds, medians):
+
+| Renderer / isolated ablation | 390×844 | 1280×720 |
 | --- | ---: | ---: |
-| 390×844 | ~20 ms | ~54 ms |
-| 1280×720 | ~48 ms | ~126 ms |
+| PR #62 (`5489ea0`) | 21.1 | 48.7 |
+| Initial PR #63 (`cdfc407`) | 52.4 | 111.0 |
+| #63 without street architecture | 36.9 | 84.1 |
+| #63 using flat facade fill | 57.4 | 120.1 |
+| #63 without geometry fog | 48.6 | 103.8 |
+| #63 without live shadow blur | **28.1** | **44.6** |
+| #63 without road texture | 46.1 | 103.8 |
+| Current, final proof benchmark | **25.0** | **42.9** |
 
-Same host/native Canvas, 25 frames, forced raster flush. The parent comparison used its renderer/assets/themes from `5489ea0`. These timings are **not phone/browser FPS measurements**, but are a substantive warning, not a green performance gate. `software-canvas-timing.json` records the final current-renderer sample. Mipmapping and reduced strip detail helped an earlier ~85 ms mobile result, but did not remove the regression.
+**Root cause:** live `shadowBlur` on character/entity draws was the dominant cost, not texture strips alone. Removing architecture or the road texture did not eliminate the regression. Blurring the now-larger presentation incurred expensive raster/compositing work. The fix removes live shadow blur while retaining authored emissive sprite pixels, contact-shadow geometry, facade textures/mips, projected architecture and reflections. A regression test prohibits re-enabling live blur. Timing variation is expected; repeat current runs measured ~25–28 ms mobile and ~43–45 ms desktop. This is substantially closer to #62, not a claim of phone/browser FPS.
 
-Before merging: profile on representative low/mid-range phones and desktop browsers, reduce geometry/compositing cost with evidence, recheck at DPR 2, verify actual DOM HUD + keyboard/pointer integration, and rerun visual review. If the richer renderer cannot meet the budget, simplify/cachify its material/geometry pass before release rather than sacrificing input responsiveness.
+Camera eye-height ratio, in standing-runner heights, decreased from `(0.84-0.43)/0.165 ≈ 2.48` to `(0.84-0.54)/0.165 ≈ 1.82`. The focal distance, runner height (16.5%), lane widths, entity coordinates and physics did not change. This reduces the overhead appearance without scaling the whole canvas.
+
+The four existing run frames now have durations **165 / 85 / 165 / 85 ms** in a 500 ms cycle. The upright passing frames no longer linger as long as the kick frames. Registration, grounding, pause behavior, jump/fall and slide selection remain intact. No character art was regenerated.
+
+Updated proofs: [worlds](worlds.jpg), [actions/stride](actions.jpg), [nine required gameplay states](states.jpg). They were inspected after the change. The scenarios are static renderer fixtures, not end-to-end authenticated game sessions or proof of new coin spawning rules.
+
+`software-canvas-timing.json` records the final sample. Current benchmarks are reproducible through the existing proof script. Browser verification was attempted again: Playwright installed, but Chromium download failed with a TLS/network error to `cdn.playwright.dev`. Full-suite assertions passed, but the command exits 1 on Coinbase TLS failures; production build exits 1 on the Google Fonts fetch. None is represented as a green command.
+
+Remaining gate: real-device/DPR-2 smoothness and visual acceptance. Keep this PR draft and unmerged. Software timing alone cannot establish production readiness.
 
 ## Remaining visual limitations
 

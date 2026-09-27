@@ -2,7 +2,7 @@ import type { RunWorldTheme } from "./run-environments";
 
 /** Presentation-only street geometry. No random source, clock or simulation writes. */
 export const STREET_FOCAL = 300;
-export const STREET_HORIZON = 0.43;
+export const STREET_HORIZON = 0.54;
 export const STREET_GROUND = 0.84;
 export const RUNNER_HEIGHT_FRACTION = 0.165;
 export const STREET_SPACING = 230;
