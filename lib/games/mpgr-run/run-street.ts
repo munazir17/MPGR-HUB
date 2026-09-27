@@ -75,15 +75,17 @@ export function drawStreetArchitecture(
   const residue = ((-traveled % STREET_SPACING) + STREET_SPACING) % STREET_SPACING;
   for (let i = STREET_BLOCKS - 1; i >= 0; i--) {
     const z = residue + i * STREET_SPACING - 160;
-    const farZ = z + STREET_SPACING * 0.91;
+    const index = Math.round((z + traveled + 160) / STREET_SPACING);
+    const farZ = z + STREET_SPACING * (0.72 + streetHash(index, 119) * 0.19);
     const nearS = streetScale(z), farS = streetScale(farZ);
     const groundNear = streetGround(height, z), groundFar = streetGround(height, farZ);
-    const index = Math.round((z + traveled + 160) / STREET_SPACING);
     for (let side = -1; side <= 1; side += 2) {
       const r = streetHash(index, side + 83);
-      const buildingHeight = height * (0.38 + r * 0.6);
+      const totalHeight = height * (0.25 + r * r * 0.78);
+      const stepped = r > 0.68;
+      const buildingHeight = totalHeight * (stepped ? 0.7 : 1);
       const inner = side * (trackHalf + height * (0.045 + streetHash(index, side + 12) * 0.018));
-      const outer = inner + side * height * (0.17 + streetHash(index, side + 17) * 0.15);
+      const outer = inner + side * height * (0.12 + streetHash(index, side + 17) * 0.22);
       const xn = center + inner * nearS, xf = center + inner * farS;
       const xo = center + outer * nearS, xof = center + outer * farS;
       if (Math.min(xn, xf, xo, xof) > width + 4 || Math.max(xn, xf, xo, xof) < -4) continue;
@@ -92,6 +94,48 @@ export function drawStreetArchitecture(
       // AO contact footprint stays on the same ground plane as the wall.
       ctx.fillStyle = "rgba(5,12,20,0.22)";
       quad(ctx, xn - side * 9 * nearS, groundNear, xo, groundNear, xof, groundFar, xf - side * 9 * farS, groundFar);
+      // A second, inset solid volume on selected roofs. Its base is exactly
+      // the main roof plane; verticals share x at top/bottom, never lean.
+      // Two faces, cached atlas detail and fog; no filters/scene objects.
+      if (stepped) {
+        const upperInner = inner + (outer - inner) * 0.22;
+        const upperOuter = outer - (outer - inner) * 0.12;
+        const un = center + upperInner * nearS, uf = center + upperInner * farS;
+        const uo = center + upperOuter * nearS;
+        const tn = groundNear - totalHeight * nearS, tf = groundFar - totalHeight * farS;
+        ctx.fillStyle = material.front;
+        quad(ctx, un, tn, uf, tf, uf, yf, un, yn);
+        ctx.fillStyle = material.side;
+        quad(ctx, un, tn, uo, tn, uo, yn, un, yn);
+        if (texture && z < 2300) {
+          const mapped = facadeMip(texture, (totalHeight - buildingHeight) * nearS);
+          const image = mapped as HTMLImageElement;
+          const iw = image.naturalWidth || image.width, ih = image.naturalHeight || image.height;
+          // At most six strips on the inset volume, reusing the decoded mip
+          // atlas. No blank giant rooftop boxes or new texture allocations.
+          const slices = Math.max(2, Math.min(6, Math.ceil(Math.abs(un - uf) / 8)));
+          ctx.save();
+          ctx.beginPath(); ctx.moveTo(un, tn); ctx.lineTo(uf, tf); ctx.lineTo(uf, yf); ctx.lineTo(un, yn); ctx.closePath(); ctx.clip();
+          for (let slice = 0; slice < slices; slice++) {
+            const a = slice / slices, b = (slice + 1) / slices;
+            const sa = streetScale(z + (farZ - z) * a), sb = streetScale(z + (farZ - z) * b);
+            const xa = center + upperInner * sa, xb = center + upperInner * sb, sm = (sa + sb) / 2;
+            const top = height * (STREET_HORIZON + (STREET_GROUND - STREET_HORIZON) * sm) - totalHeight * sm;
+            ctx.drawImage(mapped, iw * a, 0, iw / slices, ih * 0.4, Math.min(xa, xb), top, Math.abs(xa - xb) + 0.5, (totalHeight - buildingHeight) * sm);
+          }
+          ctx.restore();
+          ctx.drawImage(mapped, 0, 0, iw, ih * 0.4, Math.min(un, uo), tn, Math.abs(uo - un), yn - tn);
+          ctx.globalAlpha = 0.32;
+          ctx.fillStyle = material.side;
+          quad(ctx, un, tn, uo, tn, uo, yn, un, yn);
+          ctx.globalAlpha = 1;
+        }
+        ctx.fillStyle = theme.fog;
+        ctx.globalAlpha = fog;
+        quad(ctx, un, tn, uf, tf, uf, yf, un, yn);
+        quad(ctx, un, tn, uo, tn, uo, yn, un, yn);
+        ctx.globalAlpha = 1;
+      }
       const facade = ctx.createLinearGradient(xn, yn, xf, groundFar);
       facade.addColorStop(0, material.front);
       facade.addColorStop(1, material.side);
@@ -113,6 +157,10 @@ export function drawStreetArchitecture(
         const iw = image.naturalWidth || image.width, ih = image.naturalHeight || image.height;
         const slices = Math.max(2, Math.min(12, Math.ceil(Math.abs(xn - xf) / 5)));
         const crop = 0.65 + streetHash(index, side + 76) * 0.35;
+        // Stable facade modules, rather than stretching the identical full
+        // atlas across every block. Same number of texture draws as before.
+        const moduleWidth = 0.45 + Math.floor(streetHash(index, side + 91) * 3) * 0.25;
+        const moduleStart = (1 - moduleWidth) * streetHash(index, side + 92);
         ctx.save();
         ctx.beginPath(); ctx.moveTo(xn, yn); ctx.lineTo(xf, yf); ctx.lineTo(xf, groundFar); ctx.lineTo(xn, groundNear); ctx.closePath(); ctx.clip();
         for (let slice = 0; slice < slices; slice++) {
@@ -121,10 +169,10 @@ export function drawStreetArchitecture(
           const xa = center + inner * sa, xb = center + inner * sb;
           const sm = (sa + sb) / 2;
           const top = height * (STREET_HORIZON + (STREET_GROUND - STREET_HORIZON) * sm) - buildingHeight * sm;
-          ctx.drawImage(mappedTexture, iw * a, ih * (1 - crop), iw / slices, ih * crop, Math.min(xa, xb), top, Math.abs(xa - xb) + 0.5, buildingHeight * sm);
+          ctx.drawImage(mappedTexture, iw * (moduleStart + moduleWidth * a), ih * (1 - crop), iw * moduleWidth / slices, ih * crop, Math.min(xa, xb), top, Math.abs(xa - xb) + 0.5, buildingHeight * sm);
         }
         ctx.restore();
-        ctx.drawImage(mappedTexture, 0, ih * (1 - crop), iw, ih * crop, Math.min(xn, xo), yn, Math.abs(xo - xn), groundNear - yn);
+        ctx.drawImage(mappedTexture, iw * moduleStart, ih * (1 - crop), iw * moduleWidth, ih * crop, Math.min(xn, xo), yn, Math.abs(xo - xn), groundNear - yn);
         ctx.globalAlpha = 0.32;
         ctx.fillStyle = material.side;
         quad(ctx, xn, yn, xo, yn, xo, groundNear, xn, groundNear);
@@ -166,15 +214,21 @@ export function drawStreetArchitecture(
         }
       }
       // Pale roof accumulation / sandstone cornice; restrained cyan city trim.
-      ctx.strokeStyle = theme.id === "city" ? theme.rail : material.roof;
+      ctx.strokeStyle = theme.id === "city" && r > 0.78 ? theme.rail : material.roof;
       ctx.lineWidth = (theme.id === "ice" ? 5 : 2) * nearS;
       ctx.beginPath(); ctx.moveTo(xo, yn); ctx.lineTo(xn, yn); ctx.lineTo(xf, yf); ctx.stroke();
-      if (theme.id !== "desert" && r > 0.55) {
+      if (theme.id !== "desert" && r > 0.55 && !stepped) {
         ctx.fillStyle = material.trim;
         ctx.fillRect((xn + xo) / 2, yn - 28 * nearS, 1.4 * nearS, 28 * nearS);
       }
       // Ground-floor shop glow plus its short wet-ground reflection.
       if (z < 1300) {
+        // Recessed plinth ties both wall faces to their contact footprint.
+        // Ground coordinates are identical to the wall, not a screen band.
+        const plinth = height * (0.016 + streetHash(index, side + 97) * 0.012);
+        ctx.fillStyle = material.recess;
+        quad(ctx, xn, groundNear - plinth * nearS, xf, groundFar - plinth * farS, xf, groundFar, xn, groundNear);
+        quad(ctx, xn, groundNear - plinth * nearS, xo, groundNear - plinth * nearS, xo, groundNear, xn, groundNear);
         ctx.fillStyle = theme.twinkle[index % 2 === 0 ? 0 : 1];
         ctx.globalAlpha = theme.id === "desert" ? 0.2 : 0.55;
         quad(ctx, xn, groundNear - 10 * nearS, xf, groundFar - 10 * farS, xf, groundFar - 5 * farS, xn, groundNear - 5 * nearS);

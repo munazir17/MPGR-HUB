@@ -1,6 +1,6 @@
 {
   "preloadedCount": 53,
-  "preloadedBytes": 45685294,
+  "preloadedBytes": 45085116,
   "requestedByProof": [
     "/games/mpgr-run/character/mpgr-runner-rear-fall.webp?v=2026-09-18a",
     "/games/mpgr-run/character/mpgr-runner-rear-jump.webp?v=2026-09-18a",
@@ -12,7 +12,7 @@
     "/games/mpgr-run/collectibles/mpgr-run-coin.webp?v=2026-09-18a",
     "/games/mpgr-run/environment/city/city-facade.webp?v=2026-09-18a",
     "/games/mpgr-run/environment/city/city-props.webp?v=2026-09-18a",
-    "/games/mpgr-run/environment/city/city-skyline.webp?v=2026-09-18a",
+    "/games/mpgr-run/environment/city/city-skyline-atmospheric.webp?v=2026-09-18a",
     "/games/mpgr-run/environment/city/mpgr-airship.webp?v=2026-09-18a",
     "/games/mpgr-run/environment/desert/desert-facade.webp?v=2026-09-18a",
     "/games/mpgr-run/environment/desert/desert-props.webp?v=2026-09-18a",
@@ -56,10 +56,14 @@
     "environment/city/city-side-far.webp",
     "environment/city/city-side-mid.webp",
     "environment/city/city-side.webp",
+    "environment/city/city-skyline.webp",
     "effects/mpgr-run-level-complete.webp",
     "effects/mpgr-run-powerup-collection.webp",
+    "collectibles/mpgr-run-treasure-chest.webp",
+    "checkpoints/mpgr-run-checkpoint.webp",
     "character/mpgr-runner-fly.webp",
     "character/mpgr-runner-idle-card.webp",
+    "character/mpgr-runner-run-2.webp",
     "character/mpgr-runner-run-banner.webp"
   ],
   "note": "notInCanvasPreload does not imply unused: DOM overlays, registry art and retained originals are included. Fixtures are renderer proofs, not authenticated live gameplay."

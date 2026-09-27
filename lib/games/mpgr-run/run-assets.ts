@@ -19,13 +19,9 @@
 //
 // - The vast majority are proper RGBA cutouts with alpha=0 at the edges —
 //   used directly, no processing needed.
-// - Three assets are baked onto a solid near-black background with NO
-//   alpha channel at all: character run-2 (the second run-cycle frame),
-//   the treasure chest collectible, and the checkpoint badge. These are
-//   listed in BACKGROUND_STRIP_TARGETS below — RunGame.tsx flood-fills
-//   the background out from the edges (not a blanket color match, so
-//   genuinely dark interior details like shoes/trim survive) once on
-//   load and caches the resulting transparent canvas.
+// - Three legacy assets had a solid background: side run-2, chest and
+//   checkpoint. Lossless offline cutouts now preserve the old edge-fill
+//   result without synchronous browser pixel work. Originals are retained.
 // - Two assets — the character "fly" pose and the "powerup-collection"
 //   effect — are baked onto a full non-uniform night-sky scene (not a
 //   flat color), so a safe automatic cutout isn't possible without
@@ -86,7 +82,7 @@ const BASE = "/games/mpgr-run";
 export const CHARACTER_SPRITES = {
   idle: asset(`${BASE}/character/mpgr-runner-idle.webp`),
   run: asset(`${BASE}/character/mpgr-runner-run.webp`),
-  run2: asset(`${BASE}/character/mpgr-runner-run-2.webp`),
+  run2: asset(`${BASE}/character/mpgr-runner-run-2-cutout.webp`),
   jump: asset(`${BASE}/character/mpgr-runner-jump.webp`),
   fall: asset(`${BASE}/character/mpgr-runner-fall.webp`),
   slide: asset(`${BASE}/character/mpgr-runner-slide.webp`),
@@ -141,7 +137,7 @@ export const COLLECTIBLE_SPRITES: Record<CollectibleType, string> = {
   gem: asset(`${BASE}/collectibles/mpgr-run-gem.webp`),
   xpOrb: asset(`${BASE}/collectibles/mpgr-run-xp.webp`),
   key: asset(`${BASE}/collectibles/mpgr-run-key.webp`),
-  chest: asset(`${BASE}/collectibles/mpgr-run-treasure-chest.webp`),
+  chest: asset(`${BASE}/collectibles/mpgr-run-treasure-chest-cutout.webp`),
 };
 
 export const POWERUP_SPRITES: Record<PowerupType, string> = {
@@ -153,7 +149,7 @@ export const POWERUP_SPRITES: Record<PowerupType, string> = {
   invincibility: asset(`${BASE}/powerups/mpgr-run-invincibility.webp`),
 };
 
-export const CHECKPOINT_SPRITE = asset(`${BASE}/checkpoints/mpgr-run-checkpoint.webp`);
+export const CHECKPOINT_SPRITE = asset(`${BASE}/checkpoints/mpgr-run-checkpoint-cutout.webp`);
 
 // --- HUD-only art (2026-09-20, asset/performance pass) ------------------
 // heart and powerupFrame are *never* drawn on the canvas. run-render.ts
@@ -221,7 +217,7 @@ export const CITY_ENVIRONMENT = {
 export const ENVIRONMENT_SETS = {
   city: {
     facade: asset(`${BASE}/environment/city/city-facade.webp`),
-    skyline: asset(`${BASE}/environment/city/city-skyline.webp`),
+    skyline: asset(`${BASE}/environment/city/city-skyline-atmospheric.webp`),
     side: asset(`${BASE}/environment/city/city-side.webp`),
     sideMid: asset(`${BASE}/environment/city/city-side-mid.webp`),
     sideFar: asset(`${BASE}/environment/city/city-side-far.webp`),
@@ -252,17 +248,18 @@ export const ROAD_MATERIAL_SPRITE = asset(`${BASE}/environment/road-material.web
 
 export const AIRSHIP_SPRITE = asset(`${BASE}/environment/city/mpgr-airship.webp`);
 
-/**
- * Assets confirmed to be baked onto a solid (near-uniform) background with
- * no alpha channel. RunGame.tsx runs a one-time edge flood-fill on exactly
- * these paths after they load, replacing the raw <img> in its sprite cache
- * with a transparent canvas — everything else loads and renders as-is.
- */
-export const BACKGROUND_STRIP_TARGETS: string[] = [
+/** Lossless offline results of the existing border flood fill. Original
+ * files are retained. Prebaking avoids 73–153ms synchronous loading tasks;
+ * visible RGB and all alpha bytes match the previous runtime output. */
+export const PREBAKED_CUTOUT_PATHS: string[] = [
   CHARACTER_SPRITES.run2,
   COLLECTIBLE_SPRITES.chest,
   CHECKPOINT_SPRITE,
 ];
+
+/** Kept for loader compatibility; live assets no longer need pixel readback
+ * or background removal on the browser's main thread. */
+export const BACKGROUND_STRIP_TARGETS: string[] = [];
 
 /** Live/preloaded art only. Legacy side/sideMid/sideFar exports and their
  * files remain available, but the solid street renderer no longer downloads

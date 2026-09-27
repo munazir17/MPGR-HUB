@@ -8,6 +8,7 @@ import {
   ENVIRONMENT_SETS,
   ROAD_MATERIAL_SPRITE,
   BACKGROUND_STRIP_TARGETS,
+  PREBAKED_CUTOUT_PATHS,
   CHARACTER_SPRITES,
   CITY_ENVIRONMENT,
   CRITICAL_SPRITE_PATHS,
@@ -108,13 +109,22 @@ describe("MPGR Run asset manifest resolves on disk", () => {
     }
   });
 
-  it("keeps the background-strip targets resolvable (flood-fill inputs)", () => {
-    // stripBackgroundToTransparent() reads naturalWidth/naturalHeight off
-    // exactly these images; a missing file means a permanent procedural
-    // fallback for the second run frame, the chest, or the checkpoint.
-    expect(BACKGROUND_STRIP_TARGETS).toContain(CHARACTER_SPRITES.run2);
-    for (const src of BACKGROUND_STRIP_TARGETS) {
-      expect(fs.existsSync(publicFile(src)), src).toBe(true);
+  it("prebakes cutouts with alpha, without main-thread flood-fill inputs", () => {
+    expect(BACKGROUND_STRIP_TARGETS).toEqual([]);
+    expect(PREBAKED_CUTOUT_PATHS).toHaveLength(3);
+    for (const src of PREBAKED_CUTOUT_PATHS) {
+      expect(src).toContain("-cutout.webp");
+      const buffer = fs.readFileSync(publicFile(src));
+      let alpha = false;
+      for (let offset = 12; offset + 8 <= buffer.length;) {
+        const chunk = buffer.subarray(offset, offset + 4).toString("latin1");
+        const size = buffer.readUInt32LE(offset + 4), payload = offset + 8;
+        if (chunk === "VP8X") alpha ||= !!(buffer[payload] & 0x10);
+        if (chunk === "VP8L") alpha ||= !!(buffer.readUInt32LE(payload + 1) & 0x10000000);
+        if (chunk === "ALPH") alpha = true;
+        offset = payload + size + (size & 1);
+      }
+      expect(alpha, src).toBe(true);
     }
   });
 

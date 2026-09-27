@@ -1,3 +1,4 @@
+import { runDrawQueue, type RunDrawEntry } from "./run-draw-queue";
 /**
  * MPGR Run — canvas rendering. Extracted verbatim from RunGame.tsx
  * (P2-11 follow-up modularization): stripBackgroundToTransparent, the
@@ -125,6 +126,7 @@ const OBSTACLE_COLOR: Record<ObstacleEntity["type"], { fill: string; dark: strin
 
 /** Natural aspect of the city parallax artwork (1536x1024 source files). */
 const RUN_CITY_ART_ASPECT = 1536 / 1024;
+const SKYLINE_LAYERS = [[0.35, 0.32, 0.05], [0.5, 0.58, 0.12]] as const;
 
 /**
  * Uniform gameplay scale for the responsive renderer.
@@ -319,11 +321,7 @@ export function drawRunFrame(
   const skylineImg = getSprite(envSet.skyline);
   if (skylineImg) {
     const aspect = spriteAspect(skylineImg);
-    const layers: Array<[number, number, number]> = [
-      [0.35, 0.32, 0.05],
-      [0.5, 0.58, 0.12],
-    ];
-    for (const [bandFrac, alpha, camFactor] of layers) {
+    for (const [bandFrac, alpha, camFactor] of SKYLINE_LAYERS) {
       const bandH = HORIZON_Y * bandFrac;
       const layerW = bandH * aspect;
       // Lateral camera parallax only — the skyline sits at infinity along
@@ -373,18 +371,18 @@ export function drawRunFrame(
   // --- Distant MPGR airship (sky life) ------------------------------------
   const airship = getSprite(AIRSHIP_SPRITE);
   if (airship) {
-    const airH = H * 0.055;
+    const airH = H * 0.032;
     const airW = airH * spriteAspect(airship);
     const ax = W * (0.5 + 0.34 * Math.sin(world.elapsedMs / 23000));
     const ay = HORIZON_Y * 0.34 + Math.sin(world.elapsedMs / 5200) * H * 0.012;
-    ctx.globalAlpha = 0.9;
+    ctx.globalAlpha = 0.65;
     ctx.drawImage(airship, ax - airW / 2, ay - airH / 2, airW, airH);
     // Second, farther airship on an independent slow phase (sky life).
-    const air2H = airH * 0.55;
+    const air2H = airH * 0.45;
     const air2W = air2H * spriteAspect(airship);
     const a2x = W * (0.5 + 0.4 * Math.sin(world.elapsedMs / 41000 + 2.1));
     const a2y = HORIZON_Y * 0.18 + Math.sin(world.elapsedMs / 6100 + 1.3) * H * 0.008;
-    ctx.globalAlpha = 0.55;
+    ctx.globalAlpha = 0.4;
     ctx.drawImage(airship, a2x - air2W / 2, a2y - air2H / 2, air2W, air2H);
     ctx.globalAlpha = 1;
   }
@@ -428,18 +426,8 @@ export function drawRunFrame(
   asphalt.addColorStop(1, theme.trackNear);
   ctx.fillStyle = asphalt;
   ctx.fill();
-  // Wet-look reflective sheen: a soft light column down the track centre.
-  const sheen = ctx.createLinearGradient(0, groundYAt(sFar), 0, groundYAt(Math.min(sNear, 1.5)));
-  sheen.addColorStop(0, "rgba(255,255,255,0.10)");
-  sheen.addColorStop(0.5, "rgba(255,255,255,0.03)");
-  sheen.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.save();
-  traceTrack();
-  ctx.clip();
-  ctx.fillStyle = sheen;
-  ctx.fillRect(W / 2 - trackHalf * 0.5, groundYAt(sFar), trackHalf, H);
-  ctx.restore();
-
+  // Road grain and curb reflections follow perspective; no rectangular
+  // centre sheen with screen-vertical edges.
   ctx.save();
   traceTrack(); ctx.clip();
   const roadMaterial = getSprite(ROAD_MATERIAL_SPRITE);
@@ -487,7 +475,7 @@ export function drawRunFrame(
     ctx.closePath();
     ctx.fill();
     // Lane divider dashes ride the same scroll phase.
-    ctx.globalAlpha = 0.15 + fade * 0.4;
+    ctx.globalAlpha = 0.15 + fade * 0.48;
     ctx.fillStyle = theme.id === "ice" ? "#CDEDF5" : "#B7B8B7";
     for (const side of [-0.5, 0.5]) {
       const lat = laneGap * side;
@@ -542,7 +530,7 @@ export function drawRunFrame(
   // A continuous curb band per side (themed: concrete / snow / sand) so the
   // track reads as a street cut through the environment, not a floating
   // polygon. Side structures instance ONTO these bands further down.
-  const sCurb = Math.min(sNear, 1.5);
+  const sCurb = sNear; // continue below the viewport; no cutoff band at 0.99H
   for (const side of [-1, 1] as const) {
     const inner = trackHalf + 5;
     const outer = trackHalf + 64;
@@ -695,11 +683,7 @@ export function drawRunFrame(
   }
 
   // --- Depth-sorted world items (painter's algorithm) ---------------------
-  interface DrawItem {
-    z: number;
-    draw: () => void;
-  }
-  const items: DrawItem[] = [];
+  const queue = runDrawQueue(ctx);
 
   const drawGroundShadow = (sx: number, gy: number, rx: number, alpha: number) => {
     if (alpha <= 0.01 || rx <= 0.5) return;
@@ -719,72 +703,54 @@ export function drawRunFrame(
 
   // --- Street furniture: retain the original branded props, not building
   // cards. Architecture is solid projected geometry in run-street.ts.
-  const sideCols: Array<{
-    src: string; spacing: number; margin: number; baseH: number; zMax: number; alpha: number; shadow: number;
-  }> = [
-    { src: envSet.prop, spacing: 260, margin: H * 0.02, baseH: H * 0.19, zMax: 2600, alpha: 1, shadow: 0.2 },
-  ];
-  for (const side of [-1, 1] as const) {
-    for (let ci = 0; ci < sideCols.length; ci++) {
-      const col = sideCols[ci];
-      const residue =
-        ((-world.traveledPx - playerDepthX) % col.spacing + col.spacing) % col.spacing;
-      for (let z = residue - col.spacing; z < col.zMax; z += col.spacing) {
+  const propSprite = getSprite(envSet.prop);
+  if (propSprite) {
+    const spacing = 260, zMax = 2600, baseH = H * 0.19;
+    for (let side = -1; side <= 1; side += 2) {
+      const residue = ((-world.traveledPx - playerDepthX) % spacing + spacing) % spacing;
+      for (let z = residue - spacing; z < zMax; z += spacing) {
         if (z < -120) continue;
-        const s0 = sOf(z);
-        if (s0 > S_MAX) continue;
-        const k = Math.round((z + playerDepthX + world.traveledPx) / col.spacing);
-        const r = unitHash(k, side * 3 + ci + 1);
-        if (r < 0.12) continue; // natural gaps in the street wall
-        const img = getSprite(col.src);
-        if (!img) continue;
-                const scaleJ = 0.92 + r * 0.22;
-        // Anchor each instance OUTSIDE the road: lateral offset includes the
-        // sprite's own half-width so bases sit on the sidewalk/shoulder and
-        // never penetrate the track, at every depth.
-        const halfW = (col.baseH * scaleJ * spriteAspect(img)) / 2;
-        const lat =
-          side *
-          (trackHalf + col.margin + halfW + unitHash(k, ci + 91) * 12);
-        const depthFade = Math.max(0, 1 - (Math.max(0, z) / col.zMax) * 0.65);
-        items.push({
-          z,
-          draw: () => {
-            const s = sOf(z);
-            const aspect = spriteAspect(img);
-            const dh = col.baseH * scaleJ * s;
-            const dw = dh * aspect;
-            const sx = xAt(lat, s);
-            const gy = groundYAt(s);
-            if (col.shadow > 0) {
-              // Tight, faint contact shadow: grounds the structure without
-              // reading as a decal on bright snow/sand.
-              ctx.globalAlpha = col.shadow * depthFade * (ci >= 2 ? 0.4 : 1);
-              ctx.fillStyle = "rgba(0,0,0,0.5)";
-              ctx.beginPath();
-              ctx.ellipse(sx, gy, dw * 0.4, Math.max(1, dw * 0.055), 0, 0, Math.PI * 2);
-              ctx.fill();
-            }
-            ctx.globalAlpha = col.alpha * depthFade;
-            // Signage must never be mirrored.
-            ctx.drawImage(img, sx - dw / 2, gy - dh, dw, dh);
-            ctx.globalAlpha = 1;
-          },
-        });
+        const s = sOf(z);
+        if (s > S_MAX) continue;
+        const k = Math.round((z + playerDepthX + world.traveledPx) / spacing);
+        const r = unitHash(k, side * 3 + 1);
+        if (r < 0.12) continue;
+        const scaleJ = 0.92 + r * 0.22;
+        const halfW = baseH * scaleJ * spriteAspect(propSprite) / 2;
+        const lat = side * (trackHalf + H * 0.02 + halfW + unitHash(k, 91) * 12);
+        const depthFade = Math.max(0, 1 - Math.max(0, z) / zMax * 0.65);
+        queue.add(z, 0, side, s, scaleJ, lat, depthFade);
       }
     }
   }
+  const drawProp = (item: RunDrawEntry) => {
+    if (!propSprite) return;
+    const dh = H * 0.19 * item.a * item.scale;
+    const dw = dh * spriteAspect(propSprite);
+    const sx = xAt(item.b, item.scale), gy = groundYAt(item.scale);
+    ctx.globalAlpha = 0.2 * item.c;
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.beginPath();
+    ctx.ellipse(sx, gy, dw * 0.4, Math.max(1, dw * 0.055), 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = item.c;
+    ctx.drawImage(propSprite, sx - dw / 2, gy - dh, dw, dh);
+    ctx.globalAlpha = 1;
+  };
 
   // Power-ups.
-  for (const pu of world.powerups) {
+  for (let index = 0; index < world.powerups.length; index++) {
+    const pu = world.powerups[index];
     if (pu.collected) continue;
     const z = pu.x - playerDepthX;
     const s = visibleScale(z);
     if (s === null) continue;
+    queue.add(z, 1, index, s);
+  }
+  const drawPowerup = (item: RunDrawEntry) => {
+    const pu = world.powerups[item.index], s = item.scale;
     const cfg = POWERUP_TYPES[pu.type];
-    items.push({
-      z,
-      draw: () => {
+
         const bob = Math.sin(world.elapsedMs / 260 + pu.id) * 5;
         const sx = xAt(laneLat(pu.lane), s);
         const gy = groundYAt(s);
@@ -792,6 +758,7 @@ export function drawRunFrame(
         const size = pu.radius * 3.0 * s * objectScale;
         drawGroundShadow(sx, gy, size * 0.4, 0.28 * s);
         const puImg = getSprite(POWERUP_SPRITES[pu.type]);
+        ctx.globalAlpha = 1 - Math.min(1, Math.max(0, item.z) / Z_FAR) * 0.2;
 
 
         if (puImg) {
@@ -805,10 +772,8 @@ export function drawRunFrame(
           ctx.lineWidth = 1.5 * s;
           ctx.stroke();
         }
-
-      },
-    });
-  }
+        ctx.globalAlpha = 1;
+  };
 
   // Collectibles.
   const playerCenterX = xAt(playerLat, 1);
@@ -818,15 +783,18 @@ export function drawRunFrame(
   // are untouched — this is sprite-box sizing only.
   const playerHeightWorld = H * RUNNER_HEIGHT_FRACTION * (p.sliding ? 0.54 : 1);
   const playerCenterY = GROUND_Y - p.playerY * objectScale - playerHeightWorld / 2;
-  for (const c of world.collectibles) {
+  for (let index = 0; index < world.collectibles.length; index++) {
+    const c = world.collectibles[index];
     if (c.collected) continue;
     const z = c.x - playerDepthX;
     const s = visibleScale(z);
     if (s === null) continue;
+    queue.add(z, 2, index, s);
+  }
+  const drawCollectible = (item: RunDrawEntry) => {
+    const c = world.collectibles[item.index], s = item.scale;
     const color = COLLECTIBLE_TYPES[c.type].color;
-    items.push({
-      z,
-      draw: () => {
+
         const bob = Math.sin(world.elapsedMs / 300 + c.id) * 6;
         const air = collectiblePresentationHeight(c, world.traveledPx, world.obstacles);
         const attracting = c.magnetizedAtMs !== undefined;
@@ -841,6 +809,7 @@ export function drawRunFrame(
         const size = c.radius * (air > 0 ? 3.4 : 2.9) * shrink * s * objectScale;
         drawGroundShadow(sx, gy, size * (air > 0 ? 0.26 : 0.42), 0.3 * s * (air > 0 ? 0.5 : 1));
         const cImg = getSprite(COLLECTIBLE_SPRITES[c.type]);
+        ctx.globalAlpha = 1 - Math.min(1, Math.max(0, item.z) / Z_FAR) * 0.2;
 
 
         if (cImg) {
@@ -855,6 +824,7 @@ export function drawRunFrame(
           ctx.stroke();
         }
 
+        ctx.globalAlpha = 1;
         if (attracting) {
           ctx.strokeStyle = "rgba(34,211,238,0.5)";
           ctx.lineWidth = 1;
@@ -863,19 +833,20 @@ export function drawRunFrame(
           ctx.lineTo(playerCenterX, playerCenterY);
           ctx.stroke();
         }
-      },
-    });
-  }
+  };
 
   // Obstacles.
-  for (const o of world.obstacles) {
+  for (let index = 0; index < world.obstacles.length; index++) {
+    const o = world.obstacles[index];
     const z = o.x + o.width / 2 - playerDepthX;
     const s = visibleScale(z);
     if (s === null) continue;
+    queue.add(z, 3, index, s);
+  }
+  const drawObstacle = (item: RunDrawEntry) => {
+    const o = world.obstacles[item.index], s = item.scale;
     const palette = OBSTACLE_COLOR[o.type];
-    items.push({
-      z,
-      draw: () => {
+
         const sx = xAt(laneLat(o.lane), s);
         const gy = groundYAt(s);
         const wW = Math.min(o.width * 1.5 * objectScale, laneGap * 0.88) * s;
@@ -890,7 +861,7 @@ export function drawRunFrame(
           ctx.rotate(world.elapsedMs / 120);
           ctx.translate(-sx, -cy);
         }
-        ctx.globalAlpha = o.hit ? 0.55 : 1;
+        ctx.globalAlpha = (o.hit ? 0.55 : 1) * (1 - Math.min(1, Math.max(0, item.z) / Z_FAR) * 0.2);
         if (oImg) {
 
 
@@ -909,14 +880,11 @@ export function drawRunFrame(
         }
         ctx.globalAlpha = 1;
         ctx.restore();
-      },
-    });
-  }
+  };
 
   // The runner — rear view, z = 0, feet planted on the near track surface.
-  items.push({
-    z: 0,
-    draw: () => {
+  queue.add(0, 4, 0, 1);
+  const drawRunner = () => {
       const sx = xAt(playerLat, 1);
       const bottom = GROUND_Y - p.playerY * objectScale; // exact grounding: playerY == 0 -> feet on track
       const drawH = playerHeightWorld;
@@ -1045,11 +1013,19 @@ export function drawRunFrame(
         ctx.fillRect(sx - pw * 0.32, playerTop + drawH * 0.04, pw * 0.64, drawH * 0.2);
       }
       ctx.globalAlpha = 1;
-    },
-  });
+  };
 
-  items.sort((a, b) => b.z - a.z);
-  for (const item of items) item.draw();
+  queue.sort();
+  for (let i = 0; i < queue.count; i++) {
+    const item = queue.entries[i];
+    switch (item.kind) {
+      case 0: drawProp(item); break;
+      case 1: drawPowerup(item); break;
+      case 2: drawCollectible(item); break;
+      case 3: drawObstacle(item); break;
+      case 4: drawRunner(); break;
+    }
+  }
 
   // --- Particles & sprite bursts (world-space sparks, projected) ----------
   for (const part of world.particles) {

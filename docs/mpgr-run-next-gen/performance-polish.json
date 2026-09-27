@@ -1,0 +1,370 @@
+{
+  "warning": "Native software Canvas, CSS-sized DPR1 surfaces, NOT real-device FPS or INP. Timing variation is expected. No authenticated browser proof obtained.",
+  "comparisonBase": "05fa9538d3f920a0de1f3371fd08f104dae8e4cd",
+  "preservedPr62": "5489ea0d978f6c1e39f824d934c58bc5db97cf02",
+  "sparseBefore": [
+    {
+      "mode": "pr62",
+      "width": 390,
+      "median": 24.424605000000156,
+      "p95": 40.86945199999991
+    },
+    {
+      "mode": "pr62",
+      "width": 1280,
+      "median": 54.2672620000003,
+      "p95": 70.05078699999922
+    },
+    {
+      "mode": "current",
+      "width": 390,
+      "median": 26.743187999999463,
+      "p95": 35.49423299999944
+    },
+    {
+      "mode": "current",
+      "width": 1280,
+      "median": 46.81641200000013,
+      "p95": 53.0306240000009
+    }
+  ],
+  "sparseAfter": {
+    "warning": "Software raster comparison only, NOT browser/device FPS. A regression here requires investigation, not a mobile performance claim.",
+    "timing": [
+      {
+        "format": "mobile",
+        "width": 390,
+        "height": 844,
+        "medianMs": 21.633841999999277,
+        "maxMs": 28.100420999999187
+      },
+      {
+        "format": "desktop",
+        "width": 1280,
+        "height": 720,
+        "medianMs": 40.27168800000072,
+        "maxMs": 45.82593900000029
+      }
+    ]
+  },
+  "populatedMethod": "25 flushed frames per world/size/revision; elapsedMs 6000, 5px travel/frame; city120m/ice620m/desert1060m, 2 obstacles, 7 coins, 1 shield powerup. Reproduce with scripts/mpgr-run-profile-comparison.mjs. Assets decoded before timing. Different workload from sparse baseline.",
+  "populated": [
+    {
+      "mode": "pr62",
+      "scene": "city",
+      "width": 390,
+      "height": 844,
+      "median": 203.07481099999995,
+      "p95": 221.338078
+    },
+    {
+      "mode": "pr62",
+      "scene": "city",
+      "width": 1280,
+      "height": 720,
+      "median": 584.6101409999992,
+      "p95": 611.2849320000023
+    },
+    {
+      "mode": "pr62",
+      "scene": "ice",
+      "width": 390,
+      "height": 844,
+      "median": 189.7087219999994,
+      "p95": 206.1662780000006
+    },
+    {
+      "mode": "pr62",
+      "scene": "ice",
+      "width": 1280,
+      "height": 720,
+      "median": 569.6079979999995,
+      "p95": 596.4777170000016
+    },
+    {
+      "mode": "pr62",
+      "scene": "desert",
+      "width": 390,
+      "height": 844,
+      "median": 199.49321600000258,
+      "p95": 203.95109899999807
+    },
+    {
+      "mode": "pr62",
+      "scene": "desert",
+      "width": 1280,
+      "height": 720,
+      "median": 570.019816999993,
+      "p95": 598.916274999996
+    },
+    {
+      "mode": "prepolish",
+      "scene": "city",
+      "width": 390,
+      "height": 844,
+      "median": 37.54138199999579,
+      "p95": 61.76653200000146
+    },
+    {
+      "mode": "prepolish",
+      "scene": "city",
+      "width": 1280,
+      "height": 720,
+      "median": 50.796792000001005,
+      "p95": 64.8559580000001
+    },
+    {
+      "mode": "prepolish",
+      "scene": "ice",
+      "width": 390,
+      "height": 844,
+      "median": 27.2845559999987,
+      "p95": 28.06483699999808
+    },
+    {
+      "mode": "prepolish",
+      "scene": "ice",
+      "width": 1280,
+      "height": 720,
+      "median": 50.05114300000423,
+      "p95": 52.80033900000126
+    },
+    {
+      "mode": "prepolish",
+      "scene": "desert",
+      "width": 390,
+      "height": 844,
+      "median": 24.463231999994605,
+      "p95": 27.400217000002158
+    },
+    {
+      "mode": "prepolish",
+      "scene": "desert",
+      "width": 1280,
+      "height": 720,
+      "median": 46.63599599999725,
+      "p95": 58.12728800000332
+    },
+    {
+      "mode": "current",
+      "scene": "city",
+      "width": 390,
+      "height": 844,
+      "median": 24.795667999991565,
+      "p95": 28.690851999999722
+    },
+    {
+      "mode": "current",
+      "scene": "city",
+      "width": 1280,
+      "height": 720,
+      "median": 47.38626199999999,
+      "p95": 54.59493099999963
+    },
+    {
+      "mode": "current",
+      "scene": "ice",
+      "width": 390,
+      "height": 844,
+      "median": 22.168028999993112,
+      "p95": 24.826476999995066
+    },
+    {
+      "mode": "current",
+      "scene": "ice",
+      "width": 1280,
+      "height": 720,
+      "median": 38.756311000004644,
+      "p95": 42.515270999996574
+    },
+    {
+      "mode": "current",
+      "scene": "desert",
+      "width": 390,
+      "height": 844,
+      "median": 20.795304999992368,
+      "p95": 22.344423999995342
+    },
+    {
+      "mode": "current",
+      "scene": "desert",
+      "width": 1280,
+      "height": 720,
+      "median": 38.92064900000696,
+      "p95": 51.09783400000015
+    }
+  ],
+  "populatedFirstPass": [
+    {
+      "mode": "pr62",
+      "scene": "city",
+      "width": 390,
+      "height": 844,
+      "median": 199.6239230000001,
+      "p95": 217.68004400000063
+    },
+    {
+      "mode": "pr62",
+      "scene": "city",
+      "width": 1280,
+      "height": 720,
+      "median": 560.3516559999989,
+      "p95": 601.9270489999999
+    },
+    {
+      "mode": "pr62",
+      "scene": "ice",
+      "width": 390,
+      "height": 844,
+      "median": 192.70314399999916,
+      "p95": 200.78192299999864
+    },
+    {
+      "mode": "pr62",
+      "scene": "ice",
+      "width": 1280,
+      "height": 720,
+      "median": 549.9560590000037,
+      "p95": 648.7613400000009
+    },
+    {
+      "mode": "pr62",
+      "scene": "desert",
+      "width": 390,
+      "height": 844,
+      "median": 191.8964399999968,
+      "p95": 198.70875100000558
+    },
+    {
+      "mode": "pr62",
+      "scene": "desert",
+      "width": 1280,
+      "height": 720,
+      "median": 568.5279709999959,
+      "p95": 639.3352680000025
+    },
+    {
+      "mode": "prepolish",
+      "scene": "city",
+      "width": 390,
+      "height": 844,
+      "median": 27.69399600000179,
+      "p95": 39.850486000003
+    },
+    {
+      "mode": "prepolish",
+      "scene": "city",
+      "width": 1280,
+      "height": 720,
+      "median": 49.11907000000065,
+      "p95": 59.38793000000442
+    },
+    {
+      "mode": "prepolish",
+      "scene": "ice",
+      "width": 390,
+      "height": 844,
+      "median": 27.683845999999903,
+      "p95": 40.51105700000335
+    },
+    {
+      "mode": "prepolish",
+      "scene": "ice",
+      "width": 1280,
+      "height": 720,
+      "median": 54.14968399999634,
+      "p95": 74.41581600000063
+    },
+    {
+      "mode": "prepolish",
+      "scene": "desert",
+      "width": 390,
+      "height": 844,
+      "median": 29.488399000001664,
+      "p95": 42.51108799999929
+    },
+    {
+      "mode": "prepolish",
+      "scene": "desert",
+      "width": 1280,
+      "height": 720,
+      "median": 47.5145149999953,
+      "p95": 58.309739999996964
+    },
+    {
+      "mode": "current",
+      "scene": "city",
+      "width": 390,
+      "height": 844,
+      "median": 26.372120999993058,
+      "p95": 38.57300099999702
+    },
+    {
+      "mode": "current",
+      "scene": "city",
+      "width": 1280,
+      "height": 720,
+      "median": 46.394066000008024,
+      "p95": 51.68600799998967
+    },
+    {
+      "mode": "current",
+      "scene": "ice",
+      "width": 390,
+      "height": 844,
+      "median": 23.2786000000051,
+      "p95": 33.4660520000034
+    },
+    {
+      "mode": "current",
+      "scene": "ice",
+      "width": 1280,
+      "height": 720,
+      "median": 42.996916999996756,
+      "p95": 55.095602000001236
+    },
+    {
+      "mode": "current",
+      "scene": "desert",
+      "width": 390,
+      "height": 844,
+      "median": 21.453437999996822,
+      "p95": 24.08071999999811
+    },
+    {
+      "mode": "current",
+      "scene": "desert",
+      "width": 1280,
+      "height": 720,
+      "median": 40.798313999999664,
+      "p95": 56.947185000011814
+    }
+  ],
+  "synchronousStripBeforeMs": [
+    {
+      "src": "/games/mpgr-run/character/mpgr-runner-run-2.webp?v=2026-09-18a",
+      "samples": [
+        122.279548,
+        102.47076600000003,
+        107.15932599999996
+      ]
+    },
+    {
+      "src": "/games/mpgr-run/collectibles/mpgr-run-treasure-chest.webp?v=2026-09-18a",
+      "samples": [
+        72.567545,
+        83.88033799999994,
+        84.38717200000008
+      ]
+    },
+    {
+      "src": "/games/mpgr-run/checkpoints/mpgr-run-checkpoint.webp?v=2026-09-18a",
+      "samples": [
+        125.63133000000005,
+        135.945835,
+        153.30122400000005
+      ]
+    }
+  ],
+  "liveStripTargetCountAfter": 0
+}

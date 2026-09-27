@@ -2,6 +2,10 @@
 
 **2026-09-27. Not merge-ready.** This is a reviewable implementation checkpoint, not a claim that the final reference-quality/mobile-performance target has been met. The dominant software-raster regression has now been removed by the targeted continuation below; representative browser/device profiling and final art-direction acceptance are still required before release. The attached reference guided composition/materials; it was not copied into the game.
 
+## Latest: targeted polish after `05fa953`
+
+See [final targeted polish and INP investigation](POLISH-2026-09-27.md) for the latest changes, measurements and gate results. **The user-approved camera and animation are preserved.** Latest standalone full suite: **198 files / 2,085 tests, exit 0**; physical-device INP and browser QA remain open, and build still fails at the Google Fonts network fetch. The sheets linked below now show this latest pass. Older verification/ablation sections are historical evidence, not the latest gate status.
+
 ## Git baseline and scope
 
 - PR #62: `arena/01a0de47-mpgr-hub`, HEAD `5489ea0d978f6c1e39f824d934c58bc5db97cf02`.
@@ -32,7 +36,7 @@ Two input gaps remained: a 7–39 px horizontal movement fell through to jump, a
 
 `asset-audit.json` records every proof-requested path, preload membership, and files retained outside the canvas preload. The latter are **not automatically unused**: some belong to DOM overlays/registry art and some are retained originals.
 
-Reused without replacing bytes: rear run/idle/jump/fall/slide art, coins, obstacles, powerups, effects, props, city skyline and MPGR airship. No existing assets were deleted.
+Reused without replacing bytes: rear run/idle/jump/fall/slide art, coins, obstacles, powerups, effects, props and MPGR airship. The latest pass uses a separately named, alpha-preserving atmospheric grade of the city skyline; its original remains unchanged. No existing assets were deleted.
 
 New assets, generated and inspected in small batches:
 
@@ -41,7 +45,7 @@ New assets, generated and inspected in small batches:
 3. Neutral road grain: separate 512×512 material, inspected.
 4. Ice + desert atmospheric skyline replacements: new filenames, chroma-keyed offline, edge spill removed, inspected against a dark background and inside actual frames. Original panoramas remain on disk.
 
-Facade/road textures are intentionally **opaque materials**, not cutout sprites. The replacement skylines have alpha. New filenames provide fresh cache identities without invalidating every existing asset. Nine unused side/sideMid/sideFar cutouts remain exported/on disk but are no longer downloaded by the live canvas preload. All live references decode and resolve. The preload remains large (~45.7 MB), predominantly inherited art; further loader/art-size work is outside this checkpoint.
+Facade/road textures are intentionally **opaque materials**, not cutout sprites. The replacement skylines have alpha. New filenames provide fresh cache identities without invalidating every existing asset. Nine unused side/sideMid/sideFar cutouts remain exported/on disk but are no longer downloaded by the live canvas preload. All live references decode and resolve. The preload remains large (~45.1 MB after the latest prebake pass), predominantly inherited art; further loader/art-size work is outside this checkpoint.
 
 An automatic cleanup of the old skyline was rejected after inspection because it damaged silhouettes. A candidate replacement slide pose was also rejected (cropped extremities/unsuitable proportions); it was not added to the repository. The existing slide art remains a limitation rather than being silently replaced with bad art.
 
@@ -60,9 +64,9 @@ MPGR_VISUAL_TOOLS=/tmp/mpgr-visual \
   node scripts/mpgr-run-visual-proof.mjs /tmp/mpgr-proofs --benchmark
 ```
 
-These are renderer proofs, not browser screenshots or authenticated end-to-end gameplay. Browser automation could not be completed because the Chromium download failed in this environment.
+These are renderer proofs, not browser screenshots or authenticated end-to-end gameplay. Browser automation has not been completed. The first Chromium download failed; the latest npm-delivered binary could not launch because NSS/NSPR system libraries are missing, and their downloads also failed. These native fixtures are not substitutes for device QA.
 
-## Verification
+## Historical verification at `05fa953`
 
 | Gate | Result |
 | --- | --- |
@@ -78,7 +82,7 @@ These are renderer proofs, not browser screenshots or authenticated end-to-end g
 | Browser/mobile hardware QA | **Not completed** |
 | Performance gate | Software regression substantially reduced; hardware gate remains open |
 
-### Targeted performance/camera continuation
+### Historical performance/camera continuation (`05fa953`)
 
 No gameplay, inputs, simulation, rewards, authoritative replay, APIs or assets were changed in this continuation. It builds on `cdfc407` in the same PR #63; PR #62 remains untouched. A restored-workspace Git mismatch was resolved by first verifying all files exactly matched remote `cdfc407`, keeping a safety stash, then fast-forwarding the session branch. No work was duplicated or discarded.
 

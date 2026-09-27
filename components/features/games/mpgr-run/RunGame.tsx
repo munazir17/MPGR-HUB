@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { useWalletAuth } from "@/hooks/useWalletAuth";
 import Link from "next/link";
 import { ArrowLeft, Pause } from "lucide-react";
@@ -23,7 +23,7 @@ import { type World, freshWorld } from "@/lib/games/mpgr-run/run-world";
 import { drawRunFrame } from "@/lib/games/mpgr-run/run-render";
 import { createRunInputTrace, type RunInputTrace } from "@/lib/games/mpgr-run/input-trace";
 
-import type { Phase, HudSnapshot, RunGameProps } from "./RunGameTypes";
+import type { Phase, RunGameProps } from "./RunGameTypes";
 import { stepSimulation, buildRunStats } from "./RunGameSimulation";
 import { useRunInput } from "./useRunInput";
 import {
@@ -35,6 +35,15 @@ import { startRunAssetPipeline } from "@/lib/games/mpgr-run/asset-loader";
 import { stripBackgroundToTransparent } from "@/lib/games/mpgr-run/run-render";
 import { RunGameOverlays } from "./RunGameOverlays";
 
+import { createRunHudStore } from "./run-hud-store";
+import { createRunPerformanceReport, runPerformanceRequested, type RunPerformanceReport } from "@/lib/games/mpgr-run/run-performance";
+
+function useLazyRef<T>(create: () => T): MutableRefObject<T> {
+  const ref = useRef<T | null>(null);
+  if (ref.current === null) ref.current = create();
+  return ref as MutableRefObject<T>;
+}
+
 export function RunGame({ address }: RunGameProps) {
   const { authenticate, authenticating } = useWalletAuth();
 
@@ -43,7 +52,7 @@ export function RunGame({ address }: RunGameProps) {
   const [startError, setStartError] = useState<string | null>(null);
   const [countdownValue, setCountdownValue] = useState(COUNTDOWN_SECONDS);
 
-  const [hud, setHud] = useState<HudSnapshot>({
+  const hudStore = useLazyRef(() => createRunHudStore({
     distance: 0,
     score: 0,
     coins: 0,
@@ -52,7 +61,7 @@ export function RunGame({ address }: RunGameProps) {
     speedTier: 0,
     activePowerups: [],
     checkpointFlash: false,
-  });
+  })).current;
 
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [outcome, setOutcome] = useState<ProcessRunResultOutcome | null>(null);
@@ -63,9 +72,21 @@ export function RunGame({ address }: RunGameProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
+  const performanceRef = useRef<RunPerformanceReport | null>(null);
+  useEffect(() => {
+    if (!runPerformanceRequested(window.location.search)) return;
+    const report = createRunPerformanceReport();
+    performanceRef.current = report;
+    window.__mpgrRunPerformance = report;
+    return () => {
+      report.stop(); performanceRef.current = null;
+      if (window.__mpgrRunPerformance === report) delete window.__mpgrRunPerformance;
+    };
+  }, []);
+
   const phaseRef = useRef<Phase>("idle");
-  const worldRef = useRef<World>(freshWorld());
-  const inputTraceRef = useRef<RunInputTrace>(createRunInputTrace());
+  const worldRef = useLazyRef<World>(freshWorld);
+  const inputTraceRef = useLazyRef<RunInputTrace>(createRunInputTrace);
   const sessionRef = useRef<GameSessionMeta | null>(null);
   const runRngRef = useRef<DeterministicRng | null>(null);
 
@@ -76,7 +97,7 @@ export function RunGame({ address }: RunGameProps) {
   const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const sizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
+  const sizeRef = useRef({ width: 0, height: 0, dpr: 1 });
   const resizeRef = useRef<(() => void) | null>(null);
   const idRef = useRef(1);
   const nextId = useCallback(() => idRef.current++, []);
@@ -85,9 +106,9 @@ export function RunGame({ address }: RunGameProps) {
   const finishingRef = useRef(false);
   const finishRunRef = useRef<() => void>(() => {});
 
-  const readySpritesRef = useRef<Map<string, HTMLImageElement>>(new Map());
-  const inflightSpritesRef = useRef<Set<string>>(new Set());
-  const failedSpritesRef = useRef<Set<string>>(new Set());
+  const readySpritesRef = useLazyRef(() => new Map<string, HTMLImageElement>());
+  const inflightSpritesRef = useLazyRef(() => new Set<string>());
+  const failedSpritesRef = useLazyRef(() => new Set<string>());
 
   const goToPhase = useCallback((next: Phase) => {
     phaseRef.current = next;
@@ -117,14 +138,23 @@ export function RunGame({ address }: RunGameProps) {
       const rect = container.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.round(rect.width * dpr);
-      canvas.height = Math.round(rect.height * dpr);
+      const width = Math.round(rect.width * dpr);
+      const height = Math.round(rect.height * dpr);
+      // ResizeObserver, viewport events and settle timers often report the
+      // same size. Reassigning backing dimensions clears/reallocates canvas.
+      if (canvas.width === width && canvas.height === height &&
+          sizeRef.current.width === rect.width && sizeRef.current.height === rect.height &&
+          sizeRef.current.dpr === dpr) return;
+      if (canvas.width !== width) canvas.width = width;
+      if (canvas.height !== height) canvas.height = height;
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
       const ctx = canvas.getContext("2d");
       ctxRef.current = ctx;
       if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      sizeRef.current = { width: rect.width, height: rect.height };
+      sizeRef.current.width = rect.width;
+      sizeRef.current.height = rect.height;
+      sizeRef.current.dpr = dpr;
     };
 
     resizeRef.current = resize;
@@ -162,11 +192,11 @@ export function RunGame({ address }: RunGameProps) {
       stripBackground: stripBackgroundToTransparent,
     });
     return () => pipeline.stop();
-  }, []);
+  }, [readySpritesRef, inflightSpritesRef, failedSpritesRef]);
 
   const getSprite = useCallback((src: string): CanvasImageSource | null => {
     return readySpritesRef.current.get(src) ?? null;
-  }, []);
+  }, [readySpritesRef]);
 
   // Render a single frame
   const draw = useCallback(() => {
@@ -181,8 +211,11 @@ export function RunGame({ address }: RunGameProps) {
     const { width: viewportWidth, height } = sizeRef.current;
     if (viewportWidth === 0 || height === 0) return;
 
+    const report = performanceRef.current;
+    const started = report ? performance.now() : 0;
     drawRunFrame(ctx, worldRef.current, viewportWidth, height, getSprite);
-  }, [getSprite]);
+    if (report) report.recordRender(performance.now() - started);
+  }, [getSprite, worldRef]);
 
   useEffect(() => {
     resizeRef.current?.();
@@ -219,15 +252,18 @@ export function RunGame({ address }: RunGameProps) {
     refreshPersonalBest();
 
     void submitRunToServer(address, ended.sessionId, result, inputTraceRef.current);
-  }, [address, stopLoop, refreshPersonalBest, goToPhase]);
+  }, [address, stopLoop, refreshPersonalBest, goToPhase, worldRef, inputTraceRef]);
 
   finishRunRef.current = finishRun;
 
   const step = useCallback(
     (dt: number) => {
+      const report = performanceRef.current;
+      const started = report ? performance.now() : 0;
       stepSimulation(worldRef.current, dt, nextId, runRngRef.current);
+      if (report) report.recordSimulation(performance.now() - started);
     },
-    [nextId]
+    [nextId, worldRef]
   );
 
   const loop = useCallback(
@@ -275,7 +311,7 @@ export function RunGame({ address }: RunGameProps) {
 
       rafRef.current = requestAnimationFrame(loop);
     },
-    [step, draw]
+    [step, draw, worldRef]
   );
 
   const startHudSync = useCallback(() => {
@@ -287,7 +323,7 @@ export function RunGame({ address }: RunGameProps) {
         .map((type) => ({ type, remainingMs: Math.max(0, (world.activePowerups[type] ?? 0) - world.elapsedMs) }))
         .filter((entry) => entry.remainingMs > 0);
 
-      setHud({
+      hudStore.publish({
         distance: Math.floor(provisional.distanceMeters),
         score: provisional.score,
         coins: world.stats.coins,
@@ -298,7 +334,7 @@ export function RunGame({ address }: RunGameProps) {
         checkpointFlash: world.elapsedMs < world.checkpointFlashUntilMs,
       });
     }, 120);
-  }, []);
+  }, [hudStore, worldRef]);
 
   const beginCountdown = useCallback(async () => {
     if (startSessionInFlightRef.current) return;
@@ -392,7 +428,7 @@ export function RunGame({ address }: RunGameProps) {
       sessionRef.current = startSession(MPGR_RUN_GAME_ID, address, serverSession.sessionId);
       setRunResult(null);
       setOutcome(null);
-      setHud({
+      hudStore.publish({
         distance: 0,
         score: 0,
         coins: 0,
@@ -425,7 +461,7 @@ export function RunGame({ address }: RunGameProps) {
       startSessionInFlightRef.current = false;
       setStarting(false);
     }
-  }, [address, authenticate, goToPhase, stopLoop]);
+  }, [address, authenticate, goToPhase, stopLoop, hudStore, worldRef, inputTraceRef]);
 
   // Input bindings
   const {
@@ -526,7 +562,7 @@ export function RunGame({ address }: RunGameProps) {
 
           <RunGameOverlays
             phase={phase}
-            hud={hud}
+            hudStore={hudStore}
             countdownValue={countdownValue}
             starting={starting}
             authenticating={authenticating}
