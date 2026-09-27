@@ -34,9 +34,13 @@ import {
 import { startRunAssetPipeline } from "@/lib/games/mpgr-run/asset-loader";
 import { stripBackgroundToTransparent } from "@/lib/games/mpgr-run/run-render";
 import { RunGameOverlays } from "./RunGameOverlays";
+import { RunGameMusic } from "./RunGameMusic";
+import { createRunMusic } from "@/lib/games/mpgr-run/run-music";
 
 import { createRunHudStore } from "./run-hud-store";
 import { createRunPerformanceReport, runPerformanceRequested, type RunPerformanceReport } from "@/lib/games/mpgr-run/run-performance";
+
+const musicActiveDuring = (phase: Phase) => phase === "countdown" || phase === "running";
 
 function useLazyRef<T>(create: () => T): MutableRefObject<T> {
   const ref = useRef<T | null>(null);
@@ -72,6 +76,43 @@ export function RunGame({ address }: RunGameProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
+  const phaseRef = useRef<Phase>("idle");
+  const startSessionInFlightRef = useRef(false);
+  const music = useLazyRef(createRunMusic).current;
+  useEffect(() => {
+    music.mount();
+    const visibility = () => {
+      // The existing input hook auto-pauses the game when hidden. Recheck
+      // its synchronous phase ref before restoring sound on tab return.
+      if (document.visibilityState === "visible") {
+        music.setActive(startSessionInFlightRef.current || musicActiveDuring(phaseRef.current));
+      }
+      music.setVisible(document.visibilityState === "visible");
+    };
+    const hide = () => music.setVisible(false);
+    const gesture = () => music.gesture();
+    visibility();
+    const surface = containerRef.current;
+    // Passive capture observes activation only; never classifies, cancels,
+    // synthesizes or propagates a gameplay input.
+    surface?.addEventListener("pointerdown", gesture, { capture: true, passive: true });
+    surface?.addEventListener("keydown", gesture, { capture: true, passive: true });
+    document.addEventListener("visibilitychange", visibility);
+    window.addEventListener("pagehide", hide);
+    window.addEventListener("pageshow", visibility);
+    return () => {
+      surface?.removeEventListener("pointerdown", gesture, true);
+      surface?.removeEventListener("keydown", gesture, true);
+      document.removeEventListener("visibilitychange", visibility);
+      window.removeEventListener("pagehide", hide);
+      window.removeEventListener("pageshow", visibility);
+      music.dispose();
+    };
+  }, [music]);
+  useEffect(() => {
+    music.setActive(starting || musicActiveDuring(phase));
+  }, [music, phase, starting]);
+
   const performanceRef = useRef<RunPerformanceReport | null>(null);
   useEffect(() => {
     if (!runPerformanceRequested(window.location.search)) return;
@@ -84,7 +125,6 @@ export function RunGame({ address }: RunGameProps) {
     };
   }, []);
 
-  const phaseRef = useRef<Phase>("idle");
   const worldRef = useLazyRef<World>(freshWorld);
   const inputTraceRef = useLazyRef<RunInputTrace>(createRunInputTrace);
   const sessionRef = useRef<GameSessionMeta | null>(null);
@@ -102,7 +142,6 @@ export function RunGame({ address }: RunGameProps) {
   const idRef = useRef(1);
   const nextId = useCallback(() => idRef.current++, []);
 
-  const startSessionInFlightRef = useRef(false);
   const finishingRef = useRef(false);
   const finishRunRef = useRef<() => void>(() => {});
 
@@ -342,6 +381,9 @@ export function RunGame({ address }: RunGameProps) {
 
     startSessionInFlightRef.current = true;
     setStarting(true);
+    // Within the trusted Start click, before any authentication await.
+    // Audio failure never gates session creation or the countdown.
+    music.setActive(true);
     setStartError(null);
     try {
       finishingRef.current = false;
@@ -460,8 +502,11 @@ export function RunGame({ address }: RunGameProps) {
     } finally {
       startSessionInFlightRef.current = false;
       setStarting(false);
+      // Also stop on a failed start even if React batches away the brief
+      // `starting` state; audio must not outlive an unsuccessful launch.
+      music.setActive(musicActiveDuring(phaseRef.current));
     }
-  }, [address, authenticate, goToPhase, stopLoop, hudStore, worldRef, inputTraceRef]);
+  }, [address, authenticate, goToPhase, stopLoop, hudStore, worldRef, inputTraceRef, music]);
 
   // Input bindings
   const {
@@ -537,11 +582,12 @@ export function RunGame({ address }: RunGameProps) {
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
           Back to Games
         </Link>
+        <RunGameMusic music={music} />
         {phase === "running" && (
           <button
             onClick={togglePause}
             aria-label="Pause"
-            className="ml-auto flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white ring-1 ring-white/10 active:scale-95"
+            className="ml-2 flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white ring-1 ring-white/10 active:scale-95"
           >
             <Pause className="h-5 w-5" strokeWidth={2.5} aria-hidden="true" />
           </button>

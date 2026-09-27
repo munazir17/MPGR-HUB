@@ -81,25 +81,29 @@ export function drawStreetArchitecture(
     const groundNear = streetGround(height, z), groundFar = streetGround(height, farZ);
     for (let side = -1; side <= 1; side += 2) {
       const r = streetHash(index, side + 83);
-      const totalHeight = height * (0.25 + r * r * 0.78);
-      const stepped = r > 0.68;
-      const buildingHeight = totalHeight * (stepped ? 0.7 : 1);
+      // Independently salted profiles: rare landmarks reuse a street slot,
+      // never add objects or consume the authoritative random stream.
+      const profile = streetHash(index, side < 0 ? 401 : 719);
+      const landmark = profile > 0.955;
+      const totalHeight = height * (0.25 + r * r * 0.78) * (landmark ? 1.12 : 1);
+      const stepped = r > 0.68; // keep the existing number of upper volumes
+      const buildingHeight = totalHeight * (stepped ? 0.64 + profile * 0.13 : 1);
       const inner = side * (trackHalf + height * (0.045 + streetHash(index, side + 12) * 0.018));
-      const outer = inner + side * height * (0.12 + streetHash(index, side + 17) * 0.22);
+      const outer = inner + side * height * (0.12 + streetHash(index, side + 17) * 0.22) * (landmark ? 1.08 : 1);
       const xn = center + inner * nearS, xf = center + inner * farS;
       const xo = center + outer * nearS, xof = center + outer * farS;
       if (Math.min(xn, xf, xo, xof) > width + 4 || Math.max(xn, xf, xo, xof) < -4) continue;
       const yn = groundNear - buildingHeight * nearS, yf = groundFar - buildingHeight * farS;
       const fog = Math.min(0.86, Math.max(0, z) / 6000);
       // AO contact footprint stays on the same ground plane as the wall.
-      ctx.fillStyle = "rgba(5,12,20,0.22)";
+      ctx.fillStyle = theme.id === "ice" ? "rgba(25,60,80,0.14)" : theme.id === "desert" ? "rgba(65,40,20,0.18)" : "rgba(5,12,20,0.22)";
       quad(ctx, xn - side * 9 * nearS, groundNear, xo, groundNear, xof, groundFar, xf - side * 9 * farS, groundFar);
       // A second, inset solid volume on selected roofs. Its base is exactly
       // the main roof plane; verticals share x at top/bottom, never lean.
       // Two faces, cached atlas detail and fog; no filters/scene objects.
       if (stepped) {
-        const upperInner = inner + (outer - inner) * 0.22;
-        const upperOuter = outer - (outer - inner) * 0.12;
+        const upperInner = inner + (outer - inner) * (0.18 + profile * 0.16);
+        const upperOuter = outer - (outer - inner) * (0.09 + streetHash(index, side + 331) * 0.13);
         const un = center + upperInner * nearS, uf = center + upperInner * farS;
         const uo = center + upperOuter * nearS;
         const tn = groundNear - totalHeight * nearS, tf = groundFar - totalHeight * farS;
@@ -125,7 +129,7 @@ export function drawStreetArchitecture(
           }
           ctx.restore();
           ctx.drawImage(mapped, 0, 0, iw, ih * 0.4, Math.min(un, uo), tn, Math.abs(uo - un), yn - tn);
-          ctx.globalAlpha = 0.32;
+          ctx.globalAlpha = 0.23 + profile * 0.18;
           ctx.fillStyle = material.side;
           quad(ctx, un, tn, uo, tn, uo, yn, un, yn);
           ctx.globalAlpha = 1;
@@ -156,10 +160,10 @@ export function drawStreetArchitecture(
         const image = mappedTexture as HTMLImageElement;
         const iw = image.naturalWidth || image.width, ih = image.naturalHeight || image.height;
         const slices = Math.max(2, Math.min(12, Math.ceil(Math.abs(xn - xf) / 5)));
-        const crop = 0.65 + streetHash(index, side + 76) * 0.35;
+        const crop = 0.58 + streetHash(index, side + 76) * 0.42;
         // Stable facade modules, rather than stretching the identical full
         // atlas across every block. Same number of texture draws as before.
-        const moduleWidth = 0.45 + Math.floor(streetHash(index, side + 91) * 3) * 0.25;
+        const moduleWidth = landmark ? 0.34 : 0.45 + Math.floor(streetHash(index, side + 91) * 3) * 0.25;
         const moduleStart = (1 - moduleWidth) * streetHash(index, side + 92);
         ctx.save();
         ctx.beginPath(); ctx.moveTo(xn, yn); ctx.lineTo(xf, yf); ctx.lineTo(xf, groundFar); ctx.lineTo(xn, groundNear); ctx.closePath(); ctx.clip();
@@ -173,7 +177,7 @@ export function drawStreetArchitecture(
         }
         ctx.restore();
         ctx.drawImage(mappedTexture, iw * moduleStart, ih * (1 - crop), iw * moduleWidth, ih * crop, Math.min(xn, xo), yn, Math.abs(xo - xn), groundNear - yn);
-        ctx.globalAlpha = 0.32;
+        ctx.globalAlpha = 0.23 + profile * 0.18;
         ctx.fillStyle = material.side;
         quad(ctx, xn, yn, xo, yn, xo, groundNear, xn, groundNear);
         ctx.globalAlpha = 1;
@@ -217,16 +221,26 @@ export function drawStreetArchitecture(
       ctx.strokeStyle = theme.id === "city" && r > 0.78 ? theme.rail : material.roof;
       ctx.lineWidth = (theme.id === "ice" ? 5 : 2) * nearS;
       ctx.beginPath(); ctx.moveTo(xo, yn); ctx.lineTo(xn, yn); ctx.lineTo(xf, yf); ctx.stroke();
-      if (theme.id !== "desert" && r > 0.55 && !stepped) {
+      if (theme.id !== "desert" && r > 0.55 && !stepped && !landmark) {
         ctx.fillStyle = material.trim;
         ctx.fillRect((xn + xo) / 2, yn - 28 * nearS, 1.4 * nearS, 28 * nearS);
+      }
+      // Occasional service crown/beacon, attached to the true upper roof.
+      // Two small rects replace the generic silhouette, no blur or new mesh.
+      if (landmark && z < 1800) {
+        const roof = groundNear - totalHeight * nearS;
+        const mid = (xn + xo) / 2;
+        ctx.fillStyle = material.trim;
+        ctx.fillRect(mid - 5 * nearS, roof - 19 * nearS, 10 * nearS, 19 * nearS);
+        ctx.fillStyle = material.window;
+        ctx.fillRect(mid - 3 * nearS, roof - 17 * nearS, 6 * nearS, 3 * nearS);
       }
       // Ground-floor shop glow plus its short wet-ground reflection.
       if (z < 1300) {
         // Recessed plinth ties both wall faces to their contact footprint.
         // Ground coordinates are identical to the wall, not a screen band.
         const plinth = height * (0.016 + streetHash(index, side + 97) * 0.012);
-        ctx.fillStyle = material.recess;
+        ctx.fillStyle = theme.id === "ice" ? material.side : material.recess;
         quad(ctx, xn, groundNear - plinth * nearS, xf, groundFar - plinth * farS, xf, groundFar, xn, groundNear);
         quad(ctx, xn, groundNear - plinth * nearS, xo, groundNear - plinth * nearS, xo, groundNear, xn, groundNear);
         ctx.fillStyle = theme.twinkle[index % 2 === 0 ? 0 : 1];
@@ -276,14 +290,14 @@ export function drawStreetSurface(ctx: CanvasRenderingContext2D, width: number, 
     for (let i = 0; i < 9; i++) {
       const z = lightResidue + i * 260;
       const s = streetScale(z), y = streetGround(height, z);
-      const length = height * 0.28 * s;
+      const length = height * (theme.id === "ice" ? 0.22 : 0.28) * s;
       for (let side = -1; side <= 1; side += 2) {
         const x = center + side * (trackHalf + height * 0.025) * s;
         const glow = ctx.createLinearGradient(0, y, 0, y + length);
         const color = theme.twinkle[i % 2];
         glow.addColorStop(0, color); glow.addColorStop(1, color + "00");
         ctx.fillStyle = glow;
-        ctx.globalAlpha = 0.15;
+        ctx.globalAlpha = theme.id === "ice" ? 0.11 : 0.15;
         quad(ctx, x - 4 * s, y, x + 4 * s, y, x + 14 * s, y + length, x - 14 * s, y + length);
       }
     }

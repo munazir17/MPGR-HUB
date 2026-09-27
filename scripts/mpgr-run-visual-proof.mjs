@@ -57,6 +57,19 @@ try {
       await writeFile(path.join(out, `${name}-${format}-${pose}.png`), canvas.toBuffer('image/png'));
     }
   }
+  // Actual frames immediately around each boundary, not concept artwork.
+  const transitions = createCanvas(780, 1780), tc = transitions.getContext('2d');
+  tc.fillStyle = '#111b28'; tc.fillRect(0, 0, 780, 1780);
+  for (const [row, boundary] of [450, 900, 1350].entries()) {
+    for (const [column, offset] of [-0.01, 0.01].entries()) {
+      const canvas = createCanvas(390, 844);
+      game.drawRunFrame(canvas.getContext('2d'), fixture(boundary + offset, 'run'), 390, 844, sprite);
+      tc.drawImage(canvas, column * 390 + 65, row * 590 + 26, 260, 563);
+      tc.fillStyle = 'white'; tc.font = '16px sans-serif';
+      tc.fillText(`${boundary}m ${offset < 0 ? 'before' : 'after'} boundary`, column * 390 + 65, row * 590 + 20);
+    }
+  }
+  await writeFile(path.join(out, 'transitions.jpg'), transitions.toBuffer('image/jpeg'));
   const sheet = createCanvas(1440, 1040), ctx = sheet.getContext('2d');
   ctx.fillStyle = '#111b28'; ctx.fillRect(0, 0, 1440, 1040);
   for (let i = 0; i < worlds.length; i++) {

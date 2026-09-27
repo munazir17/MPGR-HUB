@@ -2,9 +2,13 @@
 
 **2026-09-27. Not merge-ready.** This is a reviewable implementation checkpoint, not a claim that the final reference-quality/mobile-performance target has been met. The dominant software-raster regression has now been removed by the targeted continuation below; representative browser/device profiling and final art-direction acceptance are still required before release. The attached reference guided composition/materials; it was not copied into the game.
 
-## Latest: targeted polish after `05fa953`
+## Latest: final visual + music polish after `e8e44c1`
 
-See [final targeted polish and INP investigation](POLISH-2026-09-27.md) for the latest changes, measurements and gate results. **The user-approved camera and animation are preserved.** Latest standalone full suite: **198 files / 2,085 tests, exit 0**; physical-device INP and browser QA remain open, and build still fails at the Google Fonts network fetch. The sheets linked below now show this latest pass. Older verification/ablation sections are historical evidence, not the latest gate status.
+[Current report: original local music, bounded visual changes, proofs and verification](FINAL-POLISH-MUSIC.md). Camera/runner/animation and authoritative gameplay remain unchanged. Latest complete suite: **199 files / 2,099 tests passed**; native sparse medians **21.85 / 41.96 ms**. Original CC0 music is bundled locally with native playback, persisted mute and lifecycle guards. **Browser/device audio and INP remain unverified; build still fails on the Google Fonts network fetch.** This is not a release-readiness claim. The proof sheets now show this latest pass, with an additional [world-boundary sheet](transitions.jpg).
+
+## Historical checkpoint: targeted polish after `05fa953`
+
+See [final targeted polish and INP investigation](POLISH-2026-09-27.md) for that checkpoint’s changes, measurements and gate results. **The user-approved camera and animation are preserved.** That checkpoint’s standalone full suite: **198 files / 2,085 tests, exit 0**; physical-device INP and browser QA remain open, and build still fails at the Google Fonts network fetch. The sheets linked below now show this latest pass. Older verification/ablation sections are historical evidence, not the latest gate status.
 
 ## Git baseline and scope
 

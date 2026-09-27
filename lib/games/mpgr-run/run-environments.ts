@@ -78,20 +78,20 @@ export const RUN_WORLD_THEMES: Record<RunWorldId, RunWorldTheme> = {
     id: "ice",
     sky: ["#44749C", "#77ADC8", "#C1DFE9"],
     horizonGlow: "rgba(150,235,255,0.4)",
-    groundFar: "#CFE4EF",
+    groundFar: "#C1D9E6",
     groundNear: "#9DBDD2",
     trackFar: "#789FB9",
     trackNear: "#587E98",
     rail: "#67E8F9",
     chevron: "#7DD3FC",
     haze: "rgba(186,222,238,0.9)",
-    fog: "#E6F4FA",
+    fog: "#BEDAE8",
     particle: "snow",
     particleColor: "rgba(255,255,255,0.8)",
     curb: "#DDEDF6",
     curbEdge: "#67E8F9",
     twinkle: ["#A5F3FC", "#E0F2FE"],
-    curbOuter: "#F2FAFE",
+    curbOuter: "#D2E3ED",
     sparkle: true,
   },
   desert: {
@@ -152,4 +152,27 @@ export function resolveRunWorld(distanceMeters: number): RunWorldState {
 /** Convenience for the renderer: distance in px (sim units) -> world state. */
 export function resolveRunWorldFromPx(traveledPx: number): RunWorldState {
   return resolveRunWorld(traveledPx / PX_PER_METER);
+}
+
+// Cached colour ramps avoid the old abrupt fog-colour switch at a world
+// boundary. Built once, not CSS/gradient strings allocated every frame.
+const TRANSITION_FOG = RUN_WORLD_ORDER.map((id, next) => {
+  const previous = RUN_WORLD_ORDER[(next + RUN_WORLD_ORDER.length - 1) % RUN_WORLD_ORDER.length];
+  const a = parseInt(RUN_WORLD_THEMES[previous].fog.slice(1), 16);
+  const b = parseInt(RUN_WORLD_THEMES[id].fog.slice(1), 16);
+  return Array.from({ length: 129 }, (_, i) => {
+    const t = i / 128;
+    const r = Math.round(((a >> 16) & 255) * (1 - t) + ((b >> 16) & 255) * t);
+    const g = Math.round(((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t);
+    const blue = Math.round((a & 255) * (1 - t) + (b & 255) * t);
+    return `#${((r << 16) | (g << 8) | blue).toString(16).padStart(6, "0")}`;
+  });
+});
+
+export function runTransitionFogFromPx(traveledPx: number): string {
+  const meters = traveledPx / PX_PER_METER;
+  const boundary = Math.round(meters / RUN_WORLD_LENGTH_M);
+  const next = ((boundary % RUN_WORLD_ORDER.length) + RUN_WORLD_ORDER.length) % RUN_WORLD_ORDER.length;
+  const t = Math.max(0, Math.min(1, 0.5 + (meters - boundary * RUN_WORLD_LENGTH_M) / RUN_WORLD_FADE_M));
+  return TRANSITION_FOG[next][Math.round(t * 128)];
 }

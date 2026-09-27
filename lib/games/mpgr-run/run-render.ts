@@ -27,6 +27,7 @@ import {
 } from "@/lib/games/mpgr-run/run-assets";
 import {
   resolveRunWorldFromPx,
+  runTransitionFogFromPx,
   RUN_WORLD_THEMES,
 } from "@/lib/games/mpgr-run/run-environments";
 import {
@@ -375,14 +376,14 @@ export function drawRunFrame(
     const airW = airH * spriteAspect(airship);
     const ax = W * (0.5 + 0.34 * Math.sin(world.elapsedMs / 23000));
     const ay = HORIZON_Y * 0.34 + Math.sin(world.elapsedMs / 5200) * H * 0.012;
-    ctx.globalAlpha = 0.65;
+    ctx.globalAlpha = 0.57;
     ctx.drawImage(airship, ax - airW / 2, ay - airH / 2, airW, airH);
     // Second, farther airship on an independent slow phase (sky life).
     const air2H = airH * 0.45;
     const air2W = air2H * spriteAspect(airship);
     const a2x = W * (0.5 + 0.4 * Math.sin(world.elapsedMs / 41000 + 2.1));
     const a2y = HORIZON_Y * 0.18 + Math.sin(world.elapsedMs / 6100 + 1.3) * H * 0.008;
-    ctx.globalAlpha = 0.4;
+    ctx.globalAlpha = 0.34;
     ctx.drawImage(airship, a2x - air2W / 2, a2y - air2H / 2, air2W, air2H);
     ctx.globalAlpha = 1;
   }
@@ -688,7 +689,7 @@ export function drawRunFrame(
   const drawGroundShadow = (sx: number, gy: number, rx: number, alpha: number) => {
     if (alpha <= 0.01 || rx <= 0.5) return;
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = "#000000";
+    ctx.fillStyle = theme.id === "ice" ? "#294757" : theme.id === "desert" ? "#493523" : "#070D16";
     ctx.beginPath();
     ctx.ellipse(sx, gy, rx, rx * 0.32, 0, 0, Math.PI * 2);
     ctx.fill();
@@ -894,7 +895,9 @@ export function drawRunFrame(
 
       // Contact shadow keeps the runner visually glued to the track.
       const airFactor = clamp(1 - p.playerY / 320, 0.25, 1);
-      drawGroundShadow(sx, GROUND_Y, drawH * 0.24 * airFactor, 0.23 * airFactor + 0.06);
+      drawGroundShadow(sx, GROUND_Y, drawH * 0.21 * airFactor, 0.23 * airFactor + 0.06);
+      // Tight unblurred contact core disappears as the feet leave the road.
+      drawGroundShadow(sx, GROUND_Y, drawH * 0.11, 0.14 * clamp(1 - p.playerY / 30, 0, 1));
 
       if (shielded) {
         ctx.beginPath();
@@ -1103,7 +1106,7 @@ export function drawRunFrame(
   // --- World-transition fog wall (hides the environment swap) -------------
   if (worldState.fade > 0.01) {
     ctx.globalAlpha = worldState.fade * 0.92;
-    ctx.fillStyle = theme.fog;
+    ctx.fillStyle = runTransitionFogFromPx(world.traveledPx);
     ctx.fillRect(-40, -40, W + 80, H + 80);
     ctx.globalAlpha = 1;
   }

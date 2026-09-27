@@ -6,6 +6,7 @@ import { ENVIRONMENT_SETS } from "@/lib/games/mpgr-run/run-assets";
 import {
   resolveRunWorld,
   resolveRunWorldFromPx,
+  runTransitionFogFromPx,
   RUN_WORLD_LENGTH_M,
   RUN_WORLD_ORDER,
   RUN_WORLD_THEMES,
@@ -414,5 +415,20 @@ describe("street placement contracts (no penetration / no dead gaps)", () => {
       expect(left.length, `${worldId} left lights`).toBeGreaterThan(3);
       expect(right.length, `${worldId} right lights`).toBeGreaterThan(3);
     }
+  });
+});
+
+
+describe("presentation fog colour continuity", () => {
+  it("does not switch colour at any world boundary, including the cycle wrap", () => {
+    for (const boundary of [0, 450, 900, 1350, 1800]) {
+      expect(runTransitionFogFromPx((boundary - 0.001) * PX_PER_METER))
+        .toBe(runTransitionFogFromPx((boundary + 0.001) * PX_PER_METER));
+    }
+  });
+  it("joins the adjacent world palettes outside the transition window", () => {
+    expect(runTransitionFogFromPx(415 * PX_PER_METER)).toBe(RUN_WORLD_THEMES.city.fog.toLowerCase());
+    expect(runTransitionFogFromPx(485 * PX_PER_METER)).toBe(RUN_WORLD_THEMES.ice.fog.toLowerCase());
+    expect(runTransitionFogFromPx(1385 * PX_PER_METER)).toBe(RUN_WORLD_THEMES.city.fog.toLowerCase());
   });
 });

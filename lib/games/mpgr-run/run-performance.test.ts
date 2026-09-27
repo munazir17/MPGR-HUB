@@ -37,7 +37,11 @@ describe("local opt-in interaction triage", () => {
     callbacks.get("longtask")!({ getEntries: () => [{ startTime, duration: 120 } as PerformanceEntry] });
     const snapshot = report.snapshot();
     expect(snapshot.events).toHaveLength(64);
-    expect(snapshot.events[0]).toMatchObject({ inputDelayMs: 100, handlerMs: 4, presentationDelayMs: 168 });
+    // Performance timestamps are fractional; subtraction can differ by an
+    // IEEE-754 rounding epsilon (e.g. 168.00000000000003).
+    expect(snapshot.events[0].inputDelayMs).toBeCloseTo(100, 8);
+    expect(snapshot.events[0].handlerMs).toBeCloseTo(4, 8);
+    expect(snapshot.events[0].presentationDelayMs).toBeCloseTo(168, 8);
     expect(JSON.stringify(snapshot)).not.toContain("privateText");
     expect(snapshot.longTasks).toEqual([{ startTime, durationMs: 120 }]);
     report.stop(); expect(disconnect).toHaveBeenCalledTimes(2);
