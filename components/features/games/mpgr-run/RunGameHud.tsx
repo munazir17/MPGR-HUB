@@ -55,6 +55,11 @@ export function ControlButton({
         e.stopPropagation();
         onPress();
       }}
+      onPointerUp={(e) => {
+        // Never let a control-button release reach the play-surface swipe
+        // classifier (historically caused left/right presses to jump).
+        e.stopPropagation();
+      }}
       aria-label={label}
       className={`flex h-14 w-14 items-center justify-center rounded-full backdrop-blur-md ring-1 transition-transform active:scale-90 ${
         accent

@@ -155,6 +155,10 @@ export const RUN_MAX_VIEW_SCALE = 2.4;
 // column stays put while feet stay grounded — presentation only.
 export const RUN_FRAME_ALIGN_X = [0.0313, 0.0003, -0.0313, -0.0003];
 
+// Run-cycle cadence. 110ms/frame read as a busy "idle dance"; 165ms/frame
+// (~0.66s stride) reads as an actual forward run at game speed.
+export const RUN_FRAME_MS = 165;
+
 export function runViewScale(viewportWidth: number): number {
   return clamp(
     viewportWidth / MPGR_RUN_SIMULATION_WIDTH,
@@ -372,6 +376,13 @@ export function drawRunFrame(
     const ay = HORIZON_Y * 0.34 + Math.sin(world.elapsedMs / 5200) * H * 0.012;
     ctx.globalAlpha = 0.9;
     ctx.drawImage(airship, ax - airW / 2, ay - airH / 2, airW, airH);
+    // Second, farther airship on an independent slow phase (sky life).
+    const air2H = airH * 0.55;
+    const air2W = air2H * spriteAspect(airship);
+    const a2x = W * (0.5 + 0.4 * Math.sin(world.elapsedMs / 41000 + 2.1));
+    const a2y = HORIZON_Y * 0.18 + Math.sin(world.elapsedMs / 6100 + 1.3) * H * 0.008;
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(airship, a2x - air2W / 2, a2y - air2H / 2, air2W, air2H);
     ctx.globalAlpha = 1;
   }
 
@@ -520,6 +531,17 @@ export function drawRunFrame(
     ctx.lineTo(xAt(side * inner, sCurb), groundYAt(sCurb));
     ctx.closePath();
     ctx.fill();
+    // Outer shoulder band (snow bank / dune / concrete apron) so the
+    // street keeps continuing outboard instead of ending in a dark wedge.
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = theme.curbOuter;
+    ctx.beginPath();
+    ctx.moveTo(xAt(side * outer, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * (outer + 130), sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * (outer + 130), sCurb), groundYAt(sCurb));
+    ctx.lineTo(xAt(side * outer, sCurb), groundYAt(sCurb));
+    ctx.closePath();
+    ctx.fill();
     // Emissive edge line where curb meets road.
     ctx.globalAlpha = 0.55;
     ctx.strokeStyle = theme.curbEdge;
@@ -530,6 +552,48 @@ export function drawRunFrame(
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+
+  // --- Continuous street-light rows along both curbs ----------------------
+  // Tiny emissive dots receding to the horizon: infrastructure continuity
+  // between the roadside structures and the skyline (no dead gaps).
+  for (const side of [-1, 1] as const) {
+    const spacing = 140;
+    const residue =
+      ((-world.traveledPx - playerDepthX) % spacing + spacing) % spacing;
+    for (let z = residue - spacing; z < 5200; z += spacing) {
+      if (z < -60) continue;
+      const s = sOf(z);
+      if (s > S_MAX) continue;
+      const fade = Math.max(0, 1 - Math.max(0, z) / 5200);
+      const gx = xAt(side * (trackHalf + 12), s);
+      const gy = groundYAt(s);
+      ctx.globalAlpha = 0.12 + fade * 0.45;
+      ctx.fillStyle = theme.curbEdge;
+      ctx.fillRect(gx - 0.9 * s, gy - 7 * s, 1.8 * s, 7 * s);
+      ctx.globalAlpha = 0.1 + fade * 0.3;
+      ctx.fillRect(gx - 2.2 * s, gy - 9 * s, 4.4 * s, 2.2 * s);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // --- Frozen-surface sparkle (ice world) ---------------------------------
+  if (theme.sparkle) {
+    for (let i = 0; i < 14; i++) {
+      const blink = Math.max(0, Math.sin(world.elapsedMs / (210 + (i % 5) * 77) + i * 2.3));
+      if (blink < 0.35) continue;
+      const s = 0.12 + unitHash(i, 7) * 0.85;
+      const lat = (unitHash(i, 8) - 0.5) * 2 * trackHalf * 0.85;
+      const residue =
+        ((-world.traveledPx - playerDepthX) % 700 + 700) % 700;
+      const z = residue + unitHash(i, 9) * 700 - 100;
+      const sz = sOf(Math.max(0, z));
+      ctx.globalAlpha = 0.1 + blink * 0.3;
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(xAt(lat, sz) - 0.8 * sz, groundYAt(sz) - 1.2 * sz, 1.6 * sz, 1.6 * sz);
+      void s;
+    }
+    ctx.globalAlpha = 1;
+  }
 
   // --- Rail reflections: soft light streaks on the asphalt ----------------
   ctx.save();
@@ -633,12 +697,15 @@ export function drawRunFrame(
   // mirror / gap variance and a contact shadow so structures sit ON the
   // world surface instead of floating beside it.
   const sideCols: Array<{
-    src: string; spacing: number; lat: number; baseH: number; zMax: number; alpha: number; shadow: number;
+    src: string; spacing: number; margin: number; baseH: number; zMax: number; alpha: number; shadow: number;
   }> = [
-    { src: envSet.prop, spacing: 110, lat: trackHalf + 30, baseH: 110, zMax: 1300, alpha: 1, shadow: 0.2 },
-    { src: envSet.side, spacing: 170, lat: trackHalf + 78, baseH: 250, zMax: 2300, alpha: 1, shadow: 0.3 },
-    { src: envSet.sideMid, spacing: 240, lat: trackHalf + 190, baseH: 330, zMax: 2900, alpha: 0.95, shadow: 0.22 },
-    { src: envSet.sideFar, spacing: 330, lat: trackHalf + 350, baseH: 410, zMax: 3500, alpha: 0.9, shadow: 0.14 },
+    { src: envSet.prop, spacing: 110, margin: 16, baseH: 110, zMax: 1300, alpha: 1, shadow: 0.2 },
+    { src: envSet.side, spacing: 170, margin: 18, baseH: 250, zMax: 2300, alpha: 1, shadow: 0.28 },
+    { src: envSet.sideMid, spacing: 240, margin: 26, baseH: 330, zMax: 3600, alpha: 0.95, shadow: 0 },
+    { src: envSet.sideFar, spacing: 330, margin: 40, baseH: 410, zMax: 4600, alpha: 0.9, shadow: 0 },
+    // Distant district masses: fill the wedge between roadside structures
+    // and the skyline so the city reads continuous into the horizon.
+    { src: envSet.sideFar, spacing: 650, margin: 90, baseH: 560, zMax: 6000, alpha: 0.85, shadow: 0 },
   ];
   for (const side of [-1, 1] as const) {
     for (let ci = 0; ci < sideCols.length; ci++) {
@@ -656,7 +723,13 @@ export function drawRunFrame(
         if (!img) continue;
         const flip = unitHash(k, side * 7 + ci + 51) > 0.5;
         const scaleJ = 0.92 + r * 0.22;
-        const lat = side * (col.lat + (unitHash(k, ci + 91) - 0.5) * 36);
+        // Anchor each instance OUTSIDE the road: lateral offset includes the
+        // sprite's own half-width so bases sit on the sidewalk/shoulder and
+        // never penetrate the track, at every depth.
+        const halfW = (col.baseH * scaleJ * spriteAspect(img)) / 2;
+        const lat =
+          side *
+          (trackHalf + col.margin + halfW * 0.85 + (unitHash(k, ci + 91) - 0.5) * 24);
         const depthFade = Math.max(0, 1 - (Math.max(0, z) / col.zMax) * 0.65);
         items.push({
           z,
@@ -885,7 +958,7 @@ export function drawRunFrame(
       else if (p.playerY > 0)
         spriteSrc = p.velocityY > 0 ? CHARACTER_REAR_SPRITES.jump : CHARACTER_REAR_SPRITES.fall;
       else {
-        runFrameIdx = Math.floor(world.elapsedMs / 110) % REAR_RUN_CYCLE.length;
+        runFrameIdx = Math.floor(world.elapsedMs / RUN_FRAME_MS) % REAR_RUN_CYCLE.length;
         spriteSrc = REAR_RUN_CYCLE[runFrameIdx];
       }
       let playerImg = getSprite(spriteSrc);

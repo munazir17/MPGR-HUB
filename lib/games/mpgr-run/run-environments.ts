@@ -47,6 +47,10 @@ export interface RunWorldTheme {
   curbEdge: string;
   /** Blinking window/sign light colors on the skyline. */
   twinkle: [string, string];
+  /** Outer shoulder band beyond the curb (snow bank / dune / concrete). */
+  curbOuter: string;
+  /** Frozen-surface sparkle (ice only). */
+  sparkle: boolean;
 }
 
 export const RUN_WORLD_THEMES: Record<RunWorldId, RunWorldTheme> = {
@@ -67,6 +71,8 @@ export const RUN_WORLD_THEMES: Record<RunWorldId, RunWorldTheme> = {
     curb: "#232F42",
     curbEdge: "#3B82F6",
     twinkle: ["#7DD3FC", "#F0ABFC"],
+    curbOuter: "#1A2434",
+    sparkle: false,
   },
   ice: {
     id: "ice",
@@ -85,6 +91,8 @@ export const RUN_WORLD_THEMES: Record<RunWorldId, RunWorldTheme> = {
     curb: "#DDEDF6",
     curbEdge: "#67E8F9",
     twinkle: ["#A5F3FC", "#E0F2FE"],
+    curbOuter: "#F2FAFE",
+    sparkle: true,
   },
   desert: {
     id: "desert",
@@ -103,6 +111,8 @@ export const RUN_WORLD_THEMES: Record<RunWorldId, RunWorldTheme> = {
     curb: "#C99A62",
     curbEdge: "#FBBF24",
     twinkle: ["#FCD34D", "#FDBA74"],
+    curbOuter: "#B98A50",
+    sparkle: false,
   },
 };
 

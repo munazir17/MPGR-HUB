@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { drawRunFrame, runViewScale, RUN_FRAME_ALIGN_X } from "@/lib/games/mpgr-run/run-render";
+import { drawRunFrame, runViewScale, RUN_FRAME_ALIGN_X, RUN_FRAME_MS } from "@/lib/games/mpgr-run/run-render";
 import { freshWorld, type World } from "@/lib/games/mpgr-run/run-world";
 import { ENVIRONMENT_SETS } from "@/lib/games/mpgr-run/run-assets";
 import {
@@ -327,7 +327,7 @@ describe("world integration details (visual-polish pass)", () => {
     const boxes: Array<{ x: number; y: number; w: number; h: number }> = [];
     for (let f = 0; f < 4; f++) {
       const world = worldAt(120);
-      world.elapsedMs = 1760 + f * 110 + 10; // cycle index == f
+      world.elapsedMs = RUN_FRAME_MS * 4 + f * RUN_FRAME_MS + 10; // cycle index == f
       const ctx = new EnvRecordingCtx();
       drawRunFrame(ctx as unknown as CanvasRenderingContext2D, world, vw2, vh2, makeGetSprite());
       const p = ctx.calls.find((c) => c.tag.includes("/character/mpgr-runner-rear-run-"));
@@ -342,6 +342,80 @@ describe("world integration details (visual-polish pass)", () => {
       const expected = (RUN_FRAME_ALIGN_X[f] - RUN_FRAME_ALIGN_X[f - 1]) * boxes[f].w;
       expect(boxes[f].x - boxes[f - 1].x).toBeCloseTo(expected, 6);
       expect(Math.abs(boxes[f].x - boxes[f - 1].x)).toBeLessThan(boxes[f].w * 0.04);
+    }
+  });
+});
+
+describe("street placement contracts (no penetration / no dead gaps)", () => {
+  const vw = 390;
+  const vh = 844;
+
+  function frame(meters: number): EnvRecordingCtx {
+    const ctx = new EnvRecordingCtx();
+    drawRunFrame(ctx as unknown as CanvasRenderingContext2D, worldAt(meters), vw, vh, makeGetSprite());
+    return ctx;
+  }
+
+  function sideBoxes(ctx: EnvRecordingCtx) {
+    return ctx.calls.filter(
+      (c) => c.tag.includes("-side") || c.tag.includes("-props"),
+    );
+  }
+
+  it("keeps every roadside structure outside the playable track", () => {
+    for (const meters of [120, 620, 1060]) {
+      const ctx = frame(meters);
+      for (const b of sideBoxes(ctx)) {
+        // Recover the instance depth from its grounded base line.
+        const sRoad = (b.y + b.h) / vh / 0.46 - 0.36 / 0.46;
+        if (sRoad <= 0.05 || sRoad > 2.6) continue;
+        const trackHalfScreen = 0.275 * vw * sRoad;
+        const inner = b.x + b.w / 2 < vw / 2 ? b.x + b.w : b.x;
+        const edge = vw / 2 + (b.x + b.w / 2 < vw / 2 ? -trackHalfScreen : trackHalfScreen);
+        if (b.x + b.w / 2 < vw / 2) {
+          expect(inner, `left structure at ${meters}m`).toBeLessThanOrEqual(edge + 2);
+        } else {
+          expect(inner, `right structure at ${meters}m`).toBeGreaterThanOrEqual(edge - 2);
+        }
+      }
+    }
+  });
+
+  it("has roadside content in every depth band on both sides (no dead gaps)", () => {
+    for (const meters of [120, 620, 1060]) {
+      const ctx = frame(meters);
+      const boxes = sideBoxes(ctx);
+      for (const band of [0.42, 0.52, 0.62, 0.72]) {
+        const y = vh * band;
+        const hit = boxes.filter((b) => b.y <= y && b.y + b.h >= y);
+        expect(hit.some((b) => b.x + b.w / 2 < vw / 2), `left band ${band} @${meters}m`).toBe(true);
+        expect(hit.some((b) => b.x + b.w / 2 > vw / 2), `right band ${band} @${meters}m`).toBe(true);
+      }
+    }
+  });
+
+  it("grounds every structure exactly on its depth ground line", () => {
+    const ctx = frame(120);
+    for (const b of sideBoxes(ctx)) {
+      const sRoad = (b.y + b.h) / vh / 0.46 - 0.36 / 0.46;
+      if (sRoad <= 0.05 || sRoad > 2.6) continue;
+      const gy = vh * (0.36 + 0.46 * sRoad);
+      expect(b.y + b.h).toBeCloseTo(gy, 1);
+    }
+  });
+
+  it("draws continuous street-light rows along both curbs", () => {
+    for (const [meters, worldId] of [
+      [120, "city"],
+      [620, "ice"],
+      [1060, "desert"],
+    ] as Array<[number, keyof typeof RUN_WORLD_THEMES]>) {
+      const ctx = frame(meters);
+      const lights = ctx.rects.filter((r) => r.fill === RUN_WORLD_THEMES[worldId].curbEdge && r.w < 12);
+      const left = lights.filter((r) => r.x + r.w / 2 < vw / 2);
+      const right = lights.filter((r) => r.x + r.w / 2 > vw / 2);
+      expect(left.length, `${worldId} left lights`).toBeGreaterThan(3);
+      expect(right.length, `${worldId} right lights`).toBeGreaterThan(3);
     }
   });
 });

@@ -7,6 +7,57 @@ import { getRunAudioHooks } from "@/lib/games/mpgr-run/audio-hooks";
 import type { World } from "@/lib/games/mpgr-run/run-world";
 import type { Phase } from "./RunGameTypes";
 
+/**
+ * Pure pointer-session classifier (extracted 2026-09-27 input-bug fix).
+ *
+ * Bug history: the old handler stored a single swipe start and treated a
+ * pointerup WITHOUT a matching pointerdown (`start === null`) as a tap-jump.
+ * On-screen control buttons stop pointerdown propagation (so no start is
+ * recorded) but their pointerup still bubbles to the play surface — every
+ * left/right/slide button press therefore also triggered a jump. The same
+ * fallback misfired for second fingers and cancelled pointers.
+ *
+ * Rules now:
+ *   - a pointerup only classifies if its pointerId matches the stored down;
+ *   - unmatched/missing downs are ignored (NEVER jump);
+ *   - horizontal swipes change lane, vertical swipes jump/slide,
+ *     a small-movement tap on the play surface jumps (intended convenience).
+ */
+export type RunPointerAction = "jump" | "slide" | "lane-left" | "lane-right" | null;
+
+export interface RunPointerSession {
+  down(x: number, y: number, pointerId: number): void;
+  cancel(pointerId: number): void;
+  up(x: number, y: number, pointerId: number): RunPointerAction;
+}
+
+export function createRunPointerSession(thresholdPx = 40): RunPointerSession {
+  let start: { x: number; y: number; id: number } | null = null;
+  return {
+    down(x, y, pointerId) {
+      start = { x, y, id: pointerId };
+    },
+    cancel(pointerId) {
+      if (start && start.id === pointerId) start = null;
+    },
+    up(x, y, pointerId) {
+      // Unmatched releases (control buttons, other fingers) are ignored
+      // WITHOUT destroying the active session of the owning pointer.
+      if (!start || start.id !== pointerId) return null;
+      const s = start;
+      start = null;
+      const dx = x - s.x;
+      const dy = y - s.y;
+      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > thresholdPx) {
+        return dx > 0 ? "lane-right" : "lane-left";
+      }
+      if (dy < -thresholdPx) return "jump";
+      if (dy > thresholdPx) return "slide";
+      return "jump"; // deliberate tap on the play surface
+    },
+  };
+}
+
 interface UseRunInputOptions {
   worldRef: React.RefObject<World>;
   phaseRef: React.RefObject<Phase>;
@@ -22,7 +73,10 @@ export function useRunInput({
   goToPhase,
   stopLoop,
 }: UseRunInputOptions) {
-  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const pointerSessionRef = useRef<RunPointerSession | null>(null);
+  if (pointerSessionRef.current === null) {
+    pointerSessionRef.current = createRunPointerSession();
+  }
 
   const jump = useCallback(() => {
     if (phaseRef.current !== "running") return;
@@ -118,31 +172,25 @@ export function useRunInput({
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [phaseRef, goToPhase, stopLoop]);
 
-  // Pointer swipe handlers
+  // Pointer swipe handlers (play surface). Control buttons stop their own
+  // pointerdown/up propagation, and unmatched releases are ignored here, so
+  // a lane button can never trigger a jump.
   const handlePointerDown = (e: React.PointerEvent) => {
     if (phaseRef.current !== "running") return;
-    swipeStartRef.current = { x: e.clientX, y: e.clientY };
+    pointerSessionRef.current?.down(e.clientX, e.clientY, e.pointerId);
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
     if (phaseRef.current !== "running") return;
-    const start = swipeStartRef.current;
-    swipeStartRef.current = null;
-    if (!start) {
-      jump();
-      return;
-    }
-    const dx = e.clientX - start.x;
-    const dy = e.clientY - start.y;
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 40) {
-      switchLane(dx > 0 ? 1 : -1);
-    } else if (dy < -40) {
-      jump();
-    } else if (dy > 40) {
-      slide();
-    } else {
-      jump();
-    }
+    const action = pointerSessionRef.current?.up(e.clientX, e.clientY, e.pointerId) ?? null;
+    if (action === "jump") jump();
+    else if (action === "slide") slide();
+    else if (action === "lane-left") switchLane(-1);
+    else if (action === "lane-right") switchLane(1);
+  };
+
+  const handlePointerCancel = (e: React.PointerEvent) => {
+    pointerSessionRef.current?.cancel(e.pointerId);
   };
 
   return {
@@ -152,5 +200,6 @@ export function useRunInput({
     togglePause,
     handlePointerDown,
     handlePointerUp,
+    handlePointerCancel,
   };
 }
