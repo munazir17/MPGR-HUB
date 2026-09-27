@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   ALL_SPRITE_PATHS,
+  ENVIRONMENT_SETS,
+  ROAD_MATERIAL_SPRITE,
   BACKGROUND_STRIP_TARGETS,
   CHARACTER_SPRITES,
   CITY_ENVIRONMENT,
@@ -224,5 +226,22 @@ describe("DOM-only HUD art stays small", () => {
       expect(fs.existsSync(publicFile(src)), src).toBe(true);
       expect(imageDimensions(src)).toEqual({ width: 1536, height: 1024 });
     }
+  });
+});
+
+
+describe("projected street material budgets", () => {
+  it("loads only live world textures, retaining legacy building cutouts on disk", () => {
+    for (const set of Object.values(ENVIRONMENT_SETS)) {
+      for (const src of [set.facade, set.skyline, set.prop]) expect(ALL_SPRITE_PATHS).toContain(src);
+      for (const src of [set.side, set.sideMid, set.sideFar]) {
+        expect(ALL_SPRITE_PATHS).not.toContain(src);
+        expect(fs.existsSync(publicFile(src))).toBe(true);
+      }
+      expect(imageDimensions(set.facade)).toEqual({width:512, height:768});
+      expect(fileSize(set.facade)).toBeLessThan(160 * 1024);
+    }
+    expect(imageDimensions(ROAD_MATERIAL_SPRITE)).toEqual({width:512, height:512});
+    expect(fileSize(ROAD_MATERIAL_SPRITE)).toBeLessThan(160 * 1024);
   });
 });

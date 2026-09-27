@@ -11,8 +11,9 @@ import {
   RUN_WORLD_THEMES,
 } from "@/lib/games/mpgr-run/run-environments";
 import { stepSimulation } from "@/components/features/games/mpgr-run/RunGameSimulation";
-import { JUMP_COIN_ARC_HEIGHTS } from "@/lib/games/mpgr-run/spawn-manager";
-import { COLLECTIBLE_TYPES, PLAYER_X } from "@/lib/games/mpgr-run/run-config";
+import { collectiblePresentationHeight } from "./run-coin-presentation";
+import { STREET_GROUND, STREET_HORIZON, RUNNER_HEIGHT_FRACTION, streetLaneGap } from "./run-street";
+import { COLLECTIBLE_TYPES, PLAYER_X, PLAYER_SIZE } from "@/lib/games/mpgr-run/run-config";
 import { MPGR_RUN_SIMULATION_WIDTH } from "@/lib/games/mpgr-run/authoritative-replay";
 import { createDeterministicRng } from "@/lib/games/mpgr-run/deterministic-rng";
 import { PX_PER_METER } from "@/lib/games/mpgr-run/run-config";
@@ -112,7 +113,8 @@ class EnvRecordingCtx {
   fillRect(x: number, y: number, w: number, h: number) {
     this.rects.push({ ...this.box(x, y, w, h), tag: "rect", alpha: this.globalAlpha, fill: this.fillStyle });
   }
-  drawImage(img: StubImage, x: number, y: number, w: number, h: number) {
+  drawImage(img: StubImage, ...args: number[]) {
+    const [x, y, w, h] = args.length === 8 ? args.slice(4) : args;
     this.calls.push({ ...this.box(x, y, w, h), tag: img.tag, alpha: this.globalAlpha });
   }
   createLinearGradient() { return { addColorStop: () => undefined }; }
@@ -187,7 +189,7 @@ describe("world rendering surrounds the track (no black void)", () => {
     it(`draws the ${worldId} environment on both sides and at the horizon`, () => {
       const ctx = frame(meters);
       const set = ENVIRONMENT_SETS[worldId];
-      const sides = ctx.calls.filter((c) => c.tag === set.side || c.tag === set.prop);
+      const sides = ctx.calls.filter((c) => c.tag === set.facade || c.tag === set.prop);
       expect(sides.length).toBeGreaterThan(4);
       const left = sides.filter((c) => c.x + c.w / 2 < vw * 0.32);
       const right = sides.filter((c) => c.x + c.w / 2 > vw * 0.68);
@@ -197,8 +199,8 @@ describe("world rendering surrounds the track (no black void)", () => {
       const sky = ctx.calls.filter((c) => c.tag === set.skyline);
       expect(sky.length).toBeGreaterThan(0);
       for (const band of sky) {
-        expect(band.y + band.h).toBeLessThan(vh * 0.42);
-        expect(band.y + band.h).toBeGreaterThan(vh * 0.3);
+        expect(band.y + band.h).toBeLessThan(vh * (STREET_HORIZON + 0.01));
+        expect(band.y + band.h).toBeGreaterThan(vh * (STREET_HORIZON - 0.01));
       }
       // Full-width ground fill covers the lower screen (no void rows).
       const ground = ctx.rects.filter(
@@ -216,7 +218,7 @@ describe("world rendering surrounds the track (no black void)", () => {
       const ctx = frame(meters);
       const player = ctx.calls.find((c) => c.tag.includes("/character/mpgr-runner-rear-"));
       expect(player, `rear runner drawn at ${meters}m`).toBeTruthy();
-      expect(player!.y + player!.h).toBeCloseTo(vh * 0.82, 1);
+      expect(player!.y + player!.h).toBeCloseTo(vh * STREET_GROUND, 1);
     }
   });
 
@@ -268,23 +270,18 @@ describe("world integration details (visual-polish pass)", () => {
     }
   });
 
-  it("spawns airborne coin arcs over jump obstacles as real collectibles", () => {
+  it("elevates existing real coins without adding client-only spawns", () => {
     const world = worldAt(0);
     const rng = createDeterministicRng(7);
-    let nextId = 9000;
-    for (let i = 0; i < 60 * 90; i++) stepSimulation(world, 1 / 60, () => nextId++, rng);
-    const air = world.collectibles.filter((c) => (c.airHeight ?? 0) > 0);
-    expect(air.length).toBeGreaterThan(0);
-    // Real collectibles through the existing system, arc profile intact.
-    for (const c of air) {
-      expect(c.type).toBe("coin");
-      expect(c.radius).toBe(COLLECTIBLE_TYPES.coin.radius);
-      expect([...JUMP_COIN_ARC_HEIGHTS]).toContain(c.airHeight);
+    let nextId = 9000, elevated = 0;
+    for (let i = 0; i < 60 * 15; i++) {
+      stepSimulation(world, 1 / 60, () => nextId++, rng);
+      for (const c of world.collectibles) {
+        if (collectiblePresentationHeight(c, world.traveledPx, world.obstacles) > 0) elevated++;
+        expect(c.airHeight).toBeUndefined(); // no simulation-side formation data
+      }
     }
-    // Arc shape: consecutive arc coins share a lane and step in depth.
-    const first = air[0];
-    const arc = air.filter((c) => c.lane === first.lane && Math.abs(c.x - first.x) < 120);
-    expect(arc.length).toBe(JUMP_COIN_ARC_HEIGHTS.length);
+    expect(elevated).toBeGreaterThan(0);
   });
 
   it("renders airborne coins above the grounded track line", () => {
@@ -298,7 +295,7 @@ describe("world integration details (visual-polish pass)", () => {
     for (let i = 0; i < 60 * 90 && !placed; i++) {
       stepSimulation(world, 1 / 60, () => nextId++, rng);
       placed = world.collectibles.some((c) => {
-        if ((c.airHeight ?? 0) <= 0) return false;
+        if (collectiblePresentationHeight(c, world.traveledPx, world.obstacles) <= 24) return false;
         const z = c.x - playerDepth;
         return z > 20 && z < 240;
       });
@@ -313,9 +310,9 @@ describe("world integration details (visual-polish pass)", () => {
     // grounded coins sit 8..20*s above it, airborne arc coins >= 34*s.
     const u = runViewScale(vw);
     const airborne = coins.filter((c) => {
-      const sc = c.h / (radius * 2.9 * u); // recover perspective scale
+      const sc = c.h / (radius * 3.4 * vh * RUNNER_HEIGHT_FRACTION / (PLAYER_SIZE * 2.4)); // recover perspective scale
       if (sc < 0.45 || sc > 2.6) return false;
-      const gy = vh * (0.36 + 0.46 * sc);
+      const gy = vh * (STREET_HORIZON + (STREET_GROUND - STREET_HORIZON) * sc);
       return gy - (c.y + c.h / 2) > 24 * sc * u;
     });
     expect(airborne.length).toBeGreaterThan(0);
@@ -367,9 +364,9 @@ describe("street placement contracts (no penetration / no dead gaps)", () => {
       const ctx = frame(meters);
       for (const b of sideBoxes(ctx)) {
         // Recover the instance depth from its grounded base line.
-        const sRoad = (b.y + b.h) / vh / 0.46 - 0.36 / 0.46;
+        const sRoad = ((b.y + b.h) / vh - STREET_HORIZON) / (STREET_GROUND - STREET_HORIZON);
         if (sRoad <= 0.05 || sRoad > 2.6) continue;
-        const trackHalfScreen = 0.275 * vw * sRoad;
+        const trackHalfScreen = streetLaneGap(vw, vh) * 1.5 * sRoad;
         const inner = b.x + b.w / 2 < vw / 2 ? b.x + b.w : b.x;
         const edge = vw / 2 + (b.x + b.w / 2 < vw / 2 ? -trackHalfScreen : trackHalfScreen);
         if (b.x + b.w / 2 < vw / 2) {
@@ -384,7 +381,7 @@ describe("street placement contracts (no penetration / no dead gaps)", () => {
   it("has roadside content in every depth band on both sides (no dead gaps)", () => {
     for (const meters of [120, 620, 1060]) {
       const ctx = frame(meters);
-      const boxes = sideBoxes(ctx);
+      const boxes = ctx.calls.filter((c) => c.tag.includes("-facade"));
       for (const band of [0.42, 0.52, 0.62, 0.72]) {
         const y = vh * band;
         const hit = boxes.filter((b) => b.y <= y && b.y + b.h >= y);
@@ -397,9 +394,9 @@ describe("street placement contracts (no penetration / no dead gaps)", () => {
   it("grounds every structure exactly on its depth ground line", () => {
     const ctx = frame(120);
     for (const b of sideBoxes(ctx)) {
-      const sRoad = (b.y + b.h) / vh / 0.46 - 0.36 / 0.46;
+      const sRoad = ((b.y + b.h) / vh - STREET_HORIZON) / (STREET_GROUND - STREET_HORIZON);
       if (sRoad <= 0.05 || sRoad > 2.6) continue;
-      const gy = vh * (0.36 + 0.46 * sRoad);
+      const gy = vh * (STREET_HORIZON + (STREET_GROUND - STREET_HORIZON) * sRoad);
       expect(b.y + b.h).toBeCloseTo(gy, 1);
     }
   });

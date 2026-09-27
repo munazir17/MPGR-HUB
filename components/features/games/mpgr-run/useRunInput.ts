@@ -35,7 +35,8 @@ export function createRunPointerSession(thresholdPx = 40): RunPointerSession {
   let start: { x: number; y: number; id: number } | null = null;
   return {
     down(x, y, pointerId) {
-      start = { x, y, id: pointerId };
+      // The first pointer owns the gesture until release/cancel.
+      if (start === null) start = { x, y, id: pointerId };
     },
     cancel(pointerId) {
       if (start && start.id === pointerId) start = null;
@@ -48,12 +49,14 @@ export function createRunPointerSession(thresholdPx = 40): RunPointerSession {
       start = null;
       const dx = x - s.x;
       const dy = y - s.y;
-      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > thresholdPx) {
-        return dx > 0 ? "lane-right" : "lane-left";
+      // A short directional gesture is NOT a tap. Below the lane threshold,
+      // suppress it rather than accidentally jumping. 6px allows tap jitter.
+      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 6) {
+        return Math.abs(dx) >= thresholdPx ? (dx > 0 ? "lane-right" : "lane-left") : null;
       }
       if (dy < -thresholdPx) return "jump";
       if (dy > thresholdPx) return "slide";
-      return "jump"; // deliberate tap on the play surface
+      return Math.max(Math.abs(dx), Math.abs(dy)) <= 6 ? "jump" : null;
     },
   };
 }
@@ -178,11 +181,14 @@ export function useRunInput({
   const handlePointerDown = (e: React.PointerEvent) => {
     if (phaseRef.current !== "running") return;
     pointerSessionRef.current?.down(e.clientX, e.clientY, e.pointerId);
+    // A release outside the canvas must still finish/cancel this pointer.
+    e.currentTarget.setPointerCapture(e.pointerId);
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    if (phaseRef.current !== "running") return;
+    // Always release ownership, including if a HUD pause happened mid-swipe.
     const action = pointerSessionRef.current?.up(e.clientX, e.clientY, e.pointerId) ?? null;
+    if (phaseRef.current !== "running") return;
     if (action === "jump") jump();
     else if (action === "slide") slide();
     else if (action === "lane-left") switchLane(-1);

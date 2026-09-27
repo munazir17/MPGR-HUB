@@ -518,6 +518,7 @@ export function RunGame({ address }: RunGameProps) {
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
+          onLostPointerCapture={handlePointerCancel}
           className="relative min-h-0 w-full flex-1 select-none touch-none"
           style={{ touchAction: "none" }}
         >

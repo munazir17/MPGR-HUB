@@ -220,6 +220,7 @@ export const CITY_ENVIRONMENT = {
  */
 export const ENVIRONMENT_SETS = {
   city: {
+    facade: asset(`${BASE}/environment/city/city-facade.webp`),
     skyline: asset(`${BASE}/environment/city/city-skyline.webp`),
     side: asset(`${BASE}/environment/city/city-side.webp`),
     sideMid: asset(`${BASE}/environment/city/city-side-mid.webp`),
@@ -227,14 +228,16 @@ export const ENVIRONMENT_SETS = {
     prop: asset(`${BASE}/environment/city/city-props.webp`),
   },
   ice: {
-    skyline: asset(`${BASE}/environment/ice/ice-skyline.webp`),
+    facade: asset(`${BASE}/environment/ice/ice-facade.webp`),
+    skyline: asset(`${BASE}/environment/ice/ice-skyline-atmospheric.webp`),
     side: asset(`${BASE}/environment/ice/ice-side.webp`),
     sideMid: asset(`${BASE}/environment/ice/ice-side-mid.webp`),
     sideFar: asset(`${BASE}/environment/ice/ice-side-far.webp`),
     prop: asset(`${BASE}/environment/ice/ice-props.webp`),
   },
   desert: {
-    skyline: asset(`${BASE}/environment/desert/desert-skyline.webp`),
+    facade: asset(`${BASE}/environment/desert/desert-facade.webp`),
+    skyline: asset(`${BASE}/environment/desert/desert-skyline-atmospheric.webp`),
     side: asset(`${BASE}/environment/desert/desert-side.webp`),
     sideMid: asset(`${BASE}/environment/desert/desert-side-mid.webp`),
     sideFar: asset(`${BASE}/environment/desert/desert-side-far.webp`),
@@ -245,6 +248,8 @@ export const ENVIRONMENT_SETS = {
 export type RunWorldId = keyof typeof ENVIRONMENT_SETS;
 
 /** Distant MPGR airship shared by all worlds (sky life). */
+export const ROAD_MATERIAL_SPRITE = asset(`${BASE}/environment/road-material.webp`);
+
 export const AIRSHIP_SPRITE = asset(`${BASE}/environment/city/mpgr-airship.webp`);
 
 /**
@@ -259,7 +264,10 @@ export const BACKGROUND_STRIP_TARGETS: string[] = [
   CHECKPOINT_SPRITE,
 ];
 
-/** Every sprite path used by the live render loop, flattened for a one-time preload on mount. */
+/** Live/preloaded art only. Legacy side/sideMid/sideFar exports and their
+ * files remain available, but the solid street renderer no longer downloads
+ * those nine unused cutouts. New facade/skyline filenames are fresh cache keys.
+ */
 export const ALL_SPRITE_PATHS: string[] = [
   ...Object.values(CHARACTER_SPRITES),
   ...Object.values(CHARACTER_REAR_SPRITES),
@@ -271,10 +279,9 @@ export const ALL_SPRITE_PATHS: string[] = [
   UI_SPRITES.heart,
   UI_SPRITES.powerupFrame,
   ...Object.values(CITY_ENVIRONMENT),
-  ...Object.values(ENVIRONMENT_SETS.city),
-  ...Object.values(ENVIRONMENT_SETS.ice),
-  ...Object.values(ENVIRONMENT_SETS.desert),
+  ...Object.values(ENVIRONMENT_SETS).flatMap(({ skyline, facade, prop }) => [skyline, facade, prop]),
   AIRSHIP_SPRITE,
+  ROAD_MATERIAL_SPRITE,
 ];
 
 /**
@@ -299,8 +306,11 @@ export const CRITICAL_SPRITE_PATHS: string[] = [
   CITY_ENVIRONMENT.foreground,
   // World 1 is the city, so its environment set is first-paint hero art;
   // ice/desert ride the optional lane (they appear minutes into a run).
-  ...Object.values(ENVIRONMENT_SETS.city),
+  ENVIRONMENT_SETS.city.skyline,
+  ENVIRONMENT_SETS.city.facade,
+  ENVIRONMENT_SETS.city.prop,
   AIRSHIP_SPRITE,
+  ROAD_MATERIAL_SPRITE,
   UI_SPRITES.heart,
   UI_SPRITES.powerupFrame,
 ];
