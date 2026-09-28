@@ -8,6 +8,7 @@ import {
   OPTIONAL_SPRITE_PATHS,
   ALL_SPRITE_PATHS,
   BACKGROUND_STRIP_TARGETS,
+  PREBAKED_CUTOUT_PATHS,
 } from "./run-assets";
 
 describe("withAssetVersion", () => {
@@ -59,9 +60,10 @@ describe("MPGR Run sprite catalogs", () => {
     expect(CRITICAL_SPRITE_PATHS.length + OPTIONAL_SPRITE_PATHS.length).toBe(ALL_SPRITE_PATHS.length);
   });
 
-  it("strips backgrounds using the versioned path identity", () => {
-    expect(BACKGROUND_STRIP_TARGETS).toContain(CHARACTER_SPRITES.run2);
-    for (const src of BACKGROUND_STRIP_TARGETS) {
+  it("prebakes background removal using fresh, versioned cache keys", () => {
+    expect(BACKGROUND_STRIP_TARGETS).toEqual([]);
+    expect(PREBAKED_CUTOUT_PATHS).toContain(CHARACTER_SPRITES.run2);
+    for (const src of PREBAKED_CUTOUT_PATHS) {
       expect(src).toContain(`v=${RUN_ASSET_VERSION}`);
     }
   });

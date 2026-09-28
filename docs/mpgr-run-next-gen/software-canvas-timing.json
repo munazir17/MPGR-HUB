@@ -1,0 +1,19 @@
+{
+  "warning": "Software raster comparison only, NOT browser/device FPS. A regression here requires investigation, not a mobile performance claim.",
+  "timing": [
+    {
+      "format": "mobile",
+      "width": 390,
+      "height": 844,
+      "medianMs": 21.851918999998816,
+      "maxMs": 26.552794999999605
+    },
+    {
+      "format": "desktop",
+      "width": 1280,
+      "height": 720,
+      "medianMs": 41.956318999998985,
+      "maxMs": 57.388678999999684
+    }
+  ]
+}

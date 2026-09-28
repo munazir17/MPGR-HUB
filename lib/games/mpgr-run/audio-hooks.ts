@@ -1,8 +1,8 @@
 // lib/games/mpgr-run/audio-hooks.ts
 //
-// Clean SFX interface for MPGR Run. No audio files exist in this repository
-// (public/ only has icon.png, splash.png, image.png), so every hook below
-// is a documented no-op by default — the render loop already calls the
+// Clean SFX interface for MPGR Run. SFX hooks remain documented no-ops by
+// default; the independent background-music system is in run-music.ts.
+// The render/simulation integration already calls the
 // right hook at the right moment for every event in the game design brief
 // (jump, slide, hit, pickups per collectible/power-up type, checkpoint,
 // game over). Wiring real sound later is a matter of calling

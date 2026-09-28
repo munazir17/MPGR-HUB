@@ -1,0 +1,16 @@
+{
+  "path": "/games/mpgr-run/audio/neon-circuit.wav",
+  "bytes": 2646044,
+  "sha256": "bef3fad8b4a0743b47335d898bf7090bb66e7d6d9a65426c5cb99850486c8929",
+  "sampleRate": 44100,
+  "channels": 1,
+  "bitsPerSample": 16,
+  "durationSeconds": 30.0,
+  "peakDbFS": -1.7239686325804904,
+  "rmsDbFS": -17.192032452839953,
+  "boundarySampleDelta": 0,
+  "license": "CC0-1.0; original offline synthesis, no third-party samples",
+  "defaultElementVolume": 0.2,
+  "browserPlaybackVerified": false,
+  "note": "PCM/header and mocked lifecycle checks, not a mobile listening/loop-gap test."
+}
