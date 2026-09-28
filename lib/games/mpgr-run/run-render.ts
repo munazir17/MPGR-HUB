@@ -337,8 +337,8 @@ export function drawRunFrame(
   // City: hazy far towers, then the MPGR skyline cut-out, each with its own
   // lateral parallax. The old full-scene poster panoramas are only a
   // fallback until these decode. Other worlds keep their atmospheric skyline.
-  const cityFar = theme.id === "city" ? getSprite(decorSet.skylineFar) : null;
-  const cityNear = theme.id === "city" ? getSprite(decorSet.skylineNear) : null;
+  const cityFar = theme.id === "city" ? getSprite(ENVIRONMENT_DECOR.city.skylineFar) : null;
+  const cityNear = theme.id === "city" ? getSprite(ENVIRONMENT_DECOR.city.skylineNear) : null;
   const skylineImg = theme.id === "city" ? null : getSprite(envSet.skyline);
   if (cityFar && cityNear) {
     const cityBands: Array<[CanvasImageSource, number, number, number]> = [
