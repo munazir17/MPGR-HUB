@@ -9,7 +9,7 @@ import { runDrawQueue, type RunDrawEntry } from "./run-draw-queue";
  * explicit parameters. This is a literal relocation with no behavior
  * change: same statements, same order, same values.
  */
-import { drawStreetArchitecture, drawStreetSurface, STREET_FOCAL, STREET_HORIZON, STREET_GROUND, RUNNER_HEIGHT_FRACTION, streetLaneGap, streetHash } from "./run-street";
+import { drawStreetArchitecture, drawStreetSurface, drawDistantDistricts, drawGroundAerialFade, STREET_FOCAL, STREET_HORIZON, STREET_GROUND, RUNNER_HEIGHT_FRACTION, streetLaneGap, streetHash } from "./run-street";
 import { collectiblePresentationHeight } from "./run-coin-presentation";
 import { MPGR_RUN_SIMULATION_WIDTH } from "@/lib/games/mpgr-run/authoritative-replay";
 import {
@@ -171,6 +171,49 @@ export const RUN_STRIDE_MS = 500;
 export function runStrideFrame(elapsedMs: number): number {
   const phase = ((elapsedMs % RUN_STRIDE_MS) + RUN_STRIDE_MS) % RUN_STRIDE_MS;
   return phase < 165 ? 0 : phase < 250 ? 1 : phase < 415 ? 2 : 3;
+}
+
+/**
+ * Cross-fade window between consecutive run-cycle poses, in ms.
+ *
+ * The stride timing above is locked (165/85/165/85, covered by the run-cycle
+ * tests) and stays exactly as it is — this only softens how the renderer
+ * *changes* pose. Without it each pose boundary was a hard cut: one rendered
+ * frame showed pose N and the next showed pose N+1, which is what reads as
+ * "snapping" between run frames. Both poses are already head-aligned by
+ * RUN_FRAME_ALIGN_X, so blending them for 45ms (~2.7 frames at 60fps) keeps
+ * the head and feet planted while the swing leg changes over.
+ *
+ * Presentation only: it reads elapsedMs, writes nothing, and touches no
+ * simulation timing. 45ms is a fraction of the shortest (85ms) pose, so the
+ * blended window can never swallow a whole pose — the cycle cadence is
+ * unchanged.
+ */
+export const RUN_BLEND_MS = 45;
+
+export interface RunFrameBlend {
+  /** Pose that is current at this instant — drawn first, at full opacity. */
+  index: number;
+  /** Pose fading out over the incoming one (equals `index` when idle). */
+  prevIndex: number;
+  /** 1 = fully the previous pose, 0 = fully the incoming pose. */
+  prevAlpha: number;
+}
+
+/**
+ * Resolve which run-cycle poses to draw at a moment in the cycle. Outside the
+ * blend window this reports the current pose with prevAlpha 0, so the renderer
+ * behaves exactly as before; inside it, the incoming pose is always returned as
+ * `index` (and therefore drawn first), which keeps every existing framing
+ * assertion — centre, grounding, aspect — reading the incoming pose.
+ */
+export function runFrameBlend(elapsedMs: number): RunFrameBlend {
+  const phase = ((elapsedMs % RUN_STRIDE_MS) + RUN_STRIDE_MS) % RUN_STRIDE_MS;
+  const index = runStrideFrame(elapsedMs);
+  const into = phase - RUN_FRAME_START_MS[index];
+  if (into >= RUN_BLEND_MS) return { index, prevIndex: index, prevAlpha: 0 };
+  const prevIndex = (index + REAR_RUN_CYCLE.length - 1) % REAR_RUN_CYCLE.length;
+  return { index, prevIndex, prevAlpha: 1 - into / RUN_BLEND_MS };
 }
 
 export function runViewScale(viewportWidth: number): number {
@@ -404,6 +447,11 @@ export function drawRunFrame(
       ctx.globalAlpha = 1;
     }
   }
+
+  // --- Distant districts (bridges the street rows and the skyline) --------
+  // Drawn in front of the skyline layers but behind the sky life, so the far
+  // city reads as haze-thickened masses rather than a cut-out on the horizon.
+  drawDistantDistricts(ctx, W, H, camLat, theme);
 
   // --- Distant MPGR airship (sky life) ------------------------------------
   const airship = getSprite(AIRSHIP_SPRITE);
@@ -708,9 +756,18 @@ export function drawRunFrame(
     drawStreetArchitecture(
       ctx, W, H, trackHalf + rowGap + W * 0.3 * (row - 1), camLat, streetDepth, world.elapsedMs, theme,
       streetTexture, null, 7 + 6 * (row - 1), W > H ? -Infinity : 300, row === 1 ? 1.3 : 1.9 + 0.5 * (row - 2),
+      // Deeper rows carry more atmospheric tint, so the rows separate by
+      // depth instead of stacking as equally crisp cut-outs.
+      0.07 + 0.05 * (row - 1),
     );
   }
   drawStreetArchitecture(ctx, W, H, trackHalf, camLat, streetDepth, world.elapsedMs, theme, streetTexture, streetDecor);
+
+  // --- Aerial perspective band --------------------------------------------
+  // After the buildings, before the world items: melts the distant road,
+  // shoulder and building bases into the horizon haze. The near road — where
+  // the runner, hazards and pickups live — keeps its full contrast.
+  drawGroundAerialFade(ctx, W, H, theme);
 
   // --- Checkpoint flash (screen-space, unchanged behaviour) ---------------
   if (world.elapsedMs < world.checkpointFlashUntilMs) {
@@ -992,13 +1049,19 @@ export function drawRunFrame(
 
       let spriteSrc: string;
       let runFrameIdx = -1;
+      // Grounded stride only: the pose cross-fade (presentation, never timing).
+      let blendFromIdx = -1;
+      let blendAlpha = 0;
       if (world.elapsedMs < 1) spriteSrc = CHARACTER_REAR_SPRITES.idle;
       else if (jetpackActiveNow) spriteSrc = CHARACTER_REAR_SPRITES.jump;
       else if (p.sliding) spriteSrc = CHARACTER_REAR_SPRITES.slide;
       else if (p.playerY > 0)
         spriteSrc = p.velocityY > 0 ? CHARACTER_REAR_SPRITES.jump : CHARACTER_REAR_SPRITES.fall;
       else {
-        runFrameIdx = runStrideFrame(world.elapsedMs);
+        const blend = runFrameBlend(world.elapsedMs);
+        runFrameIdx = blend.index;
+        blendFromIdx = blend.prevAlpha > 0 ? blend.prevIndex : -1;
+        blendAlpha = blend.prevAlpha;
         spriteSrc = REAR_RUN_CYCLE[runFrameIdx];
       }
       let playerImg = getSprite(spriteSrc);
@@ -1046,6 +1109,26 @@ export function drawRunFrame(
           drawW,
           drawH
         );
+        // Soften the pose cut: the outgoing stride pose fades over the
+        // incoming one for RUN_BLEND_MS. It is drawn SECOND so the incoming
+        // pose is the frame's first character draw (every framing assertion
+        // still measures the current pose), and it keeps its own head
+        // alignment and its own aspect, so the blend does not introduce a
+        // second source of lateral or vertical drift.
+        if (blendFromIdx >= 0) {
+          const blendImg = getSprite(REAR_RUN_CYCLE[blendFromIdx]);
+          if (blendImg) {
+            const blendW = drawH * spriteAspect(blendImg);
+            ctx.globalAlpha = blendAlpha * (invulnerable && !shielded ? 0.4 + Math.sin(world.elapsedMs / 60) * 0.3 : 1);
+            ctx.drawImage(
+              blendImg,
+              -blendW / 2 + RUN_FRAME_ALIGN_X[blendFromIdx] * blendW,
+              -drawH / 2,
+              blendW,
+              drawH
+            );
+          }
+        }
 
         ctx.restore();
       } else {
