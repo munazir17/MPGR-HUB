@@ -22,10 +22,7 @@ import {
   CHECKPOINT_SPRITE,
   CITY_ENVIRONMENT,
   ENVIRONMENT_SETS,
-<<<<<<< Updated upstream
-=======
   ENVIRONMENT_DECOR,
->>>>>>> Stashed changes
   AIRSHIP_SPRITE,
   ROAD_MATERIAL_SPRITE,
 } from "@/lib/games/mpgr-run/run-assets";
@@ -322,26 +319,6 @@ export function drawRunFrame(
   ctx.fillStyle = glowBand;
   ctx.fillRect(-40, HORIZON_Y - H * 0.14, W + 80, H * 0.14 + 4);
 
-<<<<<<< Updated upstream
-  // --- Skyline panoramas on the horizon (two depth layers) ---------------
-  // City retains the original MPGR panorama treatment; other worlds keep
-  // their atmospheric skylines. Road/street projection is independent.
-  const skylineImg = theme.id === "city" ? null : getSprite(envSet.skyline);
-  if (skylineImg) {
-    const aspect = spriteAspect(skylineImg);
-    for (const [bandFrac, alpha, camFactor] of SKYLINE_LAYERS) {
-      const bandH = HORIZON_Y * bandFrac;
-      const layerW = bandH * aspect;
-      // Lateral camera parallax only — the skyline sits at infinity along
-      // the running direction, so forward scroll must not slide it sideways.
-      const offset = ((camLat * camFactor) % layerW + layerW) % layerW;
-      ctx.globalAlpha = alpha;
-      for (let x = -offset - layerW; x < W + layerW; x += layerW) {
-        ctx.drawImage(skylineImg, x, HORIZON_Y - bandH + 2, layerW, bandH);
-      }
-      ctx.globalAlpha = 1;
-    }
-=======
   // --- Sky plate (real MPGR sky art, horizon-anchored, never stretched) ----
   // Cover-fit to the sky area with the plate's bottom edge on the horizon,
   // so its horizon glow always meets the skyline. Only lateral camera
@@ -393,7 +370,6 @@ export function drawRunFrame(
       }
       ctx.globalAlpha = 1;
     }
->>>>>>> Stashed changes
   } else {
     // Legacy street panoramas / procedural blocks until the new skyline
     // for this world is decode-ready.
@@ -464,8 +440,6 @@ export function drawRunFrame(
   hazeUp.addColorStop(1, theme.haze);
   ctx.fillStyle = hazeUp;
   ctx.fillRect(-40, HORIZON_Y - H * 0.1, W + 80, H * 0.1 + 1);
-<<<<<<< Updated upstream
-=======
   // Ground-side haze: the same atmospheric seam continues below the horizon
   // so the skyline base never meets the ground in a hard line.
   const hazeDown = ctx.createLinearGradient(0, HORIZON_Y, 0, HORIZON_Y + H * 0.09);
@@ -473,7 +447,6 @@ export function drawRunFrame(
   hazeDown.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = hazeDown;
   ctx.fillRect(-40, HORIZON_Y, W + 80, H * 0.09);
->>>>>>> Stashed changes
 
 
   const sNear = S_MAX;
@@ -698,32 +671,6 @@ export function drawRunFrame(
   }
   ctx.restore();
   ctx.globalAlpha = 1;
-<<<<<<< Updated upstream
-
-  // --- Energy pulses travelling along the emissive rails ------------------
-  for (const side of [-1, 1] as const) {
-    for (let pi = 0; pi < 3; pi++) {
-      const cycle = 2080;
-      const z = ((((pi * 700 + 400) - world.elapsedMs * 0.55) % cycle) + cycle) % cycle - 120;
-      if (z < 0 || z > Z_FAR) continue;
-      const s = sOf(z);
-      if (s > S_MAX) continue;
-      const gx = xAt(side * trackHalf, s);
-      const gy = groundYAt(s);
-      const fade = 1 - z / Z_FAR;
-      ctx.globalAlpha = 0.22 * fade;
-      ctx.fillStyle = theme.rail;
-      ctx.fillRect(gx - 5 * s, gy - 26 * s, 10 * s, 26 * s);
-      ctx.globalAlpha = 0.5 * fade;
-      ctx.fillRect(gx - 2.4 * s, gy - 22 * s, 4.8 * s, 22 * s);
-    }
-  }
-  ctx.globalAlpha = 1;
-
-  if (W > H) drawStreetArchitecture(ctx, W, H, trackHalf + H * 0.34, camLat, world.traveledPx + playerDepthX, world.elapsedMs, theme, getSprite(envSet.facade));
-  drawStreetArchitecture(ctx, W, H, trackHalf, camLat, world.traveledPx + playerDepthX, world.elapsedMs, theme, getSprite(envSet.facade));
-
-=======
 
   // --- Energy pulses travelling along the emissive rails ------------------
   for (const side of [-1, 1] as const) {
@@ -765,7 +712,6 @@ export function drawRunFrame(
   }
   drawStreetArchitecture(ctx, W, H, trackHalf, camLat, streetDepth, world.elapsedMs, theme, streetTexture, streetDecor);
 
->>>>>>> Stashed changes
   // --- Checkpoint flash (screen-space, unchanged behaviour) ---------------
   if (world.elapsedMs < world.checkpointFlashUntilMs) {
     const elapsedSinceStart = 1400 - (world.checkpointFlashUntilMs - world.elapsedMs);

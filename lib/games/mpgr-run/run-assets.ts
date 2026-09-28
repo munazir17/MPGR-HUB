@@ -243,8 +243,6 @@ export const ENVIRONMENT_SETS = {
 
 export type RunWorldId = keyof typeof ENVIRONMENT_SETS;
 
-<<<<<<< Updated upstream
-=======
 /**
  * Environment depth-layer art (PR #63 environment upgrade). Every file is
  * new (fresh cache key, no RUN_ASSET_VERSION bump needed) and every one is
@@ -278,7 +276,6 @@ export const ENVIRONMENT_DECOR = {
 } as const;
 
 
->>>>>>> Stashed changes
 /** Distant MPGR airship shared by all worlds (sky life). */
 export const ROAD_MATERIAL_SPRITE = asset(`${BASE}/environment/road-material.webp`);
 
@@ -313,10 +310,7 @@ export const ALL_SPRITE_PATHS: string[] = [
   UI_SPRITES.powerupFrame,
   ...Object.values(CITY_ENVIRONMENT),
   ...Object.values(ENVIRONMENT_SETS).flatMap(({ skyline, facade, prop }) => [skyline, facade, prop]),
-<<<<<<< Updated upstream
-=======
   ...Object.values(ENVIRONMENT_DECOR).flatMap((set) => Object.values(set)),
->>>>>>> Stashed changes
   AIRSHIP_SPRITE,
   ROAD_MATERIAL_SPRITE,
 ];
@@ -346,10 +340,7 @@ export const CRITICAL_SPRITE_PATHS: string[] = [
   ENVIRONMENT_SETS.city.skyline,
   ENVIRONMENT_SETS.city.facade,
   ENVIRONMENT_SETS.city.prop,
-<<<<<<< Updated upstream
-=======
   ...Object.values(ENVIRONMENT_DECOR.city),
->>>>>>> Stashed changes
   AIRSHIP_SPRITE,
   ROAD_MATERIAL_SPRITE,
   UI_SPRITES.heart,
