@@ -1,4 +1,5 @@
 import type { RunWorldTheme } from "./run-environments";
+import type { RunWorldId } from "./run-assets";
 
 /** Presentation-only street geometry. No random source, clock or simulation writes. */
 export const STREET_FOCAL = 300;
@@ -7,6 +8,16 @@ export const STREET_GROUND = 0.84;
 export const RUNNER_HEIGHT_FRACTION = 0.165;
 export const STREET_SPACING = 230;
 export const STREET_BLOCKS = 23;
+
+/**
+ * The world's street-material light response, for shading the surfaces that sit
+ * beside the facades (pavement, kerbs, contact bands). Kept here so the palette
+ * has exactly one source of truth; the renderer never invents colours.
+ */
+export function streetTones(themeId: RunWorldId): { sheen: string; shadow: string; bounce: string } {
+  const material = MATERIALS[themeId];
+  return { sheen: material.sheen, shadow: material.shadow, bounce: material.bounce };
+}
 
 export function streetHash(index: number, salt: number): number {
   let n = Math.imul(index ^ salt, 0x45d9f3b);
@@ -27,84 +38,50 @@ export function streetGround(height: number, z: number): number {
   return height * (STREET_HORIZON + (STREET_GROUND - STREET_HORIZON) * streetScale(z));
 }
 
-const MATERIALS = {
-  city: { front: "#1b2a66", side: "#0f1747", roof: "#3a3f8f", window: "#5cc8ff", recess: "#0a1035", trim: "#8b5cf6" },
-  ice: { front: "#b4d8e9", side: "#578ba9", roof: "#e8f5fa", window: "#d9f7ff", recess: "#366781", trim: "#d5edf5" },
-  desert: { front: "#d6a36e", side: "#926445", roof: "#f2ca91", window: "#ffd795", recess: "#614432", trim: "#e4ba85" },
-} as const;
-
-/** "#1b2a66" + 0.16 -> "rgba(27,42,102,0.16)". Build-time only. */
-function rgba(hex: string, alpha: number): string {
-  const value = parseInt(hex.slice(1), 16);
-  return `rgba(${(value >> 16) & 255},${(value >> 8) & 255},${value & 255},${alpha})`;
-}
-
 /**
- * Material response shades for the facade pass, derived ONCE from MATERIALS
- * above — no new palette, no per-frame colour construction, no randomness.
- * Each entry is a finished rgba() string used directly as a fillStyle:
+ * Street materials. Tone variants are literal, precomputed strings: picking
+ * one per block by hash gives neighbouring buildings different massing
+ * colour without any per-frame colour arithmetic, mixing or allocation.
  *
- *   tone[0..3]  per-building material mix (front / side / recess / roof) so
- *               neighbouring blocks stop reading as one repeated flat panel;
- *   panel       recessed mullion + floor-slab shadow (window-bay relief);
- *   corner      ambient occlusion on the street-side corner of each block;
- *   rim         the light that catches that same corner edge;
- *   sideUpper   sky-lit upper band of the side wall (fake vertical gradient
- *               without creating a per-building gradient object each frame);
- *   sideLower   ground-contact shading on the lower side wall.
+ *   front/side/roof — the three visible prism faces
+ *   sheen           — cool sky/glass response laid over the road-facing wall
+ *   bounce          — street light kicked back onto the wall base
+ *   shadow          — vertical falloff colour for the lower wall
  */
-type FacadeShades = {
-  tone: readonly [string, string, string, string];
-  panel: string;
-  corner: string;
-  rim: string;
-  sideUpper: string;
-  sideLower: string;
+interface StreetMaterial {
+  front: string;
+  side: string;
+  roof: string;
+  window: string;
+  recess: string;
+  trim: string;
+  sheen: string;
+  bounce: string;
+  shadow: string;
+  frontVariants: readonly string[];
+  sideVariants: readonly string[];
+}
+
+const MATERIALS: Record<RunWorldId, StreetMaterial> = {
+  city: {
+    front: "#1b2a66", side: "#0f1747", roof: "#3a3f8f", window: "#5cc8ff",
+    recess: "#0a1035", trim: "#8b5cf6", sheen: "#9ED4FF", bounce: "#6AA8FF", shadow: "#0B123A",
+    frontVariants: ["#17244f", "#1b2a66", "#1f3070", "#22377c"],
+    sideVariants: ["#0c1340", "#0f1747", "#111c4f", "#142156"],
+  },
+  ice: {
+    front: "#b4d8e9", side: "#578ba9", roof: "#e8f5fa", window: "#d9f7ff",
+    recess: "#366781", trim: "#d5edf5", sheen: "#F2FCFF", bounce: "#E4F6FF", shadow: "#3E7695",
+    frontVariants: ["#a6cde0", "#b4d8e9", "#bfe0ee", "#c9e7f2"],
+    sideVariants: ["#4b7d99", "#578ba9", "#6193b0", "#6b9db9"],
+  },
+  desert: {
+    front: "#d6a36e", side: "#926445", roof: "#f2ca91", window: "#ffd795",
+    recess: "#614432", trim: "#e4ba85", sheen: "#FFEDCB", bounce: "#F5CE96", shadow: "#6E4A31",
+    frontVariants: ["#c8965f", "#d6a36e", "#dfad79", "#e6b785"],
+    sideVariants: ["#855838", "#926445", "#9d6f4d", "#a87956"],
+  },
 };
-
-function buildFacadeShades(): Record<string, FacadeShades> {
-  const shades: Record<string, FacadeShades> = {};
-  for (const [id, material] of Object.entries(MATERIALS)) {
-    shades[id] = {
-      tone: [
-        rgba(material.front, 0.1),
-        rgba(material.side, 0.16),
-        rgba(material.recess, 0.12),
-        rgba(material.roof, 0.07),
-      ],
-      panel: rgba(material.recess, 0.34),
-      corner: rgba(material.recess, 0.3),
-      rim: rgba(material.roof, 0.45),
-      sideUpper: rgba(material.roof, 0.12),
-      sideLower: rgba(material.recess, 0.2),
-    };
-  }
-  return shades;
-}
-
-const FACADE_SHADES = buildFacadeShades();
-
-/** Cached conversions of a theme colour string to a partially transparent
- * one (used by the aerial-perspective band). The cache is bounded by the
- * handful of (colour, alpha) pairs the renderer actually asks for. */
-const TRANSLUCENT = new Map<string, string>();
-function translucent(color: string, alpha: number): string {
-  const key = `${color}|${alpha}`;
-  const cached = TRANSLUCENT.get(key);
-  if (cached) return cached;
-  let out = color;
-  if (color.startsWith("#")) {
-    out = rgba(color, alpha);
-  } else {
-    const parts = color.match(/rgba?\(([^)]+)\)/);
-    if (parts) {
-      const channels = parts[1].split(",").map((part) => parseFloat(part));
-      out = `rgba(${channels[0]},${channels[1]},${channels[2]},${alpha})`;
-    }
-  }
-  TRANSLUCENT.set(key, out);
-  return out;
-}
 
 // Mip levels are built once per decoded atlas, not once per building/frame.
 // They avoid repeatedly minifying a 512x768 texture into subpixel far walls.
@@ -198,10 +175,9 @@ export function drawStreetArchitecture(
   salt = 0, // second street row: different heights/profiles from the same slots
   minZ = -Infinity, // skip walls nearer than this depth (cheap far-only rows)
   widen = 1, // lateral block width multiplier for far side rows on wide screens
-  rowFog = 0, // extra atmospheric tint for deeper building rows (0 = roadside row)
+  atmosphere = 0, // extra aerial haze for outer rows: pushes them behind the street
 ): void {
   const material = MATERIALS[theme.id];
-  const shades = FACADE_SHADES[theme.id];
   const center = width / 2 - cameraLateral;
   const residue = ((-traveled % STREET_SPACING) + STREET_SPACING) % STREET_SPACING;
   for (let i = STREET_BLOCKS - 1; i >= 0; i--) {
@@ -217,6 +193,11 @@ export function drawStreetArchitecture(
       // Independently salted profiles: rare landmarks reuse a street slot,
       // never add objects or consume the authoritative random stream.
       const profile = streetHash(hk, side < 0 ? 401 : 719);
+      // Neighbouring masses read as separate buildings: each block picks its
+      // own precomputed tone variant for the road-facing and section faces.
+      const tone = streetHash(hk, side + 211);
+      const frontTone = material.frontVariants[(tone * material.frontVariants.length) | 0];
+      const sideTone = material.sideVariants[(streetHash(hk, side + 233) * material.sideVariants.length) | 0];
       const landmark = profile > 0.955;
       const totalHeight = height * (0.25 + r * r * 0.78) * (landmark ? 1.12 : 1);
       const stepped = r > 0.68; // keep the existing number of upper volumes
@@ -227,7 +208,10 @@ export function drawStreetArchitecture(
       const xo = center + outer * nearS, xof = center + outer * farS;
       if (Math.min(xn, xf, xo, xof) > width + 4 || Math.max(xn, xf, xo, xof) < -4) continue;
       const yn = groundNear - buildingHeight * nearS, yf = groundFar - buildingHeight * farS;
-      const fog = Math.min(0.92, Math.max(0, z) / 6000 + rowFog);
+      // Aerial perspective: depth haze plus the row's own atmosphere offset,
+      // so the outer rows genuinely sit behind the roadside row instead of
+      // reading as a second copy at the same distance.
+      const fog = Math.min(0.9, Math.max(0, z) / 6000 + atmosphere);
       // AO contact footprint stays on the same ground plane as the wall.
       ctx.fillStyle = theme.id === "ice" ? "rgba(25,60,80,0.14)" : theme.id === "desert" ? "rgba(65,40,20,0.18)" : "rgba(5,12,20,0.22)";
       quad(ctx, xn - side * 9 * nearS, groundNear, xo, groundNear, xof, groundFar, xf - side * 9 * farS, groundFar);
@@ -274,11 +258,11 @@ export function drawStreetArchitecture(
         ctx.globalAlpha = 1;
       }
       const facade = ctx.createLinearGradient(xn, yn, xf, groundFar);
-      facade.addColorStop(0, material.front);
-      facade.addColorStop(1, material.side);
+      facade.addColorStop(0, frontTone);
+      facade.addColorStop(1, sideTone);
       ctx.fillStyle = facade;
       quad(ctx, xn, yn, xf, yf, xf, groundFar, xn, groundNear);
-      ctx.fillStyle = material.side;
+      ctx.fillStyle = sideTone;
       quad(ctx, xn, yn, xo, yn, xo, groundNear, xn, groundNear);
       ctx.fillStyle = material.roof;
       if (buildingHeight < height * (STREET_GROUND - STREET_HORIZON)) {
@@ -321,65 +305,9 @@ export function drawStreetArchitecture(
         const frontStart = (1 - frontCols) * streetHash(hk, side + 93);
         ctx.drawImage(mappedTexture, iw * frontStart, sy, iw * frontCols, sh, Math.min(xn, xo), yn, Math.abs(xo - xn), groundNear - yn);
         ctx.globalAlpha = 0.23 + profile * 0.18 + (theme.id === "city" ? 0.16 : 0);
-        ctx.fillStyle = material.side;
+        ctx.fillStyle = sideTone;
         quad(ctx, xn, yn, xo, yn, xo, groundNear, xn, groundNear);
         ctx.globalAlpha = 1;
-      }
-
-      // --- Material depth pass (final polish) -----------------------------
-      // Bounded, image-free and deterministic: no new assets, no gradient
-      // object built per building, no randomness outside streetHash. This is
-      // what stops the solid street reading as flat poster panels — a
-      // per-building material mix, a shaded street-side corner with its own
-      // rim light, recessed window-bay mullions and floor slabs, and a
-      // two-tone side wall standing in for a real vertical light gradient.
-      const wallW = xo - xn;
-      ctx.fillStyle = shades.tone[Math.min(3, Math.floor(r * 4))];
-      quad(ctx, xn, yn, xf, yf, xf, groundFar, xn, groundNear); // side wall (recedes)
-      quad(ctx, xn, yn, xo, yn, xo, groundNear, xn, groundNear); // road-facing wall
-      if (z < 1800) {
-        // Two-tone side wall: sky-lit upper band, ground-shaded lower band.
-        ctx.fillStyle = shades.sideUpper;
-        quad(ctx, xn, yn, xf, yf, xf, yf + (groundFar - yf) * 0.42, xn, yn + (groundNear - yn) * 0.42);
-        ctx.fillStyle = shades.sideLower;
-        quad(ctx, xn, groundNear - (groundNear - yn) * 0.26, xf, groundFar - (groundFar - yf) * 0.26, xf, groundFar, xn, groundNear);
-        // Street-side corner: ambient occlusion on the wall, rim light on the
-        // edge itself, so the corner reads as a real corner from any depth.
-        ctx.fillStyle = shades.corner;
-        quad(ctx, xn, yn, xn + wallW * 0.12, yn, xn + wallW * 0.12, groundNear, xn, groundNear);
-        ctx.strokeStyle = shades.rim;
-        ctx.lineWidth = 1.1;
-        ctx.beginPath(); ctx.moveTo(xn, yn); ctx.lineTo(xn, groundNear); ctx.stroke();
-        if (texture && z < 1500) {
-          // Recessed window bays: a shaded mullion with a lit reveal beside
-          // it every quarter of the wall run, plus three projected floor
-          // slabs with their own lit edge. All on the side wall's own plane.
-          for (let m = 1; m <= 3; m++) {
-            const zM = z + (farZ - z) * (m / 4);
-            const sM = streetScale(zM);
-            const xM = center + inner * sM;
-            const gM = streetGround(height, zM);
-            const hM = buildingHeight * sM;
-            ctx.fillStyle = shades.panel;
-            ctx.fillRect(xM - 0.5, gM - hM, 1.2, hM);
-            ctx.fillStyle = shades.rim;
-            ctx.fillRect(xM + 1.1, gM - hM, 0.9, hM);
-          }
-          ctx.lineWidth = Math.max(0.4, nearS * 0.8);
-          for (let k = 1; k <= 3; k++) {
-            const level = buildingHeight * (k / 4);
-            ctx.strokeStyle = shades.panel;
-            ctx.beginPath();
-            ctx.moveTo(xn, groundNear - level * nearS);
-            ctx.lineTo(xf, groundFar - level * farS);
-            ctx.stroke();
-            ctx.strokeStyle = shades.rim;
-            ctx.beginPath();
-            ctx.moveTo(xn, groundNear - (level + 1.2) * nearS);
-            ctx.lineTo(xf, groundFar - (level + 1.2) * farS);
-            ctx.stroke();
-          }
-        }
       }
 
       // Floor courses and inset windows are attached to the projected wall,
@@ -415,6 +343,53 @@ export function drawStreetArchitecture(
           ctx.fillRect(Math.min(fa, fb), groundNear - (h + wh) * nearS, Math.abs(fb - fa), wh * nearS);
           ctx.globalAlpha = 1;
         }
+      }
+      // --- Facade depth: recessed panels, face shading, corner light --------
+      // Near blocks get cheap cues that make a projected wall read as a solid
+      // volume instead of a card: recessed cladding bands with lit sills, a
+      // sky->street shading ramp on the road-facing wall, a lit near corner
+      // where the wall turns toward the street, and a faint wet-road bounce
+      // below its own contact line. Every quad stays on the wall's own ground
+      // plane (nothing floats or leans), and the pass is depth gated so far
+      // blocks keep their flat atmospheric colour.
+      if (z < 1100 && atmosphere === 0) {
+        const near = 1 - Math.min(1, Math.max(0, z) / 1100);
+        const third = buildingHeight / 3;
+        // Vertical shading: sky light high on the wall, occlusion toward the
+        // street. Two flat quads, no per-frame gradients.
+        ctx.fillStyle = material.sheen;
+        ctx.globalAlpha = 0.07 * near * (1 - fog);
+        quad(ctx, xn, yn, xf, yf, xf, groundFar - (buildingHeight - third) * farS, xn, groundNear - (buildingHeight - third) * nearS);
+        ctx.fillStyle = material.shadow;
+        ctx.globalAlpha = 0.15 * near * (1 - fog);
+        quad(ctx, xn, groundNear - third * nearS, xf, groundFar - third * farS, xf, groundFar, xn, groundNear);
+        // Recessed cladding bands + sill catch-light (max 3 bands per wall).
+        const bands = z < 620 ? 3 : 2;
+        for (let band = 1; band <= bands; band++) {
+          const level = buildingHeight * (band / (bands + 1.4));
+          const hN = groundNear - level * nearS, hF = groundFar - level * farS;
+          const depthN = buildingHeight * 0.055 * nearS, depthF = buildingHeight * 0.055 * farS;
+          ctx.fillStyle = material.recess;
+          ctx.globalAlpha = 0.2 * near * (1 - fog);
+          quad(ctx, xn, hN - depthN, xf, hF - depthF, xf, hF, xn, hN);
+          ctx.fillStyle = material.sheen;
+          ctx.globalAlpha = 0.11 * near * (1 - fog);
+          quad(ctx, xn, hN, xf, hF, xf, hF + depthN * 0.22, xn, hN + depthN * 0.22);
+        }
+        // Lit near corner where the wall meets the street-side edge.
+        ctx.fillStyle = material.bounce;
+        ctx.globalAlpha = 0.15 * near * (1 - fog);
+        quad(ctx, xn, yn, xn + side * 2.6 * nearS, yn, xn + side * 2.6 * nearS, groundNear, xn, groundNear);
+        ctx.globalAlpha = 1;
+        // Wet-road bounce (city/ice): the facade continues faintly below its
+        // contact line, inside the block's own lateral footprint.
+        if (theme.id !== "desert") {
+          const bounce = buildingHeight * 0.22;
+          ctx.fillStyle = material.bounce;
+          ctx.globalAlpha = 0.055 * near * (1 - fog);
+          quad(ctx, xn, groundNear, xo, groundNear, xo + side * 3 * nearS, groundNear + bounce * nearS, xn + side * 3 * nearS, groundNear + bounce * nearS);
+        }
+        ctx.globalAlpha = 1;
       }
       // --- Lighting & material response (presentation only) -----------------
       // Ambient occlusion where the wall meets the street, then a lit upper
@@ -532,92 +507,148 @@ export function drawStreetArchitecture(
   }
 }
 
+/**
+ * Distant district mass. A hazy band of wider, lower blocks that fills the
+ * wedge between the roadside street wall and the horizon skyline, so the road
+ * recedes into a continuous city instead of ending in an empty valley at the
+ * vanishing point. Same rules as the street: solid prisms on the shared ground
+ * plane, deterministic per-slot profiles, heavy aerial haze, no texture
+ * sampling, no allocations and a fixed block count.
+ */
+export function drawDistantDistrict(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  trackHalf: number,
+  cameraLateral: number,
+  traveled: number,
+  theme: RunWorldTheme,
+  atmosphere = 0.42,
+  spacing = 520,
+  blocks = 10,
+  minZ = 2500,
+): void {
+  const material = MATERIALS[theme.id];
+  const center = width / 2 - cameraLateral;
+  const residue = ((-traveled % spacing) + spacing) % spacing;
+  for (let i = blocks - 1; i >= 0; i--) {
+    const z = residue + (i + Math.ceil(minZ / spacing)) * spacing;
+    const index = Math.round((z + traveled) / spacing);
+    const hk = index ^ Math.imul(37, 0x9e3779b1);
+    const r = streetHash(hk, 811);
+    const farZ = z + spacing * 1.3;
+    const nearS = streetScale(z), farS = streetScale(farZ);
+    if (nearS <= 0.02) continue;
+    const groundNear = streetGround(height, z), groundFar = streetGround(height, farZ);
+    const fog = Math.min(0.94, z / 6000 + atmosphere);
+    for (let side = -1; side <= 1; side += 2) {
+      const totalHeight = height * (0.14 + r * r * 0.46) * (0.85 + streetHash(hk, side + 3) * 0.3);
+      const inner = side * (trackHalf + height * (0.12 + streetHash(hk, side + 5) * 0.26));
+      const outer = inner + side * height * (0.2 + streetHash(hk, side + 9) * 0.55);
+      const xn = center + inner * nearS, xf = center + inner * farS;
+      const xo = center + outer * nearS, xof = center + outer * farS;
+      if (Math.min(xn, xf, xo, xof) > width + 4 || Math.max(xn, xf, xo, xof) < -4) continue;
+      const yn = groundNear - totalHeight * nearS, yf = groundFar - totalHeight * farS;
+      // Beyond this much haze a block is a silhouette: one hazed shape instead
+      // of three shaded faces, which keeps the far district nearly free while
+      // the near half keeps its volume and lit windows.
+      if (fog > 0.72) {
+        ctx.fillStyle = theme.fog;
+        ctx.globalAlpha = Math.min(0.96, fog);
+        quad(ctx, xn, yn, xo, yn, xof, yf, xf, yf);
+        quad(ctx, xn, yn, xf, yf, xf, groundFar, xn, groundNear);
+        ctx.globalAlpha = 1;
+        continue;
+      }
+      // Section face, roof plane, then the road-facing wall: one silhouette
+      // per block, all sharing the block's projected ground line.
+      ctx.fillStyle = material.side;
+      quad(ctx, xn, yn, xo, yn, xo, groundNear, xn, groundNear);
+      ctx.fillStyle = material.roof;
+      quad(ctx, xn, yn, xo, yn, xof, yf, xf, yf);
+      ctx.fillStyle = material.front;
+      quad(ctx, xn, yn, xf, yf, xf, groundFar, xn, groundNear);
+      // Haze pass: solid geometry tints toward the world's atmospheric fill
+      // rather than fading to transparency.
+      ctx.fillStyle = theme.fog;
+      ctx.globalAlpha = fog;
+      quad(ctx, xn, yn, xo, yn, xo, groundNear, xn, groundNear);
+      quad(ctx, xn, yn, xo, yn, xof, yf, xf, yf);
+      quad(ctx, xn, yn, xf, yf, xf, groundFar, xn, groundNear);
+      // Sparse lit windows keep the far district alive without texture work.
+      if (fog < 0.72) {
+        const wallW = Math.abs(xf - xn);
+        const wallX = Math.min(xn, xf);
+        const midS = (nearS + farS) / 2;
+        const midGround = streetGround(height, (z + farZ) / 2);
+        ctx.fillStyle = material.window;
+        ctx.globalAlpha = 0.2 * (1 - fog);
+        const dotW = Math.max(0.8, wallW * 0.14);
+        const dotH = Math.max(0.8, height * 0.004 * midS);
+        for (let row = 1; row <= 3; row++) {
+          const level = totalHeight * (row / 4);
+          ctx.fillRect(
+            wallX + wallW * streetHash(hk * 31 + row, side + 17) * 0.74,
+            midGround - level * midS,
+            dotW,
+            dotH,
+          );
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
 function quad(ctx: CanvasRenderingContext2D, ax: number, ay: number, bx: number, by: number, cx: number, cy: number, dx: number, dy: number): void {
   ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.lineTo(cx, cy); ctx.lineTo(dx, dy); ctx.closePath(); ctx.fill();
 }
 
 /**
- * Distant district masses between the far street rows and the skyline.
- *
- * The street rows end at a finite depth and the skyline sits on the horizon,
- * which used to leave a bare band of flat ground in between. This band fills
- * exactly that gap with heavily haze-tinted silhouettes, so the eye reads
- * roadside → blocks → districts → skyline as one continuous depth ramp
- * instead of stopping at the last building row.
- *
- * Presentation only, and deliberately cheap: 26 flat quads, no images, no
- * gradients, no per-block objects. Positions come from streetHash, so the
- * band is identical for the same travel distance (deterministic frames,
- * pause-stable) and consumes no gameplay randomness. It is anchored to the
- * HORIZON (not the ground plane) and parallaxes slower than the skyline
- * layers behind it, which is what sells the distance.
+ * Kerb dressing. World-locked pavement joints run across each kerb band and a
+ * kerb-top highlight runs along its outer edge, both projected through the same
+ * depth scale as the bands they sit on, so the shoulder reads as pavement
+ * meeting the road instead of a flat coloured wedge. Fixed 18 joints per side,
+ * deterministic spacing, no texture sampling and no allocations.
  */
-export function drawDistantDistricts(
+export function drawPavementDetail(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
+  trackHalf: number,
   cameraLateral: number,
+  traveled: number,
   theme: RunWorldTheme,
 ): void {
-  const horizon = height * STREET_HORIZON;
-  const span = width + 120;
-  for (let i = 0; i < 26; i++) {
-    const bx = streetHash(i, 611);
-    const bx2 = streetHash(i, 617);
-    const bh = streetHash(i, 619);
-    const shade = streetHash(i, 631);
-    const w = span * (0.018 + bx2 * 0.05);
-    // Slow lateral parallax: the camera trails the lane change, and these
-    // masses sit far enough away that they must lag the skyline as well.
-    const x = -60 + bx * span - cameraLateral * 0.05;
-    const tall = horizon * (0.05 + bh * bh * 0.16);
-    const base = horizon + 1 + shade * 2;
-    ctx.fillStyle = theme.fog;
-    ctx.globalAlpha = 0.3 + shade * 0.3;
-    quad(ctx, x, base, x + w, base, x + w, base - tall, x, base - tall);
-    // Stepped crown on the taller masses only (bounded: 1 extra quad each).
-    if (tall > horizon * 0.1) {
-      const inset = w * 0.22;
-      ctx.globalAlpha = 0.24 + shade * 0.24;
-      quad(ctx, x + inset, base - tall, x + w - inset, base - tall, x + w - inset, base - tall - tall * 0.14, x + inset, base - tall - tall * 0.14);
+  const material = MATERIALS[theme.id];
+  const center = width / 2 - cameraLateral;
+  const inner = trackHalf + 5;
+  const outer = trackHalf + 64;
+  const spacing = 150;
+  const residue = ((-traveled % spacing) + spacing) % spacing;
+  const jointAlpha = theme.id === "ice" ? 0.5 : theme.id === "desert" ? 0.34 : 0.42;
+  for (let i = 0; i < 9; i++) {
+    const z = residue + i * spacing;
+    const s = streetScale(z);
+    if (s <= 0.03 || s > 2.6) continue;
+    const y = streetGround(height, z);
+    const thickness = Math.max(0.4, 2.2 * s);
+    const fade = Math.min(1, s * 1.6) * (1 - Math.min(0.7, z / 5200));
+    for (let side = -1; side <= 1; side += 2) {
+      // Lit seam across the pavement: the inner slab catches the road light and
+      // the outer third falls into facade shade, so the joint reads as a
+      // surface joint rather than a painted line.
+      ctx.fillStyle = material.sheen;
+      ctx.globalAlpha = jointAlpha * fade * 0.34;
+      quad(ctx, center + side * inner * s, y, center + side * (inner + 22) * s, y,
+        center + side * (inner + 22) * s, y + thickness, center + side * inner * s, y + thickness);
+      ctx.fillStyle = material.shadow;
+      ctx.globalAlpha = jointAlpha * fade * 0.3;
+      quad(ctx, center + side * (inner + 22) * s, y, center + side * (outer - 18) * s, y,
+        center + side * (outer - 18) * s, y + thickness, center + side * (inner + 22) * s, y + thickness);
     }
   }
   ctx.globalAlpha = 1;
-}
-
-/**
- * Aerial perspective over the far ground.
- *
- * One screen-space band that melts the distant road, shoulder and building
- * bases into the horizon haze. It is strongest at the horizon line and gone
- * before the mid-distance, so the near road — surface material, lane
- * markings, rails, contact shadows — is untouched. The colour comes from the
- * world's own haze so every world keeps its established atmosphere, and the
- * alpha bucket cache keeps this a single gradient fill per frame.
- *
- * The gradient starts just ABOVE the horizon and reaches its peak exactly ON
- * the horizon line: starting at the horizon instead would step the alpha from
- * 0 to full in one pixel and leave a visible seam under the skyline. Above the
- * horizon it is atmosphere over sky, below it is atmosphere over far ground —
- * the same continuous ramp the camera would see through more air.
- */
-export function drawGroundAerialFade(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  theme: RunWorldTheme,
-): void {
-  const horizon = height * STREET_HORIZON;
-  const span = (height * (STREET_GROUND - STREET_HORIZON)) * 0.5;
-  const above = span * 0.34;
-  const total = above + span;
-  const fade = ctx.createLinearGradient(0, horizon - above, 0, horizon + span);
-  fade.addColorStop(0, translucent(theme.haze, 0));
-  fade.addColorStop(above / total, translucent(theme.haze, 0.46));
-  fade.addColorStop(above / total + 0.34 * (span / total), translucent(theme.haze, 0.16));
-  fade.addColorStop(1, translucent(theme.haze, 0));
-  ctx.fillStyle = fade;
-  ctx.fillRect(-40, horizon - above, width + 80, total + 1);
 }
 
 /** Road material in world-locked depth cells. At most 90 narrow streaks. */

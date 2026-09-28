@@ -9,7 +9,7 @@ import { runDrawQueue, type RunDrawEntry } from "./run-draw-queue";
  * explicit parameters. This is a literal relocation with no behavior
  * change: same statements, same order, same values.
  */
-import { drawStreetArchitecture, drawStreetSurface, drawDistantDistricts, drawGroundAerialFade, STREET_FOCAL, STREET_HORIZON, STREET_GROUND, RUNNER_HEIGHT_FRACTION, streetLaneGap, streetHash } from "./run-street";
+import { drawStreetArchitecture, drawDistantDistrict, drawPavementDetail, drawStreetSurface, STREET_FOCAL, STREET_HORIZON, STREET_GROUND, RUNNER_HEIGHT_FRACTION, streetLaneGap, streetHash, streetTones } from "./run-street";
 import { collectiblePresentationHeight } from "./run-coin-presentation";
 import { MPGR_RUN_SIMULATION_WIDTH } from "@/lib/games/mpgr-run/authoritative-replay";
 import {
@@ -162,58 +162,64 @@ export const RUN_MAX_VIEW_SCALE = 2.4;
 // column stays put while feet stay grounded — presentation only.
 export const RUN_FRAME_ALIGN_X = [0.0313, 0.0003, -0.0313, -0.0003];
 
+// Foot-lock note (measured offline from the same artwork): all four run-cycle
+// frames already carry opaque pixels in their bottom row, so bottom-aligning
+// every pose on the shared ground line keeps the planted foot glued to the
+// road for the whole stride — no per-frame vertical correction is needed, and
+// adding one would lift the feet off the track. The passing poses are simply
+// narrower (442px vs 504px at the same height), which is why the stride is
+// blended rather than offset.
+
 // Keep the established 165ms kick poses, but spend only 85ms in each
 // upright passing pose so the cycle reads as forward running, not idle.
 export const RUN_FRAME_MS = 165;
 export const RUN_FRAME_START_MS = [0, 165, 250, 415] as const;
 export const RUN_STRIDE_MS = 500;
+/**
+ * Length of the short cross-fade that runs INTO each pose boundary, in ms.
+ * Over the last RUN_BLEND_MS before a boundary the incoming pose is faded in
+ * on top of the outgoing one, reaching full opacity exactly at the boundary —
+ * so the pose change has no visible step (the frame just before the boundary
+ * already shows the incoming pose at full weight) while every settled pose
+ * still renders as a single sprite. Pure presentation: pose boundaries, cycle
+ * length, cadence and the frame a given elapsed time maps to are unchanged.
+ */
+export const RUN_BLEND_MS = 62;
 /** Short passing poses avoid dwelling on the upright/idle-looking frames. */
 export function runStrideFrame(elapsedMs: number): number {
   const phase = ((elapsedMs % RUN_STRIDE_MS) + RUN_STRIDE_MS) % RUN_STRIDE_MS;
   return phase < 165 ? 0 : phase < 250 ? 1 : phase < 415 ? 2 : 3;
 }
 
-/**
- * Cross-fade window between consecutive run-cycle poses, in ms.
- *
- * The stride timing above is locked (165/85/165/85, covered by the run-cycle
- * tests) and stays exactly as it is — this only softens how the renderer
- * *changes* pose. Without it each pose boundary was a hard cut: one rendered
- * frame showed pose N and the next showed pose N+1, which is what reads as
- * "snapping" between run frames. Both poses are already head-aligned by
- * RUN_FRAME_ALIGN_X, so blending them for 45ms (~2.7 frames at 60fps) keeps
- * the head and feet planted while the swing leg changes over.
- *
- * Presentation only: it reads elapsedMs, writes nothing, and touches no
- * simulation timing. 45ms is a fraction of the shortest (85ms) pose, so the
- * blended window can never swallow a whole pose — the cycle cadence is
- * unchanged.
- */
-export const RUN_BLEND_MS = 45;
-
-export interface RunFrameBlend {
-  /** Pose that is current at this instant — drawn first, at full opacity. */
-  index: number;
-  /** Pose fading out over the incoming one (equals `index` when idle). */
-  prevIndex: number;
-  /** 1 = fully the previous pose, 0 = fully the incoming pose. */
-  prevAlpha: number;
-}
+/** Pose boundaries inside one stride, including the wrap back to frame 0. */
+const RUN_STRIDE_BOUNDARIES: readonly number[] = [
+  RUN_FRAME_START_MS[1],
+  RUN_FRAME_START_MS[2],
+  RUN_FRAME_START_MS[3],
+  RUN_STRIDE_MS,
+];
 
 /**
- * Resolve which run-cycle poses to draw at a moment in the cycle. Outside the
- * blend window this reports the current pose with prevAlpha 0, so the renderer
- * behaves exactly as before; inside it, the incoming pose is always returned as
- * `index` (and therefore drawn first), which keeps every existing framing
- * assertion — centre, grounding, aspect — reading the incoming pose.
+ * Weight of the NEXT stride pose as it leads into a pose boundary: 0 while a
+ * pose is settled (so the caller draws a single sprite, exactly as before) and
+ * ramping to 1 exactly at the boundary, where that pose becomes the current
+ * one. Because the blend is complete at the boundary and never starts early
+ * with a non-zero weight, both ends of the window are continuous — the stride
+ * flows instead of stepping, with no change to pose timing, cadence or the
+ * frame an elapsed time maps to.
  */
-export function runFrameBlend(elapsedMs: number): RunFrameBlend {
-  const phase = ((elapsedMs % RUN_STRIDE_MS) + RUN_STRIDE_MS) % RUN_STRIDE_MS;
-  const index = runStrideFrame(elapsedMs);
-  const into = phase - RUN_FRAME_START_MS[index];
-  if (into >= RUN_BLEND_MS) return { index, prevIndex: index, prevAlpha: 0 };
-  const prevIndex = (index + REAR_RUN_CYCLE.length - 1) % REAR_RUN_CYCLE.length;
-  return { index, prevIndex, prevAlpha: 1 - into / RUN_BLEND_MS };
+export function runStrideLead(phaseMs: number): number {
+  const phase = ((phaseMs % RUN_STRIDE_MS) + RUN_STRIDE_MS) % RUN_STRIDE_MS;
+  for (const boundary of RUN_STRIDE_BOUNDARIES) {
+    const windowStart = boundary - RUN_BLEND_MS;
+    if (phase >= windowStart && phase < boundary) {
+      const t = (phase - windowStart) / RUN_BLEND_MS;
+      // Smoothstep: the blend starts and ends at zero rate, so neither edge of
+      // the window adds a step of its own.
+      return t * t * (3 - 2 * t);
+    }
+  }
+  return 0;
 }
 
 export function runViewScale(viewportWidth: number): number {
@@ -340,6 +346,8 @@ export function drawRunFrame(
   const worldState = resolveRunWorldFromPx(world.traveledPx);
   const theme = RUN_WORLD_THEMES[worldState.current];
   const envSet = ENVIRONMENT_SETS[worldState.current];
+  // Street-material light response (one source of truth: run-street.ts).
+  const tones = streetTones(theme.id);
 
   // Deterministic per-instance variation (no per-frame allocation).
   const unitHash = (k: number, salt: number): number => {
@@ -447,11 +455,6 @@ export function drawRunFrame(
       ctx.globalAlpha = 1;
     }
   }
-
-  // --- Distant districts (bridges the street rows and the skyline) --------
-  // Drawn in front of the skyline layers but behind the sky life, so the far
-  // city reads as haze-thickened masses rather than a cut-out on the horizon.
-  drawDistantDistricts(ctx, W, H, camLat, theme);
 
   // --- Distant MPGR airship (sky life) ------------------------------------
   const airship = getSprite(AIRSHIP_SPRITE);
@@ -635,6 +638,28 @@ export function drawRunFrame(
     ctx.lineTo(xAt(side * inner, sCurb), groundYAt(sCurb));
     ctx.closePath();
     ctx.fill();
+    // Pavement shading: light falls between the buildings and the road, so the
+    // inner third catches a cool sheen while the outer edge falls into shade
+    // against the facades. Two flat quads on the band's own ground plane — the
+    // band stops reading as a flat trench and starts reading as a pavement.
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = tones.sheen;
+    ctx.beginPath();
+    ctx.moveTo(xAt(side * inner, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * (inner + 22), sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * (inner + 22), sCurb), groundYAt(sCurb));
+    ctx.lineTo(xAt(side * inner, sCurb), groundYAt(sCurb));
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 0.34;
+    ctx.fillStyle = tones.shadow;
+    ctx.beginPath();
+    ctx.moveTo(xAt(side * (outer - 20), sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * outer, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * outer, sCurb), groundYAt(sCurb));
+    ctx.lineTo(xAt(side * (outer - 20), sCurb), groundYAt(sCurb));
+    ctx.closePath();
+    ctx.fill();
     // Outer shoulder band (snow bank / dune / concrete apron) so the
     // street keeps continuing outboard instead of ending in a dark wedge.
     ctx.globalAlpha = 0.85;
@@ -656,6 +681,10 @@ export function drawRunFrame(
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+
+  // Kerb dressing: world-locked pavement joints and a kerb-top highlight, so
+  // the shoulder reads as pavement meeting the road.
+  drawPavementDetail(ctx, W, H, trackHalf, camLat, world.traveledPx + playerDepthX, theme);
 
   // --- Continuous street-light rows along both curbs ----------------------
   // Tiny emissive dots receding to the horizon: infrastructure continuity
@@ -752,22 +781,31 @@ export function drawRunFrame(
   // ending in bare ground. Rows are drawn farthest first (painter order).
   const rowGap = W > H ? H * 0.34 : W * 0.3;
   const outerRows = W > H ? (W / H > 2 ? 3 : 2) : 1;
+  // Farthest first: the hazy district closes the horizon valley, then the
+  // outer rows recede (each with its own aerial haze), then the roadside row
+  // that carries the MPGR signage. Rows are always drawn far -> near, so the
+  // painter ordering, wall positions and lateral offsets are unchanged.
+  drawDistantDistrict(ctx, W, H, trackHalf, camLat, streetDepth, theme, 0.5, 520, 10, 2500);
+  // Atmospheric band over the far district: melts the district silhouettes and
+  // the skyline bases together, so the street, the district and the horizon
+  // form one continuous gradient instead of three stacked bands. Drawn before
+  // the street rows so it never sits in front of the near buildings.
+  const districtHaze = ctx.createLinearGradient(0, HORIZON_Y - H * 0.06, 0, HORIZON_Y + H * 0.1);
+  districtHaze.addColorStop(0, theme.haze);
+  districtHaze.addColorStop(0.42, theme.haze);
+  districtHaze.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.globalAlpha = 0.5;
+  ctx.fillStyle = districtHaze;
+  ctx.fillRect(-40, HORIZON_Y - H * 0.06, W + 80, H * 0.16);
+  ctx.globalAlpha = 1;
   for (let row = outerRows; row >= 1; row--) {
     drawStreetArchitecture(
       ctx, W, H, trackHalf + rowGap + W * 0.3 * (row - 1), camLat, streetDepth, world.elapsedMs, theme,
       streetTexture, null, 7 + 6 * (row - 1), W > H ? -Infinity : 300, row === 1 ? 1.3 : 1.9 + 0.5 * (row - 2),
-      // Deeper rows carry more atmospheric tint, so the rows separate by
-      // depth instead of stacking as equally crisp cut-outs.
-      0.07 + 0.05 * (row - 1),
+      0.1 + 0.06 * row,
     );
   }
   drawStreetArchitecture(ctx, W, H, trackHalf, camLat, streetDepth, world.elapsedMs, theme, streetTexture, streetDecor);
-
-  // --- Aerial perspective band --------------------------------------------
-  // After the buildings, before the world items: melts the distant road,
-  // shoulder and building bases into the horizon haze. The near road — where
-  // the runner, hazards and pickups live — keeps its full contrast.
-  drawGroundAerialFade(ctx, W, H, theme);
 
   // --- Checkpoint flash (screen-space, unchanged behaviour) ---------------
   if (world.elapsedMs < world.checkpointFlashUntilMs) {
@@ -803,10 +841,20 @@ export function drawRunFrame(
   // --- Depth-sorted world items (painter's algorithm) ---------------------
   const queue = runDrawQueue(ctx);
 
-  const drawGroundShadow = (sx: number, gy: number, rx: number, alpha: number) => {
+  // Contact shadow. `softness` adds a wider, fainter penumbra ellipse under the
+  // core so the shadow reads as light falling off instead of a hard decal —
+  // drawn with plain ellipses, never a live blur filter (shadowBlur stays 0).
+  const shadowTint = theme.id === "ice" ? "#294757" : theme.id === "desert" ? "#493523" : "#070D16";
+  const drawGroundShadow = (sx: number, gy: number, rx: number, alpha: number, softness = 0) => {
     if (alpha <= 0.01 || rx <= 0.5) return;
+    ctx.fillStyle = shadowTint;
+    if (softness > 0) {
+      ctx.globalAlpha = alpha * softness * 0.45;
+      ctx.beginPath();
+      ctx.ellipse(sx, gy, rx * 1.6, rx * 0.44, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = theme.id === "ice" ? "#294757" : theme.id === "desert" ? "#493523" : "#070D16";
     ctx.beginPath();
     ctx.ellipse(sx, gy, rx, rx * 0.32, 0, 0, Math.PI * 2);
     ctx.fill();
@@ -1010,11 +1058,15 @@ export function drawRunFrame(
       const shielded = !!world.activePowerups.shield || !!world.activePowerups.invincibility;
       const jetpackActiveNow = !!world.activePowerups.jetpack;
 
-      // Contact shadow keeps the runner visually glued to the track.
+      // Contact shadow keeps the runner visually glued to the track. While the
+      // feet are planted the shadow gets a soft penumbra, so ground contact
+      // reads as real light falloff; airborne, that penumbra fades with the
+      // jump and the shadow sharpens back up on landing.
       const airFactor = clamp(1 - p.playerY / 320, 0.25, 1);
-      drawGroundShadow(sx, GROUND_Y, drawH * 0.21 * airFactor, 0.23 * airFactor + 0.06);
+      const grounded = clamp(1 - p.playerY / 26, 0, 1);
+      drawGroundShadow(sx, GROUND_Y, drawH * 0.21 * airFactor, 0.23 * airFactor + 0.06, grounded * 0.85);
       // Tight unblurred contact core disappears as the feet leave the road.
-      drawGroundShadow(sx, GROUND_Y, drawH * 0.11, 0.14 * clamp(1 - p.playerY / 30, 0, 1));
+      drawGroundShadow(sx, GROUND_Y, drawH * 0.11, 0.14 * grounded);
 
       if (shielded) {
         ctx.beginPath();
@@ -1049,19 +1101,13 @@ export function drawRunFrame(
 
       let spriteSrc: string;
       let runFrameIdx = -1;
-      // Grounded stride only: the pose cross-fade (presentation, never timing).
-      let blendFromIdx = -1;
-      let blendAlpha = 0;
       if (world.elapsedMs < 1) spriteSrc = CHARACTER_REAR_SPRITES.idle;
       else if (jetpackActiveNow) spriteSrc = CHARACTER_REAR_SPRITES.jump;
       else if (p.sliding) spriteSrc = CHARACTER_REAR_SPRITES.slide;
       else if (p.playerY > 0)
         spriteSrc = p.velocityY > 0 ? CHARACTER_REAR_SPRITES.jump : CHARACTER_REAR_SPRITES.fall;
       else {
-        const blend = runFrameBlend(world.elapsedMs);
-        runFrameIdx = blend.index;
-        blendFromIdx = blend.prevAlpha > 0 ? blend.prevIndex : -1;
-        blendAlpha = blend.prevAlpha;
+        runFrameIdx = runStrideFrame(world.elapsedMs);
         spriteSrc = REAR_RUN_CYCLE[runFrameIdx];
       }
       let playerImg = getSprite(spriteSrc);
@@ -1071,6 +1117,14 @@ export function drawRunFrame(
           getSprite(CHARACTER_REAR_SPRITES.idle) ??
           getSprite(CHARACTER_SPRITES.run);
       }
+
+      // Stride lead-in weight: 0 while a pose is settled (single sprite draw,
+      // exactly the previous behaviour), ramping to 1 at the boundary so the
+      // incoming pose slides over the outgoing one instead of cutting. Pure
+      // presentation — the pose a given elapsed time selects never changes.
+      const strideLead = runFrameIdx >= 0 ? runStrideLead(world.elapsedMs) : 0;
+      const poseAlpha = ctx.globalAlpha;
+      const strideAlign = RUN_FRAME_ALIGN_X[runFrameIdx > 0 ? runFrameIdx : 0];
 
       if (playerImg) {
         const aspect = spriteAspect(playerImg);
@@ -1097,38 +1151,34 @@ export function drawRunFrame(
           }
           ctx.globalAlpha = invulnerable && !shielded ? 0.4 + Math.sin(world.elapsedMs / 60) * 0.3 : 1;
         }
+        // Stride transition. Outside the short blend windows `nextPose` is null
+        // and this is exactly the single-sprite draw it has always been; inside
+        // one, the outgoing pose fades out as the incoming pose fades in — the
+        // summed opacity stays constant, so the pose change has no visible step
+        // at either end of the window. Poses, boundaries, cadence and the frame
+        // an elapsed time selects are all unchanged; only the opacity ramp of
+        // the two adjacent frames during the transition is new.
+        const nextPose = strideLead > 0 ? getSprite(REAR_RUN_CYCLE[(runFrameIdx + 1) % REAR_RUN_CYCLE.length]) : null;
         ctx.save();
         ctx.translate(sx, bottom - drawH / 2);
         if (jetpackActiveNow) ctx.rotate(0.06);
-
-
-        ctx.drawImage(
-          playerImg,
-          -drawW / 2 + (runFrameIdx >= 0 ? RUN_FRAME_ALIGN_X[runFrameIdx] * drawW : 0),
-          -drawH / 2,
-          drawW,
-          drawH
-        );
-        // Soften the pose cut: the outgoing stride pose fades over the
-        // incoming one for RUN_BLEND_MS. It is drawn SECOND so the incoming
-        // pose is the frame's first character draw (every framing assertion
-        // still measures the current pose), and it keeps its own head
-        // alignment and its own aspect, so the blend does not introduce a
-        // second source of lateral or vertical drift.
-        if (blendFromIdx >= 0) {
-          const blendImg = getSprite(REAR_RUN_CYCLE[blendFromIdx]);
-          if (blendImg) {
-            const blendW = drawH * spriteAspect(blendImg);
-            ctx.globalAlpha = blendAlpha * (invulnerable && !shielded ? 0.4 + Math.sin(world.elapsedMs / 60) * 0.3 : 1);
-            ctx.drawImage(
-              blendImg,
-              -blendW / 2 + RUN_FRAME_ALIGN_X[blendFromIdx] * blendW,
-              -drawH / 2,
-              blendW,
-              drawH
-            );
-          }
+        if (nextPose) {
+          const nextIdx = (runFrameIdx + 1) % REAR_RUN_CYCLE.length;
+          const nextW = drawH * spriteAspect(nextPose);
+          ctx.globalAlpha = poseAlpha * (1 - strideLead);
+          ctx.drawImage(playerImg, -drawW / 2 + strideAlign * drawW, -drawH / 2, drawW, drawH);
+          ctx.globalAlpha = poseAlpha * strideLead;
+          ctx.drawImage(nextPose, -nextW / 2 + RUN_FRAME_ALIGN_X[nextIdx] * nextW, -drawH / 2, nextW, drawH);
+        } else {
+          ctx.drawImage(
+            playerImg,
+            -drawW / 2 + (runFrameIdx >= 0 ? strideAlign * drawW : 0),
+            -drawH / 2,
+            drawW,
+            drawH
+          );
         }
+        ctx.globalAlpha = poseAlpha;
 
         ctx.restore();
       } else {
