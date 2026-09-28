@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   ALL_SPRITE_PATHS,
+  ENVIRONMENT_SETS,
+  ROAD_MATERIAL_SPRITE,
   BACKGROUND_STRIP_TARGETS,
+  PREBAKED_CUTOUT_PATHS,
   CHARACTER_SPRITES,
   CITY_ENVIRONMENT,
   CRITICAL_SPRITE_PATHS,
@@ -106,13 +109,22 @@ describe("MPGR Run asset manifest resolves on disk", () => {
     }
   });
 
-  it("keeps the background-strip targets resolvable (flood-fill inputs)", () => {
-    // stripBackgroundToTransparent() reads naturalWidth/naturalHeight off
-    // exactly these images; a missing file means a permanent procedural
-    // fallback for the second run frame, the chest, or the checkpoint.
-    expect(BACKGROUND_STRIP_TARGETS).toContain(CHARACTER_SPRITES.run2);
-    for (const src of BACKGROUND_STRIP_TARGETS) {
-      expect(fs.existsSync(publicFile(src)), src).toBe(true);
+  it("prebakes cutouts with alpha, without main-thread flood-fill inputs", () => {
+    expect(BACKGROUND_STRIP_TARGETS).toEqual([]);
+    expect(PREBAKED_CUTOUT_PATHS).toHaveLength(3);
+    for (const src of PREBAKED_CUTOUT_PATHS) {
+      expect(src).toContain("-cutout.webp");
+      const buffer = fs.readFileSync(publicFile(src));
+      let alpha = false;
+      for (let offset = 12; offset + 8 <= buffer.length;) {
+        const chunk = buffer.subarray(offset, offset + 4).toString("latin1");
+        const size = buffer.readUInt32LE(offset + 4), payload = offset + 8;
+        if (chunk === "VP8X") alpha ||= !!(buffer[payload] & 0x10);
+        if (chunk === "VP8L") alpha ||= !!(buffer.readUInt32LE(payload + 1) & 0x10000000);
+        if (chunk === "ALPH") alpha = true;
+        offset = payload + size + (size & 1);
+      }
+      expect(alpha, src).toBe(true);
     }
   });
 
@@ -224,5 +236,22 @@ describe("DOM-only HUD art stays small", () => {
       expect(fs.existsSync(publicFile(src)), src).toBe(true);
       expect(imageDimensions(src)).toEqual({ width: 1536, height: 1024 });
     }
+  });
+});
+
+
+describe("projected street material budgets", () => {
+  it("loads only live world textures, retaining legacy building cutouts on disk", () => {
+    for (const set of Object.values(ENVIRONMENT_SETS)) {
+      for (const src of [set.facade, set.skyline, set.prop]) expect(ALL_SPRITE_PATHS).toContain(src);
+      for (const src of [set.side, set.sideMid, set.sideFar]) {
+        expect(ALL_SPRITE_PATHS).not.toContain(src);
+        expect(fs.existsSync(publicFile(src))).toBe(true);
+      }
+      expect(imageDimensions(set.facade)).toEqual({width:512, height:768});
+      expect(fileSize(set.facade)).toBeLessThan(160 * 1024);
+    }
+    expect(imageDimensions(ROAD_MATERIAL_SPRITE)).toEqual({width:512, height:512});
+    expect(fileSize(ROAD_MATERIAL_SPRITE)).toBeLessThan(160 * 1024);
   });
 });

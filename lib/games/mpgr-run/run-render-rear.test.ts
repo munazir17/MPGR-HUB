@@ -1,10 +1,11 @@
+import { RUNNER_HEIGHT_FRACTION, STREET_GROUND } from "./run-street";
 import { describe, expect, it } from "vitest";
 
-import { drawRunFrame, runViewScale, RUN_FRAME_ALIGN_X, RUN_FRAME_MS } from "@/lib/games/mpgr-run/run-render";
+import { drawRunFrame, RUN_FRAME_ALIGN_X, runStrideFrame } from "@/lib/games/mpgr-run/run-render";
 import { freshWorld, type World } from "@/lib/games/mpgr-run/run-world";
 import { CHARACTER_REAR_SPRITES } from "@/lib/games/mpgr-run/run-assets";
 import { MPGR_RUN_SIMULATION_WIDTH } from "@/lib/games/mpgr-run/authoritative-replay";
-import { PLAYER_X } from "@/lib/games/mpgr-run/run-config";
+import { PLAYER_X, PLAYER_SIZE } from "@/lib/games/mpgr-run/run-config";
 
 /**
  * Rear-camera projection contract (2026-09-26 Subway-Surfers-style
@@ -89,7 +90,8 @@ class RecordingCtx {
     const sin = Math.sin(r);
     this.m = [a * cos + c * sin, b * cos + d * sin, a * -sin + c * cos, b * -sin + d * cos, e, f];
   }
-  drawImage(img: StubImage, x: number, y: number, w: number, h: number) {
+  drawImage(img: StubImage, ...args: number[]) {
+    const [x, y, w, h] = args.length === 8 ? args.slice(4) : args;
     this.record(img.tag, x, y, w, h);
   }
   // Geometry-only ops: exercised for coverage, nothing to record.
@@ -154,10 +156,10 @@ describe("rear-camera projection (Subway Surfers style)", () => {
     const player = playerCall(ctx);
     // Centered: lane 1 with zero lane offset puts the runner on the centre
     // line, plus the measured per-frame head-sway art correction only.
-    const idx = Math.floor(5000 / RUN_FRAME_MS) % RUN_FRAME_ALIGN_X.length;
+    const idx = runStrideFrame(5000);
     expect(player.x + player.w / 2).toBeCloseTo(vw / 2 + RUN_FRAME_ALIGN_X[idx] * player.w, 1);
     // Grounded: feet exactly on the near track surface (0.82 * viewport height).
-    expect(player.y + player.h).toBeCloseTo(vh * 0.82, 1);
+    expect(player.y + player.h).toBeCloseTo(vh * STREET_GROUND, 1);
     // Lower-center framing, not floating mid-screen.
     expect(player.y + player.h).toBeGreaterThan(vh * 0.6);
     // Rear sprite set, never the side-view art.
@@ -169,7 +171,7 @@ describe("rear-camera projection (Subway Surfers style)", () => {
   it("lifts the runner exactly by playerY on jump and re-grounds on landing", () => {
     const vw = 900;
     const vh = 600;
-    const u = runViewScale(vw);
+
 
     const grounded = new RecordingCtx();
     drawRunFrame(grounded as unknown as CanvasRenderingContext2D, runningWorld(), vw, vh, makeGetSprite());
@@ -182,7 +184,7 @@ describe("rear-camera projection (Subway Surfers style)", () => {
     drawRunFrame(jumping as unknown as CanvasRenderingContext2D, world, vw, vh, makeGetSprite());
     const jump = playerCall(jumping);
     expect(jump.tag).toContain("rear-jump");
-    expect(jump.y + jump.h).toBeCloseTo(groundBottom - 80 * u, 1);
+    expect(jump.y + jump.h).toBeCloseTo(groundBottom - 80 * vh * RUNNER_HEIGHT_FRACTION / (PLAYER_SIZE * 2.4), 1);
 
     const landed = new RecordingCtx();
     const world2 = runningWorld();
@@ -302,17 +304,19 @@ describe("rear-camera projection (Subway Surfers style)", () => {
     const pPhone = playerCall(phone);
     const pDesk = playerCall(desktop);
     const ratio = pPhone.h / pDesk.h;
-    expect(ratio).toBeCloseTo(runViewScale(390) / runViewScale(1280), 3);
+    expect(ratio).toBeCloseTo(700 / 720, 3);
     // Phone readability floor: the runner stays >= 40 css px tall.
-    expect(pPhone.h).toBeGreaterThanOrEqual(40);
+    expect(pPhone.h / 700).toBeGreaterThanOrEqual(0.15);
+    expect(pPhone.h / 700).toBeLessThanOrEqual(0.18);
+    expect(pDesk.h / 720).toBeCloseTo(RUNNER_HEIGHT_FRACTION, 5);
     // Both keep the lower-center framing.
     for (const [call, vw, vh] of [
       [pPhone, 390, 700],
       [pDesk, 1280, 720],
     ] as const) {
-      const idx2 = Math.floor(5000 / RUN_FRAME_MS) % RUN_FRAME_ALIGN_X.length;
+      const idx2 = runStrideFrame(5000);
       expect(call.x + call.w / 2).toBeCloseTo(vw / 2 + RUN_FRAME_ALIGN_X[idx2] * call.w, 1);
-      expect(call.y + call.h).toBeCloseTo(vh * 0.82, 1);
+      expect(call.y + call.h).toBeCloseTo(vh * STREET_GROUND, 1);
     }
   });
 

@@ -1,0 +1,34 @@
+{
+  "cutouts": [
+    {
+      "source": "/games/mpgr-run/character/mpgr-runner-run-2.webp",
+      "output": "/games/mpgr-run/character/mpgr-runner-run-2-cutout.webp",
+      "width": 1536,
+      "height": 1024,
+      "visiblePixelAndAlphaMismatches": 0,
+      "sourceSha256": "de99bf4d1a3527dad1a73c05a717e4e0bde0884e68325b2fec3f82710a8248df"
+    },
+    {
+      "source": "/games/mpgr-run/collectibles/mpgr-run-treasure-chest.webp",
+      "output": "/games/mpgr-run/collectibles/mpgr-run-treasure-chest-cutout.webp",
+      "width": 1536,
+      "height": 1024,
+      "visiblePixelAndAlphaMismatches": 0,
+      "sourceSha256": "5b4f2ed3dc12123646216de09802f98b854764ea7e199c191a9c6ae58f23bd57"
+    },
+    {
+      "source": "/games/mpgr-run/checkpoints/mpgr-run-checkpoint.webp",
+      "output": "/games/mpgr-run/checkpoints/mpgr-run-checkpoint-cutout.webp",
+      "width": 1402,
+      "height": 1122,
+      "visiblePixelAndAlphaMismatches": 0,
+      "sourceSha256": "ea00b8f5031ffc9675fa36490923425b7083da83219c85be8e7d8c1022094e38"
+    }
+  ],
+  "citySkyline": {
+    "source": "/games/mpgr-run/environment/city/city-skyline.webp",
+    "output": "/games/mpgr-run/environment/city/city-skyline-atmospheric.webp",
+    "changedPixels": 280018,
+    "alphaUnchanged": true
+  }
+}

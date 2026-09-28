@@ -57,46 +57,46 @@ export const RUN_WORLD_THEMES: Record<RunWorldId, RunWorldTheme> = {
   city: {
     id: "city",
     sky: ["#04060D", "#0A1424", "#16294A"],
-    horizonGlow: "rgba(64,148,255,0.46)",
-    groundFar: "#1E2A3A",
-    groundNear: "#121B28",
-    trackFar: "#202C3E",
-    trackNear: "#2A3850",
-    rail: "#3B82F6",
+    horizonGlow: "rgba(150,90,255,0.5)",
+    groundFar: "#121838",
+    groundNear: "#0B1029",
+    trackFar: "#1A2050",
+    trackNear: "#121839",
+    rail: "#4C8DFF",
     chevron: "#38BDF8",
-    haze: "rgba(12,22,40,0.94)",
-    fog: "#33547F",
+    haze: "rgba(58,52,150,0.9)",
+    fog: "#3D4F9E",
     particle: "motes",
     particleColor: "rgba(125,195,255,0.55)",
-    curb: "#232F42",
-    curbEdge: "#3B82F6",
+    curb: "#1D2455",
+    curbEdge: "#38BDF8",
     twinkle: ["#7DD3FC", "#F0ABFC"],
-    curbOuter: "#1A2434",
+    curbOuter: "#141A40",
     sparkle: false,
   },
   ice: {
     id: "ice",
-    sky: ["#08111F", "#123049", "#3E7FA0"],
+    sky: ["#44749C", "#77ADC8", "#C1DFE9"],
     horizonGlow: "rgba(150,235,255,0.4)",
-    groundFar: "#CFE4EF",
+    groundFar: "#C1D9E6",
     groundNear: "#9DBDD2",
-    trackFar: "#1B2E3F",
-    trackNear: "#24394B",
+    trackFar: "#4374B8",
+    trackNear: "#2E5CA6",
     rail: "#67E8F9",
     chevron: "#7DD3FC",
     haze: "rgba(186,222,238,0.9)",
-    fog: "#E6F4FA",
+    fog: "#BEDAE8",
     particle: "snow",
     particleColor: "rgba(255,255,255,0.8)",
     curb: "#DDEDF6",
     curbEdge: "#67E8F9",
     twinkle: ["#A5F3FC", "#E0F2FE"],
-    curbOuter: "#F2FAFE",
+    curbOuter: "#D2E3ED",
     sparkle: true,
   },
   desert: {
     id: "desert",
-    sky: ["#20090a", "#7A3A12", "#E8863C"],
+    sky: ["#36516F", "#C78A74", "#F0BB82"],
     horizonGlow: "rgba(255,178,88,0.45)",
     groundFar: "#C79A5F",
     groundNear: "#A5763F",
@@ -152,4 +152,27 @@ export function resolveRunWorld(distanceMeters: number): RunWorldState {
 /** Convenience for the renderer: distance in px (sim units) -> world state. */
 export function resolveRunWorldFromPx(traveledPx: number): RunWorldState {
   return resolveRunWorld(traveledPx / PX_PER_METER);
+}
+
+// Cached colour ramps avoid the old abrupt fog-colour switch at a world
+// boundary. Built once, not CSS/gradient strings allocated every frame.
+const TRANSITION_FOG = RUN_WORLD_ORDER.map((id, next) => {
+  const previous = RUN_WORLD_ORDER[(next + RUN_WORLD_ORDER.length - 1) % RUN_WORLD_ORDER.length];
+  const a = parseInt(RUN_WORLD_THEMES[previous].fog.slice(1), 16);
+  const b = parseInt(RUN_WORLD_THEMES[id].fog.slice(1), 16);
+  return Array.from({ length: 129 }, (_, i) => {
+    const t = i / 128;
+    const r = Math.round(((a >> 16) & 255) * (1 - t) + ((b >> 16) & 255) * t);
+    const g = Math.round(((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t);
+    const blue = Math.round((a & 255) * (1 - t) + (b & 255) * t);
+    return `#${((r << 16) | (g << 8) | blue).toString(16).padStart(6, "0")}`;
+  });
+});
+
+export function runTransitionFogFromPx(traveledPx: number): string {
+  const meters = traveledPx / PX_PER_METER;
+  const boundary = Math.round(meters / RUN_WORLD_LENGTH_M);
+  const next = ((boundary % RUN_WORLD_ORDER.length) + RUN_WORLD_ORDER.length) % RUN_WORLD_ORDER.length;
+  const t = Math.max(0, Math.min(1, 0.5 + (meters - boundary * RUN_WORLD_LENGTH_M) / RUN_WORLD_FADE_M));
+  return TRANSITION_FOG[next][Math.round(t * 128)];
 }
