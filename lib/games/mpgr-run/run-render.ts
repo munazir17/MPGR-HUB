@@ -22,6 +22,7 @@ import {
   CHECKPOINT_SPRITE,
   CITY_ENVIRONMENT,
   ENVIRONMENT_SETS,
+  ENVIRONMENT_DECOR,
   AIRSHIP_SPRITE,
   ROAD_MATERIAL_SPRITE,
 } from "@/lib/games/mpgr-run/run-assets";
@@ -318,11 +319,44 @@ export function drawRunFrame(
   ctx.fillStyle = glowBand;
   ctx.fillRect(-40, HORIZON_Y - H * 0.14, W + 80, H * 0.14 + 4);
 
-  // --- Skyline panoramas on the horizon (two depth layers) ---------------
-  // City retains the original MPGR panorama treatment; other worlds keep
-  // their atmospheric skylines. Road/street projection is independent.
+  // --- Sky plate (real MPGR sky art, horizon-anchored, never stretched) ----
+  // Cover-fit to the sky area with the plate's bottom edge on the horizon,
+  // so its horizon glow always meets the skyline. Only lateral camera
+  // parallax moves it; forward scroll must not slide the sky sideways.
+  const decorSet = ENVIRONMENT_DECOR[theme.id];
+  const skyPlate = getSprite(decorSet.sky);
+  if (skyPlate) {
+    const skyAspect = spriteAspect(skyPlate);
+    const skyDrawH = Math.max(HORIZON_Y + 4, (W * 1.12) / skyAspect);
+    const skyDrawW = skyDrawH * skyAspect;
+    const skyX = clamp((W - skyDrawW) / 2 - camLat * 0.03, W - skyDrawW, 0);
+    ctx.drawImage(skyPlate, skyX, HORIZON_Y + 2 - skyDrawH, skyDrawW, skyDrawH);
+  }
+
+  // --- Skyline layers on the horizon (far -> near, atmospheric depth) -------
+  // City: hazy far towers, then the MPGR skyline cut-out, each with its own
+  // lateral parallax. The old full-scene poster panoramas are only a
+  // fallback until these decode. Other worlds keep their atmospheric skyline.
+  const cityFar = theme.id === "city" ? getSprite(ENVIRONMENT_DECOR.city.skylineFar) : null;
+  const cityNear = theme.id === "city" ? getSprite(ENVIRONMENT_DECOR.city.skylineNear) : null;
   const skylineImg = theme.id === "city" ? null : getSprite(envSet.skyline);
-  if (skylineImg) {
+  if (cityFar && cityNear) {
+    const cityBands: Array<[CanvasImageSource, number, number, number]> = [
+      [cityFar, 0.3, 0.9, 0.03],
+      [cityNear, 0.5, 0.96, 0.09],
+    ];
+    for (const [img, bandFrac, alpha, camFactor] of cityBands) {
+      const aspect = spriteAspect(img);
+      const bandH = HORIZON_Y * bandFrac;
+      const layerW = bandH * aspect;
+      const offset = ((camLat * camFactor) % layerW + layerW) % layerW;
+      ctx.globalAlpha = alpha;
+      for (let x = -offset - layerW; x < W + layerW; x += layerW) {
+        ctx.drawImage(img, x, HORIZON_Y - bandH + 2, layerW, bandH);
+      }
+      ctx.globalAlpha = 1;
+    }
+  } else if (skylineImg) {
     const aspect = spriteAspect(skylineImg);
     for (const [bandFrac, alpha, camFactor] of SKYLINE_LAYERS) {
       const bandH = HORIZON_Y * bandFrac;
@@ -406,6 +440,13 @@ export function drawRunFrame(
   hazeUp.addColorStop(1, theme.haze);
   ctx.fillStyle = hazeUp;
   ctx.fillRect(-40, HORIZON_Y - H * 0.1, W + 80, H * 0.1 + 1);
+  // Ground-side haze: the same atmospheric seam continues below the horizon
+  // so the skyline base never meets the ground in a hard line.
+  const hazeDown = ctx.createLinearGradient(0, HORIZON_Y, 0, HORIZON_Y + H * 0.09);
+  hazeDown.addColorStop(0, theme.haze);
+  hazeDown.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = hazeDown;
+  ctx.fillRect(-40, HORIZON_Y, W + 80, H * 0.09);
 
 
   const sNear = S_MAX;
@@ -651,8 +692,25 @@ export function drawRunFrame(
   }
   ctx.globalAlpha = 1;
 
-  if (W > H) drawStreetArchitecture(ctx, W, H, trackHalf + H * 0.34, camLat, world.traveledPx + playerDepthX, world.elapsedMs, theme, getSprite(envSet.facade));
-  drawStreetArchitecture(ctx, W, H, trackHalf, camLat, world.traveledPx + playerDepthX, world.elapsedMs, theme, getSprite(envSet.facade));
+  // Two building rows give the street real depth layering: an outer,
+  // differently-salted row behind the roadside row (full depth in landscape,
+  // far half only in portrait to stay cheap on phones), then the roadside
+  // row carrying the MPGR signage/banners.
+  const streetTexture = getSprite(envSet.facade);
+  const streetDecor = getSprite(decorSet.decor);
+  const streetDepth = world.traveledPx + playerDepthX;
+  // Landscape/wide viewports add farther, wider rows (2 on 16:9, 3 on
+  // ultrawide) so the city keeps filling the screen sideways instead of
+  // ending in bare ground. Rows are drawn farthest first (painter order).
+  const rowGap = W > H ? H * 0.34 : W * 0.3;
+  const outerRows = W > H ? (W / H > 2 ? 3 : 2) : 1;
+  for (let row = outerRows; row >= 1; row--) {
+    drawStreetArchitecture(
+      ctx, W, H, trackHalf + rowGap + W * 0.3 * (row - 1), camLat, streetDepth, world.elapsedMs, theme,
+      streetTexture, null, 7 + 6 * (row - 1), W > H ? -Infinity : 300, row === 1 ? 1.3 : 1.9 + 0.5 * (row - 2),
+    );
+  }
+  drawStreetArchitecture(ctx, W, H, trackHalf, camLat, streetDepth, world.elapsedMs, theme, streetTexture, streetDecor);
 
   // --- Checkpoint flash (screen-space, unchanged behaviour) ---------------
   if (world.elapsedMs < world.checkpointFlashUntilMs) {
