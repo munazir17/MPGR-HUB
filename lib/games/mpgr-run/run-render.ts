@@ -230,23 +230,41 @@ export function drawRunFrame(
     const cityMid = getSprite(CITY_ENVIRONMENT.midground);
     const cityFg = getSprite(CITY_ENVIRONMENT.foreground);
     const cityReady = !!(cityBg && cityMid && cityFg);
-    const drawParallaxLayer = (img: CanvasImageSource | null, speedFactor: number, alpha: number) => {
+    // Depth layers: nearer layers scroll faster, sit lower on screen and are
+    // fully opaque where they matter; `yShift` (fraction of canvas height)
+    // seats the far skyline behind the lane band on every aspect ratio
+    // because the art is height-fit, so lane positions (a fraction of the
+    // height) and the road in the artwork stay aligned.
+    const drawParallaxLayer = (
+      img: CanvasImageSource | null,
+      speedFactor: number,
+      alpha: number,
+      yShift = 0,
+    ) => {
       if (!img) return;
       const layerW = height * RUN_CITY_ART_ASPECT;
       const offset = (world.traveledPx * speedFactor * u) % layerW;
       const copies = Math.ceil(viewportWidth / layerW) + 1;
+      const y = yShift * height;
       ctx.globalAlpha = alpha;
       for (let i = 0; i <= copies; i++) {
-        ctx.drawImage(img, i * layerW - offset, 0, layerW, height);
+        ctx.drawImage(img, i * layerW - offset, y, layerW, height);
       }
       ctx.globalAlpha = 1;
     };
     // All three layers or none — a late mid/fg arriving after bg would
     // otherwise jump the city from "half-loaded" to full mid-run.
     if (cityReady) {
-      drawParallaxLayer(cityBg, 0.05, 0.9);
-      drawParallaxLayer(cityMid, 0.15, 0.85);
-      drawParallaxLayer(cityFg, 0.35, 0.8);
+      drawParallaxLayer(cityBg, 0.04, 1);
+      drawParallaxLayer(cityMid, 0.14, 1, -0.17);
+      // Atmospheric depth: haze thickens toward the horizon, separating the
+      // far skyline from the near roadside towers.
+      const haze = ctx.createLinearGradient(0, height * 0.2, 0, height * 0.55);
+      haze.addColorStop(0, "rgba(38,36,150,0)");
+      haze.addColorStop(1, "rgba(38,36,150,0.28)");
+      ctx.fillStyle = haze;
+      ctx.fillRect(0, height * 0.2, viewportWidth, height * 0.35);
+      drawParallaxLayer(cityFg, 0.32, 1);
     }
 
     // Procedural skyline glow strips — fallback only until every city
