@@ -28,7 +28,7 @@ export function streetGround(height: number, z: number): number {
 }
 
 const MATERIALS = {
-  city: { front: "#172957", side: "#0d1839", roof: "#304473", window: "#4ea7d9", recess: "#09132d", trim: "#69539d" },
+  city: { front: "#1b2a66", side: "#0f1747", roof: "#3a3f8f", window: "#5cc8ff", recess: "#0a1035", trim: "#8b5cf6" },
   ice: { front: "#b4d8e9", side: "#578ba9", roof: "#e8f5fa", window: "#d9f7ff", recess: "#366781", trim: "#d5edf5" },
   desert: { front: "#d6a36e", side: "#926445", roof: "#f2ca91", window: "#ffd795", recess: "#614432", trim: "#e4ba85" },
 } as const;
@@ -36,13 +36,20 @@ const MATERIALS = {
 // Mip levels are built once per decoded atlas, not once per building/frame.
 // They avoid repeatedly minifying a 512x768 texture into subpixel far walls.
 const mipmaps = new WeakMap<object, CanvasImageSource[]>();
+function imageWidth(source: CanvasImageSource): number {
+  const image = source as HTMLImageElement;
+  return image.naturalWidth || image.width || 0;
+}
+function imageHeight(source: CanvasImageSource): number {
+  const image = source as HTMLImageElement;
+  return image.naturalHeight || image.height || 0;
+}
 function facadeMip(source: CanvasImageSource, height: number): CanvasImageSource {
   if (typeof document === "undefined") return source;
   let levels = mipmaps.get(source);
   if (!levels) {
     levels = [source];
-    const image = source as HTMLImageElement;
-    let w = image.naturalWidth || image.width, h = image.naturalHeight || image.height;
+    let w = imageWidth(source), h = imageHeight(source);
     for (let i = 0; i < 4; i++) {
       w = Math.max(1, Math.round(w / 2)); h = Math.max(1, Math.round(h / 2));
       const canvas = document.createElement("canvas"); canvas.width = w; canvas.height = h;
@@ -58,6 +65,50 @@ function facadeMip(source: CanvasImageSource, height: number): CanvasImageSource
 }
 
 /**
+ * Two floors-worth of the facade atlas stacked vertically, built once per
+ * decoded atlas. A tall tower samples this so its floors and window bays
+ * keep a believable size in world units instead of one 768px atlas being
+ * stretched over a 1000-unit wall. Falls back to the plain atlas (1 rep)
+ * wherever no canvas is available, so behaviour degrades, never breaks.
+ */
+export const FACADE_TOWER_REPS = 2;
+interface TowerTexture { image: CanvasImageSource; reps: number }
+const towers = new WeakMap<object, TowerTexture>();
+function towerTexture(source: CanvasImageSource): TowerTexture {
+  let tower = towers.get(source);
+  if (tower) return tower;
+  tower = { image: source, reps: 1 };
+  const w = imageWidth(source), h = imageHeight(source);
+  if (typeof document !== "undefined" && w > 0 && h > 0) {
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h * FACADE_TOWER_REPS;
+    const context = canvas.getContext("2d");
+    if (context && typeof context.drawImage === "function") {
+      for (let i = 0; i < FACADE_TOWER_REPS; i++) context.drawImage(source, 0, i * h, w, h);
+      tower = { image: canvas, reps: FACADE_TOWER_REPS };
+    }
+  }
+  towers.set(source, tower);
+  return tower;
+}
+
+/**
+ * Cells of the per-world decor atlas (city: MPGR signs, ice/desert: cloth
+ * banners), in atlas pixels. The renderer projects one cell onto a
+ * road-facing wall as depth-correct strips.
+ */
+export const DECOR_CELLS = {
+  city: [
+    { x: 0, y: 0, w: 256, h: 192 },
+    { x: 256, y: 0, w: 256, h: 192 },
+    { x: 0, y: 192, w: 128, h: 192 },
+    { x: 128, y: 192, w: 128, h: 192 },
+  ],
+  ice: [{ x: 0, y: 0, w: 128, h: 256 }, { x: 128, y: 0, w: 128, h: 256 }],
+  desert: [{ x: 0, y: 0, w: 128, h: 256 }, { x: 128, y: 0, w: 128, h: 256 }],
+} as const;
+
+/**
  * A bounded street of solid prisms, not billboard sprites. Each wall uses
  * its own near/far depth, and each window is projected onto that wall.
  * Far buildings get fewer floors/windows. The loop is fixed at 46 blocks;
@@ -69,27 +120,34 @@ export function drawStreetArchitecture(
   width: number, height: number, trackHalf: number, cameraLateral: number,
   traveled: number, elapsed: number, theme: RunWorldTheme,
   texture: CanvasImageSource | null = null,
+  // Environment-upgrade options (all optional; defaults reproduce the old call shape).
+  decor: CanvasImageSource | null = null, // MPGR sign / banner atlas (see DECOR_CELLS)
+  salt = 0, // second street row: different heights/profiles from the same slots
+  minZ = -Infinity, // skip walls nearer than this depth (cheap far-only rows)
+  widen = 1, // lateral block width multiplier for far side rows on wide screens
 ): void {
   const material = MATERIALS[theme.id];
   const center = width / 2 - cameraLateral;
   const residue = ((-traveled % STREET_SPACING) + STREET_SPACING) % STREET_SPACING;
   for (let i = STREET_BLOCKS - 1; i >= 0; i--) {
     const z = residue + i * STREET_SPACING - 160;
+    if (z < minZ) continue;
     const index = Math.round((z + traveled + 160) / STREET_SPACING);
-    const farZ = z + STREET_SPACING * (0.72 + streetHash(index, 119) * 0.19);
+    const hk = salt ? index ^ Math.imul(salt, 0x9e3779b1) : index;
+    const farZ = z + STREET_SPACING * (0.72 + streetHash(hk, 119) * 0.19);
     const nearS = streetScale(z), farS = streetScale(farZ);
     const groundNear = streetGround(height, z), groundFar = streetGround(height, farZ);
     for (let side = -1; side <= 1; side += 2) {
-      const r = streetHash(index, side + 83);
+      const r = streetHash(hk, side + 83);
       // Independently salted profiles: rare landmarks reuse a street slot,
       // never add objects or consume the authoritative random stream.
-      const profile = streetHash(index, side < 0 ? 401 : 719);
+      const profile = streetHash(hk, side < 0 ? 401 : 719);
       const landmark = profile > 0.955;
       const totalHeight = height * (0.25 + r * r * 0.78) * (landmark ? 1.12 : 1);
       const stepped = r > 0.68; // keep the existing number of upper volumes
       const buildingHeight = totalHeight * (stepped ? 0.64 + profile * 0.13 : 1);
-      const inner = side * (trackHalf + height * (0.045 + streetHash(index, side + 12) * 0.018));
-      const outer = inner + side * height * (0.12 + streetHash(index, side + 17) * 0.22) * (landmark ? 1.08 : 1);
+      const inner = side * (trackHalf + height * (0.045 + streetHash(hk, side + 12) * 0.018));
+      const outer = inner + side * height * (0.10 + streetHash(hk, side + 17) * 0.17) * (landmark ? 1.08 : 1) * widen;
       const xn = center + inner * nearS, xf = center + inner * farS;
       const xo = center + outer * nearS, xof = center + outer * farS;
       if (Math.min(xn, xf, xo, xof) > width + 4 || Math.max(xn, xf, xo, xof) < -4) continue;
@@ -103,7 +161,7 @@ export function drawStreetArchitecture(
       // Two faces, cached atlas detail and fog; no filters/scene objects.
       if (stepped) {
         const upperInner = inner + (outer - inner) * (0.18 + profile * 0.16);
-        const upperOuter = outer - (outer - inner) * (0.09 + streetHash(index, side + 331) * 0.13);
+        const upperOuter = outer - (outer - inner) * (0.09 + streetHash(hk, side + 331) * 0.13);
         const un = center + upperInner * nearS, uf = center + upperInner * farS;
         const uo = center + upperOuter * nearS;
         const tn = groundNear - totalHeight * nearS, tf = groundFar - totalHeight * farS;
@@ -156,15 +214,23 @@ export function drawStreetArchitecture(
         // Strip projection follows the wall's own near/far scale; unlike a
         // sprite card its top, base and texture converge toward the horizon.
         // <= 12 strips per visible wall, cached mip atlas, bounded projection strips.
-        const mappedTexture = facadeMip(texture, buildingHeight * nearS);
-        const image = mappedTexture as HTMLImageElement;
-        const iw = image.naturalWidth || image.width, ih = image.naturalHeight || image.height;
+        // Texture sampling is WORLD-SCALED: the source window is sized from
+        // the wall's depth/height in world units (floors stay floor-sized,
+        // bays stay bay-sized) and anchored to the ground floor, instead of
+        // one atlas being stretched over the whole wall.
+        const tower = towerTexture(texture);
+        const mappedTexture = facadeMip(tower.image, buildingHeight * nearS / tower.reps);
+        const iw = imageWidth(mappedTexture), ih = imageHeight(mappedTexture);
+        const unitsAcross = Math.max(height * 0.2, 190); // world units per atlas width
+        const unitsUp = height * 0.4; // world units per atlas height
+        const rows = Math.min(1, buildingHeight / unitsUp / tower.reps);
+        const sh = ih * Math.max(0.12, rows);
+        const sy = ih - sh;
+        const wallDepth = Math.max(1, farZ - z);
+        const cols = Math.min(1, wallDepth / unitsAcross);
+        const moduleWidth = landmark ? Math.min(cols, 0.5) : cols;
+        const moduleStart = (1 - moduleWidth) * streetHash(hk, side + 92);
         const slices = Math.max(2, Math.min(12, Math.ceil(Math.abs(xn - xf) / 5)));
-        const crop = 0.58 + streetHash(index, side + 76) * 0.42;
-        // Stable facade modules, rather than stretching the identical full
-        // atlas across every block. Same number of texture draws as before.
-        const moduleWidth = landmark ? 0.34 : 0.45 + Math.floor(streetHash(index, side + 91) * 3) * 0.25;
-        const moduleStart = (1 - moduleWidth) * streetHash(index, side + 92);
         ctx.save();
         ctx.beginPath(); ctx.moveTo(xn, yn); ctx.lineTo(xf, yf); ctx.lineTo(xf, groundFar); ctx.lineTo(xn, groundNear); ctx.closePath(); ctx.clip();
         for (let slice = 0; slice < slices; slice++) {
@@ -173,11 +239,13 @@ export function drawStreetArchitecture(
           const xa = center + inner * sa, xb = center + inner * sb;
           const sm = (sa + sb) / 2;
           const top = height * (STREET_HORIZON + (STREET_GROUND - STREET_HORIZON) * sm) - buildingHeight * sm;
-          ctx.drawImage(mappedTexture, iw * (moduleStart + moduleWidth * a), ih * (1 - crop), iw * moduleWidth / slices, ih * crop, Math.min(xa, xb), top, Math.abs(xa - xb) + 0.5, buildingHeight * sm);
+          ctx.drawImage(mappedTexture, iw * (moduleStart + moduleWidth * a), sy, iw * moduleWidth / slices, sh, Math.min(xa, xb), top, Math.abs(xa - xb) + 0.5, buildingHeight * sm);
         }
         ctx.restore();
-        ctx.drawImage(mappedTexture, iw * moduleStart, ih * (1 - crop), iw * moduleWidth, ih * crop, Math.min(xn, xo), yn, Math.abs(xo - xn), groundNear - yn);
-        ctx.globalAlpha = 0.23 + profile * 0.18;
+        const frontCols = Math.min(1, Math.abs(outer - inner) / unitsAcross);
+        const frontStart = (1 - frontCols) * streetHash(hk, side + 93);
+        ctx.drawImage(mappedTexture, iw * frontStart, sy, iw * frontCols, sh, Math.min(xn, xo), yn, Math.abs(xo - xn), groundNear - yn);
+        ctx.globalAlpha = 0.23 + profile * 0.18 + (theme.id === "city" ? 0.16 : 0);
         ctx.fillStyle = material.side;
         quad(ctx, xn, yn, xo, yn, xo, groundNear, xn, groundNear);
         ctx.globalAlpha = 1;
@@ -205,7 +273,7 @@ export function drawStreetArchitecture(
           const ga = height * (STREET_HORIZON + (STREET_GROUND - STREET_HORIZON) * sa);
           const gb = height * (STREET_HORIZON + (STREET_GROUND - STREET_HORIZON) * sb);
           const wh = buildingHeight / rows * (theme.id === "desert" ? 0.45 : 0.6);
-          const lit = streetHash(index * 103 + row * 7 + col, side + 50);
+          const lit = streetHash(hk * 103 + row * 7 + col, side + 50);
           const pulse = 0.85 + 0.15 * Math.sin(elapsed / 1600 + index + row);
           ctx.fillStyle = lit > 0.36 ? material.window : material.recess;
           ctx.globalAlpha = lit > 0.36 ? (0.3 + lit * 0.48) * pulse : 0.8;
@@ -217,13 +285,82 @@ export function drawStreetArchitecture(
           ctx.globalAlpha = 1;
         }
       }
+      // --- Lighting & material response (presentation only) -----------------
+      // Ambient occlusion where the wall meets the street, then a lit upper
+      // band from the sky, both on the road-facing wall's own plane.
+      if (z < 2600) {
+        ctx.fillStyle = material.recess;
+        ctx.globalAlpha = 0.34 * (1 - fog);
+        quad(ctx, xn, groundNear - buildingHeight * 0.16 * nearS, xf, groundFar - buildingHeight * 0.16 * farS, xf, groundFar, xn, groundNear);
+        ctx.fillStyle = material.roof;
+        ctx.globalAlpha = 0.11 * (1 - fog);
+        quad(ctx, xn, yn, xf, yf, xf, groundFar - buildingHeight * 0.8 * farS, xn, groundNear - buildingHeight * 0.8 * nearS);
+        ctx.globalAlpha = 1;
+      }
+      // Emissive courses: two light strips that recede with the wall, plus a
+      // lit corner edge. City neon, ice-crystal glow, desert lantern amber.
+      if (z < 2200 && (theme.id === "city" ? r > 0.28 : r > 0.62)) {
+        const pulse = 0.82 + 0.18 * Math.sin(elapsed / 900 + hk * 1.7);
+        ctx.strokeStyle = theme.curbEdge;
+        ctx.lineWidth = Math.max(0.6, (theme.id === "desert" ? 1.1 : 1.7) * nearS);
+        ctx.globalAlpha = (theme.id === "desert" ? 0.4 : 0.62) * pulse * (1 - fog);
+        for (let course = 0; course < 2; course++) {
+          const level = buildingHeight * (course === 0 ? 0.34 : 0.68);
+          ctx.beginPath();
+          ctx.moveTo(xn, groundNear - level * nearS);
+          ctx.lineTo(xf, groundFar - level * farS);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 0.5 * pulse * (1 - fog);
+        ctx.beginPath(); ctx.moveTo(xn, yn); ctx.lineTo(xn, groundNear); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      // MPGR signage / banners projected onto the road-facing wall as
+      // depth-correct strips (real branded art, no free-floating cards).
+      if (decor && z < 1500 && streetHash(hk, side + 61) > 0.5) {
+        const cells = DECOR_CELLS[theme.id];
+        const cell = cells[Math.floor(streetHash(hk, side + 62) * cells.length) % cells.length];
+        const mount = buildingHeight * 0.16;
+        const wanted = theme.id === "city" ? height * 0.13 : height * 0.15;
+        const signH = Math.min(wanted * cell.h / 192 * (theme.id === "city" ? 1 : 0.9), buildingHeight * 0.66);
+        const signW = signH * cell.w / cell.h;
+        const z0 = z + (farZ - z) * (0.08 + 0.2 * streetHash(hk, side + 63));
+        const z1 = Math.min(farZ - 4, z0 + signW);
+        if (z1 > z0 + 6 && signH > 4) {
+          const n = z < 600 ? 4 : 2;
+          const glow = theme.id === "city" ? theme.rail : theme.curbEdge;
+          ctx.fillStyle = glow;
+          ctx.globalAlpha = 0.16 * (1 - fog);
+          const g0 = streetScale(z0), g1 = streetScale(z1);
+          quad(ctx, center + inner * g0, streetGround(height, z0) - (mount - 5) * g0, center + inner * g1, streetGround(height, z1) - (mount - 5) * g1,
+            center + inner * g1, streetGround(height, z1) - (mount + signH + 5) * g1, center + inner * g0, streetGround(height, z0) - (mount + signH + 5) * g0);
+          ctx.globalAlpha = 1 - fog * 0.6;
+          for (let i = 0; i < n; i++) {
+            const za = z0 + (z1 - z0) * i / n, zb = z0 + (z1 - z0) * (i + 1) / n;
+            const sa = streetScale(za), sb = streetScale(zb), sm = (sa + sb) / 2;
+            const xa = center + inner * sa, xb = center + inner * sb;
+            const gy = height * (STREET_HORIZON + (STREET_GROUND - STREET_HORIZON) * sm);
+            // Right-hand walls recede right-to-left; read the cell in screen order.
+            const f0 = side < 0 ? i / n : 1 - (i + 1) / n;
+            ctx.drawImage(decor, cell.x + cell.w * f0, cell.y, cell.w / n, cell.h, Math.min(xa, xb), gy - (mount + signH) * sm, Math.abs(xb - xa) + 0.5, signH * sm);
+          }
+          ctx.globalAlpha = 1;
+        }
+      }
       // Pale roof accumulation / sandstone cornice; restrained cyan city trim.
       ctx.strokeStyle = theme.id === "city" && r > 0.78 ? theme.rail : material.roof;
       ctx.lineWidth = (theme.id === "ice" ? 5 : 2) * nearS;
       ctx.beginPath(); ctx.moveTo(xo, yn); ctx.lineTo(xn, yn); ctx.lineTo(xf, yf); ctx.stroke();
       if (theme.id !== "desert" && r > 0.55 && !stepped && !landmark) {
+        // Roof mast with a lit tip (city/ice), read against the sky plate.
         ctx.fillStyle = material.trim;
-        ctx.fillRect((xn + xo) / 2, yn - 28 * nearS, 1.4 * nearS, 28 * nearS);
+        ctx.fillRect((xn + xo) / 2, yn - 46 * nearS, 2 * nearS, 46 * nearS);
+        if (z < 1600) {
+          ctx.fillStyle = theme.twinkle[index % 2];
+          ctx.globalAlpha = 0.6 + 0.4 * Math.sin(elapsed / 500 + hk);
+          ctx.fillRect((xn + xo) / 2 - 1.5 * nearS, yn - 49 * nearS, 5 * nearS, 4 * nearS);
+          ctx.globalAlpha = 1;
+        }
       }
       // Occasional service crown/beacon, attached to the true upper roof.
       // Two small rects replace the generic silhouette, no blur or new mesh.
@@ -239,7 +376,7 @@ export function drawStreetArchitecture(
       if (z < 1300) {
         // Recessed plinth ties both wall faces to their contact footprint.
         // Ground coordinates are identical to the wall, not a screen band.
-        const plinth = height * (0.016 + streetHash(index, side + 97) * 0.012);
+        const plinth = height * (0.016 + streetHash(hk, side + 97) * 0.012);
         ctx.fillStyle = theme.id === "ice" ? material.side : material.recess;
         quad(ctx, xn, groundNear - plinth * nearS, xf, groundFar - plinth * farS, xf, groundFar, xn, groundNear);
         quad(ctx, xn, groundNear - plinth * nearS, xo, groundNear - plinth * nearS, xo, groundNear, xn, groundNear);

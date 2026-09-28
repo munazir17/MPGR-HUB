@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { drawRunFrame, runViewScale, RUN_FRAME_ALIGN_X, RUN_FRAME_START_MS, RUN_STRIDE_MS } from "@/lib/games/mpgr-run/run-render";
 import { freshWorld, type World } from "@/lib/games/mpgr-run/run-world";
-import { CITY_ENVIRONMENT, ENVIRONMENT_SETS } from "@/lib/games/mpgr-run/run-assets";
+import { CITY_ENVIRONMENT, ENVIRONMENT_DECOR, ENVIRONMENT_SETS } from "@/lib/games/mpgr-run/run-assets";
 import {
   resolveRunWorld,
   resolveRunWorldFromPx,
@@ -196,17 +196,25 @@ describe("world rendering surrounds the track (no black void)", () => {
       const right = sides.filter((c) => c.x + c.w / 2 > vw * 0.68);
       expect(left.length).toBeGreaterThan(0);
       expect(right.length).toBeGreaterThan(0);
-      // City must retain all three original MPGR panorama layers, even
-      // when the alternate atmospheric skyline is already decode-ready.
+      // City draws its layered skyline (hazy far towers + MPGR mid skyline).
+      // The old poster-like full-scene panoramas are fallback-only, so they
+      // must NOT be painted once the layered art is decode-ready.
       const skyPaths: string[] = worldId === "city"
-        ? [CITY_ENVIRONMENT.background, CITY_ENVIRONMENT.midground, CITY_ENVIRONMENT.foreground]
+        ? [ENVIRONMENT_DECOR.city.skylineFar, ENVIRONMENT_DECOR.city.skylineNear]
         : [set.skyline];
       for (const path of skyPaths) {
         expect(ctx.calls.some((c) => c.tag === path)).toBe(true);
       }
       if (worldId === "city") {
         expect(ctx.calls.some((c) => c.tag === set.skyline)).toBe(false);
+        for (const legacy of [CITY_ENVIRONMENT.background, CITY_ENVIRONMENT.midground, CITY_ENVIRONMENT.foreground]) {
+          expect(ctx.calls.some((c) => c.tag === legacy)).toBe(false);
+        }
       }
+      // Every world paints its own sky plate behind the skyline, anchored to the horizon.
+      const plate = ctx.calls.find((c) => c.tag === ENVIRONMENT_DECOR[worldId].sky);
+      expect(plate, `${worldId} sky plate`).toBeTruthy();
+      expect(plate!.y + plate!.h).toBeCloseTo(vh * STREET_HORIZON + 2 * runViewScale(vw), 0);
       const sky = ctx.calls.filter((c) => skyPaths.includes(c.tag));
       expect(sky.length).toBeGreaterThan(0);
       for (const band of sky) {
@@ -223,6 +231,26 @@ describe("world rendering surrounds the track (no black void)", () => {
       expect(Math.max(...widths)).toBeGreaterThan(2 * Math.min(...widths));
     });
   }
+
+  it("falls back to the legacy city panoramas until the layered skyline decodes", () => {
+    const layered = new Set<string>([ENVIRONMENT_DECOR.city.skylineFar, ENVIRONMENT_DECOR.city.skylineNear]);
+    const base = makeGetSprite();
+    const ctx = new EnvRecordingCtx();
+    drawRunFrame(ctx as unknown as CanvasRenderingContext2D, worldAt(120), vw, vh, (src) => (layered.has(src) ? null : base(src)));
+    for (const legacy of [CITY_ENVIRONMENT.background, CITY_ENVIRONMENT.midground, CITY_ENVIRONMENT.foreground]) {
+      expect(ctx.calls.some((c) => c.tag === legacy)).toBe(true);
+    }
+  });
+
+  it("projects MPGR signage / banners onto road-facing walls in every world", () => {
+    for (const [meters, worldId] of [[120, "city"], [620, "ice"], [1060, "desert"]] as Array<[number, keyof typeof ENVIRONMENT_DECOR]>) {
+      const ctx = frame(meters);
+      const decor = ctx.calls.filter((c) => c.tag === ENVIRONMENT_DECOR[worldId].decor);
+      expect(decor.length, `${worldId} decor strips`).toBeGreaterThan(0);
+      const left = decor.some((c) => c.x + c.w / 2 < vw / 2), right = decor.some((c) => c.x + c.w / 2 > vw / 2);
+      expect(left && right, `${worldId} decor on both sides`).toBe(true);
+    }
+  });
 
   it("keeps the rear runner grounded while the world changes", () => {
     for (const meters of [120, 620, 1060]) {

@@ -243,6 +243,42 @@ export const ENVIRONMENT_SETS = {
 
 export type RunWorldId = keyof typeof ENVIRONMENT_SETS;
 
+<<<<<<< Updated upstream
+=======
+/**
+ * Environment depth-layer art (PR #63 environment upgrade). Every file is
+ * new (fresh cache key, no RUN_ASSET_VERSION bump needed) and every one is
+ * small: sky plates are <=50 KB, the decor atlases <=30 KB.
+ *
+ *   sky        - full sky plate drawn behind the skyline (stars / clouds /
+ *                sunset), anchored to the horizon and never stretched;
+ *   skylineFar - city only: hazy far tower layer (seamless, alpha);
+ *   skylineNear- city only: a 1024px re-encode of the MPGR skyline cut-out, used as
+ *                the mid skyline layer instead of the legacy poster panoramas;
+ *   decor      - MPGR sign atlas (city) / cloth banner atlas (ice, desert)
+ *                that the street renderer projects onto road-facing walls.
+ *
+ * Atlas cell layouts live in run-street.ts (DECOR_CELLS).
+ */
+export const ENVIRONMENT_DECOR = {
+  city: {
+    sky: asset(`${BASE}/environment/city/city-sky.webp`),
+    skylineFar: asset(`${BASE}/environment/city/city-skyline-far.webp`),
+    skylineNear: asset(`${BASE}/environment/city/city-skyline-mid.webp`),
+    decor: asset(`${BASE}/environment/city/city-signs.webp`),
+  },
+  ice: {
+    sky: asset(`${BASE}/environment/ice/ice-sky.webp`),
+    decor: asset(`${BASE}/environment/ice/ice-banners.webp`),
+  },
+  desert: {
+    sky: asset(`${BASE}/environment/desert/desert-sky.webp`),
+    decor: asset(`${BASE}/environment/desert/desert-banners.webp`),
+  },
+} as const;
+
+
+>>>>>>> Stashed changes
 /** Distant MPGR airship shared by all worlds (sky life). */
 export const ROAD_MATERIAL_SPRITE = asset(`${BASE}/environment/road-material.webp`);
 
@@ -277,6 +313,10 @@ export const ALL_SPRITE_PATHS: string[] = [
   UI_SPRITES.powerupFrame,
   ...Object.values(CITY_ENVIRONMENT),
   ...Object.values(ENVIRONMENT_SETS).flatMap(({ skyline, facade, prop }) => [skyline, facade, prop]),
+<<<<<<< Updated upstream
+=======
+  ...Object.values(ENVIRONMENT_DECOR).flatMap((set) => Object.values(set)),
+>>>>>>> Stashed changes
   AIRSHIP_SPRITE,
   ROAD_MATERIAL_SPRITE,
 ];
@@ -306,6 +346,10 @@ export const CRITICAL_SPRITE_PATHS: string[] = [
   ENVIRONMENT_SETS.city.skyline,
   ENVIRONMENT_SETS.city.facade,
   ENVIRONMENT_SETS.city.prop,
+<<<<<<< Updated upstream
+=======
+  ...Object.values(ENVIRONMENT_DECOR.city),
+>>>>>>> Stashed changes
   AIRSHIP_SPRITE,
   ROAD_MATERIAL_SPRITE,
   UI_SPRITES.heart,
