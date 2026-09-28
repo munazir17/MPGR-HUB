@@ -35,8 +35,11 @@ the flag is later switched off.
 ### 3. MODE A preserved (zero breaking changes)
 MODE A (assisted) code paths are untouched: same tools, same routes, same
 signing flow in `lib/trade/trade-execution.ts`. With
-`MPGR_AUTONOMOUS_AGENT_ENABLED=false` (default): all autonomy routes 404,
-the scheduler returns `disabled=true`, chat never drafts goals, and the UI
+`MPGR_AUTONOMOUS_AGENT_ENABLED=false` (default): every autonomy route
+except the public config status endpoint returns 404 (config itself always
+answers 200 with `{ enabled: false, … }` — flags and limits only, no user
+data — so the UI can render its gate), the scheduler returns
+`disabled=true`, chat never drafts goals, and the UI
 panel renders "Off until you activate a goal". Verified: full suite green
 pre/post, lint output byte-identical to baseline.
 
@@ -131,7 +134,10 @@ with monotonic sequence numbers, mirrored to `autonomy_audit` on the
 agentEventBus, and exposed (bounded projection) via the goals API.
 
 ### 15. Feature flag + emergency stop
-`MPGR_AUTONOMOUS_AGENT_ENABLED` (default **false**) gates all routes, chat
+`MPGR_AUTONOMOUS_AGENT_ENABLED` (default **false**) gates every autonomy
+route except the public config status endpoint (which always returns 200
+with `{ enabled: false, … }` — flags/limits only, no user data — so the UI
+gate can render), plus chat
 drafting, the UI panel, and the scheduler. `MPGR_AUTONOMOUS_EMERGENCY_DISABLE`
 overrides everything at the policy/runtime layer with zero deploy: goals
 stop evaluating (pending verification still finishes safely), routes
