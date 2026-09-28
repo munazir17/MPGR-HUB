@@ -47,6 +47,8 @@ import { AgentErrorBoundary } from "@/components/features/agent/AgentErrorBounda
 import { AgentX402PaymentModal } from "@/components/features/agent/AgentX402PaymentModal";
 import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTradeConfirmationModal";
 import { AgentTransferConfirmationModal } from "@/components/features/agent/AgentTransferConfirmationModal";
+import { AgentAutonomyPanel } from "@/components/features/agent/AgentAutonomyPanel";
+import { useAgentAutonomy } from "@/hooks/useAgentAutonomy";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import {
@@ -119,6 +121,9 @@ export function AgentExperience({
   const x402Payment = useX402Payment();
   const tradeQuote = useTradeQuote(appendTradeExecutionResult);
   const transferQuote = useTransferQuote(appendTransferExecutionResult);
+  // Autonomous Agent Runtime (ADDITIVE) — watch-mode goals UI + the only
+  // activation surface (explicit authorization form inside the panel).
+  const autonomy = useAgentAutonomy();
 
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking"] : ["online"];
   const hasMessages = messages.length > 0;
@@ -333,6 +338,7 @@ export function AgentExperience({
                   onReviewX402Proposal={x402Payment.openProposal}
                   onReviewTradeProposal={tradeQuote.openProposal}
                   onReviewTransferProposal={transferQuote.openProposal}
+                  onReviewAutonomyGoal={autonomy.openWithDraft}
                 />
               ) : (
                 emptyState
@@ -349,6 +355,11 @@ export function AgentExperience({
                 />
               )}
             </AnimatePresence>
+
+            {/* Autonomous Goals (ADDITIVE) — minimal mode display +
+                goal list + authorization. Self-contained; renders a slim
+                collapsed bar when unused. */}
+            {isConnected && <AgentAutonomyPanel autonomy={autonomy} />}
 
             {/* DOCK — pinned to the stage bottom (the stage, not the
                 document). Composer + State B chip row live here. */}

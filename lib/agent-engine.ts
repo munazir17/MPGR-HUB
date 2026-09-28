@@ -8,6 +8,10 @@ import type { AgentAction, AgentHighlight } from "@/lib/agent-actions";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
+// Autonomous Agent Runtime (ADDITIVE) — review-only goal draft carried on
+// the message for the UI, exactly like the proposal fields above. Nothing
+// here activates, authorizes, or executes anything.
+import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 
 // Phase 3A — local/mock persistence for MPGR Agent conversations.
 // Phase 3A.2 — replies come from lib/agent-intelligence.ts.
@@ -66,6 +70,13 @@ export interface AgentMessage {
    */
   tradeProposal?: TradeProposal;
   /**
+   * Autonomous Agent Runtime (ADDITIVE) — present only when the turn
+   * detected recurring/conditional trade phrasing and produced a
+   * REVIEW-ONLY goal draft. Display/state only: activation requires an
+   * explicit, authenticated authorization POST (see app/api/agent/autonomy).
+   */
+  autonomyGoalDraft?: AutonomyGoalDraft;
+  /**
    * P4 — present only when tokenized_stock_research succeeded.
    */
   tokenizedStockReport?: TokenizedStockReport;
@@ -106,6 +117,7 @@ interface AssistantExtras {
   tradeProposal?: TradeProposal;
   tokenizedStockReport?: TokenizedStockReport;
   transferProposal?: TransferProposal;
+  autonomyGoalDraft?: AutonomyGoalDraft;
 }
 
 function createMessage(
@@ -139,6 +151,9 @@ function createMessage(
       : {}),
     ...(extra?.transferProposal
       ? { transferProposal: extra.transferProposal }
+      : {}),
+    ...(extra?.autonomyGoalDraft
+      ? { autonomyGoalDraft: extra.autonomyGoalDraft }
       : {}),
   };
 }
@@ -190,6 +205,7 @@ export async function appendAssistantReply(
     tradeProposal,
     tokenizedStockReport,
     transferProposal,
+    autonomyGoalDraft,
   } = await getAIProvider().generateReply({
     prompt: userPrompt,
     agentContext: promptContext.agent,
@@ -211,6 +227,7 @@ export async function appendAssistantReply(
         tradeProposal,
         tokenizedStockReport,
         transferProposal,
+        autonomyGoalDraft,
       }),
     ],
   };
@@ -303,6 +320,7 @@ export async function regenerateLastReply(
     tradeProposal,
     tokenizedStockReport,
     transferProposal,
+    autonomyGoalDraft,
   } = await getAIProvider().generateReply({
     prompt: userPrompt,
     agentContext: promptContext.agent,
@@ -324,6 +342,7 @@ export async function regenerateLastReply(
         tradeProposal,
         tokenizedStockReport,
         transferProposal,
+        autonomyGoalDraft,
       }),
     ],
   };

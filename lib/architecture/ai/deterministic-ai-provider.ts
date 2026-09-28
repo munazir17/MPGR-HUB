@@ -1,5 +1,11 @@
 import { formatTradeReview, formatTradePrice, publicAgentContent } from "@/lib/trade/trade-chat";
 import { hasNegativeTradeAmount } from "./tool-call-normalization";
+// Autonomous Agent Runtime (ADDITIVE, spec §20): clearly recurring /
+// conditional trade phrasing gets an explanation plus a REVIEW-ONLY goal
+// draft instead of a one-shot swap proposal. The matcher is intentionally
+// narrow — a plain "Swap 1 USDC to AAPLc" never matches, so every existing
+// assisted flow is unchanged. Nothing is activated by chat text alone.
+import { buildAutonomyReplyText, buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
 import {
   extractBaseSwapIntent,
   extractUnresolvedSwapOrder,
@@ -53,6 +59,23 @@ export class DeterministicAIProvider implements AIProvider {
     // be answered with a whole-portfolio dump.
     const balanceAnswer = await answerWalletBalance(request);
     if (balanceAnswer) return balanceAnswer;
+
+    // Autonomous-goal phrasing ("Buy AAPLc whenever it falls below $200")
+    // runs BEFORE the trade branches: without this, a recurring request
+    // would be mis-read as a one-shot swap. Deliberately narrow matcher;
+    // the reply explains the authorization boundary and never activates
+    // anything (spec §20: "Do not silently activate autonomous execution").
+    const autonomyRequest = detectAutonomousTradeRequest(request.prompt);
+    if (autonomyRequest) {
+      return {
+        intent: "general_help",
+        reply: buildAutonomyReplyText(autonomyRequest),
+        actions: [],
+        highlights: [],
+        followUps: ["Open Autonomous Goals", "How does autonomous mode work?"],
+        autonomyGoalDraft: buildGoalDraft(autonomyRequest, request.prompt),
+      };
+    }
 
     if (isTransferPrompt(request.prompt)) {
       return prepareOrExplainTransfer(request);

@@ -11,6 +11,7 @@ import { AgentActionCard } from "./AgentActionCard";
 import { AgentX402ProposalCard } from "./AgentX402ProposalCard";
 import { AgentTradeProposalCard } from "./AgentTradeProposalCard";
 import { AgentTransferProposalCard } from "./AgentTransferProposalCard";
+import { AgentAutonomyDraftCard } from "./AgentAutonomyDraftCard";
 import { AgentTokenizedStockCard } from "./AgentTokenizedStockCard";
 import { AgentMessageToolbar } from "./AgentMessageToolbar";
 import { useStreamingText } from "@/hooks/useStreamingText";
@@ -18,6 +19,7 @@ import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
+import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 
 interface AgentChatBubbleProps {
   message: AgentMessage;
@@ -35,6 +37,10 @@ interface AgentChatBubbleProps {
   onReviewX402Proposal?: (proposal: X402PaymentProposal) => void;
   onReviewTradeProposal?: (proposal: TradeProposal) => void;
   onReviewTransferProposal?: (proposal: TransferProposal) => void;
+  // Autonomous Agent Runtime (ADDITIVE) — optional so existing render
+  // sites stay valid. Only called from an explicit tap on the draft card;
+  // opens the Autonomous Goals panel pre-filled, never activates anything.
+  onReviewAutonomyGoal?: (draft: AutonomyGoalDraft) => void;
 }
 
 function formatTime(iso: string): string {
@@ -60,6 +66,7 @@ export function AgentChatBubble({
   onReviewX402Proposal,
   onReviewTradeProposal,
   onReviewTransferProposal,
+  onReviewAutonomyGoal,
 }: AgentChatBubbleProps) {
   const isUser = message.role === "user";
   const safeContent = isUser ? message.content : publicAgentContent(message.content);
@@ -72,6 +79,7 @@ export function AgentChatBubble({
   const hasX402Proposal = !isUser && revealComplete && !!message.x402Proposal && !!onReviewX402Proposal;
   const hasTradeProposal = !isUser && revealComplete && !!message.tradeProposal && !!onReviewTradeProposal;
   const hasTransferProposal = !isUser && revealComplete && !!message.transferProposal && !!onReviewTransferProposal;
+  const hasAutonomyGoalDraft = !isUser && revealComplete && !!message.autonomyGoalDraft && !!onReviewAutonomyGoal;
   const hasStockReport = !isUser && revealComplete && !!message.tokenizedStockReport;
 
   return (
@@ -137,6 +145,12 @@ export function AgentChatBubble({
         {hasTransferProposal && (
           <div className="flex w-full flex-col gap-1.5 pt-0.5">
             <AgentTransferProposalCard proposal={message.transferProposal!} onReview={onReviewTransferProposal!} />
+          </div>
+        )}
+
+        {hasAutonomyGoalDraft && (
+          <div className="flex w-full flex-col gap-1.5 pt-0.5">
+            <AgentAutonomyDraftCard draft={message.autonomyGoalDraft!} onReview={onReviewAutonomyGoal!} />
           </div>
         )}
 

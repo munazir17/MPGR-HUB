@@ -5,6 +5,7 @@ import type { ConversationMemoryContext } from "@/lib/architecture/memory/memory
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
+import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 
 // Phase 3C Part 1 — AIProvider abstraction. Mirrors
 // lib/architecture/memory/memory-provider.ts exactly: an interface, one
@@ -82,6 +83,16 @@ export interface AIProviderResponse {
    * same pattern as tradeProposal above.
    */
   transferProposal?: TransferProposal;
+  /**
+   * Autonomous Agent Runtime (ADDITIVE) — set only when the deterministic
+   * provider detected clearly recurring/conditional trade phrasing (spec
+   * §20). It carries a REVIEW-ONLY goal draft built by
+   * lib/autonomy/chat-draft.ts: nothing is activated, authorized, or
+   * executed by chat text. Taken from that module's pure builder, never
+   * from model output. Optional/additive — every existing construction of
+   * AIProviderResponse remains valid without change.
+   */
+  autonomyGoalDraft?: AutonomyGoalDraft;
 }
 
 export interface AIProvider {
