@@ -167,10 +167,19 @@ export const EFFECT_SPRITES = {
   gemBurst: asset(`${BASE}/effects/mpgr-run-gem-collection.webp`),
 } as const;
 
+// 2026-09 environment pass: the three layers are now built from the
+// supplied MPGR neon-city art as true depth layers (1536x1024, seamless
+// horizontal tiles, lossy WebP with alpha) instead of three near-identical
+// full-frame scenes:
+//   background = night sky, midground = far skyline (fades in over the sky),
+//   foreground = near roadside towers/billboards + road (fades in over the
+//   skyline). New filenames => new cache keys, so RUN_ASSET_VERSION is not
+//   bumped. The previous city-background/midground/foreground.webp files
+//   stay on disk untouched.
 export const CITY_ENVIRONMENT = {
-  background: asset(`${BASE}/environment/city/city-background.webp`),
-  midground: asset(`${BASE}/environment/city/city-midground.webp`),
-  foreground: asset(`${BASE}/environment/city/city-foreground.webp`),
+  background: asset(`${BASE}/environment/city/city-sky.webp`),
+  midground: asset(`${BASE}/environment/city/city-skyline.webp`),
+  foreground: asset(`${BASE}/environment/city/city-roadside.webp`),
 } as const;
 
 /**
