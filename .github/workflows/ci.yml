@@ -87,14 +87,25 @@ jobs:
       - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
       - name: Fork tests (Base mainnet fork + Base Sepolia deployment)
         env:
-          # Optional secret for a dedicated RPC; falls back to the public endpoint.
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          # Optional secret for a dedicated RPC; falls back to a deep-state
+          # public endpoint. mainnet.base.org rate-limits shared CI egress
+          # (HTTP 429) and serves only minutes of recent state (pruned
+          # blocks 404), so the fork tests default to base-rpc.publicnode.com
+          # (the same public endpoint the app's RPC fallback chain uses).
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
           # Re-verifies the committed Base Sepolia deployment record against the live chain
           # (test/fork/MPGRExecutorBaseSepoliaDeployment.t.sol). Read-only; nothing is broadcast.
           BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
         run: |
           set +e -uo pipefail
           forge build >/dev/null
+          # Drop stale cross-run FORK caches (restored by the foundry
+          # toolchain cache): rpc_storage_caching pins storage to the block
+          # captured in a previous run, and short-window public endpoints
+          # prune that block within minutes ("block not found: hash …").
+          # Only chain-cache subdirs are removed — the Solidity compile
+          # cache is preserved.
+          rm -rf cache/base cache/base-sepolia cache/8453 cache/84532
           # Public Base RPCs rate-limit shared CI egress IPs (HTTP 429 "over
           # rate limit") under fork load. One settle-and-retry absorbs those
           # transient storms; a real, deterministic failure fails both runs
