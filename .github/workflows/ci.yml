@@ -95,8 +95,19 @@ jobs:
         run: |
           set +e -uo pipefail
           forge build >/dev/null
+          # Public Base RPCs rate-limit shared CI egress IPs (HTTP 429 "over
+          # rate limit") under fork load. One settle-and-retry absorbs those
+          # transient storms; a real, deterministic failure fails both runs
+          # and the job. Storage cached during attempt 1 (rpc_storage_caching
+          # in foundry.toml) makes the retry far cheaper on the endpoint.
           forge test --match-path 'test/fork/*' --json > fork-results.json 2> fork-stderr.txt
           STATUS=$?
+          if [ "$STATUS" != "0" ]; then
+            echo "::warning title=fork suite failed once::retrying after 60s (public Base RPC 429s are transient)"
+            sleep 60
+            forge test --match-path 'test/fork/*' --json > fork-results.json 2> fork-stderr.txt
+            STATUS=$?
+          fi
           if [ "$STATUS" != "0" ] && ! jq -e 'type == "object"' fork-results.json >/dev/null 2>&1; then
             echo "::error title=forge test (fork) did not produce results::$(tail -c 1500 fork-stderr.txt | tr '\n' ' ')"
           fi

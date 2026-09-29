@@ -57,7 +57,10 @@ describe("policy normalization (server-side, never trusts input)", () => {
 
   it("rejects maxDaily < maxPerTrade and non-permitted tokens", () => {
     expect(normalize({ maxDaily: "10", maxPerTrade: "20" }).ok).toBe(false);
-    expect(normalize({ sellToken: "0x1234567890abcdef1234567890abcdef12345678" }).ok).toBe(false);
+    // Fictional low-entropy placeholder (never a real credential): "0x" +
+    // repeated "ab" keeps Shannon entropy far below gitleaks' 3.5 gate for
+    // the generic-api-key rule triggered by the `sellToken` keyword.
+    expect(normalize({ sellToken: "0xabababababababababababababababababababab" }).ok).toBe(false);
   });
 
   it("expiry never exceeds the runtime TTL cap", () => {

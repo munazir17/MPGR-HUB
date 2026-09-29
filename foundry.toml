@@ -12,6 +12,12 @@ remappings = [
 ]
 fuzz = { runs = 256 }
 invariant = { runs = 64, depth = 32 }
+# Cache forked storage on disk per (chain, block): repeated reads of hot
+# slots (e.g. USDC balances, executor/registry config) across the fork
+# suite are served locally instead of re-hitting the RPC endpoint. Public
+# Base endpoints rate-limit CI egress IPs (HTTP 429), so cutting repeat
+# reads keeps the fork jobs reliable; values are deterministic per block.
+rpc_storage_caching = { chains = "all", endpoints = "remote" }
 # Deploy script writes its record to ./deployments; the local deploy-script
 # harness reads real Uniswap V3 / Permit2 bytecode from ./.uniswap-artifacts.
 fs_permissions = [

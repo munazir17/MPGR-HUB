@@ -19,7 +19,15 @@
 useDefault = true
 
 [allowlist]
-description = "One published commit containing a since-replaced test-only signing fixture; all other findings remain active."
+description = "Published commits whose only findings are since-replaced or fictional test fixtures; all other findings remain active."
 commits = [
+  # EIP-3009 signing fixture: literal 64-hex test key, since replaced by a
+  # deterministically derived key (no literal secret in source).
   "0201b95088c0d2daf76c5bbd118f3249ec31b4ec",
+  # Autonomy policy test fixture: fictional placeholder EVM address
+  # ("0x1234567890abcdef...", never a credential) that tripped the
+  # generic-api-key rule via the "Token" keyword in `sellToken:`. The
+  # fixture was replaced in-tree with a low-entropy placeholder in the
+  # same change that exempted this introducing commit.
+  "f62ea5d2c5d71d44ea8079e44a49fa2edc29d00c",
 ]
