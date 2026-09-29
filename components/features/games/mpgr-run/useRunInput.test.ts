@@ -21,6 +21,21 @@ describe("run pointer session classification", () => {
     expect(s.up(120, 396, 2)).toBe("lane-left");
   });
 
+  it("short horizontal gestures never fall through to tap-jump", () => {
+    const s = createRunPointerSession();
+    for (const dx of [-40, -39, -20, -7, 7, 20, 39, 40]) {
+      s.down(200, 400, 1);
+      expect(s.up(200 + dx, 402, 1)).toBe(Math.abs(dx) >= 40 ? (dx < 0 ? "lane-left" : "lane-right") : null);
+    }
+  });
+
+  it("another pointer cannot cancel the owner", () => {
+    const s = createRunPointerSession();
+    s.down(200, 400, 1);
+    s.cancel(2);
+    expect(s.up(280, 400, 1)).toBe("lane-right");
+  });
+
   it("vertical swipes jump / slide", () => {
     const s = createRunPointerSession();
     s.down(200, 400, 3);
@@ -54,9 +69,9 @@ describe("run pointer session classification", () => {
   it("multi-touch: a second finger's release cannot classify", () => {
     const s = createRunPointerSession();
     s.down(200, 400, 21);
-    s.down(260, 420, 22); // second finger overwrites the slot
-    expect(s.up(200, 400, 21)).toBeNull(); // id 21 no longer owns the slot
-    expect(s.up(340, 424, 22)).toBe("lane-right"); // id 22 does
+    s.down(260, 420, 22); // second finger cannot steal ownership
+    expect(s.up(340, 424, 22)).toBeNull();
+    expect(s.up(280, 400, 21)).toBe("lane-right");
     expect(s.up(10, 10, 23)).toBeNull();
   });
 

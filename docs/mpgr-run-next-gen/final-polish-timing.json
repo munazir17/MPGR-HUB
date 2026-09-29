@@ -1,0 +1,297 @@
+{
+  "base": "e8e44c145d593a3b9c1fe432e3aab48ba67a626c",
+  "method": "Same-host 25 sparse frames with forced native raster flush, DPR1, no browser audio playback. Not phone FPS/INP.",
+  "before": {
+    "warning": "Software raster comparison only, NOT browser/device FPS. A regression here requires investigation, not a mobile performance claim.",
+    "timing": [
+      {
+        "format": "mobile",
+        "width": 390,
+        "height": 844,
+        "medianMs": 23.251440000000002,
+        "maxMs": 28.705614000002242
+      },
+      {
+        "format": "desktop",
+        "width": 1280,
+        "height": 720,
+        "medianMs": 43.865836000000854,
+        "maxMs": 63.19987400000173
+      }
+    ]
+  },
+  "after": {
+    "warning": "Software raster comparison only, NOT browser/device FPS. A regression here requires investigation, not a mobile performance claim.",
+    "timing": [
+      {
+        "format": "mobile",
+        "width": 390,
+        "height": 844,
+        "medianMs": 21.851918999998816,
+        "maxMs": 26.552794999999605
+      },
+      {
+        "format": "desktop",
+        "width": 1280,
+        "height": 720,
+        "medianMs": 41.956318999998985,
+        "maxMs": 57.388678999999684
+      }
+    ]
+  },
+  "earlyCandidate": {
+    "mobileMedianMs": 26.224765,
+    "desktopMedianMs": 44.708675,
+    "note": "Candidate additionally forced upper volumes for landmarks; final keeps original upper-volume count. These timings also include normal host variance."
+  },
+  "musicFrameWork": "None in JS render/simulation loops; native decoding/playback cost is not measured by this harness.",
+  "populatedSequentialBaselineFirst": [
+    {
+      "mode": "e8e44c1",
+      "scene": "city",
+      "width": 390,
+      "height": 844,
+      "median": 38.45930700000008,
+      "p95": 43.76265199999989
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "city",
+      "width": 1280,
+      "height": 720,
+      "median": 66.1973350000003,
+      "p95": 73.00370399999974
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "ice",
+      "width": 390,
+      "height": 844,
+      "median": 34.5651969999999,
+      "p95": 47.22092599999996
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "ice",
+      "width": 1280,
+      "height": 720,
+      "median": 61.55443000000014,
+      "p95": 74.9625560000004
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "desert",
+      "width": 390,
+      "height": 844,
+      "median": 32.885056999999506,
+      "p95": 42.79646700000012
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "desert",
+      "width": 1280,
+      "height": 720,
+      "median": 60.30118500000026,
+      "p95": 77.12663800000064
+    },
+    {
+      "mode": "current",
+      "scene": "city",
+      "width": 390,
+      "height": 844,
+      "median": 36.265895000000455,
+      "p95": 45.49387700000079
+    },
+    {
+      "mode": "current",
+      "scene": "city",
+      "width": 1280,
+      "height": 720,
+      "median": 65.64822599999934,
+      "p95": 74.97912200000064
+    },
+    {
+      "mode": "current",
+      "scene": "ice",
+      "width": 390,
+      "height": 844,
+      "median": 34.16006600000037,
+      "p95": 36.93324799999937
+    },
+    {
+      "mode": "current",
+      "scene": "ice",
+      "width": 1280,
+      "height": 720,
+      "median": 55.54799599999933,
+      "p95": 63.93522200000007
+    },
+    {
+      "mode": "current",
+      "scene": "desert",
+      "width": 390,
+      "height": 844,
+      "median": 34.600970000001325,
+      "p95": 38.39290600000095
+    },
+    {
+      "mode": "current",
+      "scene": "desert",
+      "width": 1280,
+      "height": 720,
+      "median": 60.240577000000485,
+      "p95": 85.67499899999893
+    }
+  ],
+  "populatedSequentialCurrentFirst": [
+    {
+      "mode": "current",
+      "scene": "city",
+      "width": 390,
+      "height": 844,
+      "median": 41.83580299999994,
+      "p95": 50.12730999999985
+    },
+    {
+      "mode": "current",
+      "scene": "city",
+      "width": 1280,
+      "height": 720,
+      "median": 65.53341599999976,
+      "p95": 77.07278099999985
+    },
+    {
+      "mode": "current",
+      "scene": "ice",
+      "width": 390,
+      "height": 844,
+      "median": 34.757448000000295,
+      "p95": 39.545476000000235
+    },
+    {
+      "mode": "current",
+      "scene": "ice",
+      "width": 1280,
+      "height": 720,
+      "median": 59.47373200000038,
+      "p95": 65.61617600000045
+    },
+    {
+      "mode": "current",
+      "scene": "desert",
+      "width": 390,
+      "height": 844,
+      "median": 32.843848999999864,
+      "p95": 35.701129999999466
+    },
+    {
+      "mode": "current",
+      "scene": "desert",
+      "width": 1280,
+      "height": 720,
+      "median": 54.74217399999998,
+      "p95": 70.8289450000002
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "city",
+      "width": 390,
+      "height": 844,
+      "median": 27.57462299999861,
+      "p95": 38.23148499999843
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "city",
+      "width": 1280,
+      "height": 720,
+      "median": 64.51334499999939,
+      "p95": 70.80436699999882
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "ice",
+      "width": 390,
+      "height": 844,
+      "median": 33.66868000000068,
+      "p95": 40.57606599999963
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "ice",
+      "width": 1280,
+      "height": 720,
+      "median": 59.55927700000029,
+      "p95": 63.589302000000316
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "desert",
+      "width": 390,
+      "height": 844,
+      "median": 31.74844800000028,
+      "p95": 34.17631999999867
+    },
+    {
+      "mode": "e8e44c1",
+      "scene": "desert",
+      "width": 1280,
+      "height": 720,
+      "median": 59.62445700000171,
+      "p95": 79.70941200000016
+    }
+  ],
+  "populatedPaired": {
+    "method": "Shared decoded images; separate canvases; 8 warmups, 50 matched frame pairs with alternating order per scene. Same populated fixture, forced raster flush, DPR1. Native only, no audio playback.",
+    "results": [
+      {
+        "scene": "city",
+        "width": 390,
+        "height": 844,
+        "beforeMedianMs": 35.55983800000013,
+        "afterMedianMs": 35.7456830000001,
+        "pairedMedianRatio": 0.9997427434849367
+      },
+      {
+        "scene": "city",
+        "width": 1280,
+        "height": 720,
+        "beforeMedianMs": 73.98024999999961,
+        "afterMedianMs": 73.15856899999926,
+        "pairedMedianRatio": 0.9972396046742252
+      },
+      {
+        "scene": "ice",
+        "width": 390,
+        "height": 844,
+        "beforeMedianMs": 35.46555900000021,
+        "afterMedianMs": 34.926408999999694,
+        "pairedMedianRatio": 0.9877524644885445
+      },
+      {
+        "scene": "ice",
+        "width": 1280,
+        "height": 720,
+        "beforeMedianMs": 64.89777299999696,
+        "afterMedianMs": 63.0398230000028,
+        "pairedMedianRatio": 0.994562045556525
+      },
+      {
+        "scene": "desert",
+        "width": 390,
+        "height": 844,
+        "beforeMedianMs": 31.874778000001243,
+        "afterMedianMs": 32.180372999999236,
+        "pairedMedianRatio": 0.9986817018901236
+      },
+      {
+        "scene": "desert",
+        "width": 1280,
+        "height": 720,
+        "beforeMedianMs": 63.1980459999977,
+        "afterMedianMs": 63.011381000000256,
+        "pairedMedianRatio": 0.9993995551310184
+      }
+    ]
+  }
+}
