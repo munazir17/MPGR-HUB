@@ -21,6 +21,7 @@ import { isSlashCommand } from "@/lib/agent-commands/parser";
 import { executeCommandInput } from "@/lib/agent-commands/action-executor";
 import { getActionHistory, recordAction, clearActionHistory, type ActionHistoryEntry } from "@/lib/agent-commands/action-history";
 import { useCommandPalette } from "@/hooks/useCommandPalette";
+import { summarizeAutonomyGoals, type AutonomyConfig, type AutonomyGoalView } from "@/hooks/useAgentAutonomy";
 // Production audit addendum — subscribes to the same EventBus every AI
 // provider decorator already emits on (lib/architecture/ai/fallback-ai-provider.ts,
 // lib/architecture/core/types.ts:55). agentEventBus is the exact
@@ -126,7 +127,20 @@ const EMPTY_PERSONALIZATION: PersonalizationSnapshot = {
 //      execution time and passes it through as `meta`, and the catch
 //      block now ALSO records a (failed) history entry — previously a
 //      failed command execution left no trace in Action History at all.
-export function useAgentChat() {
+export interface UseAgentChatInput {
+  /**
+   * Live autonomy state from the SAME useAgentAutonomy() instance the UI
+   * panel uses (threaded through so the agent's autonomous-status reply
+   * reads the real runtime state; no second poller is created).
+   */
+  autonomy?: {
+    config: AutonomyConfig | null;
+    goals: AutonomyGoalView[];
+  } | null;
+}
+
+export function useAgentChat(input: UseAgentChatInput = {}) {
+  const autonomyState = input.autonomy ?? null;
   const sendingRef = useRef(false);
   const { address, isConnected } = useAccount();
   const { data: ethBalance } = useBalance({
@@ -223,6 +237,15 @@ export function useAgentChat() {
         rewards: { claimableTotal, totalClaimed },
         nativeEth: ethBalance?.formatted ?? null,
         usdc: usdcBalance?.formatted ?? null,
+        autonomy: autonomyState?.config
+          ? {
+              enabled: autonomyState.config.enabled,
+              emergencyDisabled: autonomyState.config.emergencyDisabled,
+              executionAvailable: autonomyState.config.executionAvailable,
+              limits: autonomyState.config.limits,
+              goals: summarizeAutonomyGoals(autonomyState.goals),
+            }
+          : null,
       }),
     [
       isConnected,
@@ -240,6 +263,7 @@ export function useAgentChat() {
       totalClaimed,
       ethBalance?.formatted,
       usdcBalance?.formatted,
+      autonomyState,
     ]
   );
 

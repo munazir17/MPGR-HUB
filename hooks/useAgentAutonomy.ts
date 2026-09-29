@@ -77,6 +77,11 @@ export interface AutonomyTokenOption {
 const HEARTBEAT_MS = 60_000;
 const TERMINAL = new Set(["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"]);
 
+/** Goal counts for the agent's autonomous-status reply — total and non-terminal. */
+export function summarizeAutonomyGoals(goals: AutonomyGoalView[]): { total: number; active: number } {
+  return { total: goals.length, active: goals.filter((g) => !TERMINAL.has(g.status)).length };
+}
+
 export interface AgentAutonomyDraftInput {
   sellToken: string;
   buyToken: string;

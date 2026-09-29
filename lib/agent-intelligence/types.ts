@@ -19,7 +19,8 @@ export type AgentIntent =
   | "open_leaderboard"
   | "suggest_next_action"
   | "research_query"
-  | "market_overview";
+  | "market_overview"
+  | "autonomous_status";
 
 export const AGENT_INTENTS: readonly AgentIntent[] = [
   "portfolio_summary",
@@ -41,6 +42,7 @@ export const AGENT_INTENTS: readonly AgentIntent[] = [
   "suggest_next_action",
   "research_query",
   "market_overview",
+  "autonomous_status",
 ];
 
 export interface AgentIntelligenceResult {

@@ -268,6 +268,73 @@ export function replyOpenLeaderboard(): string {
   return "Opening the Leaderboard — see how you rank community-wide.";
 }
 
+// Autonomous Agent Runtime status — reads ONLY the snapshot the app's own
+// autonomy config/goals state produced (useAgentAutonomy -> buildAgentContext).
+// Nothing here is hardcoded runtime state and nothing here can flip
+// executionAvailable: if the runtime reports false, the reply reports false.
+export function replyAutonomousStatus(ctx: AgentContext): string {
+  const autonomy = ctx.autonomy;
+  if (!autonomy) return notAvailable("autonomous status");
+
+  if (!autonomy.enabled) {
+    const emergencyNote = autonomy.emergencyDisabled
+      ? " An emergency stop is also engaged server-side."
+      : "";
+    return (
+      "Autonomous mode is disabled right now, so every trade stays assisted — nothing runs without your explicit confirmation and signature." +
+      emergencyNote +
+      " This is the runtime's live server-side state, not an estimate."
+    );
+  }
+
+  const parts: string[] = [];
+  parts.push("Autonomous mode: enabled.");
+  parts.push(
+    autonomy.emergencyDisabled
+      ? "Emergency stop: ENGAGED — no autonomous transaction may execute until it is lifted."
+      : "Emergency stop: not engaged.",
+  );
+  parts.push(
+    autonomy.executionAvailable
+      ? "Autonomous execution available: yes."
+      : "Autonomous execution available: no — goals can be created and evaluated, but nothing executes autonomously today; any trade still ends with your wallet confirmation and signature.",
+  );
+
+  if (autonomy.goals) {
+    const { total, active } = autonomy.goals;
+    if (total === 0) {
+      parts.push("You have no autonomous goals right now.");
+    } else {
+      const done = total - active;
+      parts.push(
+        "Autonomous goals: " +
+          active +
+          " active of " +
+          total +
+          (done > 0 ? " (" + done + " completed, failed, expired, or cancelled)." : "."),
+      );
+    }
+  }
+
+  const limits = autonomy.limits;
+  if (limits) {
+    const limitParts = [
+      "up to " + limits.maxGoalsPerWallet + " goals per wallet",
+      "at least " + limits.minCooldownSeconds + "s between evaluations",
+      "per-trade cap " + limits.maxPerTradeHuman,
+      "daily cap " + limits.maxDailyHuman + " (sell-token units)",
+      "slippage bounded to " + limits.maxSlippageBps + " bps",
+      "authorizations expire within " + limits.maxPolicyTtlDays + " days",
+    ];
+    parts.push("Live limits: " + limitParts.join(", ") + ".");
+  }
+
+  parts.push(
+    "No private keys, no server-side signing, and no fund movement without your explicit authorization — you can pause or cancel any goal in the autonomy panel.",
+  );
+  return parts.join(" ");
+}
+
 export function replySuggestNextAction(ctx: AgentContext): string {
   if (ctx.rewards && ctx.rewards.claimableTotal > 0) {
     return (
@@ -315,6 +382,7 @@ export const INTENT_HANDLERS: Record<AgentIntent, (ctx: AgentContext) => string>
   suggest_next_action: replySuggestNextAction,
   research_query: replyResearchQuery,
   market_overview: replyMarketOverview,
+  autonomous_status: replyAutonomousStatus,
 };
 
 export const INTENT_LABELS: Record<AgentIntent, string> = {
@@ -337,6 +405,7 @@ export const INTENT_LABELS: Record<AgentIntent, string> = {
   suggest_next_action: "what to do next",
   research_query: "MPGR HUB research",
   market_overview: "markets",
+  autonomous_status: "your autonomous status",
 };
 
 export function buildGreetingReply(memoryContext?: ConversationMemoryContext): string {

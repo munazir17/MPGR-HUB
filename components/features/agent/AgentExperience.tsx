@@ -94,6 +94,11 @@ export function AgentExperience({
   emptyStateText,
   onReady,
 }: AgentExperienceProps) {
+  // Autonomous Agent Runtime (ADDITIVE) — watch-mode goals UI + the only
+  // activation surface (explicit authorization form inside the panel).
+  // Declared before useAgentChat so the same instance can be threaded into
+  // the chat hook: the agent's autonomous-status reply reads THIS state.
+  const autonomy = useAgentAutonomy();
   const {
     messages,
     thinking,
@@ -113,7 +118,7 @@ export function AgentExperience({
     appendTradeExecutionResult,
     appendTransferExecutionResult,
     stopGeneration,
-  } = useAgentChat();
+  } = useAgentChat({ autonomy });
 
   const { openConnectModal } = useConnectModal();
   const reduceMotion = useReducedMotion();
@@ -121,9 +126,6 @@ export function AgentExperience({
   const x402Payment = useX402Payment();
   const tradeQuote = useTradeQuote(appendTradeExecutionResult);
   const transferQuote = useTransferQuote(appendTransferExecutionResult);
-  // Autonomous Agent Runtime (ADDITIVE) — watch-mode goals UI + the only
-  // activation surface (explicit authorization form inside the panel).
-  const autonomy = useAgentAutonomy();
 
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking"] : ["online"];
   const hasMessages = messages.length > 0;
