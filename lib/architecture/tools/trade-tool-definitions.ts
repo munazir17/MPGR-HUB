@@ -40,7 +40,7 @@ function tradeEndpoint(path: string): string {
 }
 
 function toolFailureCode(code: unknown): "INVALID_INPUT" | "WALLET_NOT_CONNECTED" | "DATA_UNAVAILABLE" | "PROVIDER_ERROR" {
-  if (["INVALID_INPUT", "UNSUPPORTED_ASSET", "INVALID_ADDRESS", "TOKEN_NOT_CONTRACT", "TOKEN_NOT_ERC20", "TOKEN_AMBIGUOUS", "TOKEN_NOT_FOUND"].includes(String(code))) return "INVALID_INPUT";
+  if (["INVALID_INPUT", "UNSUPPORTED_ASSET", "UNSUPPORTED_INPUT", "INVALID_ADDRESS", "TOKEN_NOT_CONTRACT", "TOKEN_NOT_ERC20", "TOKEN_AMBIGUOUS", "TOKEN_NOT_FOUND"].includes(String(code))) return "INVALID_INPUT";
   if (code === "WALLET_REQUIRED" || code === "WALLET_NOT_CONNECTED") return "WALLET_NOT_CONNECTED";
   if (code === "CREDENTIALS_MISSING" || code === "LIQUIDITY_UNAVAILABLE" || code === "EXECUTION_UNAVAILABLE") {
     return "DATA_UNAVAILABLE";
@@ -273,6 +273,11 @@ const stockOrderSchema: AgentToolSchema = {
       description:
         "\"usd\" (default) when the user gave a dollar figure (\"$5 of my AAPLc\", \"sell 5 USDC worth of MSTRc\"); \"token\" when the user gave a share/token count (\"Sell 5 AAPLc\", \"buy 0.01 TSLAc\"). A bare number next to a B20 ticker is a token count, not dollars. With \"usd\", side SELL means \"sell that many dollars' worth of the stock\" and side BUY means \"spend that many dollars on the stock\".",
     },
+    fundingAsset: {
+      type: "string",
+      description:
+        'Funding/input asset ONLY when the user explicitly named one ("Buy 0.001 AAPLc with ETH" → "ETH"). Omit entirely when the user did not name a funding asset. Tokenized-stock BUY currently funds with USDC only — any other named asset is rejected with UNSUPPORTED_INPUT instead of preparing a substituted proposal.',
+    },
   },
   required: ["symbol", "amount"],
 };
@@ -281,7 +286,7 @@ export const tokenizedStockPrepareOrderTool: AgentTool = {
   id: "tokenized_stock_prepare_order",
   name: "Tokenized Stock Swap Preview",
   description:
-    "Prepares an on-chain Base swap proposal to buy or sell a Coinbase B20 tokenized stock (AAPLc, SPCXc, …) using the connected wallet. BUY $10 of AAPLc = sell 10 USDC for AAPLc on Aerodrome Slipstream. This is a Base DEX swap, not Coinbase Advanced Trade (AAPL-USD). Returns a proposal for explicit confirmation. Never signs.",
+    "Prepares an on-chain Base swap proposal to buy or sell a Coinbase B20 tokenized stock (AAPLc, SPCXc, …) using the connected wallet. BUY $10 of AAPLc = sell 10 USDC for AAPLc on Aerodrome Slipstream. BUY funds with USDC only — a different explicitly named funding asset is rejected, never substituted. This is a Base DEX swap, not Coinbase Advanced Trade (AAPL-USD). Returns a proposal for explicit confirmation. Never signs.",
   category: "market",
   mode: "prepare",
   riskLevel: "medium",
@@ -290,11 +295,17 @@ export const tokenizedStockPrepareOrderTool: AgentTool = {
   inputSchema: stockOrderSchema,
 
   async execute(input, context) {
-    const body = (input ?? {}) as { symbol?: unknown; side?: unknown; amount?: unknown; amountUnit?: unknown };
+    const body = (input ?? {}) as { symbol?: unknown; side?: unknown; amount?: unknown; amountUnit?: unknown; fundingAsset?: unknown };
     const symbol = typeof body.symbol === "string" ? body.symbol.trim() : "";
     const side = body.side === "SELL" ? "SELL" : "BUY";
     const amount = typeof body.amount === "string" ? body.amount.trim() : "";
     const amountUnit = body.amountUnit === "token" ? "token" : body.amountUnit === "usd" ? "usd" : undefined;
+    // Forward an explicitly named funding asset so the server can refuse
+    // non-USDC funding instead of silently substituting USDC.
+    const fundingAsset =
+      typeof body.fundingAsset === "string" && body.fundingAsset.trim().length > 0 && body.fundingAsset.trim().length <= 24
+        ? body.fundingAsset.trim()
+        : undefined;
     const taker = context.walletAddress?.trim() ?? "";
 
     if (!symbol || !amount) {
@@ -317,6 +328,7 @@ export const tokenizedStockPrepareOrderTool: AgentTool = {
         amount,
         taker,
         ...(amountUnit ? { amountUnit } : {}),
+        ...(fundingAsset ? { fundingAsset } : {}),
       });
       if (!ok || !payload) {
         return toolError("tokenized_stock_prepare_order", {

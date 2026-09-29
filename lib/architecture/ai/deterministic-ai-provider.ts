@@ -13,6 +13,7 @@ import {
   resolveTokenizedStockOrderSide,
   extractCryptoSwapAmount,
   extractCryptoSwapPair,
+  extractExplicitFundingAsset,
   extractTradeHumanAmount,
   extractTokenizedStockOrderAmount,
   extractTradeSymbol,
@@ -35,6 +36,7 @@ import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
 import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
+import { findKnownTradeToken } from "@/lib/trade/trade-tokens";
 
 // Phase 3C Part 1 — wraps generateIntelligentReply as the always-available
 // local provider. FallbackAIProvider uses this class when Gemini throws.
@@ -461,6 +463,30 @@ async function prepareOrExplainTrade(
       );
     }
 
+    // Explicit funding asset ("Buy 0.001 AAPLc with ETH"): tokenized-stock
+    // orders fund with USDC only (the executor's Slipstream route is
+    // USDC-based). A clearly named non-USDC asset must get an explicit
+    // unsupported response — NEVER a silently USDC-substituted proposal.
+    // Unresolvable words ("with limit order") are ignored, and no explicit
+    // asset keeps the historical USDC behavior byte-for-byte.
+    const explicitFundingRaw = side === "BUY" ? extractExplicitFundingAsset(request.prompt) : null;
+    const explicitFunding = explicitFundingRaw ? findKnownTradeToken(explicitFundingRaw)?.symbol ?? null : null;
+    if (explicitFunding && explicitFunding.toUpperCase() !== "USDC") {
+      return helpResponse(
+        "Tokenized-stock orders currently fund with USDC only, so I cannot buy " +
+          symbol +
+          " with " +
+          explicitFunding +
+          " through the fee-collecting executor route. Nothing was signed or submitted. Swap " +
+          explicitFunding +
+          " to USDC first (for example \"Swap " +
+          (explicitFunding === "ETH" || explicitFunding === "WETH" ? "0.001 ETH to USDC" : "some " + explicitFunding + " to USDC") +
+          "\"), then buy " +
+          symbol +
+          " with USDC and I will prepare it with the live quote, minOut, and fees.",
+      );
+    }
+
     const result = await runRegisteredTool(
       "tokenized_stock_prepare_order",
       {
@@ -468,6 +494,7 @@ async function prepareOrExplainTrade(
         amount,
         side,
         amountUnit,
+        ...(explicitFunding ? { fundingAsset: explicitFunding } : {}),
       },
       request,
     );

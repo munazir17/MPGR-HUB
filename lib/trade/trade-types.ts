@@ -212,6 +212,7 @@ export interface TradeError {
     | "INVALID_INPUT"
     | "UNSUPPORTED_NETWORK"
     | "UNSUPPORTED_ASSET"
+    | "UNSUPPORTED_INPUT"
     | "INVALID_ADDRESS"
     | "TOKEN_NOT_CONTRACT"
     | "TOKEN_NOT_ERC20"

@@ -26,6 +26,9 @@ export function publicTradeError(error: { code?: unknown; message?: unknown } | 
     case "QUOTE_CHANGED": return "The quote changed. Review a fresh quote before confirming.";
     case "QUOTE_EXPIRED": return "This quote expired. Request a fresh quote.";
     case "UNSUPPORTED_NETWORK": return "Switch your wallet to Base to continue.";
+    case "UNSUPPORTED_INPUT": return typeof error.message === "string" && error.message.length > 0
+      ? error.message
+      : "This swap input is not supported. Nothing was signed or submitted.";
     case "INVALID_INPUT": return "Check the tokens and amount, then request a fresh quote.";
     case "CREDENTIALS_MISSING": return "Swaps are temporarily unavailable. Please try again later.";
     default: return "Could not fetch or prepare this swap right now. Please try again.";
