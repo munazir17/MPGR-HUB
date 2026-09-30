@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           trap 'echo "::error::DIED at line=$LINENO last_err=$(tail -c 220 /tmp/cast.err 2>/dev/null | tr "\n" " ")"' ERR
           RPC_URL="${RPC_URL:-https://sepolia.base.org}"
-          TX="${{ github.event.inputs.tx_hash }}"
+          TX="${{ github.event.inputs.tx_hash || '0xc5557b9a07b6a92df78c6eb7d86cc714532de5045bb2f99872eab0f605cd8b4e' }}"
           EXEC="0xa9568499D7e58854F2590a56B6D32788DbfA58F9"
           FACTORY="0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"
           TRANSFER_TOPIC="0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
