@@ -102,7 +102,7 @@ contract MPGRExecutorDelegatedTest is Test {
 
         // Router liquidity (output side), mirrored per router pair. WETH is
         // deep because the 6->18 rate pays ~1000 WETH per 1000 USDC swap.
-        vm.deal(address(this), 3_100_000 ether); // funds the WETH deposits below
+        vm.deal(address(this), 4_050_000 ether); // funds the 4 WETH deposits below
         for (uint256 i = 0; i < 2; i++) {
             address r = i == 0 ? address(slipDex) : address(uniDex);
             stock.mint(r, 1e33);
@@ -114,6 +114,7 @@ contract MPGRExecutorDelegatedTest is Test {
         stock.mint(address(uniV1), 1e33);
         usdc.mint(address(slipV1), 1e30);
         usdc.mint(address(uniV1), 1e30);
+        weth.deposit{value: 1_010_000 ether}();
         weth.deposit{value: 1_010_000 ether}();
         weth.transfer(address(slipV1), 1_000_000 ether);
         weth.transfer(address(uniV1), 1_000_000 ether);
