@@ -84,18 +84,37 @@ jobs:
           echo "::notice::EXECUTOR_TX=$TXH"
           echo "EXECUTOR=$EXEC" >> "$GITHUB_ENV"
 
-      - name: Emit deploy failure details as annotations
+      - name: Emit deploy failure details as annotations (part 1)
         if: failure()
         run: |
           if [ -f deploy.log ]; then
-            grep -nE "Error|error|revert|Failing|failed|panic|Location" deploy.log | head -5 | while IFS= read -r line; do
-              echo "::error::ERR ${line:0:320}"
+            total=$(wc -l < deploy.log)
+            start=$((total - 44)); [ "$start" -lt 1 ] && start=1
+            sed -n "${start},$((start + 13))p" deploy.log | while IFS= read -r line; do
+              echo "::error::T1 ${line:0:480}"
             done
-            tail -n 7 deploy.log | while IFS= read -r line; do
-              echo "::error::TAIL ${line:0:320}"
+          fi
+
+      - name: Emit deploy failure details as annotations (part 2)
+        if: failure()
+        run: |
+          if [ -f deploy.log ]; then
+            total=$(wc -l < deploy.log)
+            start=$((total - 30))
+            sed -n "${start},$((start + 13))p" deploy.log | while IFS= read -r line; do
+              echo "::error::T2 ${line:0:480}"
             done
-          else
-            echo "::error::deploy.log missing (forge failed before tee)"
+          fi
+
+      - name: Emit deploy failure details as annotations (part 3)
+        if: failure()
+        run: |
+          if [ -f deploy.log ]; then
+            total=$(wc -l < deploy.log)
+            start=$((total - 16))
+            sed -n "${start},${total}p" deploy.log | while IFS= read -r line; do
+              echo "::error::T3 ${line:0:480}"
+            done
           fi
 
       - name: Post-deploy on-chain verification
