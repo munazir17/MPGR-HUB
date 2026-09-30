@@ -158,7 +158,9 @@ jobs:
           TPLN="$(echo "$TPL" | sed 's/^0x//' | tr 'A-F' 'a-f')"
           CODEN="$(echo "$CODE" | sed 's/^0x//' | tr 'A-F' 'a-f')"
           echo "::notice::BYTECODE len(code)=${#CODEN} len(template)=${#TPLN}"
-          IMMREF=$(jq -c '.immutableReferences // {}' out/executor/MPGRExecutorDelegated.sol/MPGRExecutorDelegated.json)
+          ART=$(find out -name 'MPGRExecutorDelegated.json' | head -1)
+          echo "::notice::V artifact=$ART"
+          IMMREF=$(jq -c '.immutableReferences // {}' "$ART")
           python3 - "$CODEN" "$TPLN" "$IMMREF" <<'PY'
           import json, sys
           code, tpl, imm = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
