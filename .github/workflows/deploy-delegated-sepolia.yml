@@ -164,7 +164,7 @@ jobs:
             if [ -n "$EXECUTOR_INPUT" ]; then
               echo "EXECUTOR=$EXECUTOR_INPUT" >> "$GITHUB_ENV"
             elif [ -f deployments/base-sepolia/mpgr-executor-delegated.json ]; then
-              FROMJSON=$(jq -r '.executor // empty' deployments/base-sepolia/mpgr-executor-delegated.json)
+              FROMJSON=$(jq -r '.address // .executor // empty' deployments/base-sepolia/mpgr-executor-delegated.json)
               [ -n "$FROMJSON" ] || { echo "::error::no executor address (input/deployment record)"; exit 1; }
               echo "EXECUTOR=$FROMJSON" >> "$GITHUB_ENV"
             else
