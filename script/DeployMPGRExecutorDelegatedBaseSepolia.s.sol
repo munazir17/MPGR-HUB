@@ -411,6 +411,8 @@ contract DeployMPGRExecutorDelegatedBaseSepolia is Script {
         vm.serializeUint(json, "feeBps", FEE_BPS);
         vm.serializeAddress(json, "permit2", PERMIT2);
         vm.serializeAddress(json, "router", UNI_V3_SWAP_ROUTER02);
+        vm.serializeAddress(json, "tusd", address(c.tUSD));
+        vm.serializeAddress(json, "tstock", address(c.tSTOCK));
         vm.serializeAddress(json, "poolUsdStock", c.poolUsdStock);
         vm.serializeAddress(json, "poolWethUsd", c.poolWethUsd);
         vm.serializeUint(json, "deployedAtBlock", block.number);

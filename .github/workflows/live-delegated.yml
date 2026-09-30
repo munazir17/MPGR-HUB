@@ -1,0 +1,94 @@
+name: Live Delegated Execution (Base Sepolia)
+
+# PHASE 3 live test — runs the REAL delegated path end-to-end on Base Sepolia
+# (quote -> user-signed Permit2 witness slots -> DelegatedExecutionAdapter ->
+# MCP delegateSwap -> broadcaster -> frozen executor 0xa9568499…58F9 ->
+# existing verification incl. exact 25 bps fee + expectedSender).
+#
+# ARMING (deliberate, human-supplied):
+#   * push trigger fires ONLY for a commit whose message contains the exact
+#     tag [live-delegated] (same pattern as the deploy workflow);
+#   * the run needs the base-sepolia environment secrets:
+#       MPGR_BROADCASTER_PRIVATE_KEY      (operator broadcaster key)
+#       MPGR_LIVE_TEST_USER_PRIVATE_KEY   (dedicated TEST keypair — never a
+#                                          real user's key, never the main
+#                                          wallet, never the broadcaster)
+#       BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY (CI deployer — funds the test user)
+#   * Base Sepolia 84532 ONLY; tiny amounts; hard-capped in the harness.
+
+on:
+  push:
+    branches: [arena/01a0e784-mpgr-hub]
+  workflow_dispatch:
+
+concurrency:
+  group: live-delegated-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: base-sepolia
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Resolve mode
+        id: mode
+        run: |
+          MSG="$(git log -1 --pretty=%s)"
+          echo "message=$MSG" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || echo "$MSG" | grep -q "\[live-delegated\]"; then
+            echo "armed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install
+        if: steps.mode.outputs.armed == 'true'
+        run: npm ci
+
+      - name: Live delegated execution (BUY + SELL, tiny amounts)
+        if: steps.mode.outputs.armed == 'true'
+        env:
+          MPGR_LIVE_DELEGATED: "true"
+          AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET || format('{0}{1}', github.run_id, github.sha) }}
+          MPGR_BROADCASTER_PRIVATE_KEY: ${{ secrets.MPGR_BROADCASTER_PRIVATE_KEY }}
+          MPGR_LIVE_TEST_USER_PRIVATE_KEY: ${{ secrets.MPGR_LIVE_TEST_USER_PRIVATE_KEY }}
+          BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+          MPGR_LIVE_SELL_AMOUNT_RAW: ${{ vars.MPGR_LIVE_SELL_AMOUNT_RAW }}
+          BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL }}
+        run: |
+          set -o pipefail
+          npx vitest run lib/autonomy/__tests__/live-delegated.execution.test.ts 2>&1 | tee live-delegated.log
+          status=${PIPESTATUS[0]}
+          grep -a "::notice::LIVE" live-delegated.log | sed 's/^/LIVE: /'
+          exit "$status"
+
+      - name: Results -> check annotations
+        if: steps.mode.outputs.armed == 'true' && always()
+        run: |
+          if [ -f live-delegated-results.json ]; then
+            jq -r '"::notice::LIVE broadcaster=" + .broadcaster + " testUser=" + .testUser' live-delegated-results.json
+            for leg in buy sell; do
+              tx=$(jq -r --arg l "$leg" '.[$l].txHash // empty' live-delegated-results.json)
+              if [ -n "$tx" ]; then
+                fee=$(jq -r --arg l "$leg" '.[$l].feeRaw // empty' live-delegated-results.json)
+                out=$(jq -r --arg l "$leg" '.[$l].boughtRaw // empty' live-delegated-results.json)
+                echo "::notice::LIVE ${leg}Tx=${tx} feeRaw=${fee} outRaw=${out}"
+              fi
+            done
+          fi
+          if grep -aq "FAIL\|Error:" live-delegated.log 2>/dev/null; then
+            grep -a "FAIL\|Error:" live-delegated.log | head -40 | while IFS= read -r line; do
+              echo "::error::LIVE $line"
+            done
+          fi

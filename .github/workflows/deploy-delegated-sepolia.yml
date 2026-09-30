@@ -85,7 +85,11 @@ jobs:
         run: |
           set -euo pipefail
           echo "::notice::TARGET=Base Sepolia chain 84532 script=DeployMPGRExecutorDelegatedBaseSepolia.s.sol"
-          CHAIN=$(cast chain-id --rpc-url "$RPC_URL")
+          CHAIN=""
+          for i in 1 2 3; do
+            if CHAIN=$(cast chain-id --rpc-url "$RPC_URL"); then break; fi
+            sleep 2
+          done
           echo "::notice::CHAIN_ID=$CHAIN"
           [ "$CHAIN" = "84532" ] || { echo "::error::ABORT: chain is $CHAIN, not 84532"; exit 1; }
           [ -n "$PK" ] || { echo "::error::ABORT: BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY missing"; exit 1; }
@@ -172,7 +176,12 @@ jobs:
             fi
           fi
           EXEC="${EXECUTOR,,}"
-          echo "::notice::VERIFY_TARGET=$EXEC chain=$(cast chain-id --rpc-url "$RPC_URL")"
+          CHAIN=""
+          for i in 1 2 3; do
+            if CHAIN=$(cast chain-id --rpc-url "$RPC_URL"); then break; fi
+            sleep 2
+          done
+          echo "::notice::VERIFY_TARGET=$EXEC chain=$CHAIN"
           # Public Sepolia RPCs blip — every read retries 3x before failing.
           cast_try() {
             local sig="$1" out=""
@@ -272,6 +281,10 @@ jobs:
           echo "::error::DEPLOY_RESULT feeRecipient=${ONCHAIN_FEE:-unknown}"
           echo "::error::DEPLOY_RESULT feeBps=${ONCHAIN_FEEBPS:-unknown}"
           echo "::error::DEPLOY_RESULT permit2=${ONCHAIN_P2:-unknown}"
+          TUSD=$(jq -r '.tusd // empty' deployments/base-sepolia/mpgr-executor-delegated.json 2>/dev/null || true)
+          TSTOCK=$(jq -r '.tstock // empty' deployments/base-sepolia/mpgr-executor-delegated.json 2>/dev/null || true)
+          echo "::error::DEPLOY_RESULT tusd=${TUSD:-n/a}"
+          echo "::error::DEPLOY_RESULT tstock=${TSTOCK:-n/a}"
           echo "::error::DEPLOY_RESULT weth=${ONCHAIN_WETH:-unknown}"
           echo "::error::DEPLOY_RESULT witnessTypeString=${ONCHAIN_WT:-unknown}"
 
