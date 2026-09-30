@@ -53,7 +53,7 @@ contract DeployDiagDelegated is Script {
 
         bytes32 domainOnChain = IPermit2Domain(PERMIT2).DOMAIN_SEPARATOR();
         console2.log("DOMAIN_ONCHAIN:", domainOnChain);
-        console2.log("DOMAIN_MATCH:", domainOnChain == domain);
+        console2.log("DOMAIN_MATCH:", domainOnChain == domain ? "true" : "false");
         console2.log("STUB_KECCAK:", PERMIT2_WITNESS_STUB);
         console2.log("WITNESS_TYPEHASH_KECCAK:", WITNESS_TYPEHASH);
     }
