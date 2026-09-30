@@ -9,7 +9,9 @@ import { concatHex, encodeAbiParameters, keccak256, toHex, type Address, type He
 
 import {
   CANONICAL_PERMIT2,
+  DELEGATED_ACTION_WITNESS_STRUCT_TYPE_STRING,
   DELEGATED_EXECUTOR_ADDRESS,
+  DELEGATED_WITNESS_TYPEHASH,
   DELEGATED_WITNESS_TYPE_STRING,
   PERMIT2_WITNESS_TYPEHASH,
   TOKEN_PERMISSIONS_TYPEHASH,
@@ -56,7 +58,7 @@ function independentDigest(): Hex {
   const witnessHash = keccak256(
     encodeAbiParameters(
       [{ type: "bytes32" }, { type: "address" }, { type: "address" }, { type: "uint256" }, { type: "uint256" }, { type: "bytes32" }, { type: "bytes32" }],
-      [keccak256(toHex(DELEGATED_WITNESS_TYPE_STRING)), witness.owner, witness.buyToken, BigInt(witness.minAmountOut), BigInt(witness.deadline), witness.actionId, witness.policyHash],
+      [keccak256(toHex(DELEGATED_ACTION_WITNESS_STRUCT_TYPE_STRING)), witness.owner, witness.buyToken, BigInt(witness.minAmountOut), BigInt(witness.deadline), witness.actionId, witness.policyHash],
     ),
   );
   const structHash = keccak256(
@@ -91,7 +93,7 @@ describe("delegated-executor digest packing", () => {
       keccak256(
         encodeAbiParameters(
           [{ type: "bytes32" }, { type: "address" }, { type: "address" }, { type: "uint256" }, { type: "uint256" }, { type: "bytes32" }, { type: "bytes32" }],
-          [keccak256(toHex(DELEGATED_WITNESS_TYPE_STRING)), witness.owner, witness.buyToken, BigInt(witness.minAmountOut), BigInt(witness.deadline), witness.actionId, witness.policyHash],
+          [keccak256(toHex(DELEGATED_ACTION_WITNESS_STRUCT_TYPE_STRING)), witness.owner, witness.buyToken, BigInt(witness.minAmountOut), BigInt(witness.deadline), witness.actionId, witness.policyHash],
         ),
       ),
     );

@@ -412,6 +412,38 @@ contract MPGRExecutorDelegatedTest is Test {
         dex.swapOnBehalfOfUniswapV3(p, POOL_FEE, a);
     }
 
+    /// @notice STANDARD-WALLET COMPATIBILITY PROOF (witness repack regression
+    ///         guard). Permit2 builds its typeHash as
+    ///         keccak256(packed(_PERMIT_TRANSFER_FROM_WITNESS_TYPEHASH_STUB,
+    ///         WITNESS_TYPE_STRING)). For ordinary wallets (eth_signTypedData_v4)
+    ///         to sign the SAME commitment, that packed string must equal the
+    ///         full canonical EIP-712 encodeType: primary struct with the
+    ///         witness field NAME, referenced structs in alphabetical order,
+    ///         and the TokenPermissions appendix (UniswapX convention).
+    function test_WitnessTypeString_IsStandardEIP712EncodeType() public pure {
+        string memory expected =
+            "PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,ActionWitness witness)"
+            "ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)"
+            "TokenPermissions(address token,uint256 amount)";
+        bytes32 fromContract = keccak256(
+            abi.encodePacked(permit2Stub(), dex.WITNESS_TYPE_STRING())
+        );
+        assertEq(fromContract, keccak256(bytes(expected)));
+        // The witness struct hash is seeded by the struct's OWN type string
+        // (unchanged bindings), which must be a strict substring of the
+        // handoff string.
+        assertEq(
+            dex.ACTION_WITNESS_TYPEHASH(),
+            keccak256(bytes(dex.ACTION_WITNESS_STRUCT_TYPE_STRING()))
+        );
+    }
+
+    /// @dev The stub constant mirrored from the deployed PermitHash library
+    ///      (Permit2WitnessMock exposes the same value).
+    function permit2Stub() internal view returns (string memory) {
+        return permit2._PERMIT_TRANSFER_FROM_WITNESS_TYPEHASH_STUB();
+    }
+
     function test_Signature_TamperedTypeString_Reverts() public {
         (MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a) = _happyUni();
         // Signed over a DIFFERENT witness type string.

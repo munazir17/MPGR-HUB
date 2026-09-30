@@ -28,24 +28,36 @@ export const DELEGATED_EXECUTOR_ADDRESS: Address = "0x8C6311c496D41e904f4649Ba21
 export const DELEGATED_EXECUTOR_FEE_BPS = EXECUTOR_DEFAULT_FEE_BPS; // 25 — canonical, never changed here
 export const CANONICAL_PERMIT2: Address = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 
-/** Must match MPGRExecutorDelegated.WITNESS_TYPE_STRING exactly (Phase 1 verified). */
-export const DELEGATED_WITNESS_TYPE_STRING =
+/**
+ * The ActionWitness struct's own canonical EIP-712 type string — used for
+ * the witness STRUCT hash (keccak256 of this seeds the 32-byte witness).
+ * Matches MPGRExecutorDelegated.ACTION_WITNESS_STRUCT_TYPE_STRING.
+ */
+export const DELEGATED_ACTION_WITNESS_STRUCT_TYPE_STRING =
   "ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)";
 
-/** keccak256(DELEGATED_WITNESS_TYPE_STRING). */
-export const DELEGATED_WITNESS_TYPEHASH = keccak256(toHex(DELEGATED_WITNESS_TYPE_STRING));
+/** keccak256(DELEGATED_ACTION_WITNESS_STRUCT_TYPE_STRING) — witness struct-hash seed. */
+export const DELEGATED_WITNESS_TYPEHASH = keccak256(toHex(DELEGATED_ACTION_WITNESS_STRUCT_TYPE_STRING));
 
 /**
- * The witness type string a STANDARD EIP-712 wallet (eth_signTypedData_v4)
- * can sign: stub + field-name + referenced structs in alphabetical order
- * (UniswapX convention). The CURRENTLY DEPLOYED executor uses the bare
- * struct string, which NO standard wallet typed-data signature can match —
- * wallet signing is disabled (fail-closed) until that constant is fixed
- * and redeployed with explicit approval. This function reads the pinned
- * deployment facts, so the UI/API self-heal after a correct redeploy.
+ * The witness type string handed to Permit2 (matches
+ * MPGRExecutorDelegated.WITNESS_TYPE_STRING exactly) — STANDARD EIP-712
+ * form: Permit2 packs stub + this string into the typeHash, so this string
+ * must complete the stub into the full encodeType (witness field name +
+ * referenced structs alphabetical + TokenPermissions appendix; the UniswapX
+ * convention). This is the corrected (redeployed) executor's string — the
+ * ORIGINAL deployment used the bare struct string, which no standard wallet
+ * typed-data signature could ever match.
  */
-export const WALLET_COMPATIBLE_WITNESS_TYPE_STRING =
+export const DELEGATED_WITNESS_TYPE_STRING =
   "ActionWitness witness)ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)TokenPermissions(address token,uint256 amount)";
+
+/**
+ * Regression guard: the exact string a standard wallet (eth_signTypedData_v4)
+ * can sign. walletSigningSupported() reads the pinned deployment facts, so
+ * the UI/API self-heal if these ever diverge again (fail-closed).
+ */
+export const WALLET_COMPATIBLE_WITNESS_TYPE_STRING = DELEGATED_WITNESS_TYPE_STRING;
 
 export function walletSigningSupported(): boolean {
   return (DELEGATED_WITNESS_TYPE_STRING as string) === WALLET_COMPATIBLE_WITNESS_TYPE_STRING;

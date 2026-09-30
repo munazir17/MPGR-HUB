@@ -81,15 +81,30 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
     ///         native-ETH input is structurally impossible in delegated swaps.
     uint8 public constant FLAG_NATIVE_OUT = 2;
 
-    /// @notice The witness type string handed to Permit2's
-    ///         permitWitnessTransferFrom. MUST match ActionWitness's declaration
-    ///         order below field-for-field (EIP-712 canonical order).
-    string public constant WITNESS_TYPE_STRING =
+    /// @notice The ActionWitness struct's own canonical EIP-712 type string
+    ///         (the encodeType of the witness struct ALONE — used for the
+    ///         witness struct hash). Field order MUST match the ActionWitness
+    ///         struct declaration below, field-for-field.
+    string public constant ACTION_WITNESS_STRUCT_TYPE_STRING =
         "ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)";
 
-    /// @notice keccak256(WITNESS_TYPE_STRING) — the struct hash seed used to
-    ///         build the 32-byte witness passed to Permit2.
-    bytes32 public constant ACTION_WITNESS_TYPEHASH = keccak256(bytes(WITNESS_TYPE_STRING));
+    /// @notice The witness type string handed to Permit2's
+    ///         permitWitnessTransferFrom, in STANDARD EIP-712 form so that
+    ///         ordinary wallets can sign it directly. Permit2 computes its
+    ///         typeHash as
+    ///         keccak256(abi.encodePacked(_PERMIT_TRANSFER_FROM_WITNESS_TYPEHASH_STUB, witnessTypeString)),
+    ///         so this string must complete the stub into the full encodeType:
+    ///         "<witness field name + ')'>" + referenced structs in
+    ///         alphabetical order + the TokenPermissions appendix (the
+    ///         UniswapX Permit2-witness convention). The security bindings
+    ///         (fields, order, meaning) are unchanged — only the packing
+    ///         representation became wallet-compatible.
+    string public constant WITNESS_TYPE_STRING =
+        "ActionWitness witness)ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)TokenPermissions(address token,uint256 amount)";
+
+    /// @notice keccak256(ACTION_WITNESS_STRUCT_TYPE_STRING) — the struct hash
+    ///         seed used to build the 32-byte witness passed to Permit2.
+    bytes32 public constant ACTION_WITNESS_TYPEHASH = keccak256(bytes(ACTION_WITNESS_STRUCT_TYPE_STRING));
 
     // ---------------------------------------------------------------------
     // Types

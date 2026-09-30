@@ -91,9 +91,12 @@ contract DeployMPGRExecutorDelegatedBaseSepolia is Script {
     uint256 internal constant WETH_LIQUIDITY = 0.003 ether;
     uint256 internal constant MIN_DEPLOYER_BALANCE = 0.008 ether;
 
-    /// @notice Must match MPGRExecutorDelegated.WITNESS_TYPE_STRING exactly.
+    /// @notice Must match MPGRExecutorDelegated.WITNESS_TYPE_STRING exactly —
+    ///         STANDARD EIP-712 form (stub + witness field name + referenced
+    ///         structs alphabetical + TokenPermissions appendix) so the
+    ///         script's demo signatures commit to exactly what a wallet signs.
     string internal constant WITNESS_TYPE_STRING =
-        "ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)";
+        "ActionWitness witness)ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)TokenPermissions(address token,uint256 amount)";
     bytes32 internal constant WITNESS_TYPEHASH = keccak256(
         bytes(
             "ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)"
