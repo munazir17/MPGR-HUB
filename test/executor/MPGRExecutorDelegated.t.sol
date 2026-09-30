@@ -101,6 +101,7 @@ contract MPGRExecutorDelegatedTest is Test {
         v1 = new MPGRExecutor(admin, feeWallet, BPS, address(weth), address(permit2), vr, vt);
 
         // Router liquidity (output side), mirrored per router pair.
+        vm.deal(address(this), 2_000 ether); // funds the WETH deposits below
         for (uint256 i = 0; i < 2; i++) {
             address r = i == 0 ? address(slipDex) : address(uniDex);
             stock.mint(r, 1e33);
