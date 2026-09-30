@@ -30,6 +30,7 @@ jobs:
         run: |
           set -o pipefail
           forge test -vvv 2>&1 | tee /tmp/forge-output.txt
+          forge test --match-contract DEBUGCounterexample -vvvv 2>&1 | tail -n 80 > /tmp/trace.txt || true
         env:
           MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
       - name: Emit failing tests as annotations
@@ -41,7 +42,7 @@ jobs:
           while IFS= read -r line; do
             echo "::error::${line:0:350}"
           done < /tmp/fails.txt
-          # Also surface the tail (revert traces live at the end).
-          tail -n 60 /tmp/forge-output.txt | while IFS= read -r line; do
-            echo "::error::TAIL ${line:0:300}"
+          # Surface the pinned-counterexample trace (revert traces live here).
+          tail -n 45 /tmp/trace.txt | while IFS= read -r line; do
+            echo "::error::TRACE ${line:0:330}"
           done
