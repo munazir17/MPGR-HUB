@@ -5,6 +5,9 @@ name: Deploy Delegated Executor (Base Sepolia)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - "arena/**"
   pull_request:
     types: [labeled]
 
@@ -17,9 +20,13 @@ concurrency:
 
 jobs:
   deploy:
+    # The push trigger exists ONLY so GitHub indexes this workflow on this
+    # (non-default) branch. It must be armed explicitly: the push's HEAD
+    # commit message must contain the [deploy-delegated] tag.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.label.name == 'deploy-delegated-sepolia'
+      github.event.label.name == 'deploy-delegated-sepolia' ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[deploy-delegated]'))
     runs-on: ubuntu-latest
     environment: base-sepolia
     timeout-minutes: 25
