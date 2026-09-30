@@ -8,6 +8,10 @@ name: Discover Delegated Run Tokens (Base Sepolia)
 # the executor's on-chain isTokenAllowed allowlist.
 
 on:
+  push:
+    branches: [arena/01a0e784-mpgr-hub]
+    # Armed ONLY by a commit whose subject contains the exact tag
+    # [discover-tokens] (same pattern as the deploy workflow).
   workflow_dispatch:
     inputs:
       tx_hash:
@@ -20,6 +24,7 @@ permissions:
 
 jobs:
   discover:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[discover-tokens]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
