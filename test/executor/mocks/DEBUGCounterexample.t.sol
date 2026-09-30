@@ -4,7 +4,7 @@
 // debug workflow's -vvvv trace shows the exact failing line.
 import {MPGRExecutor} from "../../contracts/executor/MPGRExecutor.sol";
 import {MPGRExecutorDelegated} from "../../contracts/executor/MPGRExecutorDelegated.sol";
-import {MPGRExecutorDelegatedTest} from "./MPGRExecutorDelegated.t.sol";
+import {MPGRExecutorDelegatedTest} from "../MPGRExecutorDelegated.t.sol";
 
 contract DEBUGCounterexampleTest is MPGRExecutorDelegatedTest {
     function test_DEBUG_fuzzCounterexample() public {
