@@ -5,6 +5,8 @@ name: Deploy Delegated Executor (Base Sepolia)
 
 on:
   workflow_dispatch:
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
@@ -15,11 +17,14 @@ concurrency:
 
 jobs:
   deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'deploy-delegated-sepolia'
     runs-on: ubuntu-latest
     environment: base-sepolia
     timeout-minutes: 25
     env:
-      RPC_URL: ${{ vars.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
+      RPC_URL: ${{ vars.BASE_SEPOLIA_RPC_URL || secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,8 +39,8 @@ jobs:
       - name: Preflight — print target and abort on any mismatch (before broadcasting)
         env:
           PK: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
-          OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
-          FEE: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          OWNER: ${{ vars.MPGR_EXECUTOR_OWNER || secrets.MPGR_EXECUTOR_OWNER }}
+          FEE: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT || secrets.MPGR_EXECUTOR_FEE_RECIPIENT }}
         run: |
           set -euo pipefail
           echo "::notice::TARGET=Base Sepolia chain 84532 script=DeployMPGRExecutorDelegatedBaseSepolia.s.sol"
@@ -59,8 +64,8 @@ jobs:
       - name: Deploy — existing 84532-gated script (broadcast)
         env:
           BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
-          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
-          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER || secrets.MPGR_EXECUTOR_OWNER }}
+          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT || secrets.MPGR_EXECUTOR_FEE_RECIPIENT }}
         run: |
           set -o pipefail
           forge script script/DeployMPGRExecutorDelegatedBaseSepolia.s.sol \
