@@ -44,10 +44,30 @@ jobs:
     timeout-minutes: 25
     env:
       RPC_URL: ${{ vars.BASE_SEPOLIA_RPC_URL || secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
-      VERIFY_ONLY: ${{ github.event_name == 'push' && 'true' || inputs.verify_only && 'true' || 'false' }}
       EXECUTOR_INPUT: ${{ inputs.executor || '' }}
     steps:
       - uses: actions/checkout@v4
+
+      # Mode resolution: push runs are VERIFY-ONLY unless the HEAD commit
+      # message contains the explicit [deploy-delegated] tag; a labeled PR or
+      # a dispatch with verify_only=false deploys.
+      - name: Resolve mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            case "${{ github.event.head_commit.message }}" in
+              *"[deploy-delegated]"*) echo "verify_only=false" >> "$GITHUB_OUTPUT" ;;
+              *) echo "verify_only=true" >> "$GITHUB_OUTPUT" ;;
+            esac
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "verify_only=false" >> "$GITHUB_OUTPUT"
+          else
+            if [ "${{ inputs.verify_only }}" = "true" ]; then
+              echo "verify_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "verify_only=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
 
       - uses: foundry-rs/foundry-toolchain@v1
         with:
@@ -83,7 +103,7 @@ jobs:
           echo "::notice::PREFLIGHT=OK Permit2OnChain=true"
 
       - name: Deploy — existing 84532-gated script (broadcast)
-        if: env.VERIFY_ONLY != 'true'
+        if: steps.mode.outputs.verify_only != 'true'
         env:
           BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
           MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER || secrets.MPGR_EXECUTOR_OWNER }}
