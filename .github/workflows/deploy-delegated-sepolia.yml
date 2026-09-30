@@ -72,7 +72,7 @@ jobs:
         run: |
           forge script script/DeployDiagDelegated.s.sol --rpc-url "$RPC_URL" -vv > diag.log 2>&1 || echo "::error::DIAG forge exit=$? (log below)"
           echo "::error::DIAG-STEP-RAN lines=$(wc -l < diag.log)"
-          tail -n 25 diag.log | while IFS= read -r line; do
+          tail -n 10 diag.log | while IFS= read -r line; do
             echo "::error::DIAG ${line:0:400}"
           done
 
