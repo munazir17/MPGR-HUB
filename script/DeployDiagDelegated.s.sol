@@ -43,18 +43,18 @@ contract DeployDiagDelegated is Script {
         bytes32 domain = keccak256(abi.encode(DOMAIN_TYPEHASH, keccak256("Permit2"), block.chainid, PERMIT2));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domain, structHash));
 
-        console2.log("WITNESS_HASH:", witnessHash);
-        console2.log("TYPEHASH:", typeHash);
-        console2.log("TP_HASH:", tpHash);
-        console2.log("STRUCT_HASH:", structHash);
-        console2.log("DOMAIN_SCRIPT:", domain);
-        console2.log("DIGEST_SCRIPT:", digest);
+        console2.log("WITNESS_HASH:", uint256(witnessHash));
+        console2.log("TYPEHASH:", uint256(typeHash));
+        console2.log("TP_HASH:", uint256(tpHash));
+        console2.log("STRUCT_HASH:", uint256(structHash));
+        console2.log("DOMAIN_SCRIPT:", uint256(domain));
+        console2.log("DIGEST_SCRIPT:", uint256(digest));
         console2.log("chainid:", block.chainid);
 
         bytes32 domainOnChain = IPermit2Domain(PERMIT2).DOMAIN_SEPARATOR();
-        console2.log("DOMAIN_ONCHAIN:", domainOnChain);
+        console2.log("DOMAIN_ONCHAIN:", uint256(domainOnChain));
         console2.log("DOMAIN_MATCH:", domainOnChain == domain ? "true" : "false");
-        console2.log("STUB_KECCAK:", PERMIT2_WITNESS_STUB);
-        console2.log("WITNESS_TYPEHASH_KECCAK:", WITNESS_TYPEHASH);
+        console2.log("STUB_KECCAK:", uint256(PERMIT2_WITNESS_STUB));
+        console2.log("WITNESS_TYPEHASH_KECCAK:", uint256(WITNESS_TYPEHASH));
     }
 }
