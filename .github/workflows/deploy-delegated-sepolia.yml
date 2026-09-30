@@ -1,0 +1,110 @@
+# TEMPORARY operator-triggered deployment for Phase 1 (explicitly approved).
+# Runs the EXISTING 84532-gated script verbatim against Base Sepolia using the
+# `base-sepolia` environment's stored secret/variables. Remove after use.
+name: Deploy Delegated Executor (Base Sepolia)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-delegated-sepolia
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: base-sepolia
+    timeout-minutes: 25
+    env:
+      RPC_URL: ${{ vars.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - run: mkdir -p .forge-deps
+      - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+      - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+
+      - name: Preflight — print target and abort on any mismatch (before broadcasting)
+        env:
+          PK: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+          OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
+          FEE: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+        run: |
+          set -euo pipefail
+          echo "::notice::TARGET=Base Sepolia chain 84532 script=DeployMPGRExecutorDelegatedBaseSepolia.s.sol"
+          CHAIN=$(cast chain-id --rpc-url "$RPC_URL")
+          echo "::notice::CHAIN_ID=$CHAIN"
+          [ "$CHAIN" = "84532" ] || { echo "::error::ABORT: chain is $CHAIN, not 84532"; exit 1; }
+          [ -n "$PK" ] || { echo "::error::ABORT: BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY missing"; exit 1; }
+          DEPLOYER=$(cast wallet address --private-key "$PK")
+          BAL=$(cast balance "$DEPLOYER" --rpc-url "$RPC_URL")
+          echo "::notice::DEPLOYER=$DEPLOYER BAL_WEI=$BAL"
+          echo "::notice::OWNER=$OWNER FEE_RECIPIENT=$FEE"
+          echo "::notice::CTOR=MPGRExecutorDelegated(owner,feeRecipient,feeBps=25,weth=0x4200000000000000000000000000000000000006,permit2=0x000000000022D473030F116dDEE9F6B43aC78BA3,routers=[0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4/UNISWAP_V3_ROUTER02],tokens=[WETH,tUSD,tSTOCK])"
+          [ -n "$OWNER" ] && [ "$OWNER" != "0x0000000000000000000000000000000000000000" ] || { echo "::error::ABORT: MPGR_EXECUTOR_OWNER unset"; exit 1; }
+          [ -n "$FEE" ] && [ "$FEE" != "0x0000000000000000000000000000000000000000" ] || { echo "::error::ABORT: MPGR_EXECUTOR_FEE_RECIPIENT unset"; exit 1; }
+          [ "$FEE" != "$DEPLOYER" ] || { echo "::error::ABORT: fee recipient must differ from deployer"; exit 1; }
+          [ "$BAL" -ge 8000000000000000 ] || { echo "::error::ABORT: deployer below 0.008 ETH"; exit 1; }
+          P2LEN=$(cast code 0x000000000022D473030F116dDEE9F6B43aC78BA3 --rpc-url "$RPC_URL" | wc -c)
+          [ "$P2LEN" -gt 100 ] || { echo "::error::ABORT: canonical Permit2 not on chain"; exit 1; }
+          echo "::notice::PREFLIGHT=OK Permit2OnChain=true"
+
+      - name: Deploy — existing 84532-gated script (broadcast)
+        env:
+          BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
+          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+        run: |
+          set -o pipefail
+          forge script script/DeployMPGRExecutorDelegatedBaseSepolia.s.sol \
+            --rpc-url "$RPC_URL" --broadcast --slow 2>&1 | tee deploy.log
+          BC=broadcast/DeployMPGRExecutorDelegatedBaseSepolia.s.sol/84532/run-latest.json
+          EXEC=$(jq -r '[.transactions[] | select(.contractName=="MPGRExecutorDelegated")][0].contractAddress' "$BC")
+          TXH=$(jq -r '[.transactions[] | select(.contractName=="MPGRExecutorDelegated")][0].hash' "$BC")
+          echo "::notice::EXECUTOR=$EXEC"
+          echo "::notice::EXECUTOR_TX=$TXH"
+          echo "EXECUTOR=$EXEC" >> "$GITHUB_ENV"
+
+      - name: Post-deploy on-chain verification
+        run: |
+          set -euo pipefail
+          EXEC="$EXECUTOR"
+          CODE=$(cast code "$EXEC" --rpc-url "$RPC_URL")
+          TPL=$(forge inspect --json MPGRExecutorDelegated deployedBytecode | jq -r)
+          python3 - "$CODE" "$TPL" <<'PY'
+          import sys
+          code, tpl = sys.argv[1], sys.argv[2]
+          ok = code.startswith(tpl) and len(code) > len(tpl) and (len(code) - len(tpl)) % 32 == 0
+          print(f"BYTECODE_PREFIX_MATCH={'true' if ok else 'false'} len(code)={len(code)} len(tpl)={len(tpl)}")
+          sys.exit(0 if ok else 1)
+          PY
+          echo "::notice::BYTECODE_PREFIX_MATCH=true (runtime code = compiled template + immutables tail)"
+          O=$(cast call "$EXEC" "owner()(address)" --rpc-url "$RPC_URL")
+          P=$(cast call "$EXEC" "pendingOwner()(address)" --rpc-url "$RPC_URL")
+          B=$(cast call "$EXEC" "feeBps()(uint16)" --rpc-url "$RPC_URL")
+          F=$(cast call "$EXEC" "feeRecipient()(address)" --rpc-url "$RPC_URL")
+          P2=$(cast call "$EXEC" "PERMIT2()(address)" --rpc-url "$RPC_URL")
+          echo "::notice::ONCHAIN owner=$O pendingOwner=$P feeBps=$B feeRecipient=$F"
+          echo "::notice::ONCHAIN permit2=$P2"
+          [ "$P2" = "0x000000000022D473030F116dDEE9F6B43aC78BA3" ] || { echo "::error::Permit2 config mismatch"; exit 1; }
+          [ "$B" = "25" ] || { echo "::error::feeBps mismatch"; exit 1; }
+          [ "$P" = "0x0000000000000000000000000000000000000000" ] || { echo "::error::unexpected pendingOwner"; exit 1; }
+          echo "::notice::DEPLOYMENT_VERIFIED=true"
+
+      - name: Upload deployment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-sepolia-deployment
+          path: |
+            deploy.log
+            deployments/base-sepolia/mpgr-executor-delegated.json
+            broadcast/DeployMPGRExecutorDelegatedBaseSepolia.s.sol/84532/run-latest.json
+          if-no-files-found: warn
