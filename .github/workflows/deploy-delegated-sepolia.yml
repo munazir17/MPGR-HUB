@@ -158,11 +158,20 @@ jobs:
           TPLN="$(echo "$TPL" | sed 's/^0x//' | tr 'A-F' 'a-f')"
           CODEN="$(echo "$CODE" | sed 's/^0x//' | tr 'A-F' 'a-f')"
           echo "::notice::BYTECODE len(code)=${#CODEN} len(template)=${#TPLN}"
-          python3 - "$CODEN" "$TPLN" <<'PY'
-          import sys
-          code, tpl = sys.argv[1], sys.argv[2]
-          ok = code.startswith(tpl) and len(code) > len(tpl) and (len(code) - len(tpl)) % 64 == 0
-          print("::notice::BYTECODE_PREFIX_MATCH=%s (runtime = compiled template + immutables tail)" % ok)
+          IMMREF=$(jq -c '.immutableReferences // {}' out/executor/MPGRExecutorDelegated.sol/MPGRExecutorDelegated.json)
+          python3 - "$CODEN" "$TPLN" "$IMMREF" <<'PY'
+          import json, sys
+          code, tpl, imm = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+          mc, mt = code, tpl
+          n = 0
+          for sig, ref in imm.items():
+              for off in ref["offsets"]:
+                  a, b = off * 2, (off + ref["length"]) * 2
+                  mc = mc[:a] + "ff" * ref["length"] + mc[b:]
+                  mt = mt[:a] + "ff" * ref["length"] + mt[b:]
+                  n += 1
+          ok = len(code) == len(tpl) and mc == mt
+          print("::notice::BYTECODE_MATCH=%s (runtime == compiled template modulo %d immutable slots)" % (ok, n))
           sys.exit(0 if ok else 1)
           PY
           O=$(cast call "$EXEC" "owner()(address)" --rpc-url "$RPC_URL")
