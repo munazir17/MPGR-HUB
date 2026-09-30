@@ -100,8 +100,10 @@ contract DeployMPGRExecutorDelegatedBaseSepolia is Script {
         )
     );
     /// @notice Permit2's witness-typehash stub (deployed PermitHash library).
-    bytes32 internal constant PERMIT2_WITNESS_STUB =
-        keccak256(bytes("PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,"));
+    /// @notice Raw stub string — PermitHash.hashWithWitness packs the STRING
+    ///         itself with the witness type string (NOT its keccak).
+    string internal constant PERMIT2_WITNESS_STUB =
+        "PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,";
     bytes32 internal constant TOKEN_PERMISSIONS_TYPEHASH = keccak256("TokenPermissions(address token,uint256 amount)");
 
     string internal constant OUT_DIR = "deployments/base-sepolia";

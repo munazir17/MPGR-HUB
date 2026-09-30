@@ -17,8 +17,8 @@ contract DeployDiagDelegated is Script {
         "ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)";
     bytes32 constant WITNESS_TYPEHASH =
         keccak256(bytes("ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)"));
-    bytes32 constant PERMIT2_WITNESS_STUB =
-        keccak256(bytes("PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,"));
+    string constant PERMIT2_WITNESS_STUB =
+        "PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,";
     bytes32 constant TOKEN_PERMISSIONS_TYPEHASH = keccak256("TokenPermissions(address token,uint256 amount)");
     bytes32 constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
 
@@ -54,7 +54,7 @@ contract DeployDiagDelegated is Script {
         bytes32 domainOnChain = IPermit2Domain(PERMIT2).DOMAIN_SEPARATOR();
         console2.log("DOMAIN_ONCHAIN:", uint256(domainOnChain));
         console2.log("DOMAIN_MATCH:", domainOnChain == domain ? "true" : "false");
-        console2.log("STUB_KECCAK:", uint256(PERMIT2_WITNESS_STUB));
+        console2.log("STUB_KECCAK:", uint256(keccak256(bytes(PERMIT2_WITNESS_STUB))));
         console2.log("WITNESS_TYPEHASH_KECCAK:", uint256(WITNESS_TYPEHASH));
     }
 }
