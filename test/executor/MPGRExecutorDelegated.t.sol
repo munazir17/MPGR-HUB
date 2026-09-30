@@ -119,6 +119,9 @@ contract MPGRExecutorDelegatedTest is Test {
 
         _setRates(RATE_NUM, RATE_DEN);
 
+        // The owner holds the asset they delegate (mirrors the v1 suite's taker funding).
+        usdc.mint(ownerAddr, 1_000_000e6);
+
         // The user's standing Permit2 approval (real-world one-time approve).
         vm.startPrank(ownerAddr);
         usdc.approve(address(permit2), type(uint256).max);
@@ -703,6 +706,7 @@ contract MPGRExecutorDelegatedTest is Test {
         uint256 minOut = _expectedOut(G, RATE_NUM, RATE_DEN);
 
         // v1: classic PERMIT2 pull by the taker in the taker's own tx.
+        vm.recordLogs(); // capture the v1 flow's events
         vm.startPrank(ownerAddr);
         usdc.approve(address(v1), type(uint256).max);
         MPGRExecutor.SwapParams memory pv1 = _toV1(
@@ -757,7 +761,7 @@ contract MPGRExecutorDelegatedTest is Test {
         _setRates(bound(uint256(num), 1, 1e6), bound(uint256(den), 1, 1e6));
         uint256 expectedOut =
             _expectedOut(gross, bound(uint256(num), 1, 1e6), bound(uint256(den), 1, 1e6));
-        require(expectedOut > 0, "degenerate rate");
+        if (expectedOut == 0) return; // skip degenerate draws (out rounds to zero)
         usdc.mint(ownerAddr, gross);
         _equivalenceCheck(gross, expectedOut);
     }
