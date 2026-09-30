@@ -158,7 +158,7 @@ jobs:
           TPLN="$(echo "$TPL" | sed 's/^0x//' | tr 'A-F' 'a-f')"
           CODEN="$(echo "$CODE" | sed 's/^0x//' | tr 'A-F' 'a-f')"
           echo "::notice::BYTECODE len(code)=${#CODEN} len(template)=${#TPLN}"
-          ART=$(find out -name 'MPGRExecutorDelegated.json' | head -1)
+          ART=$(find out -name 'MPGRExecutorDelegated.json' -print -quit)
           echo "::notice::V artifact=$ART"
           IMMREF=$(jq -c '.deployedBytecode.immutableReferences // .immutableReferences // {}' "$ART")
           python3 - "$CODEN" "$TPLN" "$IMMREF" <<'PY'
