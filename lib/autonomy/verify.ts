@@ -25,6 +25,8 @@ export interface VerificationInput {
   expectedBuyAmountRaw: string;
   minBuyAmountRaw: string;
   attemptsSoFar: number;
+  /** Delegated path ONLY: broadcaster address for scoped tx.from semantics. */
+  expectedSender?: string;
 }
 
 export interface VerificationVerdict {
@@ -90,7 +92,7 @@ export async function verifyExecution(gateway: McpGateway, input: VerificationIn
   // Receipt is confirmed — prove it matched the quote via MCP verification.
   let verification;
   try {
-    verification = await gateway.verify(input.quoteId, input.txHash);
+    verification = await gateway.verify(input.quoteId, input.txHash, input.expectedSender);
   } catch {
     return {
       outcome: "PENDING_VERIFICATION",

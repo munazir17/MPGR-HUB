@@ -26,6 +26,7 @@ import {
   type Address,
   type Hex,
   type Log,
+  encodeFunctionData,
 } from "viem";
 
 import {
@@ -88,6 +89,11 @@ export interface McpDeps {
   reader: (chainId: ExecutorChainId) => ChainReader;
   nowSeconds: () => number;
   quoteSecret?: string;
+  /**
+   * Phase 2 delegated path ONLY: the operator broadcaster (Base Sepolia).
+   * Fail-closed: when absent, mpgr_delegate_swap refuses. Never user keys.
+   */
+  delegatedBroadcaster?: (tx: { to: Address; data: Hex; chainId: number }) => Promise<Hex>;
   /**
    * Base mainnet MCP trading (executor path AND 0x fallback). OFF unless
    * MPGR_MCP_ENABLE_BASE_MAINNET=true. The registry entry is a deployed fact;
@@ -674,6 +680,11 @@ export async function verifyTrade(deps: McpDeps, input: unknown): Promise<ToolOu
   if (!d) return fail("EXECUTOR_NOT_DEPLOYED", "Executor not deployed on this chain.");
   const built = intentFromPayload(d, p, args.quoteId as string, "APPROVAL");
   if (!built.ok) return built;
+  if (typeof args.expectedSender === "string" && isAddress(args.expectedSender)) {
+    // Delegated path ONLY (additive): verification is scoped to the explicit
+    // expectedSender; the event taker check remains the owner binding.
+    built.intent.expectedSender = getAddress(args.expectedSender);
+  }
   const result = verifyExecutorReceipt(receipt, built.intent);
   return { ok: true, data: jsonSafe({ ...result, explorerUrl: `${EXECUTOR_EXPLORERS[chainId]}/tx/${receipt.transactionHash}` }) as Record<string, unknown> };
 }
@@ -806,4 +817,81 @@ function verifyZeroExReceipt(p: QuotePayload, receipt: Awaited<ReturnType<ChainR
     ok: true,
     data: { verified: checks.every((c) => c.ok), transactionHash: receipt.transactionHash, blockNumber: receipt.blockNumber.toString(), checks },
   };
+}
+
+// ============================================================ delegated execution (Phase 2, Base Sepolia only)
+
+import { DELEGATED_EXECUTOR_ADDRESS, DELEGATED_EXECUTOR_ABI, DELEGATED_EXECUTOR_CHAIN_ID, DELEGATED_EXECUTOR_FEE_BPS, buildDelegatedSwapParams } from "@/lib/executor/delegated-executor";
+import { delegatedBroadcasterAddress } from "@/lib/delegated/delegated-broadcaster";
+
+/**
+ * mpgr_delegate_swap — the delegated execution capability. The CALLER (the
+ * autonomy runtime's execution adapter) has already validated policy,
+ * authorization slots, quote freshness and idempotency. This function only
+ * rebuilds deterministic parameters from the bound values, encodes the
+ * executor call and broadcasts with the operator broadcaster. The user's
+ * signature travels as authorization bytes; it is never logged.
+ */
+export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolOutcome> {
+  const args = asRecord(input);
+  const chainId = parseChainId(args.chainId);
+  if (chainId !== DELEGATED_EXECUTOR_CHAIN_ID) {
+    return fail("UNSUPPORTED_CHAIN", "Delegated execution is Base Sepolia (84532) only.");
+  }
+  const broadcast = deps.delegatedBroadcaster;
+  if (!broadcast) return fail("BROADCASTER_NOT_CONFIGURED", "Delegated execution is not configured on the server (fail-closed).");
+  const auth = asRecord(args.authorization);
+  const permit = asRecord(auth.permit);
+  const permitted = asRecord(permit.permitted);
+  const witness = asRecord(auth.witness);
+  const sig = auth.signature;
+  const numeric = (v: unknown) => (typeof v === "string" && /^\d{1,78}$/.test(v) ? BigInt(v) : null);
+  const addr = (v: unknown) => (typeof v === "string" && isAddress(v) ? getAddress(v) : null);
+  const tokenIn = addr(permitted.token);
+  const amount = numeric(permitted.amount);
+  const nonce = numeric(permit.nonce);
+  const deadline = numeric(permit.deadline ?? args.deadline);
+  const owner = addr(witness.owner);
+  const buyToken = addr(witness.buyToken);
+  const minOut = numeric(witness.minAmountOut);
+  const policyHash = typeof witness.policyHash === "string" && /^0x[0-9a-fA-F]{64}$/.test(witness.policyHash) ? witness.policyHash : null;
+  const actionId = typeof witness.actionId === "string" && /^0x[0-9a-fA-F]{64}$/.test(witness.actionId) ? witness.actionId : null;
+  const intentId = typeof args.intentId === "string" && /^0x[0-9a-fA-F]{64}$/.test(args.intentId) ? args.intentId : null;
+  const router = addr(args.router);
+  const poolFee = typeof args.poolFee === "number" && [100, 500, 3000, 10000].includes(args.poolFee) ? args.poolFee : null;
+  if (!tokenIn || !buyToken || !owner || amount === null || nonce === null || deadline === null || minOut === null || !policyHash || !actionId || !intentId || !router || poolFee === null) {
+    return fail("INVALID_AUTHORIZATION", "Delegated authorization is incomplete or malformed.");
+  }
+  if (typeof sig !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(sig)) return fail("INVALID_AUTHORIZATION", "Signature must be 65-byte rsv hex.");
+  const grossAmountIn = amount;
+  const fee = (grossAmountIn * BigInt(DELEGATED_EXECUTOR_FEE_BPS)) / 10_000n;
+  if (fee === 0n) return fail("FEE_ROUNDS_TO_ZERO", "Amount too small for the canonical 25 bps fee.");
+  const expectedFeeAmount = typeof args.expectedFeeAmount === "string" && /^\d{1,78}$/.test(args.expectedFeeAmount) ? BigInt(args.expectedFeeAmount) : null;
+  if (expectedFeeAmount !== fee) return fail("FEE_MISMATCH", "Committed fee does not equal floor(gross * 25bps) — refusing (fail-closed).");
+  const params = buildDelegatedSwapParams({
+    router, tokenIn, tokenOut: buyToken, grossAmountIn: grossAmountIn.toString(),
+    minAmountOut: minOut.toString(), deadline: Number(deadline), intentId: intentId as `0x${string}`, owner,
+    feeBps: DELEGATED_EXECUTOR_FEE_BPS,
+  });
+  if (params.expectedFeeAmount !== fee) return fail("FEE_MISMATCH", "Fee math divergence — refusing (fail-closed).");
+  const data = encodeFunctionData({
+    abi: DELEGATED_EXECUTOR_ABI,
+    functionName: "swapOnBehalfOfUniswapV3",
+    args: [
+      params,
+      poolFee,
+      {
+        permit: { permitted: { token: tokenIn, amount }, nonce, deadline },
+        witness: { owner, buyToken, minAmountOut: minOut, deadline, actionId: actionId as Hex, policyHash: policyHash as Hex },
+        signature: sig as Hex,
+      },
+    ],
+  });
+  try {
+    const txHash = await broadcast({ to: DELEGATED_EXECUTOR_ADDRESS, data, chainId: DELEGATED_EXECUTOR_CHAIN_ID });
+    return { ok: true, data: jsonSafe({ txHash, delegatedExecutor: DELEGATED_EXECUTOR_ADDRESS, chainId: DELEGATED_EXECUTOR_CHAIN_ID, expectedSender: delegatedBroadcasterAddress() }) as Record<string, unknown> };
+  } catch (error) {
+    void error;
+    return fail("RPC_ERROR", "Delegated broadcast failed. The authorization slot stays consumed (uncertain-broadcast safety).");
+  }
 }

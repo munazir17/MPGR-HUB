@@ -56,7 +56,14 @@ export function verifyExecutorReceipt(receipt: ReceiptLike, intent: ExecutorSwap
     checks.push({ name, ok, expected: String(expected), actual: String(actual) });
 
   push("receipt.status", receipt.status === "success", "success", receipt.status);
-  push("tx.from == taker", eq(receipt.from, intent.taker), intent.taker, receipt.from);
+  if (intent.expectedSender) {
+    // DELEGATED path (scoped): the BROADCASTER sends; the event must still
+    // prove the OWNER traded. Both checks must pass — never one alone.
+    push("tx.from == expectedSender (broadcaster)", eq(receipt.from, intent.expectedSender), intent.expectedSender, receipt.from);
+    // The event-level `taker` check below still enforces the owner binding.
+  } else {
+    push("tx.from == taker", eq(receipt.from, intent.taker), intent.taker, receipt.from);
+  }
   push("tx.to == executor", receipt.to !== null && eq(receipt.to, intent.executor), intent.executor, receipt.to ?? "null");
 
   // Only logs emitted BY the executor address count (a malicious contract

@@ -31,6 +31,14 @@ import type { Address } from "viem";
 export const AUTONOMY_CHAIN_ID = 8453 as const;
 export type AutonomyChainId = typeof AUTONOMY_CHAIN_ID;
 
+/**
+ * Phase 2 delegated execution (ADDITIVE): the ONLY chain the delegated
+ * Permit2-witness adapter executes on is Base Sepolia. Assisted/manual
+ * trading and the default runtime chain (Base mainnet) are untouched.
+ */
+export const DELEGATED_EXECUTION_CHAIN_ID = 84532 as const;
+export const DELEGATED_ADAPTER_ID = "delegated-permit2-sepolia";
+
 /** Only "swap" exists today. Other kinds are future extension points (spec §11). */
 export const AUTONOMY_ACTION_TYPES = ["swap"] as const;
 export type AutonomyActionType = (typeof AUTONOMY_ACTION_TYPES)[number];
@@ -93,7 +101,7 @@ export interface AutonomyPolicy {
   id: string;
   /** Lowercase wallet that authorized this policy. */
   wallet: Address;
-  chainId: AutonomyChainId;
+  chainId: AutonomyChainId | typeof DELEGATED_EXECUTION_CHAIN_ID;
   /** Always exactly ["swap"] today — validated, never extended by input. */
   actions: readonly AutonomyActionType[];
   /** The ONLY sell token this policy allows (executor-allowlisted address). */
@@ -176,6 +184,13 @@ export interface PendingExecution {
   verifyAttempts: number;
   expectedBuyAmountRaw: string;
   minBuyAmountRaw: string;
+  /**
+   * Phase 2 delegated path ONLY: the broadcaster that submitted the tx.
+   * When set, verification requires tx.from == expectedSender AND the
+   * SwapExecuted event's taker == the goal wallet (scoped — the default
+   * tx.from == taker check is unchanged for every other path).
+   */
+  expectedSender?: string;
 }
 
 export interface GoalResultSummary {

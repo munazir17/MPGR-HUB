@@ -30,6 +30,7 @@
 
 import type { Address } from "viem";
 
+import { DELEGATED_ADAPTER_ID } from "./types";
 import type {
   AuthorizationVerdict,
   AutonomousExecutionAdapter,
@@ -73,9 +74,35 @@ export const noDelegationAdapter: AutonomousExecutionAdapter = {
  * tests, its own feature gate), it registers here — this file stays the
  * single, auditable chokepoint.
  */
+/**
+ * Phase 2: a server module (delegated-adapter-production.ts) may install the
+ * real delegated adapter here before the runtime is constructed; tests may
+ * install explicit test adapters. Nothing else can ever resolve permissively.
+ */
+let installedDelegatedAdapter: AutonomousExecutionAdapter | null = null;
+
+export function installAutonomousExecutionAdapter(adapter: AutonomousExecutionAdapter): void {
+  if (adapter.id !== DELEGATED_ADAPTER_ID) {
+    throw new Error(`Only the "${DELEGATED_ADAPTER_ID}" adapter can be installed; got "${adapter.id}".`);
+  }
+  installedDelegatedAdapter = adapter;
+}
+
+export function clearInstalledAutonomousExecutionAdapter(): void {
+  installedDelegatedAdapter = null;
+}
+
 export function getAutonomousExecutionAdapter(): AutonomousExecutionAdapter {
   const configured = process.env.MPGR_AUTONOMOUS_EXECUTION_ADAPTER?.trim();
   if (!configured || configured === NO_DELEGATION_ADAPTER_ID) return noDelegationAdapter;
+  if (configured === DELEGATED_ADAPTER_ID) {
+    if (!installedDelegatedAdapter) {
+      throw new Error(
+        `Delegated adapter "${DELEGATED_ADAPTER_ID}" is configured but not installed (server wiring missing) — refusing (fail-closed).`,
+      );
+    }
+    return installedDelegatedAdapter;
+  }
   throw new Error(`Unknown autonomous execution adapter: "${configured}". No adapter is registered — refusing (fail-closed).`);
 }
 

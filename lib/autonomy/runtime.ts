@@ -26,6 +26,7 @@
 import type { Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
 
 import { AUTONOMY_LIMITS } from "./config";
+import { DELEGATED_ADAPTER_ID, DELEGATED_EXECUTION_CHAIN_ID } from "./types";
 import { evaluateCondition, evaluatePolicyAgainstAction } from "./policy-engine";
 import { utcDayKey } from "./idempotency";
 import { isTerminalGoalStatus, type AgentGoal, type AutonomyFailureCode, type GoalActionRecord, type GoalStatus } from "./types";
@@ -35,6 +36,12 @@ import type { McpGateway } from "./mcp-gateway";
 import type { AutonomyStore } from "./store";
 import { verifyExecution } from "./verify";
 import type { AutonomousExecutionAdapter } from "./types";
+import { delegatedBroadcasterAddress } from "@/lib/delegated/delegated-broadcaster";
+
+/** The chain the runtime operates on for THIS adapter (delegated = 84532). */
+function executionChainId(adapter: AutonomousExecutionAdapter): number {
+  return adapter.id === DELEGATED_ADAPTER_ID ? DELEGATED_EXECUTION_CHAIN_ID : 8453;
+}
 
 export interface AutonomyRuntimeDeps {
   store: AutonomyStore;
@@ -115,12 +122,13 @@ export class AutonomyRuntime {
     const attempts = pending.verifyAttempts;
 
     const verdict = await verifyExecution(this.deps.gateway, {
-      chainId: 8453,
+      chainId: executionChainId(this.deps.adapter),
       quoteId: pending.quoteId,
       txHash: pending.txHash,
       expectedBuyAmountRaw: pending.expectedBuyAmountRaw,
       minBuyAmountRaw: pending.minBuyAmountRaw,
       attemptsSoFar: attempts,
+      expectedSender: pending.expectedSender,
     });
 
     if (verdict.outcome === "PENDING_VERIFICATION") {
@@ -283,7 +291,7 @@ export class AutonomyRuntime {
     // own wallet; slippage clamped to the policy cap when a policy exists.
     const slippageBps = policy ? Math.min(goal.trade.slippageBps, policy.maxSlippageBps) : goal.trade.slippageBps;
     const quoteOutcome = await this.deps.gateway.quote({
-      chainId: 8453,
+      chainId: executionChainId(this.deps.adapter),
       taker: goal.wallet,
       sellToken: goal.trade.sellToken,
       buyToken: goal.trade.buyToken,
@@ -349,7 +357,7 @@ export class AutonomyRuntime {
       goal,
       {
         action: "swap",
-        chainId: 8453,
+        chainId: executionChainId(this.deps.adapter),
         sellToken: goal.trade.sellToken,
         buyToken: goal.trade.buyToken,
         sellAmountRaw: goal.trade.sellAmountRaw,
@@ -432,7 +440,7 @@ export class AutonomyRuntime {
         goalId: goal.id,
         policyId: decision.policy.id,
         wallet: goal.wallet,
-        chainId: 8453,
+        chainId: executionChainId(this.deps.adapter),
         quoteId: quote.quoteId,
         sellToken: goal.trade.sellToken,
         buyToken: goal.trade.buyToken,
@@ -467,6 +475,7 @@ export class AutonomyRuntime {
         verifyAttempts: 0,
         expectedBuyAmountRaw: quote.expectedBuyAmountRaw,
         minBuyAmountRaw: quote.minBuyAmountRaw,
+        expectedSender: this.deps.adapter.id === DELEGATED_ADAPTER_ID ? delegatedBroadcasterAddress() ?? undefined : undefined,
       },
       lastAction: `transaction submitted ${result.txHash}`,
       lastResult: { at: submittedAt, outcome: "WAITING_VERIFICATION", code: null, message: "Transaction submitted — verifying receipt before reporting any result." },

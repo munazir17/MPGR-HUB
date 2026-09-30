@@ -15,6 +15,7 @@ import "server-only";
 //   3. keeps raw MCP payloads out of the runtime (typed views only).
 
 import {
+  delegateSwap,
   getCapabilities,
   getQuote,
   getTradeStatus,
@@ -63,7 +64,9 @@ export interface McpGateway {
   quote(input: Record<string, unknown>): Promise<GatewayResult<QuotedSwap>>;
   prepare(input: Record<string, unknown>): Promise<GatewayResult<PreparedSwap>>;
   status(chainId: number, txHash: string): Promise<GatewayResult<{ status: "confirmed" | "reverted" | "pending_or_unknown"; blockNumber?: string }>>;
-  verify(quoteId: string, txHash: string): Promise<GatewayResult<{ verified: boolean; checks: Array<{ name: string; ok: boolean }>; actualBuyAmountRaw?: string; feeAmountRaw?: string; blockNumber?: string }>>;
+  verify(quoteId: string, txHash: string, expectedSender?: string): Promise<GatewayResult<{ verified: boolean; checks: Array<{ name: string; ok: boolean }>; actualBuyAmountRaw?: string; feeAmountRaw?: string; blockNumber?: string }>>;
+  /** Phase 2 delegated execution: broadcast a fully-validated witness-authorized swap (Base Sepolia only). */
+  delegateSwap(input: Record<string, unknown>): Promise<GatewayResult<{ txHash: string; expectedSender?: string | null }>>;
   /** Raw deps for callers that must reuse MCP views (verification formatting). */
   deps(): McpDeps;
 }
@@ -167,8 +170,8 @@ export class McpTradeGateway implements McpGateway {
     };
   }
 
-  async verify(quoteId: string, txHash: string): Promise<GatewayResult<{ verified: boolean; checks: Array<{ name: string; ok: boolean }>; actualBuyAmountRaw?: string; feeAmountRaw?: string; blockNumber?: string }>> {
-    const outcome = await verifyTrade(this.mcpDeps, { quoteId, txHash });
+  async verify(quoteId: string, txHash: string, expectedSender?: string): Promise<GatewayResult<{ verified: boolean; checks: Array<{ name: string; ok: boolean }>; actualBuyAmountRaw?: string; feeAmountRaw?: string; blockNumber?: string }>> {
+    const outcome = await verifyTrade(this.mcpDeps, expectedSender ? { quoteId, txHash, expectedSender } : { quoteId, txHash });
     if (!outcome.ok) return fail(outcome);
     const d = outcome.data as Record<string, unknown>;
     const event = (d.event ?? null) as Record<string, unknown> | null;
@@ -182,6 +185,13 @@ export class McpTradeGateway implements McpGateway {
         blockNumber: typeof d.blockNumber === "string" ? d.blockNumber : undefined,
       },
     };
+  }
+
+  async delegateSwap(input: Record<string, unknown>): Promise<GatewayResult<{ txHash: string; expectedSender?: string | null }>> {
+    const outcome = await delegateSwap(this.mcpDeps, input);
+    if (!outcome.ok) return fail(outcome);
+    const d = outcome.data as Record<string, unknown>;
+    return { ok: true, data: { txHash: str(d.txHash), expectedSender: (d.expectedSender as string | undefined) ?? null } };
   }
 
   deps(): McpDeps {
