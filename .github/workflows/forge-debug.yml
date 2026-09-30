@@ -29,8 +29,12 @@ jobs:
         id: test
         run: |
           set -o pipefail
-          forge test -vvv 2>&1 | tee /tmp/forge-output.txt
-          forge test --match-contract DEBUGCounterexample -vvvv 2>&1 | tail -n 80 > /tmp/trace.txt || true
+          forge test -vvv 2>&1 | tee /tmp/forge-output.txt || true
+          forge test --match-test test_DEBUG_fuzzCounterexample -vvvv > /tmp/trace.txt 2>&1 || true
+          tail -n 45 /tmp/trace.txt | while IFS= read -r line; do
+            echo "::error::TRACE ${line:0:330}"
+          done
+          exit 1
         env:
           MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
       - name: Emit failing tests as annotations
