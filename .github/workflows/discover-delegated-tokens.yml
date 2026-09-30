@@ -65,10 +65,19 @@ jobs:
           echo "::notice::STAGE=status=$STATUS"
           { [ "$STATUS" = "0x1" ] || [ "$STATUS" = "0x01" ]; } || { echo "::error::ABORT: deploy tx status $STATUS"; exit 1; }
 
-          # 1) tokens minted inside the deploy tx (Transfer from 0x0)
+          # The executor is created by ONE tx of a multi-tx forge broadcast;
+          # the test tokens + pools are created in EARLIER txs of the same
+          # broadcast (same deployer, nearby blocks). Scan a small block range.
+          BLOCK_HEX=$(jq -r '.blockNumber' receipt.json)
+          BLOCK=$((16#${BLOCK_HEX#0x}))
+          FROM=$BLOCK; TO=$((BLOCK+40))
+          echo "::notice::STAGE=scan blocks=$FROM..$TO"
+          cast_try logs --from-block "$FROM" --to-block "$TO" --json > range_logs.json
+
+          # 1) tokens minted from zero in the range (deploy script creations)
           jq -r --arg tt "$TRANSFER_TOPIC" --arg z "$ZERO_TOPIC" \
-            '.logs[] | select(.topics[0]==$tt and .topics[1]==$z) | .address' receipt.json \
-            | tr '[:upper:]' '[:lower:]' | sort -u > minted.txt
+            '[.[] | select(.topics[0]==$tt and .topics[1]==$z) | .address] | unique | .[]' range_logs.json \
+            | tr '[:upper:]' '[:lower:]' | head -20 > minted.txt
           echo "::notice::MINT_COUNT=$(wc -l < minted.txt)"
           while read -r t; do
             [ -n "$t" ] || continue
@@ -79,9 +88,9 @@ jobs:
             echo "::notice::MINTED_TOKEN address=$t symbol=$SYM decimals=$DEC totalSupply=$SUP executorAllowlisted=$ALLOW"
           done < minted.txt
 
-          # 2) PoolCreated events on the official Uniswap V3 factory
+          # 2) PoolCreated events on the official Uniswap V3 factory in range
           jq -r --arg f "$FACTORY" \
-            '.logs[] | select((.address|ascii_downcase)==($f|ascii_downcase)) | [.topics[1], .topics[2], .topics[3]] | @tsv' receipt.json \
+            '[.[] | select((.address|ascii_downcase)==($f|ascii_downcase)) | [.topics[1], .topics[2], .topics[3]] | @tsv] | .[]' range_logs.json \
             | while IFS="$(printf '\t')" read -r t0 t1 fee; do
                 T0="0x${t0: -40}"; T1="0x${t1: -40}"
                 FEE=$((16#${fee#0x}))
@@ -89,7 +98,5 @@ jobs:
                 echo "::notice::POOL_CREATED fee=$FEE token0=$T0 token1=$T1 pool=$POOL"
               done
 
-          # 3) the executor itself (created by the same tx)
-          jq -r '.logs[]? | .address' receipt.json | sort -u | head -20 > /dev/null || true
           CREATOR=$(jq -r '.from' receipt.json)
-          echo "::notice::DEPLOY_TX from=$CREATOR status=$STATUS block=$(jq -r '.blockNumber' receipt.json)"
+          echo "::notice::DEPLOY_TX from=$CREATOR status=$STATUS block=$BLOCK executor=$EXEC"
