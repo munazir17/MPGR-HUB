@@ -160,11 +160,21 @@ jobs:
           echo "::notice::BYTECODE len(code)=${#CODEN} len(template)=${#TPLN}"
           ART=$(find out -name 'MPGRExecutorDelegated.json' | head -1)
           echo "::notice::V artifact=$ART"
-          IMMREF=$(jq -c '.immutableReferences // {}' "$ART")
+          IMMREF=$(jq -c '.deployedBytecode.immutableReferences // .immutableReferences // {}' "$ART")
           python3 - "$CODEN" "$TPLN" "$IMMREF" <<'PY'
           import json, sys
           code, tpl, imm = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
-          mc, mt = code, tpl
+
+          def strip_metadata(h):
+              # solc appends CBOR metadata: ... 0x00 <len 2 bytes>; len counts BYTES
+              if len(h) >= 4:
+                  n = int(h[-4:], 16)
+                  if 0 < n < len(h) // 2:
+                      return h[: len(h) - 2 * n - 4]
+              return h
+
+          cm, tm = strip_metadata(code), strip_metadata(tpl)
+          mc, mt = cm, tm
           n = 0
           for sig, ref in imm.items():
               for off in ref["offsets"]:
@@ -172,8 +182,8 @@ jobs:
                   mc = mc[:a] + "ff" * ref["length"] + mc[b:]
                   mt = mt[:a] + "ff" * ref["length"] + mt[b:]
                   n += 1
-          ok = len(code) == len(tpl) and mc == mt
-          print("::notice::BYTECODE_MATCH=%s (runtime == compiled template modulo %d immutable slots)" % (ok, n))
+          ok = len(cm) == len(tm) and mc == mt
+          print("::notice::BYTECODE_MATCH=%s (runtime == compiled template, metadata hash excluded, %d immutable slots)" % (ok, n))
           sys.exit(0 if ok else 1)
           PY
           O=$(cast call "$EXEC" "owner()(address)" --rpc-url "$RPC_URL")
