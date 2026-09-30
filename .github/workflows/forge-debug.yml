@@ -29,18 +29,16 @@ jobs:
         id: test
         run: |
           set -o pipefail
-          forge test -vvv 2>&1 | tee /tmp/forge-output.txt || true
-          forge test --match-test test_DEBUG_fuzzCounterexample -vvvv > /tmp/trace.txt 2>&1 || true
-          # Emit ONLY the 9 lines before the panic (10-annotations-per-step cap).
-          pline=$(grep -n "panic: arithmetic" /tmp/trace.txt | head -1 | cut -d: -f1)
-          echo "::error::PANIC-LINE ${pline:-none} total $(wc -l < /tmp/trace.txt)"
-          if [ -n "$pline" ]; then
-            start=$((pline - 9)); [ "$start" -lt 1 ] && start=1
-            sed -n "${start},${pline}p" /tmp/trace.txt | while IFS= read -r line; do
-              echo "::error::CTX ${line:0:330}"
-            done
-          fi
-          exit 1
+          forge test -vvv 2>&1 | tee /tmp/forge-output.txt
+          rc=$?
+          # Explicit delegated-suite pass count (annotations are the only
+          # channel reachable from the agent sandbox).
+          forge test --match-contract MPGRExecutorDelegatedTest 2>&1 | grep -E "Suite result|Ran 1" > /tmp/delegated.txt || true
+          while IFS= read -r line; do echo "::error::DELEGATED ${line:0:300}"; done < /tmp/delegated.txt
+          grep -E "\[(FAIL|Error)" /tmp/forge-output.txt | head -8 | while IFS= read -r line; do
+            echo "::error::${line:0:330}"
+          done
+          exit $rc
         env:
           MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
       - name: Emit failing tests as annotations
