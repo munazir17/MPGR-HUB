@@ -156,11 +156,13 @@ contract DeployMPGRExecutorDelegatedBaseSepolia is Script {
         _deployTokensAndPools(c);
         _deployExecutor(c);
 
-        vm.startPrank(c.deployer);
+        // These MUST be broadcast (not pranked calls): Permit2's transferFrom
+        // needs a real on-chain allowance when the swap txs are broadcast.
+        vm.startBroadcast(c.pk);
         IERC20(address(c.tUSD)).approve(PERMIT2, type(uint256).max);
         IERC20(address(c.tSTOCK)).approve(PERMIT2, type(uint256).max);
         IERC20(WETH).approve(PERMIT2, type(uint256).max);
-        vm.stopPrank();
+        vm.stopBroadcast();
 
         _swapBuy(c);
         _swapSell(c);
