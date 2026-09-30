@@ -2,8 +2,8 @@
 // testFuzz_Equivalence_V1Permit2_vs_Delegated failed with panic 0x11 at
 // calldata args [2592000, 1999, 1538]; this pins it as a unit test so the
 // debug workflow's -vvvv trace shows the exact failing line.
-import {MPGRExecutor} from "../../contracts/executor/MPGRExecutor.sol";
-import {MPGRExecutorDelegated} from "../../contracts/executor/MPGRExecutorDelegated.sol";
+import {MPGRExecutor} from "../../../contracts/executor/MPGRExecutor.sol";
+import {MPGRExecutorDelegated} from "../../../contracts/executor/MPGRExecutorDelegated.sol";
 import {MPGRExecutorDelegatedTest} from "../MPGRExecutorDelegated.t.sol";
 
 contract DEBUGCounterexampleTest is MPGRExecutorDelegatedTest {
