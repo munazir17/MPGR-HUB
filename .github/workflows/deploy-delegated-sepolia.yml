@@ -68,6 +68,14 @@ jobs:
           [ "$P2LEN" -gt 100 ] || { echo "::error::ABORT: canonical Permit2 not on chain"; exit 1; }
           echo "::notice::PREFLIGHT=OK Permit2OnChain=true"
 
+      - name: Digest decomposition diagnostic (no broadcast)
+        run: |
+          forge script script/DeployDiagDelegated.s.sol --rpc-url "$RPC_URL" 2>&1 | tee diag.log
+          grep -E "DOMAIN_ONCHAIN|DOMAIN_SCRIPT|DOMAIN_MATCH|WITNESS_HASH|TYPEHASH|TP_HASH|STRUCT_HASH|DIGEST_SCRIPT|chainid" diag.log | while IFS= read -r line; do
+            echo "::error::DIAG ${line:0:400}"
+          done
+          echo "::error::DIAG-RAW $(grep -oE '0x[0-9a-fA-F]{64}' diag.log | head -8 | tr '\n' ' ')"
+
       - name: Deploy — existing 84532-gated script (broadcast)
         env:
           BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
@@ -91,7 +99,7 @@ jobs:
             total=$(wc -l < deploy.log)
             start=$((total - 44)); [ "$start" -lt 1 ] && start=1
             sed -n "${start},$((start + 13))p" deploy.log | while IFS= read -r line; do
-              echo "::error::T1 ${line:0:480}"
+              echo "::error::T1 ${line:0:900}"
             done
           fi
 
@@ -102,7 +110,7 @@ jobs:
             total=$(wc -l < deploy.log)
             start=$((total - 30))
             sed -n "${start},$((start + 13))p" deploy.log | while IFS= read -r line; do
-              echo "::error::T2 ${line:0:480}"
+              echo "::error::T2 ${line:0:900}"
             done
           fi
 
@@ -113,7 +121,7 @@ jobs:
             total=$(wc -l < deploy.log)
             start=$((total - 16))
             sed -n "${start},${total}p" deploy.log | while IFS= read -r line; do
-              echo "::error::T3 ${line:0:480}"
+              echo "::error::T3 ${line:0:900}"
             done
           fi
 
