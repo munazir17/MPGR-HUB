@@ -72,7 +72,8 @@ jobs:
           # recovers the whole route set without a heavy range query.
           BLOCK_HEX=$(jq -r '.blockNumber' receipt.json)
           BLOCK=$((16#${BLOCK_HEX#0x}))
-          FROM=$BLOCK; TO=$((BLOCK+60))
+          # Broadcast order: tokens -> pools -> executor, so scan BACKWARD.
+          FROM=$((BLOCK-120)); TO=$((BLOCK+5))
           echo "::notice::STAGE=scan blocks=$FROM..$TO factory=$FACTORY"
           GETLOGS="{\"fromBlock\":\"$(printf '0x%x' "$FROM")\",\"toBlock\":\"$(printf '0x%x' "$TO")\",\"address\":\"$FACTORY\"}"
           cast_try rpc eth_getLogs "$GETLOGS" --rpc-url "$RPC_URL" > pool_logs.json
@@ -90,7 +91,7 @@ jobs:
           # 2) unique tokens across those pools: symbol / decimals / allowlist
           jq -r '.[] | .topics[1], .topics[2]' pool_logs.json \
             | tr '[:upper:]' '[:lower:]' | sed 's/^0x.*\(0x[0-9a-f]\{40\}\)$/\1/' \
-            | grep '^0x' | sort -u | head -10 > tokens.txt
+            | grep '^0x' | sort -u | head -10 > tokens.txt || true
           while read -r t; do
             [ -n "$t" ] || continue
             TCS="0x$(printf '%s' "${t#0x}" | tr '[:lower:]' '[:upper:]')"
