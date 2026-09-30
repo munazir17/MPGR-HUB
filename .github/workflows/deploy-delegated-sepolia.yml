@@ -70,11 +70,11 @@ jobs:
 
       - name: Digest decomposition diagnostic (no broadcast)
         run: |
-          forge script script/DeployDiagDelegated.s.sol --rpc-url "$RPC_URL" 2>&1 | tee diag.log
-          grep -E "DOMAIN_ONCHAIN|DOMAIN_SCRIPT|DOMAIN_MATCH|WITNESS_HASH|TYPEHASH|TP_HASH|STRUCT_HASH|DIGEST_SCRIPT|chainid" diag.log | while IFS= read -r line; do
+          set -o pipefail
+          forge script script/DeployDiagDelegated.s.sol --rpc-url "$RPC_URL" -vv 2>&1 | tee diag.log
+          tail -n 25 diag.log | while IFS= read -r line; do
             echo "::error::DIAG ${line:0:400}"
           done
-          echo "::error::DIAG-RAW $(grep -oE '0x[0-9a-fA-F]{64}' diag.log | head -8 | tr '\n' ' ')"
 
       - name: Deploy — existing 84532-gated script (broadcast)
         env:
