@@ -67,9 +67,17 @@ jobs:
       - name: Executor ABI in lib/executor is in sync with the contract
         run: node script/gen-executor-abi.mjs --check
       - run: bash script/prepare-uniswap-artifacts.sh
-      - run: forge test -vvv
+      - name: forge test (failure details as annotations)
         env:
           MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
+        run: |
+          set -o pipefail
+          forge test -vvv 2>&1 | tee forge-test.log || {
+            echo "::error::forge test failed"
+            grep -aE "\[FAIL\]|Error:" forge-test.log | head -12 | while IFS= read -r l; do echo "::error::${l:0:500}"; done
+            tail -30 forge-test.log | while IFS= read -r l; do echo "::error::TAIL ${l:0:400}"; done
+            exit 1
+          }
 
   contracts-fork:
     # MPGR Executor against the REAL Aerodrome Slipstream router/pools,

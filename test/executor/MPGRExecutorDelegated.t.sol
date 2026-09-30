@@ -420,7 +420,7 @@ contract MPGRExecutorDelegatedTest is Test {
     ///         full canonical EIP-712 encodeType: primary struct with the
     ///         witness field NAME, referenced structs in alphabetical order,
     ///         and the TokenPermissions appendix (UniswapX convention).
-    function test_WitnessTypeString_IsStandardEIP712EncodeType() public pure {
+    function test_WitnessTypeString_IsStandardEIP712EncodeType() public view {
         string memory expected =
             "PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,ActionWitness witness)"
             "ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)"
