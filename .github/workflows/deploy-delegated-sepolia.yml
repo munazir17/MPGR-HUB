@@ -173,7 +173,21 @@ jobs:
           fi
           EXEC="${EXECUTOR,,}"
           echo "::notice::VERIFY_TARGET=$EXEC chain=$(cast chain-id --rpc-url "$RPC_URL")"
-          CODE=$(cast code "$EXEC" --rpc-url "$RPC_URL") || { echo "::error::V cast-code failed"; exit 1; }
+          # Public Sepolia RPCs blip — every read retries 3x before failing.
+          cast_try() {
+            local sig="$1" out=""
+            for i in 1 2 3; do
+              if out=$(cast call "$EXEC" "$sig" --rpc-url "$RPC_URL" 2>/tmp/cast.err); then echo "$out"; return 0; fi
+              sleep 5
+            done
+            echo "::error::V cast call $sig failed: $(tail -1 /tmp/cast.err | head -c 200)"; return 1
+          }
+          CODE=""
+          for i in 1 2 3; do
+            if CODE=$(cast code "$EXEC" --rpc-url "$RPC_URL" 2>/tmp/cast.err); then break; fi
+            sleep 5
+          done
+          [ -n "$CODE" ] || { echo "::error::V cast-code failed: $(tail -1 /tmp/cast.err | head -c 200)"; exit 1; }
           echo "::notice::V code_len=${#CODE}"
           TPL_JSON=$(forge inspect --json executor/MPGRExecutorDelegated.sol:MPGRExecutorDelegated deployedBytecode 2>/tmp/insp.err) \
             || TPL_JSON=$(forge inspect --json contracts/executor/MPGRExecutorDelegated.sol:MPGRExecutorDelegated deployedBytecode 2>>/tmp/insp.err) \
@@ -223,13 +237,13 @@ jobs:
               print("::notice::FIRST_DIFF_AT_BYTE=%d code=%d tmpl=%d" % (d // 2, len(cm) // 2, len(tm) // 2))
           sys.exit(0 if ok else 1)
           PY
-          O=$(cast call "$EXEC" "owner()(address)" --rpc-url "$RPC_URL")
-          P=$(cast call "$EXEC" "pendingOwner()(address)" --rpc-url "$RPC_URL")
-          B=$(cast call "$EXEC" "feeBps()(uint16)" --rpc-url "$RPC_URL")
-          F=$(cast call "$EXEC" "feeRecipient()(address)" --rpc-url "$RPC_URL")
-          P2=$(cast call "$EXEC" "PERMIT2()(address)" --rpc-url "$RPC_URL")
-          W=$(cast call "$EXEC" "WETH()(address)" --rpc-url "$RPC_URL")
-          WT=$(cast call "$EXEC" "WITNESS_TYPE_STRING()(string)" --rpc-url "$RPC_URL")
+          O=$(cast_try "owner()(address)")
+          P=$(cast_try "pendingOwner()(address)")
+          B=$(cast_try "feeBps()(uint16)")
+          F=$(cast_try "feeRecipient()(address)")
+          P2=$(cast_try "PERMIT2()(address)")
+          W=$(cast_try "WETH()(address)")
+          WT=$(cast_try "WITNESS_TYPE_STRING()(string)")
           echo "::notice::ONCHAIN owner=$O pendingOwner=$P feeBps=$B feeRecipient=$F"
           echo "::notice::ONCHAIN permit2=$P2 weth=$W"
           echo "::notice::ONCHAIN witnessTypeString=$WT"
