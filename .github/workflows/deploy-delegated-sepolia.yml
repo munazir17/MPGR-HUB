@@ -154,7 +154,7 @@ jobs:
             || TPL_JSON=$(forge inspect --json contracts/executor/MPGRExecutorDelegated.sol:MPGRExecutorDelegated deployedBytecode 2>>/tmp/insp.err) \
             || { echo "::error::V forge-inspect failed"; tail -3 /tmp/insp.err | while IFS= read -r l; do echo "::error::V $l"; done; exit 1; }
           echo "::notice::V tpl_head=${TPL_JSON:0:60}"
-          TPL=$(echo "$TPL_JSON" | jq -r '.object // .deployedBytecode.object // .') || { echo "::error::V jq failed"; exit 1; }
+          TPL=$(echo "$TPL_JSON" | jq -r 'if type == "object" then (.object // .deployedBytecode.object) else . end') || { echo "::error::V jq failed"; exit 1; }
           TPLN="$(echo "$TPL" | sed 's/^0x//' | tr 'A-F' 'a-f')"
           CODEN="$(echo "$CODE" | sed 's/^0x//' | tr 'A-F' 'a-f')"
           echo "::notice::BYTECODE len(code)=${#CODEN} len(template)=${#TPLN}"
