@@ -25,7 +25,7 @@ const wallet = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as Address;
 const sellToken = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as Address;
 const buyToken = "0xcccccccccccccccccccccccccccccccccccccccc" as Address;
 const broadcaster = "0xdddddddddddddddddddddddddddddddddddddddd" as Address;
-const EXECUTOR = "0x8C6311c496D41e904f4649Ba21EF0B2e6dC5E4f9" as Address;
+const EXECUTOR = "0xa9568499D7e58854F2590a56B6D32788DbfA58F9" as Address;
 const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as Address;
 
 const env = { ...process.env };

@@ -1,0 +1,24 @@
+{
+  "contract": "MPGRExecutorDelegated",
+  "address": "0xa9568499D7e58854F2590a56B6D32788DbfA58F9",
+  "deploymentTx": "0xc5557b9a07b6a92df78c6eb7d86cc714532de5045bb2f99872eab0f605cd8b4e",
+  "chainId": 84532,
+  "network": "base-sepolia",
+  "redeployReason": "WITNESS_TYPE_STRING corrected to the standard EIP-712 form (stub + witness field name + referenced structs alphabetical + TokenPermissions appendix) so ordinary wallets can sign the Permit2 commitment. Approved redeploy; the original deployment 0x8C6311c496D41e904f4649Ba21EF0B2e6dC5E4f9 is abandoned (it cannot be upgraded in place and has no self-destruct).",
+  "owner": "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
+  "feeRecipient": "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
+  "feeBps": 25,
+  "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+  "weth": "0x4200000000000000000000000000000000000006",
+  "witnessTypeString": "ActionWitness witness)ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)TokenPermissions(address token,uint256 amount)",
+  "router": "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4",
+  "verified": {
+    "bytecodeMatch": true,
+    "bytecodeNote": "on-chain runtime == compiled template (metadata hash excluded, 6 immutable sites masked: 4x WETH, 2x PERMIT2), len 21016 hex chars",
+    "pendingOwner": "0x0000000000000000000000000000000000000000",
+    "source": "GitHub Actions run 36760360671 (Post-deploy on-chain verification), job check-run annotations"
+  },
+  "deployedAt": "2026-09-30",
+  "demoSwaps": "BUY (tUSD->tSTOCK), SELL (tSTOCK->tUSD), NATIVE-OUT executed by the deploy script with run-unique Permit2 nonces; per-run amounts recorded in the run artifact",
+  "script": "script/DeployMPGRExecutorDelegatedBaseSepolia.s.sol (84532-gated)"
+}

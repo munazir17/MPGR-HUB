@@ -13,8 +13,10 @@
 //
 // SAFETY: the digest recipe mirrors deployed Permit2 exactly
 // (PermitHash.hashWithWitness: the RAW stub STRING packed with the witness
-// type string) and was proven live on Base Sepolia in Phase 1
-// (0x8C6311c496D41e904f4649Ba21EF0B2e6dC5E4f9 — BUY/SELL/NATIVE-OUT demos).
+// type string). Proven against wallet-style typed-data hashing (viem +
+// ethers) for the CURRENT deployment (0xa9568499D7e58854F2590a56B6D32788DbfA58F9
+// — the witness-type-corrected redeploy); the Phase-1 deployment
+// (0x8C63…4f9) proved the on-chain flow end to end and is now abandoned.
 // No private key can pass through any function in this file.
 
 import { keccak256, toHex, type Address, type Hex } from "viem";
@@ -22,9 +24,9 @@ import { keccak256, toHex, type Address, type Hex } from "viem";
 import { BASE_SEPOLIA_CHAIN_ID, EXECUTOR_DEFAULT_FEE_BPS } from "./executor-config";
 import { computeExecutorFee } from "./executor-fee";
 
-/** The Phase-1-verified delegated executor on Base Sepolia. */
+/** The delegated executor on Base Sepolia (witness-type-corrected redeploy; see deployments/base-sepolia/mpgr-executor-delegated.json). */
 export const DELEGATED_EXECUTOR_CHAIN_ID = BASE_SEPOLIA_CHAIN_ID; // 84532 — the ONLY chain this phase
-export const DELEGATED_EXECUTOR_ADDRESS: Address = "0x8C6311c496D41e904f4649Ba21EF0B2e6dC5E4f9";
+export const DELEGATED_EXECUTOR_ADDRESS: Address = "0xa9568499D7e58854F2590a56B6D32788DbfA58F9";
 export const DELEGATED_EXECUTOR_FEE_BPS = EXECUTOR_DEFAULT_FEE_BPS; // 25 — canonical, never changed here
 export const CANONICAL_PERMIT2: Address = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 
