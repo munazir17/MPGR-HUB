@@ -37,6 +37,7 @@ jobs:
           RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL }}
         run: |
           set -euo pipefail
+          trap 'echo "::error::DIED at line=$LINENO last_err=$(tail -c 220 /tmp/cast.err 2>/dev/null | tr "\n" " ")"' ERR
           RPC_URL="${RPC_URL:-https://sepolia.base.org}"
           TX="${{ github.event.inputs.tx_hash }}"
           EXEC="0xa9568499D7e58854F2590a56B6D32788DbfA58F9"
@@ -48,6 +49,7 @@ jobs:
             local out=""
             for i in 1 2 3; do
               if out=$(cast "$@" 2>/tmp/cast.err); then echo "$out"; return 0; fi
+              echo "::warning::TRY${i}_FAILED args=[$1 $2] err=$(head -c 160 /tmp/cast.err | tr '\n' ' ')"
               sleep 2
             done
             echo "::error::CAST_EXHAUSTED args=[$*] err=$(tail -c 220 /tmp/cast.err | tr '\n' ' ')"
