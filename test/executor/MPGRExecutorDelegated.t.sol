@@ -100,27 +100,29 @@ contract MPGRExecutorDelegatedTest is Test {
         vt[2] = address(weth);
         v1 = new MPGRExecutor(admin, feeWallet, BPS, address(weth), address(permit2), vr, vt);
 
-        // Router liquidity (output side), mirrored per router pair.
-        vm.deal(address(this), 2_000 ether); // funds the WETH deposits below
+        // Router liquidity (output side), mirrored per router pair. WETH is
+        // deep because the 6->18 rate pays ~1000 WETH per 1000 USDC swap.
+        vm.deal(address(this), 3_100_000 ether); // funds the WETH deposits below
         for (uint256 i = 0; i < 2; i++) {
             address r = i == 0 ? address(slipDex) : address(uniDex);
             stock.mint(r, 1e33);
             usdc.mint(r, 1e30);
-            weth.deposit{value: 500 ether}();
-            weth.transfer(r, 250 ether);
+            weth.deposit{value: 1_010_000 ether}();
+            weth.transfer(r, 1_000_000 ether);
         }
         stock.mint(address(slipV1), 1e33);
         stock.mint(address(uniV1), 1e33);
         usdc.mint(address(slipV1), 1e30);
         usdc.mint(address(uniV1), 1e30);
-        weth.deposit{value: 500 ether}();
-        weth.transfer(address(slipV1), 250 ether);
-        weth.transfer(address(uniV1), 250 ether);
+        weth.deposit{value: 1_010_000 ether}();
+        weth.transfer(address(slipV1), 1_000_000 ether);
+        weth.transfer(address(uniV1), 1_000_000 ether);
 
         _setRates(RATE_NUM, RATE_DEN);
 
-        // The owner holds the asset they delegate (mirrors the v1 suite's taker funding).
-        usdc.mint(ownerAddr, 1_000_000e6);
+        // The owner holds the asset they delegate: the equivalence fuzz pulls
+        // gross TWICE (v1 flow + delegated flow) at up to 2e9 usdc each.
+        usdc.mint(ownerAddr, 4_200_000_000e6);
 
         // The user's standing Permit2 approval (real-world one-time approve).
         vm.startPrank(ownerAddr);
@@ -605,13 +607,9 @@ contract MPGRExecutorDelegatedTest is Test {
         uint256 ownerUsdc0 = usdc.balanceOf(ownerAddr);
         uint256 ownerStock0 = stock.balanceOf(ownerAddr);
         vm.prank(broadcaster);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                MPGRExecutorDelegated.InsufficientOutput.selector,
-                _expectedOut(G, RATE_NUM / 2, RATE_DEN),
-                p.amountOutMinimum
-            )
-        );
+        // A real router enforces amountOutMinimum itself (executor's own
+        // InsufficientOutput catches only dishonest deliveries).
+        vm.expectRevert(bytes("Too little received"));
         dex.swapOnBehalfOfUniswapV3(p, POOL_FEE, a);
         assertEq(usdc.balanceOf(ownerAddr), ownerUsdc0, "atomic: owner's sell token untouched");
         assertEq(stock.balanceOf(ownerAddr), ownerStock0, "atomic: owner's buy token untouched");
@@ -881,7 +879,7 @@ contract MPGRExecutorDelegatedTest is Test {
         vm.stopPrank();
         vm.prank(broadcaster);
         vm.expectRevert(
-            abi.encodeWithSelector(MPGRExecutorDelegated.UnsupportedTransferAmount.selector, G, G - (G * 10) / 10_000)
+            abi.encodeWithSelector(MPGRExecutorDelegated.UnsupportedTransferAmount.selector, G, G - (G / 100))
         );
         dex.swapOnBehalfOfUniswapV3(p, POOL_FEE, a);
     }
@@ -956,13 +954,7 @@ contract MPGRExecutorDelegatedTest is Test {
         (MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a) = _happyUni();
         _setRates(1, RATE_NUM); // collapse the price
         vm.prank(attacker);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                MPGRExecutorDelegated.InsufficientOutput.selector,
-                _expectedOut(G, 1, RATE_NUM),
-                p.amountOutMinimum
-            )
-        );
+        vm.expectRevert(bytes("Too little received")); // router enforces the signed min
         dex.swapOnBehalfOfUniswapV3(p, POOL_FEE, a);
         assertEq(usdc.balanceOf(attacker), 0, "attacker got nothing");
     }
