@@ -1,0 +1,45 @@
+# TEMPORARY diagnostics workflow — emits forge test failures as check-run
+# annotations because job logs are not reachable from the agent sandbox.
+# Remove once the delegated executor suite is green.
+name: Forge Debug
+
+on:
+  push:
+    branches:
+      - "arena/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - run: mkdir -p .forge-deps
+      - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+      - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+      - run: bash script/prepare-uniswap-artifacts.sh
+      - name: forge test
+        id: test
+        run: forge test -vvv 2>&1 | tee /tmp/forge-output.txt
+        env:
+          MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
+      - name: Emit failing tests as annotations
+        if: failure() || cancelled()
+        run: |
+          grep -E "\[(FAIL|Error)|FAIL\.|Suite result.*failed" /tmp/forge-output.txt | head -30 > /tmp/fails.txt || true
+          count=$(wc -l < /tmp/fails.txt)
+          echo "failure lines: $count"
+          while IFS= read -r line; do
+            echo "::error::${line:0:350}"
+          done < /tmp/fails.txt
+          # Also surface the tail (revert traces live at the end).
+          tail -n 60 /tmp/forge-output.txt | while IFS= read -r line; do
+            echo "::error::TAIL ${line:0:300}"
+          done
