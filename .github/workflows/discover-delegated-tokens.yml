@@ -31,8 +31,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: v1.2.3
 
       - name: Parse deploy receipt (read-only)
         env:
@@ -52,15 +50,18 @@ jobs:
               if out=$(cast "$@" 2>/tmp/cast.err); then echo "$out"; return 0; fi
               sleep 2
             done
-            echo "cast failed: $(head -c 200 /tmp/cast.err)" >&2
+            echo "::error::CAST_EXHAUSTED args=[$*] err=$(tail -c 220 /tmp/cast.err | tr '\n' ' ')"
             return 1
           }
 
+          echo "::notice::STAGE=receipt rpc_host=$(echo "$RPC_URL" | sed -E 's#(https?://[^/?#]*).*#\1#')"
           cast_try receipt "$TX" --rpc-url "$RPC_URL" --json > receipt.json
+          echo "::notice::STAGE=receipt_ok logs=$(jq '.logs | length' receipt.json) block=$(jq -r '.blockNumber' receipt.json)"
           CHAIN=$(cast_try chain-id --rpc-url "$RPC_URL")
           [ "$CHAIN" = "84532" ] || { echo "::error::ABORT: chain is $CHAIN, not 84532"; exit 1; }
           STATUS=$(jq -r '.status' receipt.json)
-          [ "$STATUS" = "0x1" ] || { echo "::error::ABORT: deploy tx status $STATUS"; exit 1; }
+          echo "::notice::STAGE=status=$STATUS"
+          { [ "$STATUS" = "0x1" ] || [ "$STATUS" = "0x01" ]; } || { echo "::error::ABORT: deploy tx status $STATUS"; exit 1; }
 
           # 1) tokens minted inside the deploy tx (Transfer from 0x0)
           jq -r --arg tt "$TRANSFER_TOPIC" --arg z "$ZERO_TOPIC" \
