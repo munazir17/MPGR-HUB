@@ -175,16 +175,27 @@ jobs:
               return h
 
           cm, tm = strip_metadata(code), strip_metadata(tpl)
+          def refs_of(entry):
+              if isinstance(entry, dict) and "offsets" in entry:
+                  for off in entry["offsets"]:
+                      yield off, entry["length"]
+              elif isinstance(entry, list):
+                  for r in entry:
+                      yield r["start"], r["length"]
+
           mc, mt = cm, tm
           n = 0
-          for sig, ref in imm.items():
-              for off in ref["offsets"]:
-                  a, b = off * 2, (off + ref["length"]) * 2
-                  mc = mc[:a] + "ff" * ref["length"] + mc[b:]
-                  mt = mt[:a] + "ff" * ref["length"] + mt[b:]
+          for entry in imm.values():
+              for off, ln in refs_of(entry):
+                  a, b = off * 2, (off + ln) * 2
+                  mc = mc[:a] + "ff" * ln + mc[b:]
+                  mt = mt[:a] + "ff" * ln + mt[b:]
                   n += 1
           ok = len(cm) == len(tm) and mc == mt
-          print("::notice::BYTECODE_MATCH=%s (runtime == compiled template, metadata hash excluded, %d immutable slots)" % (ok, n))
+          print("::notice::BYTECODE_MATCH=%s (runtime == compiled template, metadata hash excluded, %d immutable sites)" % (ok, n))
+          if not ok:
+              d = next((i for i, (x, y) in enumerate(zip(cm, tm)) if x != y), min(len(cm), len(tm)))
+              print("::notice::FIRST_DIFF_AT_BYTE=%d code=%d tmpl=%d" % (d // 2, len(cm) // 2, len(tm) // 2))
           sys.exit(0 if ok else 1)
           PY
           O=$(cast call "$EXEC" "owner()(address)" --rpc-url "$RPC_URL")
