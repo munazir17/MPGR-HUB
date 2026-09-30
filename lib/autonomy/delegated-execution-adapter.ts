@@ -80,20 +80,30 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
   }
 
   /**
-   * The full static checklist (feature flag, emergency stop, chain,
-   * configured addresses, on-chain code + config). Explicit reasons.
+   * Operational posture only (no chain I/O): feature flag, emergency stop,
+   * gateway + broadcaster configuration. Explicit auditable reasons.
    */
-  checkStatic(): AuthorizationVerdict {
+  private checkOperational(): AuthorizationVerdict {
     if (!isAutonomousAgentEnabled()) return { authorized: false, reason: "AUTONOMOUS_FLAG_DISABLED" };
     if (isAutonomousExecutionEmergencyDisabled()) return { authorized: false, reason: "EMERGENCY_DISABLE" };
     if (this.deps.gateway === undefined) return { authorized: false, reason: "MCP_UNAVAILABLE" };
     const broadcaster = this.deps.broadcast ? "injected" : delegatedBroadcasterAddress();
     if (!broadcaster) return { authorized: false, reason: "BROADCASTER_NOT_CONFIGURED" };
-    // On-chain posture (cached 60 s; a fresh check also gates executeSwap).
-    const chain = this.deps.chain ?? delegatedChainView();
+    return { authorized: true };
+  }
+
+  /**
+   * Static checklist = operational posture + on-chain posture. FAIL-CLOSED
+   * on a cold/stale chain-check cache: until a verifyOnChain() pass proves
+   * the deployed configuration, the answer is ONCHAIN_CHECK_PENDING, never
+   * an optimistic true. executeSwap runs the live check itself.
+   */
+  checkStatic(): AuthorizationVerdict {
+    const operational = this.checkOperational();
+    if (!operational.authorized) return operational;
     const ttl = this.cachedConfigCheck && Date.now() - this.cachedConfigCheck.at < 60_000 ? this.cachedConfigCheck : null;
-    if (ttl) return ttl.ok ? { authorized: true } : { authorized: false, reason: ttl.reason };
-    return { authorized: true }; // deep on-chain checks run in verifyOnChain (async)
+    if (!ttl) return { authorized: false, reason: "ONCHAIN_CHECK_PENDING" };
+    return ttl.ok ? { authorized: true } : { authorized: false, reason: ttl.reason };
   }
 
   /** Deep on-chain posture (async): code present + config matches expectations. */
@@ -129,7 +139,9 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
   }
 
   async executeSwap(request: DelegatedSwapRequest): Promise<DelegatedSwapResult> {
-    const posture = this.checkStatic();
+    // Operational gates first (no I/O), then the LIVE on-chain check —
+    // which also refreshes the cache checkStatic() reports from.
+    const posture = this.checkOperational();
     if (!posture.authorized) {
       return { ok: false, code: "EXECUTION_UNAVAILABLE", message: `Delegated execution unavailable (${posture.reason}).` };
     }

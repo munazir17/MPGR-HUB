@@ -5,8 +5,13 @@
 // Client seam for the Autonomous Agent Runtime UI (spec §19). Strictly
 // read/control only: the hook lists goals and policies, pauses / resumes /
 // cancels, submits an explicit authorization, and runs a bounded heartbeat
-// tick. It NEVER receives key material, never signs, and shows no raw MCP /
-// RPC payloads.
+// tick. It NEVER receives key material and shows no raw MCP / RPC payloads.
+//
+// Phase 2 (delegated execution, Base Sepolia): the hook also lists bounded
+// Permit2 authorization SLOTS, revokes them, and — only when the user
+// presses the explicit sign button — asks the CONNECTED USER WALLET to sign
+// pre-authorized single-trade slots. The only signature involved is the
+// user's own, over exactly the bounded details shown in the UI.
 //
 // The heartbeat only runs when ALL of these hold:
 //   * the runtime is enabled server-side (config.enabled),
@@ -16,9 +21,17 @@
 // enforces its own bounds regardless.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAccount } from "wagmi";
+import { useAccount, useSignTypedData } from "wagmi";
 import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
+import {
+  DELEGATED_EXECUTOR_ADDRESS,
+  DELEGATED_EXECUTOR_CHAIN_ID,
+  delegatedActionId,
+  delegatedPermitNonce,
+  delegatedPermitTypedData,
+  delegatedPolicyHash,
+} from "@/lib/executor/delegated-executor";
 
 export interface AutonomyConfig {
   enabled: boolean;
@@ -57,6 +70,7 @@ export interface AutonomyGoalView {
 
 export interface AutonomyPolicyView {
   id: string;
+  chainId: number;
   sellToken: string;
   buyToken: string;
   maxPerTradeRaw: string;
@@ -66,6 +80,27 @@ export interface AutonomyPolicyView {
   enabled: boolean;
   expiresAt: string;
   revokedAt: string | null;
+}
+
+/** Public view of a delegated authorization slot (never carries the signature). */
+export interface DelegatedSlotView {
+  id: string;
+  policyId: string;
+  goalId: string;
+  slotIndex: number;
+  chainId: number;
+  wallet: string;
+  sellToken: string;
+  amountRaw: string;
+  buyToken: string;
+  minAmountOutRaw: string;
+  deadline: number;
+  deadlineIso: string;
+  status: "active" | "consumed" | "revoked" | "expired";
+  consumedAt: string | null;
+  consumedByTxHash: string | null;
+  revokedAt: string | null;
+  createdAt: string;
 }
 
 export interface AutonomyTokenOption {
@@ -97,11 +132,25 @@ export interface AgentAutonomyDraftInput {
   description?: string;
 }
 
+export interface DelegatedSlotsInput {
+  policyId: string;
+  goalId: string;
+  /** How many slots to sign (bounded server-side by MAX_DELEGATED_SLOTS). */
+  count: number;
+  /** Human-unit minimum output PER TRADE — the signed floor. */
+  minAmountOutHuman: string;
+  /** Slot expiry in hours (capped by the policy expiry server-side). */
+  expiresInHours: number;
+}
+
 export function useAgentAutonomy() {
-  const { address } = useAccount();
+  const { address, chainId: connectedChainId } = useAccount();
+  const { signTypedDataAsync } = useSignTypedData();
   const [config, setConfig] = useState<AutonomyConfig | null>(null);
   const [goals, setGoals] = useState<AutonomyGoalView[]>([]);
   const [policies, setPolicies] = useState<AutonomyPolicyView[]>([]);
+  const [slots, setSlots] = useState<DelegatedSlotView[]>([]);
+  const [slotsSigningSupported, setSlotsSigningSupported] = useState(false);
   const [tokens, setTokens] = useState<AutonomyTokenOption[]>([]);
   const [draft, setDraft] = useState<AutonomyGoalDraft | null>(null);
   const [busy, setBusy] = useState(false);
@@ -129,6 +178,7 @@ export function useAgentAutonomy() {
       setConfig(null);
       setGoals([]);
       setPolicies([]);
+      setSlots([]);
       setTokens([]);
       tokensFetchedRef.current = false;
       hasPendingRef.current = false;
@@ -146,8 +196,15 @@ export function useAgentAutonomy() {
       const list = goalsRes.goals as AutonomyGoalView[];
       setGoals(list);
       hasPendingRef.current = list.some((g) => !TERMINAL.has(g.status) || g.pendingTxHash);
-      const policyRes = await fetchWithSession("/api/agent/autonomy/policy", { method: "GET" }).then((r) => r.json()).catch(() => null);
+      const [policyRes, slotsRes] = await Promise.all([
+        fetchWithSession("/api/agent/autonomy/policy", { method: "GET" }).then((r) => r.json()).catch(() => null),
+        fetchWithSession("/api/agent/autonomy/authorization", { method: "GET" }).then((r) => r.json()).catch(() => null),
+      ]);
       if (policyRes && Array.isArray(policyRes.policies)) setPolicies(policyRes.policies as AutonomyPolicyView[]);
+      if (slotsRes && Array.isArray(slotsRes.slots)) {
+        setSlots(slotsRes.slots as DelegatedSlotView[]);
+        setSlotsSigningSupported(slotsRes.walletSigningSupported === true);
+      }
     } else {
       setGoals([]);
     }
@@ -256,6 +313,135 @@ export function useAgentAutonomy() {
     [refresh],
   );
 
+  /** Revoke a delegated authorization slot (server enforces ownership). */
+  const revokeSlot = useCallback(
+    async (slotId: string) => {
+      setBusy(true);
+      setError(null);
+      try {
+        const res = await fetchWithSession(`/api/agent/autonomy/authorization?id=${encodeURIComponent(slotId)}`, { method: "DELETE" });
+        if (!res.ok) setError("The authorization slot could not be revoked right now.");
+        await refresh();
+        return res.ok;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [refresh],
+  );
+
+  /**
+   * Explicit delegated-slot signing: builds the canonical Permit2 witness
+   * typed data for EXACTLY the bounded details the UI shows, asks the
+   * connected USER wallet to sign, and registers the slots server-side
+   * (which re-validates everything and recovers the signature). The server
+   * never sees a private key and the runtime can only ever broadcast what
+   * these slots literally say.
+   */
+  const signDelegatedSlots = useCallback(
+    async (input: DelegatedSlotsInput): Promise<{ ok: boolean; message?: string }> => {
+      const wallet = address;
+      if (!wallet) return { ok: false, message: "Connect your wallet first." };
+      if (connectedChainId !== undefined && connectedChainId !== DELEGATED_EXECUTOR_CHAIN_ID) {
+        return { ok: false, message: "Switch your wallet to Base Sepolia to sign delegated slots." };
+      }
+      const policy = policies.find((p) => p.id === input.policyId);
+      const goal = goals.find((g) => g.id === input.goalId);
+      if (!policy || !goal) return { ok: false, message: "Pick the goal to authorize." };
+      const buyTokenDecimals = tokens.find((t) => t.address.toLowerCase() === goal.trade.buyToken.toLowerCase())?.decimals;
+      if (!buyTokenDecimals) return { ok: false, message: "Token details are still loading — try again." };
+      const cleaned = input.minAmountOutHuman.trim();
+      if (!/^\d*(\.\d*)?$/.test(cleaned) || cleaned === "" || cleaned === ".") {
+        return { ok: false, message: "Enter the minimum output per trade." };
+      }
+      const [whole = "0", frac = ""] = cleaned.split(".");
+      const fracPadded = frac.padEnd(buyTokenDecimals, "0").slice(0, buyTokenDecimals);
+      const minAmountOut = BigInt(whole + fracPadded);
+      if (minAmountOut <= 0n) return { ok: false, message: "The minimum output must be above zero." };
+      const count = Math.max(1, Math.min(5, Math.floor(input.count)));
+      const deadlineCap = Math.floor(new Date(policy.expiresAt).getTime() / 1000);
+      const deadline = Math.min(Math.floor(Date.now() / 1000) + Math.floor(input.expiresInHours * 3600), deadlineCap);
+      if (deadline <= Math.floor(Date.now() / 1000)) return { ok: false, message: "This policy has already expired." };
+      const usedIndexes = new Set(slots.filter((s) => s.policyId === input.policyId && !s.revokedAt && !s.consumedAt).map((s) => s.slotIndex));
+      const free = [0, 1, 2, 3, 4].filter((i) => !usedIndexes.has(i)).slice(0, count);
+      if (free.length === 0) return { ok: false, message: "No free authorization slots left for this policy — revoke one first." };
+
+      setBusy(true);
+      setError(null);
+      try {
+        const payloadSlots = free.map((slotIndex) => {
+          const permit = {
+            token: policy.sellToken as `0x${string}`,
+            amount: goal.trade.sellAmountRaw, // EXACT goal trade amount (base units, decimal string)
+            nonce: delegatedPermitNonce(input.goalId, slotIndex), // deterministic Permit2 nonce
+            deadline, // unix seconds
+          };
+          const witness = {
+            owner: (wallet.toLowerCase() as `0x${string}`),
+            buyToken: policy.buyToken as `0x${string}`,
+            minAmountOut: minAmountOut.toString(),
+            deadline,
+            actionId: delegatedActionId(input.goalId),
+            policyHash: delegatedPolicyHash({
+              id: policy.id,
+              wallet: (wallet.toLowerCase() as `0x${string}`),
+              chainId: DELEGATED_EXECUTOR_CHAIN_ID,
+              sellToken: policy.sellToken as `0x${string}`,
+              buyToken: policy.buyToken as `0x${string}`,
+              maxPerTradeRaw: policy.maxPerTradeRaw,
+              maxSlippageBps: policy.maxSlippageBps,
+              expiresAt: policy.expiresAt,
+            }),
+          };
+          return { slotIndex, permit, witness };
+        });
+        const signed = [];
+        for (const item of payloadSlots) {
+          const typed = delegatedPermitTypedData({ permit: item.permit, witness: item.witness }, DELEGATED_EXECUTOR_CHAIN_ID, DELEGATED_EXECUTOR_ADDRESS);
+          const signature = await signTypedDataAsync({ ...typed, domain: { ...typed.domain, chainId: BigInt(DELEGATED_EXECUTOR_CHAIN_ID) } } as Parameters<typeof signTypedDataAsync>[0]);
+          signed.push({
+            slotIndex: item.slotIndex,
+            permit: {
+              token: item.permit.token,
+              amount: item.permit.amount.toString(),
+              nonce: item.permit.nonce.toString(),
+              deadline: Number(item.permit.deadline),
+            },
+            witness: {
+              owner: item.witness.owner,
+              buyToken: item.witness.buyToken,
+              minAmountOut: item.witness.minAmountOut.toString(),
+              deadline: Number(item.witness.deadline),
+              actionId: item.witness.actionId,
+              policyHash: item.witness.policyHash,
+            },
+            signature,
+          });
+        }
+        const res = await fetchWithSession("/api/agent/autonomy/authorization", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ policyId: input.policyId, goalId: input.goalId, slots: signed }),
+        });
+        const payload2 = (await res.json().catch(() => null)) as { error?: string; code?: string } | null;
+        if (!res.ok) {
+          const detail = payload2?.error ?? "The authorization could not be registered.";
+          setError(detail);
+          return { ok: false, message: detail };
+        }
+        await refresh();
+        return { ok: true };
+      } catch (signError) {
+        const message = signError instanceof Error && signError.message ? signError.message : "Signing was cancelled or failed.";
+        setError(message);
+        return { ok: false, message };
+      } finally {
+        setBusy(false);
+      }
+    },
+    [address, connectedChainId, goals, policies, refresh, signTypedDataAsync, slots, tokens],
+  );
+
   // Bounded heartbeat — see the header comment for the exact conditions.
   useEffect(() => {
     if (!config?.enabled || !walletKey || !hasPendingRef.current) return;
@@ -286,6 +472,10 @@ export function useAgentAutonomy() {
     resume,
     cancel,
     revokePolicy,
+    revokeSlot,
+    signDelegatedSlots,
+    slots,
+    slotsSigningSupported,
     authorizeGoal,
     mutate,
     draft,

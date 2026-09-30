@@ -22,7 +22,10 @@ import { logger as coreLogger } from "@/lib/architecture/core/logger";
 
 import { BusAuditSink } from "./audit";
 import { isAutonomousAgentEnabled } from "./config";
-import { getAutonomousExecutionAdapter } from "./execution-adapter";
+import { DelegatedExecutionAdapter } from "./delegated-execution-adapter";
+import { RedisDelegatedAuthorizationStore } from "./delegated-redis-store";
+import type { DelegatedAuthorizationStore } from "./delegated-authorization";
+import { installAutonomousExecutionAdapter, getAutonomousExecutionAdapter } from "./execution-adapter";
 import { McpTradeGateway, type McpGateway } from "./mcp-gateway";
 import { AutonomyRuntime } from "./runtime";
 import { AutonomyScheduler } from "./scheduler";
@@ -32,6 +35,8 @@ import { publicAutonomyLimits } from "./config";
 
 export interface AutonomySystem {
   store: AutonomyStore;
+  /** Delegated authorization slots (Base Sepolia control plane). */
+  slots: DelegatedAuthorizationStore;
   gateway: McpGateway;
   runtime: AutonomyRuntime;
   scheduler: AutonomyScheduler;
@@ -39,7 +44,20 @@ export interface AutonomySystem {
 
 function build(): AutonomySystem {
   const store = new RedisAutonomyStore();
-  const gateway = McpTradeGateway.production();
+  const slots = new RedisDelegatedAuthorizationStore();
+  const gateway = McpTradeGateway.productionWithDelegation();
+  // Server bootstrap (Phase 2): the delegated adapter is installed ONLY
+  // here, server-side. getAutonomousExecutionAdapter() still refuses
+  // unless MPGR_AUTONOMOUS_EXECUTION_ADAPTER=delegated-permit2-sepolia is
+  // configured; with the env unset every path resolves to the default
+  // "none" adapter and assisted/manual trading is byte-for-byte unchanged.
+  installAutonomousExecutionAdapter(
+    new DelegatedExecutionAdapter({
+      slots,
+      gateway,
+      getPolicy: (policyId) => store.getPolicy(policyId),
+    }),
+  );
   const audit = new BusAuditSink(store, agentEventBus, agentPerformanceMonitor);
   const runtime = new AutonomyRuntime({
     store,
@@ -51,7 +69,7 @@ function build(): AutonomySystem {
     now: () => new Date(),
   });
   const scheduler = new AutonomyScheduler(store, runtime, coreLogger, agentPerformanceMonitor);
-  return { store, gateway, runtime, scheduler };
+  return { store, slots, gateway, runtime, scheduler };
 }
 
 let system: AutonomySystem | null = null;

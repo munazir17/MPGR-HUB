@@ -35,6 +35,22 @@ export const DELEGATED_WITNESS_TYPE_STRING =
 /** keccak256(DELEGATED_WITNESS_TYPE_STRING). */
 export const DELEGATED_WITNESS_TYPEHASH = keccak256(toHex(DELEGATED_WITNESS_TYPE_STRING));
 
+/**
+ * The witness type string a STANDARD EIP-712 wallet (eth_signTypedData_v4)
+ * can sign: stub + field-name + referenced structs in alphabetical order
+ * (UniswapX convention). The CURRENTLY DEPLOYED executor uses the bare
+ * struct string, which NO standard wallet typed-data signature can match —
+ * wallet signing is disabled (fail-closed) until that constant is fixed
+ * and redeployed with explicit approval. This function reads the pinned
+ * deployment facts, so the UI/API self-heal after a correct redeploy.
+ */
+export const WALLET_COMPATIBLE_WITNESS_TYPE_STRING =
+  "ActionWitness witness)ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)TokenPermissions(address token,uint256 amount)";
+
+export function walletSigningSupported(): boolean {
+  return (DELEGATED_WITNESS_TYPE_STRING as string) === WALLET_COMPATIBLE_WITNESS_TYPE_STRING;
+}
+
 /** Deployed Permit2's witness stub — the RAW STRING (not its keccak) is packed. */
 export const PERMIT2_WITNESS_STUB =
   "PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,";
@@ -172,7 +188,11 @@ export function delegatedPermit2Domain(chainId: number, permit2: Address = CANON
 export function delegatedPermitDigest(payload: Pick<DelegatedAuthorizationPayload, "permit" | "witness">, chainId: number, spender: Address): Hex {
   const domain = delegatedPermit2Domain(chainId, permit2FromSameChain(chainId));
   const structHash = delegatedPermitStructHash(payload, spender);
-  return keccak256(toHex(`0x1901${domain.slice(2)}${structHash.slice(2)}`));
+  // NOTE: the packed digest is ALREADY a hex string — it must be hashed as
+  // raw hex bytes. viem's toHex() would UTF-8-encode the STRING (a bug that
+  // self-consistently hid from sign/recover round-trips and was caught only
+  // against an independent wallet-style typed-data digest).
+  return keccak256(`0x1901${domain.slice(2)}${structHash.slice(2)}` as Hex);
 }
 
 /** Client-side EIP-712 typed data for wallet.signTypedData (same digest). */

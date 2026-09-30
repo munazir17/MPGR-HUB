@@ -21,7 +21,7 @@
 
 import { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronDown, Repeat, ShieldCheck, ShieldOff, X } from "lucide-react";
+import { ChevronDown, PenLine, Repeat, ShieldCheck, ShieldOff, X } from "lucide-react";
 import { clsx } from "clsx";
 import {
   useAgentAutonomy,
@@ -121,11 +121,15 @@ function draftToForm(draft: AutonomyGoalDraft | null, tokens: AutonomyTokenOptio
 }
 
 export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
-  const { config, goals, policies, tokens, busy, error, dismissError, refresh, pause, resume, cancel, revokePolicy, authorizeGoal, draft, clearDraft, mutate } =
+  const { config, goals, policies, tokens, busy, error, dismissError, refresh, pause, resume, cancel, revokePolicy, revokeSlot, signDelegatedSlots, slots, slotsSigningSupported, authorizeGoal, draft, clearDraft, mutate } =
     autonomy;
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<AuthorizeFormState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [delegatedGoalId, setDelegatedGoalId] = useState("");
+  const [delegatedCount, setDelegatedCount] = useState(1);
+  const [delegatedMinOut, setDelegatedMinOut] = useState("");
+  const [delegatedHours, setDelegatedHours] = useState(24);
 
   const activeCount = useMemo(() => goals.filter((g) => !["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"].includes(g.status)).length, [goals]);
 
@@ -277,6 +281,163 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                       </li>
                     ))}
                   </ul>
+                </div>
+              )}
+
+              {/* DELEGATED EXECUTION (Phase 2 — Base Sepolia, explicit sign, revocable) */}
+              {config?.enabled && (
+                <div className="space-y-2 rounded-xl border border-sky-400/20 bg-sky-500/[0.04] p-3" data-testid="delegated-execution-section">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+                    Delegated execution · Base Sepolia {config.executionAvailable ? "· broadcaster available" : "· not configured"}
+                  </p>
+                  <p className="text-[11px] leading-relaxed text-muted">
+                    Sign pre-authorized single-trade slots. Each slot executes exactly once, exactly as signed below — same
+                    tokens, same amount, never below your minimum output, never after expiry. The operator broadcaster can
+                    only submit these signed slots and holds no keys of yours. Revoke anytime.
+                  </p>
+
+                  {slots.length > 0 && (
+                    <ul className="space-y-1.5">
+                      {slots.map((slot) => (
+                        <li key={slot.id} className="flex items-center gap-2 rounded-xl border border-white/[0.08] bg-surface-2 px-3 py-2 text-xs">
+                          <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-sky-300" aria-hidden="true" />
+                          <span className="min-w-0 flex-1 truncate text-white">
+                            {symbol(slot.sellToken)} → {symbol(slot.buyToken)} · exact {humanAmount(tokens, slot.sellToken, slot.amountRaw)} · min out{" "}
+                            {humanAmount(tokens, slot.buyToken, slot.minAmountOutRaw)} · expires {new Date(slot.deadlineIso).toLocaleString()}
+                          </span>
+                          <span
+                            className={clsx(
+                              "shrink-0 rounded-full px-2 py-0.5 text-[10px] ring-1",
+                              slot.status === "active" && "bg-emerald-500/10 text-emerald-300 ring-emerald-400/30",
+                              slot.status === "consumed" && "bg-white/[0.06] text-muted ring-white/10",
+                              slot.status === "revoked" && "bg-red-500/10 text-red-300 ring-red-400/30",
+                              slot.status === "expired" && "bg-white/[0.06] text-muted ring-white/10",
+                            )}
+                          >
+                            {slot.status}
+                          </span>
+                          {(slot.status === "active" || slot.status === "expired") && (
+                            <button
+                              type="button"
+                              onClick={() => revokeSlot(slot.id)}
+                              disabled={busy}
+                              className="flex min-h-[28px] shrink-0 items-center gap-1 rounded-lg border border-white/[0.08] px-2 text-[11px] text-muted transition-colors hover:border-red-400/40 hover:text-red-300 disabled:opacity-50"
+                            >
+                              <ShieldOff className="h-3 w-3" aria-hidden="true" />
+                              Revoke
+                            </button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {slots.length === 0 && (
+                    <p className="text-[11px] text-muted">No delegated slots. Nothing can be executed without your explicit signature below.</p>
+                  )}
+
+                  {(() => {
+                    const eligibleGoals = goals.filter((g) => {
+                      const policy = policies.find((p) => p.id === g.policyId);
+                      return (
+                        !["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"].includes(g.status) &&
+                        policy &&
+                        policy.chainId === 84532 &&
+                        !policy.revokedAt &&
+                        new Date(policy.expiresAt).getTime() > Date.now()
+                      );
+                    });
+                    // A stale selection simply falls back to the first eligible goal.
+                    if (eligibleGoals.length === 0 || config.emergencyDisabled) return null;
+                    const goal = eligibleGoals.find((g) => g.id === delegatedGoalId) ?? eligibleGoals[0];
+                    const activeCount = slots.filter((s) => s.goalId === goal.id && s.status === "active").length;
+                    return (
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <label className="col-span-2 space-y-1">
+                          <span className="text-muted">Goal to pre-authorize</span>
+                          <select
+                            value={goal.id}
+                            onChange={(e) => setDelegatedGoalId(e.target.value)}
+                            className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                          >
+                            {eligibleGoals.map((g) => (
+                              <option key={g.id} value={g.id}>
+                                {g.description}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-muted">Slots ({5 - activeCount} free)</span>
+                          <select
+                            value={delegatedCount}
+                            onChange={(e) => setDelegatedCount(Number(e.target.value))}
+                            className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                          >
+                            {[1, 2, 3, 4, 5].filter((n) => n <= 5 - activeCount).map((n) => (
+                              <option key={n} value={n}>
+                                {n}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-muted">Expires in</span>
+                          <select
+                            value={delegatedHours}
+                            onChange={(e) => setDelegatedHours(Number(e.target.value))}
+                            className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                          >
+                            <option value={1}>1 hour</option>
+                            <option value={6}>6 hours</option>
+                            <option value={24}>24 hours</option>
+                            <option value={72}>3 days</option>
+                          </select>
+                        </label>
+                        <label className="col-span-2 space-y-1">
+                          <span className="text-muted">
+                            Minimum output per trade ({symbol(goal.trade.buyToken)}) — the signed floor
+                          </span>
+                          <input
+                            value={delegatedMinOut}
+                            onChange={(e) => setDelegatedMinOut(e.target.value)}
+                            inputMode="decimal"
+                            placeholder="0.00"
+                            className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          data-testid="delegated-sign-button"
+                          disabled={busy || !slotsSigningSupported}
+                          onClick={async () => {
+                            const result = await signDelegatedSlots({
+                              policyId: goal.policyId,
+                              goalId: goal.id,
+                              count: delegatedCount,
+                              minAmountOutHuman: delegatedMinOut,
+                              expiresInHours: delegatedHours,
+                            });
+                            if (result.ok) {
+                              setDelegatedMinOut("");
+                              setNotice("Delegated slots signed and registered. Each executes at most once, exactly as signed.");
+                            }
+                          }}
+                          className="col-span-2 flex min-h-[36px] items-center justify-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 text-[11px] font-semibold text-sky-200 transition-colors hover:bg-sky-500/20 disabled:opacity-50"
+                        >
+                          <PenLine className="h-3 w-3" aria-hidden="true" />
+                          {slotsSigningSupported
+                            ? `Sign ${delegatedCount} slot${delegatedCount > 1 ? "s" : ""} with wallet`
+                            : "Wallet signing unavailable for this executor build"}
+                        </button>
+                        {!slotsSigningSupported && (
+                          <p className="col-span-2 text-[10px] leading-relaxed text-muted">
+                            The deployed executor&apos;s witness type string is not signable by standard wallets — signing opens
+                            automatically once the executor is updated. Everything else (limits, revocation) works today.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 

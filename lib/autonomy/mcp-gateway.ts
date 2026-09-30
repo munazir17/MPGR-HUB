@@ -14,6 +14,7 @@ import "server-only";
 //   2. maps MCP error codes onto the autonomy failure taxonomy;
 //   3. keeps raw MCP payloads out of the runtime (typed views only).
 
+import { createDelegatedBroadcaster } from "@/lib/delegated/delegated-broadcaster";
 import {
   delegateSwap,
   getCapabilities,
@@ -112,6 +113,18 @@ export class McpTradeGateway implements McpGateway {
 
   static production(): McpTradeGateway {
     return new McpTradeGateway(createMcpDeps());
+  }
+
+  /**
+   * Phase 2 delegated path (Base Sepolia): identical to production() plus
+   * the operator broadcaster (lib/delegated — its own domain, following the
+   * reward-vault operator-key seam). Fail-closed: with the broadcaster key
+   * unset on the server the delegate tool refuses; nothing else in the
+   * gateway changes.
+   */
+  static productionWithDelegation(): McpTradeGateway {
+    const broadcaster = createDelegatedBroadcaster();
+    return new McpTradeGateway({ ...createMcpDeps(), delegatedBroadcaster: broadcaster.address ? broadcaster.broadcast : undefined });
   }
 
   async getCapabilities(): Promise<ToolOutcome> {

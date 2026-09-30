@@ -328,6 +328,9 @@ export const AUTONOMY_AUDIT_EVENT_TYPES = [
   "VERIFICATION_PENDING",
   "VERIFICATION_FAILED",
   "DUPLICATE_PREVENTED",
+  // Phase 2 delegated control plane (Base Sepolia authorization slots)
+  "DELEGATED_AUTHORIZATION_CREATED",
+  "DELEGATED_AUTHORIZATION_REVOKED",
 ] as const;
 export type AutonomyAuditEventType = (typeof AUTONOMY_AUDIT_EVENT_TYPES)[number];
 

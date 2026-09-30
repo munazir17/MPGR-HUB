@@ -68,7 +68,11 @@ const chatState = (overrides: Record<string, unknown>) => ({
 vi.mock("@rainbow-me/rainbowkit", () => ({
   useConnectModal: () => ({ connectModalOpen: false, openConnectModal: () => {} }),
 }));
-vi.mock("wagmi", () => ({ useAccount: () => ({ address: undefined, isConnected: false }) }));
+vi.mock("wagmi", () => ({
+  useAccount: () => ({ address: undefined, isConnected: false }),
+  // the autonomy hook wires the (wallet-gated) delegated-slot signing seam
+  useSignTypedData: () => ({ signTypedDataAsync: async () => { throw new Error("not used in render tests"); } }),
+}));
 vi.mock("@/hooks/useAgentChat", () => ({
   useAgentChat: vi.fn(() => disconnectedChat),
 }));

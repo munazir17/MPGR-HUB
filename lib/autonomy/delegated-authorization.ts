@@ -68,7 +68,9 @@ export interface DelegatedSlotVerdict {
 
 export interface DelegatedAuthorizationStore {
   saveSlots(slots: DelegatedAuthorizationSlot[]): Promise<number>;
-  listSlots(wallet: string, policyId: string): Promise<DelegatedAuthorizationSlot[]>;
+  listSlots(wallet: string, policyId?: string): Promise<DelegatedAuthorizationSlot[]>;
+  getSlot(id: string, wallet: string): Promise<DelegatedAuthorizationSlot | null>;
+  /** Atomically consumes a slot; returns false when it is already consumed/revoked or owned by someone else. */
   markConsumed(id: string, wallet: string, txHash: string, at: string): Promise<boolean>;
   markRevoked(id: string, wallet: string, at: string): Promise<boolean>;
 }
@@ -84,12 +86,16 @@ export class InMemoryDelegatedAuthorizationStore implements DelegatedAuthorizati
     }
     return slots.length;
   }
-  async listSlots(wallet: string, policyId: string): Promise<DelegatedAuthorizationSlot[]> {
-    return [...this.slots.values()].filter((s) => s.wallet === wallet && s.policyId === policyId);
+  async listSlots(wallet: string, policyId?: string): Promise<DelegatedAuthorizationSlot[]> {
+    return [...this.slots.values()].filter((s) => s.wallet === wallet && (!policyId || s.policyId === policyId));
+  }
+  async getSlot(id: string, wallet: string): Promise<DelegatedAuthorizationSlot | null> {
+    const s = this.slots.get(id) ?? null;
+    return s && s.wallet === wallet ? { ...s } : null;
   }
   async markConsumed(id: string, wallet: string, txHash: string, at: string): Promise<boolean> {
     const s = this.slots.get(id);
-    if (!s || s.wallet !== wallet || s.consumedAt) return false;
+    if (!s || s.wallet !== wallet || s.consumedAt || s.revokedAt) return false;
     this.slots.set(id, { ...s, consumedAt: at, consumedByTxHash: txHash });
     return true;
   }

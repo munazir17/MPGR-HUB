@@ -155,9 +155,15 @@ describe("fail-closed executionAvailable", () => {
       if (!result.ok) expect(result.code).toBe("EXECUTION_UNAVAILABLE");
     });
   }
-  it("wrong chain policy is refused", async () => {
+  it("cold chain-check cache fails closed; chain-mismatch surfaces once posture is proven", async () => {
     const { adapter } = makeDeps();
+    // Cold cache: never an optimistic true.
+    expect(adapter.checkAuthorization(wallet, policy({ chainId: AUTONOMY_CHAIN_ID })).reason).toBe("ONCHAIN_CHECK_PENDING");
+    expect(adapter.checkStatic().reason).toBe("ONCHAIN_CHECK_PENDING");
+    // After the deep on-chain pass the specific chain rejection is auditable.
+    await adapter.verifyOnChain();
     expect(adapter.checkAuthorization(wallet, policy({ chainId: AUTONOMY_CHAIN_ID })).reason).toBe("CHAIN_MISMATCH");
+    expect(adapter.checkAuthorization(wallet, policy()).authorized).toBe(true);
   });
   it("missing executor code / permit2 code / wrong feeBps / wrong permit2 / rpc failure refuse on-chain", async () => {
     const variants: Array<[string, (c: Record<string, unknown>) => unknown]> = [
