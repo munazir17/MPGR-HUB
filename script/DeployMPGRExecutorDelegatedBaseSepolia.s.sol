@@ -273,6 +273,16 @@ contract DeployMPGRExecutorDelegatedBaseSepolia is Script {
         });
     }
 
+    /// @notice Run-unique Permit2 nonce base for the demo swaps. Permit2's
+    ///         nonce = bitmapWord << 8 | bit, so the base stays a multiple of
+    ///         256 (bit 1..3 used by the three demos, always in one fresh
+    ///         word). Derived from the landing block — a redeploy can never
+    ///         collide with nonces burned by an earlier run (Phase 1 burned
+    ///         words 0 with the original fixed nonces 1..3).
+    function _demoNonceBase() internal view returns (uint256) {
+        return (uint256(keccak256(abi.encodePacked(block.timestamp, blockhash(block.number - 1)))) % ((type(uint248).max / 256) - 4)) * 256;
+    }
+
     /// @notice Builds the full Permit2 witness authorization: the digest follows
     ///         the DEPLOYED Permit2 hashing convention exactly (stub typehash +
     ///         witness type string; spender = the delegated executor).
@@ -283,7 +293,7 @@ contract DeployMPGRExecutorDelegatedBaseSepolia is Script {
     {
         auth.permit = IPermit2SignatureTransfer.PermitTransferFrom({
             permitted: IPermit2SignatureTransfer.TokenPermissions({token: p.tokenIn, amount: p.grossAmountIn}),
-            nonce: nonce,
+            nonce: _demoNonceBase() + nonce,
             deadline: p.deadline
         });
         auth.witness = MPGRExecutorDelegated.ActionWitness({
