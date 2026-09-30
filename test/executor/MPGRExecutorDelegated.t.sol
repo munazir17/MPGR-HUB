@@ -782,7 +782,7 @@ contract MPGRExecutorDelegatedTest is Test {
         assertEq(uniV1.lastAmountIn(), gross - (gross * BPS) / 10_000, "v1 router input");
         assertEq(uniDex.lastAmountIn(), uniV1.lastAmountIn(), "swap amount parity");
         assertEq(outDex, expectedOut, "delegated out");
-        assertEq(stockMid - stock.balanceOf(ownerAddr), expectedOut, "v1 out vs delegated out");
+        assertEq(stock.balanceOf(ownerAddr) - stockMid, expectedOut, "v1 out vs delegated out");
         assertEq(usdcMid - usdc.balanceOf(ownerAddr), gross, "gross spent parity");
         assertTrue(stock.balanceOf(ownerAddr) > stockMid, "owner stock grew in both flows");
     }
