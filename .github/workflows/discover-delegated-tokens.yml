@@ -67,36 +67,37 @@ jobs:
 
           # The executor is created by ONE tx of a multi-tx forge broadcast;
           # the test tokens + pools are created in EARLIER txs of the same
-          # broadcast (same deployer, nearby blocks). Scan a small block range.
+          # broadcast (same deployer, nearby blocks). PoolCreated events on the
+          # official factory carry BOTH token addresses — a factory-scoped scan
+          # recovers the whole route set without a heavy range query.
           BLOCK_HEX=$(jq -r '.blockNumber' receipt.json)
           BLOCK=$((16#${BLOCK_HEX#0x}))
-          FROM=$BLOCK; TO=$((BLOCK+40))
-          echo "::notice::STAGE=scan blocks=$FROM..$TO"
-          cast_try logs --from-block "$FROM" --to-block "$TO" --json > range_logs.json
+          FROM=$BLOCK; TO=$((BLOCK+60))
+          echo "::notice::STAGE=scan blocks=$FROM..$TO factory=$FACTORY"
+          cast_try logs --from-block "$FROM" --to-block "$TO" --address "$FACTORY" --json > pool_logs.json
+          echo "::notice::STAGE=pool_logs count=$(jq 'length' pool_logs.json)"
 
-          # 1) tokens minted from zero in the range (deploy script creations)
-          jq -r --arg tt "$TRANSFER_TOPIC" --arg z "$ZERO_TOPIC" \
-            '[.[] | select(.topics[0]==$tt and .topics[1]==$z) | .address] | unique | .[]' range_logs.json \
-            | tr '[:upper:]' '[:lower:]' | head -20 > minted.txt
-          echo "::notice::MINT_COUNT=$(wc -l < minted.txt)"
-          while read -r t; do
-            [ -n "$t" ] || continue
-            SYM=$(cast_try call "$t" "symbol()(string)" --rpc-url "$RPC_URL" || echo "?")
-            DEC=$(cast_try call "$t" "decimals()(uint8)" --rpc-url "$RPC_URL" || echo "?")
-            SUP=$(cast_try call "$t" "totalSupply()(uint256)" --rpc-url "$RPC_URL" || echo "?")
-            ALLOW=$(cast_try call "$EXEC" "isTokenAllowed(address)(bool)" "$t" --rpc-url "$RPC_URL" || echo "?")
-            echo "::notice::MINTED_TOKEN address=$t symbol=$SYM decimals=$DEC totalSupply=$SUP executorAllowlisted=$ALLOW"
-          done < minted.txt
-
-          # 2) PoolCreated events on the official Uniswap V3 factory in range
-          jq -r --arg f "$FACTORY" \
-            '[.[] | select((.address|ascii_downcase)==($f|ascii_downcase)) | [.topics[1], .topics[2], .topics[3]] | @tsv] | .[]' range_logs.json \
+          # 1) pools: token0 / token1 / fee (+ on-chain getPool cross-check)
+          jq -r '[.[] | [.topics[1], .topics[2], .topics[3]] | @tsv] | .[]' pool_logs.json \
             | while IFS="$(printf '\t')" read -r t0 t1 fee; do
                 T0="0x${t0: -40}"; T1="0x${t1: -40}"
                 FEE=$((16#${fee#0x}))
                 POOL=$(cast_try call "$FACTORY" "getPool(address,address,uint24)(address)" "$T0" "$T1" "$FEE" --rpc-url "$RPC_URL" || echo "?")
                 echo "::notice::POOL_CREATED fee=$FEE token0=$T0 token1=$T1 pool=$POOL"
               done
+
+          # 2) unique tokens across those pools: symbol / decimals / allowlist
+          jq -r '.[] | .topics[1], .topics[2]' pool_logs.json \
+            | tr '[:upper:]' '[:lower:]' | sed 's/^0x.*\(0x[0-9a-f]\{40\}\)$/\1/' \
+            | grep '^0x' | sort -u | head -10 > tokens.txt
+          while read -r t; do
+            [ -n "$t" ] || continue
+            TCS="0x$(printf '%s' "${t#0x}" | tr '[:lower:]' '[:upper:]')"
+            SYM=$(cast_try call "$t" "symbol()(string)" --rpc-url "$RPC_URL" || echo "?")
+            DEC=$(cast_try call "$t" "decimals()(uint8)" --rpc-url "$RPC_URL" || echo "?")
+            ALLOW=$(cast_try call "$EXEC" "isTokenAllowed(address)(bool)" "$t" --rpc-url "$RPC_URL" || echo "?")
+            echo "::notice::ROUTE_TOKEN address=$t symbol=$SYM decimals=$DEC executorAllowlisted=$ALLOW"
+          done < tokens.txt
 
           CREATOR=$(jq -r '.from' receipt.json)
           echo "::notice::DEPLOY_TX from=$CREATOR status=$STATUS block=$BLOCK executor=$EXEC"
