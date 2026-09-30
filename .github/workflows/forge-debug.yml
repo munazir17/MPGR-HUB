@@ -31,9 +31,15 @@ jobs:
           set -o pipefail
           forge test -vvv 2>&1 | tee /tmp/forge-output.txt || true
           forge test --match-test test_DEBUG_fuzzCounterexample -vvvv > /tmp/trace.txt 2>&1 || true
-          tail -n 45 /tmp/trace.txt | while IFS= read -r line; do
-            echo "::error::TRACE ${line:0:330}"
-          done
+          # Emit ONLY the 9 lines before the panic (10-annotations-per-step cap).
+          pline=$(grep -n "panic: arithmetic" /tmp/trace.txt | head -1 | cut -d: -f1)
+          echo "::error::PANIC-LINE ${pline:-none} total $(wc -l < /tmp/trace.txt)"
+          if [ -n "$pline" ]; then
+            start=$((pline - 9)); [ "$start" -lt 1 ] && start=1
+            sed -n "${start},${pline}p" /tmp/trace.txt | while IFS= read -r line; do
+              echo "::error::CTX ${line:0:330}"
+            done
+          fi
           exit 1
         env:
           MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
