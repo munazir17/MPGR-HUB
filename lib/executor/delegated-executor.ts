@@ -21,7 +21,14 @@
 
 import { keccak256, toHex, type Address, type Hex } from "viem";
 
-import { BASE_SEPOLIA_CHAIN_ID, EXECUTOR_DEFAULT_FEE_BPS } from "./executor-config";
+import {
+  BASE_SEPOLIA_CHAIN_ID,
+  BASE_SEPOLIA_UNISWAP_V3,
+  CANONICAL_WETH,
+  EXECUTOR_DEFAULT_FEE_BPS,
+  RouterKind,
+  type ExecutorDeployment,
+} from "./executor-config";
 import { computeExecutorFee } from "./executor-fee";
 
 /** The delegated executor on Base Sepolia (witness-type-corrected redeploy; see deployments/base-sepolia/mpgr-executor-delegated.json). */
@@ -29,6 +36,65 @@ export const DELEGATED_EXECUTOR_CHAIN_ID = BASE_SEPOLIA_CHAIN_ID; // 84532 — t
 export const DELEGATED_EXECUTOR_ADDRESS: Address = "0xa9568499D7e58854F2590a56B6D32788DbfA58F9";
 export const DELEGATED_EXECUTOR_FEE_BPS = EXECUTOR_DEFAULT_FEE_BPS; // 25 — canonical, never changed here
 export const CANONICAL_PERMIT2: Address = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+
+/**
+ * Test tokens created by the DELEGATED executor's deploy broadcast (GitHub
+ * Actions run 36760360671, tx 0xc5557b9a…8b4e, block 47512719). Discovered
+ * on-chain from PoolCreated events on the official Uniswap V3 factory
+ * (blocks 47512599..47512724; both pools fee 3000; getPool cross-checked).
+ * These are NOT the v1 executor's tokens — each deploy run creates fresh
+ * MPGRTestnetToken supply, so quoting the v1 pair against this executor
+ * would cross-wire two contracts and is rejected by the quote path.
+ */
+export const DELEGATED_BASE_SEPOLIA_TUSD: Address = "0x4aa87b87897D58404734F9bfF237Bb32a2C0E865";
+export const DELEGATED_BASE_SEPOLIA_TSTOCK: Address = "0x94CFE06d2e7A46c43944aec9f78a8EA2a992bBF8";
+/** Pools baked into the delegated executor (discovery evidence, both fee 3000). */
+export const DELEGATED_BASE_SEPOLIA_POOL_WETH_TUSD: Address = "0xA5967BD7C861f499D8adb9cAcC9A7344f10C3248";
+export const DELEGATED_BASE_SEPOLIA_POOL_USD_STOCK: Address = "0x2474381Acfff7A0f4786e477208D8e48bCe8b0f4";
+
+/**
+ * Route registry for the DELEGATED executor (Phase 3). Kept separate from
+ * the v1 BASE_SEPOLIA_EXECUTOR_DEPLOYMENT on purpose: same chain, different
+ * contract, different baked token allowlist and pools. The delegated quote
+ * path selects this entry ONLY when the caller passes the pinned delegated
+ * executor address (fail-closed; see getQuote's executor argument).
+ */
+export const BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
+  chainId: DELEGATED_EXECUTOR_CHAIN_ID,
+  network: "base-sepolia",
+  executor: DELEGATED_EXECUTOR_ADDRESS,
+  owner: "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
+  feeRecipient: "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
+  feeBps: DELEGATED_EXECUTOR_FEE_BPS,
+  weth: CANONICAL_WETH,
+  permit2: CANONICAL_PERMIT2,
+  deployTx: "0xc5557b9a07b6a92df78c6eb7d86cc714532de5045bb2f99872eab0f605cd8b4e",
+  deployBlock: 47512719,
+  explorerUrl: "https://sepolia.basescan.org/address/0xa9568499D7e58854F2590a56B6D32788DbfA58F9",
+  tokens: [
+    { address: CANONICAL_WETH, symbol: "WETH", decimals: 18, isWeth: true },
+    { address: DELEGATED_BASE_SEPOLIA_TUSD, symbol: "tUSD", decimals: 6, testnet: true },
+    { address: DELEGATED_BASE_SEPOLIA_TSTOCK, symbol: "tSTOCK", decimals: 18, testnet: true },
+  ],
+  routes: [
+    {
+      kind: RouterKind.UNISWAP_V3_ROUTER02,
+      router: BASE_SEPOLIA_UNISWAP_V3.swapRouter02,
+      quoter: BASE_SEPOLIA_UNISWAP_V3.quoterV2,
+      poolFee: 3000,
+      tokenA: DELEGATED_BASE_SEPOLIA_TUSD,
+      tokenB: DELEGATED_BASE_SEPOLIA_TSTOCK,
+    },
+    {
+      kind: RouterKind.UNISWAP_V3_ROUTER02,
+      router: BASE_SEPOLIA_UNISWAP_V3.swapRouter02,
+      quoter: BASE_SEPOLIA_UNISWAP_V3.quoterV2,
+      poolFee: 3000,
+      tokenA: CANONICAL_WETH,
+      tokenB: DELEGATED_BASE_SEPOLIA_TUSD,
+    },
+  ],
+};
 
 /**
  * The ActionWitness struct's own canonical EIP-712 type string — used for

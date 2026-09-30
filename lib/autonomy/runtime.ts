@@ -24,6 +24,7 @@
 //   * the LLM appears NOWHERE in this file — there is nothing to prompt.
 
 import type { Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
+import { DELEGATED_EXECUTOR_ADDRESS } from "@/lib/executor/delegated-executor";
 
 import { AUTONOMY_LIMITS } from "./config";
 import { DELEGATED_ADAPTER_ID, DELEGATED_EXECUTION_CHAIN_ID } from "./types";
@@ -290,13 +291,18 @@ export class AutonomyRuntime {
     // OBSERVE — fresh quote for the exact goal trade. Taker is the goal's
     // own wallet; slippage clamped to the policy cap when a policy exists.
     const slippageBps = policy ? Math.min(goal.trade.slippageBps, policy.maxSlippageBps) : goal.trade.slippageBps;
+    // Phase 3: when execution targets the delegated executor (Base Sepolia
+    // 84532), quote its OWN route registry (run-fresh token allowlist) —
+    // never the v1 registry. Any other chain keeps the default quote path.
+    const quoteChainId = executionChainId(this.deps.adapter);
     const quoteOutcome = await this.deps.gateway.quote({
-      chainId: executionChainId(this.deps.adapter),
+      chainId: quoteChainId,
       taker: goal.wallet,
       sellToken: goal.trade.sellToken,
       buyToken: goal.trade.buyToken,
       sellAmount: goal.trade.sellAmountRaw,
       slippageBps,
+      ...(quoteChainId === DELEGATED_EXECUTION_CHAIN_ID ? { executor: DELEGATED_EXECUTOR_ADDRESS } : {}),
     });
 
     if (!quoteOutcome.ok) {

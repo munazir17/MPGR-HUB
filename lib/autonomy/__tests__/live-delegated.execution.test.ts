@@ -32,13 +32,14 @@ import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 
 import {
   CANONICAL_PERMIT2,
+  DELEGATED_BASE_SEPOLIA_TSTOCK,
+  DELEGATED_BASE_SEPOLIA_TUSD,
   DELEGATED_EXECUTOR_ADDRESS,
   delegatedActionId,
   delegatedPermitNonce,
   delegatedPermitTypedData,
   delegatedPolicyHash,
 } from "@/lib/executor/delegated-executor";
-import { BASE_SEPOLIA_TSTOCK, BASE_SEPOLIA_TUSD } from "@/lib/executor/executor-config";
 import { createDelegatedBroadcaster } from "@/lib/delegated/delegated-broadcaster";
 import { DelegatedExecutionAdapter } from "@/lib/autonomy/delegated-execution-adapter";
 import { InMemoryDelegatedAuthorizationStore } from "@/lib/autonomy/delegated-authorization";
@@ -87,7 +88,7 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     const [bBroadcaster, bUser, userUsd] = await Promise.all([
       client.getBalance({ address: broadcasterAddress }),
       client.getBalance({ address: testUser.address }),
-      client.readContract({ address: BASE_SEPOLIA_TUSD, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] }),
+      client.readContract({ address: DELEGATED_BASE_SEPOLIA_TUSD, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] }),
     ]);
     console.log(`::notice::LIVE broadcaster=${broadcasterAddress} eth=${Number(bBroadcaster) / 1e18} testUser=${testUser.address} eth=${Number(bUser) / 1e18} tUSD=${userUsd.toString()}`);
     expect(bBroadcaster, "broadcaster needs >= 0.0005 ETH for gas").toBeGreaterThanOrEqual(parseEther("0.0005"));
@@ -100,22 +101,22 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     // ---------------- fixture funding (testnet only, NOT the delegated trade) ----------------
     // Deployer tops the test user up with ETH + tUSD + a little tSTOCK when short.
     const deployerWallet = createWalletClient({ account: deployer, chain: baseSepolia, transport: http(rpcUrl) });
-    const userStockBefore = await client.readContract({ address: BASE_SEPOLIA_TSTOCK, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] });
+    const userStockBefore = await client.readContract({ address: DELEGATED_BASE_SEPOLIA_TSTOCK, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] });
     if (bUser < parseEther("0.001")) {
       await waitFor(client, await deployerWallet.sendTransaction({ to: testUser.address, value: parseEther("0.002") }));
     }
     if (userUsd < sellAmountRaw) {
-      await waitFor(client, await deployerWallet.sendTransaction({ to: BASE_SEPOLIA_TUSD, data: encodeTransfer(testUser.address, sellAmountRaw) }));
+      await waitFor(client, await deployerWallet.sendTransaction({ to: DELEGATED_BASE_SEPOLIA_TUSD, data: encodeTransfer(testUser.address, sellAmountRaw) }));
     }
     if (userStockBefore < parseEther("0.000001")) {
-      await waitFor(client, await deployerWallet.sendTransaction({ to: BASE_SEPOLIA_TSTOCK, data: encodeTransfer(testUser.address, parseEther("1")) }));
+      await waitFor(client, await deployerWallet.sendTransaction({ to: DELEGATED_BASE_SEPOLIA_TSTOCK, data: encodeTransfer(testUser.address, parseEther("1")) }));
     }
 
     // Permit2 allowance for the test user (needed once per token) — the test
     // user approves with their OWN key.
     const testUserWallet = createWalletClient({ account: testUser, chain: baseSepolia, transport: http(rpcUrl) });
-    await ensureAllowance(testUserWallet, client, BASE_SEPOLIA_TUSD, sellAmountRaw);
-    await ensureAllowance(testUserWallet, client, BASE_SEPOLIA_TSTOCK, await client.readContract({ address: BASE_SEPOLIA_TSTOCK, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] }));
+    await ensureAllowance(testUserWallet, client, DELEGATED_BASE_SEPOLIA_TUSD, sellAmountRaw);
+    await ensureAllowance(testUserWallet, client, DELEGATED_BASE_SEPOLIA_TSTOCK, await client.readContract({ address: DELEGATED_BASE_SEPOLIA_TSTOCK, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] }));
 
     // ---------------- the real app stack ----------------
     const gateway = McpTradeGateway.productionWithDelegation();
@@ -139,8 +140,8 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
       authorizedAt: new Date().toISOString(),
       authorizationRef: "live-test",
     });
-    policies.set("live_buy", makePolicy("live_buy", BASE_SEPOLIA_TUSD, BASE_SEPOLIA_TSTOCK));
-    policies.set("live_sell", makePolicy("live_sell", BASE_SEPOLIA_TSTOCK, BASE_SEPOLIA_TUSD));
+    policies.set("live_buy", makePolicy("live_buy", DELEGATED_BASE_SEPOLIA_TUSD, DELEGATED_BASE_SEPOLIA_TSTOCK));
+    policies.set("live_sell", makePolicy("live_sell", DELEGATED_BASE_SEPOLIA_TSTOCK, DELEGATED_BASE_SEPOLIA_TUSD));
 
     const adapter = new DelegatedExecutionAdapter({
       slots,
@@ -162,8 +163,8 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     const buyQuote = await gateway.quote({
       chainId: 84532,
       taker: testUser.address,
-      sellToken: BASE_SEPOLIA_TUSD,
-      buyToken: BASE_SEPOLIA_TSTOCK,
+      sellToken: DELEGATED_BASE_SEPOLIA_TUSD,
+      buyToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
       sellAmount: sellAmountRaw.toString(),
       slippageBps: 300,
     });
@@ -176,8 +177,8 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
       policy: policies.get("live_buy")!,
       goalId: buyGoalId,
       slotIndex: 0,
-      sellToken: BASE_SEPOLIA_TUSD,
-      buyToken: BASE_SEPOLIA_TSTOCK,
+      sellToken: DELEGATED_BASE_SEPOLIA_TUSD,
+      buyToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
       sellAmountRaw,
       minAmountOut: bq!.minBuyAmountRaw,
     });
@@ -188,8 +189,8 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
       wallet: testUser.address.toLowerCase() as Address,
       chainId: 84532,
       quoteId: bq!.quoteId,
-      sellToken: BASE_SEPOLIA_TUSD,
-      buyToken: BASE_SEPOLIA_TSTOCK,
+      sellToken: DELEGATED_BASE_SEPOLIA_TUSD,
+      buyToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
       sellAmountRaw: sellAmountRaw.toString(),
       expectedBuyAmountRaw: bq!.expectedBuyAmountRaw,
       minBuyAmountRaw: bq!.minBuyAmountRaw,
@@ -210,15 +211,15 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     console.log(`::notice::LIVE BUY tx=${buyTxHash} feeRaw=${buyFee} out=${result.buy!.boughtRaw}`);
 
     // ================= SELL: tSTOCK -> tUSD =================
-    const stockNow = await client.readContract({ address: BASE_SEPOLIA_TSTOCK, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] });
+    const stockNow = await client.readContract({ address: DELEGATED_BASE_SEPOLIA_TSTOCK, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] });
     const stockReceived = stockNow - (userStockBefore < parseEther("0.000001") ? 0n : userStockBefore);
     expect(stockReceived > 0n, "BUY produced zero tSTOCK — cannot run the SELL leg").toBe(true);
 
     const sellQuote = await gateway.quote({
       chainId: 84532,
       taker: testUser.address,
-      sellToken: BASE_SEPOLIA_TSTOCK,
-      buyToken: BASE_SEPOLIA_TUSD,
+      sellToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
+      buyToken: DELEGATED_BASE_SEPOLIA_TUSD,
       sellAmount: stockReceived.toString(),
       slippageBps: 300,
     });
@@ -231,8 +232,8 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
       policy: policies.get("live_sell")!,
       goalId: sellGoalId,
       slotIndex: 1,
-      sellToken: BASE_SEPOLIA_TSTOCK,
-      buyToken: BASE_SEPOLIA_TUSD,
+      sellToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
+      buyToken: DELEGATED_BASE_SEPOLIA_TUSD,
       sellAmountRaw: stockReceived,
       minAmountOut: sq!.minBuyAmountRaw,
     });
@@ -243,8 +244,8 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
       wallet: testUser.address.toLowerCase() as Address,
       chainId: 84532,
       quoteId: sq!.quoteId,
-      sellToken: BASE_SEPOLIA_TSTOCK,
-      buyToken: BASE_SEPOLIA_TUSD,
+      sellToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
+      buyToken: DELEGATED_BASE_SEPOLIA_TUSD,
       sellAmountRaw: stockReceived.toString(),
       expectedBuyAmountRaw: sq!.expectedBuyAmountRaw,
       minBuyAmountRaw: sq!.minBuyAmountRaw,

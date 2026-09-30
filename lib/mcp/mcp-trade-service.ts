@@ -86,6 +86,12 @@ const DEFAULT_SLIPPAGE_BPS = 100;
 
 export interface McpDeps {
   registry: Record<ExecutorChainId, ExecutorDeployment | null>;
+  /**
+   * Phase 3 delegated path: route registry for MPGRExecutorDelegated (Base
+   * Sepolia). Selected ONLY when a quote explicitly passes the pinned
+   * delegated executor address as `executor` — never as a silent default.
+   */
+  delegatedRegistry?: Partial<Record<ExecutorChainId, ExecutorDeployment>>;
   reader: (chainId: ExecutorChainId) => ChainReader;
   nowSeconds: () => number;
   quoteSecret?: string;
@@ -335,6 +341,32 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
   const taker = getAddress(args.taker);
   const slippage = parseSlippage(args.slippageBps);
   if (typeof slippage === "string") return fail("INVALID_SLIPPAGE", slippage);
+
+  // ---- Delegated-executor quoting (Phase 3, opt-in) ------------------------
+  // The delegated executor has its OWN run-fresh token allowlist and pools;
+  // quoting the v1 registry against it would cross-wire two contracts. So the
+  // delegated registry is chosen ONLY for an explicit, exact executor match —
+  // anything else fails closed. Omitting `executor` keeps the v1 behaviour.
+  const executorArg = typeof args.executor === "string" ? args.executor.trim() : "";
+  if (executorArg) {
+    if (chainId !== BASE_SEPOLIA_CHAIN_ID) {
+      return fail("UNSUPPORTED_CHAIN", "The delegated executor is Base Sepolia (84532) only.");
+    }
+    let requested: Address;
+    try {
+      requested = getAddress(executorArg);
+    } catch {
+      return fail("INVALID_EXECUTOR", "executor must be a valid address.");
+    }
+    if (requested !== DELEGATED_EXECUTOR_ADDRESS) {
+      return fail("EXECUTOR_MISMATCH", "executor does not match the pinned delegated executor.");
+    }
+    const delegated = deps.delegatedRegistry?.[chainId];
+    if (!delegated) {
+      return fail("EXECUTOR_NOT_DEPLOYED", "The delegated executor is not registered for quoting.");
+    }
+    return quoteExecutor(deps, chainId, delegated, args, null, null, taker, slippage);
+  }
 
   // ---- Base mainnet provider dispatch -------------------------------------
   // 1. Operator switch: nothing is quoted on 8453 while mainnet MCP trading

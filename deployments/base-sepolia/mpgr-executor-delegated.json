@@ -12,6 +12,15 @@
   "weth": "0x4200000000000000000000000000000000000006",
   "witnessTypeString": "ActionWitness witness)ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)TokenPermissions(address token,uint256 amount)",
   "router": "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4",
+  "tusd": "0x4aa87b87897D58404734F9bfF237Bb32a2C0E865",
+  "tstock": "0x94CFE06d2e7A46c43944aec9f78a8EA2a992bBF8",
+  "poolWethUsd": "0xA5967BD7C861f499D8adb9cAcC9A7344f10C3248",
+  "poolUsdStock": "0x2474381Acfff7A0f4786e477208D8e48bCe8b0f4",
+  "poolFeeTiers": {
+    "poolWethUsd": 3000,
+    "poolUsdStock": 3000
+  },
+  "tokensDiscoveredFrom": "PoolCreated events on the official Uniswap V3 factory 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24, blocks 47512599..47512724 (deploy block 47512719), getPool cross-checked; discovery run 36769006505 (read-only)",
   "verified": {
     "bytecodeMatch": true,
     "bytecodeNote": "on-chain runtime == compiled template (metadata hash excluded, 6 immutable sites masked: 4x WETH, 2x PERMIT2), len 21016 hex chars",
