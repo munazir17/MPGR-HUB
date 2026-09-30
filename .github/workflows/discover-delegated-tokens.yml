@@ -46,13 +46,13 @@ jobs:
           ZERO_TOPIC="0x0000000000000000000000000000000000000000000000000000000000000000"
 
           cast_try() { # cast_try <args...> — public RPCs blip
-            local out=""
+            local out="" i
             for i in 1 2 3; do
-              if out=$(cast "$@" 2>/tmp/cast.err); then echo "$out"; return 0; fi
-              echo "::warning::TRY${i}_FAILED args=[$1 $2] err=$(head -c 160 /tmp/cast.err | tr '\n' ' ')"
+              if out=$(cast "$@" 2>/tmp/cast.err); then printf '%s' "$out"; return 0; fi
+              echo "::warning::TRY${i}_FAILED cmd=$1 errsize=$(wc -c < /tmp/cast.err 2>/dev/null || echo -1) errhead=$(head -c 140 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"
               sleep 2
             done
-            echo "::error::CAST_EXHAUSTED args=[$*] err=$(tail -c 220 /tmp/cast.err | tr '\n' ' ')"
+            echo "::error::CAST_EXHAUSTED cmd=$1 errtail=$(tail -c 200 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"
             return 1
           }
 
@@ -74,7 +74,8 @@ jobs:
           BLOCK=$((16#${BLOCK_HEX#0x}))
           FROM=$BLOCK; TO=$((BLOCK+60))
           echo "::notice::STAGE=scan blocks=$FROM..$TO factory=$FACTORY"
-          cast_try logs --from-block "$FROM" --to-block "$TO" --address "$FACTORY" --json > pool_logs.json
+          GETLOGS="{\"fromBlock\":\"$(printf '0x%x' "$FROM")\",\"toBlock\":\"$(printf '0x%x' "$TO")\",\"address\":\"$FACTORY\"}"
+          cast_try rpc eth_getLogs "$GETLOGS" --rpc-url "$RPC_URL" > pool_logs.json
           echo "::notice::STAGE=pool_logs count=$(jq 'length' pool_logs.json)"
 
           # 1) pools: token0 / token1 / fee (+ on-chain getPool cross-check)
