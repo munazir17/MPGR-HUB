@@ -31,13 +31,13 @@ jobs:
           set -o pipefail
           forge test -vvv 2>&1 | tee /tmp/forge-output.txt
           rc=$?
-          # Explicit delegated-suite pass count (annotations are the only
-          # channel reachable from the agent sandbox).
-          forge test --match-contract MPGRExecutorDelegatedTest 2>&1 | grep -E "Suite result|Ran 1" > /tmp/delegated.txt || true
-          while IFS= read -r line; do echo "::error::DELEGATED ${line:0:300}"; done < /tmp/delegated.txt
-          grep -E "\[(FAIL|Error)" /tmp/forge-output.txt | head -8 | while IFS= read -r line; do
-            echo "::error::${line:0:330}"
-          done
+          echo "::error::RC=$rc"
+          # Prioritized diagnostics (annotation cap is 10 per step):
+          # 1) the grand summary, 2) non-ok suite lines, 3) [FAIL] lines.
+          grep -E "^Ran [0-9]+ test" /tmp/forge-output.txt | head -2 > /tmp/diag.txt || true
+          grep "Suite result" /tmp/forge-output.txt | grep -v ": ok" | head -4 >> /tmp/diag.txt || true
+          grep -E "\[(FAIL|Error)" /tmp/forge-output.txt | head -6 >> /tmp/diag.txt || true
+          while IFS= read -r line; do echo "::error::DIAG ${line:0:330}"; done < /tmp/diag.txt
           exit $rc
         env:
           MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
