@@ -160,8 +160,9 @@ jobs:
           echo "::notice::BYTECODE len(code)=${#CODEN} len(template)=${#TPLN}"
           ART=$(find out -name 'MPGRExecutorDelegated.json' -print -quit)
           echo "::notice::V artifact=$ART"
-          IMMREF=$(jq -c '.deployedBytecode.immutableReferences // .immutableReferences // {}' "$ART")
-          python3 - "$CODEN" "$TPLN" "$IMMREF" <<'PY'
+          IMMREF=$(jq -c '.deployedBytecode.immutableReferences // .immutableReferences // {}' "$ART") || { echo "::error::V immref-jq failed"; exit 1; }
+          echo "::notice::V immref=${IMMREF:0:200}"
+          python3 - "$CODEN" "$TPLN" "$IMMREF" 2>/tmp/py.err <<'PY' || { echo "::error::V python failed"; tail -6 /tmp/py.err | while IFS= read -r l; do echo "::error::PY $l"; done; exit 1; }
           import json, sys
           code, tpl, imm = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
 
