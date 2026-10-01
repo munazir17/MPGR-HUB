@@ -1,0 +1,180 @@
+name: Delegated Preflight (Read-Only)
+
+# PHASE 3 preflight validation. READ-ONLY BY CONSTRUCTION:
+#   * every chain interaction goes through ro(), which ONLY permits
+#     call / balance / chain-id / code / receipt (no send, no publish);
+#   * the secrets job derives ADDRESSES from keys (address derivation is not
+#     a signature and reveals nothing) and prints presence booleans and
+#     MATCH/MISMATCH results only — never key material, never lengths;
+#   * Base Sepolia 84532 only; no funds move; no transactions; no approvals.
+# Armed by a commit subject containing [preflight] (same pattern as the other
+# tag-gated workflows) or by manual dispatch.
+
+on:
+  push:
+    branches: [arena/01a0e784-mpgr-hub]
+  workflow_dispatch:
+
+concurrency:
+  group: preflight-delegated-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  chain:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[preflight]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Read-only chain preflight
+        env:
+          EXECUTOR: "0xa9568499D7e58854F2590a56B6D32788DbfA58F9"
+          BROADCASTER: "0x9898EcD0BcDdF1A240b88355db069d4016b23d28"
+          DEPLOYER: "0xb67FCDF437B5FeF64E4b32952dc6d172dc9ec56e"
+          OWNER: "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e"
+          FEE_RECIPIENT: "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4"
+          PERMIT2: "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+          WETH: "0x4200000000000000000000000000000000000006"
+          TUSD: "0x4aa87b87897D58404734F9bfF237Bb32a2C0E865"
+          TSTOCK: "0x94CFE06d2e7A46c43944aec9f78a8EA2a992bBF8"
+          POOL_WETH_TUSD: "0xA5967BD7C861f499D8adb9cAcC9A7344f10C3248"
+          POOL_USD_STOCK: "0x2474381Acfff7A0f4786e477208D8e48bCe8b0f4"
+          FACTORY: "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"
+          QUOTER: "0xC5290058841028F1614F3A6F0F5816cAd0df5E27"
+          WITNESS: "ActionWitness witness)ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)TokenPermissions(address token,uint256 amount)"
+        run: |
+          set -euo pipefail
+          trap 'echo "::error::PREFLIGHT_DIED at line=$LINENO"' ERR
+          RPC_URL="${RPC_URL:-https://sepolia.base.org}"
+
+          # READ-ONLY GUARD: only these cast subcommands may ever run here.
+          ro() {
+            case "$1" in
+              call|balance|chain-id|code|receipt) ;;
+              *) echo "::error::BLOCKED non-read-only command: $1"; exit 42 ;;
+            esac
+            local out="" i
+            for i in 1 2 3; do
+              if out=$(cast "$@" --rpc-url "$RPC_URL" 2>/tmp/cast.err); then printf '%s' "$out"; return 0; fi
+              sleep 2
+            done
+            echo "::error::PREFLIGHT_CAST_EXHAUSTED cmd=$1 err=$(tail -c 160 /tmp/cast.err | tr '\n' ' ')"
+            return 1
+          }
+
+          CHAIN=$(ro chain-id)
+          echo "::notice::PREFLIGHT chain=$CHAIN (must be 84532)"
+          [ "$CHAIN" = "84532" ] || { echo "::error::WRONG CHAIN $CHAIN"; exit 1; }
+
+          B_BAL=$(ro balance "$BROADCASTER")
+          echo "::notice::PREFLIGHT broadcaster_eth=$(printf '%s' "$B_BAL" | awk '{printf "%.6f", $1/1000000000000000000}')"
+          D_BAL=$(ro balance "$DEPLOYER")
+          echo "::notice::PREFLIGHT deployer_eth=$(printf '%s' "$D_BAL" | awk '{printf "%.6f", $1/1000000000000000000}')"
+
+          PAUSED=$(ro call "$EXECUTOR" "paused()(bool)")
+          FEE=$(ro call "$EXECUTOR" "feeBps()(uint16)")
+          OWN=$(ro call "$EXECUTOR" "owner()(address)")
+          FREC=$(ro call "$EXECUTOR" "feeRecipient()(address)")
+          P2=$(ro call "$EXECUTOR" "PERMIT2()(address)")
+          W=$(ro call "$EXECUTOR" "WETH()(address)")
+          echo "::notice::PREFLIGHT executor paused=$PAUSED feeBps=$FEE owner=$OWN feeRecipient=$FREC permit2_ok=$([ "$P2" = "$PERMIT2" ] && echo true || echo FALSE) weth_ok=$([ "$W" = "$WETH" ] && echo true || echo FALSE)"
+
+          WT=$(ro call "$EXECUTOR" "WITNESS_TYPE_STRING()(string)")
+          echo "::notice::PREFLIGHT witness_matches=$([ "$WT" = "$WITNESS" ] && echo true || echo FALSE)"
+
+          A_TUSD=$(ro call "$EXECUTOR" "isTokenAllowed(address)(bool)" "$TUSD")
+          A_TSTOCK=$(ro call "$EXECUTOR" "isTokenAllowed(address)(bool)" "$TSTOCK")
+          A_WETH=$(ro call "$EXECUTOR" "isTokenAllowed(address)(bool)" "$WETH")
+          echo "::notice::PREFLIGHT allowlist tusd=$A_TUSD tstock=$A_TSTOCK weth=$A_WETH"
+
+          P1=$(ro call "$FACTORY" "getPool(address,address,uint24)(address)" "$WETH" "$TUSD" 3000)
+          P2P=$(ro call "$FACTORY" "getPool(address,address,uint24)(address)" "$TUSD" "$TSTOCK" 3000)
+          echo "::notice::PREFLIGHT pools weth_tusd_ok=$([ "$P1" = "$POOL_WETH_TUSD" ] && echo true || echo FALSE) usd_stock_ok=$([ "$P2P" = "$POOL_USD_STOCK" ] && echo true || echo FALSE)"
+
+          L1=$(ro call "$POOL_WETH_TUSD" "liquidity()(uint128)")
+          S1=$(ro call "$POOL_WETH_TUSD" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)" | awk '{print $1}')
+          L2=$(ro call "$POOL_USD_STOCK" "liquidity()(uint128)")
+          S2=$(ro call "$POOL_USD_STOCK" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)" | awk '{print $1}')
+          echo "::notice::PREFLIGHT pool_liquidity weth_tusd=$L1 sqrt_nonzero=$([ "$S1" != "0" ] && echo true || echo false) usd_stock=$L2 sqrt_nonzero=$([ "$S2" != "0" ] && echo true || echo false)"
+
+          Q_OUT=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TUSD,$TSTOCK,100000000,3000,0)" | awk '{print $1}')
+          echo "::notice::PREFLIGHT quote 100_tUSD -> tSTOCK raw_out=$Q_OUT"
+          if [ "$Q_OUT" != "0" ] && [ -n "$Q_OUT" ]; then
+            Q_BACK=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TSTOCK,$TUSD,$Q_OUT,3000,0)" | awk '{print $1}')
+            echo "::notice::PREFLIGHT quote roundtrip tSTOCK -> tUSD raw_out=$Q_BACK (expect ~=100000000 less pool fee)"
+          fi
+
+          SUP_U=$(ro call "$TUSD" "totalSupply()(uint256)")
+          SUP_S=$(ro call "$TSTOCK" "totalSupply()(uint256)")
+          D_U=$(ro call "$TUSD" "balanceOf(address)(uint256)" "$DEPLOYER")
+          D_S=$(ro call "$TSTOCK" "balanceOf(address)(uint256)" "$DEPLOYER")
+          echo "::notice::PREFLIGHT tusd supply=$SUP_U deployer=$D_U"
+          echo "::notice::PREFLIGHT tstock supply=$SUP_S deployer=$D_S"
+
+          echo "::notice::PREFLIGHT chain_checks=OK"
+
+  secrets:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[preflight]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: base-sepolia
+    env:
+      BROADCASTER_KEY: ${{ secrets.MPGR_BROADCASTER_PRIVATE_KEY }}
+      TEST_USER_KEY: ${{ secrets.MPGR_LIVE_TEST_USER_PRIVATE_KEY }}
+      DEPLOYER_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Secret presence + address binding (no key material printed)
+        run: |
+          set -euo pipefail
+          EXPECTED_BROADCASTER="0x9898ecd0bcddf1a240b88355db069d4016b23d28"
+          EXPECTED_DEPLOYER="0xb67fcdf437b5fef64e4b32952dc6d172dc9ec56e"
+
+          if [ -n "${BROADCASTER_KEY:-}" ]; then
+            echo "::notice::PREFLIGHT secret MPGR_BROADCASTER_PRIVATE_KEY=set"
+            ADDR=$(cast wallet address --private-key "$BROADCASTER_KEY" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+            if [ "$ADDR" = "$EXPECTED_BROADCASTER" ]; then
+              echo "::notice::PREFLIGHT broadcaster_key_matches_expected_address=true"
+            else
+              echo "::error::PREFLIGHT broadcaster_key_matches_expected_address=false (derived address differs — WRONG KEY IN SECRET)"
+              exit 1
+            fi
+          else
+            echo "::error::PREFLIGHT secret MPGR_BROADCASTER_PRIVATE_KEY=UNSET"
+            exit 1
+          fi
+
+          if [ -n "${DEPLOYER_KEY:-}" ]; then
+            echo "::notice::PREFLIGHT secret BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY=set"
+            ADDR=$(cast wallet address --private-key "$DEPLOYER_KEY" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+            echo "::notice::PREFLIGHT deployer_key_matches_expected_address=$([ "$ADDR" = "$EXPECTED_DEPLOYER" ] && echo true || echo FALSE)"
+          else
+            echo "::error::PREFLIGHT secret BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY=UNSET"
+            exit 1
+          fi
+
+          if [ -n "${TEST_USER_KEY:-}" ]; then
+            echo "::notice::PREFLIGHT secret MPGR_LIVE_TEST_USER_PRIVATE_KEY=set"
+            TU=$(cast wallet address --private-key "$TEST_USER_KEY" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+            echo "::notice::PREFLIGHT live_test_user_address=$TU"
+            if [ "$TU" = "$EXPECTED_BROADCASTER" ] || [ "$TU" = "$EXPECTED_DEPLOYER" ]; then
+              echo "::error::PREFLIGHT test user MUST differ from broadcaster and deployer"
+              exit 1
+            fi
+            echo "::notice::PREFLIGHT test_user_distinct=true"
+          else
+            echo "::notice::PREFLIGHT secret MPGR_LIVE_TEST_USER_PRIVATE_KEY=UNSET (expected until the test keypair is created)"
+          fi
+
+          echo "::notice::PREFLIGHT secret_checks=DONE"
