@@ -148,7 +148,8 @@ jobs:
           set +e
           # Decodes the SwapExecuted events of the Phase-3 live BUY/SELL txs
           # straight from chain receipts (no harness, no app code).
-          SWAP_TOPIC=$(cast keccak "SwapExecuted(address,address,bytes32,address,address,uint256,uint256,uint256,uint256,address,uint16,uint8,uint8)")
+          # ABI-verified canonical topic0 (keccak of the SwapExecuted signature).
+          SWAP_TOPIC="0x80331ce92a7885c99237a1428f76bc2281c3b972ccae3004a248a6c0cf714a22"
           TEST_USER_ADDR="$TEST_USER"
           for LEG in buy sell; do
             if [ "$LEG" = buy ]; then TXH="0x9cc4838e3e90b52dddfb07bb259145dbd0bce896f3ad96bd42fd7a657f645588"; ELSE_TOK="$TSTOCK"; fi
@@ -159,7 +160,20 @@ jobs:
             TXTO=$(printf '%s' "$R" | jq -r '.to')
             TXSTATUS=$(printf '%s' "$R" | jq -r '.status')
             LOGLINE=$(printf '%s' "$R" | jq -r --arg t "$SWAP_TOPIC" --arg e "$EXEC" '[.logs[] | select((.address|ascii_downcase)==($e|ascii_downcase) and .topics[0]==$t)][0] | if . == null then empty else [.topics[1], .topics[2], .topics[3], .data] | @tsv end') || true
-            if [ -z "$LOGLINE" ]; then echo "::error::PREFLIGHT live_${LEG}_swapEvent=MISSING"; continue; fi
+            if [ -z "$LOGLINE" ]; then
+              # Fallback: the executor's 3-topic + 10-word-data log, whatever its topic0.
+              LOGLINE=$(printf '%s' "$R" | jq -r --arg e "$EXEC" '[.logs[] | select((.address|ascii_downcase)==($e|ascii_downcase) and (.topics|length)==4 and ((.data|length)==642))][0] | if . == null then empty else [.topics[0], .topics[1], .topics[2], .topics[3], .data] | @tsv end') || true
+              if [ -n "$LOGLINE" ]; then
+                ACTUAL_T0=$(printf '%s' "$LOGLINE" | cut -f1)
+                LOGLINE=$(printf '%s' "$LOGLINE" | cut -f2-)
+                echo "::error::PREFLIGHT live_${LEG}_topic0_fallback actual_topic0=$ACTUAL_T0"
+              fi
+            fi
+            if [ -z "$LOGLINE" ]; then
+              EXEC_T0S=$(printf '%s' "$R" | jq -r --arg e "$EXEC" '[.logs[] | select((.address|ascii_downcase)==($e|ascii_downcase)) | .topics[0]] | join(",")')
+              echo "::error::PREFLIGHT live_${LEG}_swapEvent=MISSING executor_log_topic0s=[$EXEC_T0S] log_count=$(printf '%s' "$R" | jq '.logs | length')"
+              continue
+            fi
             TAKER=0x$(printf '%s' "$LOGLINE" | cut -f1 | cut -c27-66)
             EVROUTER=0x$(printf '%s' "$LOGLINE" | cut -f2 | cut -c27-66)
             INTENT=$(printf '%s' "$LOGLINE" | cut -f3)
