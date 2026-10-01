@@ -165,7 +165,7 @@ jobs:
             TXFROM=$(printf '%s' "$R" | jq -r '.from')
             TXTO=$(printf '%s' "$R" | jq -r '.to')
             TXSTATUS=$(printf '%s' "$R" | jq -r '.status')
-            LOGLINE=$(printf '%s' "$R" | jq -r --arg t "$SWAP_TOPIC" --arg e "$EXEC" '[.logs[] | select(.address==($e)) and (.topics[0]==$t)][0] | [.topics[1], .topics[2], .topics[3], .data] | @tsv')
+            LOGLINE=$(printf '%s' "$R" | jq -r --arg t "$SWAP_TOPIC" --arg e "$EXEC" '[.logs[] | select((.address|ascii_downcase)==($e|ascii_downcase) and .topics[0]==$t)][0] | if . == null then empty else [.topics[1], .topics[2], .topics[3], .data] | @tsv end') || true
             if [ -z "$LOGLINE" ]; then echo "::warning::PREFLIGHT live_${LEG}_swapEvent=MISSING"; continue; fi
             TAKER=0x$(printf '%s' "$LOGLINE" | cut -f1 | cut -c27-66)
             EVROUTER=0x$(printf '%s' "$LOGLINE" | cut -f2 | cut -c27-66)
