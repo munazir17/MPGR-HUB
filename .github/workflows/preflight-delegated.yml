@@ -182,12 +182,15 @@ jobs:
             INTENT=$(printf '%s' "$LOGLINE" | cut -f3)
             DATA=$(printf '%s' "$LOGLINE" | cut -f4 | sed 's/^0x//')
             TOKENIN=0x${DATA:24:40}; TOKENOUT=0x${DATA:88:40}
-            GROSS=$((16#${DATA:152:64})); FEE=$((16#${DATA:216:64})); SWAPIN=$((16#${DATA:280:64})); AMOUT=$((16#${DATA:344:64}))
-            FREC=0x${DATA:408:40}; FEEBPS=$((16#${DATA:472:64}))
+            # uint256 words occupy the FULL 64-char slot (addresses sit in the
+            # last 40 chars of their slot; uint16 sits in the last 4 chars).
+            GROSS=$((16#${DATA:128:64})); FEE=$((16#${DATA:192:64})); SWAPIN=$((16#${DATA:256:64})); AMOUT=$((16#${DATA:320:64}))
+            FREC=0x${DATA:408:40}; FEEBPS=$((16#${DATA:508:4}))
             MATH_OK=$([ $((FEE + SWAPIN)) -eq "$GROSS" ] && echo true || echo false)
+            FEE_OK=$([ "$FEE" -eq $((GROSS * 25 / 10000)) ] && echo true || echo false)
             TAKER_OK=$([ "${TAKER,,}" = "${TEST_USER_ADDR,,}" ] && echo true || echo false)
             FROM_OK=$([ "${TXFROM,,}" = "${BROADCASTER,,}" ] && echo true || echo false)
-            echo "::error::PREFLIGHT_LIVE leg=$LEG status=$TXSTATUS from_broadcaster_ok=$FROM_OK to_executor_ok=$([ "${TXTO,,}" = "${EXEC,,}" ] && echo true || echo false) taker_is_testuser_ok=$TAKER_OK tokenIn=$TOKENIN tokenOut=$TOKENOUT gross=$GROSS fee=$FEE swapIn=$SWAPIN amountOut=$AMOUT feePlusSwapEqualsGross=$MATH_OK feeRecipient=$FREC feeBps=$FEEBPS intentId=$INTENT router=$EVROUTER"
+            echo "::error::PREFLIGHT_LIVE leg=$LEG status=$TXSTATUS from_broadcaster_ok=$FROM_OK to_executor_ok=$([ "${TXTO,,}" = "${EXEC,,}" ] && echo true || echo false) taker_is_testuser_ok=$TAKER_OK tokenIn=$TOKENIN tokenOut=$TOKENOUT gross=$GROSS fee=$FEE swapIn=$SWAPIN amountOut=$AMOUT feePlusSwapEqualsGross=$MATH_OK fee_equals_25bps=$FEE_OK feeRecipient=$FREC feeBps=$FEEBPS intentId=$INTENT router=$EVROUTER"
           done
 
           set -e
