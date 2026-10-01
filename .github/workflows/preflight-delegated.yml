@@ -102,9 +102,9 @@ jobs:
           echo "::notice::PREFLIGHT pools weth_tusd_ok=$([ "$P1" = "$POOL_WETH_TUSD" ] && echo true || echo FALSE) usd_stock_ok=$([ "$P2P" = "$POOL_USD_STOCK" ] && echo true || echo FALSE)"
 
           L1=$(ro call "$POOL_WETH_TUSD" "liquidity()(uint128)")
-          S1=$(ro call "$POOL_WETH_TUSD" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)" | awk '{print $1}')
+          S1=$(ro call "$POOL_WETH_TUSD" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)" | head -1 | awk '{print $1}')
           L2=$(ro call "$POOL_USD_STOCK" "liquidity()(uint128)")
-          S2=$(ro call "$POOL_USD_STOCK" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)" | awk '{print $1}')
+          S2=$(ro call "$POOL_USD_STOCK" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)" | head -1 | awk '{print $1}')
           echo "::notice::PREFLIGHT pool_liquidity weth_tusd=$L1 sqrt_nonzero=$([ "$S1" != "0" ] && echo true || echo false) usd_stock=$L2 sqrt_nonzero=$([ "$S2" != "0" ] && echo true || echo false)"
 
           SUP_U=$(ro call "$TUSD" "totalSupply()(uint256)")
@@ -114,16 +114,16 @@ jobs:
           echo "::notice::PREFLIGHT tusd supply=$SUP_U deployer=$D_U"
           echo "::notice::PREFLIGHT tstock supply=$SUP_S deployer=$D_S"
 
-          Q_OUT=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TUSD,$TSTOCK,100000000,3000,0)" | awk '{print $1}')
+          Q_OUT=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TUSD,$TSTOCK,100000000,3000,0)" | head -1 | awk '{print $1}')
           echo "::notice::PREFLIGHT quote 100_tUSD -> tSTOCK raw_out=$Q_OUT"
           if [ -n "$Q_OUT" ] && [ "$Q_OUT" != "0" ]; then
-            if Q_BACK=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TSTOCK,$TUSD,$Q_OUT,3000,0)" | awk '{print $1}'); then
+            if Q_BACK=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TSTOCK,$TUSD,$Q_OUT,3000,0)" | head -1 | awk '{print $1}'); then
               echo "::notice::PREFLIGHT quote roundtrip tSTOCK -> tUSD raw_out=$Q_BACK (expect ~=100000000 less pool fee)"
             else
               echo "::warning::PREFLIGHT reverse_quote_err=$(tail -c 300 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"
               T0=$(ro call "$POOL_USD_STOCK" "token0()(address)")
               echo "::notice::PREFLIGHT pool_usd_stock token0=$T0 slot0=$(ro call "$POOL_USD_STOCK" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)")"
-              if Q2=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TSTOCK,$TUSD,1000000000000000000,3000,0)" | awk '{print $1}'); then
+              if Q2=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TSTOCK,$TUSD,1000000000000000000,3000,0)" | head -1 | awk '{print $1}'); then
                 echo "::notice::PREFLIGHT quote 1_tSTOCK -> tUSD raw_out=$Q2"
               else
                 echo "::warning::PREFLIGHT reverse_1e18_err=$(tail -c 300 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"
