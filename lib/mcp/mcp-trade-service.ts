@@ -939,7 +939,17 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
     const txHash = await broadcast({ to: DELEGATED_EXECUTOR_ADDRESS, data, chainId: DELEGATED_EXECUTOR_CHAIN_ID });
     return { ok: true, data: jsonSafe({ txHash, delegatedExecutor: DELEGATED_EXECUTOR_ADDRESS, chainId: DELEGATED_EXECUTOR_CHAIN_ID, expectedSender: delegatedBroadcasterAddress() }) as Record<string, unknown> };
   } catch (error) {
-    void error;
-    return fail("RPC_ERROR", "Delegated broadcast failed. The authorization slot stays consumed (uncertain-broadcast safety).");
+    // PHASE 5: sanitized diagnostics — the fail-closed message carries the
+    // underlying cause (viem shortMessage) so operators can diagnose a failed
+    // broadcast WITHOUT weakening the safety semantics. URLs (possible RPC
+    // endpoints) are stripped; the message is length-capped. No key material
+    // can appear here (viem never places the signing key in error messages).
+    const raw = typeof (error as { shortMessage?: unknown })?.shortMessage === "string"
+      ? (error as { shortMessage: string }).shortMessage
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    const sanitized = raw.replace(/https?:\/\/\S+/g, "[rpc]").slice(0, 240);
+    return fail("RPC_ERROR", `Delegated broadcast failed (${sanitized}). The authorization slot stays consumed (uncertain-broadcast safety).`);
   }
 }
