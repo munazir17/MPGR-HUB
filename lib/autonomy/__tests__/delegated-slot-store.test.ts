@@ -3,6 +3,7 @@
 // double (same approach as goal-store tests): CAS consumption, nonce
 // registry, wallet scoping and persistence across instances.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { delegatedActionId } from "@/lib/executor/delegated-executor";
 import type { Address, Hex } from "viem";
 
 import { LuaRedis } from "@/lib/__tests__/helpers/lua-redis";
@@ -57,7 +58,7 @@ export function makeSlot(over: Partial<DelegatedAuthorizationSlot> = {}, index =
       buyToken: BUY,
       minAmountOut: "900000000",
       deadline: 4_100_000_000,
-      actionId: ("0x" + "11".repeat(32)) as Hex,
+      actionId: delegatedActionId("goal_1"),
       policyHash: policyHashFor(policy),
     },
     signature: ("0x" + "22".repeat(65)) as Hex,

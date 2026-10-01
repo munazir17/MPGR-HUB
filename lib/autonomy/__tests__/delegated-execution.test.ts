@@ -14,7 +14,12 @@ import {
   validateNewSlotAgainstPolicy,
   type DelegatedAuthorizationSlot,
 } from "../delegated-authorization";
-import { delegatedPermitDigest, delegatedPermitTypedData, DELEGATED_WITNESS_TYPE_STRING } from "@/lib/executor/delegated-executor";
+import {
+  delegatedActionId,
+  delegatedPermitDigest,
+  delegatedPermitTypedData,
+  DELEGATED_WITNESS_TYPE_STRING,
+} from "@/lib/executor/delegated-executor";
 import { verifyExecutorReceipt } from "@/lib/executor/executor-verify";
 import { AUTONOMY_CHAIN_ID, DELEGATED_ADAPTER_ID, DELEGATED_EXECUTION_CHAIN_ID, type AutonomyPolicy } from "../types";
 import type { McpGateway } from "../mcp-gateway";
@@ -70,7 +75,8 @@ function slot(over: Partial<DelegatedAuthorizationSlot> = {}): DelegatedAuthoriz
       buyToken,
       minAmountOut: "900000000",
       deadline: 4_100_000_000,
-      actionId: ("0x" + "11".repeat(32)) as Hex,
+      // bound to the slot's goal (H-2 invariant, Phase 4)
+      actionId: delegatedActionId("goal-1"),
       policyHash: policyHashFor(policy()),
     },
     signature: ("0x" + "22".repeat(65)) as Hex,
@@ -190,7 +196,7 @@ describe("authorization slot bindings", () => {
     const ok = selectDelegatedSlot([slot()], { now, policy: p, sellToken, buyToken, sellAmountRaw: "1000000000", liveMinBuyAmountRaw: "950000000" });
     expect(ok.authorized).toBe(true);
     const bad: Array<[string, DelegatedAuthorizationSlot, string]> = [
-      ["expired", slot({ permit: { token: sellToken, amount: "1000000000", nonce: "1", deadline: 1000 }, witness: { owner: wallet, buyToken, minAmountOut: "1", deadline: 1000, actionId: ("0x" + "11".repeat(32)) as Hex, policyHash: policyHashFor(p) } }), "SLOT_EXPIRED"],
+      ["expired", slot({ permit: { token: sellToken, amount: "1000000000", nonce: "1", deadline: 1000 }, witness: { owner: wallet, buyToken, minAmountOut: "1", deadline: 1000, actionId: delegatedActionId("goal-1"), policyHash: policyHashFor(p) } }), "SLOT_EXPIRED"],
       ["revoked", slot({ revokedAt: now.toISOString() }), "NO_SLOTS"],
       ["consumed", slot({ consumedAt: now.toISOString() }), "NO_SLOTS"],
       ["wrong owner", slot({ witness: { ...slot().witness, owner: broadcaster } }), "OWNER_MISMATCH"],

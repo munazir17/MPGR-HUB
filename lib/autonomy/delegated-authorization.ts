@@ -19,7 +19,7 @@
 
 import type { Address, Hex } from "viem";
 
-import { DELEGATED_EXECUTOR_CHAIN_ID, delegatedPolicyHash } from "@/lib/executor/delegated-executor";
+import { DELEGATED_EXECUTOR_CHAIN_ID, delegatedActionId, delegatedPolicyHash } from "@/lib/executor/delegated-executor";
 
 import { DELEGATED_ADAPTER_ID, type AutonomyPolicy } from "./types";
 
@@ -82,6 +82,12 @@ export class InMemoryDelegatedAuthorizationStore implements DelegatedAuthorizati
     for (const s of slots) {
       const dupe = [...this.slots.values()].find((x) => x.permit.nonce === s.permit.nonce && x.wallet === s.wallet);
       if (dupe) throw new Error("duplicate permit nonce");
+      // HARDENING (Phase 4, H-1): a consumed or revoked slot is terminal — it
+      // must never be resurrected by a re-save under the same deterministic id.
+      const existing = this.slots.get(s.id);
+      if (existing && (existing.consumedAt || existing.revokedAt)) {
+        throw new Error("slot id already consumed or revoked; refusing overwrite");
+      }
       this.slots.set(s.id, { ...s });
     }
     return slots.length;
@@ -163,6 +169,13 @@ export function selectDelegatedSlot(slots: DelegatedAuthorizationSlot[], ctx: Sl
     if (BigInt(slot.permit.amount) !== BigInt(ctx.sellAmountRaw)) return { authorized: false, reason: "AMOUNT_MISMATCH", slot };
     if (slot.witness.buyToken.toLowerCase() !== ctx.buyToken.toLowerCase()) return { authorized: false, reason: "OUTPUT_TOKEN_MISMATCH", slot };
     if (slot.witness.policyHash.toLowerCase() !== expectedPolicyHash) return { authorized: false, reason: "POLICY_HASH_MISMATCH", slot };
+    // HARDENING (Phase 4, H-2): the signed actionId is bound to the slot's
+    // goal. The executor REQUIRES call intentId == signed actionId, and the
+    // call intentId is derived from the goal — a mismatch here could only
+    // produce a doomed broadcast, so refuse it BEFORE any broadcast.
+    if (slot.witness.actionId.toLowerCase() !== delegatedActionId(slot.goalId).toLowerCase()) {
+      return { authorized: false, reason: "ACTION_MISMATCH", slot };
+    }
     if (slot.witness.deadline !== slot.permit.deadline) return { authorized: false, reason: "SLOT_EXPIRED", slot };
     // The live quote (policy-clamped slippage) must still clear the SIGNED
     // floor. The executed minOut is the SIGNED value — never weaker.

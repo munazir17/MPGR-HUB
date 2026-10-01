@@ -110,6 +110,16 @@ export class RedisDelegatedAuthorizationStore implements DelegatedAuthorizationS
       const claimed = await redis.set(nonceKey, slot.id, { ex: NONCE_TTL_SECONDS, nx: true });
       if (claimed === null) throw new Error("duplicate permit nonce");
       try {
+        // HARDENING (Phase 4, H-1): a consumed or revoked slot is terminal.
+        // Refuse resurrection by re-save under the same deterministic id
+        // (best-effort here; the Lua CAS in the consume path stays the
+        // authoritative guard — Phase 5 moves this check into Lua as well).
+        const prevRaw = await redis.get(KEY.slot(slot.id));
+        const prev = parseRecord<DelegatedAuthorizationSlot>(prevRaw as Raw);
+        if (prev && (prev.consumedAt || prev.revokedAt)) {
+          await redis.del(nonceKey).catch(() => {});
+          throw new Error("slot id already consumed or revoked; refusing overwrite");
+        }
         await redis.set(KEY.slot(slot.id), JSON.stringify(slot));
         await redis.set(KEY.slotMeta(slot.id), metaOf(slot));
         await redis.eval(ZADD_MEMBER_SCRIPT, [KEY.walletSlots(slot.wallet.toLowerCase())], [slot.id]);
