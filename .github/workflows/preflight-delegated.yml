@@ -54,6 +54,10 @@ jobs:
           set -euo pipefail
           err_handler() { echo "::error::PREFLIGHT_DIED at line=$LINENO err=$(tail -c 220 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"; }
           trap err_handler ERR
+          # Every result goes to BOTH the annotations stream and the step
+          # summary (annotations are sporadically dropped by GitHub; the
+          # summary is the durable record).
+          emit() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
           RPC_URL="${RPC_URL:-https://sepolia.base.org}"
 
           # READ-ONLY GUARD: only these cast subcommands may ever run here.
@@ -72,13 +76,13 @@ jobs:
           }
 
           CHAIN=$(ro chain-id)
-          echo "::notice::PREFLIGHT chain=$CHAIN (must be 84532)"
+          emit "::notice::PREFLIGHT chain=$CHAIN (must be 84532)"
           [ "$CHAIN" = "84532" ] || { echo "::error::WRONG CHAIN $CHAIN"; exit 1; }
 
           B_BAL=$(ro balance "$BROADCASTER")
-          echo "::notice::PREFLIGHT broadcaster_eth=$(printf '%s' "$B_BAL" | awk '{printf "%.6f", $1/1000000000000000000}')"
+          emit "::notice::PREFLIGHT broadcaster_eth=$(printf '%s' "$B_BAL" | awk '{printf "%.6f", $1/1000000000000000000}')"
           D_BAL=$(ro balance "$DEPLOYER")
-          echo "::notice::PREFLIGHT deployer_eth=$(printf '%s' "$D_BAL" | awk '{printf "%.6f", $1/1000000000000000000}')"
+          emit "::notice::PREFLIGHT deployer_eth=$(printf '%s' "$D_BAL" | awk '{printf "%.6f", $1/1000000000000000000}')"
 
           PAUSED=$(ro call "$EXECUTOR" "paused()(bool)")
           FEE=$(ro call "$EXECUTOR" "feeBps()(uint16)")
@@ -86,52 +90,52 @@ jobs:
           FREC=$(ro call "$EXECUTOR" "feeRecipient()(address)")
           P2=$(ro call "$EXECUTOR" "PERMIT2()(address)")
           W=$(ro call "$EXECUTOR" "WETH()(address)")
-          echo "::notice::PREFLIGHT executor paused=$PAUSED feeBps=$FEE owner=$OWN feeRecipient=$FREC permit2_ok=$([ "$P2" = "$PERMIT2" ] && echo true || echo FALSE) weth_ok=$([ "$W" = "$WETH" ] && echo true || echo FALSE)"
+          emit "::notice::PREFLIGHT executor paused=$PAUSED feeBps=$FEE owner=$OWN feeRecipient=$FREC permit2_ok=$([ "$P2" = "$PERMIT2" ] && echo true || echo FALSE) weth_ok=$([ "$W" = "$WETH" ] && echo true || echo FALSE)"
 
           WT=$(ro call "$EXECUTOR" "WITNESS_TYPE_STRING()(string)" | tr -d '"')
-          echo "::notice::PREFLIGHT witness_matches=$([ "$WT" = "$WITNESS" ] && echo true || echo FALSE)"
-          echo "::notice::PREFLIGHT witness_onchain=$WT"
+          emit "::notice::PREFLIGHT witness_matches=$([ "$WT" = "$WITNESS" ] && echo true || echo FALSE)"
+          emit "::notice::PREFLIGHT witness_onchain=$WT"
 
           A_TUSD=$(ro call "$EXECUTOR" "isTokenAllowed(address)(bool)" "$TUSD")
           A_TSTOCK=$(ro call "$EXECUTOR" "isTokenAllowed(address)(bool)" "$TSTOCK")
           A_WETH=$(ro call "$EXECUTOR" "isTokenAllowed(address)(bool)" "$WETH")
-          echo "::notice::PREFLIGHT allowlist tusd=$A_TUSD tstock=$A_TSTOCK weth=$A_WETH"
+          emit "::notice::PREFLIGHT allowlist tusd=$A_TUSD tstock=$A_TSTOCK weth=$A_WETH"
 
           P1=$(ro call "$FACTORY" "getPool(address,address,uint24)(address)" "$WETH" "$TUSD" 3000)
           P2P=$(ro call "$FACTORY" "getPool(address,address,uint24)(address)" "$TUSD" "$TSTOCK" 3000)
-          echo "::notice::PREFLIGHT pools weth_tusd_ok=$([ "$P1" = "$POOL_WETH_TUSD" ] && echo true || echo FALSE) usd_stock_ok=$([ "$P2P" = "$POOL_USD_STOCK" ] && echo true || echo FALSE)"
+          emit "::notice::PREFLIGHT pools weth_tusd_ok=$([ "$P1" = "$POOL_WETH_TUSD" ] && echo true || echo FALSE) usd_stock_ok=$([ "$P2P" = "$POOL_USD_STOCK" ] && echo true || echo FALSE)"
 
           L1=$(ro call "$POOL_WETH_TUSD" "liquidity()(uint128)")
           S1=$(ro call "$POOL_WETH_TUSD" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)" | head -1 | awk '{print $1}')
           L2=$(ro call "$POOL_USD_STOCK" "liquidity()(uint128)")
           S2=$(ro call "$POOL_USD_STOCK" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)" | head -1 | awk '{print $1}')
-          echo "::notice::PREFLIGHT pool_liquidity weth_tusd=$L1 sqrt_nonzero=$([ "$S1" != "0" ] && echo true || echo false) usd_stock=$L2 sqrt_nonzero=$([ "$S2" != "0" ] && echo true || echo false)"
+          emit "::notice::PREFLIGHT pool_liquidity weth_tusd=$L1 sqrt_nonzero=$([ "$S1" != "0" ] && echo true || echo false) usd_stock=$L2 sqrt_nonzero=$([ "$S2" != "0" ] && echo true || echo false)"
 
           SUP_U=$(ro call "$TUSD" "totalSupply()(uint256)")
           SUP_S=$(ro call "$TSTOCK" "totalSupply()(uint256)")
           D_U=$(ro call "$TUSD" "balanceOf(address)(uint256)" "$DEPLOYER")
           D_S=$(ro call "$TSTOCK" "balanceOf(address)(uint256)" "$DEPLOYER")
-          echo "::notice::PREFLIGHT tusd supply=$SUP_U deployer=$D_U"
-          echo "::notice::PREFLIGHT tstock supply=$SUP_S deployer=$D_S"
+          emit "::notice::PREFLIGHT tusd supply=$SUP_U deployer=$D_U"
+          emit "::notice::PREFLIGHT tstock supply=$SUP_S deployer=$D_S"
 
           Q_OUT=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TUSD,$TSTOCK,100000000,3000,0)" | head -1 | awk '{print $1}')
-          echo "::notice::PREFLIGHT quote 100_tUSD -> tSTOCK raw_out=$Q_OUT"
+          emit "::notice::PREFLIGHT quote 100_tUSD -> tSTOCK raw_out=$Q_OUT"
           if [ -n "$Q_OUT" ] && [ "$Q_OUT" != "0" ]; then
             if Q_BACK=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TSTOCK,$TUSD,$Q_OUT,3000,0)" | head -1 | awk '{print $1}'); then
-              echo "::notice::PREFLIGHT quote roundtrip tSTOCK -> tUSD raw_out=$Q_BACK (expect ~=100000000 less pool fee)"
+              emit "::notice::PREFLIGHT quote roundtrip tSTOCK -> tUSD raw_out=$Q_BACK (expect ~=100000000 less pool fee)"
             else
               echo "::warning::PREFLIGHT reverse_quote_err=$(tail -c 300 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"
               T0=$(ro call "$POOL_USD_STOCK" "token0()(address)")
-              echo "::notice::PREFLIGHT pool_usd_stock token0=$T0 slot0=$(ro call "$POOL_USD_STOCK" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)")"
+              emit "::notice::PREFLIGHT pool_usd_stock token0=$T0 slot0=$(ro call "$POOL_USD_STOCK" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)")"
               if Q2=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TSTOCK,$TUSD,1000000000000000000,3000,0)" | head -1 | awk '{print $1}'); then
-                echo "::notice::PREFLIGHT quote 1_tSTOCK -> tUSD raw_out=$Q2"
+                emit "::notice::PREFLIGHT quote 1_tSTOCK -> tUSD raw_out=$Q2"
               else
                 echo "::warning::PREFLIGHT reverse_1e18_err=$(tail -c 300 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"
               fi
             fi
           fi
 
-          echo "::notice::PREFLIGHT chain_checks=OK"
+          emit "::notice::PREFLIGHT chain_checks=OK"
 
   secrets:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[preflight]')
@@ -150,14 +154,15 @@ jobs:
       - name: Secret presence + address binding (no key material printed)
         run: |
           set -euo pipefail
+          emit() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
           EXPECTED_BROADCASTER="0x9898ecd0bcddf1a240b88355db069d4016b23d28"
           EXPECTED_DEPLOYER="0xb67fcdf437b5fef64e4b32952dc6d172dc9ec56e"
 
           if [ -n "${BROADCASTER_KEY:-}" ]; then
-            echo "::notice::PREFLIGHT secret MPGR_BROADCASTER_PRIVATE_KEY=set"
+            emit "::notice::PREFLIGHT secret MPGR_BROADCASTER_PRIVATE_KEY=set"
             ADDR=$(cast wallet address --private-key "$BROADCASTER_KEY" 2>/dev/null | tr '[:upper:]' '[:lower:]')
             if [ "$ADDR" = "$EXPECTED_BROADCASTER" ]; then
-              echo "::notice::PREFLIGHT broadcaster_key_matches_expected_address=true"
+              emit "::notice::PREFLIGHT broadcaster_key_matches_expected_address=true"
             else
               echo "::error::PREFLIGHT broadcaster_key_matches_expected_address=false (derived address differs — WRONG KEY IN SECRET)"
               exit 1
@@ -168,25 +173,25 @@ jobs:
           fi
 
           if [ -n "${DEPLOYER_KEY:-}" ]; then
-            echo "::notice::PREFLIGHT secret BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY=set"
+            emit "::notice::PREFLIGHT secret BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY=set"
             ADDR=$(cast wallet address --private-key "$DEPLOYER_KEY" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-            echo "::notice::PREFLIGHT deployer_key_matches_expected_address=$([ "$ADDR" = "$EXPECTED_DEPLOYER" ] && echo true || echo FALSE)"
+            emit "::notice::PREFLIGHT deployer_key_matches_expected_address=$([ "$ADDR" = "$EXPECTED_DEPLOYER" ] && echo true || echo FALSE)"
           else
             echo "::error::PREFLIGHT secret BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY=UNSET"
             exit 1
           fi
 
           if [ -n "${TEST_USER_KEY:-}" ]; then
-            echo "::notice::PREFLIGHT secret MPGR_LIVE_TEST_USER_PRIVATE_KEY=set"
+            emit "::notice::PREFLIGHT secret MPGR_LIVE_TEST_USER_PRIVATE_KEY=set"
             TU=$(cast wallet address --private-key "$TEST_USER_KEY" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-            echo "::notice::PREFLIGHT live_test_user_address=$TU"
+            emit "::notice::PREFLIGHT live_test_user_address=$TU"
             if [ "$TU" = "$EXPECTED_BROADCASTER" ] || [ "$TU" = "$EXPECTED_DEPLOYER" ]; then
               echo "::error::PREFLIGHT test user MUST differ from broadcaster and deployer"
               exit 1
             fi
-            echo "::notice::PREFLIGHT test_user_distinct=true"
+            emit "::notice::PREFLIGHT test_user_distinct=true"
           else
-            echo "::notice::PREFLIGHT secret MPGR_LIVE_TEST_USER_PRIVATE_KEY=UNSET (expected until the test keypair is created)"
+            emit "::notice::PREFLIGHT secret MPGR_LIVE_TEST_USER_PRIVATE_KEY=UNSET (expected until the test keypair is created)"
           fi
 
-          echo "::notice::PREFLIGHT secret_checks=DONE"
+          emit "::notice::PREFLIGHT secret_checks=DONE"
