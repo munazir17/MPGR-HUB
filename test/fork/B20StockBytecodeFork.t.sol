@@ -64,7 +64,7 @@ contract B20StockBytecodeForkTest is Test {
         return abi.decode(ret, (uint8));
     }
 
-    function _requireCode(address token, string memory symbol) internal pure {
+    function _requireCode(address token, string memory symbol) internal view {
         assertGt(token.code.length, 0, string(abi.encodePacked("F-13: ", symbol, " has NO deployed bytecode")));
     }
 
