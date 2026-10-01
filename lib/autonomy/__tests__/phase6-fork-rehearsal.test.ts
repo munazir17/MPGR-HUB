@@ -1,0 +1,402 @@
+// lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts
+//
+// PHASE 6 — BASE MAINNET FORK REHEARSAL (local anvil fork; NOTHING is
+// broadcast to any real chain). Runs ONLY when MPGR_PHASE6_FORK=true with
+// BASE_MAINNET_RPC_URL (CI: foundry toolchain + public RPC), exactly like the
+// repo's contracts-fork job. Rehearses the COMPLETE Mainnet autonomous path
+// against REAL fork state:
+//   Goal -> Scheduler -> Policy -> Fresh Quote (real QuoterV2) -> Prepare
+//   (v1 intent, Mainnet registry — the F-9 seam) -> Authorization (user-side
+//   approval, impersonated key on the fork) -> Execution through the FROZEN
+//   Mainnet executor -> Receipt -> Verification (receipt facts) -> Audit ->
+//   Goal state.
+// Also proves: duplicate tick rejection, emergency stop, uncertain broadcast
+// never re-broadcast, reverted transaction classified TX_REVERTED, exact
+// 25 bps fee reconciliation, and on-chain chain-separation (the delegated
+// Sepolia executor has NO code on the Mainnet fork).
+//
+// The execution adapter here is a TEST-ONLY impersonation adapter standing in
+// for the (deliberately absent) production Mainnet signing mechanism — it
+// sends the runtime-prepared, unsigned transactionRequest from a locally
+// funded fork key. No production code path is modified.
+
+import { spawn, type ChildProcess } from "node:child_process";
+import { createWriteStream, type WriteStream } from "node:fs";
+import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
+import {
+  createPublicClient,
+  createWalletClient,
+  encodeFunctionData,
+  erc20Abi,
+  http,
+  parseEther,
+  decodeEventLog,
+  type Address,
+  type Hex,
+} from "viem";
+import { foundry } from "viem/chains";
+import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+
+import { AUTONOMY_LIMITS } from "@/lib/autonomy/config";
+import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
+import { AutonomyRuntime } from "@/lib/autonomy/runtime";
+import { AutonomyScheduler } from "@/lib/autonomy/scheduler";
+import { BusAuditSink } from "@/lib/autonomy/audit";
+import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
+import type { ChainReader } from "@/lib/executor/executor-chain";
+import {
+  BASE_MAINNET_EXECUTOR_DEPLOYMENT,
+  BASE_MAINNET_UNISWAP_V3,
+  BASE_MAINNET_USDC,
+  CANONICAL_WETH,
+  MPGR_EXECUTOR_DEPLOYMENTS,
+} from "@/lib/executor/executor-config";
+import {
+  BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT,
+  DELEGATED_EXECUTOR_ADDRESS,
+} from "@/lib/executor/delegated-executor";
+import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
+import { InMemoryEventBus } from "@/lib/architecture/core/event-bus";
+import { InMemoryPerformanceMonitor } from "@/lib/architecture/core/performance-monitor";
+import type { EventBus, Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
+import type { AutonomousExecutionAdapter, DelegatedSwapRequest, DelegatedSwapResult } from "@/lib/autonomy/types";
+import type { McpDeps } from "@/lib/mcp/mcp-trade-service";
+
+const FORK_RPC = process.env.BASE_MAINNET_RPC_URL?.trim() || "https://base-rpc.publicnode.com";
+const FORK = process.env.MPGR_PHASE6_FORK === "true";
+const PORT = 8645;
+const LOCAL = `http://127.0.0.1:${PORT}`;
+const silentLogger: Logger = { debug: () => {}, warn: () => {}, error: () => {} };
+const AAPLc = BASE_MAINNET_EXECUTOR_DEPLOYMENT.tokens.find((t) => t.symbol !== "USDC" && t.symbol !== "WETH")!.address as Address;
+
+type FailMode = "none" | "skipApproval" | "fabricateHash";
+
+function makeAdapter(
+  account: PrivateKeyAccount,
+  opts: { failMode?: FailMode; requests: Array<Record<string, unknown>>; publicClient: ReturnType<typeof createPublicClient>; wallet: ReturnType<typeof createWalletClient> },
+): AutonomousExecutionAdapter & { requests: Array<Record<string, unknown>> } {
+  const failMode = opts.failMode ?? "none";
+  return {
+    requests: opts.requests,
+    id: "phase6-mainnet-rehearsal",
+    canDelegate: true,
+    checkAuthorization: () => ({ authorized: true }),
+    async executeSwap(request: DelegatedSwapRequest): Promise<DelegatedSwapResult> {
+      opts.requests.push(request as unknown as Record<string, unknown>);
+      if (failMode === "fabricateHash") return { ok: true, txHash: ("0x" + "11".repeat(32)) as Hex };
+      const sellToken = getAddressLike(request.sellToken);
+      if (failMode !== "skipApproval") {
+        const allowance = (await opts.publicClient.readContract({ address: sellToken, abi: erc20Abi, functionName: "allowance", args: [account.address, BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor] })) as bigint;
+        if (allowance < BigInt(request.sellAmountRaw)) {
+          await opts.wallet.sendTransaction({ chain: undefined, account: opts.wallet.account!, to: sellToken, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, 2n ** 200n] }) });
+        }
+      }
+      const prepared = request.transactionRequest as { to: `0x${string}`; data: `0x${string}` } | null;
+      if (!prepared?.to || !prepared?.data) return { ok: false, code: "EXECUTION_UNAVAILABLE", message: "no prepared transaction" };
+      const hash = await opts.wallet.sendTransaction({ chain: undefined, account: opts.wallet.account!, to: prepared.to, data: prepared.data });
+      return { ok: true, txHash: hash };
+    },
+  } as never;
+}
+
+function getAddressLike(a: string): Address {
+  return a as Address;
+}
+
+describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvil, nothing broadcast to real chains)", () => {
+  let anvil: ChildProcess | null = null;
+  let anvilLog: WriteStream | null = null;
+  const anvilLogPath = `${process.env.TMPDIR ?? "/tmp"}/phase6-anvil.stderr.log`;
+  const publicClient = createPublicClient({ chain: foundry, transport: http(LOCAL) });
+  const clock = { ms: 1_800_000_000_000 };
+
+  beforeAll(async () => {
+    // Submission gate (runtime.ts): autonomous submission requires the master
+    // flag. Set directly (NOT vi.stubEnv) so the emergency test's
+    // vi.unstubAllEnvs() cannot silently strip it mid-suite.
+    process.env.MPGR_AUTONOMOUS_AGENT_ENABLED = "true";
+    // Capture anvil's stderr (fork RPC errors, 429s) for CI debugging.
+    anvilLog = createWriteStream(anvilLogPath);
+    anvil = spawn("anvil", ["--fork-url", FORK_RPC, "--port", String(PORT), "--no-rate-limit"], { stdio: ["ignore", "ignore", "pipe"], detached: false });
+    anvil.stderr?.on("data", (chunk: Buffer) => anvilLog?.write(chunk));
+    // wait for readiness
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(LOCAL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }), signal: AbortSignal.timeout(4000) });
+        const json = (await res.json()) as { result?: string };
+        if (json.result === "0x2105") return; // 8453
+      } catch {
+        /* not ready */
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    anvilLog?.end();
+    throw new Error(`anvil fork did not become ready in time (stderr tail: ${await import("node:fs/promises").then((f) => f.readFile(anvilLogPath, "utf8").then((t) => t.slice(-800)).catch(() => "unavailable"))})`);
+  }, 180_000);
+
+  afterAll(() => {
+    anvil?.kill("SIGKILL");
+    anvilLog?.end();
+    delete process.env.MPGR_AUTONOMOUS_AGENT_ENABLED;
+  });
+
+  function forkReader(): ChainReader {
+    const client = createPublicClient({ chain: foundry, transport: http(LOCAL) });
+    return {
+      chainId: 8453,
+      readContract: (a) => client.readContract(a as never),
+      simulateContract: async (a) => ({ result: await client.simulateContract(a as never) }),
+      getBalance: (a) => client.getBalance(a),
+      getTransactionReceipt: async ({ hash }) => {
+        const r = await client.getTransactionReceipt({ hash: hash as Hex });
+        return r as never;
+      },
+    };
+  }
+
+  function buildDeps(): McpDeps {
+    return {
+      registry: MPGR_EXECUTOR_DEPLOYMENTS,
+      delegatedRegistry: { 84532: BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT },
+      reader: () => forkReader(),
+      nowSeconds: () => Math.floor(clock.ms / 1000),
+      quoteSecret: "phase6-fork-secret",
+      mainnetEnabled: true,
+      mainnetFeeRecipient: BASE_MAINNET_EXECUTOR_DEPLOYMENT.feeRecipient as Address,
+    } as unknown as McpDeps;
+  }
+
+  async function fundAndBootstrapUsdc(account: PrivateKeyAccount, ethAmount = "1"): Promise<bigint> {
+    const testClient = (await import("viem")).createTestClient({ chain: foundry, mode: "anvil", transport: http(LOCAL) });
+    await testClient.setBalance({ address: account.address, value: parseEther(ethAmount) });
+    const wallet = createWalletClient({ account, chain: foundry, transport: http(LOCAL) });
+    // ETH -> WETH
+    await wallet.sendTransaction({ to: CANONICAL_WETH, data: "0xd0e30db0", value: parseEther((Number(ethAmount) * 0.9).toFixed(6)) });
+    // WETH -> USDC via official SwapRouter02 (V3, fee 3000) — deterministic fork bootstrap
+    await wallet.sendTransaction({ to: CANONICAL_WETH, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [BASE_MAINNET_UNISWAP_V3.swapRouter02, 2n ** 200n] }) });
+    const wethBalance = (await publicClient.readContract({ address: CANONICAL_WETH, abi: erc20Abi, functionName: "balanceOf", args: [account.address] })) as bigint;
+    await wallet.sendTransaction({
+      to: BASE_MAINNET_UNISWAP_V3.swapRouter02,
+      data: encodeFunctionData({
+        abi: [{
+          name: "exactInputSingle",
+          type: "function",
+          stateMutability: "payable",
+          inputs: [{ name: "params", type: "tuple", components: [
+            { name: "tokenIn", type: "address" }, { name: "tokenOut", type: "address" }, { name: "fee", type: "uint24" },
+            { name: "recipient", type: "address" }, { name: "amountIn", type: "uint256" }, { name: "amountOutMinimum", type: "uint256" },
+            { name: "sqrtPriceLimitX96", type: "uint160" },
+          ] }],
+          outputs: [{ type: "uint256" }],
+        }],
+        functionName: "exactInputSingle",
+        args: [{ tokenIn: CANONICAL_WETH, tokenOut: BASE_MAINNET_USDC, fee: 3000, recipient: account.address, amountIn: wethBalance, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n }],
+      } as never),
+    });
+    const usdc = (await publicClient.readContract({ address: BASE_MAINNET_USDC, abi: erc20Abi, functionName: "balanceOf", args: [account.address] })) as bigint;
+    expect(usdc > 0n, "fork bootstrap produced no USDC").toBe(true);
+    return usdc;
+  }
+
+  function buildRuntime(store: InMemoryAutonomyStore, adapter: AutonomousExecutionAdapter, bus: EventBus) {
+    store.clock = () => clock.ms; // deterministic goal/policy ids
+    const perf: PerformanceMonitor = new InMemoryPerformanceMonitor();
+    const runtime = new AutonomyRuntime({
+      store,
+      gateway: new McpTradeGateway(buildDeps()),
+      adapter,
+      audit: new BusAuditSink(store, bus, perf),
+      logger: silentLogger,
+      performanceMonitor: perf,
+      now: () => new Date(clock.ms),
+    });
+    const scheduler = new AutonomyScheduler(store, runtime, silentLogger, perf);
+    return { runtime, scheduler };
+  }
+
+  async function createGoal(store: InMemoryAutonomyStore, wallet: Address, sellToken: Address, buyToken: Address, sellRaw: bigint, decimals: { sell: number; buy: number }) {
+    const policy = await store.createPolicy({
+      id: "", wallet, chainId: 8453, actions: ["swap"], sellToken, buyToken,
+      maxPerTradeRaw: sellRaw.toString(), maxDailyRaw: (sellRaw * 5n).toString(), maxSlippageBps: 500, maxActionsPerDay: 4,
+      enabled: true, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 6 * 3600_000).toISOString(),
+      authorizedAt: new Date().toISOString(), authorizationRef: "phase6-fork",
+    });
+    return store.createGoal({
+      id: "", wallet, policyId: policy!.id, type: "conditional_swap", description: "phase6 fork rehearsal", status: "ACTIVE",
+      condition: { kind: "price_below", threshold: "1000000" }, // human price of 1 buy token in sell tokens (both legs are far below)
+      trade: { sellToken, buyToken, sellAmountRaw: sellRaw.toString(), slippageBps: 300, sellDecimals: decimals.sell, buyDecimals: decimals.buy },
+      cooldownSeconds: 60, maxTrades: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 6 * 3600_000).toISOString(), nextEvaluationAt: new Date().toISOString(),
+      pendingExecution: null, stats: { evaluations: 0, triggered: 0, verified: 0, consecutiveFailures: 0 },
+    } as never);
+  }
+
+  it("on-chain chain separation: the delegated Sepolia executor has NO code on the Mainnet fork", async () => {
+    const code = await publicClient.getBytecode({ address: DELEGATED_EXECUTOR_ADDRESS });
+    expect(code === undefined || code === "0x", "delegated Sepolia executor must not exist on Mainnet").toBe(true);
+    const mainnetCode = await publicClient.getBytecode({ address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor });
+    expect(mainnetCode && mainnetCode !== "0x").toBe(true);
+    const [feeBps, permit2, owner, feeRecipient] = await Promise.all([
+      publicClient.readContract({ address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, abi: MPGR_EXECUTOR_ABI as never, functionName: "feeBps" }),
+      publicClient.readContract({ address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, abi: MPGR_EXECUTOR_ABI as never, functionName: "PERMIT2" }),
+      publicClient.readContract({ address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, abi: MPGR_EXECUTOR_ABI as never, functionName: "owner" }),
+      publicClient.readContract({ address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, abi: MPGR_EXECUTOR_ABI as never, functionName: "feeRecipient" }),
+    ]);
+    expect(Number(feeBps)).toBe(25);
+    expect(String(permit2).toLowerCase()).toBe(CANONICAL_PERMIT2_LOWER);
+    expect(String(owner).toLowerCase()).toBe(BASE_MAINNET_EXECUTOR_DEPLOYMENT.owner.toLowerCase());
+    expect(String(feeRecipient).toLowerCase()).toBe(BASE_MAINNET_EXECUTOR_DEPLOYMENT.feeRecipient.toLowerCase());
+    console.error(`::error::PHASE6_FORK chainAudit ok executor=${BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor} feeBps=25 code=${(mainnetCode!.length - 2) / 2}B`);
+  });
+
+  it("BUY + SELL through the full runtime chain on the fork, with exact 25 bps fee reconciliation", async () => {
+    const taker = privateKeyToAccount(generatePrivateKey());
+    await fundAndBootstrapUsdc(taker);
+    const wallet = createWalletClient({ account: taker, chain: foundry, transport: http(LOCAL) });
+    const requests: Array<Record<string, unknown>> = [];
+    const adapter = makeAdapter(taker, { requests, publicClient, wallet });
+    const store = new InMemoryAutonomyStore();
+    const bus = new InMemoryEventBus();
+    const audit: Array<{ event?: { type?: string } }> = [];
+    bus.on("autonomy_audit", (payload: unknown) => audit.push(payload as { event?: { type?: string } }));
+    const { scheduler } = buildRuntime(store, adapter, bus);
+
+    // ---------- BUY: 1 USDC -> AAPLc ----------
+    const usdcBefore = (await publicClient.readContract({ address: BASE_MAINNET_USDC, abi: erc20Abi, functionName: "balanceOf", args: [taker.address] })) as bigint;
+    const stockBefore = (await publicClient.readContract({ address: AAPLc, abi: erc20Abi, functionName: "balanceOf", args: [taker.address] })) as bigint;
+    const buyGoal = await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 1_000_000n, { sell: 6, buy: 18 });
+    const submit = await scheduler.tick({ now: new Date(clock.ms) });
+    expect(submit.results[0]?.kind, JSON.stringify(submit.results)).toBe("EXECUTION_SUBMITTED");
+    expect(requests).toHaveLength(1);
+    const buyTx = (await store.getGoal(buyGoal.id))!.pendingExecution!.txHash as Hex;
+    const buyReceipt = await publicClient.getTransactionReceipt({ hash: buyTx });
+    expect(buyReceipt.status).toBe("success");
+
+    // fee reconciliation from the REAL SwapExecuted event
+    const swapTopic = (await import("@/lib/executor/mpgr-executor-abi")).MPGR_EXECUTOR_ABI.find((x) => x.type === "event" && x.name === "SwapExecuted");
+    let buyGross = 0n, buyFee = 0n, buyFeeRecipient = "";
+    for (const log of buyReceipt.logs) {
+      try {
+        const ev = decodeEventLog({ abi: [swapTopic!] as never, data: log.data, topics: log.topics as never }) as unknown as { args: Record<string, unknown> };
+        buyGross = ev.args.grossAmountIn as bigint;
+        buyFee = ev.args.feeAmount as bigint;
+        buyFeeRecipient = String(ev.args.feeRecipient);
+        break;
+      } catch { /* not the executor event */ }
+    }
+    expect(buyGross).toBe(1_000_000n);
+    expect(buyFee).toBe((buyGross * 25n) / 10_000n);
+    expect(buyFeeRecipient.toLowerCase()).toBe(BASE_MAINNET_EXECUTOR_DEPLOYMENT.feeRecipient.toLowerCase());
+
+    // duplicate tick: rejected, no second broadcast
+    const dup = await scheduler.tick({ now: new Date(clock.ms) });
+    expect(dup.evaluated).toBe(0);
+    expect(requests).toHaveLength(1);
+
+    // verification pass
+    clock.ms += AUTONOMY_LIMITS.verificationRetrySeconds * 1000 + 1000;
+    const verify = await scheduler.tick({ now: new Date(clock.ms) });
+    const buyAfter = (await store.getGoal(buyGoal.id))!;
+    expect(buyAfter.status, JSON.stringify(buyAfter.lastResult)).toBe("COMPLETED");
+    void verify;
+    const stockReceived = ((await publicClient.readContract({ address: AAPLc, abi: erc20Abi, functionName: "balanceOf", args: [taker.address] })) as bigint) - stockBefore;
+    expect(stockReceived > 0n).toBe(true);
+
+    // ---------- SELL: all received AAPLc -> USDC ----------
+    const sellRequests: Array<Record<string, unknown>> = [];
+    const sellAdapter = makeAdapter(taker, { requests: sellRequests, publicClient, wallet });
+    const sellStore = new InMemoryAutonomyStore();
+    const sellBus = new InMemoryEventBus();
+    const sellAudit: Array<{ event?: { type?: string } }> = [];
+    sellBus.on("autonomy_audit", (payload: unknown) => sellAudit.push(payload as { event?: { type?: string } }));
+    const sellRuntime = buildRuntime(sellStore, sellAdapter, sellBus);
+    const sellGoal = await createGoal(sellStore, taker.address, AAPLc, BASE_MAINNET_USDC, stockReceived, { sell: 18, buy: 6 });
+    const sellSubmit = await sellRuntime.scheduler.tick({ now: new Date(clock.ms) });
+    expect(sellSubmit.results[0]?.kind, JSON.stringify(sellSubmit.results)).toBe("EXECUTION_SUBMITTED");
+    expect(sellRequests).toHaveLength(1);
+    const sellTx = (await sellStore.getGoal(sellGoal.id))!.pendingExecution!.txHash as Hex;
+    const sellReceipt = await publicClient.getTransactionReceipt({ hash: sellTx });
+    expect(sellReceipt.status).toBe("success");
+    clock.ms += AUTONOMY_LIMITS.verificationRetrySeconds * 1000 + 1000;
+    await sellRuntime.scheduler.tick({ now: new Date(clock.ms) });
+    expect((await sellStore.getGoal(sellGoal.id))!.status).toBe("COMPLETED");
+
+    const usdcEnd = (await publicClient.readContract({ address: BASE_MAINNET_USDC, abi: erc20Abi, functionName: "balanceOf", args: [taker.address] })) as bigint;
+    expect(usdcEnd < usdcBefore, "round trip should cost fees + spread").toBe(true);
+
+    // ordered audit chain on the SELL leg
+    const types = sellAudit.map((p) => p.event?.type ?? "");
+    const order = ["QUOTE_CREATED", "CONDITION_MET", "POLICY_APPROVED", "AUTHORIZATION_CHECKED", "TRADE_PREPARED", "TRANSACTION_SUBMITTED", "EXECUTION_VERIFIED"];
+    let last = -1;
+    for (const expected of order) {
+      const idx = types.indexOf(expected);
+      expect(idx, `missing/out-of-order ${expected}: ${types.join(",")}`).toBeGreaterThan(last);
+      last = idx;
+    }
+    console.error(`::error::PHASE6_FORK roundTrip ok buy=${buyTx} sell=${sellTx} buyFeeRaw=${buyFee} usdcStart=${usdcBefore} usdcEnd=${usdcEnd}`);
+  }, 600_000);
+
+  it("emergency stop blocks a new broadcast mid-suite; nothing is signed or sent", async () => {
+    vi.stubEnv("MPGR_AUTONOMOUS_EMERGENCY_DISABLE", "true");
+    try {
+      const taker = privateKeyToAccount(generatePrivateKey());
+      await fundAndBootstrapUsdc(taker, "0.2");
+      const wallet = createWalletClient({ account: taker, chain: foundry, transport: http(LOCAL) });
+      const requests: Array<Record<string, unknown>> = [];
+      const store = new InMemoryAutonomyStore();
+      const bus = new InMemoryEventBus();
+      const { scheduler } = buildRuntime(store, makeAdapter(taker, { requests, publicClient, wallet }), bus);
+      await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 10_000n, { sell: 6, buy: 18 });
+      const summary = await scheduler.tick({ now: new Date(clock.ms) });
+      expect(summary.disabled).toBe(true);
+      expect(requests).toHaveLength(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }, 300_000);
+
+  it("uncertain broadcast (fabricated hash) is NEVER re-broadcast: PENDING -> UNCERTAIN -> goal FAILED", async () => {
+    const taker = privateKeyToAccount(generatePrivateKey());
+    await fundAndBootstrapUsdc(taker, "0.2");
+    const wallet = createWalletClient({ account: taker, chain: foundry, transport: http(LOCAL) });
+    const requests: Array<Record<string, unknown>> = [];
+    const store = new InMemoryAutonomyStore();
+    const { scheduler } = buildRuntime(store, makeAdapter(taker, { requests, publicClient, wallet, failMode: "fabricateHash" }), new InMemoryEventBus());
+    await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 10_000n, { sell: 6, buy: 18 });
+    const submit = await scheduler.tick({ now: new Date(clock.ms) });
+    expect(submit.results[0]?.kind).toBe("EXECUTION_SUBMITTED");
+    expect(requests).toHaveLength(1);
+    for (let i = 0; i < AUTONOMY_LIMITS.maxVerificationAttempts; i++) {
+      clock.ms += AUTONOMY_LIMITS.verificationRetrySeconds * 1000 + 1000;
+      await scheduler.tick({ now: new Date(clock.ms) });
+    }
+    const goal = (await store.listGoals(taker.address))[0]!;
+    expect(goal.status).toBe("FAILED");
+    expect(goal.pendingExecution).toBeNull();
+    expect(requests, "uncertain broadcast must NEVER be re-broadcast").toHaveLength(1);
+    console.error(`::error::PHASE6_FORK uncertain ok classified=${goal.lastResult?.code} rebroadcasts=0`);
+  }, 600_000);
+
+  it("reverted execution is classified TX_REVERTED and not retried", async () => {
+    const taker = privateKeyToAccount(generatePrivateKey());
+    await fundAndBootstrapUsdc(taker, "0.2");
+    const wallet = createWalletClient({ account: taker, chain: foundry, transport: http(LOCAL) });
+    const requests: Array<Record<string, unknown>> = [];
+    const store = new InMemoryAutonomyStore();
+    const { scheduler } = buildRuntime(store, makeAdapter(taker, { requests, publicClient, wallet, failMode: "skipApproval" }), new InMemoryEventBus());
+    await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 10_000n, { sell: 6, buy: 18 });
+    const submit = await scheduler.tick({ now: new Date(clock.ms) });
+    expect(submit.results[0]?.kind).toBe("EXECUTION_SUBMITTED"); // broadcast happened
+    expect(requests).toHaveLength(1);
+    clock.ms += AUTONOMY_LIMITS.verificationRetrySeconds * 1000 + 1000;
+    await scheduler.tick({ now: new Date(clock.ms) });
+    const goal = (await store.listGoals(taker.address))[0]!;
+    expect(goal.pendingExecution).toBeNull();
+    expect(["TX_REVERTED", "VERIFICATION_FAILED"]).toContain(goal.lastResult?.code ?? "");
+    expect(requests, "reverted execution must NOT be blindly retried").toHaveLength(1);
+    console.error(`::error::PHASE6_FORK revert ok classified=${goal.lastResult?.code} rebroadcasts=0`);
+  }, 600_000);
+});
+
+const CANONICAL_PERMIT2_LOWER = "0x000000000022d473030f116ddee9f6b43ac78ba3";

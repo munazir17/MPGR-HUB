@@ -1,0 +1,78 @@
+name: Phase 6 Fork Rehearsal (Base Mainnet, local anvil — nothing broadcast)
+
+# PHASE 6 — adversarial FORK REHEARSAL of the autonomous Mainnet runtime path.
+#
+# Runs lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts against a LOCAL
+# anvil fork of Base mainnet spawned INSIDE the runner:
+#   - on-chain chain separation (delegated Sepolia executor has NO code there)
+#   - autonomous BUY (USDC -> AAPLc) and SELL through the FULL runtime chain
+#     Goal -> Scheduler -> Policy -> fresh QuoterV2 quote -> v1 prepare (the
+#     F-9 seam) -> broadcast -> receipt verification -> audit -> goal state
+#   - exact 25 bps fee reconciliation from the real SwapExecuted event
+#   - duplicate tick rejection, emergency stop, uncertain broadcast (fabricated
+#     hash) NEVER re-broadcast, reverted tx classified TX_REVERTED, no retries
+#
+# NOTHING is broadcast to any real chain: the fork is private to the runner
+# and discarded when the job ends. Autonomous execution stays OFF in the app
+# (MPGR_AUTONOMOUS_AGENT_ENABLED is set ONLY inside the vitest process here,
+# exactly like the Phase 5 armed job sets it inside its own process).
+
+on:
+  push:
+    branches: [arena/01a0e784-mpgr-hub]
+  workflow_dispatch:
+
+concurrency:
+  group: phase6-fork-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fork-rehearsal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # Provides `anvil` on PATH (the test spawns it itself).
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - run: npm ci
+      - name: Fork rehearsal (BUY/SELL + failure modes on a local Base mainnet fork)
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          MPGR_PHASE6_FORK: "true"
+          # Optional dedicated RPC; falls back to the same deep-state public
+          # endpoint the contracts-fork job uses (mainnet.base.org 429s and
+          # prunes recent blocks under shared CI egress).
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
+        run: |
+          set +e -uo pipefail
+          STATUS=1
+          for attempt in 1 2; do
+            npx vitest run lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts 2>&1 | tee phase6-fork.log
+            STATUS=${PIPESTATUS[0]}
+            [ "$STATUS" = "0" ] && break
+            # Public Base RPCs rate-limit shared CI egress (HTTP 429) under
+            # fork load — one settle-and-retry absorbs transient storms
+            # (same rationale as the contracts-fork job).
+            if [ "$attempt" = "1" ]; then
+              echo "::warning title=phase6 fork rehearsal failed once::retrying after 60s (public Base RPC 429s are transient)"
+              sleep 60
+            fi
+          done
+          # Success-evidence annotations (emitted by the test itself).
+          grep -a "::error::PHASE6_FORK" phase6-fork.log | head -8 || true
+          if [ "$STATUS" != "0" ]; then
+            grep -aE "FAIL |AssertionError|Error:|did not become ready" phase6-fork.log | head -12 | while IFS= read -r l; do echo "::error::${l:0:500}"; done
+            if [ -f "$TMPDIR/phase6-anvil.stderr.log" ] || [ -f "/tmp/phase6-anvil.stderr.log" ]; then
+              echo "::error::anvil stderr tail: $(tail -c 600 /tmp/phase6-anvil.stderr.log 2>/dev/null || tail -c 600 "$TMPDIR/phase6-anvil.stderr.log" | tr '\n' ' ')"
+            fi
+            exit 1
+          fi
