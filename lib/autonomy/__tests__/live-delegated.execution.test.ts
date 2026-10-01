@@ -44,9 +44,17 @@ import { createDelegatedBroadcaster } from "@/lib/delegated/delegated-broadcaste
 import { DelegatedExecutionAdapter } from "@/lib/autonomy/delegated-execution-adapter";
 import { InMemoryDelegatedAuthorizationStore } from "@/lib/autonomy/delegated-authorization";
 import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
+import { AutonomyRuntime } from "@/lib/autonomy/runtime";
+import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
+import { BusAuditSink } from "@/lib/autonomy/audit";
+import { InMemoryEventBus } from "@/lib/architecture/core/event-bus";
+import { InMemoryPerformanceMonitor } from "@/lib/architecture/core/performance-monitor";
+import type { EventBus, Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
 import type { AutonomyPolicy, DelegatedSwapRequest } from "@/lib/autonomy/types";
 
 const LIVE = process.env.MPGR_LIVE_DELEGATED === "true";
+/** Runtime verification backoff (AUTONOMY_LIMITS.verificationRetrySeconds) + margin. */
+const AUTONOMY_VERIFY_WAIT_MS = 31_000;
 
 /** Hard cap: the live demo never sells more than 10k tUSD of TEST tokens. */
 const MAX_SELL_AMOUNT_RAW = 10_000_000_000n; // 10,000 tUSD (6 dp)
@@ -63,6 +71,16 @@ interface LiveResult {
     txHash: Hex; soldRaw: string; expectedRaw: string; minOutRaw: string; boughtRaw: string;
     feeRaw: string; quoteId: string; nonce: string; actionId: string; deadline: number;
   };
+  /** PHASE 5: the SELL leg runs through the REAL AutonomyRuntime (goal machine + audit). */
+  runtime?: {
+    goalId: string;
+    goalStatus: string;
+    auditEvents: string[];
+    actionRecords: number;
+    verifiedFeeRaw: string;
+  };
+  /** PHASE 5: chain facts for the reconciliation script (single source of truth). */
+  tokens?: { tusd: Address; tstock: Address; executor: Address; permit2: Address; feeRecipient: Address };
 }
 
 describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed run only)", () => {
@@ -130,25 +148,26 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     const slots = new InMemoryDelegatedAuthorizationStore();
     const runTag = Date.now().toString(36);
     const policies = new Map<string, AutonomyPolicy>();
-    const makePolicy = (id: string, sellToken: Address, buyToken: Address): AutonomyPolicy => ({
+    // PHASE 5: VERY SMALL readiness caps — a policy can never authorize more
+    // than the single tiny trade (+ 5x daily headroom), 2 actions/day.
+    const makePolicy = (id: string, sellToken: Address, buyToken: Address, maxPerTrade: bigint): AutonomyPolicy => ({
       id,
       wallet: testUser.address.toLowerCase() as Address,
       chainId: 84532,
       actions: ["swap"],
       sellToken,
       buyToken,
-      maxPerTradeRaw: MAX_SELL_AMOUNT_RAW.toString(),
-      maxDailyRaw: (MAX_SELL_AMOUNT_RAW * 10n).toString(),
+      maxPerTradeRaw: maxPerTrade.toString(),
+      maxDailyRaw: (maxPerTrade * 5n).toString(),
       maxSlippageBps: 500,
-      maxActionsPerDay: 5,
+      maxActionsPerDay: 2,
       enabled: true,
       createdAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
       authorizedAt: new Date().toISOString(),
       authorizationRef: "live-test",
     });
-    policies.set("live_buy", makePolicy("live_buy", DELEGATED_BASE_SEPOLIA_TUSD, DELEGATED_BASE_SEPOLIA_TSTOCK));
-    policies.set("live_sell", makePolicy("live_sell", DELEGATED_BASE_SEPOLIA_TSTOCK, DELEGATED_BASE_SEPOLIA_TUSD));
+    policies.set("live_buy", makePolicy("live_buy", DELEGATED_BASE_SEPOLIA_TUSD, DELEGATED_BASE_SEPOLIA_TSTOCK, sellAmountRaw));
 
     const adapter = new DelegatedExecutionAdapter({
       slots,
@@ -233,11 +252,19 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     };
     console.log(`::notice::LIVE BUY tx=${buyTxHash} feeRaw=${buyFee} out=${result.buy!.boughtRaw}`);
 
-    // ================= SELL: tSTOCK -> tUSD =================
+    // ================= SELL: tSTOCK -> tUSD (through the REAL runtime) ======
+    // PHASE 5: this leg proves the FULL autonomous chain — goal -> policy ->
+    // authorization slot -> runtime (condition/policy/idempotency) -> adapter
+    // -> MCP -> broadcaster -> executor -> receipt -> verification -> AUDIT
+    // events -> goal state COMPLETED.
     const stockNow = await client.readContract({ address: DELEGATED_BASE_SEPOLIA_TSTOCK, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] });
     const stockReceived = stockNow - (userStockBefore < parseEther("0.000001") ? 0n : userStockBefore);
     expect(stockReceived > 0n, "BUY produced zero tSTOCK — cannot run the SELL leg").toBe(true);
+    policies.set("live_sell", makePolicy("live_sell", DELEGATED_BASE_SEPOLIA_TSTOCK, DELEGATED_BASE_SEPOLIA_TUSD, stockReceived));
 
+    // Pre-quote ONLY to size the slot's signed floor (the runtime re-quotes
+    // internally; the signed floor is set 0.5% below the observed floor so a
+    // fresh quote still clears it — the EXECUTOR enforces the real floor).
     const sellQuote = await gateway.quote({
       chainId: 84532,
       taker: testUser.address,
@@ -251,56 +278,117 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     const sq = sellQuote.ok ? sellQuote.data : null;
     expect(BigInt(sq!.minBuyAmountRaw) > 0n, "SELL quote returned a zero floor").toBe(true);
 
-    const sellGoalId = `live-${runTag}-sell`;
+    const runtimeStore = new InMemoryAutonomyStore();
+    const bus = new InMemoryEventBus();
+    const auditPayloads: Array<{ event?: { type?: string } }> = [];
+    bus.on("autonomy_audit", (payload: unknown) => auditPayloads.push(payload as { event?: { type?: string } }));
+    const perf: PerformanceMonitor = new InMemoryPerformanceMonitor();
+    const logger: Logger = { debug: () => {}, warn: () => {}, error: () => {} };
+    const runtime = new AutonomyRuntime({
+      store: runtimeStore,
+      gateway,
+      adapter,
+      audit: new BusAuditSink(runtimeStore, bus, perf),
+      logger,
+      performanceMonitor: perf,
+      now: () => new Date(),
+    });
+    const sellPolicy = (await runtimeStore.createPolicy(policies.get("live_sell")!))!;
+    const sellGoal = await runtimeStore.createGoal({
+      id: "",
+      wallet: testUser.address.toLowerCase() as Address,
+      policyId: sellPolicy.id,
+      type: "conditional_swap",
+      description: "Phase 5 readiness SELL (tiny)",
+      status: "ACTIVE",
+      condition: { kind: "price_below", threshold: "1000000" },
+      trade: {
+        sellToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
+        buyToken: DELEGATED_BASE_SEPOLIA_TUSD,
+        sellAmountRaw: stockReceived.toString(),
+        slippageBps: 300,
+        sellDecimals: 18,
+        buyDecimals: 6,
+      },
+      cooldownSeconds: 60,
+      maxTrades: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
+      nextEvaluationAt: new Date().toISOString(),
+      pendingExecution: null,
+      stats: { evaluations: 0, triggered: 0, verified: 0, consecutiveFailures: 0 },
+    } as never);
+    const sellGoalId = sellGoal.id;
     const sellSlot = await signAndStoreSlot(slots, testUser, {
-      policy: policies.get("live_sell")!,
+      policy: sellPolicy,
       goalId: sellGoalId,
       slotIndex: 1,
       sellToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
       buyToken: DELEGATED_BASE_SEPOLIA_TUSD,
       sellAmountRaw: stockReceived,
-      minAmountOut: sq!.minBuyAmountRaw,
+      minAmountOut: ((BigInt(sq!.minBuyAmountRaw) * 9950n) / 10000n).toString(),
     });
 
-    const sellExec = await adapter.executeSwap({
-      goalId: sellGoalId,
-      policyId: "live_sell",
-      wallet: testUser.address.toLowerCase() as Address,
-      chainId: 84532,
-      quoteId: sq!.quoteId,
-      sellToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
-      buyToken: DELEGATED_BASE_SEPOLIA_TUSD,
-      sellAmountRaw: stockReceived.toString(),
-      expectedBuyAmountRaw: sq!.expectedBuyAmountRaw,
-      minBuyAmountRaw: sq!.minBuyAmountRaw,
-      slippageBps: 300,
-      idempotencyKey: `${sellGoalId}-exec`,
-      steps: [],
-      transactionRequest: null,
-    } satisfies DelegatedSwapRequest);
-    expect(sellExec.ok, `SELL execution failed: ${sellExec.ok ? "" : sellExec.message}`).toBe(true);
-    const sellTxHash: Hex = sellExec.ok ? (sellExec.txHash as Hex) : ("0x" as Hex);
-    await waitFor(client, sellTxHash);
+    const submitted = await runtime.evaluateGoal(sellGoalId);
+    expect(submitted.kind === "EXECUTION_SUBMITTED", `runtime SELL did not submit: ${JSON.stringify(submitted)}`).toBe(true);
+    const sellTxHash: Hex = submitted.kind === "EXECUTION_SUBMITTED" ? (submitted.txHash as Hex) : ("0x" as Hex);
+    console.log(`::notice::LIVE SELL submitted tx=${sellTxHash} (runtime goal ${sellGoalId})`);
+
+    // Runtime verification pass after the 30s verification backoff.
+    await new Promise((r) => setTimeout(r, AUTONOMY_VERIFY_WAIT_MS));
+    const verified = await runtime.evaluateGoal(sellGoalId);
+    expect(verified.kind === "EXECUTION_SUBMITTED" ? false : true).toBe(true);
+    const goalAfter = (await runtimeStore.getGoal(sellGoalId))!;
+    expect(goalAfter.status, `runtime goal must be COMPLETED, got ${goalAfter.status}: ${JSON.stringify(goalAfter.lastResult)}`).toBe("COMPLETED");
+    expect(goalAfter.pendingExecution).toBeNull();
+
+    const records = await runtimeStore.listActionRecords(sellGoalId);
+    const verifiedRecord = records.find((r) => r.verified === true && r.status === "CONFIRMED");
+    expect(verifiedRecord, "runtime must persist a VERIFIED action record").toBeTruthy();
+    const sellFee = BigInt(verifiedRecord!.feeAmountRaw || "0");
+    expect(sellFee, "SELL fee must equal floor(gross * 25 bps) in tSTOCK").toBe((stockReceived * 25n) / 10000n);
+
+    const auditTypes = auditPayloads.map((p) => p.event?.type ?? "");
+    const expectedOrder = ["QUOTE_CREATED", "CONDITION_CHECKED", "CONDITION_MET", "POLICY_APPROVED", "AUTHORIZATION_CHECKED", "TRADE_PREPARED", "TRANSACTION_SUBMITTED", "EXECUTION_VERIFIED"];
+    let lastIdx = -1;
+    for (const expected of expectedOrder) {
+      const idx = auditTypes.indexOf(expected);
+      expect(idx, `missing/out-of-order audit event ${expected}; got ${auditTypes.join(",")}`).toBeGreaterThan(lastIdx);
+      lastIdx = idx;
+    }
 
     const sellVerify = await gateway.verify(sq!.quoteId, sellTxHash, broadcasterAddress, sellSlot.actionId);
-    expect(sellVerify.ok && sellVerify.data.verified, `SELL verification FAILED: ${JSON.stringify(sellVerify)}`).toBe(true);
-    const sellFee = BigInt((sellVerify.ok && sellVerify.data.feeAmountRaw) || "0");
-    expect(sellFee, "SELL fee must equal floor(gross * 25 bps) in tSTOCK").toBe((stockReceived * 25n) / 10000n);
     result.sell = {
       txHash: sellTxHash,
       soldRaw: stockReceived.toString(),
       expectedRaw: sq!.expectedBuyAmountRaw,
       minOutRaw: sq!.minBuyAmountRaw,
-      boughtRaw: (sellVerify.ok && sellVerify.data.actualBuyAmountRaw) || "0",
+      boughtRaw: verifiedRecord!.actualBuyAmountRaw || (sellVerify.ok && sellVerify.data.actualBuyAmountRaw) || "0",
       feeRaw: sellFee.toString(),
       quoteId: sq!.quoteId,
       nonce: sellSlot.nonce,
       actionId: sellSlot.actionId,
       deadline: sellSlot.deadline,
     };
-    console.log(`::notice::LIVE SELL tx=${sellTxHash} feeRaw=${sellFee} out=${result.sell!.boughtRaw}`);
+    result.runtime = {
+      goalId: sellGoalId,
+      goalStatus: goalAfter.status,
+      auditEvents: auditTypes.filter((t) => t.length > 0),
+      actionRecords: records.length,
+      verifiedFeeRaw: sellFee.toString(),
+    };
+    console.log(`::notice::LIVE SELL verified tx=${sellTxHash} feeRaw=${sellFee} out=${result.sell!.boughtRaw} goal=${goalAfter.status} auditEvents=${auditTypes.length}`);
 
     // ---------------- machine-readable evidence ----------------
+    const feeRecipientOnChain = await client.readContract({ address: DELEGATED_EXECUTOR_ADDRESS, abi: [{ type: "function", name: "feeRecipient", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] }] as const, functionName: "feeRecipient" });
+    result.tokens = {
+      tusd: DELEGATED_BASE_SEPOLIA_TUSD,
+      tstock: DELEGATED_BASE_SEPOLIA_TSTOCK,
+      executor: DELEGATED_EXECUTOR_ADDRESS,
+      permit2: CANONICAL_PERMIT2,
+      feeRecipient: feeRecipientOnChain,
+    };
     const { writeFileSync } = await import("node:fs");
     writeFileSync("live-delegated-results.json", JSON.stringify(result, null, 2));
     console.log(`::notice::LIVE_RESULT executor=${DELEGATED_EXECUTOR_ADDRESS} permit2=${CANONICAL_PERMIT2}`);
