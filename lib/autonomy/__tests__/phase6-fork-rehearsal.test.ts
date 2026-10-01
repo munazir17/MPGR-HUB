@@ -141,8 +141,6 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
         "--port", String(PORT),
         "--no-rate-limit",
         "--fork-retry-backoff", "300",
-        "--storage-caching", "remote",
-        "--cache-path", `${process.cwd()}/.anvil-fork-cache`,
       ],
       { stdio: ["ignore", "ignore", "pipe"], detached: false },
     );
