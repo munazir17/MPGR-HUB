@@ -49,7 +49,9 @@ import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
 import type { ChainReader } from "@/lib/executor/executor-chain";
 import {
   BASE_MAINNET_EXECUTOR_DEPLOYMENT,
+  BASE_MAINNET_SLIPSTREAM,
   BASE_MAINNET_USDC,
+  CANONICAL_WETH,
   MPGR_EXECUTOR_DEPLOYMENTS,
 } from "@/lib/executor/executor-config";
 import {
@@ -121,22 +123,54 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     process.env.MPGR_AUTONOMOUS_AGENT_ENABLED = "true";
     // Capture anvil's stderr (fork RPC errors, 429s) for CI debugging.
     anvilLog = createWriteStream(anvilLogPath);
-    anvil = spawn("anvil", ["--fork-url", FORK_RPC, "--port", String(PORT), "--no-rate-limit"], { stdio: ["ignore", "ignore", "pipe"], detached: false });
+    anvil = spawn("anvil", ["--fork-url", FORK_RPC, "--port", String(PORT), "--no-rate-limit", "--fork-retry-backoff", "300"], { stdio: ["ignore", "ignore", "pipe"], detached: false });
     anvil.stderr?.on("data", (chunk: Buffer) => anvilLog?.write(chunk));
     // wait for readiness
     const deadline = Date.now() + 120_000;
+    let ready = false;
     while (Date.now() < deadline) {
       try {
         const res = await fetch(LOCAL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }), signal: AbortSignal.timeout(4000) });
         const json = (await res.json()) as { result?: string };
-        if (json.result === "0x2105") return; // 8453
+        if (json.result === "0x2105") { ready = true; break; } // 8453
       } catch {
         /* not ready */
       }
       await new Promise((r) => setTimeout(r, 2000));
     }
-    anvilLog?.end();
-    throw new Error(`anvil fork did not become ready in time (stderr tail: ${await import("node:fs/promises").then((f) => f.readFile(anvilLogPath, "utf8").then((t) => t.slice(-800)).catch(() => "unavailable"))})`);
+    if (!ready) {
+      anvilLog?.end();
+      throw new Error(`anvil fork did not become ready in time (stderr tail: ${await import("node:fs/promises").then((f) => f.readFile(anvilLogPath, "utf8").then((t) => t.slice(-800)).catch(() => "unavailable"))})`);
+    }
+    // EAGER WARM-UP: a lazy anvil fork degrades SILENTLY when the upstream
+    // public RPC flakes (a contract can read as codeless EOA -> OpcodeNotFound
+    // or a call "succeeds" as a plain transfer). Touch every contract this
+    // suite needs once, with retries, so the code is cached locally BEFORE any
+    // rehearsal runs — and so a genuinely absent contract fails loudly HERE.
+    const warm = [
+      ["executor", BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor],
+      ["USDC", BASE_MAINNET_USDC],
+      ["AAPLc", AAPLc],
+      ["WETH", CANONICAL_WETH],
+      ["slipstreamRouter", BASE_MAINNET_SLIPSTREAM.swapRouter],
+      ["slipstreamFactory", BASE_MAINNET_SLIPSTREAM.factory],
+      ["slipstreamQuoter", BASE_MAINNET_SLIPSTREAM.quoterV2],
+    ] as const;
+    const warmDeadline = Date.now() + 180_000;
+    for (;;) {
+      const missing: string[] = [];
+      for (const [label, address] of warm) {
+        const code = await publicClient.getBytecode({ address });
+        if (!code || code === "0x") missing.push(`${label}@${address}`);
+      }
+      if (missing.length === 0) break;
+      if (Date.now() > warmDeadline) {
+        anvilLog?.end();
+        throw new Error(`fork warm-up failed — contracts still codeless (upstream RPC degradation or genuinely absent): ${missing.join(", ")}`);
+      }
+      console.error(`[phase6-warmup] retrying codeless contracts: ${missing.join(", ")}`);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
   }, 180_000);
 
   afterAll(() => {
@@ -221,18 +255,22 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
   }
 
   async function createGoal(store: InMemoryAutonomyStore, wallet: Address, sellToken: Address, buyToken: Address, sellRaw: bigint, decimals: { sell: number; buy: number }) {
+    // ALL timestamps are on the RUNTIME clock — the runtime evaluates expiry
+    // against this.now(), so real-wall-clock dates would instantly expire.
+    const nowIso = () => new Date(clock.ms).toISOString();
     const policy = await store.createPolicy({
       id: "", wallet, chainId: 8453, actions: ["swap"], sellToken, buyToken,
       maxPerTradeRaw: sellRaw.toString(), maxDailyRaw: (sellRaw * 5n).toString(), maxSlippageBps: 500, maxActionsPerDay: 4,
-      enabled: true, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 6 * 3600_000).toISOString(),
-      authorizedAt: new Date().toISOString(), authorizationRef: "phase6-fork",
+      enabled: true, createdAt: nowIso(), expiresAt: new Date(clock.ms + 6 * 3600_000).toISOString(),
+      authorizedAt: nowIso(), authorizationRef: "phase6-fork",
     });
     return store.createGoal({
       id: "", wallet, policyId: policy!.id, type: "conditional_swap", description: "phase6 fork rehearsal", status: "ACTIVE",
       condition: { kind: "price_below", threshold: "1000000" }, // human price of 1 buy token in sell tokens (both legs are far below)
       trade: { sellToken, buyToken, sellAmountRaw: sellRaw.toString(), slippageBps: 300, sellDecimals: decimals.sell, buyDecimals: decimals.buy },
-      cooldownSeconds: 60, maxTrades: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 6 * 3600_000).toISOString(), nextEvaluationAt: new Date().toISOString(),
+      cooldownSeconds: 60, maxTrades: 1, createdAt: nowIso(), updatedAt: nowIso(),
+      expiresAt: new Date(clock.ms + 6 * 3600_000).toISOString(), nextEvaluationAt: nowIso(),
+      lastAction: null, lastResult: null,
       pendingExecution: null, stats: { evaluations: 0, triggered: 0, verified: 0, consecutiveFailures: 0 },
     } as never);
   }
