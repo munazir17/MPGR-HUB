@@ -115,7 +115,7 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
       client.getBalance({ address: testUser.address }),
       client.readContract({ address: DELEGATED_BASE_SEPOLIA_TUSD, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] }),
     ]);
-    console.log(`::notice::LIVE broadcaster=${broadcasterAddress} eth=${Number(bBroadcaster) / 1e18} testUser=${testUser.address} eth=${Number(bUser) / 1e18} tUSD=${userUsd.toString()}`);
+    console.error(`::error::LIVE broadcaster=${broadcasterAddress} eth=${Number(bBroadcaster) / 1e18} testUser=${testUser.address} eth=${Number(bUser) / 1e18} tUSD=${userUsd.toString()}`);
     expect(bBroadcaster, "broadcaster needs >= 0.0005 ETH for gas").toBeGreaterThanOrEqual(parseEther("0.0005"));
 
     // ---------------- amount ----------------
@@ -250,7 +250,7 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
       actionId: buySlot.actionId,
       deadline: buySlot.deadline,
     };
-    console.log(`::notice::LIVE BUY tx=${buyTxHash} feeRaw=${buyFee} out=${result.buy!.boughtRaw}`);
+    console.error(`::error::LIVE_BUY tx=${buyTxHash} feeRaw=${buyFee} out=${result.buy!.boughtRaw}`);
 
     // ================= SELL: tSTOCK -> tUSD (through the REAL runtime) ======
     // PHASE 5: this leg proves the FULL autonomous chain — goal -> policy ->
@@ -259,7 +259,8 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     // events -> goal state COMPLETED.
     const stockNow = await client.readContract({ address: DELEGATED_BASE_SEPOLIA_TSTOCK, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] });
     const stockReceived = stockNow - (userStockBefore < parseEther("0.000001") ? 0n : userStockBefore);
-    expect(stockReceived > 0n, "BUY produced zero tSTOCK — cannot run the SELL leg").toBe(true);
+    console.error(`::error::LIVE_STOCK before=${userStockBefore} after=${stockNow} delta=${stockReceived} boughtRaw=${result.buy?.boughtRaw}`);
+    expect(stockReceived > 0n, `BUY produced zero tSTOCK delta — cannot run the SELL leg (before=${userStockBefore} after=${stockNow} boughtRaw=${result.buy?.boughtRaw} tx=${result.buy?.txHash})`).toBe(true);
     policies.set("live_sell", makePolicy("live_sell", DELEGATED_BASE_SEPOLIA_TSTOCK, DELEGATED_BASE_SEPOLIA_TUSD, stockReceived));
 
     // Pre-quote ONLY to size the slot's signed floor (the runtime re-quotes
@@ -333,7 +334,7 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     const submitted = await runtime.evaluateGoal(sellGoalId);
     expect(submitted.kind === "EXECUTION_SUBMITTED", `runtime SELL did not submit: ${JSON.stringify(submitted)}`).toBe(true);
     const sellTxHash: Hex = submitted.kind === "EXECUTION_SUBMITTED" ? (submitted.txHash as Hex) : ("0x" as Hex);
-    console.log(`::notice::LIVE SELL submitted tx=${sellTxHash} (runtime goal ${sellGoalId})`);
+    console.error(`::error::LIVE_SELL_SUBMITTED tx=${sellTxHash} goal=${sellGoalId}`);
 
     // Runtime verification pass after the 30s verification backoff.
     await new Promise((r) => setTimeout(r, AUTONOMY_VERIFY_WAIT_MS));
@@ -378,7 +379,7 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
       actionRecords: records.length,
       verifiedFeeRaw: sellFee.toString(),
     };
-    console.log(`::notice::LIVE SELL verified tx=${sellTxHash} feeRaw=${sellFee} out=${result.sell!.boughtRaw} goal=${goalAfter.status} auditEvents=${auditTypes.length}`);
+    console.error(`::error::LIVE_SELL_VERIFIED tx=${sellTxHash} feeRaw=${sellFee} out=${result.sell!.boughtRaw} goal=${goalAfter.status} auditEvents=${auditTypes.length}`);
 
     // ---------------- machine-readable evidence ----------------
     const feeRecipientOnChain = await client.readContract({ address: DELEGATED_EXECUTOR_ADDRESS, abi: [{ type: "function", name: "feeRecipient", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] }] as const, functionName: "feeRecipient" });
