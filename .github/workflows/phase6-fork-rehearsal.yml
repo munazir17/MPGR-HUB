@@ -54,14 +54,21 @@ jobs:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
         run: |
           set +e -uo pipefail
-          # Public Base RPCs degrade under anvil fork load (429 storms, and a
-          # LAZY fork can even read contracts as codeless). Attempt two
-          # upstreams with a fresh fork each; a real deterministic failure
-          # fails both and the job.
+          # ONE pinned fork block for the whole job: every upstream attempt
+          # forks the SAME block, so anvil's disk storage cache (written by
+          # attempt 1) makes later attempts nearly upstream-free — the same
+          # cross-attempt economics as the forge contracts-fork job.
+          FORK_BLOCK=""
+          for i in 1 2 3; do
+            FORK_BLOCK="$(curl -s -m 15 -X POST -H 'Content-Type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' https://base-rpc.publicnode.com | jq -r '.result // empty' | jq -r 'tonumber | floor - 300' 2>/dev/null || true)"
+            [ -n "$FORK_BLOCK" ] && [ "$FORK_BLOCK" != "null" ] && break
+            sleep 5
+          done
+          echo "Pinned fork block: ${FORK_BLOCK:-<unpinned fallback>}"
           STATUS=1
           for upstream in "https://base-rpc.publicnode.com" "https://base.drpc.org" "https://base.llamarpc.com" "https://1rpc.io/base"; do
             echo "Attempting fork rehearsal against upstream: $upstream"
-            BASE_MAINNET_RPC_URL="$upstream" npx vitest run lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts 2>&1 | tee phase6-fork.log
+            BASE_MAINNET_RPC_URL="$upstream" BASE_FORK_BLOCK="$FORK_BLOCK" npx vitest run lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts 2>&1 | tee phase6-fork.log
             STATUS=${PIPESTATUS[0]}
             [ "$STATUS" = "0" ] && break
             echo "::warning title=phase6 fork rehearsal failed against $upstream::retrying with the next upstream after 60s"
@@ -71,6 +78,7 @@ jobs:
           grep -a "::error::PHASE6_FORK" phase6-fork.log | head -8 || true
           if [ "$STATUS" != "0" ]; then
             grep -aE "FAIL |AssertionError|Error:|did not become ready" phase6-fork.log | head -12 | while IFS= read -r l; do echo "::error::${l:0:500}"; done
+            grep -a "phase6-warmup" phase6-fork.log | head -4 | while IFS= read -r l; do echo "::error::WARMUP ${l:0:400}"; done
             if [ -f "$TMPDIR/phase6-anvil.stderr.log" ] || [ -f "/tmp/phase6-anvil.stderr.log" ]; then
               echo "::error::anvil stderr tail: $(tail -c 600 /tmp/phase6-anvil.stderr.log 2>/dev/null || tail -c 600 "$TMPDIR/phase6-anvil.stderr.log" | tr '\n' ' ')"
             fi

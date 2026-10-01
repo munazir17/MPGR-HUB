@@ -125,18 +125,27 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     process.env.MPGR_AUTONOMOUS_AGENT_ENABLED = "true";
     // Capture anvil's stderr (fork RPC errors, 429s) for CI debugging.
     anvilLog = createWriteStream(anvilLogPath);
-    // PIN the fork ~300 blocks (~10 min) behind latest: an unpinned fork
-    // invalidates cached state on every new upstream block, generating refetch
-    // storms that public RPCs throttle. A pinned block is stable AND makes the
-    // rehearsal deterministic. Falls back to unpinned if the upstream cannot
-    // be probed before spawn.
+    // PIN the fork to ONE block for the whole job (BASE_FORK_BLOCK, computed
+    // once by the workflow): a moving latest block invalidates cached state on
+    // every new upstream block, generating refetch storms public RPCs throttle.
+    // A pinned block is deterministic AND lets anvil's disk storage cache stay
+    // warm across the workflow's upstream retries (same recipe as the green
+    // forge contracts-fork job's rpc_storage_caching).
     let forkUrl = FORK_RPC;
-    try {
-      const res = await fetch(FORK_RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }), signal: AbortSignal.timeout(10_000) });
-      const json = (await res.json()) as { result?: string };
-      if (json.result) forkUrl = `${FORK_RPC}@${BigInt(json.result) - 300n}`;
-    } catch { /* unpinned fallback */ }
-    anvil = spawn("anvil", ["--fork-url", forkUrl, "--port", String(PORT), "--no-rate-limit", "--fork-retry-backoff", "300"], { stdio: ["ignore", "ignore", "pipe"], detached: false });
+    const pinned = process.env.BASE_FORK_BLOCK?.trim();
+    if (pinned && /^\d+$/.test(pinned)) forkUrl = `${FORK_RPC}@${pinned}`;
+    anvil = spawn(
+      "anvil",
+      [
+        "--fork-url", forkUrl,
+        "--port", String(PORT),
+        "--no-rate-limit",
+        "--fork-retry-backoff", "300",
+        "--storage-caching", "remote",
+        "--cache-path", `${process.cwd()}/.anvil-fork-cache`,
+      ],
+      { stdio: ["ignore", "ignore", "pipe"], detached: false },
+    );
     anvil.stderr?.on("data", (chunk: Buffer) => anvilLog?.write(chunk));
     // wait for readiness
     const deadline = Date.now() + 180_000;
