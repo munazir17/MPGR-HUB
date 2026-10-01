@@ -126,7 +126,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     anvil = spawn("anvil", ["--fork-url", FORK_RPC, "--port", String(PORT), "--no-rate-limit", "--fork-retry-backoff", "300"], { stdio: ["ignore", "ignore", "pipe"], detached: false });
     anvil.stderr?.on("data", (chunk: Buffer) => anvilLog?.write(chunk));
     // wait for readiness
-    const deadline = Date.now() + 120_000;
+    const deadline = Date.now() + 180_000;
     let ready = false;
     while (Date.now() < deadline) {
       try {
@@ -178,7 +178,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
       console.error(`[phase6-warmup] retrying unusable contracts: ${missing.join(", ")}`);
       await new Promise((r) => setTimeout(r, 3000));
     }
-  }, 180_000);
+  }, 600_000); // boot (≤180s) + warm-up (≤180s) + margin on slow public upstreams
 
   afterAll(() => {
     anvil?.kill("SIGKILL");
