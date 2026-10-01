@@ -122,6 +122,10 @@ async function main() {
     if (ca === OWNER.toLowerCase() || ca === FEE_RECIPIENT.toLowerCase() || ca === EXECUTOR.toLowerCase()) {
       return fail("canary address must be SEPARATE from owner/feeRecipient/executor");
     }
+    const sepoliaBroadcaster = process.env.SEPOLIA_BROADCASTER_ADDRESS?.trim().toLowerCase();
+    if (sepoliaBroadcaster && ca === sepoliaBroadcaster) {
+      return fail("canary address equals the SEPOLIA broadcaster address — a DEDICATED Mainnet canary key is required");
+    }
     const eth = await client.getBalance({ address: CANARY_ADDRESS });
     if (eth < 10n ** 14n) return fail(`canary ETH ${eth} wei < 10^14 (gas for the single tx)`);
     const bal = await client.readContract({ address: USDC, abi: [{ type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] }], functionName: "balanceOf", args: [CANARY_ADDRESS] });

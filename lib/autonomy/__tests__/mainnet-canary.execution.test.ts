@@ -48,6 +48,8 @@ import {
   MPGR_EXECUTOR_DEPLOYMENTS,
 } from "@/lib/executor/executor-config";
 import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
+import { DELEGATED_EXECUTOR_ADDRESS } from "@/lib/executor/delegated-executor";
+import { delegatedBroadcasterAddress } from "@/lib/delegated/delegated-broadcaster";
 import { InMemoryEventBus } from "@/lib/architecture/core/event-bus";
 import { InMemoryPerformanceMonitor } from "@/lib/architecture/core/performance-monitor";
 import type { EventBus, Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
@@ -87,6 +89,22 @@ describe.skipIf(!ARMED)("MAINNET CANARY — one real 1-USDC BUY through the Main
     // separation: the canary key is nobody else in the system
     expect(account.address.toLowerCase()).not.toBe(pinned.owner.toLowerCase());
     expect(account.address.toLowerCase()).not.toBe(pinned.feeRecipient.toLowerCase());
+    expect(account.address.toLowerCase()).not.toBe(DELEGATED_EXECUTOR_ADDRESS.toLowerCase());
+    // SEPOLIA-BROADCASTER REUSE GUARD (deterministic, fail-closed, both ways):
+    // (1) if this runner carries the Sepolia broadcaster env, the canary key
+    //     must NOT be that account; (2) the operator may pin the Sepolia
+    //     broadcaster's ADDRESS (non-secret) via SEPOLIA_BROADCASTER_ADDRESS —
+    //     equality with the canary address is fatal. The canary is MAINNET-only
+    //     and the Sepolia broadcaster is 84532-only; they can never be the same
+    //     account.
+    const sepoliaBroadcaster = delegatedBroadcasterAddress();
+    if (sepoliaBroadcaster && sepoliaBroadcaster.toLowerCase() === account.address.toLowerCase()) {
+      throw new Error("FATAL: the canary key IS the Sepolia broadcaster — provision a DEDICATED Mainnet canary key. Nothing was broadcast.");
+    }
+    const pinnedSepoliaBroadcaster = process.env.SEPOLIA_BROADCASTER_ADDRESS?.trim().toLowerCase();
+    if (pinnedSepoliaBroadcaster && pinnedSepoliaBroadcaster === account.address.toLowerCase()) {
+      throw new Error("FATAL: canary address equals SEPOLIA_BROADCASTER_ADDRESS — a dedicated Mainnet canary key is required. Nothing was broadcast.");
+    }
     // funded + pre-approved -> the canary is ONE transaction
     const usdcBalance = (await publicClient.readContract({ address: BASE_MAINNET_USDC, abi: erc20Abi, functionName: "balanceOf", args: [account.address] })) as bigint;
     const allowance = (await publicClient.readContract({ address: BASE_MAINNET_USDC, abi: erc20Abi, functionName: "allowance", args: [account.address, pinned.executor] })) as bigint;

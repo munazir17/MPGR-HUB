@@ -20,6 +20,19 @@ Canary trade: **BUY 1.00 USDC → AAPLc through the real Mainnet runtime path** 
 | Kill switch (in-sandbox) | `MPGR_AUTONOMOUS_EMERGENCY_DISABLE=true` | Evaluated inside the runtime before every action → goal PARKED, nothing signed. The canary test ALSO refuses to start when this is set. |
 | Master switch | `MPGR_AUTONOMOUS_AGENT_ENABLED` | Exists ONLY inside the canary test process of an explicitly armed dispatch (Phase-5-armed pattern). The product default remains OFF; no Vercel/production env changes. |
 
+**Exact wallet roles (and the reuse guard):**
+
+| Role | Identity | Chain | Rules |
+|---|---|---|---|
+| **Mainnet canary broadcaster** | NEW dedicated key — GitHub secret `MPGR_MAINNET_CANARY_PRIVATE_KEY`; address pinned as `CANARY_ADDRESS` | 8453 ONLY | The ONLY key that can sign the canary. Exposure capped by its own funding (≤ ~1 USDC + gas). Pre-approved to the executor. Drained + rotatable post-canary. |
+| **Sepolia broadcaster (operator)** | existing GitHub secret `MPGR_BROADCASTER_PRIVATE_KEY` | 84532 ONLY | Belongs to the delegated Phase 2–5 path, which hard-refuses chain 8453 (`UNSUPPORTED_CHAIN`) — it can never transact on Mainnet even if misconfigured. NEVER used by the canary. |
+| Executor owner | `0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e` | 8453 | `pause()`/config authority — the on-chain kill switch. Never a broadcaster. |
+| Fee recipient | `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4` | 8453 | Receives the exact 25 bps fee. Never a broadcaster. |
+| User main wallet | user-custodied | any | Never provisioned, requested, or used as a broadcaster by this repo (standing constraint). Assisted/manual trading only. |
+| Deployer | deployment-time only | 8453/84532 | Not part of the canary in any role. |
+
+**Sepolia-reuse guard (deterministic, fail-closed, enforced pre-sign in the canary AND in the read-only preflight):** the canary address must differ from the owner, the fee recipient, the executor, the delegated Sepolia executor, AND the Sepolia broadcaster — checked (1) against the live `MPGR_BROADCASTER_PRIVATE_KEY` env if a runner ever carries it, and (2) against the non-secret address pin `SEPOLIA_BROADCASTER_ADDRESS` (repo variable/secret). Any equality is FATAL: nothing is signed or broadcast.
+
 **Emergency kill-switch procedure (any time):**
 1. Immediate: re-dispatch `Mainnet Canary` with `armed=false` (all jobs then read-only) — and/or set `MPGR_AUTONOMOUS_EMERGENCY_DISABLE=true` in the repo/runner environment and re-run anything armed; the canary test checks it first and refuses.
 2. Structural: the canary only executes inside its explicitly dispatched job — there is no standing Mainnet execution anywhere (the production Mainnet adapter `noDelegationAdapter` refuses every action; F-15).
@@ -36,7 +49,7 @@ Canary trade: **BUY 1.00 USDC → AAPLc through the real Mainnet runtime path** 
    - [ ] bytecode present: executor, Permit2, USDC, WETH, **13/13 stocks**;
    - [ ] decimals: USDC 6, WETH 18, stocks 8;
    - [ ] USDC/AAPLc tick-10 Slipstream pool exists; live quoter 1 USDC → AAPLc inside sanity band [0.0001, 1] AAPLc;
-   - [ ] (with `CANARY_ADDRESS` secret set) canary wallet: ETH ≥ 10¹⁴ wei, USDC ≥ 1.00, allowance ≥ 1.00, and distinct from owner/feeRecipient/executor.
+   - [ ] (with `CANARY_ADDRESS` secret set) canary wallet: ETH ≥ 10¹⁴ wei, USDC ≥ 1.00, allowance ≥ 1.00, and distinct from owner/feeRecipient/executor **and the Sepolia broadcaster** (`SEPOLIA_BROADCASTER_ADDRESS` pin).
 4. Operator sanity: expected proceeds ≈ quote; slippage tolerance 100 bps; verify the dispatch is on `arena/01a0e784-mpgr-hub` at the approved SHA.
 
 ## 3. Exact one-transaction canary procedure (after explicit operator approval)

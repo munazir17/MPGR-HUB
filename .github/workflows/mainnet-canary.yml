@@ -50,6 +50,7 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=4096
       BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
       CANARY_ADDRESS: ${{ secrets.CANARY_ADDRESS || '' }}
+      SEPOLIA_BROADCASTER_ADDRESS: ${{ vars.SEPOLIA_BROADCASTER_ADDRESS || secrets.SEPOLIA_BROADCASTER_ADDRESS || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -110,6 +111,7 @@ jobs:
       MPGR_MAINNET_CANARY_PRIVATE_KEY: ${{ secrets.MPGR_MAINNET_CANARY_PRIVATE_KEY }}
       BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
       CANARY_ADDRESS: ${{ secrets.CANARY_ADDRESS || '' }}
+      SEPOLIA_BROADCASTER_ADDRESS: ${{ vars.SEPOLIA_BROADCASTER_ADDRESS || secrets.SEPOLIA_BROADCASTER_ADDRESS || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
