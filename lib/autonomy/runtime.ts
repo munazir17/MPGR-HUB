@@ -27,7 +27,7 @@ import type { Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
 import { DELEGATED_EXECUTOR_ADDRESS, delegatedActionId } from "@/lib/executor/delegated-executor";
 
 import { AUTONOMY_LIMITS } from "./config";
-import { DELEGATED_ADAPTER_ID, DELEGATED_EXECUTION_CHAIN_ID } from "./types";
+import { DELEGATED_ADAPTER_ID, DELEGATED_EXECUTION_CHAIN_ID, type DelegatedSwapRequest } from "./types";
 import { evaluateCondition, evaluatePolicyAgainstAction } from "./policy-engine";
 import { utcDayKey } from "./idempotency";
 import { isTerminalGoalStatus, type AgentGoal, type AutonomyFailureCode, type GoalActionRecord, type GoalStatus } from "./types";
@@ -436,12 +436,27 @@ export class AutonomyRuntime {
       return { kind: "SKIPPED", reason: "STATE_CHANGED", message: "Goal state changed during evaluation." };
     }
 
-    // TRADE PREPARED — through MCP, unsigned only (spec §12).
-    const prepared = await this.deps.gateway.prepare({ quoteId: quote.quoteId, authorization: "APPROVAL" });
-    if (!prepared.ok) {
-      return this.failAfterClaim(executing, idempotencyKey, prepared.failure.code, prepared.failure.message, now);
+    // TRADE PREPARED — through MCP, unsigned only (spec §12). On the
+    // DELEGATED path (Phase 2/5, Base Sepolia) the v1 intent build does NOT
+    // apply: its token registry is the v1 executor's, so building a v1
+    // intent would wrongly reject delegated-allowlisted tokens (PHASE 5
+    // finding F-9). There, preparation IS the adapter's own signed slot
+    // re-validation (witness actionId/policyHash/minOut vs the live quote),
+    // and the adapter constructs the broadcast calldata itself.
+    const delegatedPath = this.deps.adapter.id === DELEGATED_ADAPTER_ID;
+    let preparedSteps: DelegatedSwapRequest["steps"] = [];
+    let preparedTransactionRequest: DelegatedSwapRequest["transactionRequest"] = null;
+    if (delegatedPath) {
+      await this.audit(goal.wallet, "TRADE_PREPARED", now, goal.id, goal.policyId, { quoteId: quote.quoteId, steps: 0, delegated: true });
+    } else {
+      const prepared = await this.deps.gateway.prepare({ quoteId: quote.quoteId, authorization: "APPROVAL" });
+      if (!prepared.ok) {
+        return this.failAfterClaim(executing, idempotencyKey, prepared.failure.code, prepared.failure.message, now);
+      }
+      preparedSteps = prepared.data.steps;
+      preparedTransactionRequest = prepared.data.transactionRequest;
+      await this.audit(goal.wallet, "TRADE_PREPARED", now, goal.id, goal.policyId, { quoteId: quote.quoteId, steps: prepared.data.steps.length });
     }
-    await this.audit(goal.wallet, "TRADE_PREPARED", now, goal.id, goal.policyId, { quoteId: quote.quoteId, steps: prepared.data.steps.length });
 
     // EXECUTE — only the adapter can reach a signature (spec §6). It is
     // called with UNSIGNED data and after every deterministic check passed.
@@ -460,8 +475,8 @@ export class AutonomyRuntime {
         minBuyAmountRaw: quote.minBuyAmountRaw,
         slippageBps,
         idempotencyKey,
-        steps: prepared.data.steps,
-        transactionRequest: prepared.data.transactionRequest,
+        steps: preparedSteps,
+        transactionRequest: preparedTransactionRequest,
       });
     } catch (error) {
       this.deps.logger.error("Autonomous execution adapter threw", { goalId: goal.id });

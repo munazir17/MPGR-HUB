@@ -475,3 +475,83 @@ describe("hardening §14: full ordered audit chain on the success path", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// F-9 regression pin: the runtime's DELEGATED path must NOT build a v1
+// intent (gateway.prepare validates against the v1 token registry and
+// wrongly rejects delegated-allowlisted tokens). Preparation on the
+// delegated path is the adapter's own signed-slot re-validation.
+// ---------------------------------------------------------------------------
+
+describe("hardening F-9: delegated runtime path skips the v1 prepare seam", () => {
+  it("executes a delegated-chain goal without ever calling gateway.prepare; adapter receives empty steps", async () => {
+    vi.stubEnv("MPGR_AUTONOMOUS_AGENT_ENABLED", "true");
+    try {
+      const { InMemoryAutonomyStore } = await import("@/lib/autonomy/store");
+      const { AutonomyRuntime: RT } = await import("@/lib/autonomy/runtime");
+      const { BusAuditSink: Sink } = await import("@/lib/autonomy/audit");
+      const { InMemoryEventBus: Bus } = await import("@/lib/architecture/core/event-bus");
+      const { InMemoryPerformanceMonitor: Perf } = await import("@/lib/architecture/core/performance-monitor");
+      const { DELEGATED_ADAPTER_ID } = await import("@/lib/autonomy/types");
+      const { getAddress: ga } = await import("viem");
+      const { silentLogger: slog } = await import("./helpers");
+
+      const prepareSpy = vi.fn();
+      const executeSpy = vi.fn(async (..._args: unknown[]) => ({ ok: true, txHash: ("0x" + "7e".repeat(32)) as `0x${string}` }));
+      const sellTok = ga("0x00000000000000000000000000000000000000a5");
+      const buyTok = ga("0x00000000000000000000000000000000000000b7");
+      const gw = {
+        quote: async () => ({
+          ok: true,
+          data: { quoteId: "q-f9", sellAmountRaw: "500", expectedBuyAmountRaw: "1000", minBuyAmountRaw: "900", quoteExpiresAt: Math.floor(Date.now() / 1000) + 600 },
+        }),
+        prepare: prepareSpy,
+        status: async () => ({ ok: true, data: { status: "confirmed", blockNumber: "1" } }),
+        verify: async () => ({ ok: true, data: { verified: true, checks: [], actualBuyAmountRaw: "1000", feeAmountRaw: "1" } }),
+      } as unknown as McpGateway;
+      const adapter = {
+        id: DELEGATED_ADAPTER_ID,
+        canDelegate: true,
+        checkAuthorization: () => ({ authorized: true }),
+        executeSwap: executeSpy,
+      };
+      const store = new InMemoryAutonomyStore();
+      const walletAddr = ga("0x0000000000000000000000000000000000000d0e");
+      const policy = await store.createPolicy({
+        id: "pol-f9", wallet: walletAddr, chainId: 84532, actions: ["swap"], sellToken: sellTok, buyToken: buyTok,
+        maxPerTradeRaw: "500", maxDailyRaw: "2500", maxSlippageBps: 500, maxActionsPerDay: 2, enabled: true,
+        createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        authorizedAt: new Date().toISOString(), authorizationRef: "f9",
+      });
+      const goal = await store.createGoal({
+        id: "", wallet: walletAddr, policyId: policy!.id, type: "conditional_swap", description: "f9", status: "ACTIVE",
+        condition: { kind: "price_below", threshold: "1000000" },
+        trade: { sellToken: sellTok, buyToken: buyTok, sellAmountRaw: "500", slippageBps: 100, sellDecimals: 6, buyDecimals: 6 },
+        cooldownSeconds: 60, maxTrades: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(), nextEvaluationAt: new Date().toISOString(),
+        pendingExecution: null, stats: { evaluations: 0, triggered: 0, verified: 0, consecutiveFailures: 0 },
+      } as never);
+      const bus = new Bus();
+      const perf = new Perf();
+      const runtime = new RT({ store, gateway: gw, adapter: adapter as never, audit: new Sink(store, bus, perf), logger: slog, performanceMonitor: perf, now: () => new Date() });
+
+      const submitted = await runtime.evaluateGoal(goal.id);
+      expect(submitted.kind).toBe("EXECUTION_SUBMITTED");
+      expect(prepareSpy, "delegated path must NOT call the v1 prepare seam").not.toHaveBeenCalled();
+      const req = (executeSpy.mock.calls as unknown as Array<Array<unknown>>)[0]?.[0] as { steps: unknown[]; transactionRequest: unknown };
+      expect(req.steps).toEqual([]);
+      expect(req.transactionRequest).toBeNull();
+
+      // verification pass completes the goal without prepare as well
+      const { AUTONOMY_LIMITS: LIMITS } = await import("@/lib/autonomy/config");
+      await new Promise((r) => setTimeout(r, 50));
+      const g = (await store.getGoal(goal.id))!;
+      await store.transitionGoal(goal.id, walletAddr, ["EXECUTING"], g.updatedAt, { updatedAt: "v2", nextEvaluationAt: new Date().toISOString() });
+      const second = await runtime.evaluateGoal(goal.id);
+      expect((await store.getGoal(goal.id))!.status).toBe("COMPLETED");
+      void second; void LIMITS;
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
