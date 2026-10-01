@@ -85,8 +85,8 @@ async function seedOwnedBy(wallet: Address) {
     actions: ["swap"],
     sellToken: SELL,
     buyToken: BUY,
-    maxPerTradeRaw: "1000000000",
-    maxDailyRaw: "10000000000",
+    maxPerTradeRaw: "1000000000000000000000",
+    maxDailyRaw: "10000000000000000000000",
     maxSlippageBps: 100,
     maxActionsPerDay: 5,
     enabled: true,
@@ -273,5 +273,64 @@ describe("hardening §16: response hygiene — no key material or internal detai
     expect(theirs).not.toContain(createdBody.policy.id);
     // cleanup so cross-test store state stays small
     await POLICY_DELETE(new Request("http://x/api/policy", { method: "DELETE", body: JSON.stringify({ policyId: createdBody.policy.id }) }));
+  });
+});
+
+describe("hardening §15 round-2: expired SIWE, malformed bodies, duplicate creation, audit emission", () => {
+  beforeEach(() => {
+    flag(true);
+  });
+
+  it("an EXPIRED/invalid SIWE session is indistinguishable from no session: 401 everywhere (fail-closed)", async () => {
+    // The session seam (`requireWallet`) returns null for missing AND expired
+    // sessions (expiry is checked inside the session store before returning).
+    currentWallet = null;
+    const res = await GOAL_GET(new Request("http://x/api/goal"), ctx(GOAL_ID));
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBeTruthy(); // auditable reason, never a silent empty 401
+  });
+
+  it("malformed JSON body -> 4xx with a structured error, never a 5xx", async () => {
+    currentWallet = USER;
+    const bad = new Request("http://x/api/goals", { method: "POST", body: "{not json", headers: { "content-type": "application/json" } });
+    const res = await GOALS_POST(bad);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+    const body = (await res.json()) as { error?: string };
+    expect(typeof body.error).toBe("string");
+  });
+
+  it("duplicate goal creation is allowed (user-initiated) but every goal gets a DISTINCT id and stays wallet-scoped", async () => {
+    await redis.reset();
+    await seedOwnedBy(USER);
+    currentWallet = USER;
+    const body = JSON.stringify({ policyId: POLICY_ID, condition: { kind: "price_below", threshold: "50" }, sellAmount: "1" });
+    const a = await GOALS_POST(new Request("http://x/api/goals", { method: "POST", body }));
+    const b = await GOALS_POST(new Request("http://x/api/goals", { method: "POST", body }));
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    const ja = (await a.json()) as { goal: { id: string } };
+    const jb = (await b.json()) as { goal: { id: string } };
+    expect(ja.goal.id).not.toBe(jb.goal.id);
+    const listed = (await (await GOALS_GET(new Request("http://x/api/goals"))).json()) as { goals: Array<{ id: string }> };
+    expect(listed.goals.filter((g) => g.id === ja.goal.id || g.id === jb.goal.id)).toHaveLength(2);
+    // cross-wallet still sees nothing
+    currentWallet = OTHER;
+    const otherList = (await (await GOALS_GET(new Request("http://x/api/goals"))).json()) as { goals: Array<{ id: string }> };
+    expect(otherList.goals).toHaveLength(0);
+    currentWallet = USER;
+  });
+
+  it("POST /goals appends a GOAL_CREATED audit event bound to the authenticated wallet", async () => {
+    await redis.reset();
+    await seedOwnedBy(USER);
+    currentWallet = USER;
+    const body = JSON.stringify({ policyId: POLICY_ID, condition: { kind: "price_below", threshold: "50" }, sellAmount: "1" });
+    const created = await GOALS_POST(new Request("http://x/api/goals", { method: "POST", body }));
+    expect(created.status).toBe(201);
+    const { goal } = (await created.json()) as { goal: { id: string } };
+    const audit = await systemUnderTest.store.listAudit(goal.id);
+    expect(audit.some((e) => e.type === "GOAL_CREATED")).toBe(true);
   });
 });
