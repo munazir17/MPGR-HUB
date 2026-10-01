@@ -125,7 +125,18 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     process.env.MPGR_AUTONOMOUS_AGENT_ENABLED = "true";
     // Capture anvil's stderr (fork RPC errors, 429s) for CI debugging.
     anvilLog = createWriteStream(anvilLogPath);
-    anvil = spawn("anvil", ["--fork-url", FORK_RPC, "--port", String(PORT), "--no-rate-limit", "--fork-retry-backoff", "300"], { stdio: ["ignore", "ignore", "pipe"], detached: false });
+    // PIN the fork ~300 blocks (~10 min) behind latest: an unpinned fork
+    // invalidates cached state on every new upstream block, generating refetch
+    // storms that public RPCs throttle. A pinned block is stable AND makes the
+    // rehearsal deterministic. Falls back to unpinned if the upstream cannot
+    // be probed before spawn.
+    let forkUrl = FORK_RPC;
+    try {
+      const res = await fetch(FORK_RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }), signal: AbortSignal.timeout(10_000) });
+      const json = (await res.json()) as { result?: string };
+      if (json.result) forkUrl = `${FORK_RPC}@${BigInt(json.result) - 300n}`;
+    } catch { /* unpinned fallback */ }
+    anvil = spawn("anvil", ["--fork-url", forkUrl, "--port", String(PORT), "--no-rate-limit", "--fork-retry-backoff", "300"], { stdio: ["ignore", "ignore", "pipe"], detached: false });
     anvil.stderr?.on("data", (chunk: Buffer) => anvilLog?.write(chunk));
     // wait for readiness
     const deadline = Date.now() + 180_000;
@@ -176,7 +187,9 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
         const quote = await publicClient.readContract({ address: BASE_MAINNET_SLIPSTREAM.quoterV2, abi: aerodromeQuoterV2Abi as never, functionName: "quoteExactInputSingle", args: [{ tokenIn: BASE_MAINNET_USDC, tokenOut: AAPLc, amountIn: 1_000_000n, tickSpacing: 10, sqrtPriceLimitX96: 0n }] }) as unknown as readonly [bigint, bigint, number, bigint];
         if (!(Array.isArray(quote) && quote[0] > 0n)) missing.push(`slipstreamQuote(1 USDC -> AAPLc = ${String(quote)})`);
       } catch (e) {
-        missing.push(`state probes failed (${(e as Error).message.slice(0, 160)})`);
+        const err = e as Error & { cause?: Error };
+        const detail = `${err.message}${err.cause?.message ? ` <- ${err.cause.message}` : ""}`;
+        missing.push(`state probes failed (${detail.slice(0, 220)})`);
       }
       if (missing.length === 0) break;
       if (Date.now() > warmDeadline) {

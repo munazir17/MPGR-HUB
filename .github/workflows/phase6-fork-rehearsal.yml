@@ -32,7 +32,7 @@ permissions:
 jobs:
   fork-rehearsal:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,7 +59,7 @@ jobs:
           # upstreams with a fresh fork each; a real deterministic failure
           # fails both and the job.
           STATUS=1
-          for upstream in "https://base-rpc.publicnode.com" "https://base.drpc.org"; do
+          for upstream in "https://base-rpc.publicnode.com" "https://base.drpc.org" "https://base.llamarpc.com" "https://1rpc.io/base"; do
             echo "Attempting fork rehearsal against upstream: $upstream"
             BASE_MAINNET_RPC_URL="$upstream" npx vitest run lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts 2>&1 | tee phase6-fork.log
             STATUS=${PIPESTATUS[0]}
