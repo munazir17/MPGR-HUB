@@ -48,6 +48,7 @@ import { BusAuditSink } from "@/lib/autonomy/audit";
 import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
 import type { ChainReader } from "@/lib/executor/executor-chain";
 import {
+  BASE_MAINNET_B20_TOKENS,
   BASE_MAINNET_EXECUTOR_DEPLOYMENT,
   BASE_MAINNET_SLIPSTREAM,
   BASE_MAINNET_USDC,
@@ -187,8 +188,12 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
       try {
         await publicClient.readContract({ address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, abi: MPGR_EXECUTOR_ABI as never, functionName: "owner" });
         await decimalsOf(BASE_MAINNET_USDC);
-        await decimalsOf(AAPLc);
         await decimalsOf(CANONICAL_WETH);
+        // F-13: every configured stock token must answer decimals()==8 on the fork.
+        for (const stock of BASE_MAINNET_B20_TOKENS) {
+          const d = await decimalsOf(stock.address as Address);
+          if (d !== 8) missing.push(`${stock.symbol}(decimals ${d} != 8)`);
+        }
         const pool = (await publicClient.readContract({ address: BASE_MAINNET_SLIPSTREAM.factory, abi: aerodromeSlipstreamFactoryAbi, functionName: "getPool", args: [BASE_MAINNET_USDC, AAPLc, 10] })) as Address;
         if (pool === "0x0000000000000000000000000000000000000000") missing.push("slipstreamPool(USDC/AAPLc tick 10 EMPTY)");
         const quote = await publicClient.readContract({ address: BASE_MAINNET_SLIPSTREAM.quoterV2, abi: aerodromeQuoterV2Abi as never, functionName: "quoteExactInputSingle", args: [{ tokenIn: BASE_MAINNET_USDC, tokenOut: AAPLc, amountIn: 1_000_000n, tickSpacing: 10, sqrtPriceLimitX96: 0n }] }) as unknown as readonly [bigint, bigint, number, bigint];

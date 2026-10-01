@@ -15,10 +15,13 @@
 // No RPC, no signing, no broadcast. Fork rehearsal lives in
 // lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts.
 
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it, vi } from "vitest";
 import { getAddress, type Address, type Hex } from "viem";
 
 import {
+  BASE_MAINNET_B20_TOKENS,
   BASE_MAINNET_CHAIN_ID,
   BASE_MAINNET_EXECUTOR_DEPLOYMENT,
   BASE_MAINNET_USDC,
@@ -511,5 +514,30 @@ describe("PHASE 6 §F: concurrent execution is single-broadcast; same-slot repla
     const key = "exec-goal_p6f:2026-10-01T00:00:00.000Z"; // deterministic per-slot key shape (runtime.ts)
     expect(await store.claimExecution(key, 86_400)).toBe(true);
     expect(await store.claimExecution(key, 86_400), "replay of the same slot key must be refused").toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §G — F-13 CLOSURE (registry ↔ fork-proof drift pin). The on-chain half of
+// F-13 is test/fork/B20StockBytecodeFork.t.sol (contracts-fork CI): it proves
+// all 13 configured stock tokens are DEPLOYED 8-decimal contracts on Base
+// mainnet. This offline pin guarantees that .sol proof and the TS registry can
+// never drift: same 13 addresses, exact per-symbol match, no extra members.
+// -----------------------------------------------------------------------------
+describe("PHASE 6 §G: F-13 closure — the fork bytecode proof and the TS stock registry are in lockstep", () => {
+  it("BASE_MAINNET_B20_TOKENS has exactly 13 entries and matches test/fork/B20StockBytecodeFork.t.sol symbol-for-symbol", () => {
+    expect(BASE_MAINNET_B20_TOKENS).toHaveLength(13);
+
+    const sol = readFileSync("test/fork/B20StockBytecodeFork.t.sol", "utf8");
+    const declared = [...sol.matchAll(/address internal constant (\w+c) = (0x[bB]20[0-9a-fA-F]{37});/g)].map(
+      (m) => ({ symbol: m[1], address: m[2].toLowerCase() }),
+    );
+    expect(declared, "the fork test must declare exactly the 13 stock tokens").toHaveLength(13);
+
+    const config = BASE_MAINNET_B20_TOKENS.map((t) => ({ symbol: t.symbol, address: t.address.toLowerCase() }));
+    for (let i = 0; i < 13; i++) {
+      expect(declared[i].symbol, `registry order/symbol drift at #${i}`).toBe(config[i].symbol);
+      expect(declared[i].address, `registry address drift for ${config[i].symbol}`).toBe(config[i].address);
+    }
   });
 });
