@@ -228,3 +228,24 @@ guards: flag-off default, explicit per-goal wallet authorization (user-signed
 bounded Permit2 slots), tiny caps, emergency stop, single-use nonces, receipt-fact
 verification, no auto-rebroadcast, full audit. Mainnet remains LOCKED and requires
 its own explicit approval + adversarial pass (see §7 prerequisites, unchanged).
+
+## Phase 5 final gate addendum (same day, no new broadcast)
+
+- **Full-suite gate on the final state:** 2324 passed / 0 failed (10 env-gated skips:
+  the armed live harness + the CI-only preflight), tsc clean, lint 0 errors / 59
+  pre-existing warnings, audit:high PASSED, CI green at the Phase 5 tip.
+- **Scheduler link + duplicate rejection proven deterministically**
+  (`lib/autonomy/__tests__/phase5-chain.test.ts`): goal → `scheduler.tick` →
+  policy → slot → quote → ONE broadcast → EXECUTING(pending) → immediate duplicate
+  tick evaluates 0 and cannot re-broadcast → verification via the same scheduler
+  seam → goal COMPLETED with the full ordered audit chain and no key material;
+  consumed slot selection refuses forever (`NO_SLOTS`).
+- **F-12 (LOW, disclosure correction):** balance re-reconciliation proved **two**
+  orphan BUY broadcasts occurred across the arming attempts (runs 36840467365 and
+  36841133124), not one as previously disclosed. Each 0.01 tUSD, each verified
+  on-chain with the exact fee; both SELL counterparts never ran (assert failures
+  after the BUY). Run 36841133124's failure was a stale load-balanced-RPC balance
+  read in the TEST's evidence code (its in-test verification had already passed) —
+  production-path balance reads use receipt facts, not mid-test balance deltas.
+  Full arithmetic: −3×10,025 (three BUYs incl. fees) + 9,965 (SELL proceeds) =
+  −20,110 tUSD — exactly the on-chain delta. 
