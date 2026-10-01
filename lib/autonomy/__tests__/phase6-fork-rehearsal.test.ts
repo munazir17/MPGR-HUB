@@ -59,6 +59,7 @@ import {
   DELEGATED_EXECUTOR_ADDRESS,
 } from "@/lib/executor/delegated-executor";
 import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
+import { approvalAuthorization, buildExecutorIntent, encodeExecutorSwap } from "@/lib/executor/executor-intent";
 import { aerodromeQuoterV2Abi, aerodromeSlipstreamFactoryAbi } from "@/lib/trade/aerodrome-slipstream";
 import { InMemoryEventBus } from "@/lib/architecture/core/event-bus";
 import { InMemoryPerformanceMonitor } from "@/lib/architecture/core/performance-monitor";
@@ -462,6 +463,47 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     expect(requests, "reverted execution must NOT be blindly retried").toHaveLength(1);
     console.error(`::error::PHASE6_FORK revert ok classified=${goal.lastResult?.code} rebroadcasts=0`);
   }, 600_000);
+
+  it("slippage/minOut is enforced ON-CHAIN by the executor: an unmeetable minOut REVERTS — no bad fill is possible", async () => {
+    const taker = privateKeyToAccount(generatePrivateKey());
+    await fundUsdc(taker, 1_000_000n);
+    const wallet = createWalletClient({ account: taker, chain: foundry, transport: http(LOCAL) });
+    const approve = await wallet.sendTransaction({
+      chain: undefined, account: taker, to: BASE_MAINNET_USDC,
+      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, 2n ** 200n] }), gas: 80_000n,
+    });
+    await publicClient.waitForTransactionReceipt({ hash: approve });
+    // Adversarial intent: same real executor/route, but expectedBuyAmount claims
+    // 10,000,000 AAPLc (8 decimals) for 1 USDC — ~30,000x the live price — so the
+    // derived minOut can never be met on the real USDC/AAPLc pool.
+    const built = buildExecutorIntent({
+      deployment: BASE_MAINNET_EXECUTOR_DEPLOYMENT,
+      taker: taker.address,
+      sellToken: BASE_MAINNET_USDC,
+      buyToken: AAPLc,
+      sellAmount: 1_000_000n,
+      expectedBuyAmount: 10n ** 24n,
+      slippageBps: 300,
+      authorization: "APPROVAL",
+      nowSeconds: Math.floor(clock.ms / 1000),
+      quoteId: "phase6-minout-adversarial",
+      feeBps: 25,
+      feeRecipient: BASE_MAINNET_EXECUTOR_DEPLOYMENT.feeRecipient,
+    });
+    expect(built.ok, JSON.stringify(built.ok ? null : built.error)).toBe(true);
+    const intent = built.ok ? built.value : null;
+    expect(BigInt(intent!.minBuyAmount)).toBe((10n ** 24n * 97n) / 100n); // minOut = expected x (1 - slippage), immutable in calldata
+    const prepared = encodeExecutorSwap(intent!, approvalAuthorization());
+    const hash = await wallet.sendTransaction({ chain: undefined, account: taker, to: prepared.to, data: prepared.data, gas: 600_000n });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    expect(receipt.status, "the executor/venue must revert when amountOut < minOut — a broadcaster cannot force a bad fill").toBe("reverted");
+    // Nothing moved: the revert is atomic (no partial fill, no fee skim).
+    const stock = (await publicClient.readContract({ address: AAPLc, abi: erc20Abi, functionName: "balanceOf", args: [taker.address] })) as bigint;
+    const usdcAfter = (await publicClient.readContract({ address: BASE_MAINNET_USDC, abi: erc20Abi, functionName: "balanceOf", args: [taker.address] })) as bigint;
+    expect(stock).toBe(0n);
+    expect(usdcAfter).toBe(1_000_000n);
+    console.error(`::error::PHASE6_FORK minOut ok reverted=${hash} minOutRaw=${intent!.minBuyAmount} balancesUnchanged=true`);
+  }, 300_000);
 });
 
 const CANONICAL_PERMIT2_LOWER = "0x000000000022d473030f116ddee9f6b43ac78ba3";

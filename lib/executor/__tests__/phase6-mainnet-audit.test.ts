@@ -431,3 +431,85 @@ describe("PHASE 6 §E: policy limits bind on the Mainnet path (max trade, daily 
     expect(AUTONOMY_LIMITS.verificationRetrySeconds).toBe(30);
   });
 });
+
+// -----------------------------------------------------------------------------
+// §F — CONCURRENT EXECUTION + REPLAY PROTECTION ON THE MAINNET PATH (8453).
+// Two simultaneous evaluations of the SAME goal slot must produce exactly ONE
+// broadcast: the evaluation lease (store-level) makes the second concurrent
+// evaluation SKIPPED before it even quotes, and the execution-guard
+// idempotency key makes same-slot replay impossible. These are the v1/Mainnet
+// equivalents of the delegated path's nonce/replay binding.
+// -----------------------------------------------------------------------------
+describe("PHASE 6 §F: concurrent execution is single-broadcast; same-slot replay is impossible on the Mainnet path", () => {
+  it("two concurrent evaluations of one goal -> exactly ONE quote, ONE broadcast (lease win), loser SKIPPED", async () => {
+    vi.stubEnv("MPGR_AUTONOMOUS_AGENT_ENABLED", "true");
+    try {
+      const { InMemoryAutonomyStore } = await import("@/lib/autonomy/store");
+      const { AutonomyRuntime } = await import("@/lib/autonomy/runtime");
+      const { BusAuditSink } = await import("@/lib/autonomy/audit");
+      const { InMemoryEventBus } = await import("@/lib/architecture/core/event-bus");
+      const { InMemoryPerformanceMonitor } = await import("@/lib/architecture/core/performance-monitor");
+      const { silentLogger } = await import("@/lib/autonomy/__tests__/helpers");
+      const { NO_DELEGATION_ADAPTER_ID } = await import("@/lib/autonomy/execution-adapter");
+
+      const quoteSpy = vi.fn(async (..._args: unknown[]) => ({
+        ok: true as const,
+        data: { quoteId: "q-p6f", sellAmountRaw: "500", expectedBuyAmountRaw: "1000", minBuyAmountRaw: "900", quoteExpiresAt: 9_999_999_999 },
+      }));
+      const executeSpy = vi.fn(async (..._args: unknown[]) => ({ ok: true, txHash: ("0x" + "7f".repeat(32)) as `0x${string}` }));
+      const gw = {
+        quote: quoteSpy,
+        prepare: async () => ({
+          ok: true as const,
+          data: { steps: [{ step: "x" }], transactionRequest: { to: MAINNET_EXECUTOR, data: "0xdead" as Hex }, expiresAt: 9_999_999_999 },
+        }),
+        status: async () => ({ ok: true as const, data: { status: "confirmed", blockNumber: "1" } }),
+        verify: async () => ({ ok: true as const, data: { verified: true, checks: [], actualBuyAmountRaw: "1000", feeAmountRaw: "1" } }),
+      } as never;
+      const adapter = {
+        id: NO_DELEGATION_ADAPTER_ID, // v1/Mainnet execution chain (8453)
+        canDelegate: true,
+        checkAuthorization: () => ({ authorized: true }),
+        executeSwap: executeSpy,
+      };
+      const store = new InMemoryAutonomyStore();
+      const walletAddr = getAddress("0x0000000000000000000000000000000000006b1a") as Address;
+      const policy = await store.createPolicy({
+        id: "pol-p6f", wallet: walletAddr, chainId: 8453, actions: ["swap"], sellToken: BASE_MAINNET_USDC, buyToken: AAPLc,
+        maxPerTradeRaw: "500", maxDailyRaw: "2500", maxSlippageBps: 500, maxActionsPerDay: 2, enabled: true,
+        createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        authorizedAt: new Date().toISOString(), authorizationRef: "p6f",
+      });
+      const goal = await store.createGoal({
+        id: "", wallet: walletAddr, policyId: policy!.id, type: "conditional_swap", description: "p6f concurrency", status: "ACTIVE",
+        condition: { kind: "price_below", threshold: "1000000000000000000" },
+        trade: { sellToken: BASE_MAINNET_USDC, buyToken: AAPLc, sellAmountRaw: "500", slippageBps: 100, sellDecimals: 6, buyDecimals: 18 },
+        cooldownSeconds: 60, maxTrades: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(), nextEvaluationAt: new Date().toISOString(),
+        pendingExecution: null, stats: { evaluations: 0, triggered: 0, verified: 0, consecutiveFailures: 0 },
+      } as never);
+      const bus = new InMemoryEventBus();
+      const perf = new InMemoryPerformanceMonitor();
+      const runtime = new AutonomyRuntime({ store, gateway: gw, adapter: adapter as never, audit: new BusAuditSink(store, bus, perf), logger: silentLogger, performanceMonitor: perf, now: () => new Date() });
+
+      // TRUE concurrency: both evaluations enter the runtime simultaneously.
+      const [a, b] = await Promise.all([runtime.evaluateGoal(goal.id), runtime.evaluateGoal(goal.id)]);
+      const kinds = [a.kind, b.kind].sort();
+      expect(kinds).toEqual(["EXECUTION_SUBMITTED", "SKIPPED"]);
+      const loser = a.kind === "SKIPPED" ? a : b;
+      expect(loser.kind === "SKIPPED" && loser.reason).toBe("LEASE_BUSY");
+      expect(executeSpy, "exactly ONE broadcast under concurrency").toHaveBeenCalledTimes(1);
+      expect(quoteSpy, "the lease loser must never even quote").toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("the execution guard refuses a replayed idempotency key (same slot can never broadcast twice)", async () => {
+    const { InMemoryAutonomyStore } = await import("@/lib/autonomy/store");
+    const store = new InMemoryAutonomyStore();
+    const key = "exec-goal_p6f:2026-10-01T00:00:00.000Z"; // deterministic per-slot key shape (runtime.ts)
+    expect(await store.claimExecution(key, 86_400)).toBe(true);
+    expect(await store.claimExecution(key, 86_400), "replay of the same slot key must be refused").toBe(false);
+  });
+});
