@@ -59,6 +59,7 @@ import {
   DELEGATED_EXECUTOR_ADDRESS,
 } from "@/lib/executor/delegated-executor";
 import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
+import { aerodromeQuoterV2Abi, aerodromeSlipstreamFactoryAbi } from "@/lib/trade/aerodrome-slipstream";
 import { InMemoryEventBus } from "@/lib/architecture/core/event-bus";
 import { InMemoryPerformanceMonitor } from "@/lib/architecture/core/performance-monitor";
 import type { EventBus, Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
@@ -145,37 +146,43 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     // EAGER WARM-UP: a lazy anvil fork degrades SILENTLY when the upstream
     // public RPC flakes (a contract can read as codeless EOA -> OpcodeNotFound
     // or a call "succeeds" as a plain transfer). Touch every contract this
-    // suite needs once, with retries, so the code is cached locally BEFORE any
-    // rehearsal runs — and so a genuinely absent contract fails loudly HERE.
-    const warm = [
-      ["executor", BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor],
-      ["USDC", BASE_MAINNET_USDC],
-      ["AAPLc", AAPLc],
-      ["WETH", CANONICAL_WETH],
-      ["slipstreamRouter", BASE_MAINNET_SLIPSTREAM.swapRouter],
-      ["slipstreamFactory", BASE_MAINNET_SLIPSTREAM.factory],
-      ["slipstreamQuoter", BASE_MAINNET_SLIPSTREAM.quoterV2],
-    ] as const;
+    // suite needs once — bytecode AND a view/quote call that MUST succeed —
+    // with retries, so state is cached locally BEFORE any rehearsal runs and
+    // a genuinely absent contract/pool fails loudly HERE.
+    const code = async (label: string, address: Address, missing: string[]) => {
+      const c = await publicClient.getBytecode({ address });
+      if (!c || c === "0x") missing.push(`${label}(no code)`);
+    };
+    const decimalsOf = (address: Address) => publicClient.readContract({ address, abi: erc20Abi, functionName: "decimals" });
     const warmDeadline = Date.now() + 180_000;
     for (;;) {
       const missing: string[] = [];
-      for (const [label, address] of warm) {
-        try {
-          const code = await publicClient.getBytecode({ address });
-          if (!code || code === "0x") { missing.push(`${label}(no code)`); continue; }
-          // Real state probe too: a lazy fork can serve bytecode but fail the
-          // FIRST eth_call against it (same upstream degradation).
-          await publicClient.readContract({ address, abi: erc20Abi, functionName: "decimals" });
-        } catch {
-          missing.push(`${label}(eth_call failed)`);
-        }
+      await code("executor", BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, missing).catch(() => missing.push("executor(code)"));
+      await code("USDC", BASE_MAINNET_USDC, missing).catch(() => missing.push("USDC(code)"));
+      await code("AAPLc", AAPLc, missing).catch(() => missing.push("AAPLc(code)"));
+      await code("WETH", CANONICAL_WETH, missing).catch(() => missing.push("WETH(code)"));
+      await code("slipstreamRouter", BASE_MAINNET_SLIPSTREAM.swapRouter, missing).catch(() => missing.push("slipstreamRouter(code)"));
+      await code("slipstreamFactory", BASE_MAINNET_SLIPSTREAM.factory, missing).catch(() => missing.push("slipstreamFactory(code)"));
+      await code("slipstreamQuoter", BASE_MAINNET_SLIPSTREAM.quoterV2, missing).catch(() => missing.push("slipstreamQuoter(code)"));
+      // State probes (each MUST succeed for its contract type):
+      try {
+        await publicClient.readContract({ address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, abi: MPGR_EXECUTOR_ABI as never, functionName: "owner" });
+        await decimalsOf(BASE_MAINNET_USDC);
+        await decimalsOf(AAPLc);
+        await decimalsOf(CANONICAL_WETH);
+        const pool = (await publicClient.readContract({ address: BASE_MAINNET_SLIPSTREAM.factory, abi: aerodromeSlipstreamFactoryAbi, functionName: "getPool", args: [BASE_MAINNET_USDC, AAPLc, 10] })) as Address;
+        if (pool === "0x0000000000000000000000000000000000000000") missing.push("slipstreamPool(USDC/AAPLc tick 10 EMPTY)");
+        const quote = await publicClient.readContract({ address: BASE_MAINNET_SLIPSTREAM.quoterV2, abi: aerodromeQuoterV2Abi as never, functionName: "quoteExactInputSingle", args: [{ tokenIn: BASE_MAINNET_USDC, tokenOut: AAPLc, amountIn: 1_000_000n, tickSpacing: 10, sqrtPriceLimitX96: 0n }] }) as unknown as readonly [bigint, bigint, number, bigint];
+        if (!(Array.isArray(quote) && quote[0] > 0n)) missing.push(`slipstreamQuote(1 USDC -> AAPLc = ${String(quote)})`);
+      } catch (e) {
+        missing.push(`state probes failed (${(e as Error).message.slice(0, 160)})`);
       }
       if (missing.length === 0) break;
       if (Date.now() > warmDeadline) {
         anvilLog?.end();
-        throw new Error(`fork warm-up failed — contracts still unusable (upstream RPC degradation or genuinely absent): ${missing.join(", ")}`);
+        throw new Error(`fork warm-up failed — contracts still unusable (upstream RPC degradation or genuinely absent): ${missing.join("; ")}`);
       }
-      console.error(`[phase6-warmup] retrying unusable contracts: ${missing.join(", ")}`);
+      console.error(`[phase6-warmup] retrying unusable contracts: ${missing.join("; ")}`);
       await new Promise((r) => setTimeout(r, 3000));
     }
   }, 600_000); // boot (≤180s) + warm-up (≤180s) + margin on slow public upstreams
