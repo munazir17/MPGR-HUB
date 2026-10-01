@@ -103,7 +103,7 @@ jobs:
           if [ -n "$ID" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@comment.md >/dev/null
           else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && hashFiles('smoke-rehearsal.json') != ''
         with:
           name: smoke-rehearsal
@@ -164,7 +164,7 @@ jobs:
           if [ -n "$ID" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@comment.md >/dev/null
           else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && hashFiles('smoke-live.json') != ''
         with:
           name: smoke-live
