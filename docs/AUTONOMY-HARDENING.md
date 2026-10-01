@@ -159,3 +159,72 @@ signed-binding immutability, or the single-execution-per-slot property.
 - **INV-4** revoked/expired authorizations can never execute.
 - **INV-5** emergency stop + feature flag gate every new execution; verification of an already-broadcast tx still completes.
 - **INV-6** uncertain broadcast outcomes are never re-broadcast; verification-first, bounded attempts.
+
+---
+
+# PHASE 5 ADDENDUM — GUARDED BASE SEPOLIA READINESS (2026-10-01)
+
+**Result: PASS.** One explicitly armed, tiny-value (0.01 tUSD) readiness test ran the
+EXISTING delegated path end-to-end on Base Sepolia 84532 and reconciled clean.
+No Mainnet touch; no Vercel/production change; autonomous remains OFF by default
+(the flag is true ONLY inside the armed job of the explicitly dispatched run).
+
+## Mechanism (existing, reused — nothing new)
+`.github/workflows/phase5-readiness.yml`: `preflight` (always) → `armed` (explicit
+commit-tag arm) → `reconcile` (read-only). Harness:
+`lib/autonomy/__tests__/live-delegated.execution.test.ts` (Phase 3 mechanism,
+extended: tiny policy caps, runtime-driven SELL leg). Reconciler:
+`scripts/phase5-reconcile.mjs`.
+
+## Preflight results (run 36839442133 + every armed run's gate)
+- Env fail-closed: broadcaster/test-user/deployer keys + RPC verified present and well-formed.
+- Identity: broadcaster `0x9898EcD0BcDdF1A240b88355db069d4016b23d28`, test user and
+  deployer — three distinct wallets; broadcaster ETH ≥ gas floor.
+- Chain: `chainId == 84532`; executor == frozen `0xa9568499D7e58854F2590a56B6D32788DbfA58F9`.
+- Executor deep posture ON-CHAIN: bytecode present; `feeBps == 25`;
+  `PERMIT2 == 0x0000…` canonical; `WITNESS_TYPE_STRING` == `DELEGATED_WITNESS_TYPE_STRING`.
+- Fee recipient on-chain: `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4`.
+- Slot limits: `MAX_DELEGATED_SLOTS == 5`; deterministic nonce/actionId space pinned.
+- Emergency disable: `EMERGENCY_DISABLE` blocks the adapter (fail-closed, env-proven).
+- No-Mainnet path: `delegateSwap` refuses chainId 8453 (`UNSUPPORTED_CHAIN`);
+  slot selection refuses a Mainnet policy (`CHAIN_MISMATCH`).
+- Dry-run plan produced (`phase5-plan.json`) — NO broadcast at preflight.
+- ALL 9 Phase 4 hardening suites re-run in CI preflight: 126/126 ✓.
+
+## Armed test (run 36841538979 @ `1e161db`) — BROADCAST TRANSACTIONS
+| Leg | Tx | Path |
+| --- | --- | --- |
+| BUY tUSD→tSTOCK | `0x9f007a5b1f16dda81edbe4e0326ab7b52d5a0e36c0db42dab8e04c5b5fbbe285` | goal → policy (tiny caps) → user-signed slot → DelegatedExecutionAdapter → MCP `delegateSwap` → broadcaster → frozen executor |
+| SELL tSTOCK→tUSD | `0x5a9b9a86aa13afaf454721b82171b320308a2595add976191d540286aefbae90` | FULL runtime chain: goal (ACTIVE) → policy → slot → runtime condition/policy/idempotency gates → adapter → MCP → broadcaster → executor → receipt → `EXECUTION_VERIFIED` → ordered audit events → goal **COMPLETED** |
+
+Both receipts `success` (blocks 47539004 / 47539007); both verified with
+`tx.from == broadcaster`, `taker == testUser`, exact `floor(gross × 25 bps)` fees,
+on-chain minOut enforced.
+
+## Reconciliation (all checks OK)
+- Balances (Phase 3-end → now): test user tUSD 98,905,468 → 98,885,358 (−20,110 =
+  two BUYs of 10,025 incl. fee, minus SELL proceeds); tSTOCK 1,775,488,098,139,350,068
+  → 1,775,642,919,384,543,795 (+154.82e12 = two BUY outs − SELL fee) — consistent
+  with the disclosed orphan (below) plus this run's pair.
+- Fee recipient: `0x96F7fb5C…964A4`, tUSD balance 50,500,075 (received both BUY fees).
+- Broadcaster gas: 0.00000122 ETH (BUY) + 0.00000122 ETH (SELL) = 2.438e9 wei total;
+  broadcaster identity re-derived from the key and matched the run evidence.
+- Slot/nonce state: BOTH Permit2 single-use nonces consumed (bitmap bits flipped:
+  buy wordPos 354797…569 bit 240; sell wordPos 960210…590 bit 155).
+- Goal state: runtime goal **COMPLETED**, `pendingExecution` cleared, VERIFIED action record persisted.
+- Audit: ordered `QUOTE_CREATED → CONDITION_CHECKED → CONDITION_MET → POLICY_APPROVED →
+  AUTHORIZATION_CHECKED → TRADE_PREPARED → TRANSACTION_SUBMITTED → EXECUTION_VERIFIED`, no secrets.
+
+## Phase 5 findings
+| # | Severity | Finding | Status |
+| --- | --- | --- | --- |
+| F-9 | HIGH | Runtime's TRADE_PREPARED seam built a v1 intent on the delegated chain — v1 token registry wrongly rejects delegated-allowlisted tokens (`TOKEN_NOT_ALLOWED`), so delegated goals could never pass prepare. **One orphan BUY (0.01 tUSD, run 36840467365) occurred before discovery; its hash was only in capped log lines and is disclosed as unrecoverable here (fee 25 raw + dust gas; balances above account for it).** | **FIXED** — delegated path skips v1 prepare (preparation = adapter's signed-slot re-validation); unit pin in `hardening-gaps`; v1 path unchanged |
+| F-10 | LOW | First armed attempt failed at the broadcaster with the underlying cause swallowed. No broadcast occurred (pre-acceptance throw; balances/nonce math confirm nothing on-chain). | FIXED — sanitized diagnostics in `delegateSwap`'s fail-closed message (URLs stripped, capped) |
+| F-11 | INFORMATIONAL | The delegated quote seam requires the quote-signing env (`AUTH_SESSION_SECRET`) in harness runs; a run-scoped value suffices (same pattern as the Phase 3 workflow). | Documented |
+
+## Phase 5 verdict
+The autonomous delegated path is **READY on Base Sepolia** under the existing
+guards: flag-off default, explicit per-goal wallet authorization (user-signed
+bounded Permit2 slots), tiny caps, emergency stop, single-use nonces, receipt-fact
+verification, no auto-rebroadcast, full audit. Mainnet remains LOCKED and requires
+its own explicit approval + adversarial pass (see §7 prerequisites, unchanged).
