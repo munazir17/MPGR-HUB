@@ -65,7 +65,7 @@ export interface McpGateway {
   quote(input: Record<string, unknown>): Promise<GatewayResult<QuotedSwap>>;
   prepare(input: Record<string, unknown>): Promise<GatewayResult<PreparedSwap>>;
   status(chainId: number, txHash: string): Promise<GatewayResult<{ status: "confirmed" | "reverted" | "pending_or_unknown"; blockNumber?: string }>>;
-  verify(quoteId: string, txHash: string, expectedSender?: string): Promise<GatewayResult<{ verified: boolean; checks: Array<{ name: string; ok: boolean }>; actualBuyAmountRaw?: string; feeAmountRaw?: string; blockNumber?: string }>>;
+  verify(quoteId: string, txHash: string, expectedSender?: string, expectedIntentId?: string): Promise<GatewayResult<{ verified: boolean; checks: Array<{ name: string; ok: boolean }>; actualBuyAmountRaw?: string; feeAmountRaw?: string; blockNumber?: string }>>;
   /** Phase 2 delegated execution: broadcast a fully-validated witness-authorized swap (Base Sepolia only). */
   delegateSwap(input: Record<string, unknown>): Promise<GatewayResult<{ txHash: string; expectedSender?: string | null }>>;
   /** Raw deps for callers that must reuse MCP views (verification formatting). */
@@ -183,8 +183,11 @@ export class McpTradeGateway implements McpGateway {
     };
   }
 
-  async verify(quoteId: string, txHash: string, expectedSender?: string): Promise<GatewayResult<{ verified: boolean; checks: Array<{ name: string; ok: boolean }>; actualBuyAmountRaw?: string; feeAmountRaw?: string; blockNumber?: string }>> {
-    const outcome = await verifyTrade(this.mcpDeps, expectedSender ? { quoteId, txHash, expectedSender } : { quoteId, txHash });
+  async verify(quoteId: string, txHash: string, expectedSender?: string, expectedIntentId?: string): Promise<GatewayResult<{ verified: boolean; checks: Array<{ name: string; ok: boolean }>; actualBuyAmountRaw?: string; feeAmountRaw?: string; blockNumber?: string }>> {
+    const input: Record<string, unknown> = { quoteId, txHash };
+    if (expectedSender) input.expectedSender = expectedSender;
+    if (expectedIntentId) input.expectedIntentId = expectedIntentId;
+    const outcome = await verifyTrade(this.mcpDeps, input);
     if (!outcome.ok) return fail(outcome);
     const d = outcome.data as Record<string, unknown>;
     const event = (d.event ?? null) as Record<string, unknown> | null;

@@ -24,7 +24,7 @@
 //   * the LLM appears NOWHERE in this file — there is nothing to prompt.
 
 import type { Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
-import { DELEGATED_EXECUTOR_ADDRESS } from "@/lib/executor/delegated-executor";
+import { DELEGATED_EXECUTOR_ADDRESS, delegatedActionId } from "@/lib/executor/delegated-executor";
 
 import { AUTONOMY_LIMITS } from "./config";
 import { DELEGATED_ADAPTER_ID, DELEGATED_EXECUTION_CHAIN_ID } from "./types";
@@ -130,6 +130,11 @@ export class AutonomyRuntime {
       minBuyAmountRaw: pending.minBuyAmountRaw,
       attemptsSoFar: attempts,
       expectedSender: pending.expectedSender,
+      // Delegated path: the executor binds the event intentId to the signed
+      // witness actionId (delegatedActionId(goalId)).
+      ...(executionChainId(this.deps.adapter) === DELEGATED_EXECUTION_CHAIN_ID
+        ? { expectedIntentId: delegatedActionId(goal.id) }
+        : {}),
     });
 
     if (verdict.outcome === "PENDING_VERIFICATION") {

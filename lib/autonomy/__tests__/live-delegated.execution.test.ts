@@ -213,7 +213,9 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     const buyTxHash: Hex = buyExec.ok ? (buyExec.txHash as Hex) : ("0x" as Hex);
     await waitFor(client, buyTxHash);
 
-    const buyVerify = await gateway.verify(bq!.quoteId, buyTxHash, broadcasterAddress);
+    // expectedIntentId = the SIGNED actionId: the executor binds the event's
+    // intentId to the witness actionId, never the quote-derived id.
+    const buyVerify = await gateway.verify(bq!.quoteId, buyTxHash, broadcasterAddress, buySlot.actionId);
     expect(buyVerify.ok && buyVerify.data.verified, `BUY verification FAILED: ${JSON.stringify(buyVerify)}`).toBe(true);
     const buyFee = BigInt((buyVerify.ok && buyVerify.data.feeAmountRaw) || "0");
     expect(buyFee, "BUY fee must equal floor(gross * 25 bps)").toBe((sellAmountRaw * 25n) / 10000n);
@@ -280,7 +282,7 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     const sellTxHash: Hex = sellExec.ok ? (sellExec.txHash as Hex) : ("0x" as Hex);
     await waitFor(client, sellTxHash);
 
-    const sellVerify = await gateway.verify(sq!.quoteId, sellTxHash, broadcasterAddress);
+    const sellVerify = await gateway.verify(sq!.quoteId, sellTxHash, broadcasterAddress, sellSlot.actionId);
     expect(sellVerify.ok && sellVerify.data.verified, `SELL verification FAILED: ${JSON.stringify(sellVerify)}`).toBe(true);
     const sellFee = BigInt((sellVerify.ok && sellVerify.data.feeAmountRaw) || "0");
     expect(sellFee, "SELL fee must equal floor(gross * 25 bps) in tSTOCK").toBe((stockReceived * 25n) / 10000n);

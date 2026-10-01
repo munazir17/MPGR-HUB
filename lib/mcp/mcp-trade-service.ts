@@ -708,14 +708,30 @@ export async function verifyTrade(deps: McpDeps, input: unknown): Promise<ToolOu
 
   if (p.provider === "0x-native-fee") return verifyZeroExReceipt(p, receipt);
 
-  const d = deps.registry[chainId];
-  if (!d) return fail("EXECUTOR_NOT_DEPLOYED", "Executor not deployed on this chain.");
+  const defaultDeployment = deps.registry[chainId];
+  if (!defaultDeployment) return fail("EXECUTOR_NOT_DEPLOYED", "Executor not deployed on this chain.");
+  // Phase 3: select the verification registry by FACT — the receipt's
+  // executed contract. A trade the delegated executor executed is verified
+  // against the delegated registry (its own token allowlist/routes); every
+  // other trade keeps the v1 default. Fail-closed: an unknown executor fails
+  // the executor checks downstream, never passes by heuristic.
+  const delegatedDeployment = deps.delegatedRegistry?.[chainId];
+  const executedTo = typeof receipt.to === "string" ? getAddress(receipt.to) : null;
+  const d = delegatedDeployment && executedTo !== null && executedTo === delegatedDeployment.executor ? delegatedDeployment : defaultDeployment;
   const built = intentFromPayload(d, p, args.quoteId as string, "APPROVAL");
   if (!built.ok) return built;
   if (typeof args.expectedSender === "string" && isAddress(args.expectedSender)) {
     // Delegated path ONLY (additive): verification is scoped to the explicit
     // expectedSender; the event taker check remains the owner binding.
     built.intent.expectedSender = getAddress(args.expectedSender);
+  }
+  if (typeof args.expectedIntentId === "string") {
+    // Delegated path ONLY: the executor REQUIRES call intentId == the signed
+    // witness actionId (contract line: p.intentId != auth.witness.actionId ->
+    // InvalidWitness), so the event carries the actionId, never the quote-
+    // derived id. The caller pins it explicitly; the event check stays strict.
+    if (!/^0x[0-9a-fA-F]{64}$/.test(args.expectedIntentId)) return fail("INVALID_INTENT_ID", "expectedIntentId must be a 32-byte hex hash.");
+    built.intent.intentId = args.expectedIntentId as `0x${string}`;
   }
   const result = verifyExecutorReceipt(receipt, built.intent);
   return { ok: true, data: jsonSafe({ ...result, explorerUrl: `${EXECUTOR_EXPLORERS[chainId]}/tx/${receipt.transactionHash}` }) as Record<string, unknown> };

@@ -27,6 +27,12 @@ export interface VerificationInput {
   attemptsSoFar: number;
   /** Delegated path ONLY: broadcaster address for scoped tx.from semantics. */
   expectedSender?: string;
+  /**
+   * Delegated path ONLY: the signed witness actionId — the executor requires
+   * call intentId == actionId, so the SwapExecuted event carries this, never
+   * the quote-derived intent id.
+   */
+  expectedIntentId?: string;
 }
 
 export interface VerificationVerdict {
@@ -92,7 +98,7 @@ export async function verifyExecution(gateway: McpGateway, input: VerificationIn
   // Receipt is confirmed — prove it matched the quote via MCP verification.
   let verification;
   try {
-    verification = await gateway.verify(input.quoteId, input.txHash, input.expectedSender);
+    verification = await gateway.verify(input.quoteId, input.txHash, input.expectedSender, input.expectedIntentId);
   } catch {
     return {
       outcome: "PENDING_VERIFICATION",
