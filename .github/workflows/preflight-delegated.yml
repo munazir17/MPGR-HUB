@@ -170,8 +170,10 @@ jobs:
               fi
             fi
             if [ -z "$LOGLINE" ]; then
-              EXEC_T0S=$(printf '%s' "$R" | jq -r --arg e "$EXEC" '[.logs[] | select((.address|ascii_downcase)==($e|ascii_downcase)) | .topics[0]] | join(",")')
-              echo "::error::PREFLIGHT live_${LEG}_swapEvent=MISSING executor_log_topic0s=[$EXEC_T0S] log_count=$(printf '%s' "$R" | jq '.logs | length')"
+              EXEC_T0S=$(printf '%s' "$R" | jq -r --arg e "$EXEC" '[.logs[] | select((.address|ascii_downcase)==($e|ascii_downcase)) | .topics[0]] | join(",")' 2>/dev/null) || EXEC_T0S="jq_err"
+              LOG_ADDRS=$(printf '%s' "$R" | jq -r '[.logs[].address] | join(",")' 2>/dev/null) || LOG_ADDRS="jq_err"
+              LOG_KEYS=$(printf '%s' "$R" | jq -r '.logs[0] | keys | join(",")' 2>/dev/null) || LOG_KEYS="jq_err"
+              echo "::error::PREFLIGHT live_${LEG}_swapEvent=MISSING executor_log_topic0s=[$EXEC_T0S] log_addrs=[$LOG_ADDRS] log0_keys=[$LOG_KEYS] log_count=$(printf '%s' "$R" | jq '.logs | length')"
               continue
             fi
             TAKER=0x$(printf '%s' "$LOGLINE" | cut -f1 | cut -c27-66)
