@@ -54,18 +54,18 @@ jobs:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
         run: |
           set +e -uo pipefail
+          # Public Base RPCs degrade under anvil fork load (429 storms, and a
+          # LAZY fork can even read contracts as codeless). Attempt two
+          # upstreams with a fresh fork each; a real deterministic failure
+          # fails both and the job.
           STATUS=1
-          for attempt in 1 2; do
-            npx vitest run lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts 2>&1 | tee phase6-fork.log
+          for upstream in "https://base-rpc.publicnode.com" "https://base.drpc.org"; do
+            echo "Attempting fork rehearsal against upstream: $upstream"
+            BASE_MAINNET_RPC_URL="$upstream" npx vitest run lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts 2>&1 | tee phase6-fork.log
             STATUS=${PIPESTATUS[0]}
             [ "$STATUS" = "0" ] && break
-            # Public Base RPCs rate-limit shared CI egress (HTTP 429) under
-            # fork load — one settle-and-retry absorbs transient storms
-            # (same rationale as the contracts-fork job).
-            if [ "$attempt" = "1" ]; then
-              echo "::warning title=phase6 fork rehearsal failed once::retrying after 60s (public Base RPC 429s are transient)"
-              sleep 60
-            fi
+            echo "::warning title=phase6 fork rehearsal failed against $upstream::retrying with the next upstream after 60s"
+            sleep 60
           done
           # Success-evidence annotations (emitted by the test itself).
           grep -a "::error::PHASE6_FORK" phase6-fork.log | head -8 || true

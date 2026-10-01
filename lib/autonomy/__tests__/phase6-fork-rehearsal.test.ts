@@ -160,15 +160,22 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     for (;;) {
       const missing: string[] = [];
       for (const [label, address] of warm) {
-        const code = await publicClient.getBytecode({ address });
-        if (!code || code === "0x") missing.push(`${label}@${address}`);
+        try {
+          const code = await publicClient.getBytecode({ address });
+          if (!code || code === "0x") { missing.push(`${label}(no code)`); continue; }
+          // Real state probe too: a lazy fork can serve bytecode but fail the
+          // FIRST eth_call against it (same upstream degradation).
+          await publicClient.readContract({ address, abi: erc20Abi, functionName: "decimals" });
+        } catch {
+          missing.push(`${label}(eth_call failed)`);
+        }
       }
       if (missing.length === 0) break;
       if (Date.now() > warmDeadline) {
         anvilLog?.end();
-        throw new Error(`fork warm-up failed — contracts still codeless (upstream RPC degradation or genuinely absent): ${missing.join(", ")}`);
+        throw new Error(`fork warm-up failed — contracts still unusable (upstream RPC degradation or genuinely absent): ${missing.join(", ")}`);
       }
-      console.error(`[phase6-warmup] retrying codeless contracts: ${missing.join(", ")}`);
+      console.error(`[phase6-warmup] retrying unusable contracts: ${missing.join(", ")}`);
       await new Promise((r) => setTimeout(r, 3000));
     }
   }, 180_000);
