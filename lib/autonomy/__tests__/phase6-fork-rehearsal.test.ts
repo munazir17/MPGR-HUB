@@ -26,11 +26,14 @@ import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
 import {
   createPublicClient,
   createWalletClient,
+  encodeAbiParameters,
   encodeFunctionData,
   erc20Abi,
   http,
+  keccak256,
   parseEther,
   decodeEventLog,
+  pad,
   type Address,
   type Hex,
 } from "viem";
@@ -46,9 +49,7 @@ import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
 import type { ChainReader } from "@/lib/executor/executor-chain";
 import {
   BASE_MAINNET_EXECUTOR_DEPLOYMENT,
-  BASE_MAINNET_UNISWAP_V3,
   BASE_MAINNET_USDC,
-  CANONICAL_WETH,
   MPGR_EXECUTOR_DEPLOYMENTS,
 } from "@/lib/executor/executor-config";
 import {
@@ -88,12 +89,15 @@ function makeAdapter(
       if (failMode !== "skipApproval") {
         const allowance = (await opts.publicClient.readContract({ address: sellToken, abi: erc20Abi, functionName: "allowance", args: [account.address, BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor] })) as bigint;
         if (allowance < BigInt(request.sellAmountRaw)) {
-          await opts.wallet.sendTransaction({ chain: undefined, account: opts.wallet.account!, to: sellToken, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, 2n ** 200n] }) });
+          await opts.wallet.sendTransaction({ chain: undefined, account: opts.wallet.account!, to: sellToken, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, 2n ** 200n] }), gas: 80_000n });
         }
       }
       const prepared = request.transactionRequest as { to: `0x${string}`; data: `0x${string}` } | null;
       if (!prepared?.to || !prepared?.data) return { ok: false, code: "EXECUTION_UNAVAILABLE", message: "no prepared transaction" };
-      const hash = await opts.wallet.sendTransaction({ chain: undefined, account: opts.wallet.account!, to: prepared.to, data: prepared.data });
+      // Explicit gas: skips pre-send estimation so a REVERTING swap still
+      // reaches the block (anvil includes reverting txs) — required by the
+      // TX_REVERTED failure-mode rehearsal below.
+      const hash = await opts.wallet.sendTransaction({ chain: undefined, account: opts.wallet.account!, to: prepared.to, data: prepared.data, gas: 600_000n });
       return { ok: true, txHash: hash };
     },
   } as never;
@@ -167,36 +171,37 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     } as unknown as McpDeps;
   }
 
-  async function fundAndBootstrapUsdc(account: PrivateKeyAccount, ethAmount = "1"): Promise<bigint> {
+  async function rpc(method: string, params: unknown[]): Promise<unknown> {
+    const res = await fetch(LOCAL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+    const json = (await res.json()) as { result?: unknown; error?: { message: string } };
+    if (json.error) throw new Error(`rpc ${method}: ${json.error.message}`);
+    return json.result;
+  }
+
+  /**
+   * Fund the taker with REAL USDC on the fork (storage-level, same approach as
+   * the green Solidity fork tests' `deal`). No swap scaffolding: the first CI
+   * attempt showed a WETH-deposit + SwapRouter02 bootstrap can degrade silently
+   * on a lazy public-RPC fork; direct funding is deterministic. Verifies the
+   * exact balance before returning — funding is never silently assumed.
+   */
+  async function fundUsdc(account: PrivateKeyAccount, usdcRaw: bigint): Promise<void> {
     const testClient = (await import("viem")).createTestClient({ chain: foundry, mode: "anvil", transport: http(LOCAL) });
-    await testClient.setBalance({ address: account.address, value: parseEther(ethAmount) });
-    const wallet = createWalletClient({ account, chain: foundry, transport: http(LOCAL) });
-    // ETH -> WETH
-    await wallet.sendTransaction({ to: CANONICAL_WETH, data: "0xd0e30db0", value: parseEther((Number(ethAmount) * 0.9).toFixed(6)) });
-    // WETH -> USDC via official SwapRouter02 (V3, fee 3000) — deterministic fork bootstrap
-    await wallet.sendTransaction({ to: CANONICAL_WETH, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [BASE_MAINNET_UNISWAP_V3.swapRouter02, 2n ** 200n] }) });
-    const wethBalance = (await publicClient.readContract({ address: CANONICAL_WETH, abi: erc20Abi, functionName: "balanceOf", args: [account.address] })) as bigint;
-    await wallet.sendTransaction({
-      to: BASE_MAINNET_UNISWAP_V3.swapRouter02,
-      data: encodeFunctionData({
-        abi: [{
-          name: "exactInputSingle",
-          type: "function",
-          stateMutability: "payable",
-          inputs: [{ name: "params", type: "tuple", components: [
-            { name: "tokenIn", type: "address" }, { name: "tokenOut", type: "address" }, { name: "fee", type: "uint24" },
-            { name: "recipient", type: "address" }, { name: "amountIn", type: "uint256" }, { name: "amountOutMinimum", type: "uint256" },
-            { name: "sqrtPriceLimitX96", type: "uint160" },
-          ] }],
-          outputs: [{ type: "uint256" }],
-        }],
-        functionName: "exactInputSingle",
-        args: [{ tokenIn: CANONICAL_WETH, tokenOut: BASE_MAINNET_USDC, fee: 3000, recipient: account.address, amountIn: wethBalance, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n }],
-      } as never),
-    });
-    const usdc = (await publicClient.readContract({ address: BASE_MAINNET_USDC, abi: erc20Abi, functionName: "balanceOf", args: [account.address] })) as bigint;
-    expect(usdc > 0n, "fork bootstrap produced no USDC").toBe(true);
-    return usdc;
+    await testClient.setBalance({ address: account.address, value: parseEther("1") });
+    const balance = () => publicClient.readContract({ address: BASE_MAINNET_USDC, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }) as Promise<bigint>;
+    // 1) anvil_deal — Foundry auto-detects the ERC20 balance slot.
+    let dealt = false;
+    try {
+      await rpc("anvil_deal", [account.address, BASE_MAINNET_USDC, `0x${usdcRaw.toString(16)}`]);
+      dealt = (await balance()) === usdcRaw;
+    } catch { dealt = false; }
+    // 2) Fallback: Circle FiatToken `balances` mapping lives at storage slot 9.
+    if (!dealt) {
+      const slot = keccak256(encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [account.address, 9n]));
+      await testClient.setStorageAt({ address: BASE_MAINNET_USDC, index: slot, value: pad(`0x${usdcRaw.toString(16)}` as `0x${string}`, { size: 32 }) });
+    }
+    const final = await balance();
+    expect(final === usdcRaw, `fork USDC funding failed: anvil_deal=${dealt ? "ok" : "unavailable"} balance=${final} wanted=${usdcRaw}`).toBe(true);
   }
 
   function buildRuntime(store: InMemoryAutonomyStore, adapter: AutonomousExecutionAdapter, bus: EventBus) {
@@ -252,7 +257,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
 
   it("BUY + SELL through the full runtime chain on the fork, with exact 25 bps fee reconciliation", async () => {
     const taker = privateKeyToAccount(generatePrivateKey());
-    await fundAndBootstrapUsdc(taker);
+    await fundUsdc(taker, 10_000_000n); // 10 USDC headroom for the round trip
     const wallet = createWalletClient({ account: taker, chain: foundry, transport: http(LOCAL) });
     const requests: Array<Record<string, unknown>> = [];
     const adapter = makeAdapter(taker, { requests, publicClient, wallet });
@@ -341,16 +346,24 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     vi.stubEnv("MPGR_AUTONOMOUS_EMERGENCY_DISABLE", "true");
     try {
       const taker = privateKeyToAccount(generatePrivateKey());
-      await fundAndBootstrapUsdc(taker, "0.2");
+      await fundUsdc(taker, 1_000_000n);
       const wallet = createWalletClient({ account: taker, chain: foundry, transport: http(LOCAL) });
       const requests: Array<Record<string, unknown>> = [];
       const store = new InMemoryAutonomyStore();
       const bus = new InMemoryEventBus();
       const { scheduler } = buildRuntime(store, makeAdapter(taker, { requests, publicClient, wallet }), bus);
+      const emergencyAudit: Array<Record<string, unknown>> = [];
+      bus.on("autonomy_audit", (payload: unknown) => emergencyAudit.push(payload as Record<string, unknown>));
       await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 10_000n, { sell: 6, buy: 18 });
       const summary = await scheduler.tick({ now: new Date(clock.ms) });
-      expect(summary.disabled).toBe(true);
-      expect(requests).toHaveLength(0);
+      // The kill switch fires inside the evaluation loop (post quote/policy,
+      // pre authorization): the goal is PARKED, never broadcast.
+      expect(summary.results[0]?.kind, JSON.stringify(summary.results)).toBe("PARKED");
+      const goal = (await store.listGoals(taker.address))[0]!;
+      expect(goal.lastResult?.code).toBe("EXECUTION_UNAVAILABLE");
+      expect(goal.lastResult?.message ?? "").toContain("globally disabled");
+      expect(JSON.stringify(emergencyAudit)).toContain("EMERGENCY_DISABLE");
+      expect(requests, "emergency stop must prevent any signature or broadcast").toHaveLength(0);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -358,7 +371,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
 
   it("uncertain broadcast (fabricated hash) is NEVER re-broadcast: PENDING -> UNCERTAIN -> goal FAILED", async () => {
     const taker = privateKeyToAccount(generatePrivateKey());
-    await fundAndBootstrapUsdc(taker, "0.2");
+    await fundUsdc(taker, 1_000_000n);
     const wallet = createWalletClient({ account: taker, chain: foundry, transport: http(LOCAL) });
     const requests: Array<Record<string, unknown>> = [];
     const store = new InMemoryAutonomyStore();
@@ -380,7 +393,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
 
   it("reverted execution is classified TX_REVERTED and not retried", async () => {
     const taker = privateKeyToAccount(generatePrivateKey());
-    await fundAndBootstrapUsdc(taker, "0.2");
+    await fundUsdc(taker, 1_000_000n);
     const wallet = createWalletClient({ account: taker, chain: foundry, transport: http(LOCAL) });
     const requests: Array<Record<string, unknown>> = [];
     const store = new InMemoryAutonomyStore();
