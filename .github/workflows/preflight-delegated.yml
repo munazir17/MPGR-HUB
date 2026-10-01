@@ -39,6 +39,7 @@ jobs:
           EXECUTOR: "0xa9568499D7e58854F2590a56B6D32788DbfA58F9"
           BROADCASTER: "0x9898EcD0BcDdF1A240b88355db069d4016b23d28"
           DEPLOYER: "0xb67FCDF437B5FeF64E4b32952dc6d172dc9ec56e"
+          TEST_USER: "0xFBa0235Bb0f0Ccd9f880938b2F72A86bDC3E3AD8"
           OWNER: "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e"
           FEE_RECIPIENT: "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4"
           PERMIT2: "0x000000000022D473030F116dDEE9F6B43aC78BA3"
@@ -83,6 +84,8 @@ jobs:
           emit "::warning::PREFLIGHT broadcaster_eth=$(printf '%s' "$B_BAL" | awk '{printf "%.6f", $1/1000000000000000000}')"
           D_BAL=$(ro balance "$DEPLOYER")
           emit "::warning::PREFLIGHT deployer_eth=$(printf '%s' "$D_BAL" | awk '{printf "%.6f", $1/1000000000000000000}')"
+          T_BAL=$(ro balance "$TEST_USER")
+          emit "::warning::PREFLIGHT test_user_eth=$(printf '%s' "$T_BAL" | awk '{printf "%.6f", $1/1000000000000000000}')"
 
           PAUSED=$(ro call "$EXECUTOR" "paused()(bool)")
           FEE=$(ro call "$EXECUTOR" "feeBps()(uint16)")
@@ -117,6 +120,9 @@ jobs:
           D_S=$(ro call "$TSTOCK" "balanceOf(address)(uint256)" "$DEPLOYER")
           emit "::warning::PREFLIGHT tusd supply=$SUP_U deployer=$D_U"
           emit "::warning::PREFLIGHT tstock supply=$SUP_S deployer=$D_S"
+          T_U=$(ro call "$TUSD" "balanceOf(address)(uint256)" "$TEST_USER")
+          T_S=$(ro call "$TSTOCK" "balanceOf(address)(uint256)" "$TEST_USER")
+          emit "::warning::PREFLIGHT test_user_tusd=$T_U test_user_tstock=$T_S"
 
           Q_BACK=""
           Q_OUT=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TUSD,$TSTOCK,100000000,3000,0)" | head -1 | awk '{print $1}')
@@ -144,7 +150,7 @@ jobs:
           FREC_OK=$([ "$FREC" = "$FEE_RECIPIENT" ] && echo true || echo false)
           POOL1_OK=$([ "$P1" = "$POOL_WETH_TUSD" ] && echo true || echo false)
           POOL2_OK=$([ "$P2P" = "$POOL_USD_STOCK" ] && echo true || echo false)
-          emit "::error::PREFLIGHT_RESULT chain=$CHAIN broadcaster_eth=$B_BAL deployer_eth=$D_BAL paused=$PAUSED feeBps=$FEE owner_ok=$OWNER_OK feeRec_ok=$FREC_OK permit2_ok=$([ "$P2" = "$PERMIT2" ] && echo true || echo false) weth_ok=$([ "$W" = "$WETH" ] && echo true || echo false) witness_ok=$([ "$WT" = "$WITNESS" ] && echo true || echo false) allowlist=$A_TUSD/$A_TSTOCK/$A_WETH pools_ok=$POOL1_OK/$POOL2_OK liquidity=$L1/$L2 tusd_supply=$SUP_U deployer_tusd=$D_U tstock_supply=$SUP_S deployer_tstock=$D_S quote_100tusd_out=$Q_OUT roundtrip_out=${Q_BACK:-n/a} RESULT_OK=true"
+          emit "::error::PREFLIGHT_RESULT chain=$CHAIN broadcaster_eth=$B_BAL deployer_eth=$D_BAL paused=$PAUSED feeBps=$FEE owner_ok=$OWNER_OK feeRec_ok=$FREC_OK permit2_ok=$([ "$P2" = "$PERMIT2" ] && echo true || echo false) weth_ok=$([ "$W" = "$WETH" ] && echo true || echo false) witness_ok=$([ "$WT" = "$WITNESS" ] && echo true || echo false) allowlist=$A_TUSD/$A_TSTOCK/$A_WETH pools_ok=$POOL1_OK/$POOL2_OK liquidity=$L1/$L2 tusd_supply=$SUP_U deployer_tusd=$D_U tstock_supply=$SUP_S deployer_tstock=$D_S quote_100tusd_out=$Q_OUT roundtrip_out=${Q_BACK:-n/a} test_user_eth=$T_BAL test_user_tusd=$T_U test_user_tstock=$T_S RESULT_OK=true"
 
   secrets:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[preflight]')
@@ -166,6 +172,7 @@ jobs:
           emit() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
           EXPECTED_BROADCASTER="0x9898ecd0bcddf1a240b88355db069d4016b23d28"
           EXPECTED_DEPLOYER="0xb67fcdf437b5fef64e4b32952dc6d172dc9ec56e"
+          EXPECTED_TEST_USER="0xfba0235bb0f0ccd9f880938b2f72a86bdc3e3ad8"
 
           if [ -n "${BROADCASTER_KEY:-}" ]; then
             emit "::warning::PREFLIGHT secret MPGR_BROADCASTER_PRIVATE_KEY=set"
@@ -199,9 +206,15 @@ jobs:
               exit 1
             fi
             emit "::warning::PREFLIGHT test_user_distinct=true"
+            if [ "$TU" = "$EXPECTED_TEST_USER" ]; then
+              emit "::warning::PREFLIGHT test_user_key_matches_expected_address=true"
+            else
+              echo "::error::PREFLIGHT test_user_key_matches_expected_address=false (derived $TU != expected $EXPECTED_TEST_USER)"
+              exit 1
+            fi
           else
             emit "::warning::PREFLIGHT secret MPGR_LIVE_TEST_USER_PRIVATE_KEY=UNSET (expected until the test keypair is created)"
           fi
 
           emit "::warning::PREFLIGHT secret_checks=DONE"
-          emit "::error::PREFLIGHT_RESULT secrets broadcaster_set=${BROADCASTER_KEY:+true} broadcaster_match=true deployer_set=${DEPLOYER_KEY:+true} test_user_set=${TEST_USER_KEY:+true} RESULT_OK=true"
+          emit "::error::PREFLIGHT_RESULT secrets broadcaster_set=${BROADCASTER_KEY:+true} broadcaster_match=true deployer_set=${DEPLOYER_KEY:+true} test_user_set=${TEST_USER_KEY:+true} test_user_match=$([ "${TEST_USER_KEY:-}" != "" ] && [ "$(cast wallet address --private-key "$TEST_USER_KEY" 2>/dev/null | tr '[:upper:]' '[:lower:]')" = "$EXPECTED_TEST_USER" ] && echo true || echo false) RESULT_OK=true"
