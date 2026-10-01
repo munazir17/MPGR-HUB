@@ -146,6 +146,7 @@ jobs:
           # ---- independent post-trade evidence (READ-ONLY receipt decoding) ----
           # Evidence gathering is best-effort: never abort the run here.
           set +e
+          EXEC="$EXECUTOR"
           # Decodes the SwapExecuted events of the Phase-3 live BUY/SELL txs
           # straight from chain receipts (no harness, no app code).
           # ABI-verified canonical topic0 (keccak of the SwapExecuted signature).
