@@ -54,8 +54,14 @@ const MAX_SELL_AMOUNT_RAW = 10_000_000_000n; // 10,000 tUSD (6 dp)
 interface LiveResult {
   broadcaster: Address;
   testUser: Address;
-  buy?: { txHash: Hex; soldRaw: string; boughtRaw: string; feeRaw: string; quoteId: string };
-  sell?: { txHash: Hex; soldRaw: string; boughtRaw: string; feeRaw: string; quoteId: string };
+  buy?: {
+    txHash: Hex; soldRaw: string; expectedRaw: string; minOutRaw: string; boughtRaw: string;
+    feeRaw: string; quoteId: string; nonce: string; actionId: string; deadline: number;
+  };
+  sell?: {
+    txHash: Hex; soldRaw: string; expectedRaw: string; minOutRaw: string; boughtRaw: string;
+    feeRaw: string; quoteId: string; nonce: string; actionId: string; deadline: number;
+  };
 }
 
 describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed run only)", () => {
@@ -167,13 +173,16 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
       buyToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
       sellAmount: sellAmountRaw.toString(),
       slippageBps: 300,
+      // Delegate the quote to the pinned delegated executor's OWN route
+      // registry (runtime parity, lib/autonomy/runtime.ts).
+      executor: DELEGATED_EXECUTOR_ADDRESS,
     });
     expect(buyQuote.ok, `BUY quote failed: ${buyQuote.ok ? "" : buyQuote.failure.message}`).toBe(true);
     const bq = buyQuote.ok ? buyQuote.data : null;
     expect(BigInt(bq!.minBuyAmountRaw) > 0n, "BUY quote returned a zero floor (pool dead?)").toBe(true);
 
     const buyGoalId = `live-${runTag}-buy`;
-    await signAndStoreSlot(slots, testUser, {
+    const buySlot = await signAndStoreSlot(slots, testUser, {
       policy: policies.get("live_buy")!,
       goalId: buyGoalId,
       slotIndex: 0,
@@ -207,7 +216,18 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     expect(buyVerify.ok && buyVerify.data.verified, `BUY verification FAILED: ${JSON.stringify(buyVerify)}`).toBe(true);
     const buyFee = BigInt((buyVerify.ok && buyVerify.data.feeAmountRaw) || "0");
     expect(buyFee, "BUY fee must equal floor(gross * 25 bps)").toBe((sellAmountRaw * 25n) / 10000n);
-    result.buy = { txHash: buyTxHash, soldRaw: sellAmountRaw.toString(), boughtRaw: (buyVerify.ok && buyVerify.data.actualBuyAmountRaw) || "0", feeRaw: buyFee.toString(), quoteId: bq!.quoteId };
+    result.buy = {
+      txHash: buyTxHash,
+      soldRaw: sellAmountRaw.toString(),
+      expectedRaw: bq!.expectedBuyAmountRaw,
+      minOutRaw: bq!.minBuyAmountRaw,
+      boughtRaw: (buyVerify.ok && buyVerify.data.actualBuyAmountRaw) || "0",
+      feeRaw: buyFee.toString(),
+      quoteId: bq!.quoteId,
+      nonce: buySlot.nonce,
+      actionId: buySlot.actionId,
+      deadline: buySlot.deadline,
+    };
     console.log(`::notice::LIVE BUY tx=${buyTxHash} feeRaw=${buyFee} out=${result.buy!.boughtRaw}`);
 
     // ================= SELL: tSTOCK -> tUSD =================
@@ -222,13 +242,14 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
       buyToken: DELEGATED_BASE_SEPOLIA_TUSD,
       sellAmount: stockReceived.toString(),
       slippageBps: 300,
+      executor: DELEGATED_EXECUTOR_ADDRESS,
     });
     expect(sellQuote.ok, `SELL quote failed: ${sellQuote.ok ? "" : sellQuote.failure.message}`).toBe(true);
     const sq = sellQuote.ok ? sellQuote.data : null;
     expect(BigInt(sq!.minBuyAmountRaw) > 0n, "SELL quote returned a zero floor").toBe(true);
 
     const sellGoalId = `live-${runTag}-sell`;
-    await signAndStoreSlot(slots, testUser, {
+    const sellSlot = await signAndStoreSlot(slots, testUser, {
       policy: policies.get("live_sell")!,
       goalId: sellGoalId,
       slotIndex: 1,
@@ -262,7 +283,18 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     expect(sellVerify.ok && sellVerify.data.verified, `SELL verification FAILED: ${JSON.stringify(sellVerify)}`).toBe(true);
     const sellFee = BigInt((sellVerify.ok && sellVerify.data.feeAmountRaw) || "0");
     expect(sellFee, "SELL fee must equal floor(gross * 25 bps) in tSTOCK").toBe((stockReceived * 25n) / 10000n);
-    result.sell = { txHash: sellTxHash, soldRaw: stockReceived.toString(), boughtRaw: (sellVerify.ok && sellVerify.data.actualBuyAmountRaw) || "0", feeRaw: sellFee.toString(), quoteId: sq!.quoteId };
+    result.sell = {
+      txHash: sellTxHash,
+      soldRaw: stockReceived.toString(),
+      expectedRaw: sq!.expectedBuyAmountRaw,
+      minOutRaw: sq!.minBuyAmountRaw,
+      boughtRaw: (sellVerify.ok && sellVerify.data.actualBuyAmountRaw) || "0",
+      feeRaw: sellFee.toString(),
+      quoteId: sq!.quoteId,
+      nonce: sellSlot.nonce,
+      actionId: sellSlot.actionId,
+      deadline: sellSlot.deadline,
+    };
     console.log(`::notice::LIVE SELL tx=${sellTxHash} feeRaw=${sellFee} out=${result.sell!.boughtRaw}`);
 
     // ---------------- machine-readable evidence ----------------
@@ -321,7 +353,7 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     store: InMemoryDelegatedAuthorizationStore,
     user: PrivateKeyAccount,
     opts: { policy: AutonomyPolicy; goalId: string; slotIndex: number; sellToken: Address; buyToken: Address; sellAmountRaw: bigint; minAmountOut: string },
-  ): Promise<void> {
+  ): Promise<{ nonce: string; actionId: string; deadline: number }> {
     const deadline = Math.floor(Date.now() / 1000) + 1800;
     const permit = {
       token: opts.sellToken,
@@ -369,5 +401,6 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
         createdAt: new Date().toISOString(),
       },
     ]);
+    return { nonce: permit.nonce, actionId: witness.actionId, deadline };
   }
 });

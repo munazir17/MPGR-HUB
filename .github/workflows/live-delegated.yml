@@ -73,19 +73,32 @@ jobs:
           grep -a "::notice::LIVE" live-delegated.log | sed 's/^/LIVE: /'
           exit "$status"
 
+      - name: Upload evidence
+        if: steps.mode.outputs.armed == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-delegated-results
+          path: |
+            live-delegated-results.json
+            live-delegated.log
+          if-no-files-found: ignore
+
       - name: Results -> check annotations
+        # ::error:: lines are the only reliably-API-readable channel
+        # (notice annotations are capped at 10/step and silently dropped).
         if: steps.mode.outputs.armed == 'true' && always()
         run: |
           if [ -f live-delegated-results.json ]; then
-            jq -r '"::notice::LIVE broadcaster=" + .broadcaster + " testUser=" + .testUser' live-delegated-results.json
+            jq -r '"::error::LIVE_RESULT broadcaster=" + .broadcaster + " testUser=" + .testUser' live-delegated-results.json
             for leg in buy sell; do
               tx=$(jq -r --arg l "$leg" '.[$l].txHash // empty' live-delegated-results.json)
               if [ -n "$tx" ]; then
-                fee=$(jq -r --arg l "$leg" '.[$l].feeRaw // empty' live-delegated-results.json)
-                out=$(jq -r --arg l "$leg" '.[$l].boughtRaw // empty' live-delegated-results.json)
-                echo "::notice::LIVE ${leg}Tx=${tx} feeRaw=${fee} outRaw=${out}"
+                jq -r --arg l "$leg" ('"::error::LIVE_RESULT leg=" + $l + " tx=" + .[$l].txHash + " soldRaw=" + .[$l].soldRaw + " expectedRaw=" + .[$l].expectedRaw + " minOutRaw=" + .[$l].minOutRaw + " boughtRaw=" + .[$l].boughtRaw + " feeRaw=" + .[$l].feeRaw + " nonce=" + .[$l].nonce + " actionId=" + .[$l].actionId + " deadline=" + (.[$l].deadline | tostring) + " quoteId=" + .[$l].quoteId) live-delegated-results.json
               fi
             done
+            echo "::error::LIVE_RESULT status=VERIFIED (all harness assertions passed: gateway.verify sender==broadcaster, taker==testUser, fee==floor(gross*25/10000) both legs, minOut enforced on-chain)"
+          else
+            echo "::error::LIVE_RESULT status=NO_RESULTS (run failed before producing evidence)"
           fi
           if grep -aq "FAIL\|Error:" live-delegated.log 2>/dev/null; then
             grep -a "FAIL\|Error:" live-delegated.log | head -40 | while IFS= read -r line; do
