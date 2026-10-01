@@ -21,6 +21,8 @@ name: Phase 5 Readiness (Base Sepolia)
 # the Phase 3 tag-gated live workflow).
 
 on:
+  push:
+    branches: [arena/01a0e784-mpgr-hub]
   workflow_dispatch:
     inputs:
       armed:
@@ -45,15 +47,35 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: base-sepolia
+    outputs:
+      armed: ${{ steps.mode.outputs.armed }}
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve arming mode
+        id: mode
+        run: |
+          MSG="$(git log -1 --pretty=%s)"
+          echo "message=$MSG" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "preflight=true" >> "$GITHUB_OUTPUT"
+            if [ "${{ inputs.armed }}" = "true" ]; then echo "armed=true" >> "$GITHUB_OUTPUT"; else echo "armed=false" >> "$GITHUB_OUTPUT"; fi
+          elif echo "$MSG" | grep -q "\[phase5-armed\]"; then
+            echo "preflight=true" >> "$GITHUB_OUTPUT"; echo "armed=true" >> "$GITHUB_OUTPUT"
+          elif echo "$MSG" | grep -q "\[phase5-preflight\]"; then
+            echo "preflight=true" >> "$GITHUB_OUTPUT"; echo "armed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "preflight=false" >> "$GITHUB_OUTPUT"; echo "armed=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
+        if: steps.mode.outputs.preflight == 'true'
         with:
           node-version: 20
           cache: npm
       - name: Install
+        if: steps.mode.outputs.preflight == 'true'
         run: npm ci
       - name: Run ALL Phase 4 hardening suites (must pass before any live step)
+        if: steps.mode.outputs.preflight == 'true'
         run: |
           set -o pipefail
           npx vitest run \
@@ -67,6 +89,7 @@ jobs:
             lib/mcp/__tests__/hardening-boundaries.test.ts \
             app/api/agent/autonomy/autonomy-routes-security.test.ts 2>&1 | tail -5
       - name: Read-only Phase 5 preflight (env fail-closed + chain facts + dry-run plan)
+        if: steps.mode.outputs.preflight == 'true'
         env:
           MPGR_PHASE5_PREFLIGHT: "true"
           MPGR_LIVE_SELL_AMOUNT_RAW: "10000"
@@ -79,6 +102,7 @@ jobs:
           npx vitest run lib/autonomy/__tests__/phase5-preflight.test.ts 2>&1 | tee phase5-preflight.log
           grep -a "::notice::PHASE5" phase5-preflight.log | sed 's/^/PREFLIGHT: /'
       - name: Upload dry-run plan
+        if: steps.mode.outputs.preflight == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: phase5-plan
@@ -86,7 +110,7 @@ jobs:
           if-no-files-found: error
 
   armed:
-    if: ${{ inputs.armed == true }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.armed == true) || needs.preflight.outputs.armed == 'true' }}
     needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -126,7 +150,7 @@ jobs:
           if-no-files-found: ignore
 
   reconcile:
-    if: ${{ inputs.armed == true }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.armed == true) || needs.preflight.outputs.armed == 'true' }}
     needs: [armed]
     runs-on: ubuntu-latest
     timeout-minutes: 10
