@@ -120,7 +120,14 @@ jobs:
             if Q_BACK=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TSTOCK,$TUSD,$Q_OUT,3000,0)" | awk '{print $1}'); then
               echo "::notice::PREFLIGHT quote roundtrip tSTOCK -> tUSD raw_out=$Q_BACK (expect ~=100000000 less pool fee)"
             else
-              echo "::warning::PREFLIGHT reverse quote unavailable (non-fatal; forward quote already proves route viability)"
+              echo "::warning::PREFLIGHT reverse_quote_err=$(tail -c 300 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"
+              T0=$(ro call "$POOL_USD_STOCK" "token0()(address)")
+              echo "::notice::PREFLIGHT pool_usd_stock token0=$T0 slot0=$(ro call "$POOL_USD_STOCK" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)")"
+              if Q2=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TSTOCK,$TUSD,1000000000000000000,3000,0)" | awk '{print $1}'); then
+                echo "::notice::PREFLIGHT quote 1_tSTOCK -> tUSD raw_out=$Q2"
+              else
+                echo "::warning::PREFLIGHT reverse_1e18_err=$(tail -c 300 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"
+              fi
             fi
           fi
 
