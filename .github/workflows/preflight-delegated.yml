@@ -53,7 +53,7 @@ jobs:
           WITNESS: "ActionWitness witness)ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)TokenPermissions(address token,uint256 amount)"
         run: |
           set -euo pipefail
-          err_handler() { echo "::error::PREFLIGHT_DIED at line=$LINENO err=$(tail -c 220 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"; }
+          err_handler() { echo "::error::PREFLIGHT_DIED cmd=${BASH_COMMAND} line=${LINENO} err=$(tail -c 220 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"; }
           trap err_handler ERR
           # Every result goes to BOTH the annotations stream and the step
           # summary (annotations are sporadically dropped by GitHub; the
@@ -151,6 +151,8 @@ jobs:
           POOL1_OK=$([ "$P1" = "$POOL_WETH_TUSD" ] && echo true || echo false)
           POOL2_OK=$([ "$P2P" = "$POOL_USD_STOCK" ] && echo true || echo false)
           # ---- independent post-trade evidence (READ-ONLY receipt decoding) ----
+          # Evidence gathering is best-effort: never abort the run here.
+          set +e
           # Decodes the SwapExecuted events of the Phase-3 live BUY/SELL txs
           # straight from chain receipts (no harness, no app code).
           SWAP_TOPIC=$(cast keccak "SwapExecuted(address,address,bytes32,address,address,uint256,uint256,uint256,uint256,address,uint16,uint8,uint8)")
@@ -178,6 +180,7 @@ jobs:
             echo "::error::PREFLIGHT_LIVE leg=$LEG status=$TXSTATUS from_broadcaster_ok=$FROM_OK to_executor_ok=$([ "${TXTO,,}" = "${EXEC,,}" ] && echo true || echo false) taker_is_testuser_ok=$TAKER_OK tokenIn=$TOKENIN tokenOut=$TOKENOUT gross=$GROSS fee=$FEE swapIn=$SWAPIN amountOut=$AMOUT feePlusSwapEqualsGross=$MATH_OK feeRecipient=$FREC feeBps=$FEEBPS intentId=$INTENT router=$EVROUTER"
           done
 
+          set -e
           emit "::error::PREFLIGHT_RESULT chain=$CHAIN broadcaster_eth=$B_BAL deployer_eth=$D_BAL paused=$PAUSED feeBps=$FEE owner_ok=$OWNER_OK feeRec_ok=$FREC_OK permit2_ok=$([ "$P2" = "$PERMIT2" ] && echo true || echo false) weth_ok=$([ "$W" = "$WETH" ] && echo true || echo false) witness_ok=$([ "$WT" = "$WITNESS" ] && echo true || echo false) allowlist=$A_TUSD/$A_TSTOCK/$A_WETH pools_ok=$POOL1_OK/$POOL2_OK liquidity=$L1/$L2 tusd_supply=$SUP_U deployer_tusd=$D_U tstock_supply=$SUP_S deployer_tstock=$D_S quote_100tusd_out=$Q_OUT roundtrip_out=${Q_BACK:-n/a} test_user_eth=$T_BAL test_user_tusd=$T_U test_user_tstock=$T_S RESULT_OK=true"
 
   secrets:
