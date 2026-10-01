@@ -54,6 +54,7 @@ const MAX_SELL_AMOUNT_RAW = 10_000_000_000n; // 10,000 tUSD (6 dp)
 interface LiveResult {
   broadcaster: Address;
   testUser: Address;
+  balances?: { broadcasterEth: string; userEth: string; userTusd: string; userTstock: string };
   buy?: {
     txHash: Hex; soldRaw: string; expectedRaw: string; minOutRaw: string; boughtRaw: string;
     feeRaw: string; quoteId: string; nonce: string; actionId: string; deadline: number;
@@ -303,7 +304,21 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     console.log(`::notice::LIVE_RESULT executor=${DELEGATED_EXECUTOR_ADDRESS} permit2=${CANONICAL_PERMIT2}`);
     console.log(`::notice::LIVE_RESULT buy=${buyTxHash}`);
     console.log(`::notice::LIVE_RESULT sell=${sellTxHash}`);
+    // Final balance reconciliation evidence (test user + broadcaster).
+    const [userTusdEnd, userTstockEnd, userEthEnd, bEthEnd] = await Promise.all([
+      client.readContract({ address: DELEGATED_BASE_SEPOLIA_TUSD, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] }),
+      client.readContract({ address: DELEGATED_BASE_SEPOLIA_TSTOCK, abi: erc20Abi, functionName: "balanceOf", args: [testUser.address] }),
+      client.getBalance({ address: testUser.address }),
+      client.getBalance({ address: broadcasterAddress }),
+    ]);
+    result.balances = {
+      broadcasterEth: bEthEnd.toString(),
+      userEth: userEthEnd.toString(),
+      userTusd: userTusdEnd.toString(),
+      userTstock: userTstockEnd.toString(),
+    };
     console.log(`::notice::LIVE_RESULT buyFeeRaw=${result.buy!.feeRaw} sellFeeRaw=${result.sell!.feeRaw}`);
+    console.log(`::notice::LIVE_RESULT finalBalances broadcasterEth=${bEthEnd} userEth=${userEthEnd} userTusd=${userTusdEnd} userTstock=${userTstockEnd}`);
   });
 
   // ---------------- helpers ----------------

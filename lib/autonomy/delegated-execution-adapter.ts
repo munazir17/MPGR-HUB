@@ -197,7 +197,9 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
         poolFee,
         intentId: delegatedActionId(request.goalId),
         owner: request.wallet,
-        deadline: slot.permit.deadline,
+        // MCP service parses numeric authorization fields from digit STRINGS
+        // (its only wire format; the value is identical — pure serialization).
+        deadline: String(slot.permit.deadline),
         expectedFeeAmount: buildDelegatedSwapParams({
           router: this.routerFor(request.sellToken, request.buyToken),
           tokenIn: request.sellToken,
@@ -213,7 +215,7 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
           permit: {
             permitted: { token: slot.permit.token, amount: slot.permit.amount },
             nonce: slot.permit.nonce,
-            deadline: slot.permit.deadline,
+            deadline: String(slot.permit.deadline),
           },
           witness: slot.witness,
           signature: slot.signature,
