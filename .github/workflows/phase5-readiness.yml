@@ -93,6 +93,9 @@ jobs:
         env:
           MPGR_PHASE5_PREFLIGHT: "true"
           MPGR_LIVE_SELL_AMOUNT_RAW: "10000"
+          # Quote-signing secret (same pattern as the Phase 3 live workflow):
+          # a run-scoped value is sufficient — this is NOT a session secret store.
+          AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET || format('{0}{1}', github.run_id, github.sha) }}
           MPGR_BROADCASTER_PRIVATE_KEY: ${{ secrets.MPGR_BROADCASTER_PRIVATE_KEY }}
           MPGR_LIVE_TEST_USER_PRIVATE_KEY: ${{ secrets.MPGR_LIVE_TEST_USER_PRIVATE_KEY }}
           BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
