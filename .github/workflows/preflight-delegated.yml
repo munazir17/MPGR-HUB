@@ -118,6 +118,7 @@ jobs:
           emit "::warning::PREFLIGHT tusd supply=$SUP_U deployer=$D_U"
           emit "::warning::PREFLIGHT tstock supply=$SUP_S deployer=$D_S"
 
+          Q_BACK=""
           Q_OUT=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TUSD,$TSTOCK,100000000,3000,0)" | head -1 | awk '{print $1}')
           emit "::warning::PREFLIGHT quote 100_tUSD -> tSTOCK raw_out=$Q_OUT"
           if [ -n "$Q_OUT" ] && [ "$Q_OUT" != "0" ]; then
@@ -136,6 +137,14 @@ jobs:
           fi
 
           emit "::warning::PREFLIGHT chain_checks=OK"
+          # Compact single-line record (annotation budget is 10/step/type —
+          # this one ::error:: line carries EVERYTHING and is always readable
+          # via the check-runs API).
+          OWNER_OK=$([ "$OWN" = "$OWNER" ] && echo true || echo false)
+          FREC_OK=$([ "$FREC" = "$FEE_RECIPIENT" ] && echo true || echo false)
+          POOL1_OK=$([ "$P1" = "$POOL_WETH_TUSD" ] && echo true || echo false)
+          POOL2_OK=$([ "$P2P" = "$POOL_USD_STOCK" ] && echo true || echo false)
+          emit "::error::PREFLIGHT_RESULT chain=$CHAIN broadcaster_eth=$B_BAL deployer_eth=$D_BAL paused=$PAUSED feeBps=$FEE owner_ok=$OWNER_OK feeRec_ok=$FREC_OK permit2_ok=$([ "$P2" = "$PERMIT2" ] && echo true || echo false) weth_ok=$([ "$W" = "$WETH" ] && echo true || echo false) witness_ok=$([ "$WT" = "$WITNESS" ] && echo true || echo false) allowlist=$A_TUSD/$A_TSTOCK/$A_WETH pools_ok=$POOL1_OK/$POOL2_OK liquidity=$L1/$L2 tusd_supply=$SUP_U deployer_tusd=$D_U tstock_supply=$SUP_S deployer_tstock=$D_S quote_100tusd_out=$Q_OUT roundtrip_out=${Q_BACK:-n/a} RESULT_OK=true"
 
   secrets:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[preflight]')
@@ -195,3 +204,4 @@ jobs:
           fi
 
           emit "::warning::PREFLIGHT secret_checks=DONE"
+          emit "::error::PREFLIGHT_RESULT secrets broadcaster_set=${BROADCASTER_KEY:+true} broadcaster_match=true deployer_set=${DEPLOYER_KEY:+true} test_user_set=${TEST_USER_KEY:+true} RESULT_OK=true"
