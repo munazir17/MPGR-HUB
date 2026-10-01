@@ -97,32 +97,25 @@ jobs:
 
           WT=$(ro call "$EXECUTOR" "WITNESS_TYPE_STRING()(string)" | tr -d '"')
           emit "::warning::PREFLIGHT witness_matches=$([ "$WT" = "$WITNESS" ] && echo true || echo FALSE)"
-          emit "::warning::PREFLIGHT witness_onchain=$WT"
 
           A_TUSD=$(ro call "$EXECUTOR" "isTokenAllowed(address)(bool)" "$TUSD")
           A_TSTOCK=$(ro call "$EXECUTOR" "isTokenAllowed(address)(bool)" "$TSTOCK")
           A_WETH=$(ro call "$EXECUTOR" "isTokenAllowed(address)(bool)" "$WETH")
-          emit "::warning::PREFLIGHT allowlist tusd=$A_TUSD tstock=$A_TSTOCK weth=$A_WETH"
 
           P1=$(ro call "$FACTORY" "getPool(address,address,uint24)(address)" "$WETH" "$TUSD" 3000)
           P2P=$(ro call "$FACTORY" "getPool(address,address,uint24)(address)" "$TUSD" "$TSTOCK" 3000)
-          emit "::warning::PREFLIGHT pools weth_tusd_ok=$([ "$P1" = "$POOL_WETH_TUSD" ] && echo true || echo FALSE) usd_stock_ok=$([ "$P2P" = "$POOL_USD_STOCK" ] && echo true || echo FALSE)"
 
           L1=$(ro call "$POOL_WETH_TUSD" "liquidity()(uint128)")
           S1=$(ro call "$POOL_WETH_TUSD" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)" | head -1 | awk '{print $1}')
           L2=$(ro call "$POOL_USD_STOCK" "liquidity()(uint128)")
           S2=$(ro call "$POOL_USD_STOCK" "slot0()(uint160,int24,uint16,uint16,uint8,bool,bool)" | head -1 | awk '{print $1}')
-          emit "::warning::PREFLIGHT pool_liquidity weth_tusd=$L1 sqrt_nonzero=$([ "$S1" != "0" ] && echo true || echo false) usd_stock=$L2 sqrt_nonzero=$([ "$S2" != "0" ] && echo true || echo false)"
 
           SUP_U=$(ro call "$TUSD" "totalSupply()(uint256)")
           SUP_S=$(ro call "$TSTOCK" "totalSupply()(uint256)")
           D_U=$(ro call "$TUSD" "balanceOf(address)(uint256)" "$DEPLOYER")
           D_S=$(ro call "$TSTOCK" "balanceOf(address)(uint256)" "$DEPLOYER")
-          emit "::warning::PREFLIGHT tusd supply=$SUP_U deployer=$D_U"
-          emit "::warning::PREFLIGHT tstock supply=$SUP_S deployer=$D_S"
           T_U=$(ro call "$TUSD" "balanceOf(address)(uint256)" "$TEST_USER")
           T_S=$(ro call "$TSTOCK" "balanceOf(address)(uint256)" "$TEST_USER")
-          emit "::warning::PREFLIGHT test_user_tusd=$T_U test_user_tstock=$T_S"
 
           Q_BACK=""
           Q_OUT=$(ro call "$QUOTER" "quoteExactInputSingle((address,address,uint256,uint24,uint160))(uint256,uint160,uint32,uint256)" "($TUSD,$TSTOCK,100000000,3000,0)" | head -1 | awk '{print $1}')
@@ -161,12 +154,12 @@ jobs:
             if [ "$LEG" = buy ]; then TXH="0x9cc4838e3e90b52dddfb07bb259145dbd0bce896f3ad96bd42fd7a657f645588"; ELSE_TOK="$TSTOCK"; fi
             if [ "$LEG" = sell ]; then TXH="0x7eec560e22cc50e37d07e1158730e5b2ddfca9398cd1215a19575b0c89e723c7"; ELSE_TOK="$TUSD"; fi
             R=$(ro receipt "$TXH" --json || true)
-            if [ -z "$R" ]; then echo "::warning::PREFLIGHT live_${LEG}_receipt=NOT_FOUND"; continue; fi
+            if [ -z "$R" ]; then echo "::error::PREFLIGHT live_${LEG}_receipt=NOT_FOUND"; continue; fi
             TXFROM=$(printf '%s' "$R" | jq -r '.from')
             TXTO=$(printf '%s' "$R" | jq -r '.to')
             TXSTATUS=$(printf '%s' "$R" | jq -r '.status')
             LOGLINE=$(printf '%s' "$R" | jq -r --arg t "$SWAP_TOPIC" --arg e "$EXEC" '[.logs[] | select((.address|ascii_downcase)==($e|ascii_downcase) and .topics[0]==$t)][0] | if . == null then empty else [.topics[1], .topics[2], .topics[3], .data] | @tsv end') || true
-            if [ -z "$LOGLINE" ]; then echo "::warning::PREFLIGHT live_${LEG}_swapEvent=MISSING"; continue; fi
+            if [ -z "$LOGLINE" ]; then echo "::error::PREFLIGHT live_${LEG}_swapEvent=MISSING"; continue; fi
             TAKER=0x$(printf '%s' "$LOGLINE" | cut -f1 | cut -c27-66)
             EVROUTER=0x$(printf '%s' "$LOGLINE" | cut -f2 | cut -c27-66)
             INTENT=$(printf '%s' "$LOGLINE" | cut -f3)
