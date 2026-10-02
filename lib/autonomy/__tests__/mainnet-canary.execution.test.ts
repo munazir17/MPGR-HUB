@@ -25,6 +25,7 @@ import {
   decodeEventLog,
   encodeFunctionData,
   erc20Abi,
+  getAddress,
   http,
   type Address,
   type Hex,
@@ -70,6 +71,13 @@ describe.skipIf(!ARMED)("MAINNET CANARY — one real 1-USDC BUY through the Main
     if (isAutonomousExecutionEmergencyDisabled()) throw new Error("MPGR_AUTONOMOUS_EMERGENCY_DISABLE is set — canary refuses to run.");
     if (!RPC || /^https?:\/\/(127\.|localhost)/i.test(RPC)) throw new Error("BASE_MAINNET_RPC_URL must be a real dedicated Mainnet endpoint.");
     const account: PrivateKeyAccount = privateKeyToAccount(KEY as `0x${string}`);
+    // FAIL-CLOSED CANARY PIN (audit remediation): the configured key MUST
+    // derive to the ONE authorized canary wallet. This runs BEFORE any
+    // network activity, signing, or broadcast — a wrong key can never trade.
+    const AUTHORIZED_CANARY_ADDRESS = getAddress("0xBF6c574b9543967f0D528ae49603b0A7574a280b");
+    if (getAddress(account.address) !== AUTHORIZED_CANARY_ADDRESS) {
+      throw new Error("FATAL: canary key does not derive to the authorized canary address — nothing was signed, read, or broadcast.");
+    }
     const publicClient = createPublicClient({ chain: base, transport: http(RPC) });
     const wallet = createWalletClient({ account, chain: base, transport: http(RPC) });
 
