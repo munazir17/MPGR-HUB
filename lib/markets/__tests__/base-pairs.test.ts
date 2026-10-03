@@ -27,7 +27,7 @@ describe("base-pairs allowlist", () => {
 
   it("tape segment B contains all issued official stock tickers in product order", () => {
     expect(TAPE_STOCK_PAIRS.map((pair) => pair.symbol)).toContain("NFLXc");
-    expect(TAPE_STOCK_PAIRS.map((pair) => pair.symbol)).toContain("AMD c".replace(" ",""));
+    expect(TAPE_STOCK_PAIRS.map((pair) => pair.symbol)).toContain("AMDc");
   });
 
   // Official underlying-company names re-checked against Base's verified
@@ -228,7 +228,7 @@ describe("new issued B20 safety cases", () => {
     expect(verifyB20Address("0xb200000000000000000000000000000000000001").status).toBe("unlisted");
   });
   it("does not invent Chainlink feeds for newly issued entries", () => {
-    for (const symbol of ["NFLXc","PLTRc","GMEc","AMD c".replace(" ","")]) expect(findBasePair(symbol)?.chainlinkFeed).toBeUndefined();
+    for (const symbol of ["NFLXc","PLTRc","GMEc","AMDc"]) expect(findBasePair(symbol)?.chainlinkFeed).toBeUndefined();
   });
   it("keeps the existing NVDAc feed unchanged", () => {
     expect(findBasePair("NVDAc")?.chainlinkFeed?.toLowerCase()).toBe("0x04689a41629776563e6822f76f2e57d148d28513");
