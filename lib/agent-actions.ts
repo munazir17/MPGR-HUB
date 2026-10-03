@@ -468,6 +468,7 @@ const ACTION_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentAction[]>
   suggest_next_action: actionsSuggestNextAction,
   research_query: () => [],
   market_overview: () => [],
+  autonomous_status: () => [],
 };
 
 export function getAgentActions(intent: AgentIntent, ctx: AgentContext): AgentAction[] {
@@ -578,6 +579,7 @@ const HIGHLIGHT_BUILDERS: Record<AgentIntent, (ctx: AgentContext) => AgentHighli
   suggest_next_action: () => [],
   research_query: () => [],
   market_overview: () => [],
+  autonomous_status: () => [],
 };
 
 export function getAgentHighlights(intent: AgentIntent, ctx: AgentContext): AgentHighlight[] {
@@ -609,6 +611,7 @@ const FOLLOW_UP_PROMPTS: Record<AgentIntent, string[]> = {
   suggest_next_action: ["Show my portfolio summary", "What's my Holder Tier?", "Any rewards to claim?"],
   research_query: ["What does $MPGR do?", "Explain x402", "What are tokenized stocks?"],
   market_overview: ["What's moving in the market?", "Analyze ETH", "Research $MPGR"],
+  autonomous_status: ["Is autonomous mode enabled?", "Show my portfolio summary"],
 };
 
 export function getFollowUpPrompts(intent: AgentIntent): string[] {

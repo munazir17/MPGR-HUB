@@ -36,6 +36,7 @@ export {
   isX402PaymentPrompt,
   isTransferPrompt,
   extractTransferRequest,
+  extractExplicitFundingAsset,
   extractX402ResourceUrl,
 } from "./agent-intelligence/prompt-parsers";
 

@@ -130,71 +130,53 @@ function formatUsdFromChainlink(answer: bigint, decimals: number): string {
   return negative ? `-${formatted}` : formatted;
 }
 
+// ReadClient type alias keeps the injected-client test seam honest while
+// the default stays the shared Base read client.
+type ReadClient = ReturnType<typeof getTradePublicClient>;
+
+/**
+ * Full on-chain state for one B20 token. All eight reads (six IB20 fields
+ * + Chainlink latest round + feed decimals) are batched into ONE
+ * Multicall3 round trip: the same contracts and functions as before, but
+ * a single request instead of eight concurrent ones, so rate-limited
+ * public RPCs are far less likely to fail the verification that quotes
+ * depend on. Semantics are byte-identical: any call that cannot be read
+ * (revert OR transport failure, via `allowFailure`) yields null for that
+ * field only, and callers keep failing closed on a null decimals.
+ */
 export async function readTokenizedStockOnchain(
   entry: TokenizedStockCatalogEntry,
+  client: ReadClient = getTradePublicClient(),
 ): Promise<TokenizedStockOnchainState> {
-  const client = getTradePublicClient();
+  const results = await readOptional(() =>
+    client.multicall({
+      contracts: [
+        { address: entry.address, abi: B20_TOKEN_ABI, functionName: "symbol" },
+        { address: entry.address, abi: B20_TOKEN_ABI, functionName: "name" },
+        { address: entry.address, abi: B20_TOKEN_ABI, functionName: "decimals" },
+        { address: entry.address, abi: B20_TOKEN_ABI, functionName: "totalSupply" },
+        { address: entry.address, abi: B20_TOKEN_ABI, functionName: "multiplier" },
+        { address: entry.address, abi: B20_TOKEN_ABI, functionName: "paused" },
+        { address: entry.chainlinkFeed, abi: CHAINLINK_AGGREGATOR_V3_ABI, functionName: "latestRoundData" },
+        { address: entry.chainlinkFeed, abi: CHAINLINK_AGGREGATOR_V3_ABI, functionName: "decimals" },
+      ],
+      allowFailure: true,
+    }),
+  );
 
-  const [symbol, name, decimals, totalSupply, multiplier, paused, round] = await Promise.all([
-    readOptional(() =>
-      client.readContract({
-        address: entry.address,
-        abi: B20_TOKEN_ABI,
-        functionName: "symbol",
-      }),
-    ),
-    readOptional(() =>
-      client.readContract({
-        address: entry.address,
-        abi: B20_TOKEN_ABI,
-        functionName: "name",
-      }),
-    ),
-    readOptional(() =>
-      client.readContract({
-        address: entry.address,
-        abi: B20_TOKEN_ABI,
-        functionName: "decimals",
-      }),
-    ),
-    readOptional(() =>
-      client.readContract({
-        address: entry.address,
-        abi: B20_TOKEN_ABI,
-        functionName: "totalSupply",
-      }),
-    ),
-    readOptional(() =>
-      client.readContract({
-        address: entry.address,
-        abi: B20_TOKEN_ABI,
-        functionName: "multiplier",
-      }),
-    ),
-    readOptional(() =>
-      client.readContract({
-        address: entry.address,
-        abi: B20_TOKEN_ABI,
-        functionName: "paused",
-      }),
-    ),
-    readOptional(() =>
-      client.readContract({
-        address: entry.chainlinkFeed,
-        abi: CHAINLINK_AGGREGATOR_V3_ABI,
-        functionName: "latestRoundData",
-      }),
-    ),
-  ]);
+  function pick<T>(index: number): T | null {
+    const result = results?.[index];
+    return result && result.status === "success" ? ((result.result as T) ?? null) : null;
+  }
 
-  const feedDecimals =
-    (await readOptional(() =>
-      client.readContract({
-        address: entry.chainlinkFeed,
-        abi: CHAINLINK_AGGREGATOR_V3_ABI,
-        functionName: "decimals",
-      }),
-    )) ?? 8;
+  const symbol = pick<string>(0);
+  const name = pick<string>(1);
+  const decimalsRaw = pick<number>(2);
+  const totalSupply = pick<bigint>(3);
+  const multiplier = pick<bigint>(4);
+  const paused = pick<boolean>(5);
+  const round = pick<[bigint, bigint, bigint, bigint, bigint]>(6);
+  const feedDecimals = pick<number>(7) ?? 8;
 
   const chainlinkPriceUsd =
     round && round[1] !== undefined
@@ -208,7 +190,7 @@ export async function readTokenizedStockOnchain(
   return {
     symbol: symbol ?? null,
     name: name ?? null,
-    decimals: decimals === null || decimals === undefined ? null : Number(decimals),
+    decimals: decimalsRaw === null ? null : Number(decimalsRaw),
     totalSupply: totalSupply !== null ? totalSupply.toString() : null,
     multiplierWad: multiplierWad !== null ? multiplierWad.toString() : null,
     multiplier:

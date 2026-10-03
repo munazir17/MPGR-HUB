@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { detectIntent, generateIntelligentReply } from "@/lib/agent-intelligence";
+import { GENERAL_HELP_REPLY } from "@/lib/agent-intelligence/reply-generators";
 import type { AgentContext } from "@/lib/agent-context";
 
 const ctx: AgentContext = {
@@ -91,5 +92,61 @@ describe("generateIntelligentReply portfolio vs research", () => {
       isConnected: false,
     }, null);
     expect(result.intent).toBe("research_query");
+  });
+});
+
+describe("autonomous_status intent routing", () => {
+  it("regression: 'Show my autonomous status' routes to autonomous_status", () => {
+    expect(detectIntent("Show my autonomous status", null).intent).toBe("autonomous_status");
+  });
+
+  it("routes every supported autonomous-status phrasing to autonomous_status", () => {
+    const phrases = [
+      "Show my autonomous status",
+      "autonomous status",
+      "show autonomous status",
+      "what is my autonomous status",
+      "What's my autonomous status?",
+      "whats my autonomous status",
+      "is autonomous mode enabled",
+      "Is my autonomous agent enabled?",
+      "Is autonomous mode on?",
+      "Autonomy status",
+    ];
+    for (const phrase of phrases) {
+      expect(detectIntent(phrase, null).intent, phrase).toBe("autonomous_status");
+    }
+  });
+
+  it("keeps routing autonomous-status questions regardless of previous intent or memory", () => {
+    const memory = { dominantRecentIntent: "research_query" } as never;
+    expect(detectIntent("What's my autonomous status?", "research_query", memory).intent).toBe(
+      "autonomous_status",
+    );
+    expect(detectIntent("Show my autonomous status", "portfolio_summary").intent).toBe(
+      "autonomous_status",
+    );
+  });
+
+  it("answers with a real status reply, never the generic help or research text", () => {
+    const result = generateIntelligentReply("Show my autonomous status", { ...ctx, autonomy: {
+      enabled: true,
+      emergencyDisabled: false,
+      executionAvailable: false,
+      limits: {
+        maxGoalsPerWallet: 10,
+        minCooldownSeconds: 60,
+        maxPolicyTtlDays: 30,
+        maxPerTradeHuman: "10000",
+        maxDailyHuman: "100000",
+        maxSlippageBps: 500,
+      },
+      goals: { total: 0, active: 0 },
+    } }, null);
+    expect(result.intent).toBe("autonomous_status");
+    expect(result.reply).not.toBe(GENERAL_HELP_REPLY);
+    expect(result.reply).not.toContain("MoneyPaiger");
+    expect(result.reply).toContain("Autonomous mode: enabled");
+    expect(result.reply).toContain("Autonomous execution available: no");
   });
 });

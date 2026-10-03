@@ -69,6 +69,12 @@ export interface ExecutorSwapIntent {
   /** Unix seconds. */
   deadline: number;
   intentId: Hex;
+  /**
+   * Phase 2 delegated path ONLY: the broadcaster expected as tx.from. When
+   * set, verification requires tx.from == expectedSender AND the event's
+   * taker == taker. UNSET (every existing path): tx.from == taker as before.
+   */
+  expectedSender?: Address;
   authorization: AuthorizationMode;
   /** Address the user must approve: executor (APPROVAL/EIP2612) or Permit2 (PERMIT2). */
   spender: Address;

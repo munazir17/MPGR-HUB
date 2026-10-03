@@ -1,0 +1,86 @@
+name: Phase 6 Fork Rehearsal (Base Mainnet, local anvil — nothing broadcast)
+
+# PHASE 6 — adversarial FORK REHEARSAL of the autonomous Mainnet runtime path.
+#
+# Runs lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts against a LOCAL
+# anvil fork of Base mainnet spawned INSIDE the runner:
+#   - on-chain chain separation (delegated Sepolia executor has NO code there)
+#   - autonomous BUY (USDC -> AAPLc) and SELL through the FULL runtime chain
+#     Goal -> Scheduler -> Policy -> fresh QuoterV2 quote -> v1 prepare (the
+#     F-9 seam) -> broadcast -> receipt verification -> audit -> goal state
+#   - exact 25 bps fee reconciliation from the real SwapExecuted event
+#   - duplicate tick rejection, emergency stop, uncertain broadcast (fabricated
+#     hash) NEVER re-broadcast, reverted tx classified TX_REVERTED, no retries
+#
+# NOTHING is broadcast to any real chain: the fork is private to the runner
+# and discarded when the job ends. Autonomous execution stays OFF in the app
+# (MPGR_AUTONOMOUS_AGENT_ENABLED is set ONLY inside the vitest process here,
+# exactly like the Phase 5 armed job sets it inside its own process).
+
+on:
+  push:
+    branches: [arena/01a0e784-mpgr-hub]
+  workflow_dispatch:
+
+concurrency:
+  group: phase6-fork-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fork-rehearsal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # Provides `anvil` on PATH (the test spawns it itself).
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - run: npm ci
+      - name: Fork rehearsal (BUY/SELL + failure modes on a local Base mainnet fork)
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          MPGR_PHASE6_FORK: "true"
+          # Optional dedicated RPC; falls back to the same deep-state public
+          # endpoint the contracts-fork job uses (mainnet.base.org 429s and
+          # prunes recent blocks under shared CI egress).
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
+        run: |
+          set +e -uo pipefail
+          # ONE pinned fork block for the whole job: every upstream attempt
+          # forks the SAME block, so anvil's disk storage cache (written by
+          # attempt 1) makes later attempts nearly upstream-free — the same
+          # cross-attempt economics as the forge contracts-fork job.
+          FORK_BLOCK=""
+          for i in 1 2 3; do
+            FORK_BLOCK="$(curl -s -m 15 -X POST -H 'Content-Type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' https://base-rpc.publicnode.com | jq -r '.result // empty' | jq -r 'tonumber | floor - 300' 2>/dev/null || true)"
+            [ -n "$FORK_BLOCK" ] && [ "$FORK_BLOCK" != "null" ] && break
+            sleep 5
+          done
+          echo "Pinned fork block: ${FORK_BLOCK:-<unpinned fallback>}"
+          STATUS=1
+          for upstream in "https://base-rpc.publicnode.com" "https://base.drpc.org" "https://base.llamarpc.com" "https://1rpc.io/base"; do
+            echo "Attempting fork rehearsal against upstream: $upstream"
+            BASE_MAINNET_RPC_URL="$upstream" BASE_FORK_BLOCK="$FORK_BLOCK" npx vitest run lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts 2>&1 | tee phase6-fork.log
+            STATUS=${PIPESTATUS[0]}
+            [ "$STATUS" = "0" ] && break
+            echo "::warning title=phase6 fork rehearsal failed against $upstream::retrying with the next upstream after 60s"
+            sleep 60
+          done
+          # Success-evidence annotations (emitted by the test itself).
+          grep -a "::error::PHASE6_FORK" phase6-fork.log | head -8 || true
+          if [ "$STATUS" != "0" ]; then
+            grep -aE "FAIL |AssertionError|Error:|did not become ready" phase6-fork.log | head -12 | while IFS= read -r l; do echo "::error::${l:0:500}"; done
+            grep -a "phase6-warmup" phase6-fork.log | head -4 | while IFS= read -r l; do echo "::error::WARMUP ${l:0:400}"; done
+            if [ -f "$TMPDIR/phase6-anvil.stderr.log" ] || [ -f "/tmp/phase6-anvil.stderr.log" ]; then
+              echo "::error::anvil stderr tail: $(tail -c 600 /tmp/phase6-anvil.stderr.log 2>/dev/null || tail -c 600 "$TMPDIR/phase6-anvil.stderr.log" | tr '\n' ' ')"
+            fi
+            exit 1
+          fi

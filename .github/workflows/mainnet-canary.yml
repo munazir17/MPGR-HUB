@@ -1,0 +1,146 @@
+name: Mainnet Canary (ONE 1-USDC BUY — operator-armed only)
+
+# MAINNET CANARY — PREPARED, NOT EXECUTED.
+#
+# NOTHING here runs on Mainnet unless an operator explicitly dispatches this
+# workflow with armed=true AND the dedicated canary secrets exist:
+#   MPGR_MAINNET_CANARY_PRIVATE_KEY — DEDICATED Mainnet canary key (pre-funded
+#     with ~1 USDC + a little ETH, pre-approved to the executor). It is NOT the
+#     user's wallet, NOT the deployer, NOT the Sepolia broadcaster
+#     (MPGR_BROADCASTER_PRIVATE_KEY), and it never appears in Vercel/app envs.
+#   BASE_MAINNET_RPC_URL — dedicated Mainnet RPC (falls back to publicnode).
+#   CANARY_ADDRESS — the canary key's address (derived OFFLINE by the operator;
+#     the key itself is never put in any file here).
+#
+# Default dispatch (armed=false) runs the READ-ONLY preflight only: chain,
+# executor config (owner/feeRecipient/feeBps=25/unpaused), bytecode for the
+# executor, Permit2, USDC, WETH and ALL 13 stock tokens (F-13), route+quote
+# sanity, and — when CANARY_ADDRESS is set — funding/allowance so the canary
+# is EXACTLY ONE transaction.
+#
+# Autonomous execution remains OFF in the product (MPGR_AUTONOMOUS_AGENT_ENABLED
+# exists ONLY inside the canary test process of an explicitly armed run — the
+# same pattern as the Phase 5 armed job). Emergency kill switch:
+# MPGR_AUTONOMOUS_EMERGENCY_DISABLE=true makes the canary test refuse to run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      armed:
+        description: "ARM: execute the ONE-transaction canary BUY on Base MAINNET (operator approval)"
+        type: boolean
+        default: false
+      canaryTxHash:
+        description: "Optional: reconcile an existing canary tx (read-only) without arming"
+        type: string
+        default: ""
+
+concurrency:
+  group: mainnet-canary-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
+      CANARY_ADDRESS: ${{ secrets.CANARY_ADDRESS || '' }}
+      SEPOLIA_BROADCASTER_ADDRESS: ${{ vars.SEPOLIA_BROADCASTER_ADDRESS || secrets.SEPOLIA_BROADCASTER_ADDRESS || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Phase 6 offline audit suite (read-only pins)
+        run: npx vitest run lib/executor/__tests__/phase6-mainnet-audit.test.ts
+      - name: Mainnet preflight (STRICTLY read-only chain checks)
+        run: node scripts/mainnet-canary-preflight.mjs
+      - name: Checklist pointer
+        run: |
+          echo "::notice title=Mainnet canary::Preflight done. Runbook: docs/MAINNET-CANARY-RUNBOOK.md. Arm ONLY with explicit operator approval."
+
+  reconcile:
+    # Read-only reconciliation of a canary transaction (hash input, or the tx
+    # produced by an armed run in the same dispatch).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [preflight]
+    if: inputs.canaryTxHash != '' || inputs.armed == true
+    env:
+      BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
+      CANARY_ADDRESS: ${{ secrets.CANARY_ADDRESS || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - id: tx
+        run: |
+          if [ -n "${{ inputs.canaryTxHash }}" ]; then
+            echo "hash=${{ inputs.canaryTxHash }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "hash=$(cat mainnet-canary-tx.txt 2>/dev/null | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Reconcile (read-only)
+        if: steps.tx.outputs.hash != ''
+        run: node scripts/mainnet-canary-reconcile.mjs "${{ steps.tx.outputs.hash }}"
+      - name: No tx to reconcile (armed run must execute the canary first)
+        if: steps.tx.outputs.hash == ''
+        run: echo "::notice::No canary tx hash provided — nothing to reconcile (read-only job did nothing)."
+
+  canary:
+    # THE one-transaction Mainnet BUY. Runs ONLY on an explicitly armed
+    # dispatch AND after preflight passed. Refuses to run without the
+    # dedicated canary key secret.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [preflight]
+    if: inputs.armed == true
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      MPGR_MAINNET_CANARY: "true"
+      MPGR_MAINNET_CANARY_PRIVATE_KEY: ${{ secrets.MPGR_MAINNET_CANARY_PRIVATE_KEY }}
+      BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
+      CANARY_ADDRESS: ${{ secrets.CANARY_ADDRESS || '' }}
+      SEPOLIA_BROADCASTER_ADDRESS: ${{ vars.SEPOLIA_BROADCASTER_ADDRESS || secrets.SEPOLIA_BROADCASTER_ADDRESS || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Guard — dedicated canary key must exist (fail closed)
+        run: |
+          if [ -z "${MPGR_MAINNET_CANARY_PRIVATE_KEY}" ]; then
+            echo "::error::MPGR_MAINNET_CANARY_PRIVATE_KEY is not configured — provision the DEDICATED canary key secret first (see docs/MAINNET-CANARY-RUNBOOK.md). Nothing was broadcast."
+            exit 1
+          fi
+      - name: Canary — exactly ONE 1-USDC BUY through the Mainnet runtime path
+        run: |
+          set +e -uo pipefail
+          npx vitest run lib/autonomy/__tests__/mainnet-canary.execution.test.ts 2>&1 | tee mainnet-canary.log
+          STATUS=${PIPESTATUS[0]}
+          grep -a "MAINNET_CANARY ok" mainnet-canary.log | head -2 || true
+          if [ "$STATUS" != "0" ]; then
+            grep -aE "FAIL |AssertionError|Error:" mainnet-canary.log | head -10 | while IFS= read -r l; do echo "::error::${l:0:500}"; done
+            exit 1
+          fi
+      - name: Export canary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mainnet-canary-evidence
+          path: |
+            mainnet-canary.log
+            mainnet-canary-tx.txt
+          if-no-files-found: ignore

@@ -1,0 +1,186 @@
+name: Phase 5 Readiness (Base Sepolia)
+
+# PHASE 5 — GUARDED Base Sepolia autonomous READINESS (never Mainnet).
+#
+# Three jobs, strictly gated:
+#   1. preflight  — ALWAYS run first: all Phase 4 hardening suites, then the
+#                    read-only chain/env preflight + DRY-RUN plan (NO broadcast).
+#   2. armed      — ONLY when the operator explicitly dispatches with
+#                    armed=true AND preflight passed: ONE tiny-value readiness
+#                    test through the EXISTING delegated path (BUY direct-
+#                    adapter parity + SELL through the real AutonomyRuntime:
+#                    goal -> policy -> slot -> runtime -> MCP -> broadcaster ->
+#                    frozen executor -> receipt -> verification -> audit ->
+#                    goal COMPLETED).
+#   3. reconcile  — read-only on-chain reconciliation of the armed run
+#                    (balances, fee recipient, broadcaster gas, Permit2 nonce
+#                    consumption, receipts, runtime audit/goal evidence).
+#
+# Autonomous remains OFF in the app (MPGR_AUTONOMOUS_AGENT_ENABLED=true exists
+# ONLY inside the armed job of this explicitly dispatched run, exactly like
+# the Phase 3 tag-gated live workflow).
+
+on:
+  push:
+    branches: [arena/01a0e784-mpgr-hub]
+  workflow_dispatch:
+    inputs:
+      armed:
+        description: "Arm the tiny-value readiness test (broadcasts 2 txs on Base Sepolia)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: phase5-readiness-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Tiny-value readiness amount: 0.01 tUSD (10,000 base units, 6 dp).
+  # Hard-capped in the harness; overridable only downward by ops.
+  MPGR_LIVE_SELL_AMOUNT_RAW: "10000"
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: base-sepolia
+    outputs:
+      armed: ${{ steps.mode.outputs.armed }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve arming mode
+        id: mode
+        run: |
+          MSG="$(git log -1 --pretty=%s)"
+          echo "message=$MSG" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "preflight=true" >> "$GITHUB_OUTPUT"
+            if [ "${{ inputs.armed }}" = "true" ]; then echo "armed=true" >> "$GITHUB_OUTPUT"; else echo "armed=false" >> "$GITHUB_OUTPUT"; fi
+          elif echo "$MSG" | grep -q "\[phase5-armed\]"; then
+            echo "preflight=true" >> "$GITHUB_OUTPUT"; echo "armed=true" >> "$GITHUB_OUTPUT"
+          elif echo "$MSG" | grep -q "\[phase5-preflight\]"; then
+            echo "preflight=true" >> "$GITHUB_OUTPUT"; echo "armed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "preflight=false" >> "$GITHUB_OUTPUT"; echo "armed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.mode.outputs.preflight == 'true'
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        if: steps.mode.outputs.preflight == 'true'
+        run: npm ci
+      - name: Run ALL Phase 4 hardening suites (must pass before any live step)
+        if: steps.mode.outputs.preflight == 'true'
+        run: |
+          set -o pipefail
+          npx vitest run \
+            lib/autonomy/__tests__/hardening-authorization.test.ts \
+            lib/autonomy/__tests__/hardening-concurrency.test.ts \
+            lib/autonomy/__tests__/hardening-policy-goals.test.ts \
+            lib/autonomy/__tests__/hardening-scheduler-idempotency.test.ts \
+            lib/autonomy/__tests__/hardening-gaps.test.ts \
+            lib/executor/__tests__/hardening-invariants.test.ts \
+            lib/mcp/__tests__/hardening-quotes-verify.test.ts \
+            lib/mcp/__tests__/hardening-boundaries.test.ts \
+            app/api/agent/autonomy/autonomy-routes-security.test.ts 2>&1 | tail -5
+      - name: Read-only Phase 5 preflight (env fail-closed + chain facts + dry-run plan)
+        if: steps.mode.outputs.preflight == 'true'
+        env:
+          MPGR_PHASE5_PREFLIGHT: "true"
+          MPGR_LIVE_SELL_AMOUNT_RAW: "10000"
+          # Quote-signing secret (same pattern as the Phase 3 live workflow):
+          # a run-scoped value is sufficient — this is NOT a session secret store.
+          AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET || format('{0}{1}', github.run_id, github.sha) }}
+          MPGR_BROADCASTER_PRIVATE_KEY: ${{ secrets.MPGR_BROADCASTER_PRIVATE_KEY }}
+          MPGR_LIVE_TEST_USER_PRIVATE_KEY: ${{ secrets.MPGR_LIVE_TEST_USER_PRIVATE_KEY }}
+          BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+          BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL }}
+        run: |
+          set -o pipefail
+          npx vitest run lib/autonomy/__tests__/phase5-preflight.test.ts 2>&1 | tee phase5-preflight.log
+          grep -a "::notice::PHASE5" phase5-preflight.log | sed 's/^/PREFLIGHT: /'
+      - name: Upload dry-run plan
+        if: steps.mode.outputs.preflight == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase5-plan
+          path: phase5-plan.json
+          if-no-files-found: error
+
+  armed:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.armed == true) || needs.preflight.outputs.armed == 'true' }}
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: base-sepolia
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: ARMED tiny-value readiness test (existing delegated path only)
+        env:
+          MPGR_LIVE_DELEGATED: "true"
+          # Explicitly armed run ONLY — never an app/Vercel/production setting.
+          MPGR_AUTONOMOUS_AGENT_ENABLED: "true"
+          # Quote-signing secret (same pattern as the Phase 3 live workflow).
+          AUTH_SESSION_SECRET: ${{ secrets.AUTH_SESSION_SECRET || format('{0}{1}', github.run_id, github.sha) }}
+          MPGR_BROADCASTER_PRIVATE_KEY: ${{ secrets.MPGR_BROADCASTER_PRIVATE_KEY }}
+          MPGR_LIVE_TEST_USER_PRIVATE_KEY: ${{ secrets.MPGR_LIVE_TEST_USER_PRIVATE_KEY }}
+          BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+          BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL }}
+          MPGR_LIVE_SELL_AMOUNT_RAW: "10000"
+        run: |
+          set -o pipefail
+          npx vitest run lib/autonomy/__tests__/live-delegated.execution.test.ts 2>&1 | tee live-delegated.log
+          status=${PIPESTATUS[0]}
+          grep -a "::notice::LIVE" live-delegated.log | sed 's/^/LIVE: /'
+          exit "$status"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase5-results
+          path: |
+            live-delegated-results.json
+            live-delegated.log
+          if-no-files-found: ignore
+
+  reconcile:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.armed == true) || needs.preflight.outputs.armed == 'true' }}
+    needs: [armed]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: base-sepolia
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install (viem for read-only reconciliation)
+        run: npm ci
+      - name: Download run evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: phase5-results
+      - name: Reconcile on-chain facts vs run evidence
+        env:
+          BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL }}
+          MPGR_BROADCASTER_PRIVATE_KEY: ${{ secrets.MPGR_BROADCASTER_PRIVATE_KEY }}
+        run: |
+          node scripts/phase5-reconcile.mjs live-delegated-results.json
+      - name: Upload reconciliation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase5-reconciliation
+          path: phase5-reconciliation.json
+          if-no-files-found: ignore

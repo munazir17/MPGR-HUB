@@ -67,9 +67,17 @@ jobs:
       - name: Executor ABI in lib/executor is in sync with the contract
         run: node script/gen-executor-abi.mjs --check
       - run: bash script/prepare-uniswap-artifacts.sh
-      - run: forge test -vvv
+      - name: forge test (failure details as annotations)
         env:
           MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
+        run: |
+          set -o pipefail
+          forge test -vvv 2>&1 | tee forge-test.log || {
+            echo "::error::forge test failed"
+            grep -aE "\[FAIL\]|Error:" forge-test.log | head -12 | while IFS= read -r l; do echo "::error::${l:0:500}"; done
+            tail -30 forge-test.log | while IFS= read -r l; do echo "::error::TAIL ${l:0:400}"; done
+            exit 1
+          }
 
   contracts-fork:
     # MPGR Executor against the REAL Aerodrome Slipstream router/pools,
@@ -87,16 +95,38 @@ jobs:
       - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
       - name: Fork tests (Base mainnet fork + Base Sepolia deployment)
         env:
-          # Optional secret for a dedicated RPC; falls back to the public endpoint.
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          # Optional secret for a dedicated RPC; falls back to a deep-state
+          # public endpoint. mainnet.base.org rate-limits shared CI egress
+          # (HTTP 429) and serves only minutes of recent state (pruned
+          # blocks 404), so the fork tests default to base-rpc.publicnode.com
+          # (the same public endpoint the app's RPC fallback chain uses).
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
           # Re-verifies the committed Base Sepolia deployment record against the live chain
           # (test/fork/MPGRExecutorBaseSepoliaDeployment.t.sol). Read-only; nothing is broadcast.
           BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
         run: |
           set +e -uo pipefail
           forge build >/dev/null
+          # Drop stale cross-run FORK caches (restored by the foundry
+          # toolchain cache): rpc_storage_caching pins storage to the block
+          # captured in a previous run, and short-window public endpoints
+          # prune that block within minutes ("block not found: hash …").
+          # Only chain-cache subdirs are removed — the Solidity compile
+          # cache is preserved.
+          rm -rf cache/base cache/base-sepolia cache/8453 cache/84532
+          # Public Base RPCs rate-limit shared CI egress IPs (HTTP 429 "over
+          # rate limit") under fork load. One settle-and-retry absorbs those
+          # transient storms; a real, deterministic failure fails both runs
+          # and the job. Storage cached during attempt 1 (rpc_storage_caching
+          # in foundry.toml) makes the retry far cheaper on the endpoint.
           forge test --match-path 'test/fork/*' --json > fork-results.json 2> fork-stderr.txt
           STATUS=$?
+          if [ "$STATUS" != "0" ]; then
+            echo "::warning title=fork suite failed once::retrying after 60s (public Base RPC 429s are transient)"
+            sleep 60
+            forge test --match-path 'test/fork/*' --json > fork-results.json 2> fork-stderr.txt
+            STATUS=$?
+          fi
           if [ "$STATUS" != "0" ] && ! jq -e 'type == "object"' fork-results.json >/dev/null 2>&1; then
             echo "::error title=forge test (fork) did not produce results::$(tail -c 1500 fork-stderr.txt | tr '\n' ' ')"
           fi

@@ -1,0 +1,105 @@
+name: Discover Delegated Run Tokens (Base Sepolia)
+
+# READ-ONLY evidence job. No secrets, no funds, no trades, no deploys.
+# Parses the delegated-executor deploy transaction receipt (Base Sepolia
+# 84532) to recover the run's fresh test-token addresses (MPGRTestnetToken
+# tUSD 6dp / tSTOCK 18dp), the Uniswap V3 pools baked into the executor
+# (PoolCreated events on the official factory), and proves each token is on
+# the executor's on-chain isTokenAllowed allowlist.
+
+on:
+  push:
+    branches: [arena/01a0e784-mpgr-hub]
+    # Armed ONLY by a commit whose subject contains the exact tag
+    # [discover-tokens] (same pattern as the deploy workflow).
+  workflow_dispatch:
+    inputs:
+      tx_hash:
+        description: "Deploy tx hash (default: the successful delegated redeploy)"
+        required: false
+        default: "0xc5557b9a07b6a92df78c6eb7d86cc714532de5045bb2f99872eab0f605cd8b4e"
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[discover-tokens]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Parse deploy receipt (read-only)
+        env:
+          RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL }}
+        run: |
+          set -euo pipefail
+          trap 'echo "::error::DIED at line=$LINENO last_err=$(tail -c 220 /tmp/cast.err 2>/dev/null | tr "\n" " ")"' ERR
+          RPC_URL="${RPC_URL:-https://sepolia.base.org}"
+          TX="${{ github.event.inputs.tx_hash || '0xc5557b9a07b6a92df78c6eb7d86cc714532de5045bb2f99872eab0f605cd8b4e' }}"
+          EXEC="0xa9568499D7e58854F2590a56B6D32788DbfA58F9"
+          FACTORY="0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"
+          TRANSFER_TOPIC="0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+          ZERO_TOPIC="0x0000000000000000000000000000000000000000000000000000000000000000"
+
+          cast_try() { # cast_try <args...> — public RPCs blip
+            local out="" i
+            for i in 1 2 3; do
+              if out=$(cast "$@" 2>/tmp/cast.err); then printf '%s' "$out"; return 0; fi
+              echo "::warning::TRY${i}_FAILED cmd=$1 errsize=$(wc -c < /tmp/cast.err 2>/dev/null || echo -1) errhead=$(head -c 140 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"
+              sleep 2
+            done
+            echo "::error::CAST_EXHAUSTED cmd=$1 errtail=$(tail -c 200 /tmp/cast.err 2>/dev/null | tr '\n' ' ')"
+            return 1
+          }
+
+          echo "::notice::STAGE=receipt rpc_host=$(echo "$RPC_URL" | sed -E 's#(https?://[^/?#]*).*#\1#')"
+          cast_try receipt "$TX" --rpc-url "$RPC_URL" --json > receipt.json
+          echo "::notice::STAGE=receipt_ok logs=$(jq '.logs | length' receipt.json) block=$(jq -r '.blockNumber' receipt.json)"
+          CHAIN=$(cast_try chain-id --rpc-url "$RPC_URL")
+          [ "$CHAIN" = "84532" ] || { echo "::error::ABORT: chain is $CHAIN, not 84532"; exit 1; }
+          STATUS=$(jq -r '.status' receipt.json)
+          echo "::notice::STAGE=status=$STATUS"
+          { [ "$STATUS" = "0x1" ] || [ "$STATUS" = "0x01" ]; } || { echo "::error::ABORT: deploy tx status $STATUS"; exit 1; }
+
+          # The executor is created by ONE tx of a multi-tx forge broadcast;
+          # the test tokens + pools are created in EARLIER txs of the same
+          # broadcast (same deployer, nearby blocks). PoolCreated events on the
+          # official factory carry BOTH token addresses — a factory-scoped scan
+          # recovers the whole route set without a heavy range query.
+          BLOCK_HEX=$(jq -r '.blockNumber' receipt.json)
+          BLOCK=$((16#${BLOCK_HEX#0x}))
+          # Broadcast order: tokens -> pools -> executor, so scan BACKWARD.
+          FROM=$((BLOCK-120)); TO=$((BLOCK+5))
+          echo "::notice::STAGE=scan blocks=$FROM..$TO factory=$FACTORY"
+          GETLOGS="{\"fromBlock\":\"$(printf '0x%x' "$FROM")\",\"toBlock\":\"$(printf '0x%x' "$TO")\",\"address\":\"$FACTORY\"}"
+          cast_try rpc eth_getLogs "$GETLOGS" --rpc-url "$RPC_URL" > pool_logs.json
+          echo "::notice::STAGE=pool_logs count=$(jq 'length' pool_logs.json)"
+
+          # 1) pools: token0 / token1 / fee (+ on-chain getPool cross-check)
+          jq -r '[.[] | [.topics[1], .topics[2], .topics[3]] | @tsv] | .[]' pool_logs.json \
+            | while IFS="$(printf '\t')" read -r t0 t1 fee; do
+                T0="0x${t0: -40}"; T1="0x${t1: -40}"
+                FEE=$((16#${fee#0x}))
+                POOL=$(cast_try call "$FACTORY" "getPool(address,address,uint24)(address)" "$T0" "$T1" "$FEE" --rpc-url "$RPC_URL" || echo "?")
+                echo "::notice::POOL_CREATED fee=$FEE token0=$T0 token1=$T1 pool=$POOL"
+              done
+
+          # 2) unique tokens across those pools: symbol / decimals / allowlist
+          jq -r '.[] | .topics[1], .topics[2]' pool_logs.json \
+            | tr '[:upper:]' '[:lower:]' | sed 's/^0x.*\(0x[0-9a-f]\{40\}\)$/\1/' \
+            | grep '^0x' | sort -u | head -10 > tokens.txt || true
+          while read -r t; do
+            [ -n "$t" ] || continue
+            TCS="0x$(printf '%s' "${t#0x}" | tr '[:lower:]' '[:upper:]')"
+            SYM=$(cast_try call "$t" "symbol()(string)" --rpc-url "$RPC_URL" || echo "?")
+            DEC=$(cast_try call "$t" "decimals()(uint8)" --rpc-url "$RPC_URL" || echo "?")
+            ALLOW=$(cast_try call "$EXEC" "isTokenAllowed(address)(bool)" "$t" --rpc-url "$RPC_URL" || echo "?")
+            echo "::notice::ROUTE_TOKEN address=$t symbol=$SYM decimals=$DEC executorAllowlisted=$ALLOW"
+          done < tokens.txt
+
+          CREATOR=$(jq -r '.from' receipt.json)
+          echo "::notice::DEPLOY_TX from=$CREATOR status=$STATUS block=$BLOCK executor=$EXEC"

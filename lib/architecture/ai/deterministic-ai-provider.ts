@@ -1,5 +1,11 @@
 import { formatTradeReview, formatTradePrice, publicAgentContent } from "@/lib/trade/trade-chat";
 import { hasNegativeTradeAmount } from "./tool-call-normalization";
+// Autonomous Agent Runtime (ADDITIVE, spec §20): clearly recurring /
+// conditional trade phrasing gets an explanation plus a REVIEW-ONLY goal
+// draft instead of a one-shot swap proposal. The matcher is intentionally
+// narrow — a plain "Swap 1 USDC to AAPLc" never matches, so every existing
+// assisted flow is unchanged. Nothing is activated by chat text alone.
+import { buildAutonomyReplyText, buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
 import {
   extractBaseSwapIntent,
   extractUnresolvedSwapOrder,
@@ -7,6 +13,7 @@ import {
   resolveTokenizedStockOrderSide,
   extractCryptoSwapAmount,
   extractCryptoSwapPair,
+  extractExplicitFundingAsset,
   extractTradeHumanAmount,
   extractTokenizedStockOrderAmount,
   extractTradeSymbol,
@@ -29,6 +36,7 @@ import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
 import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
+import { findKnownTradeToken } from "@/lib/trade/trade-tokens";
 
 // Phase 3C Part 1 — wraps generateIntelligentReply as the always-available
 // local provider. FallbackAIProvider uses this class when Gemini throws.
@@ -53,6 +61,23 @@ export class DeterministicAIProvider implements AIProvider {
     // be answered with a whole-portfolio dump.
     const balanceAnswer = await answerWalletBalance(request);
     if (balanceAnswer) return balanceAnswer;
+
+    // Autonomous-goal phrasing ("Buy AAPLc whenever it falls below $200")
+    // runs BEFORE the trade branches: without this, a recurring request
+    // would be mis-read as a one-shot swap. Deliberately narrow matcher;
+    // the reply explains the authorization boundary and never activates
+    // anything (spec §20: "Do not silently activate autonomous execution").
+    const autonomyRequest = detectAutonomousTradeRequest(request.prompt);
+    if (autonomyRequest) {
+      return {
+        intent: "general_help",
+        reply: buildAutonomyReplyText(autonomyRequest),
+        actions: [],
+        highlights: [],
+        followUps: ["Open Autonomous Goals", "How does autonomous mode work?"],
+        autonomyGoalDraft: buildGoalDraft(autonomyRequest, request.prompt),
+      };
+    }
 
     if (isTransferPrompt(request.prompt)) {
       return prepareOrExplainTransfer(request);
@@ -438,6 +463,30 @@ async function prepareOrExplainTrade(
       );
     }
 
+    // Explicit funding asset ("Buy 0.001 AAPLc with ETH"): tokenized-stock
+    // orders fund with USDC only (the executor's Slipstream route is
+    // USDC-based). A clearly named non-USDC asset must get an explicit
+    // unsupported response — NEVER a silently USDC-substituted proposal.
+    // Unresolvable words ("with limit order") are ignored, and no explicit
+    // asset keeps the historical USDC behavior byte-for-byte.
+    const explicitFundingRaw = side === "BUY" ? extractExplicitFundingAsset(request.prompt) : null;
+    const explicitFunding = explicitFundingRaw ? findKnownTradeToken(explicitFundingRaw)?.symbol ?? null : null;
+    if (explicitFunding && explicitFunding.toUpperCase() !== "USDC") {
+      return helpResponse(
+        "Tokenized-stock orders currently fund with USDC only, so I cannot buy " +
+          symbol +
+          " with " +
+          explicitFunding +
+          " through the fee-collecting executor route. Nothing was signed or submitted. Swap " +
+          explicitFunding +
+          " to USDC first (for example \"Swap " +
+          (explicitFunding === "ETH" || explicitFunding === "WETH" ? "0.001 ETH to USDC" : "some " + explicitFunding + " to USDC") +
+          "\"), then buy " +
+          symbol +
+          " with USDC and I will prepare it with the live quote, minOut, and fees.",
+      );
+    }
+
     const result = await runRegisteredTool(
       "tokenized_stock_prepare_order",
       {
@@ -445,6 +494,7 @@ async function prepareOrExplainTrade(
         amount,
         side,
         amountUnit,
+        ...(explicitFunding ? { fundingAsset: explicitFunding } : {}),
       },
       request,
     );

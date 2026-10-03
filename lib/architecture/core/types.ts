@@ -190,6 +190,17 @@ export interface AgentEventMap {
     requestId: string;
     message: string;
   };
+
+  // Phase 3 — Autonomous Agent Runtime (ADDITIVE). Emitted by
+  // lib/autonomy/audit.ts's BusAuditSink for every autonomous decision or
+  // action (goal lifecycle, condition checks, policy verdicts, quotes,
+  // authorization checks, submissions, verifications). `event` is the
+  // serializable AutonomyAuditEvent from lib/autonomy/types.ts — plain
+  // data only (ids, addresses, codes, hashes, amounts); the autonomy type
+  // model structurally cannot carry secrets. Subscribing consumers need
+  // no change to any emitter; zero middleware/handlers existed for these
+  // names before, so existing behavior is untouched.
+  autonomy_audit: { event: import("@/lib/autonomy/types").AutonomyAuditEvent };
 }
 
 export type AgentEventName = keyof AgentEventMap;
