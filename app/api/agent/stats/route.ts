@@ -1,7 +1,7 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { parseAbiItem, type Address } from "viem";
+import { parseAbiItem } from "viem";
 import { getTradePublicClient } from "@/lib/trade/trade-public-client";
 import { getRedis } from "@/lib/api/redis";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, BASE_MAINNET_USDC } from "@/lib/executor/executor-config";
