@@ -243,7 +243,8 @@ export interface TokenizedStockCatalogEntry {
   network: "base";
   standard: "B20";
   issuer: "Coinbase";
-  chainlinkFeed: Address;
+  /** Chainlink feed is present only for the original documented feed-backed B20 stocks. */
+  chainlinkFeed?: Address;
   /** Holding / secondary-market trading is permissionless per Base docs. */
   secondaryMarket: "permissionless";
   /**
