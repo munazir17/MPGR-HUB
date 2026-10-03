@@ -31,8 +31,10 @@ export const B20_ORACLE_REGISTRY =
   "0x3f3E8cf41cdd3b1D118c16471aB0113DfDDd5CaD" as Address;
 
 /**
- * Official 13 Coinbase tokenized stocks + Chainlink feeds, copied
- * verbatim from Base docs. Do not add tickers that are not on that page.
+ * Coinbase Tokenized Stocks API snapshot fetched 2026-10-03, chain Base (8453).
+ * Source of truth: https://api.coinbase.com/v1/tokenized-stocks
+ * The older Base docs table is stale (10 rows only). Identify B20 assets by
+ * address; never invent a ticker, address, or Chainlink feed.
  */
 export const COINBASE_B20_TOKENIZED_STOCKS: readonly TokenizedStockCatalogEntry[] = [
   {
@@ -73,7 +75,6 @@ export const COINBASE_B20_TOKENIZED_STOCKS: readonly TokenizedStockCatalogEntry[
     network: "base",
     standard: "B20",
     issuer: "Coinbase",
-    chainlinkFeed: "0x408e44f504A7371a345F03a73dDC96A4b48e8aa7",
     secondaryMarket: "permissionless",
     primaryMintRedeem: "authorized-participant-only",
   },
@@ -87,7 +88,6 @@ export const COINBASE_B20_TOKENIZED_STOCKS: readonly TokenizedStockCatalogEntry[
     network: "base",
     standard: "B20",
     issuer: "Coinbase",
-    chainlinkFeed: "0x0231cF2635D1E17bB5c2462cc7504Ba1fBd61f33",
     secondaryMarket: "permissionless",
     primaryMintRedeem: "authorized-participant-only",
   },
@@ -115,7 +115,6 @@ export const COINBASE_B20_TOKENIZED_STOCKS: readonly TokenizedStockCatalogEntry[
     network: "base",
     standard: "B20",
     issuer: "Coinbase",
-    chainlinkFeed: "0xAB657C39bac0D5886250D70849e2E3E008F2EECB",
     secondaryMarket: "permissionless",
     primaryMintRedeem: "authorized-participant-only",
   },
@@ -217,7 +216,6 @@ export const COINBASE_B20_TOKENIZED_STOCKS: readonly TokenizedStockCatalogEntry[
     secondaryMarket: "permissionless",
     primaryMintRedeem: "authorized-participant-only",
   },
-,
   {
     ticker: "AMDc",
     symbol: "AMDc",
