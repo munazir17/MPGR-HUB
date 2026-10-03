@@ -436,6 +436,11 @@ async function quoteExecutor(
   } catch {
     return fail("QUOTE_FAILED", "The on-chain quoter could not price this trade (insufficient liquidity?).");
   }
+  // Defense-in-depth: a structurally unusable quote must fail CLOSED as a
+  // structured QUOTE_FAILED (goal stays ACTIVE, nothing broadcast) instead of
+  // crashing later at `expectedBuyAmount: expected.toString()`.
+  if (typeof expected !== "bigint" || expected <= 0n)
+    return fail("QUOTE_FAILED", "Quoter returned no usable output amount.");
 
   const now = deps.nowSeconds();
   const payload: QuotePayload = {
