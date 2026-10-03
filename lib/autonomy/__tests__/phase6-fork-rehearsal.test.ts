@@ -239,7 +239,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
       delegatedRegistry: { 84532: BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT },
       reader: () => forkReader(),
       nowSeconds: () => Math.floor(clock.ms / 1000),
-      quoteSecret: "phase6-fork-secret",
+      quoteSecret: "phase6-fork-secret-quote-signing-v1",
       mainnetEnabled: true,
       mainnetFeeRecipient: BASE_MAINNET_EXECUTOR_DEPLOYMENT.feeRecipient as Address,
     } as unknown as McpDeps;

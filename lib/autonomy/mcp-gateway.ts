@@ -80,6 +80,7 @@ function mapMcpError(code: string): AutonomyFailureCode {
       return "EXECUTOR_PAUSED";
     case "QUOTE_FAILED":
     case "UPSTREAM_ERROR":
+    case "QUOTE_SECRET_MISSING": // quote-signing misconfiguration is a quote failure, not a generic RPC error (live-canary observability fix)
       return "QUOTE_FAILED";
     case "NO_ROUTE":
     case "LIQUIDITY_UNAVAILABLE":

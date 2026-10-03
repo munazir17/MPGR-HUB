@@ -64,4 +64,30 @@ describe("quoteId (HMAC-bound quote)", () => {
       if (prev !== undefined) process.env.AUTH_SESSION_SECRET = prev;
     }
   });
+
+  // LIVE-CANARY REGRESSION (d9344df): the autonomous canary previously used a
+  // 28-char synthetic secret and every quote silently failed QUOTE_SECRET_MISSING.
+  // Lock the boundary: >=32 works, and sign/verify are symmetric + tamper-proof.
+  it("accepts a secret at the exact 32-char boundary", () => {
+    const boundary = "a".repeat(32);
+    const signed = signQuoteId(payload, boundary);
+    expect(signed.ok).toBe(true);
+    expect(verifyQuoteId((signed as { quoteId: string }).quoteId, payload.iat + 1, boundary).ok).toBe(true);
+  });
+
+  it("sign/verify are symmetric and reject a tampered payload", () => {
+    const secret = "mainnet-canary-operator-armed-1700000000000";
+    const signed = signQuoteId(payload, secret);
+    expect(signed.ok).toBe(true);
+    const quoteId = (signed as { quoteId: string }).quoteId;
+    expect(verifyQuoteId(quoteId, payload.iat + 1, secret).ok).toBe(true);
+    // mutating the SIGNED string (payload body or MAC) must invalidate it
+    const parts = quoteId.split(".");
+    parts[1] = parts[1].slice(0, -4) + (parts[1].endsWith("AAAA") ? "BBBB" : "AAAA"); // body tamper
+    expect(verifyQuoteId(parts.join("."), payload.iat + 1, secret).ok).toBe(false);
+    const macParts = quoteId.split(".");
+    macParts[2] = macParts[2].slice(0, -2) + (macParts[2].endsWith("AA") ? "BB" : "AA"); // MAC tamper
+    expect(verifyQuoteId(macParts.join("."), payload.iat + 1, secret).ok).toBe(false);
+    expect(verifyQuoteId(quoteId, payload.iat + 1, "different-secret-at-least-32-chars").ok).toBe(false);
+  });
 });
