@@ -101,4 +101,10 @@ export const STOCKS_AGENT_CHIPS: readonly StocksAgentChip[] = [
     prompt: "Prepare a swap of 10 USDC to TSLAc on Base.",
     icon: Landmark,
   },
+  {
+    id: "prepare-nflxc",
+    label: "Quote 10 USDC → NFLXc",
+    prompt: "Quote 10 USDC to NFLXc and prepare the swap.",
+    icon: Landmark,
+  },
 ] as const;
