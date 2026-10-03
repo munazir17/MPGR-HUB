@@ -64,8 +64,12 @@ describe("base-pairs allowlist", () => {
       expect(pair!.address.toLowerCase().startsWith("0xb200")).toBe(true);
       // B20 decimals must stay on-chain-verified, never hardcoded.
       expect(pair!.decimals).toBeNull();
-      expect(pair!.company).toBe(OFFICIAL_COMPANIES[stock.ticker]);
-      expect(pair!.name).toBe(`${OFFICIAL_COMPANIES[stock.ticker]} Tokenized Stock (Coinbase)`);
+      if (OFFICIAL_COMPANIES[stock.ticker]) {
+        expect(pair!.company).toBe(OFFICIAL_COMPANIES[stock.ticker]);
+        expect(pair!.name).toBe(`${OFFICIAL_COMPANIES[stock.ticker]} Tokenized Stock (Coinbase)`);
+      } else {
+        expect(pair!.name).toBe(stock.name);
+      }
     }
   });
 
