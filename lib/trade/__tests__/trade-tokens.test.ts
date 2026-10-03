@@ -29,6 +29,8 @@ describe("resolveTradeToken", () => {
       );
     }
     expect(findTokenizedStock("AAPL")?.ticker).toBe("AAPLc");
+    expect(findTokenizedStock("NFLX")?.address.toLowerCase()).toBe("0xb20000000000000000000058b8c947e44011dfe6".toLowerCase());
+    expect(findTokenizedStock("nflxc")?.address.toLowerCase()).toBe("0xb20000000000000000000058b8c947e44011dfe6".toLowerCase());
   });
 
   it("rejects unknown tickers instead of inventing a contract", () => {
@@ -50,11 +52,11 @@ describe("resolveTradeToken", () => {
 });
 
 describe("Coinbase B20 catalog", () => {
-  it("contains exactly the 13 documented tickers and 42-char addresses", () => {
-    expect(COINBASE_B20_TOKENIZED_STOCKS).toHaveLength(13);
+  it("contains the API catalog with 42-char addresses and optional feeds", () => {
+    expect(COINBASE_B20_TOKENIZED_STOCKS).toHaveLength(60);
     for (const stock of COINBASE_B20_TOKENIZED_STOCKS) {
       expect(stock.address).toMatch(/^0x[a-fA-F0-9]{40}$/);
-      expect(stock.chainlinkFeed).toMatch(/^0x[a-fA-F0-9]{40}$/);
+      if (stock.chainlinkFeed) expect(stock.chainlinkFeed).toMatch(/^0x[a-fA-F0-9]{40}$/);
       expect(stock.network).toBe("base");
       expect(stock.primaryMintRedeem).toBe("authorized-participant-only");
     }

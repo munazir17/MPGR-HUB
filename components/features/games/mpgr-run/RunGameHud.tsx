@@ -24,7 +24,7 @@ export function HudChip({
   value: string;
 }) {
   return (
-    <div className="flex items-center gap-1.5 rounded-full bg-black/40 px-3 py-1.5 shadow-[0_0_0_1px_rgba(59,130,246,0.35)] backdrop-blur-md">
+    <div className="flex items-center gap-1.5 rounded-full bg-black/70 px-3 py-1.5 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]">
       {imgSrc ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={imgSrc} alt="" className="h-4 w-4 object-contain" aria-hidden="true" />
@@ -55,11 +55,16 @@ export function ControlButton({
         e.stopPropagation();
         onPress();
       }}
+      onPointerUp={(e) => {
+        // Never let a control-button release reach the play-surface swipe
+        // classifier (historically caused left/right presses to jump).
+        e.stopPropagation();
+      }}
       aria-label={label}
-      className={`flex h-14 w-14 items-center justify-center rounded-full backdrop-blur-md ring-1 transition-transform active:scale-90 ${
+      className={`flex h-14 w-14 items-center justify-center rounded-full ring-1 transition-transform active:scale-90 ${
         accent
           ? "bg-gradient-premium text-white shadow-glow-gold ring-white/20"
-          : "bg-black/45 text-white ring-white/15"
+          : "bg-black/70 text-white ring-white/15"
       }`}
     >
       <Icon className="h-6 w-6" aria-hidden="true" />

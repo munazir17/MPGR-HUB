@@ -148,6 +148,7 @@ export async function readTokenizedStockOnchain(
   entry: TokenizedStockCatalogEntry,
   client: ReadClient = getTradePublicClient(),
 ): Promise<TokenizedStockOnchainState> {
+  const chainlinkFeed = entry.chainlinkFeed;
   const results = await readOptional(() =>
     client.multicall({
       contracts: [
@@ -157,8 +158,6 @@ export async function readTokenizedStockOnchain(
         { address: entry.address, abi: B20_TOKEN_ABI, functionName: "totalSupply" },
         { address: entry.address, abi: B20_TOKEN_ABI, functionName: "multiplier" },
         { address: entry.address, abi: B20_TOKEN_ABI, functionName: "paused" },
-        { address: entry.chainlinkFeed, abi: CHAINLINK_AGGREGATOR_V3_ABI, functionName: "latestRoundData" },
-        { address: entry.chainlinkFeed, abi: CHAINLINK_AGGREGATOR_V3_ABI, functionName: "decimals" },
       ],
       allowFailure: true,
     }),
@@ -175,8 +174,24 @@ export async function readTokenizedStockOnchain(
   const totalSupply = pick<bigint>(3);
   const multiplier = pick<bigint>(4);
   const paused = pick<boolean>(5);
-  const round = pick<[bigint, bigint, bigint, bigint, bigint]>(6);
-  const feedDecimals = pick<number>(7) ?? 8;
+  const round = chainlinkFeed
+    ? await readOptional(() =>
+        client.readContract({
+          address: chainlinkFeed,
+          abi: CHAINLINK_AGGREGATOR_V3_ABI,
+          functionName: "latestRoundData",
+        }),
+      )
+    : null;
+  const feedDecimals = chainlinkFeed
+    ? ((await readOptional(() =>
+        client.readContract({
+          address: chainlinkFeed,
+          abi: CHAINLINK_AGGREGATOR_V3_ABI,
+          functionName: "decimals",
+        }),
+      )) ?? 8)
+    : 8;
 
   const chainlinkPriceUsd =
     round && round[1] !== undefined

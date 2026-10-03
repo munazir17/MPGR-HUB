@@ -23,7 +23,6 @@ import { MPGR_RUN_SIMULATION_WIDTH } from "@/lib/games/mpgr-run/authoritative-re
 import { clamp } from "@/lib/games/mpgr-run/run-physics";
 import { createDeterministicRng } from "@/lib/games/mpgr-run/deterministic-rng";
 
-const TEST_CANVAS_HEIGHT = 480;
 
 describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", () => {
   let idCounter = 1;
@@ -66,13 +65,13 @@ describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", ()
       world.player.playerY = 10;
 
       // Step forward by 0.1s
-      stepSimulation(world, 0.1, TEST_CANVAS_HEIGHT, nextId, null);
+      stepSimulation(world, 0.1, nextId, null);
       expect(world.player.playerY).toBeGreaterThan(10);
       expect(world.player.velocityY).toBeLessThan(JUMP_VELOCITY);
 
       // Step forward until gravity brings player back to ground
       for (let i = 0; i < 20; i++) {
-        stepSimulation(world, 0.1, TEST_CANVAS_HEIGHT, nextId, null);
+        stepSimulation(world, 0.1, nextId, null);
       }
       expect(world.player.playerY).toBe(0);
       expect(world.player.velocityY).toBe(0);
@@ -83,10 +82,10 @@ describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", ()
       world.player.sliding = true;
       world.player.slideUntilMs = 500;
 
-      stepSimulation(world, 0.2, TEST_CANVAS_HEIGHT, nextId, null); // 200ms elapsed
+      stepSimulation(world, 0.2, nextId, null); // 200ms elapsed
       expect(world.player.sliding).toBe(true);
 
-      stepSimulation(world, 0.4, TEST_CANVAS_HEIGHT, nextId, null); // 600ms elapsed
+      stepSimulation(world, 0.4, nextId, null); // 600ms elapsed
       expect(world.player.sliding).toBe(false);
     });
 
@@ -95,8 +94,8 @@ describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", ()
       const world2 = freshWorld();
       world2.activePowerups.speed = 10000;
 
-      stepSimulation(world1, 0.1, TEST_CANVAS_HEIGHT, nextId, null);
-      stepSimulation(world2, 0.1, TEST_CANVAS_HEIGHT, nextId, null);
+      stepSimulation(world1, 0.1, nextId, null);
+      stepSimulation(world2, 0.1, nextId, null);
 
       expect(world2.effectiveSpeed).toBeCloseTo(world1.effectiveSpeed * SPEED_BOOST_MULTIPLIER, 1);
       expect(world2.traveledPx).toBeGreaterThan(world1.traveledPx);
@@ -107,7 +106,7 @@ describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", ()
       world.activePowerups.jetpack = 5000;
       expect(world.player.playerY).toBe(0);
 
-      stepSimulation(world, 0.5, TEST_CANVAS_HEIGHT, nextId, null);
+      stepSimulation(world, 0.5, nextId, null);
       expect(world.player.playerY).toBeGreaterThan(0);
       expect(world.player.playerY).toBeLessThanOrEqual(JETPACK_FLY_HEIGHT);
     });
@@ -126,7 +125,7 @@ describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", ()
       };
       world.collectibles.push(coin);
 
-      collectItem(world, coin, TEST_CANVAS_HEIGHT, nextId);
+      collectItem(world, coin, nextId);
       expect(coin.collected).toBe(true);
       expect(world.stats.coins).toBe(1);
       expect(world.particles.length).toBeGreaterThan(0);
@@ -145,7 +144,7 @@ describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", ()
       };
       world.powerups.push(powerup);
 
-      collectPowerup(world, powerup, TEST_CANVAS_HEIGHT, nextId);
+      collectPowerup(world, powerup, nextId);
       expect(powerup.collected).toBe(true);
       expect(world.stats.powerups).toBe(1);
       expect(world.activePowerups.shield).toBeGreaterThan(world.elapsedMs);
@@ -154,12 +153,12 @@ describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", ()
     it("clamps particle buffer size to avoid unbounded memory growth", () => {
       const world = freshWorld();
       for (let i = 0; i < 20; i++) {
-        spawnBurst(world, 50, 50, "#FFFFFF", 20, nextId);
+        spawnBurst(world, 50, 1, 50, "#FFFFFF", 20, nextId);
       }
       expect(world.particles.length).toBeLessThanOrEqual(160);
 
       for (let i = 0; i < 20; i++) {
-        spawnSpriteBurst(world, 50, 50, "burst.png", 300, 30, nextId);
+        spawnSpriteBurst(world, 50, 1, 50, "burst.png", 300, 30, nextId);
       }
       expect(world.spriteBursts.length).toBeLessThanOrEqual(12);
     });
@@ -183,7 +182,7 @@ describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", ()
         passed: false,
       });
 
-      stepSimulation(world, 0.001, TEST_CANVAS_HEIGHT, nextId, null);
+      stepSimulation(world, 0.001, nextId, null);
       expect(world.player.hp).toBe(0);
       expect(world.gameOver).toBe(true);
       expect(world.stats.hits).toBe(1);
@@ -207,7 +206,7 @@ describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", ()
         passed: false,
       });
 
-      stepSimulation(world, 0.001, TEST_CANVAS_HEIGHT, nextId, null);
+      stepSimulation(world, 0.001, nextId, null);
       expect(world.player.hp).toBe(STARTING_HP);
       expect(world.gameOver).toBe(false);
       expect(world.stats.hits).toBe(0);
@@ -223,8 +222,8 @@ describe("RunGame Simulation & Extracted Modules Characterization (Task 13)", ()
 
       // Run 60 ticks on both worlds with identical RNG seed
       for (let i = 0; i < 60; i++) {
-        stepSimulation(world1, 0.05, TEST_CANVAS_HEIGHT, nextId, rng1);
-        stepSimulation(world2, 0.05, TEST_CANVAS_HEIGHT, nextId, rng2);
+        stepSimulation(world1, 0.05, nextId, rng1);
+        stepSimulation(world2, 0.05, nextId, rng2);
       }
 
       expect(world1.obstacles.length).toBe(world2.obstacles.length);

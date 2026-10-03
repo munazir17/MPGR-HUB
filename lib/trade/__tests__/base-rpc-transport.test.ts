@@ -178,11 +178,14 @@ describe("B20 on-chain verification batching (multicall)", () => {
     return found;
   }
 
-  function fakeClient(multicall: ReturnType<typeof vi.fn>) {
-    return { multicall } as unknown as Parameters<typeof readTokenizedStockOnchain>[1];
+  function fakeClient(
+    multicall: ReturnType<typeof vi.fn>,
+    readContract?: ReturnType<typeof vi.fn>,
+  ) {
+    return { multicall, readContract } as unknown as Parameters<typeof readTokenizedStockOnchain>[1];
   }
 
-  it("issues exactly ONE multicall round trip and preserves per-field null semantics", async () => {
+  it("issues exactly ONE multicall round trip for token fields plus guarded feed reads, preserving per-field null semantics", async () => {
     const multicall = vi.fn(async ({ contracts }: { contracts: Array<{ functionName: string }> }) =>
       contracts.map((contract, index) => {
         if (contract.functionName === "decimals" && index === 2) {
@@ -199,17 +202,26 @@ describe("B20 on-chain verification batching (multicall)", () => {
             return { status: "success" as const, result: 10n ** 18n };
           case "paused":
             return { status: "success" as const, result: false };
-          case "latestRoundData":
-            return { status: "success" as const, result: [1n, 22_500_000_000n, 1n, 1_700_000_000n, 1n] };
           default:
             return { status: "success" as const, result: 8 };
         }
       }),
     );
+    const readContract = vi.fn(async ({ functionName }: { functionName: string }) => {
+      if (functionName === "latestRoundData") {
+        return [1n, 22_500_000_000n, 1n, 1_700_000_000n, 1n];
+      }
+      return 8; // aggregator decimals
+    });
 
-    const state = await readTokenizedStockOnchain(entry(), fakeClient(multicall));
+    const state = await readTokenizedStockOnchain(entry(), fakeClient(multicall, readContract));
 
-    expect(multicall).toHaveBeenCalledTimes(1); // one RPC round trip, not eight
+    // token fields batched into one RPC round trip, not six
+    expect(multicall).toHaveBeenCalledTimes(1);
+    const batched = multicall.mock.calls[0][0].contracts as Array<{ functionName: string }>;
+    expect(batched).toHaveLength(6);
+    // feed reads happen only for the catalog's chainlink feed (guarded, not batched)
+    expect(readContract).toHaveBeenCalledTimes(2);
     expect(state.symbol).toBe("AAPLc");
     expect(state.decimals).toBeNull(); // failed read → null (never guessed)
     expect(state.paused).toBe(false);
@@ -217,6 +229,21 @@ describe("B20 on-chain verification batching (multicall)", () => {
     expect(state.multiplierWad).toBe("1000000000000000000");
     expect(state.chainlinkPriceUsd).toBe("225"); // formatUnits strips trailing zeros
     expect(state.chainlinkUpdatedAt).toBe(1_700_000_000);
+  });
+
+  it("skips feed reads entirely when the catalog entry has no chainlink feed (fail-closed nulls)", async () => {
+    const multicall = vi.fn(async ({ contracts }: { contracts: Array<{ functionName: string }> }) =>
+      contracts.map(() => ({ status: "success" as const, result: 8 })),
+    );
+    const readContract = vi.fn();
+    const feedless = { ...entry(), chainlinkFeed: undefined } as ReturnType<typeof entry>;
+
+    const state = await readTokenizedStockOnchain(feedless, fakeClient(multicall, readContract));
+
+    expect(multicall).toHaveBeenCalledTimes(1);
+    expect(readContract).not.toHaveBeenCalled(); // no feed → no reads
+    expect(state.chainlinkPriceUsd).toBeNull();
+    expect(state.chainlinkUpdatedAt).toBeNull();
   });
 
   it("returns all-null state (never a guess) when the whole multicall fails", async () => {

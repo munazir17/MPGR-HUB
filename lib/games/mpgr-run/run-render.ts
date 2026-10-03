@@ -1,3 +1,4 @@
+import { runDrawQueue, type RunDrawEntry } from "./run-draw-queue";
 /**
  * MPGR Run — canvas rendering. Extracted verbatim from RunGame.tsx
  * (P2-11 follow-up modularization): stripBackgroundToTransparent, the
@@ -8,26 +9,37 @@
  * explicit parameters. This is a literal relocation with no behavior
  * change: same statements, same order, same values.
  */
+import { drawStreetArchitecture, drawDistantDistrict, drawPavementDetail, drawStreetSurface, STREET_FOCAL, STREET_HORIZON, STREET_GROUND, RUNNER_HEIGHT_FRACTION, streetLaneGap, streetHash, streetTones } from "./run-street";
+import { collectiblePresentationHeight } from "./run-coin-presentation";
 import { MPGR_RUN_SIMULATION_WIDTH } from "@/lib/games/mpgr-run/authoritative-replay";
 import {
   CHARACTER_SPRITES,
+  CHARACTER_REAR_SPRITES,
+  REAR_RUN_CYCLE,
   OBSTACLE_SPRITES,
   COLLECTIBLE_SPRITES,
   POWERUP_SPRITES,
   CHECKPOINT_SPRITE,
   CITY_ENVIRONMENT,
+  ENVIRONMENT_SETS,
+  ENVIRONMENT_DECOR,
+  AIRSHIP_SPRITE,
+  ROAD_MATERIAL_SPRITE,
 } from "@/lib/games/mpgr-run/run-assets";
 import {
-  LANE_COUNT,
-  LANE_CENTER_Y,
+  resolveRunWorldFromPx,
+  runTransitionFogFromPx,
+  RUN_WORLD_THEMES,
+} from "@/lib/games/mpgr-run/run-environments";
+import {
+  LANE_GAP_PX,
   PLAYER_X,
   PLAYER_SIZE,
-  SLIDE_HITBOX_SCALE,
   MAGNET_ATTRACT_MS,
   COLLECTIBLE_TYPES,
   POWERUP_TYPES,
 } from "@/lib/games/mpgr-run/run-config";
-import { clamp, laneBaselineScreenY } from "@/lib/games/mpgr-run/run-physics";
+import { clamp } from "@/lib/games/mpgr-run/run-physics";
 import type { ObstacleEntity } from "@/lib/games/mpgr-run/spawn-manager";
 import type { World } from "@/lib/games/mpgr-run/run-world";
 
@@ -114,16 +126,9 @@ const OBSTACLE_COLOR: Record<ObstacleEntity["type"], { fill: string; dark: strin
 };
 
 
-/**
- * Renders one frame of MPGR Run onto `ctx`.
- *
- * Signature mirrors exactly what the original inline `draw` useCallback
- * closed over once its own canvas/context/size guard clauses (which stay
- * in RunGame.tsx, since they touch canvasRef/ctxRef/sizeRef) are stripped
- * away: a 2D context, the current World snapshot, the viewport size, and
- * the sprite lookup. Nothing else.
 /** Natural aspect of the city parallax artwork (1536x1024 source files). */
 const RUN_CITY_ART_ASPECT = 1536 / 1024;
+const SKYLINE_LAYERS = [[0.35, 0.32, 0.05], [0.5, 0.58, 0.12]] as const;
 
 /**
  * Uniform gameplay scale for the responsive renderer.
@@ -138,13 +143,84 @@ const RUN_CITY_ART_ASPECT = 1536 / 1024;
  *     width (cropping the field would cut reaction time — a gameplay
  *     change, not a layout one), scaled up as big as the screen allows;
  *   - phones (below RUN_MIN_VIEW_SCALE * 960 css px): the scale is
- *     floored so gameplay objects stay clearly visible; the field is
- *     correspondingly cropped behind the spawn edge via
- *     runCameraOffsetX();
+ *     floored so gameplay objects stay clearly visible; the classic
+ *     side view crops correspondingly behind the spawn edge via
+ *     runCameraOffsetX(), while the rear view keeps the full track
+ *     width proportional (lane gap is a fraction of the design width);
  *   - ultrawide: capped so the game never gets absurd.
+ *
+ * The rear-camera renderer uses this same u as its single master scale,
+ * so the runner, hazards and collectibles still grow together with the
+ * viewport exactly as the locked responsive-scaling tests require.
  */
 export const RUN_MIN_VIEW_SCALE = 0.75;
 export const RUN_MAX_VIEW_SCALE = 2.4;
+
+// Per-frame lateral head-centroid correction measured offline from the rear
+// run-cycle art (head region centroid sway was +-3% of sprite width between
+// frames, read as head wobble). Shifts each cycle frame so the head/torso
+// column stays put while feet stay grounded — presentation only.
+export const RUN_FRAME_ALIGN_X = [0.0313, 0.0003, -0.0313, -0.0003];
+
+// Foot-lock note (measured offline from the same artwork): all four run-cycle
+// frames already carry opaque pixels in their bottom row, so bottom-aligning
+// every pose on the shared ground line keeps the planted foot glued to the
+// road for the whole stride — no per-frame vertical correction is needed, and
+// adding one would lift the feet off the track. The passing poses are simply
+// narrower (442px vs 504px at the same height), which is why the stride is
+// blended rather than offset.
+
+// Keep the established 165ms kick poses, but spend only 85ms in each
+// upright passing pose so the cycle reads as forward running, not idle.
+export const RUN_FRAME_MS = 165;
+export const RUN_FRAME_START_MS = [0, 165, 250, 415] as const;
+export const RUN_STRIDE_MS = 500;
+/**
+ * Length of the short cross-fade that runs INTO each pose boundary, in ms.
+ * Over the last RUN_BLEND_MS before a boundary the incoming pose is faded in
+ * on top of the outgoing one, reaching full opacity exactly at the boundary —
+ * so the pose change has no visible step (the frame just before the boundary
+ * already shows the incoming pose at full weight) while every settled pose
+ * still renders as a single sprite. Pure presentation: pose boundaries, cycle
+ * length, cadence and the frame a given elapsed time maps to are unchanged.
+ */
+export const RUN_BLEND_MS = 62;
+/** Short passing poses avoid dwelling on the upright/idle-looking frames. */
+export function runStrideFrame(elapsedMs: number): number {
+  const phase = ((elapsedMs % RUN_STRIDE_MS) + RUN_STRIDE_MS) % RUN_STRIDE_MS;
+  return phase < 165 ? 0 : phase < 250 ? 1 : phase < 415 ? 2 : 3;
+}
+
+/** Pose boundaries inside one stride, including the wrap back to frame 0. */
+const RUN_STRIDE_BOUNDARIES: readonly number[] = [
+  RUN_FRAME_START_MS[1],
+  RUN_FRAME_START_MS[2],
+  RUN_FRAME_START_MS[3],
+  RUN_STRIDE_MS,
+];
+
+/**
+ * Weight of the NEXT stride pose as it leads into a pose boundary: 0 while a
+ * pose is settled (so the caller draws a single sprite, exactly as before) and
+ * ramping to 1 exactly at the boundary, where that pose becomes the current
+ * one. Because the blend is complete at the boundary and never starts early
+ * with a non-zero weight, both ends of the window are continuous — the stride
+ * flows instead of stepping, with no change to pose timing, cadence or the
+ * frame an elapsed time maps to.
+ */
+export function runStrideLead(phaseMs: number): number {
+  const phase = ((phaseMs % RUN_STRIDE_MS) + RUN_STRIDE_MS) % RUN_STRIDE_MS;
+  for (const boundary of RUN_STRIDE_BOUNDARIES) {
+    const windowStart = boundary - RUN_BLEND_MS;
+    if (phase >= windowStart && phase < boundary) {
+      const t = (phase - windowStart) / RUN_BLEND_MS;
+      // Smoothstep: the blend starts and ends at zero rate, so neither edge of
+      // the window adds a step of its own.
+      return t * t * (3 - 2 * t);
+    }
+  }
+  return 0;
+}
 
 export function runViewScale(viewportWidth: number): number {
   return clamp(
@@ -155,7 +231,16 @@ export function runViewScale(viewportWidth: number): number {
 }
 
 /**
- * Left edge of the visible camera window, in simulation x units.
+ * Left edge of the visible camera window, in simulation x units — the
+ * CLASSIC side-view framing contract, kept verbatim (and covered by
+ * run-view-scale.test.ts) for the side-view presentation and any future
+ * classic-mode toggle.
+ *
+ * The rear-camera renderer (drawRunFrame below) does not crop the field
+ * horizontally at all: simulation x is depth there, and perspective
+ * compression toward the horizon gives narrow screens their warning
+ * time instead of a camera window, so this offset is intentionally not
+ * applied to the rear view.
  *
  *   - full field visible (u = w/960, uncapped): 0 — identical framing
  *     to the classic renderer;
@@ -177,13 +262,29 @@ export function runCameraOffsetX(viewportWidth: number): number {
 }
 
 /**
- * Renders one frame of MPGR Run onto `ctx`.
+ * Renders one frame of MPGR Run onto `ctx` — Subway-Surfers-style
+ * THIRD-PERSON REAR CAMERA over the untouched side-scroll simulation.
+ *
+ * The simulation (and the server's authoritative replay) still scrolls
+ * entities along a fixed 960-unit depth axis with 3 logical lanes and a
+ * vertical jump height. This renderer maps those world coordinates onto a
+ * perspective ground plane behind the runner:
+ *
+ *   depth   z  = entity.x - PLAYER_X*960          (0 at the player, +ahead)
+ *   scale   s  = FOCAL / (FOCAL + z)              (1 at the player, →0 at horizon)
+ *   ground  y  = horizonY + (groundY - horizonY) * s   (track converges)
+ *   lateral x  = centreX - camLat + laneLat * s   (lanes converge too)
+ *   height  y -= worldHeight * s                  (jumps/elevations)
+ *
+ * Everything therefore shrinks toward a single vanishing point, objects
+ * grow as they approach, and the player is seen from BEHIND (rear sprite
+ * set) standing on the near end of the track. Painter's algorithm: a
+ * single depth-sorted draw list, player included at z = 0, so hazards
+ * passing the player sweep in front of the camera naturally.
  *
  * Signature mirrors exactly what the original inline `draw` useCallback
- * closed over once its own canvas/context/size guard clauses (which stay
- * in RunGame.tsx, since they touch canvasRef/ctxRef/sizeRef) are stripped
- * away: a 2D context, the current World snapshot, the viewport size, and
- * the sprite lookup. Nothing else.
+ * closed over: a 2D context, the current World snapshot, the viewport
+ * size, and the sprite lookup. Nothing else.
  */
 export function drawRunFrame(
   ctx: CanvasRenderingContext2D,
@@ -192,413 +293,1038 @@ export function drawRunFrame(
   height: number,
   getSprite: (src: string) => CanvasImageSource | null
 ): void {
-    const width = MPGR_RUN_SIMULATION_WIDTH;
-    const p = world.player;
-    const playerScreenX = width * PLAYER_X;
+  const p = world.player;
 
-    // ONE uniform gameplay scale + camera window (see runViewScale).
-    const u = runViewScale(viewportWidth);
-    const camX = runCameraOffsetX(viewportWidth);
-    const visible = viewportWidth / u; // sim units across the screen
-    // Design-space height: the vertical unit space the simulation's
-    // visual helpers (lane anchors, burst spawn y) are computed in.
-    const designHeight = height / u;
-    const laneY = (lane: number) => laneBaselineScreenY(designHeight, lane);
+  // ONE uniform gameplay scale (see runViewScale) — the whole rear view is
+  // laid out in design units (css px / u) so phones and desktops frame the
+  // same track proportionally.
+  const u = runViewScale(viewportWidth);
+  const W = viewportWidth / u;
+  const H = height / u;
 
-    // --- Backdrop (screen space) ---------------------------------------
-    // Sky + parallax are drawn in raw screen pixels so the city artwork
-    // can keep its natural 3:2 aspect (height-fit, tiled horizontally)
-    // instead of being stretched to the canvas shape. traveledPx is
-    // simulation px — multiply by u for the on-screen scroll speed, so
-    // the backdrop keeps pace with the entities.
-    ctx.save();
-    if (world.screenShake > 0.5) {
-      ctx.translate((Math.random() - 0.5) * world.screenShake, (Math.random() - 0.5) * world.screenShake);
+  // --- Rear-camera projection ------------------------------------------
+  const playerDepthX = MPGR_RUN_SIMULATION_WIDTH * PLAYER_X;
+  const HORIZON_Y = H * STREET_HORIZON; // cinematic rear-camera vanishing line
+  const GROUND_Y = H * STREET_GROUND; // track surface at the player's depth
+  const FOCAL = STREET_FOCAL; // depth (sim units) at which scale halves
+  const Z_FAR = 860; // draw distance ahead of the player
+  const S_MAX = 2.6; // near clip (s beyond this is behind the camera)
+
+  const sOf = (z: number): number => FOCAL / (FOCAL + z);
+  const groundYAt = (s: number): number => HORIZON_Y + (GROUND_Y - HORIZON_Y) * s;
+
+  // Portrait road fills 72% of width at player depth; landscape is height-
+  // limited so lanes never become enormous. All entities share a height scale.
+  const laneGap = streetLaneGap(W, H);
+  const objectScale = H * RUNNER_HEIGHT_FRACTION / (PLAYER_SIZE * 2.4);
+  const trackHalf = laneGap * 1.5;
+  const K = laneGap / LANE_GAP_PX; // sim lane-offset units -> world lateral units
+  const laneLat = (lane: number): number => (lane - 1) * laneGap;
+  const playerLat = p.laneOffset * K; // smoothed, same glide as before
+  const camLat = playerLat * 0.3; // camera trails the lane change slightly
+  const xAt = (lat: number, s: number): number => W / 2 - camLat + lat * s;
+
+  const spriteAspect = (img: CanvasImageSource): number => {
+    const probe = img as Partial<HTMLImageElement> & Partial<HTMLCanvasElement>;
+    const w = probe.naturalWidth ?? probe.width ?? 0;
+    const h = probe.naturalHeight ?? probe.height ?? 0;
+    return w > 0 && h > 0 ? w / h : 1;
+  };
+
+  ctx.save();
+  ctx.scale(u, u);
+  // Live shadowBlur forces expensive intermediate sprite rasterization.
+  // Ground-contact ellipses and authored emissive pixels supply lighting;
+  // never Gaussian-blur decoded character/obstacle images every frame.
+  ctx.shadowBlur = 0;
+  if (world.screenShake > 0.5) {
+    ctx.translate((streetHash(Math.floor(world.elapsedMs / 16), 41) - 0.5) * world.screenShake, (streetHash(Math.floor(world.elapsedMs / 16), 42) - 0.5) * world.screenShake);
+  }
+  ctx.clearRect(-40, -40, W + 80, H + 80);
+
+  // --- World theme (presentation-only distance cycle: city/ice/desert) ---
+  const worldState = resolveRunWorldFromPx(world.traveledPx);
+  const theme = RUN_WORLD_THEMES[worldState.current];
+  const envSet = ENVIRONMENT_SETS[worldState.current];
+  // Street-material light response (one source of truth: run-street.ts).
+  const tones = streetTones(theme.id);
+
+  // Deterministic per-instance variation (no per-frame allocation).
+  const unitHash = (k: number, salt: number): number => {
+    const h = Math.sin(k * 127.1 + salt * 311.7) * 43758.5453;
+    return h - Math.floor(h);
+  };
+
+
+  // --- Sky ---------------------------------------------------------------
+  const skyGradient = ctx.createLinearGradient(0, 0, 0, HORIZON_Y + 20);
+  skyGradient.addColorStop(0, theme.sky[0]);
+  skyGradient.addColorStop(0.55, theme.sky[1]);
+  skyGradient.addColorStop(1, theme.sky[2]);
+  ctx.fillStyle = skyGradient;
+  ctx.fillRect(-40, -40, W + 80, HORIZON_Y + 60);
+  // Emissive city glow hugging the horizon.
+  const glowBand = ctx.createLinearGradient(0, HORIZON_Y - H * 0.14, 0, HORIZON_Y);
+  glowBand.addColorStop(0, "rgba(0,0,0,0)");
+  glowBand.addColorStop(1, theme.horizonGlow);
+  ctx.fillStyle = glowBand;
+  ctx.fillRect(-40, HORIZON_Y - H * 0.14, W + 80, H * 0.14 + 4);
+
+  // --- Sky plate (real MPGR sky art, horizon-anchored, never stretched) ----
+  // Cover-fit to the sky area with the plate's bottom edge on the horizon,
+  // so its horizon glow always meets the skyline. Only lateral camera
+  // parallax moves it; forward scroll must not slide the sky sideways.
+  const decorSet = ENVIRONMENT_DECOR[theme.id];
+  const skyPlate = getSprite(decorSet.sky);
+  if (skyPlate) {
+    const skyAspect = spriteAspect(skyPlate);
+    const skyDrawH = Math.max(HORIZON_Y + 4, (W * 1.12) / skyAspect);
+    const skyDrawW = skyDrawH * skyAspect;
+    const skyX = clamp((W - skyDrawW) / 2 - camLat * 0.03, W - skyDrawW, 0);
+    ctx.drawImage(skyPlate, skyX, HORIZON_Y + 2 - skyDrawH, skyDrawW, skyDrawH);
+  }
+
+  // --- Skyline layers on the horizon (far -> near, atmospheric depth) -------
+  // City: hazy far towers, then the MPGR skyline cut-out, each with its own
+  // lateral parallax. The old full-scene poster panoramas are only a
+  // fallback until these decode. Other worlds keep their atmospheric skyline.
+  const cityFar = theme.id === "city" ? getSprite(ENVIRONMENT_DECOR.city.skylineFar) : null;
+  const cityNear = theme.id === "city" ? getSprite(ENVIRONMENT_DECOR.city.skylineNear) : null;
+  const skylineImg = theme.id === "city" ? null : getSprite(envSet.skyline);
+  if (cityFar && cityNear) {
+    const cityBands: Array<[CanvasImageSource, number, number, number]> = [
+      [cityFar, 0.3, 0.9, 0.03],
+      [cityNear, 0.5, 0.96, 0.09],
+    ];
+    for (const [img, bandFrac, alpha, camFactor] of cityBands) {
+      const aspect = spriteAspect(img);
+      const bandH = HORIZON_Y * bandFrac;
+      const layerW = bandH * aspect;
+      const offset = ((camLat * camFactor) % layerW + layerW) % layerW;
+      ctx.globalAlpha = alpha;
+      for (let x = -offset - layerW; x < W + layerW; x += layerW) {
+        ctx.drawImage(img, x, HORIZON_Y - bandH + 2, layerW, bandH);
+      }
+      ctx.globalAlpha = 1;
     }
-    ctx.clearRect(-40, -40, viewportWidth + 80, height + 80);
-    const skyGradient = ctx.createLinearGradient(0, 0, 0, height);
-    skyGradient.addColorStop(0, "#0A0B0D");
-    skyGradient.addColorStop(0.55, "#0D1420");
-    skyGradient.addColorStop(1, "#111826");
-    ctx.fillStyle = skyGradient;
-    ctx.fillRect(-40, -40, viewportWidth + 80, height + 80);
-
-    // Real "City Run" artwork, three depth layers scrolling at different
-    // rates tied to actual distance traveled (so it pauses correctly and
-    // never drifts out of sync with the game clock).
+  } else if (skylineImg) {
+    const aspect = spriteAspect(skylineImg);
+    for (const [bandFrac, alpha, camFactor] of SKYLINE_LAYERS) {
+      const bandH = HORIZON_Y * bandFrac;
+      const layerW = bandH * aspect;
+      // Lateral camera parallax only — the skyline sits at infinity along
+      // the running direction, so forward scroll must not slide it sideways.
+      const offset = ((camLat * camFactor) % layerW + layerW) % layerW;
+      ctx.globalAlpha = alpha;
+      for (let x = -offset - layerW; x < W + layerW; x += layerW) {
+        ctx.drawImage(skylineImg, x, HORIZON_Y - bandH + 2, layerW, bandH);
+      }
+      ctx.globalAlpha = 1;
+    }
+  } else {
+    // Legacy street panoramas / procedural blocks until the new skyline
+    // for this world is decode-ready.
     const cityBg = getSprite(CITY_ENVIRONMENT.background);
     const cityMid = getSprite(CITY_ENVIRONMENT.midground);
     const cityFg = getSprite(CITY_ENVIRONMENT.foreground);
-    const cityReady = !!(cityBg && cityMid && cityFg);
-    const drawParallaxLayer = (img: CanvasImageSource | null, speedFactor: number, alpha: number) => {
-      if (!img) return;
-      const layerW = height * RUN_CITY_ART_ASPECT;
-      const offset = (world.traveledPx * speedFactor * u) % layerW;
-      const copies = Math.ceil(viewportWidth / layerW) + 1;
-      ctx.globalAlpha = alpha;
-      for (let i = 0; i <= copies; i++) {
-        ctx.drawImage(img, i * layerW - offset, 0, layerW, height);
-      }
-      ctx.globalAlpha = 1;
-    };
-    // All three layers or none — a late mid/fg arriving after bg would
-    // otherwise jump the city from "half-loaded" to full mid-run.
-    if (cityReady) {
-      drawParallaxLayer(cityBg, 0.05, 0.9);
-      drawParallaxLayer(cityMid, 0.15, 0.85);
-      drawParallaxLayer(cityFg, 0.35, 0.8);
-    }
-
-    // Procedural skyline glow strips — fallback only until every city
-    // layer is load+decode-ready as a set.
-    if (!cityReady) {
-      const gap = 140 * u;
-      const scroll = ((world.elapsedMs / 40) * u) % gap;
-      ctx.globalAlpha = 0.12;
-      ctx.fillStyle = "#3B82F6";
-      for (let bx = -scroll - gap; bx < viewportWidth + gap; bx += gap) {
-        ctx.fillRect(bx, height * 0.18, 44 * u, height * 0.32);
-      }
-      ctx.globalAlpha = 1;
-    }
-    ctx.restore();
-
-    // --- World (uniform sim/design space, camera-translated) -----------
-    ctx.save();
-    ctx.scale(u, u);
-    ctx.translate(-camX, 0);
-    if (world.screenShake > 0.5) {
-      ctx.translate((Math.random() - 0.5) * world.screenShake, (Math.random() - 0.5) * world.screenShake);
-    }
-
-    // Three lane tracks.
-    for (let lane = 0; lane < LANE_COUNT; lane++) {
-      const y = laneY(lane);
-      const isCurrent = lane === p.lane;
-      ctx.strokeStyle = COLORS.laneLine;
-      ctx.globalAlpha = isCurrent ? 0.55 : 0.18;
-      ctx.lineWidth = isCurrent ? 2 : 1;
-      ctx.beginPath();
-      ctx.moveTo(camX, y);
-      ctx.lineTo(camX + visible, y);
-      ctx.stroke();
-      if (isCurrent) {
-        const glow = ctx.createLinearGradient(0, y - 10, 0, y + 4);
-        glow.addColorStop(0, "rgba(59,130,246,0.16)");
-        glow.addColorStop(1, "rgba(59,130,246,0)");
-        ctx.fillStyle = glow;
-        ctx.fillRect(camX, y - 10, visible, 14);
-      }
-    }
-    ctx.globalAlpha = 1;
-
-    // Checkpoint flash.
-    if (world.elapsedMs < world.checkpointFlashUntilMs) {
-      const elapsedSinceStart = 1400 - (world.checkpointFlashUntilMs - world.elapsedMs);
-      const remaining = (world.checkpointFlashUntilMs - world.elapsedMs) / 1400;
-      const flashAlpha = clamp(remaining, 0, 1);
-      ctx.globalAlpha = flashAlpha * 0.5;
-      ctx.fillStyle = "#FBBF24";
-      ctx.fillRect(camX, 0, visible, designHeight);
-      ctx.globalAlpha = 1;
-
-      const checkpointImg = getSprite(CHECKPOINT_SPRITE);
-      if (checkpointImg) {
-        // Ease-out scale-in over the first 260ms, then hold, then fade with the flash alpha.
-        const growT = clamp(elapsedSinceStart / 260, 0, 1);
-        const easedGrow = 1 - Math.pow(1 - growT, 3);
-        const baseSize = Math.min(visible, designHeight) * 0.28;
-        const size = baseSize * (0.7 + easedGrow * 0.3);
-        const cx = camX + visible / 2;
-        const cy = designHeight * 0.22;
-
-        // Radiating ring pulse behind the badge.
-        const ringT = clamp(elapsedSinceStart / 700, 0, 1);
-        ctx.globalAlpha = (1 - ringT) * 0.5;
-        ctx.strokeStyle = "#FBBF24";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(cx, cy, baseSize * 0.4 + ringT * baseSize * 0.6, 0, Math.PI * 2);
-        ctx.stroke();
-
-        ctx.globalAlpha = flashAlpha;
-        ctx.drawImage(checkpointImg, cx - size / 2, cy - size / 2, size, size);
+    if (cityBg && cityMid && cityFg) {
+      const layers: Array<[CanvasImageSource, number, number, number]> = [
+        [cityBg, 0.46, 0.5, 0.1],
+        [cityMid, 0.66, 0.68, 0.2],
+        [cityFg, 0.92, 0.85, 0.34],
+      ];
+      for (const [img, bandFrac, alpha, camFactor] of layers) {
+        const bandH = HORIZON_Y * bandFrac;
+        const layerW = bandH * RUN_CITY_ART_ASPECT;
+        const offset = ((camLat * camFactor) % layerW + layerW) % layerW;
+        ctx.globalAlpha = alpha;
+        for (let x = -offset - layerW; x < W + layerW; x += layerW) {
+          ctx.drawImage(img, x, HORIZON_Y - bandH + 2, layerW, bandH);
+        }
         ctx.globalAlpha = 1;
       }
-    }
-
-    // Power-up pickups.
-    for (const pu of world.powerups) {
-      if (pu.collected) continue;
-      const y = laneY(pu.lane);
-      const bob = Math.sin(world.elapsedMs / 260 + pu.id) * 5;
-      const cfg = POWERUP_TYPES[pu.type];
-      const puImg = getSprite(POWERUP_SPRITES[pu.type]);
-      const puCy = y - 20 + bob;
-      ctx.shadowColor = cfg.color;
-      ctx.shadowBlur = 12;
-      if (puImg) {
-        const size = pu.radius * 2.6;
-        ctx.drawImage(puImg, pu.x - size / 2, puCy - size / 2, size, size);
-      } else {
-        ctx.beginPath();
-        ctx.arc(pu.x, puCy, pu.radius, 0, Math.PI * 2);
-        ctx.fillStyle = cfg.color;
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255,255,255,0.85)";
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
-      ctx.shadowBlur = 0;
-    }
-
-    // Collectibles.
-    for (const c of world.collectibles) {
-      if (c.collected) continue;
-      const y = laneY(c.lane);
-      const bob = Math.sin(world.elapsedMs / 300 + c.id) * 6;
-      const attracting = c.magnetizedAtMs !== undefined;
-      const shrink = attracting ? clamp(1 - (world.elapsedMs - c.magnetizedAtMs!) / MAGNET_ATTRACT_MS, 0.25, 1) : 1;
-      const color = COLLECTIBLE_TYPES[c.type].color;
-      const cImg = getSprite(COLLECTIBLE_SPRITES[c.type]);
-      const cCy = y - 14 + bob;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 8;
-      if (cImg) {
-        const size = c.radius * 2.4 * shrink;
-        ctx.drawImage(cImg, c.x - size / 2, cCy - size / 2, size, size);
-      } else {
-        ctx.beginPath();
-        ctx.arc(c.x, cCy, c.radius * shrink, 0, Math.PI * 2);
-        ctx.fillStyle = color;
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255,255,255,0.6)";
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-      ctx.shadowBlur = 0;
-      if (attracting) {
-        ctx.strokeStyle = "rgba(34,211,238,0.5)";
-        ctx.beginPath();
-        ctx.moveTo(c.x, cCy);
-        ctx.lineTo(playerScreenX + PLAYER_SIZE / 2, laneY(p.lane) - p.playerY - PLAYER_SIZE / 2);
-        ctx.stroke();
-      }
-    }
-
-    // Obstacles.
-    for (const o of world.obstacles) {
-      const y = laneY(o.lane);
-      const top = y - o.groundHeight - o.height;
-      const bottom = y - o.groundHeight;
-      const palette = OBSTACLE_COLOR[o.type];
-      const oImg = getSprite(OBSTACLE_SPRITES[o.type]);
-      ctx.save();
-      if (o.type === "saw") {
-        const cx = o.x + o.width / 2;
-        const cy = (top + bottom) / 2;
-        ctx.translate(cx, cy);
-        ctx.rotate(world.elapsedMs / 120);
-        ctx.translate(-cx, -cy);
-      }
-      ctx.globalAlpha = o.hit ? 0.55 : 1;
-      if (oImg) {
-        const drawW = o.width * 1.5;
-        const drawH = o.height + o.groundHeight + 8;
-        ctx.shadowColor = palette.fill;
-        ctx.shadowBlur = o.hit ? 0 : 6;
-        if (o.type === "saw") {
-          ctx.drawImage(oImg, -drawW / 2, -drawH / 2, drawW, drawH);
-        } else {
-          ctx.drawImage(oImg, o.x + o.width / 2 - drawW / 2, bottom - drawH, drawW, drawH);
-        }
-        ctx.shadowBlur = 0;
-      } else {
-        const gradient = ctx.createLinearGradient(o.x, top, o.x, bottom);
-        gradient.addColorStop(0, palette.fill);
-        gradient.addColorStop(1, palette.dark);
-        ctx.fillStyle = gradient;
-        ctx.shadowColor = palette.fill;
-        ctx.shadowBlur = o.hit ? 0 : 6;
-        const r = 4;
-        ctx.beginPath();
-        ctx.moveTo(o.x + r, top);
-        ctx.lineTo(o.x + o.width - r, top);
-        ctx.quadraticCurveTo(o.x + o.width, top, o.x + o.width, top + r);
-        ctx.lineTo(o.x + o.width, bottom);
-        ctx.lineTo(o.x, bottom);
-        ctx.lineTo(o.x, top + r);
-        ctx.quadraticCurveTo(o.x, top, o.x + r, top);
-        ctx.closePath();
-        ctx.fill();
-        ctx.shadowBlur = 0;
-      }
-      ctx.globalAlpha = 1;
-      ctx.restore();
-    }
-
-    // Particles (y in design units, spawned by the simulation).
-    for (const part of world.particles) {
-      const alpha = clamp(part.life / part.maxLife, 0, 1);
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = part.color;
-      ctx.beginPath();
-      ctx.arc(part.x, part.y, part.size, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-
-    // Sprite bursts — real explosion/coin/gem artwork, growing and fading out.
-    for (const burst of world.spriteBursts) {
-      const img = getSprite(burst.sprite);
-      if (!img) continue;
-      const t = clamp((world.elapsedMs - burst.startMs) / burst.durationMs, 0, 1);
-      const size = burst.maxSize * (0.5 + t * 0.6);
-      ctx.globalAlpha = 1 - t;
-      ctx.drawImage(img, burst.x - size / 2, burst.y - size / 2, size, size);
-    }
-    ctx.globalAlpha = 1;
-
-    // Player — drawn from the smoothed lane offset so switching lanes glides
-    // instead of snapping (collision above always uses the logical p.lane).
-    const baselineY = designHeight * LANE_CENTER_Y + p.laneOffset;
-    const playerHeight = p.sliding ? PLAYER_SIZE * SLIDE_HITBOX_SCALE : PLAYER_SIZE;
-    const playerBottom = baselineY - p.playerY;
-    const playerTop = playerBottom - playerHeight;
-    const invulnerable = world.elapsedMs < p.invulnerableUntilMs;
-    const shielded = !!world.activePowerups.shield || !!world.activePowerups.invincibility;
-
-    if (shielded) {
-      ctx.beginPath();
-      ctx.arc(playerScreenX + PLAYER_SIZE / 2, (playerTop + playerBottom) / 2, PLAYER_SIZE * 0.9, 0, Math.PI * 2);
-      ctx.strokeStyle = world.activePowerups.invincibility ? "#F472B6" : "#34D399";
-      ctx.globalAlpha = 0.6 + Math.sin(world.elapsedMs / 90) * 0.2;
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-    if (world.activePowerups.jetpack) {
-      // Layered flicker flame — richer than a single triangle, still pure procedural VFX.
-      for (let layer = 0; layer < 2; layer++) {
-        const flicker = Math.random() * 8;
-        const len = 14 + layer * 8 + flicker;
-        ctx.beginPath();
-        ctx.moveTo(playerScreenX + 2, playerBottom - 2 - layer * 3);
-        ctx.lineTo(playerScreenX - len, playerBottom + 4 + layer * 2);
-        ctx.lineTo(playerScreenX + 2, playerBottom + 8 + layer * 3);
-        ctx.closePath();
-        ctx.fillStyle = layer === 0 ? "#FDE68A" : "#FB923C";
-        ctx.shadowColor = "#FB923C";
-        ctx.shadowBlur = 14 - layer * 4;
-        ctx.globalAlpha = 0.85 - layer * 0.2;
-        ctx.fill();
-      }
-      ctx.shadowBlur = 0;
-      ctx.globalAlpha = 1;
-    }
-    if (world.activePowerups.speed) {
-      ctx.globalAlpha = 0.35;
-      ctx.fillStyle = COLORS.player;
-      for (let i = 1; i <= 3; i++) {
-        ctx.fillRect(playerScreenX - i * 10, playerTop + 4, 6, playerHeight - 8);
-      }
-      ctx.globalAlpha = 1;
-    }
-
-    ctx.globalAlpha = invulnerable && !shielded ? 0.4 + Math.sin(world.elapsedMs / 60) * 0.3 : 1;
-
-    const jetpackActiveNow = !!world.activePowerups.jetpack;
-    // A gentle vertical bob while grounded and running — cosmetic only, applied
-    // solely to where the sprite is drawn, never to playerTop/playerBottom (which
-    // stay authoritative for collision, the shield ring, and every other effect).
-    const grounded = p.playerY <= 0 && !p.sliding && !jetpackActiveNow;
-    const runBob = grounded ? Math.abs(Math.sin(world.elapsedMs / 120)) * 2.5 : 0;
-
-    let spriteSrc: string = CHARACTER_SPRITES.run;
-    // NOTE: mpgr-runner-fly.webp is intentionally excluded from run-assets.ts
-    // (baked non-uniform sky background, unsafe to auto-cutout — see the
-    // audit note there), so jetpack reuses the properly transparent `jump`
-    // pose plus the flame VFX above and a forward flight tilt below.
-    if (jetpackActiveNow) spriteSrc = CHARACTER_SPRITES.jump;
-    else if (p.sliding) spriteSrc = CHARACTER_SPRITES.slide;
-    else if (p.playerY > 0) spriteSrc = p.velocityY > 0 ? CHARACTER_SPRITES.jump : CHARACTER_SPRITES.fall;
-    else spriteSrc = Math.floor(world.elapsedMs / 120) % 2 === 0 ? CHARACTER_SPRITES.run : CHARACTER_SPRITES.run2;
-    let playerImg = getSprite(spriteSrc);
-    // If the pose for this frame isn't decode-ready yet, hold a current-version
-    // stand-in (run / jump / idle) rather than flickering to the procedural
-    // capsule every other run-cycle frame. Procedural is the last resort.
-    if (!playerImg) {
-      playerImg =
-        getSprite(CHARACTER_SPRITES.run) ??
-        getSprite(CHARACTER_SPRITES.jump) ??
-        getSprite(CHARACTER_SPRITES.idle);
-    }
-
-    if (playerImg) {
-      const drawW = PLAYER_SIZE * 1.9;
-      const drawH = playerHeight * 1.9;
-      const cx = playerScreenX + PLAYER_SIZE / 2;
-      const cy = playerBottom - drawH / 2 - runBob;
-      ctx.save();
-      ctx.translate(cx, cy);
-      if (jetpackActiveNow) ctx.rotate(-0.12);
-      ctx.shadowColor = "rgba(59,130,246,0.55)";
-      ctx.shadowBlur = 14;
-      ctx.drawImage(playerImg, -drawW / 2, -drawH / 2, drawW, drawH);
-      ctx.shadowBlur = 0;
-      ctx.restore();
     } else {
-      const grad = ctx.createLinearGradient(0, playerTop, 0, playerBottom);
-      grad.addColorStop(0, COLORS.player);
-      grad.addColorStop(1, COLORS.playerCore);
-      ctx.fillStyle = grad;
-      ctx.shadowColor = "rgba(59,130,246,0.55)";
-      ctx.shadowBlur = 14;
-      const pr = 7;
+      ctx.globalAlpha = 0.14;
+      ctx.fillStyle = "#3B82F6";
+      const gap = 90;
+      const drift = (camLat * 0.2) % gap;
+      for (let bx = -drift - gap; bx < W + gap; bx += gap) {
+        const bh = HORIZON_Y * (0.3 + ((Math.floor(bx / gap) % 3) + 2) * 0.12);
+        ctx.fillRect(bx, HORIZON_Y - bh, gap * 0.45, bh);
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // --- Distant MPGR airship (sky life) ------------------------------------
+  const airship = getSprite(AIRSHIP_SPRITE);
+  if (airship) {
+    const airH = H * 0.032;
+    const airW = airH * spriteAspect(airship);
+    const ax = W * (0.5 + 0.34 * Math.sin(world.elapsedMs / 23000));
+    const ay = HORIZON_Y * 0.34 + Math.sin(world.elapsedMs / 5200) * H * 0.012;
+    ctx.globalAlpha = 0.57;
+    ctx.drawImage(airship, ax - airW / 2, ay - airH / 2, airW, airH);
+    // Second, farther airship on an independent slow phase (sky life).
+    const air2H = airH * 0.45;
+    const air2W = air2H * spriteAspect(airship);
+    const a2x = W * (0.5 + 0.4 * Math.sin(world.elapsedMs / 41000 + 2.1));
+    const a2y = HORIZON_Y * 0.18 + Math.sin(world.elapsedMs / 6100 + 1.3) * H * 0.008;
+    ctx.globalAlpha = 0.34;
+    ctx.drawImage(airship, a2x - air2W / 2, a2y - air2H / 2, air2W, air2H);
+    ctx.globalAlpha = 1;
+  }
+
+  // --- Ground plane (world surface, full width — no void) -----------------
+  const groundGradient = ctx.createLinearGradient(0, HORIZON_Y, 0, H);
+  groundGradient.addColorStop(0, theme.groundFar);
+  groundGradient.addColorStop(0.45, theme.groundNear);
+  groundGradient.addColorStop(1, theme.groundNear);
+  ctx.fillStyle = groundGradient;
+  ctx.fillRect(-40, HORIZON_Y, W + 80, H - HORIZON_Y + 40);
+
+  // --- Horizon haze (both sides of the horizon line) ----------------------
+  // Melts the skyline bases AND the far track edge into one atmospheric
+  // seam so the road visibly connects to the world horizon.
+  const hazeUp = ctx.createLinearGradient(0, HORIZON_Y - H * 0.1, 0, HORIZON_Y);
+  hazeUp.addColorStop(0, "rgba(0,0,0,0)");
+  hazeUp.addColorStop(1, theme.haze);
+  ctx.fillStyle = hazeUp;
+  ctx.fillRect(-40, HORIZON_Y - H * 0.1, W + 80, H * 0.1 + 1);
+  // Ground-side haze: the same atmospheric seam continues below the horizon
+  // so the skyline base never meets the ground in a hard line.
+  const hazeDown = ctx.createLinearGradient(0, HORIZON_Y, 0, HORIZON_Y + H * 0.09);
+  hazeDown.addColorStop(0, theme.haze);
+  hazeDown.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = hazeDown;
+  ctx.fillRect(-40, HORIZON_Y, W + 80, H * 0.09);
+
+
+  const sNear = S_MAX;
+  // The ROAD surface converges all the way into the horizon haze (visual
+  // only); gameplay entities still cull at Z_FAR.
+  const sFar = sOf(9000);
+
+  // Track trapezoid (converges to the vanishing point). Plain ctx paths
+  // (no Path2D) so the frame also renders under minimal canvas stubs.
+  const traceTrack = () => {
+    ctx.beginPath();
+    ctx.moveTo(xAt(-trackHalf, sNear), groundYAt(sNear));
+    ctx.lineTo(xAt(trackHalf, sNear), groundYAt(sNear));
+    ctx.lineTo(xAt(trackHalf, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(-trackHalf, sFar), groundYAt(sFar));
+    ctx.closePath();
+  };
+  traceTrack();
+  const asphalt = ctx.createLinearGradient(0, groundYAt(sFar), 0, groundYAt(Math.min(sNear, 1.4)));
+  asphalt.addColorStop(0, theme.trackFar);
+  asphalt.addColorStop(1, theme.trackNear);
+  ctx.fillStyle = asphalt;
+  ctx.fill();
+  // Road grain and curb reflections follow perspective; no rectangular
+  // centre sheen with screen-vertical edges.
+  ctx.save();
+  traceTrack(); ctx.clip();
+  const roadMaterial = getSprite(ROAD_MATERIAL_SPRITE);
+  if (roadMaterial) {
+    const image = roadMaterial as HTMLImageElement;
+    const iw = image.naturalWidth || image.width, ih = image.naturalHeight || image.height;
+    const start = groundYAt(0.14), step = (H - start) / 96;
+    ctx.globalAlpha = theme.id === "ice" ? 0.1 : 0.22;
+    for (let i = 0; i < 96; i++) {
+      const y = start + i * step;
+      const s = (y - HORIZON_Y) / (GROUND_Y - HORIZON_Y);
+      const z = FOCAL / s - FOCAL;
+      const sy = ((z + world.traveledPx + playerDepthX) % ih + ih) % ih;
+      ctx.drawImage(roadMaterial, 0, sy, iw, Math.min(4, ih - sy), xAt(-trackHalf, s), y, trackHalf * 2 * s, step + 0.5);
+    }
+    ctx.globalAlpha = 1;
+  }
+  drawStreetSurface(ctx, W, H, trackHalf, camLat, world.traveledPx + playerDepthX, theme);
+  ctx.restore();
+
+  // World-locked scrolling texture inside the track: cross stripes + lane
+  // dashes tied to traveledPx, so the ground rushes toward the camera at
+  // exactly the entities' speed and freezes correctly on pause.
+  const STRIPE_SPACING = 120;
+  const STRIPE_THICK = 26;
+  const stripeResidue =
+    ((-world.traveledPx - playerDepthX) % STRIPE_SPACING + STRIPE_SPACING) % STRIPE_SPACING;
+  ctx.save();
+  traceTrack();
+  ctx.clip();
+  for (let z = stripeResidue - STRIPE_SPACING; z < Z_FAR; z += STRIPE_SPACING) {
+    const zA = Math.max(z, -135);
+    const zB = z + STRIPE_THICK;
+    if (zB <= -135) continue;
+    const sA = sOf(zA);
+    const sB = sOf(zB);
+    const fade = 1 - Math.max(0, z) / Z_FAR;
+    ctx.globalAlpha = 0.008 + fade * 0.012;
+    ctx.fillStyle = theme.rail;
+    ctx.beginPath();
+    ctx.moveTo(xAt(-trackHalf, sA), groundYAt(sA));
+    ctx.lineTo(xAt(trackHalf, sA), groundYAt(sA));
+    ctx.lineTo(xAt(trackHalf, sB), groundYAt(sB));
+    ctx.lineTo(xAt(-trackHalf, sB), groundYAt(sB));
+    ctx.closePath();
+    ctx.fill();
+    // Lane divider dashes ride the same scroll phase.
+    ctx.globalAlpha = 0.15 + fade * 0.48;
+    ctx.fillStyle = theme.id === "ice" ? "#CDEDF5" : "#B7B8B7";
+    for (const side of [-0.5, 0.5]) {
+      const lat = laneGap * side;
       ctx.beginPath();
-      ctx.moveTo(playerScreenX + pr, playerTop);
-      ctx.lineTo(playerScreenX + PLAYER_SIZE - pr, playerTop);
-      ctx.quadraticCurveTo(playerScreenX + PLAYER_SIZE, playerTop, playerScreenX + PLAYER_SIZE, playerTop + pr);
-      ctx.lineTo(playerScreenX + PLAYER_SIZE, playerBottom - pr);
-      ctx.quadraticCurveTo(playerScreenX + PLAYER_SIZE, playerBottom, playerScreenX + PLAYER_SIZE - pr, playerBottom);
-      ctx.lineTo(playerScreenX + pr, playerBottom);
-      ctx.quadraticCurveTo(playerScreenX, playerBottom, playerScreenX, playerBottom - pr);
-      ctx.lineTo(playerScreenX, playerTop + pr);
-      ctx.quadraticCurveTo(playerScreenX, playerTop, playerScreenX + pr, playerTop);
+      ctx.moveTo(xAt(lat - 2.5, sA), groundYAt(sA));
+      ctx.lineTo(xAt(lat + 2.5, sA), groundYAt(sA));
+      ctx.lineTo(xAt(lat + 2.5, sB), groundYAt(sB));
+      ctx.lineTo(xAt(lat - 2.5, sB), groundYAt(sB));
       ctx.closePath();
       ctx.fill();
-      ctx.shadowBlur = 0;
-      ctx.fillStyle = "#0A0B0D";
-      ctx.fillRect(playerScreenX + PLAYER_SIZE * 0.45, playerTop + playerHeight * 0.28, PLAYER_SIZE * 0.4, playerHeight * 0.22);
+    }
+    // Center-lane chevron markings (pointing up-track), same scroll phase.
+    ctx.globalAlpha = 0.08 + fade * 0.15;
+    ctx.fillStyle = theme.chevron;
+    const cw = laneGap * 0.17;
+    const cA = z + 10;
+    const cB = z + 34;
+    for (const arm of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(xAt(arm * cw, sOf(cA)), groundYAt(sOf(cA)));
+      ctx.lineTo(xAt(arm * (cw - 4), sOf(cA)), groundYAt(sOf(cA)));
+      ctx.lineTo(xAt(arm * 4 - arm * 0, sOf(cB)), groundYAt(sOf(cB)));
+      ctx.lineTo(xAt(0, sOf(cB)), groundYAt(sOf(cB)));
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // Glowing outer rails (world-themed emissive edges).
+  const railGradient = ctx.createLinearGradient(0, groundYAt(sFar), 0, groundYAt(Math.min(sNear, 1.5)));
+  railGradient.addColorStop(0, "rgba(0,0,0,0)");
+  railGradient.addColorStop(0.25, theme.rail);
+  railGradient.addColorStop(1, theme.rail);
+  ctx.globalAlpha = 0.8;
+  ctx.fillStyle = railGradient;
+  for (const side of [-1, 1]) {
+    const inner = trackHalf * side;
+    const outer = (trackHalf + 3) * side;
+    ctx.beginPath();
+    ctx.moveTo(xAt(inner, sNear), groundYAt(sNear));
+    ctx.lineTo(xAt(outer, sNear), groundYAt(sNear));
+    ctx.lineTo(xAt(outer, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(inner, sFar), groundYAt(sFar));
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // --- Sidewalk / shoulder strips: embed the road in the world ------------
+  // A continuous curb band per side (themed: concrete / snow / sand) so the
+  // track reads as a street cut through the environment, not a floating
+  // polygon. Side structures instance ONTO these bands further down.
+  const sCurb = sNear; // continue below the viewport; no cutoff band at 0.99H
+  for (const side of [-1, 1] as const) {
+    const inner = trackHalf + 5;
+    const outer = trackHalf + 64;
+    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = theme.curb;
+    ctx.beginPath();
+    ctx.moveTo(xAt(side * inner, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * outer, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * outer, sCurb), groundYAt(sCurb));
+    ctx.lineTo(xAt(side * inner, sCurb), groundYAt(sCurb));
+    ctx.closePath();
+    ctx.fill();
+    // Pavement shading: light falls between the buildings and the road, so the
+    // inner third catches a cool sheen while the outer edge falls into shade
+    // against the facades. Two flat quads on the band's own ground plane — the
+    // band stops reading as a flat trench and starts reading as a pavement.
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = tones.sheen;
+    ctx.beginPath();
+    ctx.moveTo(xAt(side * inner, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * (inner + 22), sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * (inner + 22), sCurb), groundYAt(sCurb));
+    ctx.lineTo(xAt(side * inner, sCurb), groundYAt(sCurb));
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 0.34;
+    ctx.fillStyle = tones.shadow;
+    ctx.beginPath();
+    ctx.moveTo(xAt(side * (outer - 20), sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * outer, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * outer, sCurb), groundYAt(sCurb));
+    ctx.lineTo(xAt(side * (outer - 20), sCurb), groundYAt(sCurb));
+    ctx.closePath();
+    ctx.fill();
+    // Outer shoulder band (snow bank / dune / concrete apron) so the
+    // street keeps continuing outboard instead of ending in a dark wedge.
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = theme.curbOuter;
+    ctx.beginPath();
+    ctx.moveTo(xAt(side * outer, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * (outer + 130), sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * (outer + 130), sCurb), groundYAt(sCurb));
+    ctx.lineTo(xAt(side * outer, sCurb), groundYAt(sCurb));
+    ctx.closePath();
+    ctx.fill();
+    // Emissive edge line where curb meets road.
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = theme.curbEdge;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(xAt(side * inner, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * inner, sCurb), groundYAt(sCurb));
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Kerb dressing: world-locked pavement joints and a kerb-top highlight, so
+  // the shoulder reads as pavement meeting the road.
+  drawPavementDetail(ctx, W, H, trackHalf, camLat, world.traveledPx + playerDepthX, theme);
+
+  // --- Continuous street-light rows along both curbs ----------------------
+  // Tiny emissive dots receding to the horizon: infrastructure continuity
+  // between the roadside structures and the skyline (no dead gaps).
+  for (const side of [-1, 1] as const) {
+    const spacing = 140;
+    const residue =
+      ((-world.traveledPx - playerDepthX) % spacing + spacing) % spacing;
+    for (let z = residue - spacing; z < 5200; z += spacing) {
+      if (z < -60) continue;
+      const s = sOf(z);
+      if (s > S_MAX) continue;
+      const fade = Math.max(0, 1 - Math.max(0, z) / 5200);
+      const gx = xAt(side * (trackHalf + 12), s);
+      const gy = groundYAt(s);
+      ctx.globalAlpha = 0.12 + fade * 0.45;
+      ctx.fillStyle = theme.curbEdge;
+      ctx.fillRect(gx - 0.9 * s, gy - 7 * s, 1.8 * s, 7 * s);
+      ctx.globalAlpha = 0.1 + fade * 0.3;
+      ctx.fillRect(gx - 2.2 * s, gy - 9 * s, 4.4 * s, 2.2 * s);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // --- Frozen-surface sparkle (ice world) ---------------------------------
+  if (theme.sparkle) {
+    for (let i = 0; i < 14; i++) {
+      const blink = Math.max(0, Math.sin(world.elapsedMs / (210 + (i % 5) * 77) + i * 2.3));
+      if (blink < 0.35) continue;
+      const s = 0.12 + unitHash(i, 7) * 0.85;
+      const lat = (unitHash(i, 8) - 0.5) * 2 * trackHalf * 0.85;
+      const residue =
+        ((-world.traveledPx - playerDepthX) % 700 + 700) % 700;
+      const z = residue + unitHash(i, 9) * 700 - 100;
+      const sz = sOf(Math.max(0, z));
+      ctx.globalAlpha = 0.1 + blink * 0.3;
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(xAt(lat, sz) - 0.8 * sz, groundYAt(sz) - 1.2 * sz, 1.6 * sz, 1.6 * sz);
+      void s;
     }
     ctx.globalAlpha = 1;
+  }
 
-    // Cinematic vignette — a constant, subtle cyberpunk framing so the
-    // premium mood holds even where no sprite/particle is on screen.
-    // Drawn over the whole camera window (not just the 960-unit field)
-    // so ultrawide zoomed views are covered edge to edge.
-    const vignette = ctx.createRadialGradient(
-      camX + visible / 2,
-      designHeight / 2,
-      Math.min(visible, designHeight) * 0.35,
-      camX + visible / 2,
-      designHeight / 2,
-      Math.max(visible, designHeight) * 0.7
+  // --- Rail reflections: soft light streaks on the asphalt ----------------
+  ctx.save();
+  traceTrack();
+  ctx.clip();
+  for (const side of [-1, 1] as const) {
+    const rg = ctx.createLinearGradient(0, groundYAt(sFar), 0, groundYAt(1.3));
+    rg.addColorStop(0, "rgba(0,0,0,0)");
+    rg.addColorStop(1, theme.rail);
+    ctx.globalAlpha = 0.13;
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.moveTo(xAt(side * (trackHalf - 1) - 3, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * (trackHalf - 1) + 3, sFar), groundYAt(sFar));
+    ctx.lineTo(xAt(side * (trackHalf - 1) + 7, 1.3), groundYAt(1.3));
+    ctx.lineTo(xAt(side * (trackHalf - 1) - 7, 1.3), groundYAt(1.3));
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+
+  // --- Energy pulses travelling along the emissive rails ------------------
+  for (const side of [-1, 1] as const) {
+    for (let pi = 0; pi < 3; pi++) {
+      const cycle = 2080;
+      const z = ((((pi * 700 + 400) - world.elapsedMs * 0.55) % cycle) + cycle) % cycle - 120;
+      if (z < 0 || z > Z_FAR) continue;
+      const s = sOf(z);
+      if (s > S_MAX) continue;
+      const gx = xAt(side * trackHalf, s);
+      const gy = groundYAt(s);
+      const fade = 1 - z / Z_FAR;
+      ctx.globalAlpha = 0.22 * fade;
+      ctx.fillStyle = theme.rail;
+      ctx.fillRect(gx - 5 * s, gy - 26 * s, 10 * s, 26 * s);
+      ctx.globalAlpha = 0.5 * fade;
+      ctx.fillRect(gx - 2.4 * s, gy - 22 * s, 4.8 * s, 22 * s);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // Two building rows give the street real depth layering: an outer,
+  // differently-salted row behind the roadside row (full depth in landscape,
+  // far half only in portrait to stay cheap on phones), then the roadside
+  // row carrying the MPGR signage/banners.
+  const streetTexture = getSprite(envSet.facade);
+  const streetDecor = getSprite(decorSet.decor);
+  const streetDepth = world.traveledPx + playerDepthX;
+  // Landscape/wide viewports add farther, wider rows (2 on 16:9, 3 on
+  // ultrawide) so the city keeps filling the screen sideways instead of
+  // ending in bare ground. Rows are drawn farthest first (painter order).
+  const rowGap = W > H ? H * 0.34 : W * 0.3;
+  const outerRows = W > H ? (W / H > 2 ? 3 : 2) : 1;
+  // Farthest first: the hazy district closes the horizon valley, then the
+  // outer rows recede (each with its own aerial haze), then the roadside row
+  // that carries the MPGR signage. Rows are always drawn far -> near, so the
+  // painter ordering, wall positions and lateral offsets are unchanged.
+  drawDistantDistrict(ctx, W, H, trackHalf, camLat, streetDepth, theme, 0.5, 520, 10, 2500);
+  // Atmospheric band over the far district: melts the district silhouettes and
+  // the skyline bases together, so the street, the district and the horizon
+  // form one continuous gradient instead of three stacked bands. Drawn before
+  // the street rows so it never sits in front of the near buildings.
+  const districtHaze = ctx.createLinearGradient(0, HORIZON_Y - H * 0.06, 0, HORIZON_Y + H * 0.1);
+  districtHaze.addColorStop(0, theme.haze);
+  districtHaze.addColorStop(0.42, theme.haze);
+  districtHaze.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.globalAlpha = 0.5;
+  ctx.fillStyle = districtHaze;
+  ctx.fillRect(-40, HORIZON_Y - H * 0.06, W + 80, H * 0.16);
+  ctx.globalAlpha = 1;
+  for (let row = outerRows; row >= 1; row--) {
+    drawStreetArchitecture(
+      ctx, W, H, trackHalf + rowGap + W * 0.3 * (row - 1), camLat, streetDepth, world.elapsedMs, theme,
+      streetTexture, null, 7 + 6 * (row - 1), W > H ? -Infinity : 300, row === 1 ? 1.3 : 1.9 + 0.5 * (row - 2),
+      0.1 + 0.06 * row,
     );
-    vignette.addColorStop(0, "rgba(0,0,0,0)");
-    vignette.addColorStop(1, "rgba(0,0,0,0.38)");
-    ctx.fillStyle = vignette;
-    ctx.fillRect(camX, 0, visible, designHeight);
+  }
+  drawStreetArchitecture(ctx, W, H, trackHalf, camLat, streetDepth, world.elapsedMs, theme, streetTexture, streetDecor);
 
-    // Hit-damage flash — a brief red pulse over the whole frame, on top of
-    // everything else, so a hit always reads clearly even mid-chaos.
-    if (world.elapsedMs < world.hitFlashUntilMs) {
-      const hitT = clamp((world.hitFlashUntilMs - world.elapsedMs) / 220, 0, 1);
-      ctx.globalAlpha = hitT * 0.35;
-      ctx.fillStyle = "#DC2626";
-      ctx.fillRect(camX, 0, visible, designHeight);
+  // --- Checkpoint flash (screen-space, unchanged behaviour) ---------------
+  if (world.elapsedMs < world.checkpointFlashUntilMs) {
+    const elapsedSinceStart = 1400 - (world.checkpointFlashUntilMs - world.elapsedMs);
+    const remaining = (world.checkpointFlashUntilMs - world.elapsedMs) / 1400;
+    const flashAlpha = clamp(remaining, 0, 1);
+    ctx.globalAlpha = flashAlpha * 0.5;
+    ctx.fillStyle = "#FBBF24";
+    ctx.fillRect(-40, -40, W + 80, H + 80);
+    ctx.globalAlpha = 1;
+
+    const checkpointImg = getSprite(CHECKPOINT_SPRITE);
+    if (checkpointImg) {
+      const growT = clamp(elapsedSinceStart / 260, 0, 1);
+      const easedGrow = 1 - Math.pow(1 - growT, 3);
+      const baseSize = Math.min(W, H) * 0.28;
+      const size = baseSize * (0.7 + easedGrow * 0.3);
+      const cx = W / 2;
+      const cy = H * 0.22;
+      const ringT = clamp(elapsedSinceStart / 700, 0, 1);
+      ctx.globalAlpha = (1 - ringT) * 0.5;
+      ctx.strokeStyle = "#FBBF24";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(cx, cy, baseSize * 0.4 + ringT * baseSize * 0.6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = flashAlpha;
+      ctx.drawImage(checkpointImg, cx - size / 2, cy - size / 2, size, size);
       ctx.globalAlpha = 1;
     }
+  }
 
-    ctx.restore();
+  // --- Depth-sorted world items (painter's algorithm) ---------------------
+  const queue = runDrawQueue(ctx);
+
+  // Contact shadow. `softness` adds a wider, fainter penumbra ellipse under the
+  // core so the shadow reads as light falling off instead of a hard decal —
+  // drawn with plain ellipses, never a live blur filter (shadowBlur stays 0).
+  const shadowTint = theme.id === "ice" ? "#294757" : theme.id === "desert" ? "#493523" : "#070D16";
+  const drawGroundShadow = (sx: number, gy: number, rx: number, alpha: number, softness = 0) => {
+    if (alpha <= 0.01 || rx <= 0.5) return;
+    ctx.fillStyle = shadowTint;
+    if (softness > 0) {
+      ctx.globalAlpha = alpha * softness * 0.45;
+      ctx.beginPath();
+      ctx.ellipse(sx, gy, rx * 1.6, rx * 0.44, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.ellipse(sx, gy, rx, rx * 0.32, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  };
+
+  const visibleScale = (z: number): number | null => {
+    if (z > Z_FAR || z < -135) return null;
+    const s = sOf(z);
+    return s > S_MAX ? null : s;
+  };
+
+  // --- Street furniture: retain the original branded props, not building
+  // cards. Architecture is solid projected geometry in run-street.ts.
+  const propSprite = getSprite(envSet.prop);
+  if (propSprite) {
+    const spacing = 260, zMax = 2600, baseH = H * 0.19;
+    for (let side = -1; side <= 1; side += 2) {
+      const residue = ((-world.traveledPx - playerDepthX) % spacing + spacing) % spacing;
+      for (let z = residue - spacing; z < zMax; z += spacing) {
+        if (z < -120) continue;
+        const s = sOf(z);
+        if (s > S_MAX) continue;
+        const k = Math.round((z + playerDepthX + world.traveledPx) / spacing);
+        const r = unitHash(k, side * 3 + 1);
+        if (r < 0.12) continue;
+        const scaleJ = 0.92 + r * 0.22;
+        const halfW = baseH * scaleJ * spriteAspect(propSprite) / 2;
+        const lat = side * (trackHalf + H * 0.02 + halfW + unitHash(k, 91) * 12);
+        const depthFade = Math.max(0, 1 - Math.max(0, z) / zMax * 0.65);
+        queue.add(z, 0, side, s, scaleJ, lat, depthFade);
+      }
+    }
+  }
+  const drawProp = (item: RunDrawEntry) => {
+    if (!propSprite) return;
+    const dh = H * 0.19 * item.a * item.scale;
+    const dw = dh * spriteAspect(propSprite);
+    const sx = xAt(item.b, item.scale), gy = groundYAt(item.scale);
+    ctx.globalAlpha = 0.2 * item.c;
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.beginPath();
+    ctx.ellipse(sx, gy, dw * 0.4, Math.max(1, dw * 0.055), 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = item.c;
+    ctx.drawImage(propSprite, sx - dw / 2, gy - dh, dw, dh);
+    ctx.globalAlpha = 1;
+  };
+
+  // Power-ups.
+  for (let index = 0; index < world.powerups.length; index++) {
+    const pu = world.powerups[index];
+    if (pu.collected) continue;
+    const z = pu.x - playerDepthX;
+    const s = visibleScale(z);
+    if (s === null) continue;
+    queue.add(z, 1, index, s);
+  }
+  const drawPowerup = (item: RunDrawEntry) => {
+    const pu = world.powerups[item.index], s = item.scale;
+    const cfg = POWERUP_TYPES[pu.type];
+
+        const bob = Math.sin(world.elapsedMs / 260 + pu.id) * 5;
+        const sx = xAt(laneLat(pu.lane), s);
+        const gy = groundYAt(s);
+        const cy = gy - (20 + bob) * s * objectScale;
+        const size = pu.radius * 3.0 * s * objectScale;
+        drawGroundShadow(sx, gy, size * 0.4, 0.28 * s);
+        const puImg = getSprite(POWERUP_SPRITES[pu.type]);
+        ctx.globalAlpha = 1 - Math.min(1, Math.max(0, item.z) / Z_FAR) * 0.2;
+
+
+        if (puImg) {
+          ctx.drawImage(puImg, sx - size / 2, cy - size / 2, size, size);
+        } else {
+          ctx.beginPath();
+          ctx.arc(sx, cy, (pu.radius * s), 0, Math.PI * 2);
+          ctx.fillStyle = cfg.color;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255,255,255,0.85)";
+          ctx.lineWidth = 1.5 * s;
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+  };
+
+  // Collectibles.
+  const playerCenterX = xAt(playerLat, 1);
+  // Visual heights (world units): standing runner reads ~2.4x the 30-unit
+  // hitbox; the slide pose is a low bundle that stays under the drone line
+  // (groundHeight 42) so "slide under" reads correctly. Hitboxes themselves
+  // are untouched — this is sprite-box sizing only.
+  const playerHeightWorld = H * RUNNER_HEIGHT_FRACTION * (p.sliding ? 0.54 : 1);
+  const playerCenterY = GROUND_Y - p.playerY * objectScale - playerHeightWorld / 2;
+  for (let index = 0; index < world.collectibles.length; index++) {
+    const c = world.collectibles[index];
+    if (c.collected) continue;
+    const z = c.x - playerDepthX;
+    const s = visibleScale(z);
+    if (s === null) continue;
+    queue.add(z, 2, index, s);
+  }
+  const drawCollectible = (item: RunDrawEntry) => {
+    const c = world.collectibles[item.index], s = item.scale;
+    const color = COLLECTIBLE_TYPES[c.type].color;
+
+        const bob = Math.sin(world.elapsedMs / 300 + c.id) * 6;
+        const air = collectiblePresentationHeight(c, world.traveledPx, world.obstacles);
+        const attracting = c.magnetizedAtMs !== undefined;
+        const shrink = attracting
+          ? clamp(1 - (world.elapsedMs - (c.magnetizedAtMs as number)) / MAGNET_ATTRACT_MS, 0.25, 1)
+          : 1;
+        const sx = xAt(laneLat(c.lane), s);
+        const gy = groundYAt(s);
+        const cy = gy - (14 + bob + air) * s * objectScale;
+        // Airborne formation coins render a touch larger so the jump arc
+        // reads clearly against the sky-line (presentation only).
+        const size = c.radius * (air > 0 ? 3.4 : 2.9) * shrink * s * objectScale;
+        drawGroundShadow(sx, gy, size * (air > 0 ? 0.26 : 0.42), 0.3 * s * (air > 0 ? 0.5 : 1));
+        const cImg = getSprite(COLLECTIBLE_SPRITES[c.type]);
+        ctx.globalAlpha = 1 - Math.min(1, Math.max(0, item.z) / Z_FAR) * 0.2;
+
+
+        if (cImg) {
+          ctx.drawImage(cImg, sx - size / 2, cy - size / 2, size, size);
+        } else {
+          ctx.beginPath();
+          ctx.arc(sx, cy, c.radius * shrink * s, 0, Math.PI * 2);
+          ctx.fillStyle = color;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255,255,255,0.6)";
+          ctx.lineWidth = 1 * s;
+          ctx.stroke();
+        }
+
+        ctx.globalAlpha = 1;
+        if (attracting) {
+          ctx.strokeStyle = "rgba(34,211,238,0.5)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sx, cy);
+          ctx.lineTo(playerCenterX, playerCenterY);
+          ctx.stroke();
+        }
+  };
+
+  // Obstacles.
+  for (let index = 0; index < world.obstacles.length; index++) {
+    const o = world.obstacles[index];
+    const z = o.x + o.width / 2 - playerDepthX;
+    const s = visibleScale(z);
+    if (s === null) continue;
+    queue.add(z, 3, index, s);
+  }
+  const drawObstacle = (item: RunDrawEntry) => {
+    const o = world.obstacles[item.index], s = item.scale;
+    const palette = OBSTACLE_COLOR[o.type];
+
+        const sx = xAt(laneLat(o.lane), s);
+        const gy = groundYAt(s);
+        const wW = Math.min(o.width * 1.5 * objectScale, laneGap * 0.88) * s;
+        const hW = (o.height + 8) * s * objectScale;
+        const bottom = gy - o.groundHeight * s * objectScale;
+        drawGroundShadow(sx, gy, wW * 0.42, 0.38 * s);
+        const oImg = getSprite(OBSTACLE_SPRITES[o.type]);
+        ctx.save();
+        if (o.type === "saw") {
+          const cy = bottom - hW / 2;
+          ctx.translate(sx, cy);
+          ctx.rotate(world.elapsedMs / 120);
+          ctx.translate(-sx, -cy);
+        }
+        ctx.globalAlpha = (o.hit ? 0.55 : 1) * (1 - Math.min(1, Math.max(0, item.z) / Z_FAR) * 0.2);
+        if (oImg) {
+
+
+          ctx.drawImage(oImg, sx - wW / 2, bottom - hW, wW, hW);
+
+        } else {
+          const top = bottom - hW;
+          const gradient = ctx.createLinearGradient(0, top, 0, bottom);
+          gradient.addColorStop(0, palette.fill);
+          gradient.addColorStop(1, palette.dark);
+          ctx.fillStyle = gradient;
+
+
+          ctx.fillRect(sx - wW / 2, top, wW, hW);
+
+        }
+        ctx.globalAlpha = 1;
+        ctx.restore();
+  };
+
+  // The runner — rear view, z = 0, feet planted on the near track surface.
+  queue.add(0, 4, 0, 1);
+  const drawRunner = () => {
+      const sx = xAt(playerLat, 1);
+      const bottom = GROUND_Y - p.playerY * objectScale; // exact grounding: playerY == 0 -> feet on track
+      const drawH = playerHeightWorld;
+      const invulnerable = world.elapsedMs < p.invulnerableUntilMs;
+      const shielded = !!world.activePowerups.shield || !!world.activePowerups.invincibility;
+      const jetpackActiveNow = !!world.activePowerups.jetpack;
+
+      // Contact shadow keeps the runner visually glued to the track. While the
+      // feet are planted the shadow gets a soft penumbra, so ground contact
+      // reads as real light falloff; airborne, that penumbra fades with the
+      // jump and the shadow sharpens back up on landing.
+      const airFactor = clamp(1 - p.playerY / 320, 0.25, 1);
+      const grounded = clamp(1 - p.playerY / 26, 0, 1);
+      drawGroundShadow(sx, GROUND_Y, drawH * 0.21 * airFactor, 0.23 * airFactor + 0.06, grounded * 0.85);
+      // Tight unblurred contact core disappears as the feet leave the road.
+      drawGroundShadow(sx, GROUND_Y, drawH * 0.11, 0.14 * grounded);
+
+      if (shielded) {
+        ctx.beginPath();
+        ctx.arc(sx, bottom - drawH / 2, PLAYER_SIZE * 0.9, 0, Math.PI * 2);
+        ctx.strokeStyle = world.activePowerups.invincibility ? "#F472B6" : "#34D399";
+        ctx.globalAlpha = 0.6 + Math.sin(world.elapsedMs / 90) * 0.2;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      if (jetpackActiveNow) {
+        // Downward flicker flame under the feet (rear view).
+        for (let layer = 0; layer < 2; layer++) {
+          const flicker = streetHash(Math.floor(world.elapsedMs / 32), layer + 92) * 8;
+          const len = 14 + layer * 8 + flicker;
+          ctx.beginPath();
+          ctx.moveTo(sx - 7, bottom - 2 + layer * 2);
+          ctx.lineTo(sx, bottom + len);
+          ctx.lineTo(sx + 7, bottom - 2 + layer * 2);
+          ctx.closePath();
+          ctx.fillStyle = layer === 0 ? "#FDE68A" : "#FB923C";
+
+
+          ctx.globalAlpha = 0.85 - layer * 0.2;
+          ctx.fill();
+        }
+
+        ctx.globalAlpha = 1;
+      }
+
+      ctx.globalAlpha = invulnerable && !shielded ? 0.4 + Math.sin(world.elapsedMs / 60) * 0.3 : 1;
+
+      let spriteSrc: string;
+      let runFrameIdx = -1;
+      if (world.elapsedMs < 1) spriteSrc = CHARACTER_REAR_SPRITES.idle;
+      else if (jetpackActiveNow) spriteSrc = CHARACTER_REAR_SPRITES.jump;
+      else if (p.sliding) spriteSrc = CHARACTER_REAR_SPRITES.slide;
+      else if (p.playerY > 0)
+        spriteSrc = p.velocityY > 0 ? CHARACTER_REAR_SPRITES.jump : CHARACTER_REAR_SPRITES.fall;
+      else {
+        runFrameIdx = runStrideFrame(world.elapsedMs);
+        spriteSrc = REAR_RUN_CYCLE[runFrameIdx];
+      }
+      let playerImg = getSprite(spriteSrc);
+      if (!playerImg) {
+        playerImg =
+          getSprite(CHARACTER_REAR_SPRITES.run1) ??
+          getSprite(CHARACTER_REAR_SPRITES.idle) ??
+          getSprite(CHARACTER_SPRITES.run);
+      }
+
+      // Stride lead-in weight: 0 while a pose is settled (single sprite draw,
+      // exactly the previous behaviour), ramping to 1 at the boundary so the
+      // incoming pose slides over the outgoing one instead of cutting. Pure
+      // presentation — the pose a given elapsed time selects never changes.
+      const strideLead = runFrameIdx >= 0 ? runStrideLead(world.elapsedMs) : 0;
+      const poseAlpha = ctx.globalAlpha;
+      const strideAlign = RUN_FRAME_ALIGN_X[runFrameIdx > 0 ? runFrameIdx : 0];
+
+      if (playerImg) {
+        const aspect = spriteAspect(playerImg);
+        const drawW = drawH * aspect;
+        // Speed boost: ghost copies trailing toward the camera.
+        if (world.activePowerups.speed) {
+          for (const [gz, ga] of [
+            [-16, 0.16],
+            [-32, 0.09],
+          ] as const) {
+            const gs = sOf(gz);
+            if (gs <= S_MAX) {
+              ctx.globalAlpha = ga;
+              const gH = drawH * gs;
+              const gW = gH * aspect;
+              ctx.drawImage(
+                playerImg,
+                xAt(playerLat, gs) - gW / 2,
+                groundYAt(gs) - p.playerY * objectScale * gs - gH,
+                gW,
+                gH
+              );
+            }
+          }
+          ctx.globalAlpha = invulnerable && !shielded ? 0.4 + Math.sin(world.elapsedMs / 60) * 0.3 : 1;
+        }
+        // Stride transition. Outside the short blend windows `nextPose` is null
+        // and this is exactly the single-sprite draw it has always been; inside
+        // one, the outgoing pose fades out as the incoming pose fades in — the
+        // summed opacity stays constant, so the pose change has no visible step
+        // at either end of the window. Poses, boundaries, cadence and the frame
+        // an elapsed time selects are all unchanged; only the opacity ramp of
+        // the two adjacent frames during the transition is new.
+        const nextPose = strideLead > 0 ? getSprite(REAR_RUN_CYCLE[(runFrameIdx + 1) % REAR_RUN_CYCLE.length]) : null;
+        ctx.save();
+        ctx.translate(sx, bottom - drawH / 2);
+        if (jetpackActiveNow) ctx.rotate(0.06);
+        if (nextPose) {
+          const nextIdx = (runFrameIdx + 1) % REAR_RUN_CYCLE.length;
+          const nextW = drawH * spriteAspect(nextPose);
+          ctx.globalAlpha = poseAlpha * (1 - strideLead);
+          ctx.drawImage(playerImg, -drawW / 2 + strideAlign * drawW, -drawH / 2, drawW, drawH);
+          ctx.globalAlpha = poseAlpha * strideLead;
+          ctx.drawImage(nextPose, -nextW / 2 + RUN_FRAME_ALIGN_X[nextIdx] * nextW, -drawH / 2, nextW, drawH);
+        } else {
+          ctx.drawImage(
+            playerImg,
+            -drawW / 2 + (runFrameIdx >= 0 ? strideAlign * drawW : 0),
+            -drawH / 2,
+            drawW,
+            drawH
+          );
+        }
+        ctx.globalAlpha = poseAlpha;
+
+        ctx.restore();
+      } else {
+        // Procedural capsule fallback (rear silhouette: hood + head block).
+        const playerTop = bottom - drawH;
+        const grad = ctx.createLinearGradient(0, playerTop, 0, bottom);
+        grad.addColorStop(0, COLORS.player);
+        grad.addColorStop(1, COLORS.playerCore);
+        ctx.fillStyle = grad;
+
+
+        const pw = drawH * 0.42;
+        const pr = 7;
+        ctx.beginPath();
+        ctx.moveTo(sx - pw / 2 + pr, playerTop);
+        ctx.lineTo(sx + pw / 2 - pr, playerTop);
+        ctx.quadraticCurveTo(sx + pw / 2, playerTop, sx + pw / 2, playerTop + pr);
+        ctx.lineTo(sx + pw / 2, bottom - pr);
+        ctx.quadraticCurveTo(sx + pw / 2, bottom, sx + pw / 2 - pr, bottom);
+        ctx.lineTo(sx - pw / 2 + pr, bottom);
+        ctx.quadraticCurveTo(sx - pw / 2, bottom, sx - pw / 2, bottom - pr);
+        ctx.lineTo(sx - pw / 2, playerTop + pr);
+        ctx.quadraticCurveTo(sx - pw / 2, playerTop, sx - pw / 2 + pr, playerTop);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = "#FCD34D"; // hair block, seen from behind
+        ctx.fillRect(sx - pw * 0.32, playerTop + drawH * 0.04, pw * 0.64, drawH * 0.2);
+      }
+      ctx.globalAlpha = 1;
+  };
+
+  queue.sort();
+  for (let i = 0; i < queue.count; i++) {
+    const item = queue.entries[i];
+    switch (item.kind) {
+      case 0: drawProp(item); break;
+      case 1: drawPowerup(item); break;
+      case 2: drawCollectible(item); break;
+      case 3: drawObstacle(item); break;
+      case 4: drawRunner(); break;
+    }
+  }
+
+  // --- Particles & sprite bursts (world-space sparks, projected) ----------
+  for (const part of world.particles) {
+    const z = part.x - playerDepthX;
+    const s = visibleScale(z);
+    if (s === null) continue;
+    const alpha = clamp(part.life / part.maxLife, 0, 1);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = part.color;
+    ctx.beginPath();
+    ctx.arc(
+      xAt(laneLat(part.lane) + part.lx, s),
+      groundYAt(s) - part.y * s * objectScale,
+      Math.max(0.6, part.size * s * objectScale),
+      0,
+      Math.PI * 2
+    );
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  for (const burst of world.spriteBursts) {
+    const img = getSprite(burst.sprite);
+    if (!img) continue;
+    const z = burst.x - playerDepthX;
+    const s = visibleScale(z);
+    if (s === null) continue;
+    const t = clamp((world.elapsedMs - burst.startMs) / burst.durationMs, 0, 1);
+    const size = burst.maxSize * (0.5 + t * 0.6) * s * objectScale;
+    ctx.globalAlpha = 1 - t;
+    ctx.drawImage(
+      img,
+      xAt(laneLat(burst.lane), s) - size / 2,
+      groundYAt(s) - burst.y * s * objectScale - size / 2,
+      size,
+      size
+    );
+  }
+  ctx.globalAlpha = 1;
+
+  // --- Live weather (procedural, allocation-free, per-world) --------------
+  const WEATHER_COUNT = 34;
+  ctx.fillStyle = theme.particleColor;
+  for (let i = 0; i < WEATHER_COUNT; i++) {
+    const f1 = unitHash(i, 11);
+    const f2 = unitHash(i, 23);
+    const f3 = unitHash(i, 37);
+    let px = 0;
+    let py = 0;
+    let size = 1;
+    let alpha = 0.3;
+    if (theme.particle === "snow") {
+      px = ((i * 167.3 + Math.sin(world.elapsedMs / 1400 + i) * 26 + world.elapsedMs * 0.012 * (0.5 + f1)) % W + W) % W;
+      py = ((i * 211.7 + world.elapsedMs * 0.055 * (0.5 + f2)) % (H + 30)) - 15;
+      size = 1 + f3 * 1.8;
+      alpha = 0.3 + f1 * 0.4;
+    } else if (theme.particle === "dust") {
+      px = ((i * 143.9 - world.elapsedMs * 0.05 * (0.4 + f1)) % W + W) % W;
+      py = H * (0.45 + 0.55 * f2) + Math.sin(world.elapsedMs / 900 + i) * 8;
+      size = 0.8 + f3 * 1.4;
+      alpha = 0.16 + f1 * 0.2;
+    } else {
+      px = ((i * 121.7 + Math.sin(world.elapsedMs / 1800 + i * 1.7) * 34) % W + W) % W;
+      py = H - ((world.elapsedMs * 0.018 * (0.4 + f2) + i * 89.3) % (H * 0.85));
+      size = 0.7 + f3 * 1.1;
+      alpha = 0.14 + f1 * 0.2;
+    }
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(px, py, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // --- World-transition fog wall (hides the environment swap) -------------
+  if (worldState.fade > 0.01) {
+    ctx.globalAlpha = worldState.fade * 0.92;
+    ctx.fillStyle = runTransitionFogFromPx(world.traveledPx);
+    ctx.fillRect(-40, -40, W + 80, H + 80);
+    ctx.globalAlpha = 1;
+  }
+
+  // --- Cinematic vignette + hit flash (screen space, unchanged) -----------
+  const vignette = ctx.createRadialGradient(
+    W / 2,
+    H / 2,
+    Math.min(W, H) * 0.35,
+    W / 2,
+    H / 2,
+    Math.max(W, H) * 0.7
+  );
+  vignette.addColorStop(0, "rgba(0,0,0,0)");
+  vignette.addColorStop(1, "rgba(0,0,0,0.22)");
+  ctx.fillStyle = vignette;
+  ctx.fillRect(-40, -40, W + 80, H + 80);
+
+  if (world.elapsedMs < world.hitFlashUntilMs) {
+    const hitT = clamp((world.hitFlashUntilMs - world.elapsedMs) / 220, 0, 1);
+    ctx.globalAlpha = hitT * 0.35;
+    ctx.fillStyle = "#DC2626";
+    ctx.fillRect(-40, -40, W + 80, H + 80);
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.restore();
 }

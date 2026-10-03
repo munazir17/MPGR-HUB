@@ -1,0 +1,13 @@
+{
+  "protocol": "Same native Canvas host, 25 frames, 390x844 / 1280x720, forced getImageData raster flush; elapsedMs=6000, traveledPx=1000 advancing by 5 per sample; median milliseconds, not device FPS",
+  "runnerHeightCssPx": {"pr62Mobile":54,"pr63Mobile":139.26,"currentMobile":139.26},
+  "rows": [
+    {"variant":"PR62 5489ea0","mobile":21.0576,"desktop":48.7497},
+    {"variant":"PR63 cdfc407","mobile":52.3551,"desktop":111.0464},
+    {"variant":"cdfc407 without architecture","mobile":36.8720,"desktop":84.0800},
+    {"variant":"cdfc407 flat facade fill","mobile":57.4273,"desktop":120.0904},
+    {"variant":"cdfc407 no fog","mobile":48.6314,"desktop":103.8496},
+    {"variant":"cdfc407 no live shadow blur","mobile":28.0693,"desktop":44.6207},
+    {"variant":"cdfc407 no road texture","mobile":46.0783,"desktop":103.8370}
+  ]
+}

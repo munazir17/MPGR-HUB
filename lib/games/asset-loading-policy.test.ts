@@ -164,17 +164,112 @@ describe("non-critical page art loads lazily and off-thread", () => {
     expect(layout).toContain('icon: "/icon-128.png"');
     expect(layout).toContain('apple: "/icon-180.png"');
   });
+
+  it("declares Base App and Farcaster embed metadata without duplicate base:app_id tags", () => {
+    const layout = read("app/layout.tsx");
+    expect(layout).toContain('"base:app_id": "6a79d1c8d198f685bc61e308"');
+    expect(layout).toContain('"fc:miniapp": JSON.stringify(embed)');
+    expect(layout).toContain('"fc:frame": JSON.stringify(embed)');
+    expect(layout).toContain('images: ["https://mpgrhub.xyz/og.png"]');
+    expect(layout).not.toContain('<meta name="base:app_id"');
+  });
 });
 
 describe("mini-app icon contract is unchanged", () => {
   it("keeps the Farcaster/Base manifest on the canonical icon and splash", () => {
     const manifest = JSON.parse(read("public/.well-known/farcaster.json")) as {
-      miniapp: { iconUrl: string; splashImageUrl: string };
+      accountAssociation: { header: string; payload: string; signature: string };
+      baseBuilder: { ownerAddress: string };
+      miniapp: {
+        iconUrl: string;
+        splashImageUrl: string;
+        heroImageUrl: string;
+        ogImageUrl: string;
+        ogTitle: string;
+        ogDescription: string;
+        screenshotUrls: string[];
+        tags: string[];
+      };
     };
-    expect(manifest.miniapp.iconUrl).toBe("https://mpgrhub.xyz/icon.png");
+    expect(manifest.accountAssociation).toEqual({
+      header:
+        "eyJmaWQiOjM4NTE3OSwidHlwZSI6ImN1c3RvZHkiLCJrZXkiOiIweGM2RjIyMzE1MDIzZjQ3REFGMjFDNTgwRDc3ZDVGODYwQzllQzhEODYifQ",
+      payload: "eyJkb21haW4iOiJtcGdyaHViLnh5eiJ9",
+      signature:
+        "zgmZ760fywlsU+ScGXwFP/MLqIWRgnryU4ejg/fbvEcpWOlk4IyyrKWlKq79cayRnEp8JcGZav46tl6xCpOx4Rs=",
+    });
+    expect(manifest.baseBuilder.ownerAddress).toBe("0x8cf779b5a4d210d8c75048751b8532f491732964");
+    expect(manifest.miniapp.iconUrl).toBe("https://mpgrhub.xyz/icon-1024.png");
     expect(manifest.miniapp.splashImageUrl).toBe("https://mpgrhub.xyz/splash.png");
-    for (const file of ["public/icon.png", "public/splash.png"]) {
+    expect(manifest.miniapp.heroImageUrl).toBe("https://mpgrhub.xyz/og.png");
+    expect(manifest.miniapp.ogImageUrl).toBe("https://mpgrhub.xyz/og.png");
+    expect(manifest.miniapp.ogTitle).toBe("MPGR HUB");
+    expect(manifest.miniapp.ogDescription).toBe(
+      "AI-powered onchain hub on Base for gaming, rewards, staking, AI agents and payments.",
+    );
+    expect(manifest.miniapp.screenshotUrls).toEqual([
+      "https://mpgrhub.xyz/screenshots/1.png",
+      "https://mpgrhub.xyz/screenshots/2.png",
+      "https://mpgrhub.xyz/screenshots/3.png",
+    ]);
+    expect(manifest.miniapp.tags).toEqual(["ai", "gaming", "rewards", "staking", "agent"]);
+    for (const file of [
+      "public/icon.png",
+      "public/icon-1024.png",
+      "public/splash.png",
+      "public/embed.png",
+      "public/og.png",
+      "public/screenshots/1.png",
+      "public/screenshots/2.png",
+      "public/screenshots/3.png",
+    ]) {
       expect(fs.existsSync(path.join(REPO_ROOT, file)), file).toBe(true);
+    }
+  });
+
+  it("validates dimensions and RGB (no-alpha) PNG properties for Base App discovery assets", () => {
+    const readPngHeader = (relativePath: string) => {
+      const buf = fs.readFileSync(path.join(REPO_ROOT, relativePath));
+      expect(buf.readUInt32BE(0), relativePath).toBe(0x89504e47);
+      return {
+        width: buf.readUInt32BE(16),
+        height: buf.readUInt32BE(20),
+        bitDepth: buf.readUInt8(24),
+        colorType: buf.readUInt8(25),
+      };
+    };
+
+    expect(readPngHeader("public/icon-1024.png")).toEqual({
+      width: 1024,
+      height: 1024,
+      bitDepth: 8,
+      colorType: 2,
+    });
+    expect(readPngHeader("public/embed.png")).toEqual({
+      width: 1200,
+      height: 800,
+      bitDepth: 8,
+      colorType: 2,
+    });
+    expect(readPngHeader("public/og.png")).toEqual({
+      width: 1200,
+      height: 630,
+      bitDepth: 8,
+      colorType: 2,
+    });
+    for (const shot of [
+      "public/screenshots/1.png",
+      "public/screenshots/2.png",
+      "public/screenshots/3.png",
+    ]) {
+      const header = readPngHeader(shot);
+      expect(header, shot).toEqual({
+        width: 1284,
+        height: 2778,
+        bitDepth: 8,
+        colorType: 2,
+      });
+      expect(header.height).toBeGreaterThan(header.width);
     }
   });
 });

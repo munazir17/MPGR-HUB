@@ -41,7 +41,18 @@ export interface CollectibleEntity {
   radius: number;
   collected: boolean;
   magnetizedAtMs?: number;
+  /**
+   * Presentation height above the lane baseline (world px). Used by the
+   * renderer to draw airborne coin formations over jump obstacles so the
+   * arc reads as "jump here -> collect". Pickup rules are unchanged:
+   * collection stays lane + depth based exactly as before.
+   */
+  airHeight?: number;
 }
+
+/** Airborne coin arc profile (world px above lane baseline), near -> far. */
+export const JUMP_COIN_ARC_HEIGHTS = [26, 50, 64, 50, 26] as const;
+export const JUMP_COIN_ARC_SPACING_PX = 24;
 
 export interface PowerupEntity {
   id: number;
