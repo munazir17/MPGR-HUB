@@ -154,7 +154,7 @@ const pairSchema: AgentToolSchema = {
     symbol: {
       type: "string",
       description:
-        "Allowlisted pair symbol: a Coinbase wrapped asset (cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA), native USDC, or one of the 10 LIVE official Coinbase Tokenized Stocks (NVDAc, AAPLc, GOOGLc, METAc, AMZNc, MSFTc, TSLAc, SPCXc, SNDKc, MSTRc). Underlying tickers (AAPL) resolve to their B20 token. COINc/CRCLc/INTCc have Coinbase-published addresses but are not live yet — they return status announced-not-live.",
+        "Allowlisted pair symbol: a Coinbase wrapped asset (cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA), native USDC, or an issued Coinbase Tokenized Stock (B20), including NVDAc, AAPLc, TSLAc, AMDc, AVGOc, GMEc, NFLXc, PLTRc and the other issued catalog symbols. Underlying tickers (NFLX, AMD, etc.) resolve to their B20 token. Announced-not-live symbols return status announced-not-live and are never prepared for trading.",
     },
   },
   required: ["symbol"],
@@ -334,7 +334,7 @@ export const getPremiumTool: AgentTool = {
   id: "get_premium",
   name: "Stock Premium vs Feed",
   description:
-    "Reports a Coinbase Tokenized Stock's DEX price versus its official Chainlink feed price and the premium in basis points, with staleness/pause flags. premiumBps null means a leg is unavailable — say so, never estimate it.",
+    "Reports a Coinbase Tokenized Stock's DEX price versus its Chainlink feed when one exists. New issued B20 stocks have no published Chainlink feed: report the feed as unavailable, show the DEX price only when an actual pool quote exists, and never estimate a premium.",
   category: "market",
   mode: "read",
   riskLevel: "low",
@@ -355,7 +355,7 @@ export const getPremiumTool: AgentTool = {
     if (!pair.live) {
       return toolError("get_premium", {
         code: "INVALID_INPUT",
-        message: `${pair.symbol} is a Coinbase-published B20 address that is NOT LIVE yet (no issued supply, no Chainlink feed), so there is no premium to report. Base's official list carries 10 live tokenized stocks.`,
+        message: `${pair.symbol} is a Coinbase-published B20 address that is NOT LIVE yet, so there is no premium to report.`,
       });
     }
     try {
@@ -385,8 +385,12 @@ export const getPremiumTool: AgentTool = {
           feedUpdatedAt: stock?.feedUpdatedAt ?? null,
           asOf: detail.asOf,
           interpretation:
-            stock?.premiumBps === null || stock?.premiumBps === undefined
-              ? "A price leg is unavailable — report the premium as unknown."
+            stock?.usdFeed === null || stock?.usdFeed === undefined
+              ? stock?.usdDex === null || stock?.usdDex === undefined
+                ? "Chainlink feed unavailable and no DEX pool quote exists; price and premium are unknown."
+                : "Chainlink feed unavailable; DEX price is shown without an estimated premium."
+              : stock?.premiumBps === null || stock?.premiumBps === undefined
+                ? "A price leg is unavailable — report the premium as unknown."
               : stock.premiumBps > 0
                 ? "DEX trades above the official feed (premium)."
                 : stock.premiumBps < 0
