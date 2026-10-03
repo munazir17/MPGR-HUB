@@ -43,7 +43,7 @@ export function AgentVolumeStat() {
 
   return (
     <div
-      className="ml-auto hidden shrink-0 items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-1.5 sm:flex"
+      className="mt-1 flex w-fit max-w-full shrink-0 items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-1.5"
       data-testid="agent-volume-stat"
       aria-label="MPGR Agent total value traded"
     >
