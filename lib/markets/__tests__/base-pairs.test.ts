@@ -95,7 +95,7 @@ describe("base-pairs allowlist", () => {
       expect(pair.live).toBe(false);
       expect(pair.onTape).toBe(false);
       expect(pair.chainlinkFeed).toBeUndefined();
-      expect(pair.notes).toMatch(/NOT LIVE/i);
+      expect(pair.notes).toContain("announced-not-live");
     }
     // Every wrapped asset and native USDC is live.
     expect(
