@@ -12,9 +12,8 @@ export const revalidate = 0;
 
 const CACHE_KEY = "mpgr:agent:stats:v2";
 const CACHE_TTL_SECONDS = 60;
-// Keep ranges conservative for public Base RPCs. If a provider still rejects a
-// range, scanRange() halves it until the request succeeds.
 const INITIAL_LOG_CHUNK = 20_000n;
+const MIN_LOG_CHUNK = 250n;
 
 const SWAP_EXECUTED_EVENT = parseAbiItem(
   "event SwapExecuted(address indexed taker,address indexed router,bytes32 indexed intentId,address tokenIn,address tokenOut,uint256 grossAmountIn,uint256 feeAmount,uint256 swapAmountIn,uint256 amountOut,address feeRecipient,uint16 feeBps,uint8 routerKind,uint8 flags)",
@@ -24,6 +23,12 @@ type Stats = {
   available: boolean;
   totalValueTradedUsd: number | null;
   tradeCount: number | null;
+};
+
+type LogScanResult = {
+  totalUsdcAtomic: bigint;
+  tradeCount: number;
+  txHashes: Set<string>;
 };
 
 function unavailable() {
@@ -54,25 +59,24 @@ async function scanRange(
   client: ReturnType<typeof getTradePublicClient>,
   fromBlock: bigint,
   toBlock: bigint,
-  chunkSize: bigint,
-): Promise<{
-  totalUsdcAtomic: bigint;
-  tradeCount: number;
-  txHashes: Set<string>;
-}> {
+  initialChunkSize: bigint,
+): Promise<LogScanResult> {
+  const pending: Array<{ fromBlock: bigint; toBlock: bigint; chunkSize: bigint }> = [
+    { fromBlock, toBlock, chunkSize: initialChunkSize },
+  ];
   let totalUsdcAtomic = 0n;
   let tradeCount = 0;
   const txHashes = new Set<string>();
 
-  for (let start = fromBlock; start <= toBlock; start += chunkSize + 1n) {
-    const end = start + chunkSize - 1n > toBlock ? toBlock : start + chunkSize - 1n;
+  while (pending.length > 0) {
+    const range = pending.pop()!;
 
     try {
       const logs = await client.getLogs({
         address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor,
         event: SWAP_EXECUTED_EVENT,
-        fromBlock: start,
-        toBlock: end,
+        fromBlock: range.fromBlock,
+        toBlock: range.toBlock,
       });
 
       for (const log of logs) {
@@ -83,31 +87,33 @@ async function scanRange(
         const outputIsUsdc = tokenOut.toLowerCase() === BASE_MAINNET_USDC.toLowerCase();
         if (!inputIsUsdc && !outputIsUsdc) continue;
 
-        // SwapExecuted is emitted only after the executor swap succeeds.
-        // Use the actual USDC leg as gross executed notional.
         totalUsdcAtomic += inputIsUsdc ? grossAmountIn : amountOut;
         tradeCount += 1;
         if (log.transactionHash) txHashes.add(log.transactionHash.toLowerCase());
       }
     } catch (error) {
-      // Retry the same range at half the size. This handles Base RPC
-      // getLogs range/rate limits without hiding a real scan failure.
-      if (chunkSize <= 250n) throw error;
-      const midpoint = start + (chunkSize / 2n) - 1n;
-      const firstEnd = midpoint < toBlock ? midpoint : toBlock;
+      const span = range.toBlock - range.fromBlock + 1n;
+      if (span <= MIN_LOG_CHUNK) throw error;
 
-      const first = await scanRange(client, start, firstEnd, chunkSize / 2n);
+      const nextChunkSize =
+        range.chunkSize > MIN_LOG_CHUNK ? range.chunkSize / 2n : MIN_LOG_CHUNK;
+      const midpoint = range.fromBlock + nextChunkSize - 1n;
+      const firstEnd = midpoint < range.toBlock ? midpoint : range.toBlock;
+
+      pending.push({
+        fromBlock: range.fromBlock,
+        toBlock: firstEnd,
+        chunkSize: nextChunkSize,
+      });
+
       const secondStart = firstEnd + 1n;
-      const second =
-        secondStart <= toBlock
-          ? await scanRange(client, secondStart, toBlock, chunkSize / 2n)
-          : { totalUsdcAtomic: 0n, tradeCount: 0, txHashes: new Set<string>() };
-
-      totalUsdcAtomic += first.totalUsdcAtomic + second.totalUsdcAtomic;
-      tradeCount += first.tradeCount + second.tradeCount;
-      for (const hash of first.txHashes) txHashes.add(hash);
-      for (const hash of second.txHashes) txHashes.add(hash);
-      break;
+      if (secondStart <= range.toBlock) {
+        pending.push({
+          fromBlock: secondStart,
+          toBlock: range.toBlock,
+          chunkSize: nextChunkSize,
+        });
+      }
     }
   }
 
@@ -129,8 +135,6 @@ export async function GET() {
 
     const live = await scanRange(client, fromBlock, latestBlock, INITIAL_LOG_CHUNK);
 
-    // Merge verified pre/current historical Agent trades. Dedupe against live
-    // Executor logs so a seeded Executor transaction is never counted twice.
     const liveHashes = live.txHashes;
     let totalUsdcAtomic = live.totalUsdcAtomic;
     let tradeCount = live.tradeCount;
