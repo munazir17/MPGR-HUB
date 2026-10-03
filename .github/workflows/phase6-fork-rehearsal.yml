@@ -66,7 +66,12 @@ jobs:
           done
           echo "Pinned fork block: ${FORK_BLOCK:-<unpinned fallback>}"
           STATUS=1
-          for upstream in "https://base-rpc.publicnode.com" "https://base.drpc.org" "https://base.llamarpc.com" "https://1rpc.io/base"; do
+          # Upstream rotation (CI infra fix): 1rpc.io/base was observed
+          # redirecting to a discontinued lavanet gateway (HTTP 410 during
+          # anvil genesis, run 37138105007) — removed. mainnet.base.org
+          # (the chain operator's public endpoint) leads the order; the
+          # pinned fork block + anvil disk cache keep upstream usage minimal.
+          for upstream in "https://mainnet.base.org" "https://base-rpc.publicnode.com" "https://base.drpc.org" "https://base.llamarpc.com"; do
             echo "Attempting fork rehearsal against upstream: $upstream"
             BASE_MAINNET_RPC_URL="$upstream" BASE_FORK_BLOCK="$FORK_BLOCK" npx vitest run lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts 2>&1 | tee phase6-fork.log
             STATUS=${PIPESTATUS[0]}
