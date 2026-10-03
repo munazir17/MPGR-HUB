@@ -134,6 +134,7 @@ export async function readTokenizedStockOnchain(
   entry: TokenizedStockCatalogEntry,
 ): Promise<TokenizedStockOnchainState> {
   const client = getTradePublicClient();
+  const chainlinkFeed = entry.chainlinkFeed;
 
   const [symbol, name, decimals, totalSupply, multiplier, paused, round] = await Promise.all([
     readOptional(() =>
