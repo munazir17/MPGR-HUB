@@ -178,10 +178,10 @@ export async function readTokenizedStockOnchain(
         functionName: "paused",
       }),
     ),
-    entry.chainlinkFeed
+    chainlinkFeed
       ? readOptional(() =>
           client.readContract({
-            address: entry.chainlinkFeed,
+            address: chainlinkFeed,
             abi: CHAINLINK_AGGREGATOR_V3_ABI,
             functionName: "latestRoundData",
           }),
@@ -189,10 +189,10 @@ export async function readTokenizedStockOnchain(
       : Promise.resolve(null),
   ]);
 
-  const feedDecimals = entry.chainlinkFeed
+  const feedDecimals = chainlinkFeed
     ? ((await readOptional(() =>
         client.readContract({
-          address: entry.chainlinkFeed,
+          address: chainlinkFeed,
           abi: CHAINLINK_AGGREGATOR_V3_ABI,
           functionName: "decimals",
         }),
