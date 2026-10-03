@@ -133,7 +133,7 @@ describe.skipIf(!ARMED)("MAINNET CANARY — one real 1-USDC BUY through the Main
       delegatedRegistry: { 84532: (await import("@/lib/executor/delegated-executor")).BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT },
       reader: () => reader,
       nowSeconds: () => Math.floor(Date.now() / 1000),
-      quoteSecret: `mainnet-canary-${Date.now()}`,
+      quoteSecret: `mainnet-canary-operator-armed-${Date.now()}`,
       mainnetEnabled: true,
       mainnetFeeRecipient: pinned.feeRecipient as Address,
     } as unknown as McpDeps;
