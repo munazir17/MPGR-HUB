@@ -19,7 +19,6 @@ import { AgentCore } from "./AgentCore";
 import { AgentStatusBadge } from "./AgentStatusBadge";
 import type { AgentStatusId } from "@/lib/agent-config";
 import { MPGR_AGENT_TITLE } from "@/lib/agent-stocks-config";
-import { AgentVolumeStat } from "./AgentVolumeStat";
 
 interface StocksAgentHeroProps {
   statuses: AgentStatusId[];
@@ -47,7 +46,6 @@ export function StocksAgentHero({ statuses, thread = false }: StocksAgentHeroPro
             ))}
           </div>
         </div>
-        <AgentVolumeStat />
       </div>
     </div>
   );
