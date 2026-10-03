@@ -94,3 +94,28 @@ Canary trade: **BUY 1.00 USDC → AAPLc through the real Mainnet runtime path** 
 - F-13 fork proof (13/13 stock bytecode): `test/fork/B20StockBytecodeFork.t.sol` (runs in `contracts-fork`)
 - F-13 registry↔fork lockstep pin: `phase6-mainnet-audit.test.ts` §G
 - Phase 6 report: `docs/PHASE6-MAINNET-AUDIT.md`
+
+## 7. EXECUTION RECORD — AUTONOMOUS CANARY COMPLETE (2026-10-03)
+
+**Outcome: SUCCESS — one real autonomous Base Mainnet BUY, chain-verified.**
+
+| Field | Value |
+| --- | --- |
+| Tx | `0xa9220494124f25125aa4430cf1356773f6bccd0be908bd1b24c1c5f55025693c` |
+| Status / block | Success / 52,125,202 (2026-10-03 15:02:31 UTC) |
+| Trade | 1.00 USDC (1,000,000 raw) → AAPLc via executor `0xD982…505A`, pool `0xA3b1…94F0` |
+| Fee | 0.0025 USDC (2,500 raw, exactly 25 bps) → `0x96F7…64A4` |
+| Output | 0.00298997 AAPLc (≈ $1.00; minOut honored) |
+| Broadcasts | exactly 1; no retry; process exited = disarmed (env-local arming only) |
+
+### Defects the live canary surfaced (all fixed on this branch)
+
+1. **Quote signing (deterministic blocker):** the test's synthetic quote secret was 28 chars — the HMAC key policy requires ≥ 32 → every quote failed `QUOTE_SECRET_MISSING` (gateway-masked as `RPC_ERROR` → PARKED). Fixed in `d9344df`; boundary/symmetry/MAC-tamper regressions in `quote-id.test.ts`; `QUOTE_SECRET_MISSING` now maps truthfully to `QUOTE_FAILED` (`fce449a`).
+2. **Receipt-read RPC fragility:** the primary public RPC rejected a normal recent-block `eth_getTransactionReceipt` with a JSON-RPC `-32602` archive-token error body (HTTP 200) — invisible to viem's transport-level fallback. Fixed with an application-level, receipt-only, fail-closed fallback across key-less public endpoints (`b3b8728`; regression suite `receipt-fallback.test.ts`). Verification semantics unchanged: a hash alone is never success — status/from/to/logs/SwapExecuted/minOut are still proven.
+3. **Fork-harness latent defects (exposed once signing worked):** wrong AAPLc decimals in rehearsal goals (18 → 8, `7703c70`) and direct post-broadcast receipt reads racing inclusion (bounded wait, `5a1e57b`). CI upstream rotation refreshed after a provider discontinuation (`27c511f`).
+
+### Post-canary wallet / governance
+
+- Canary wallet rests at 0.987707 USDC + 0.00298997 AAPLc (the canary receipt itself); ~1 USDC executor allowance remains approved but inert — revoke via `USDC.approve(0xD982…505A, 0)` if zero residual exposure is desired (operator action).
+- Autonomous execution remains OFF in the product; nothing persists after an armed run.
+- Any further canary = a NEW campaign requiring new funding + explicit operator authorization (the funding guard now enforces this automatically).
