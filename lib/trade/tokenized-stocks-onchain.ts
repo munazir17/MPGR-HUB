@@ -178,23 +178,26 @@ export async function readTokenizedStockOnchain(
         functionName: "paused",
       }),
     ),
-    readOptional(() =>
-      client.readContract({
-        address: entry.chainlinkFeed,
-        abi: CHAINLINK_AGGREGATOR_V3_ABI,
-        functionName: "latestRoundData",
-      }),
-    ),
+    entry.chainlinkFeed
+      ? readOptional(() =>
+          client.readContract({
+            address: entry.chainlinkFeed,
+            abi: CHAINLINK_AGGREGATOR_V3_ABI,
+            functionName: "latestRoundData",
+          }),
+        )
+      : Promise.resolve(null),
   ]);
 
-  const feedDecimals =
-    (await readOptional(() =>
-      client.readContract({
-        address: entry.chainlinkFeed,
-        abi: CHAINLINK_AGGREGATOR_V3_ABI,
-        functionName: "decimals",
-      }),
-    )) ?? 8;
+  const feedDecimals = entry.chainlinkFeed
+    ? ((await readOptional(() =>
+        client.readContract({
+          address: entry.chainlinkFeed,
+          abi: CHAINLINK_AGGREGATOR_V3_ABI,
+          functionName: "decimals",
+        }),
+      )) ?? 8)
+    : 8;
 
   const chainlinkPriceUsd =
     round && round[1] !== undefined
