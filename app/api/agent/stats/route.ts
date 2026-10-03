@@ -11,7 +11,8 @@ export const revalidate = 0;
 
 const CACHE_KEY = "mpgr:agent:stats:v1";
 const CACHE_TTL_SECONDS = 60;
-const LOG_CHUNK_SIZE = 100_000n;
+const LOG_CHUNK_SIZE = 20_000n;
+const MIN_LOG_RANGE = 250n;
 
 const SWAP_EXECUTED_EVENT = parseAbiItem(
   "event SwapExecuted(address indexed taker,address indexed router,bytes32 indexed intentId,address tokenIn,address tokenOut,uint256 grossAmountIn,uint256 feeAmount,uint256 swapAmountIn,uint256 amountOut,address feeRecipient,uint16 feeBps,uint8 routerKind,uint8 flags)",
@@ -21,6 +22,17 @@ type Stats = {
   available: boolean;
   totalValueTradedUsd: number | null;
   tradeCount: number | null;
+};
+
+type LogRange = {
+  fromBlock: bigint;
+  toBlock: bigint;
+  chunkSize: bigint;
+};
+
+type LogScanResult = {
+  totalUsdcAtomic: bigint;
+  tradeCount: number;
 };
 
 function unavailable() {
@@ -47,25 +59,77 @@ async function writeCached(stats: Stats): Promise<void> {
   }
 }
 
-async function getLogsAdaptive(
+async function scanExecutorLogs(
   client: ReturnType<typeof getTradePublicClient>,
   fromBlock: bigint,
   toBlock: bigint,
-) {
-  try {
-    return await client.getLogs({
-      address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor,
-      event: SWAP_EXECUTED_EVENT,
-      fromBlock,
-      toBlock,
-    });
-  } catch (error) {
-    if (fromBlock >= toBlock) throw error;
-    const midpoint = fromBlock + (toBlock - fromBlock) / 2n;
-    const left = await getLogsAdaptive(client, fromBlock, midpoint);
-    const right = await getLogsAdaptive(client, midpoint + 1n, toBlock);
-    return [...left, ...right];
+): Promise<LogScanResult> {
+  const pending: LogRange[] = [
+    { fromBlock, toBlock, chunkSize: LOG_CHUNK_SIZE },
+  ];
+
+  let totalUsdcAtomic = 0n;
+  let tradeCount = 0;
+
+  while (pending.length > 0) {
+    const range = pending.pop()!;
+
+    try {
+      const logs = await client.getLogs({
+        address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor,
+        event: SWAP_EXECUTED_EVENT,
+        fromBlock: range.fromBlock,
+        toBlock: range.toBlock,
+      });
+
+      for (const log of logs) {
+        const { tokenIn, tokenOut, grossAmountIn, amountOut } = log.args;
+        if (!tokenIn || !tokenOut || grossAmountIn === undefined || amountOut === undefined) {
+          continue;
+        }
+
+        const inputIsUsdc =
+          tokenIn.toLowerCase() === BASE_MAINNET_USDC.toLowerCase();
+        const outputIsUsdc =
+          tokenOut.toLowerCase() === BASE_MAINNET_USDC.toLowerCase();
+
+        if (!inputIsUsdc && !outputIsUsdc) continue;
+
+        totalUsdcAtomic += inputIsUsdc ? grossAmountIn : amountOut;
+        tradeCount += 1;
+      }
+    } catch (error) {
+      const span = range.toBlock - range.fromBlock + 1n;
+
+      if (span <= MIN_LOG_RANGE) {
+        throw error;
+      }
+
+      const nextChunk = range.chunkSize > MIN_LOG_RANGE
+        ? range.chunkSize / 2n
+        : MIN_LOG_RANGE;
+
+      const midpoint = range.fromBlock + nextChunk - 1n;
+      const leftEnd = midpoint < range.toBlock ? midpoint : range.toBlock;
+
+      pending.push({
+        fromBlock: range.fromBlock,
+        toBlock: leftEnd,
+        chunkSize: nextChunk,
+      });
+
+      const rightStart = leftEnd + 1n;
+      if (rightStart <= range.toBlock) {
+        pending.push({
+          fromBlock: rightStart,
+          toBlock: range.toBlock,
+          chunkSize: nextChunk,
+        });
+      }
+    }
   }
+
+  return { totalUsdcAtomic, tradeCount };
 }
 
 export async function GET() {
@@ -81,33 +145,11 @@ export async function GET() {
     const latestBlock = await client.getBlockNumber();
     const fromBlock = BigInt(BASE_MAINNET_EXECUTOR_DEPLOYMENT.deployBlock);
 
-    let totalUsdcAtomic = 0n;
-    let tradeCount = 0;
-
-    // The executor was deployed recently, so bounded chunks keep public RPC
-    // providers happy without changing the source of truth: successful
-    // SwapExecuted events on the Base mainnet executor.
-    for (let start = fromBlock; start <= latestBlock; start += LOG_CHUNK_SIZE + 1n) {
-      const end = start + LOG_CHUNK_SIZE > latestBlock ? latestBlock : start + LOG_CHUNK_SIZE;
-
-      const logs = await getLogsAdaptive(client, start, end);
-
-      for (const log of logs) {
-        const { tokenIn, tokenOut, grossAmountIn, amountOut } = log.args;
-        if (!tokenIn || !tokenOut || grossAmountIn === undefined || amountOut === undefined) continue;
-
-        const inputIsUsdc = tokenIn.toLowerCase() === BASE_MAINNET_USDC.toLowerCase();
-        const outputIsUsdc = tokenOut.toLowerCase() === BASE_MAINNET_USDC.toLowerCase();
-
-        // Every production executor route is USDC <-> WETH or USDC <-> B20.
-        // Use the actual USDC leg, so no external price oracle is needed and
-        // the metric remains an executed, on-chain notional rather than a quote.
-        if (!inputIsUsdc && !outputIsUsdc) continue;
-
-        totalUsdcAtomic += inputIsUsdc ? grossAmountIn : amountOut;
-        tradeCount += 1;
-      }
-    }
+    const { totalUsdcAtomic, tradeCount } = await scanExecutorLogs(
+      client,
+      fromBlock,
+      latestBlock,
+    );
 
     const stats: Stats = {
       available: true,
