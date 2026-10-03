@@ -348,7 +348,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     // ---------- BUY: 1 USDC -> AAPLc ----------
     const usdcBefore = (await publicClient.readContract({ address: BASE_MAINNET_USDC, abi: erc20Abi, functionName: "balanceOf", args: [taker.address] })) as bigint;
     const stockBefore = (await publicClient.readContract({ address: AAPLc, abi: erc20Abi, functionName: "balanceOf", args: [taker.address] })) as bigint;
-    const buyGoal = await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 1_000_000n, { sell: 6, buy: 18 });
+    const buyGoal = await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 1_000_000n, { sell: 6, buy: 8 });
     const submit = await scheduler.tick({ now: new Date(clock.ms) });
     expect(submit.results[0]?.kind, JSON.stringify(submit.results)).toBe("EXECUTION_SUBMITTED");
     expect(requests).toHaveLength(1);
@@ -394,7 +394,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     const sellAudit: Array<{ event?: { type?: string } }> = [];
     sellBus.on("autonomy_audit", (payload: unknown) => sellAudit.push(payload as { event?: { type?: string } }));
     const sellRuntime = buildRuntime(sellStore, sellAdapter, sellBus);
-    const sellGoal = await createGoal(sellStore, taker.address, AAPLc, BASE_MAINNET_USDC, stockReceived, { sell: 18, buy: 6 });
+    const sellGoal = await createGoal(sellStore, taker.address, AAPLc, BASE_MAINNET_USDC, stockReceived, { sell: 8, buy: 6 });
     const sellSubmit = await sellRuntime.scheduler.tick({ now: new Date(clock.ms) });
     expect(sellSubmit.results[0]?.kind, JSON.stringify(sellSubmit.results)).toBe("EXECUTION_SUBMITTED");
     expect(sellRequests).toHaveLength(1);
@@ -432,7 +432,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
       const { scheduler } = buildRuntime(store, makeAdapter(taker, { requests, publicClient, wallet }), bus);
       const emergencyAudit: Array<Record<string, unknown>> = [];
       bus.on("autonomy_audit", (payload: unknown) => emergencyAudit.push(payload as Record<string, unknown>));
-      await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 10_000n, { sell: 6, buy: 18 });
+      await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 10_000n, { sell: 6, buy: 8 });
       const summary = await scheduler.tick({ now: new Date(clock.ms) });
       // The kill switch fires inside the evaluation loop (post quote/policy,
       // pre authorization): the goal is PARKED, never broadcast.
@@ -454,7 +454,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     const requests: Array<Record<string, unknown>> = [];
     const store = new InMemoryAutonomyStore();
     const { scheduler } = buildRuntime(store, makeAdapter(taker, { requests, publicClient, wallet, failMode: "fabricateHash" }), new InMemoryEventBus());
-    await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 10_000n, { sell: 6, buy: 18 });
+    await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 10_000n, { sell: 6, buy: 8 });
     const submit = await scheduler.tick({ now: new Date(clock.ms) });
     expect(submit.results[0]?.kind).toBe("EXECUTION_SUBMITTED");
     expect(requests).toHaveLength(1);
@@ -476,7 +476,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     const requests: Array<Record<string, unknown>> = [];
     const store = new InMemoryAutonomyStore();
     const { scheduler } = buildRuntime(store, makeAdapter(taker, { requests, publicClient, wallet, failMode: "skipApproval" }), new InMemoryEventBus());
-    await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 10_000n, { sell: 6, buy: 18 });
+    await createGoal(store, taker.address, BASE_MAINNET_USDC, AAPLc, 10_000n, { sell: 6, buy: 8 });
     const submit = await scheduler.tick({ now: new Date(clock.ms) });
     expect(submit.results[0]?.kind).toBe("EXECUTION_SUBMITTED"); // broadcast happened
     expect(requests).toHaveLength(1);
