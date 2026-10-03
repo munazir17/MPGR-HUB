@@ -73,14 +73,17 @@ describe("base-pairs allowlist", () => {
     }
   });
 
-  it("marks exactly the ten live stocks live, and the three published-but-unlaunched ones not tradable", () => {
+  it("marks the 38 issued stocks live, and the published-but-unlaunched ones not tradable", () => {
     const b20 = BASE_PAIRS.filter((pair) => pair.kind === "b20-stock");
     expect(b20.filter((pair) => pair.live).map((pair) => pair.symbol).sort()).toEqual(
-      Object.keys(OFFICIAL_COMPANIES)
-        .filter((ticker) => !NOT_YET_LIVE.includes(ticker))
-        .sort(),
+      [
+        "AAPLc", "AMZNc", "GOOGLc", "METAc", "MSFTc", "MSTRc", "NVDAc", "SNDKc", "SPCXc", "TSLAc",
+        "AMDc", "ASTSc", "AVGOc", "BEc", "CAKEc", "DJTc", "DUOLc", "GMEc", "HIMSc", "HTZc",
+        "LLYc", "MRNAc", "MRVLc", "MUc", "NFLXc", "NVAXc", "ORCLc", "PFEc", "PLTRc", "PMc",
+        "PTONc", "PYPLc", "QUBTc", "RBLXc", "RDDTc", "SOUNc", "TTWOc", "WENc",
+      ].sort(),
     );
-    // base.org/stocks lists 10 live Coinbase Tokenized Stocks.
+    // Coinbase API snapshot contains 38 issued/live stocks on Base.
     expect(b20.filter((pair) => pair.live)).toHaveLength(38);
     expect(TAPE_STOCK_PAIRS.every((pair) => pair.live)).toBe(true);
 
