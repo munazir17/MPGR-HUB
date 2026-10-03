@@ -28,7 +28,7 @@
     "clsx": "^2.1.1",
     "framer-motion": "^11.11.9",
     "lucide-react": "^0.454.0",
-    "next": "16.3.5",
+    "next": "16.3.8",
     "ox": "0.14.44",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -42,8 +42,9 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "autoprefixer": "^10.4.20",
+    "braces": "file:scripts/vendor/braces-3.0.4.tgz",
     "eslint": "^9.39.5",
-    "eslint-config-next": "16.3.5",
+    "eslint-config-next": "16.3.8",
     "fengari": "^0.1.5",
     "postcss": "^8.5.28",
     "tailwindcss": "^3.4.14",
@@ -52,6 +53,7 @@
   },
   "overrides": {
     "axios": "$axios",
+    "braces": "file:scripts/vendor/braces-3.0.4.tgz",
     "ws": "8.21.3",
     "postcss": "$postcss",
     "rpc-websockets": "10.0.1"
