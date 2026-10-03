@@ -46,7 +46,7 @@ import { AutonomyRuntime } from "@/lib/autonomy/runtime";
 import { AutonomyScheduler } from "@/lib/autonomy/scheduler";
 import { BusAuditSink } from "@/lib/autonomy/audit";
 import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
-import type { ChainReader } from "@/lib/executor/executor-chain";
+import { waitForTransactionReceiptWithFallback, type ChainReader } from "@/lib/executor/executor-chain";
 import {
   BASE_MAINNET_B20_TOKENS,
   BASE_MAINNET_EXECUTOR_DEPLOYMENT,
@@ -353,7 +353,9 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     expect(submit.results[0]?.kind, JSON.stringify(submit.results)).toBe("EXECUTION_SUBMITTED");
     expect(requests).toHaveLength(1);
     const buyTx = (await store.getGoal(buyGoal.id))!.pendingExecution!.txHash as Hex;
-    const buyReceipt = await publicClient.getTransactionReceipt({ hash: buyTx });
+    // bounded wait-for-inclusion: anvil includes on the next block; a direct
+    // read raced receipt availability on CI (TransactionReceiptNotFoundError)
+    const buyReceipt = await waitForTransactionReceiptWithFallback(8453, buyTx, forkReader(), { timeoutMs: 60_000, intervalMs: 500 });
     expect(buyReceipt.status).toBe("success");
 
     // fee reconciliation from the REAL SwapExecuted event
@@ -399,7 +401,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     expect(sellSubmit.results[0]?.kind, JSON.stringify(sellSubmit.results)).toBe("EXECUTION_SUBMITTED");
     expect(sellRequests).toHaveLength(1);
     const sellTx = (await sellStore.getGoal(sellGoal.id))!.pendingExecution!.txHash as Hex;
-    const sellReceipt = await publicClient.getTransactionReceipt({ hash: sellTx });
+    const sellReceipt = await waitForTransactionReceiptWithFallback(8453, sellTx, forkReader(), { timeoutMs: 60_000, intervalMs: 500 });
     expect(sellReceipt.status).toBe("success");
     clock.ms += AUTONOMY_LIMITS.verificationRetrySeconds * 1000 + 1000;
     await sellRuntime.scheduler.tick({ now: new Date(clock.ms) });
