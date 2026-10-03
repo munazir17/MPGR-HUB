@@ -17,6 +17,7 @@
 import { Bot, Coins, Network } from "lucide-react";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { APP_NAME } from "@/lib/site";
+import { AgentVolumeStat } from "@/components/features/agent/AgentVolumeStat";
 import {
   STOCKS_AGENT_DISCLAIMER,
   STOCKS_AGENT_SIGN_LINE,
@@ -48,7 +49,8 @@ export function HomeInfoSection() {
       className="mx-auto w-full max-w-[1120px] px-4 pb-12 pt-10 sm:px-6 md:pt-16 lg:px-8"
       data-testid="home-info-section"
     >
-      <div className="mx-auto max-w-3xl text-center">
+      <AgentVolumeStat />
+      <div className="mx-auto mt-8 max-w-3xl text-center">
         <p className="eyebrow">{APP_NAME}</p>
         <h2 className="display-l mt-3 text-[28px] text-white md:text-4xl md:leading-[44px]">
           Build. Explore. Trade. Earn with AI on Base.
