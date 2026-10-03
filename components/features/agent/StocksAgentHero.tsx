@@ -19,6 +19,7 @@ import { AgentCore } from "./AgentCore";
 import { AgentStatusBadge } from "./AgentStatusBadge";
 import type { AgentStatusId } from "@/lib/agent-config";
 import { MPGR_AGENT_TITLE } from "@/lib/agent-stocks-config";
+import { AgentVolumeStat } from "./AgentVolumeStat";
 
 interface StocksAgentHeroProps {
   statuses: AgentStatusId[];
@@ -31,17 +32,22 @@ export function StocksAgentHero({ statuses, thread = false }: StocksAgentHeroPro
 
   return (
     <div
-      className="flex min-w-0 flex-1 items-center gap-x-3 gap-y-1"
+      className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
       data-testid="stocks-agent-hero"
     >
       {thread && <AgentCore variant="jewel" state={thinking ? "thinking" : "idle"} />}
-      <h1 className="display-xl truncate text-[22px] text-white md:text-[24px] lg:text-[30px]">
-        {MPGR_AGENT_TITLE}
-      </h1>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {statuses.map((status) => (
-          <AgentStatusBadge key={status} status={status} />
-        ))}
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 className="display-xl truncate text-[20px] text-white sm:text-[22px] md:text-[24px] lg:text-[28px]">
+            {MPGR_AGENT_TITLE}
+          </h1>
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+            {statuses.map((status) => (
+              <AgentStatusBadge key={status} status={status} />
+            ))}
+          </div>
+        </div>
+        <AgentVolumeStat />
       </div>
     </div>
   );
