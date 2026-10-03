@@ -38,6 +38,121 @@ export function executorRpcUrl(chainId: ExecutorChainId): string {
 // several route tests replace with minimal mocks.
 const BASE_MAINNET_PUBLIC_FALLBACK_RPC = "https://base-rpc.publicnode.com";
 
+// ---------------------------------------------------------------------------
+// Receipt-read hardening (application-level, additive).
+//
+// Defect (observed live on the successful autonomous Mainnet canary,
+// tx 0xa922…5693c): base-rpc.publicnode.com rejected a NORMAL recent-block
+// eth_getTransactionReceipt with a JSON-RPC error body (HTTP 200, code
+// -32602 "Archive requests require a personal token"). viem's `fallback`
+// transport only re-routes on TRANSPORT failures (network/timeout/HTTP
+// status) — a JSON-RPC error body is a "successful" HTTP response, so the
+// documented transport fallback never engaged and receipt verification
+// crashed even though the receipt was readable on every other public node.
+//
+// Fix: an explicit, deterministic, RECEIPT-ONLY retry across the documented
+// PUBLIC Base endpoints. Scope discipline:
+//  - verification itself is untouched (status/from/to/logs are still proven
+//    by verifyExecutorReceipt — only WHERE the receipt is read from changes);
+//  - the audited transport rule stands: a CONFIGURED BASE_RPC_URL keeps
+//    exactly one transport for regular reads — this fallback applies only
+//    to getTransactionReceipt AFTER the primary read errored;
+//  - PUBLIC, key-less endpoints only; never any secret or paid token;
+//  - all endpoints failing rethrows the ORIGINAL error (fail closed).
+const BASE_MAINNET_RECEIPT_FALLBACK_URLS = ["https://mainnet.base.org", "https://base-rpc.publicnode.com"] as const;
+
+/** origin-only (paths/credentials never logged — mirrors trade-public-client discipline). */
+function safeOrigin(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).origin;
+  } catch {
+    return "<receipt-fallback>";
+  }
+}
+
+interface MinimalReceiptClient {
+  getTransactionReceipt(args: { hash: Hex }): Promise<{
+    status: "success" | "reverted";
+    transactionHash: Hex;
+    blockNumber: bigint;
+    from: Address;
+    to: Address | null;
+    logs: readonly unknown[];
+  }>;
+}
+
+function toReceiptLike(r: Awaited<ReturnType<MinimalReceiptClient["getTransactionReceipt"]>>): import("./executor-verify").ReceiptLike {
+  return { status: r.status, transactionHash: r.transactionHash, blockNumber: r.blockNumber, from: r.from, to: r.to, logs: r.logs as import("./executor-verify").ReceiptLike["logs"] };
+}
+
+/**
+ * Reads a transaction receipt through `primary`; if the primary errors
+ * (e.g. an archive-policy JSON-RPC rejection), retries the SAME read
+ * once per PUBLIC fallback endpoint in deterministic order. Fail-closed:
+ * if every read fails, the original error is rethrown.
+ *
+ * `clientFactory` is injectable for offline tests; production uses viem.
+ */
+export async function readTransactionReceiptWithFallback(
+  chainId: ExecutorChainId,
+  hash: Hex,
+  primary: () => Promise<import("./executor-verify").ReceiptLike>,
+  opts: { clientFactory?: (url: string) => MinimalReceiptClient; urls?: readonly string[] } = {},
+): Promise<import("./executor-verify").ReceiptLike> {
+  let primaryError: unknown;
+  try {
+    return await primary();
+  } catch (error) {
+    if (chainId !== BASE_MAINNET_CHAIN_ID) throw error; // fallbacks defined for Base mainnet only
+    primaryError = error;
+  }
+  const urls = opts.urls ?? BASE_MAINNET_RECEIPT_FALLBACK_URLS;
+  let lastError: unknown = primaryError;
+  for (const url of urls) {
+    try {
+      const client = opts.clientFactory ? opts.clientFactory(url) : createPublicClient({ chain: base, transport: http(url, { timeout: 10_000, retryCount: 0 }) });
+      const receipt = await (client as MinimalReceiptClient).getTransactionReceipt({ hash });
+      console.error(`[executor-rpc] primary receipt read failed; served by fallback ${safeOrigin(url)} (verification unchanged)`);
+      return toReceiptLike(receipt);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw primaryError;
+}
+
+const RECEIPT_NOT_FOUND = /could not be found|not found/i;
+
+/**
+ * Polls for a receipt (wait-for-inclusion) using a ChainReader whose
+ * getTransactionReceipt is fallback-hardened. Tolerates "not yet mined"
+ * (ReceiptNotFoundError) and endpoint errors until the deadline; throws
+ * the last error otherwise. Does NOT alter what verification then proves.
+ */
+export async function waitForTransactionReceiptWithFallback(
+  chainId: ExecutorChainId,
+  hash: Hex,
+  reader: Pick<ChainReader, "getTransactionReceipt">,
+  opts: { timeoutMs?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<import("./executor-verify").ReceiptLike> {
+  const timeoutMs = opts.timeoutMs ?? 240_000;
+  const intervalMs = opts.intervalMs ?? 2_000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  for (;;) {
+    try {
+      return await reader.getTransactionReceipt({ hash });
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!RECEIPT_NOT_FOUND.test(message) && Date.now() >= deadline) throw lastError;
+      if (Date.now() + intervalMs > deadline) throw lastError;
+    }
+    await sleep(intervalMs);
+  }
+}
+
 export function createChainReader(chainId: ExecutorChainId): ChainReader {
   // Transport hardening (behavior-preserving):
   //  - BASE_RPC_URL configured → EXACTLY one transport, byte-identical to
@@ -68,10 +183,11 @@ export function createChainReader(chainId: ExecutorChainId): ChainReader {
     readContract: (a) => client.readContract(a as never),
     simulateContract: (a) => client.simulateContract(a as never) as Promise<{ result: unknown }>,
     getBalance: (a) => client.getBalance(a),
-    getTransactionReceipt: async ({ hash }) => {
-      const r = await client.getTransactionReceipt({ hash });
-      return { status: r.status, transactionHash: r.transactionHash, blockNumber: r.blockNumber, from: r.from, to: r.to, logs: r.logs };
-    },
+    getTransactionReceipt: async ({ hash }) =>
+      readTransactionReceiptWithFallback(chainId, hash, async () => {
+        const r = await client.getTransactionReceipt({ hash });
+        return { status: r.status, transactionHash: r.transactionHash, blockNumber: r.blockNumber, from: r.from, to: r.to, logs: r.logs };
+      }),
   };
 }
 

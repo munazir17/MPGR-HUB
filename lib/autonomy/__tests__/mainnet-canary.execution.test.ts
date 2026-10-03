@@ -41,7 +41,7 @@ import { AutonomyScheduler } from "@/lib/autonomy/scheduler";
 import { BusAuditSink } from "@/lib/autonomy/audit";
 import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
 import { isAutonomousExecutionEmergencyDisabled } from "@/lib/autonomy/config";
-import type { ChainReader } from "@/lib/executor/executor-chain";
+import { readTransactionReceiptWithFallback, waitForTransactionReceiptWithFallback, type ChainReader } from "@/lib/executor/executor-chain";
 import {
   BASE_MAINNET_EXECUTOR_DEPLOYMENT,
   BASE_MAINNET_USDC,
@@ -126,7 +126,11 @@ describe.skipIf(!ARMED)("MAINNET CANARY — one real 1-USDC BUY through the Main
       readContract: (a) => publicClient.readContract(a as never),
       simulateContract: (a) => publicClient.simulateContract(a as never),
       getBalance: (a) => publicClient.getBalance(a),
-      getTransactionReceipt: async ({ hash }) => (await publicClient.getTransactionReceipt({ hash: hash as Hex })) as never,
+      getTransactionReceipt: async ({ hash }) =>
+        readTransactionReceiptWithFallback(8453, hash, async () => {
+          const r = await publicClient.getTransactionReceipt({ hash: hash as Hex });
+          return { status: r.status, transactionHash: r.transactionHash, blockNumber: r.blockNumber, from: r.from, to: r.to, logs: r.logs };
+        }) as never,
     };
     const deps = {
       registry: MPGR_EXECUTOR_DEPLOYMENTS,
@@ -197,7 +201,11 @@ describe.skipIf(!ARMED)("MAINNET CANARY — one real 1-USDC BUY through the Main
     const goalId = (await store.listGoals(account.address))[0]!.id;
     const txHash = (await store.getGoal(goalId))!.pendingExecution!.txHash as Hex;
 
-    const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+    // Receipt wait is endpoint-resilient: the primary RPC may serve JSON-RPC
+    // archive-policy rejections for ordinary receipt reads (observed live on
+    // the successful canary). Verification FACTS are unchanged — status,
+    // from, to, logs and the SwapExecuted event are still proven below.
+    const receipt = await waitForTransactionReceiptWithFallback(8453, txHash, reader, { timeoutMs: 240_000, intervalMs: 2_000 });
     expect(receipt.status).toBe("success");
     expect(receipt.from.toLowerCase()).toBe(account.address.toLowerCase());
     expect(receipt.to?.toLowerCase()).toBe(pinned.executor.toLowerCase());
