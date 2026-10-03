@@ -243,7 +243,7 @@ export const verifyB20ContractTool: AgentTool = {
   id: "verify_b20_contract",
   name: "Verify B20 Contract",
   description:
-    "Checks whether a Base contract address is an official Coinbase Tokenized Stock (B20) using Base's verified registry (base.org/stocks). Returns status live (official:true, tradable), announced-not-live (Coinbase published the address but the asset is not live yet — COINc/CRCLc/INTCc — so official:false and never tradable), or unlisted (official:false, including look-alike 0xb200… addresses and clone tickers). A 0xb200 prefix alone does not make a token a stock: Coinbase also issues B20-standard wrapped crypto such as cbHYPE and cbZEC. Never verifies from memory or the web.",
+    "Checks whether a Base contract address is an official Coinbase Tokenized Stock (B20) using Base's verified registry (base.org/stocks). Returns status live (official:true, tradable), announced-not-live (Coinbase published the address but the asset is not live/issued yet — including COINc, CRCLc, INTCc and the newly announced catalog — so official:false and never tradable), or unlisted (official:false, including look-alike 0xb200… addresses and clone tickers). A 0xb200 prefix alone does not make a token a stock: Coinbase also issues B20-standard wrapped crypto such as cbHYPE and cbZEC. Never verifies from memory or the web.",
   category: "research",
   mode: "read",
   riskLevel: "low",
