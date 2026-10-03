@@ -124,7 +124,7 @@ describe.skipIf(!ARMED)("MAINNET CANARY — one real 1-USDC BUY through the Main
     const reader: ChainReader = {
       chainId: 8453,
       readContract: (a) => publicClient.readContract(a as never),
-      simulateContract: async (a) => ({ result: await publicClient.simulateContract(a as never) }),
+      simulateContract: (a) => publicClient.simulateContract(a as never),
       getBalance: (a) => publicClient.getBalance(a),
       getTransactionReceipt: async ({ hash }) => (await publicClient.getTransactionReceipt({ hash: hash as Hex })) as never,
     };

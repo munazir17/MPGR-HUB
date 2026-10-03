@@ -224,7 +224,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
     return {
       chainId: 8453,
       readContract: (a) => client.readContract(a as never),
-      simulateContract: async (a) => ({ result: await client.simulateContract(a as never) }),
+      simulateContract: (a) => client.simulateContract(a as never),
       getBalance: (a) => client.getBalance(a),
       getTransactionReceipt: async ({ hash }) => {
         const r = await client.getTransactionReceipt({ hash: hash as Hex });
