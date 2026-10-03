@@ -7,7 +7,7 @@ describe("tokenized-stock catalog resolution", () => {
   it("lists the official Coinbase B20 catalog including AAPLc", () => {
     const tickers = COINBASE_B20_TOKENIZED_STOCKS.map((stock) => stock.ticker);
     expect(tickers).toContain("AAPLc");
-    expect(COINBASE_B20_TOKENIZED_STOCKS).toHaveLength(13);
+    expect(COINBASE_B20_TOKENIZED_STOCKS).toHaveLength(60);
   });
 
   it("resolves AAPL to the exact AAPLc catalog asset", () => {

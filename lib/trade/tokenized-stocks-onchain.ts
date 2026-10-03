@@ -134,6 +134,7 @@ export async function readTokenizedStockOnchain(
   entry: TokenizedStockCatalogEntry,
 ): Promise<TokenizedStockOnchainState> {
   const client = getTradePublicClient();
+  const chainlinkFeed = entry.chainlinkFeed;
 
   const [symbol, name, decimals, totalSupply, multiplier, paused, round] = await Promise.all([
     readOptional(() =>
@@ -178,23 +179,26 @@ export async function readTokenizedStockOnchain(
         functionName: "paused",
       }),
     ),
-    readOptional(() =>
-      client.readContract({
-        address: entry.chainlinkFeed,
-        abi: CHAINLINK_AGGREGATOR_V3_ABI,
-        functionName: "latestRoundData",
-      }),
-    ),
+    chainlinkFeed
+      ? readOptional(() =>
+          client.readContract({
+            address: chainlinkFeed,
+            abi: CHAINLINK_AGGREGATOR_V3_ABI,
+            functionName: "latestRoundData",
+          }),
+        )
+      : Promise.resolve(null),
   ]);
 
-  const feedDecimals =
-    (await readOptional(() =>
-      client.readContract({
-        address: entry.chainlinkFeed,
-        abi: CHAINLINK_AGGREGATOR_V3_ABI,
-        functionName: "decimals",
-      }),
-    )) ?? 8;
+  const feedDecimals = chainlinkFeed
+    ? ((await readOptional(() =>
+        client.readContract({
+          address: chainlinkFeed,
+          abi: CHAINLINK_AGGREGATOR_V3_ABI,
+          functionName: "decimals",
+        }),
+      )) ?? 8)
+    : 8;
 
   const chainlinkPriceUsd =
     round && round[1] !== undefined

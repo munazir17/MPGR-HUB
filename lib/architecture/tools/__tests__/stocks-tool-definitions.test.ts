@@ -362,6 +362,25 @@ describe("get_premium", () => {
   });
 });
 
+describe("get_premium for feedless issued B20", () => {
+  it("reports Chainlink unavailable and never fabricates a premium", async () => {
+    stubJson(200, {
+      pair: { symbol: "NFLXc" },
+      stockEntry: { usdFeed: null, usdDex: 123.45, premiumBps: null, feedStale: true, paused: false },
+      asOf: 1700000000,
+      blockNumber: 1,
+    });
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool("get_premium", { symbol: "NFLXc" }, { confirmationMode: "always_confirm", requestId: "t-feedless-premium" });
+    expect(result.success).toBe(true);
+    const out = result.data as { usdFeed: number | null; usdDex: number | null; premiumBps: number | null; interpretation: string };
+    expect(out.usdFeed).toBeNull();
+    expect(out.usdDex).toBe(123.45);
+    expect(out.premiumBps).toBeNull();
+    expect(out.interpretation).toMatch(/Chainlink feed unavailable/i);
+  });
+});
+
 describe("describe_x402_tape", () => {
   it("documents the paid tape endpoint without paying anything", async () => {
     const runtime = makeRuntime();
@@ -481,5 +500,36 @@ describe("prepare_swap", () => {
     );
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe("DATA_UNAVAILABLE");
+  });
+});
+
+
+describe("new B20 issued/announced safety cases", () => {
+  it("verifies the NFLXc contract as live", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool("verify_b20_contract", { address: "0xb20000000000000000000058B8c947e44011dFE6" }, { confirmationMode: "always_confirm", requestId: "t-new-nflx" });
+    expect(result.success).toBe(true);
+    const verification = (result.data as { verification: { official: boolean; status: string; symbol: string } }).verification;
+    expect(verification.official).toBe(true);
+    expect(verification.status).toBe("live");
+    expect(verification.symbol).toBe("NFLXc");
+  });
+
+  it("refuses AEOc as announced-not-live before prepare/quote", async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool("prepare_swap", { sellSymbol: "USDC", buySymbol: "AEOc", amount: "10" }, { confirmationMode: "always_confirm", requestId: "t-new-aeo", walletAddress: WALLET });
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toMatch(/announced-not-live|NOT LIVE/i);
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(0);
+  });
+
+  it("routes USDC → NFLXc through the existing stock quote endpoint", async () => {
+    stubJson(200, { proposal: { id: "nflx_x", requiresConfirmation: true, network: "base", provider: "aerodrome-slipstream" } });
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool("prepare_swap", { sellSymbol: "USDC", buySymbol: "NFLXc", amount: "10" }, { confirmationMode: "always_confirm", requestId: "t-new-nflx-quote", walletAddress: WALLET });
+    expect(result.success).toBe(true);
+    const call = vi.mocked(fetch).mock.calls[0];
+    expect(String(call?.[0])).toBe("/api/trade/stocks/quote");
+    expect(JSON.parse(String((call?.[1] as RequestInit).body)).symbol).toBe("NFLXc");
   });
 });

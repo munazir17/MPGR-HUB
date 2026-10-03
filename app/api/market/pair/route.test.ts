@@ -88,7 +88,7 @@ describe("GET /api/market/pair", () => {
     expect(body.pair.status).toBe("announced-not-live");
     expect(body.pair.company).toBe("Coinbase");
     expect(body.pair.chainlinkFeed).toBeNull();
-    expect(body.pair.notes).toMatch(/NOT LIVE/i);
+    expect(body.pair.notes).toMatch(/announced-not-live/i);
     // No tape entry can exist for an asset with no feed and no supply.
     expect(body.stockEntry).toBeNull();
   });

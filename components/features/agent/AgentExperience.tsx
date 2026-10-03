@@ -297,7 +297,7 @@ export function AgentExperience({
                 hero component). Clear appears once a thread exists. */}
             <motion.div
               {...rise(0)}
-              className="flex h-12 shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 sm:px-4 md:h-14 lg:px-5"
+              className="flex h-[72px] shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 sm:px-4 md:h-[76px] lg:px-5"
             >
               {heroSlot(heroStatuses, { thread: hasMessages })}
               {hasMessages && (

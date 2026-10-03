@@ -8,24 +8,10 @@
 // BOTH client components and server routes: no `server-only`, no fetches,
 // no invented values.
 //
-// Sources verified 2026-09-21 (do not add addresses without checking
-// these first — an allowlist that guesses is worse than no allowlist):
-//
-//   Coinbase Tokenized Stocks (B20) + Chainlink equity feeds + registry:
-//     https://docs.base.org/build-on-base/integrate-defi/list-tokenized-stocks
-//     https://www.coinbase.com/tokenize
-//   Coinbase Wrapped Assets (cbBTC/cbETH/cbDOGE/cbXRP/cbLTC/cbADA):
-//     https://www.coinbase.com/campaigns/wrapped-assets
-//     https://help.coinbase.com/en-gb/coinbase/trading-and-funding/sending-or-receiving-cryptocurrency/coinbase-wrapped-btc
-//   Native USDC on Base (NOT "cbUSDC" — there is no such token):
-//     https://docs.cdp.coinbase.com/ (USDC on Base) — same address the
-//     x402/trade configs in this repo already use.
-//
-// The B20 stock entries are DERIVED from lib/trade/tokenized-stocks.ts's
-// catalog (the pre-existing, docs-verified source used by the trade
-// paths) so the tape allowlist and the swap allowlist can never drift
-// apart. Ticker addresses there were re-verified against docs.base.org
-// for this change and match byte-for-byte.
+// Source of truth for B20 stocks: Coinbase Tokenized Stocks API snapshot
+// https://api.coinbase.com/v1/tokenized-stocks fetched 2026-10-03 (Base 8453).
+// The older Base docs table is stale (10 rows only). Addresses are preserved
+// exactly as supplied by Coinbase; identify tokens by address, never ticker.
 //
 // NOTE on decimals:
 //   - Wrapped/stable entries carry decimals verified on Basescan
@@ -71,12 +57,9 @@ export interface BasePairEntry {
    */
   company?: string;
   /**
-   * False only for the Coinbase-published B20 addresses that Base's
-   * official tokenized-stocks list marks as NOT YET LIVE (COINc, CRCLc,
-   * INTCc — removed from the live list by base/docs#1955, 2026-09-11:
-   * no issued supply, no Chainlink feed row, not tradable). Every other
-   * entry — wrapped assets, native USDC and the 10 live stocks — is true.
-   * Swap/prepare surfaces must refuse `live: false` assets.
+   * False for Coinbase-published B20 addresses that are announced but not
+   * issued/live yet. All issued entries in the API catalog are live for the
+   * allowlist; actual swaps still require an Aerodrome Slipstream quote.
    */
   live: boolean;
   /** Chainlink price feed proxy (Coinbase equity feeds for B20). */
@@ -112,41 +95,28 @@ export const OFFICIAL_LIST_SOURCES = [
   "https://developers.circle.com/stablecoins/usdc-contract-addresses",
 ] as const;
 
-/**
- * Official underlying-company names for the B20 tokenized stocks,
- * transcribed from Base's verified registry (base.org/stocks) on
- * 2026-09-22. Note the two that differ from the older naming still used
- * by the pre-existing trade catalog: MSTRc is "Strategy" (MicroStrategy
- * renamed) and SNDKc is "SanDisk".
- */
+/** Official underlying-company display names for the B20 catalog. */
 const B20_OFFICIAL_COMPANY: Readonly<Record<string, string>> = Object.freeze({
-  NVDAc: "NVIDIA",
-  AAPLc: "Apple",
-  GOOGLc: "Alphabet",
-  METAc: "Meta",
-  AMZNc: "Amazon",
-  MSFTc: "Microsoft",
-  TSLAc: "Tesla",
-  MSTRc: "Strategy",
-  SNDKc: "SanDisk",
-  SPCXc: "SpaceX",
-  // Coinbase has published B20 addresses for these three, but they are
-  // NOT live yet (see B20_NOT_YET_LIVE).
-  COINc: "Coinbase",
-  CRCLc: "Circle",
-  INTCc: "Intel",
+  NVDAc: "NVIDIA", AAPLc: "Apple", GOOGLc: "Alphabet", METAc: "Meta",
+  AMZNc: "Amazon", MSFTc: "Microsoft", TSLAc: "Tesla", MSTRc: "Strategy",
+  SNDKc: "SanDisk", SPCXc: "SpaceX", COINc: "Coinbase", CRCLc: "Circle", INTCc: "Intel",
+  AMDc: "Advanced Micro Devices, Inc.", ASTSc: "AST SpaceMobile, Inc.", AVGOc: "Broadcom Inc.",
+  BEc: "Bloom Energy Corporation", CAKEc: "Cheesecake Factory Inc", DJTc: "Trump Media & Technology Group Corp.",
+  DUOLc: "Duolingo, Inc.", GMEc: "GameStop Corp.", HIMSc: "Hims & Hers Health, Inc.", HTZc: "Hertz Global Holdings, Inc.",
+  LLYc: "Eli Lilly & Co", MRNAc: "Moderna, Inc.", MRVLc: "Marvell Technology, Inc.", MUc: "Micron Technology Inc.",
+  NFLXc: "Netflix Inc", NVAXc: "Novavax Inc", ORCLc: "Oracle Corporation", PFEc: "Pfizer Inc",
+  PLTRc: "Palantir Technologies Inc.", PMc: "Philip Morris International Inc.", PTONc: "Peloton Interactive, Inc.",
+  PYPLc: "PayPal Holdings, Inc.", QUBTc: "Quantum Computing Inc.", RBLXc: "Roblox Corporation", RDDTc: "Reddit, Inc.",
+  SOUNc: "SoundHound AI, Inc.", TTWOc: "Take-Two Interactive Software, Inc.", WENc: "Wendy's Co",
+  AEOc: "American Eagle Outfitters, Inc.", AMCc: "AMC Entertainment Holdings, Inc.", BIRDc: "Smartbird, Inc.",
+  BMNRc: "BitMine Immersion Technologies, Inc.", BYNDc: "Beyond Meat, Inc.", CIFRc: "Cipher Digital Inc.",
+  CLSKc: "CleanSpark, Inc.", CRWVc: "CoreWeave, Inc.", HUTc: "Hut 8 Corp.", KSSc: "Kohl's Corporation",
+  LCIDc: "Lucid Group, Inc.", MARAc: "MARA Holdings, Inc.", OPENc: "Opendoor Technologies Inc.", RIOTc: "Riot Platforms, Inc.",
+  USDEc: "StablecoinX Inc.", VVVc: "Valvoline Inc", WULFc: "TeraWulf Inc.", WWc: "WW International, Inc.", XYZc: "Block, Inc.",
 });
 
-/**
- * Coinbase-published B20 addresses that are not live yet. Base's official
- * tokenized-stocks documentation removed these three rows (and their
- * Chainlink feed rows) because listing them next to launched tokens read
- * as "tradable today" (base/docs#1955, 2026-09-11). base.org/stocks lists
- * 10 live assets. We keep the addresses so verification can answer
- * precisely — "published by Coinbase, not live, do not trade" — instead of
- * a bare "unknown", and so swaps fail closed with a real explanation.
- */
-const B20_NOT_YET_LIVE: ReadonlySet<string> = new Set(["COINc", "CRCLc", "INTCc"]);
+/** Coinbase-published B20 addresses that are announced but not live/issued. */
+const B20_NOT_YET_LIVE: ReadonlySet<string> = new Set(["COINc", "CRCLc", "INTCc", "AEOc", "AMCc", "BIRDc", "BMNRc", "BYNDc", "CIFRc", "CLSKc", "CRWVc", "HUTc", "KSSc", "LCIDc", "MARAc", "OPENc", "RIOTc", "USDEc", "VVVc", "WULFc", "WWc", "XYZc"]);
 
 /** True when a symbol/address is a Coinbase B20 stock that is not live yet. */
 export function isNotYetLiveB20(symbol: string): boolean {
@@ -252,28 +222,13 @@ const WRAPPED_AND_STABLE_ENTRIES: readonly BasePairEntry[] = [
 // Segment B — Coinbase Tokenized Stocks (B20)
 // ---------------------------------------------------------------------------
 
-/**
- * The 10 tickers the live tape shows, in tape order. The full official
- * catalog (13 entries, including COINc / CRCLc / INTCc) stays in the
- * allowlist for verification and swap routing — those three are simply
- * not tape segments per the product decision.
- */
+/** Issued B20 stocks shown on the live tape, in stable product order. */
 const TAPE_STOCK_TICKERS = [
-  "NVDAc",
-  "AAPLc",
-  "GOOGLc",
-  "METAc",
-  "AMZNc",
-  "MSFTc",
-  "TSLAc",
-  "SPCXc",
-  "SNDKc",
-  "MSTRc",
+  "NVDAc","AAPLc","GOOGLc","METAc","AMZNc","MSFTc","TSLAc","SPCXc","SNDKc","MSTRc",
+  "AMDc","ASTSc","AVGOc","BEc","CAKEc","DJTc","DUOLc","GMEc","HIMSc","HTZc","LLYc","MRNAc","MRVLc","MUc","NFLXc","NVAXc","ORCLc","PFEc","PLTRc","PMc","PTONc","PYPLc","QUBTc","RBLXc","RDDTc","SOUNc","TTWOc","WENc",
 ] as const;
 
-const tapeStockIndex = new Map<string, number>(
-  TAPE_STOCK_TICKERS.map((ticker, index) => [ticker, index]),
-);
+const tapeStockIndex = new Map<string, number>(TAPE_STOCK_TICKERS.map((ticker, index) => [ticker, index]));
 
 const B20_ENTRIES: readonly BasePairEntry[] = COINBASE_B20_TOKENIZED_STOCKS.map(
   (stock): BasePairEntry => {
@@ -282,28 +237,19 @@ const B20_ENTRIES: readonly BasePairEntry[] = COINBASE_B20_TOKENIZED_STOCKS.map(
     const notYetLive = B20_NOT_YET_LIVE.has(stock.ticker);
     return {
       symbol: stock.ticker,
-      // Official naming: "<Company> Tokenized Stock (Coinbase)" using the
-      // company name published on base.org/stocks (so MSTRc reads
-      // "Strategy", not the stale "MicroStrategy").
-      name: company ? `${company} Tokenized Stock (Coinbase)` : stock.name,
+      name: company ? company + " Tokenized Stock (Coinbase)" : stock.name,
       company,
       kind: "b20-stock",
       address: stock.address,
-      // B20 decimals are issuer-configurable — read on-chain, never guess.
       decimals: null,
       chainId: CHAIN_ID,
       live: !notYetLive,
-      // Base docs also note the on-chain metadata is mutable and that
-      // tokens "should be identified by address rather than ticker or
-      // symbol" — the address below is the authority, names are display.
-      chainlinkFeed: notYetLive ? undefined : stock.chainlinkFeed,
-      onTape: tapePosition !== undefined,
+      chainlinkFeed: stock.chainlinkFeed,
+      onTape: tapePosition !== undefined && !notYetLive,
       segment: "stocks",
       notes: notYetLive
-        ? "Coinbase has published this B20 address, but Base's official list marks it NOT LIVE yet (no issued supply, no Chainlink feed). Do not trade it."
-        : tapePosition === undefined
-          ? "Official Coinbase B20 catalog entry. Not on the default live tape."
-          : "Coinbase Tokenized Stock (B20) on Base. Claim on the underlying share held in custody.",
+        ? "Coinbase-published B20 address, announced-not-live. Do not trade or prepare a swap."
+        : "Issued Coinbase Tokenized Stock (B20). Swap only when Aerodrome Slipstream quotes.",
     };
   },
 ).sort((a, b) => {
@@ -311,7 +257,6 @@ const B20_ENTRIES: readonly BasePairEntry[] = COINBASE_B20_TOKENIZED_STOCKS.map(
   const bi = tapeStockIndex.get(b.symbol) ?? Number.MAX_SAFE_INTEGER;
   return ai - bi || a.symbol.localeCompare(b.symbol);
 });
-
 // ---------------------------------------------------------------------------
 // Registry + lookups
 // ---------------------------------------------------------------------------
