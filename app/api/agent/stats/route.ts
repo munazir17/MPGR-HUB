@@ -47,6 +47,27 @@ async function writeCached(stats: Stats): Promise<void> {
   }
 }
 
+async function getLogsAdaptive(
+  client: ReturnType<typeof getTradePublicClient>,
+  fromBlock: bigint,
+  toBlock: bigint,
+) {
+  try {
+    return await client.getLogs({
+      address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor,
+      event: SWAP_EXECUTED_EVENT,
+      fromBlock,
+      toBlock,
+    });
+  } catch (error) {
+    if (fromBlock >= toBlock) throw error;
+    const midpoint = fromBlock + (toBlock - fromBlock) / 2n;
+    const left = await getLogsAdaptive(client, fromBlock, midpoint);
+    const right = await getLogsAdaptive(client, midpoint + 1n, toBlock);
+    return [...left, ...right];
+  }
+}
+
 export async function GET() {
   const cached = await readCached();
   if (cached) {
@@ -69,12 +90,7 @@ export async function GET() {
     for (let start = fromBlock; start <= latestBlock; start += LOG_CHUNK_SIZE + 1n) {
       const end = start + LOG_CHUNK_SIZE > latestBlock ? latestBlock : start + LOG_CHUNK_SIZE;
 
-      const logs = await client.getLogs({
-        address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor,
-        event: SWAP_EXECUTED_EVENT,
-        fromBlock: start,
-        toBlock: end,
-      });
+      const logs = await getLogsAdaptive(client, start, end);
 
       for (const log of logs) {
         const { tokenIn, tokenOut, grossAmountIn, amountOut } = log.args;
