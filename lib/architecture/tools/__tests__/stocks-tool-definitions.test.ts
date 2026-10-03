@@ -362,6 +362,25 @@ describe("get_premium", () => {
   });
 });
 
+describe("get_premium for feedless issued B20", () => {
+  it("reports Chainlink unavailable and never fabricates a premium", async () => {
+    stubJson(200, {
+      pair: { symbol: "NFLXc" },
+      stockEntry: { usdFeed: null, usdDex: 123.45, premiumBps: null, feedStale: true, paused: false },
+      asOf: 1700000000,
+      blockNumber: 1,
+    });
+    const runtime = makeRuntime();
+    const result = await runtime.executeTool("get_premium", { symbol: "NFLXc" }, { confirmationMode: "always_confirm", requestId: "t-feedless-premium" });
+    expect(result.success).toBe(true);
+    const out = result.data as { usdFeed: number | null; usdDex: number | null; premiumBps: number | null; interpretation: string };
+    expect(out.usdFeed).toBeNull();
+    expect(out.usdDex).toBe(123.45);
+    expect(out.premiumBps).toBeNull();
+    expect(out.interpretation).toMatch(/Chainlink feed unavailable/i);
+  });
+});
+
 describe("describe_x402_tape", () => {
   it("documents the paid tape endpoint without paying anything", async () => {
     const runtime = makeRuntime();
