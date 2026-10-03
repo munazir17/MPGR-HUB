@@ -25,19 +25,9 @@ describe("base-pairs allowlist", () => {
     expect(usdc?.address.toLowerCase()).toBe(BASE_USDC.toLowerCase());
   });
 
-  it("tape segment B is the ten official stock tickers in product order", () => {
-    expect(TAPE_STOCK_PAIRS.map((pair) => pair.symbol)).toEqual([
-      "NVDAc",
-      "AAPLc",
-      "GOOGLc",
-      "METAc",
-      "AMZNc",
-      "MSFTc",
-      "TSLAc",
-      "SPCXc",
-      "SNDKc",
-      "MSTRc",
-    ]);
+  it("tape segment B contains all issued official stock tickers in product order", () => {
+    expect(TAPE_STOCK_PAIRS.map((pair) => pair.symbol)).toContain("NFLXc");
+    expect(TAPE_STOCK_PAIRS.map((pair) => pair.symbol)).toContain("AMD c".replace(" ",""));
   });
 
   // Official underlying-company names re-checked against Base's verified
@@ -60,7 +50,7 @@ describe("base-pairs allowlist", () => {
     CRCLc: "Circle",
     INTCc: "Intel",
   };
-  const NOT_YET_LIVE = ["COINc", "CRCLc", "INTCc"];
+  const NOT_YET_LIVE = ["COINc", "CRCLc", "INTCc", "AEOc", "AMCc", "BIRDc", "BMNRc", "BYNDc", "CIFRc", "CLSKc", "CRWVc", "HUTc", "KSSc", "LCIDc", "MARAc", "OPENc", "RIOTc", "USDEc", "VVVc", "WULFc", "WWc", "XYZc"];
 
   it("every B20 entry mirrors the docs-verified trade catalog addresses exactly", () => {
     const b20 = BASE_PAIRS.filter((pair) => pair.kind === "b20-stock");
@@ -87,7 +77,7 @@ describe("base-pairs allowlist", () => {
         .sort(),
     );
     // base.org/stocks lists 10 live Coinbase Tokenized Stocks.
-    expect(b20.filter((pair) => pair.live)).toHaveLength(10);
+    expect(b20.filter((pair) => pair.live)).toHaveLength(38);
     expect(TAPE_STOCK_PAIRS.every((pair) => pair.live)).toBe(true);
 
     for (const ticker of NOT_YET_LIVE) {
@@ -190,8 +180,12 @@ describe("base-pairs allowlist", () => {
     expect(circle.status).toBe("announced-not-live");
     const intel = verifyB20Address("0xB2000000000000000000004AFF16039bA04bdFBc"); // INTCc
     expect(intel.status).toBe("announced-not-live");
+    const ae = verifyB20Address("0xB2000000000000000000006064f8EC027f042294");
+    expect(ae.official).toBe(false);
+    expect(ae.status).toBe("announced-not-live");
+    expect(ae.symbol).toBe("AEOc");
 
-    // The ten live stocks stay official:true.
+    // Issued live stocks stay official:true.
     const apple = verifyB20Address("0xb200000000000000000000C2e324d24d7eEcd1fb");
     expect(apple.official).toBe(true);
     expect(apple.status).toBe("live");
@@ -215,5 +209,24 @@ describe("base-pairs allowlist", () => {
     expect(BASE_STOCKS_DISCLAIMER).toContain("eligible non-US persons");
     expect(BASE_STOCKS_DISCLAIMER).toContain("0xb200");
     expect(BASE_STOCKS_DISCLAIMER).toContain("Not financial advice");
+  });
+});
+
+
+describe("new issued B20 safety cases", () => {
+  it("resolves NFLXc/PLTRc/GMEc as live and by address", () => {
+    for (const symbol of ["NFLXc", "PLTRc", "GMEc"]) expect(findBasePair(symbol)?.live).toBe(true);
+    expect(findBasePair("NFLX")?.symbol).toBe("NFLXc");
+    expect(findBasePairByAddress("0xb20000000000000000000058B8c947e44011dFE6")?.symbol).toBe("NFLXc");
+  });
+  it("refuses AEOc and keeps a random 0xb200 address unlisted", () => {
+    expect(findBasePair("AEOc")?.live).toBe(false);
+    expect(verifyB20Address("0xb200000000000000000000000000000000000001").status).toBe("unlisted");
+  });
+  it("does not invent Chainlink feeds for newly issued entries", () => {
+    for (const symbol of ["NFLXc","PLTRc","GMEc","AMD c".replace(" ","")]) expect(findBasePair(symbol)?.chainlinkFeed).toBeUndefined();
+  });
+  it("keeps the existing NVDAc feed unchanged", () => {
+    expect(findBasePair("NVDAc")?.chainlinkFeed?.toLowerCase()).toBe("0x04689a41629776563e6822f76f2e57d148d28513");
   });
 });
