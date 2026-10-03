@@ -43,12 +43,12 @@ export function AgentVolumeStat() {
 
   return (
     <div
-      className="mt-1 flex w-fit max-w-full shrink-0 items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-1.5"
+      className="mx-auto flex w-fit max-w-full items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.025] px-5 py-3"
       data-testid="agent-volume-stat"
       aria-label="MPGR Agent total value traded"
     >
       <div className="text-right leading-none">
-        <div className="text-base font-semibold tracking-[-0.02em] text-white md:text-lg">
+        <div className="text-xl font-semibold tracking-[-0.025em] text-white md:text-2xl">
           {formatUsd(value)}
         </div>
         <div className="mt-1 text-[9px] font-medium uppercase tracking-[0.16em] text-muted">
