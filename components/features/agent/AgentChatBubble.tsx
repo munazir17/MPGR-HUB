@@ -39,7 +39,8 @@ interface AgentChatBubbleProps {
   onReviewTransferProposal?: (proposal: TransferProposal) => void;
   // Autonomous Agent Runtime (ADDITIVE) — optional so existing render
   // sites stay valid. Only called from an explicit tap on the draft card;
-  // opens the Autonomous Goals panel pre-filled, never activates anything.
+  // opens the dedicated chat-draft review UI, never the manual panel,
+  // and never activates anything.
   onReviewAutonomyGoal?: (draft: AutonomyGoalDraft) => void;
 }
 

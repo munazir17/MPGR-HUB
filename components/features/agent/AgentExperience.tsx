@@ -48,6 +48,7 @@ import { AgentX402PaymentModal } from "@/components/features/agent/AgentX402Paym
 import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTradeConfirmationModal";
 import { AgentTransferConfirmationModal } from "@/components/features/agent/AgentTransferConfirmationModal";
 import { AgentAutonomyPanel } from "@/components/features/agent/AgentAutonomyPanel";
+import { AgentAutonomyDraftReview } from "@/components/features/agent/AgentAutonomyDraftReview";
 import { useAgentAutonomy } from "@/hooks/useAgentAutonomy";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAgentChat } from "@/hooks/useAgentChat";
@@ -358,9 +359,8 @@ export function AgentExperience({
               )}
             </AnimatePresence>
 
-            {/* Autonomous Goals (ADDITIVE) — minimal mode display +
-                goal list + authorization. Self-contained; renders a slim
-                collapsed bar when unused. */}
+            {/* Autonomous Goals (ADDITIVE) — MANUAL entry point only.
+                Chat-created drafts open AgentAutonomyDraftReview, not this panel. */}
             {isConnected && <AgentAutonomyPanel autonomy={autonomy} />}
 
             {/* DOCK — pinned to the stage bottom (the stage, not the
@@ -425,6 +425,7 @@ export function AgentExperience({
         stepLabel={transferQuote.stepLabel}
         onConfirmAndSend={transferQuote.confirmAndSend}
       />
+      <AgentAutonomyDraftReview autonomy={autonomy} />
     </>
   );
 }

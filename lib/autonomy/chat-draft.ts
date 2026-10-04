@@ -142,7 +142,7 @@ export function buildAutonomyReplyText(match: AutonomyRequestMatch): string {
     "",
     "It would only ever execute inside limits you explicitly authorize (per-trade cap, daily cap, slippage, expiry) — and autonomous trading is OFF until you review and activate it. MPGR never holds your keys: with no delegation set up, the goal simply watches and notifies you.",
     "",
-    "Open “Autonomous Goals” below the chat to review the draft, set your limits, and authorize it. Until then nothing executes.",
+    "Review the draft card below this message to confirm the details and authorize it. Until then nothing executes.",
   ].join("\n");
 }
 

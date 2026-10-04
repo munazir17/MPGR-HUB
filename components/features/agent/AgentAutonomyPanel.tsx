@@ -12,14 +12,16 @@
 //                       (cooldown, trade cap) and live status/result lines.
 //   3. EXECUTION HIST — recent actions per goal (outcome, verified, link).
 //   4. AUTHORIZATIONS — active policies with revoke.
-//   5. AUTHORIZATION  — the ONLY place autonomous trading is activated:
-//                       an explicit form pre-filled from a chat draft.
+//   5. AUTHORIZATION  — the MANUAL entry point for autonomous trading:
+//                       an explicit form the user fills from scratch.
+//                       Chat-created drafts are reviewed in
+//                       AgentAutonomyDraftReview, not here.
 //
 // No raw MCP/RPC JSON is ever rendered; amounts are human-readable; keys
 // and signatures never appear here (watch mode only, signing stays in the
 // existing user-signature flow).
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, PenLine, Repeat, ShieldCheck, ShieldOff, X } from "lucide-react";
 import { clsx } from "clsx";
@@ -28,8 +30,12 @@ import {
   type AutonomyGoalView,
   type AutonomyTokenOption,
 } from "@/hooks/useAgentAutonomy";
-import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import { formatTokenAmount } from "@/lib/format";
+import {
+  autonomyDraftToForm,
+  autonomyFormToDraftInput,
+  type AutonomyAuthorizeFormState,
+} from "./autonomy-authorize-form";
 
 interface AgentAutonomyPanelProps {
   autonomy: ReturnType<typeof useAgentAutonomy>;
@@ -85,91 +91,32 @@ function relative(iso: string): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-interface AuthorizeFormState {
-  sell: string;
-  buy: string;
-  sellAmount: string;
-  threshold: string;
-  kind: "price_below" | "price_above";
-  maxDaily: string;
-  slippageBps: number;
-  maxTrades: number;
-  cooldownSeconds: number;
-  ttlDays: number;
-}
-
-function draftToForm(draft: AutonomyGoalDraft | null, tokens: AutonomyTokenOption[]): AuthorizeFormState {
-  const usdc = tokens.find((t) => t.symbol.toUpperCase() === "USDC");
-  const target =
-    draft && tokens.find((t) => t.symbol.toLowerCase() === draft.targetAsset.toLowerCase());
-  const spend =
-    draft && tokens.find((t) => t.symbol.toLowerCase() === draft.spendAsset.toLowerCase());
-  const sellAmount = draft?.amountPerTrade ?? "50";
-  const perTrade = Number(sellAmount);
-  return {
-    sell: spend?.address ?? usdc?.address ?? "",
-    buy: target?.address ?? "",
-    sellAmount,
-    threshold: draft?.triggerPrice ?? "",
-    kind: draft?.triggerKind ?? "price_below",
-    maxDaily: Number.isFinite(perTrade) && perTrade > 0 ? String(Math.max(perTrade * 2, 10)) : "100",
-    slippageBps: 100,
-    maxTrades: 10,
-    cooldownSeconds: 3600,
-    ttlDays: 30,
-  };
-}
-
 export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
-  const { config, goals, policies, tokens, busy, error, dismissError, refresh, pause, resume, cancel, revokePolicy, revokeSlot, signDelegatedSlots, slots, slotsSigningSupported, authorizeGoal, draft, clearDraft, mutate } =
+  const { config, goals, policies, tokens, busy, error, dismissError, pause, resume, cancel, revokePolicy, revokeSlot, signDelegatedSlots, slots, slotsSigningSupported, authorizeGoal, mutate } =
     autonomy;
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState<AuthorizeFormState | null>(null);
+  const [form, setForm] = useState<AutonomyAuthorizeFormState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [delegatedGoalId, setDelegatedGoalId] = useState("");
   const [delegatedCount, setDelegatedCount] = useState(1);
   const [delegatedMinOut, setDelegatedMinOut] = useState("");
   const [delegatedHours, setDelegatedHours] = useState(24);
 
-  useEffect(() => {
-    if (draft) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- a review draft is an explicit request to open this panel.
-      setOpen(true);
-    }
-  }, [draft]);
-
   const activeCount = useMemo(() => goals.filter((g) => !["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"].includes(g.status)).length, [goals]);
 
-  // Pre-fill (or reset) the authorization form whenever a draft arrives or
-  // the token catalog loads. Never auto-submits.
-  const formState = form ?? draftToForm(draft, tokens);
+  // Manual entry point only — never pre-filled from a chat draft.
+  const formState = form ?? autonomyDraftToForm(null, tokens);
   const formDirty = form !== null;
-  const setField = (patch: Partial<AuthorizeFormState>) => setForm({ ...formState, ...patch });
+  const setField = (patch: Partial<AutonomyAuthorizeFormState>) => setForm({ ...formState, ...patch });
 
   const handleAuthorize = async () => {
     if (!formState.sell || !formState.buy) {
       setNotice("Pick both tokens first.");
       return;
     }
-    const result = await authorizeGoal({
-      sellToken: formState.sell,
-      buyToken: formState.buy,
-      maxPerTrade: formState.sellAmount,
-      maxDaily: formState.maxDaily,
-      maxSlippageBps: formState.slippageBps,
-      maxActionsPerDay: Math.max(formState.maxTrades * 2, 10),
-      ttlDays: formState.ttlDays,
-      condition: { kind: formState.kind, threshold: formState.threshold },
-      sellAmount: formState.sellAmount,
-      cooldownSeconds: formState.cooldownSeconds,
-      maxTrades: formState.maxTrades,
-      description: `${formState.kind === "price_below" ? "Buy" : "Sell"} when price ${
-        formState.kind === "price_below" ? "falls below" : "rises above"
-      } ${formState.threshold}`,
-    });
+    const result = await authorizeGoal(autonomyFormToDraftInput(formState));
     if (result.ok) {
       setForm(null);
-      clearDraft();
       setNotice("Goal activated. It stays inside the limits you set.");
     }
   };
@@ -234,8 +181,8 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
               {/* GOALS */}
               {goals.length === 0 ? (
                 <p className="text-xs text-muted">
-                  No goals yet. When the agent chat detects a recurring request (e.g. “Buy AAPLc whenever it falls
-                  below $200”), it drafts a goal here — nothing runs until you set limits and authorize it.
+                  No goals yet. Create one below, or ask the agent in chat (e.g. “Buy AAPLc whenever it falls
+                  below $200”) — chat drafts open their own review, and nothing runs until you authorize it.
                 </p>
               ) : (
                 <ul className="space-y-2">
@@ -450,9 +397,9 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
 
               {/* AUTHORIZATION FORM */}
               {config?.enabled && !config.emergencyDisabled && (
-                <div className="space-y-2 rounded-xl border border-primary/20 bg-primary/[0.04] p-3">
+                <div className="space-y-2 rounded-xl border border-primary/20 bg-primary/[0.04] p-3" data-testid="agent-autonomy-manual-form">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
-                    {draft ? "Draft from chat — review, adjust, then authorize" : "New autonomous goal"}
+                    New autonomous goal
                   </p>
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <label className="space-y-1">
@@ -499,7 +446,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                       <span className="flex gap-1">
                         <select
                           value={formState.kind}
-                          onChange={(e) => setField({ kind: e.target.value as AuthorizeFormState["kind"] })}
+                          onChange={(e) => setField({ kind: e.target.value as AutonomyAuthorizeFormState["kind"] })}
                           className="w-full rounded-l-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                         >
                           <option value="price_below">below</option>
@@ -547,12 +494,11 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                     >
                       {busy ? "Working…" : "Authorize & activate goal"}
                     </button>
-                    {(formDirty || draft) && (
+                    {formDirty && (
                       <button
                         type="button"
                         onClick={() => {
                           setForm(null);
-                          clearDraft();
                         }}
                         className="min-h-[36px] rounded-lg border border-white/[0.1] px-3 text-xs text-muted transition-colors hover:text-white"
                       >
