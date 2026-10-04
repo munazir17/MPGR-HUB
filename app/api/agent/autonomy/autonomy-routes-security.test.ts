@@ -236,7 +236,18 @@ describe("hardening §16: response hygiene — no key material or internal detai
 
   it("config exposes only flags and limits; tokens exposes only the allowlist projection", async () => {
     const cfg = (await (await CONFIG_GET()).json()) as Record<string, unknown>;
-    expect(Object.keys(cfg).sort()).toEqual(["emergencyDisabled", "enabled", "executionAvailable", "limits"].sort());
+    // UPDATED BY THE MC-1/MC-2 REMEDIATION: `delegated` was added so the UI can
+    // tell the user honestly whether a goal authorized on a given chain could
+    // ever execute, and which contract their signature will name as spender.
+    // It carries only a chain id, a deployed PUBLIC contract address (or null)
+    // and a boolean — never the operator broadcaster key or address.
+    expect(Object.keys(cfg).sort()).toEqual(["delegated", "emergencyDisabled", "enabled", "executionAvailable", "limits"].sort());
+    const delegated = cfg.delegated as Record<string, unknown>;
+    expect(Object.keys(delegated).sort()).toEqual(["chainId", "executor", "walletSigningSupported"]);
+    expect(delegated.executor === null || /^0x[0-9a-fA-F]{40}$/.test(String(delegated.executor))).toBe(true);
+    // No key material anywhere in the config payload.
+    const cfgText = JSON.stringify(cfg);
+    expect(cfgText).not.toMatch(/privateKey|PRIVATE_KEY|0x[0-9a-fA-F]{64}/);
 
     const tok = (await (await TOKENS_GET()).json()) as { chainId: number; tokens: Array<Record<string, unknown>>; pairs: unknown[] };
     expect(tok.chainId).toBe(8453);

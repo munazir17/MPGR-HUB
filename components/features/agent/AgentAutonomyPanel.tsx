@@ -303,7 +303,16 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                       return (
                         !["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"].includes(g.status) &&
                         policy &&
-                        policy.chainId === 84532 &&
+                        // CHAIN BINDING (MC-1 remediation): a goal is eligible for
+                        // delegated pre-authorization when its policy targets a
+                        // delegated chain (Base 8453 or Base Sepolia 84532) AND
+                        // the server reports a PINNED executor for exactly that
+                        // chain. Without a pinned executor the user would be
+                        // signing for a contract that does not exist, so the
+                        // control is not offered at all.
+                        (policy.chainId === 8453 || policy.chainId === 84532) &&
+                        config.delegated?.chainId === policy.chainId &&
+                        Boolean(config.delegated?.executor) &&
                         !policy.revokedAt &&
                         new Date(policy.expiresAt).getTime() > Date.now()
                       );

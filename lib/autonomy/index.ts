@@ -28,6 +28,7 @@ import type { DelegatedAuthorizationStore } from "./delegated-authorization";
 import { installAutonomousExecutionAdapter, getAutonomousExecutionAdapter } from "./execution-adapter";
 import { isDelegatedAdapterId, MAINNET_DELEGATED_ADAPTER_ID } from "./types";
 import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID } from "@/lib/executor/executor-config";
+import { delegatedExecutorAddressFor, walletSigningSupported } from "@/lib/executor/delegated-executor";
 import { McpTradeGateway, type McpGateway } from "./mcp-gateway";
 import { AutonomyRuntime } from "./runtime";
 import { AutonomyScheduler } from "./scheduler";
@@ -135,7 +136,6 @@ export function autonomyStatus() {
   return {
     enabled: isAutonomousAgentEnabled(),
     emergencyDisabled: process.env.MPGR_AUTONOMOUS_EMERGENCY_DISABLE?.trim().toLowerCase() === "true",
-    /** Always false today — no delegation adapter ships (see execution-adapter.ts). */
     executionAvailable: (() => {
       try {
         return getAutonomousExecutionAdapter().canDelegate;
@@ -143,6 +143,34 @@ export function autonomyStatus() {
         return false;
       }
     })(),
+    /**
+     * Per-chain delegated capability, so the UI can tell the user HONESTLY
+     * whether a goal they authorize on a given chain could ever execute, and
+     * which contract their signature will name as spender. These are deployed
+     * public contract addresses, not secrets; the operator key never appears.
+     *
+     * `executor: null` means no delegated executor is pinned for that chain, so
+     * the UI must not offer to sign slots for it (the server refuses too).
+     */
+    delegated: {
+      chainId: (() => {
+        try {
+          const adapter = getAutonomousExecutionAdapter();
+          return typeof adapter.chainId === "number" ? adapter.chainId : null;
+        } catch {
+          return null;
+        }
+      })(),
+      executor: (() => {
+        try {
+          const adapter = getAutonomousExecutionAdapter();
+          return typeof adapter.chainId === "number" ? delegatedExecutorAddressFor(adapter.chainId) : null;
+        } catch {
+          return null;
+        }
+      })(),
+      walletSigningSupported: walletSigningSupported(),
+    },
     limits: publicAutonomyLimits(),
   };
 }
