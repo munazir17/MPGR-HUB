@@ -19,9 +19,9 @@
 
 import type { Address, Hex } from "viem";
 
-import { DELEGATED_EXECUTOR_CHAIN_ID, delegatedActionId, delegatedPolicyHash } from "@/lib/executor/delegated-executor";
+import { delegatedActionId, delegatedPolicyHash, isDelegatedChainId } from "@/lib/executor/delegated-executor";
 
-import { DELEGATED_ADAPTER_ID, type AutonomyPolicy } from "./types";
+import { DELEGATED_ADAPTER_ID, type AutonomyPolicy, type SupportedPolicyChainId } from "./types";
 
 export { DELEGATED_ADAPTER_ID };
 
@@ -32,7 +32,14 @@ export const MAX_DELEGATED_SLOTS = 5;
 export interface DelegatedAuthorizationSlot {
   id: string;
   wallet: Address; // lowercase; must equal permit witness owner + signer
-  chainId: 84532;
+  /**
+   * The chain this authorization is valid on (84532 Base Sepolia or 8453
+   * Base mainnet). CHAIN-BOUND THREE WAYS, so it can never be replayed onto
+   * another chain: (1) this record, (2) the Permit2 EIP-712 domain `chainId`
+   * the user signed, and (3) `policyHash`, whose canonical tuple includes
+   * `uint256 chainId` (see delegatedPolicyHash).
+   */
+  chainId: SupportedPolicyChainId;
   policyId: string;
   goalId: string;
   slotIndex: number;
@@ -149,7 +156,12 @@ export interface SlotMatchContext {
  */
 export function selectDelegatedSlot(slots: DelegatedAuthorizationSlot[], ctx: SlotMatchContext): DelegatedSlotVerdict {
   if (!ctx.policy) return { authorized: false, reason: "POLICY_MISMATCH" };
-  if (ctx.policy.chainId !== DELEGATED_EXECUTOR_CHAIN_ID) return { authorized: false, reason: "CHAIN_MISMATCH" };
+  // CHAIN BINDING (audit MC-1 remediation). The policy must target a delegated
+  // chain, and every slot must be bound to EXACTLY that chain — a Sepolia slot
+  // can never authorize a mainnet policy, or vice versa. The chain is also
+  // inside the signed Permit2 domain and inside `policyHash`, so this check is
+  // defence-in-depth over a cryptographic binding, not the only one.
+  if (!isDelegatedChainId(ctx.policy.chainId)) return { authorized: false, reason: "CHAIN_MISMATCH" };
   const expectedPolicyHash = policyHashFor(ctx.policy).toLowerCase();
   const nowSeconds = Math.floor(ctx.now.getTime() / 1000);
 
@@ -159,7 +171,9 @@ export function selectDelegatedSlot(slots: DelegatedAuthorizationSlot[], ctx: Sl
   if (usable.length === 0) return { authorized: false, reason: "NO_SLOTS" };
 
   for (const slot of usable) {
-    if (slot.chainId !== DELEGATED_EXECUTOR_CHAIN_ID) return { authorized: false, reason: "CHAIN_MISMATCH", slot };
+    if (!isDelegatedChainId(slot.chainId) || slot.chainId !== ctx.policy.chainId) {
+      return { authorized: false, reason: "CHAIN_MISMATCH", slot };
+    }
     if (slot.permit.deadline <= nowSeconds || slot.witness.deadline <= nowSeconds) {
       return { authorized: false, reason: "SLOT_EXPIRED", slot };
     }
@@ -191,7 +205,11 @@ export function selectDelegatedSlot(slots: DelegatedAuthorizationSlot[], ctx: Sl
 /** Checks a new slot against the policy BEFORE storing (server-side validation). */
 export function validateNewSlotAgainstPolicy(slot: Omit<DelegatedAuthorizationSlot, "id">, policy: AutonomyPolicy): string | null {
   if (slot.wallet.toLowerCase() !== policy.wallet.toLowerCase()) return "OWNER_MISMATCH";
-  if (slot.chainId !== DELEGATED_EXECUTOR_CHAIN_ID || policy.chainId !== DELEGATED_EXECUTOR_CHAIN_ID) return "CHAIN_MISMATCH";
+  // Both sides must be delegated-capable chains AND the same chain. The
+  // signature the user produced is over that chain's Permit2 domain with that
+  // chain's executor as spender, so a cross-chain slot cannot verify anyway —
+  // this refuses it earlier and with a clearer reason.
+  if (!isDelegatedChainId(slot.chainId) || !isDelegatedChainId(policy.chainId) || slot.chainId !== policy.chainId) return "CHAIN_MISMATCH";
   if (slot.permit.token.toLowerCase() !== policy.sellToken.toLowerCase()) return "TOKEN_MISMATCH";
   if (slot.witness.buyToken.toLowerCase() !== policy.buyToken.toLowerCase()) return "OUTPUT_TOKEN_MISMATCH";
   if (BigInt(slot.permit.amount) > BigInt(policy.maxPerTradeRaw)) return "AMOUNT_MISMATCH";

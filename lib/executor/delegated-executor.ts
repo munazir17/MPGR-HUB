@@ -19,15 +19,19 @@
 // (0x8C63…4f9) proved the on-chain flow end to end and is now abandoned.
 // No private key can pass through any function in this file.
 
-import { keccak256, toHex, type Address, type Hex } from "viem";
+import { getAddress, isAddress, keccak256, toHex, type Address, type Hex } from "viem";
 
 import {
+  BASE_MAINNET_CHAIN_ID,
+  BASE_MAINNET_EXECUTOR_DEPLOYMENT,
   BASE_SEPOLIA_CHAIN_ID,
   BASE_SEPOLIA_UNISWAP_V3,
   CANONICAL_WETH,
   EXECUTOR_DEFAULT_FEE_BPS,
   RouterKind,
+  findExecutorRoute,
   type ExecutorDeployment,
+  type ExecutorRoute,
 } from "./executor-config";
 import { computeExecutorFee } from "./executor-fee";
 
@@ -95,6 +99,141 @@ export const BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT: ExecutorDeployment = {
     },
   ],
 };
+
+// ===========================================================================
+// Chain-generalized delegated execution: Base mainnet (8453) + Base Sepolia
+// (84532). This closes audit finding MC-1/MC-2 (docs/ACTIVATION-FLOW-AUDIT.md).
+//
+// WHY THE DELEGATED CONTRACT IS REQUIRED ON MAINNET
+//   The deployed v1 MPGRExecutor (0xD982726e…505A) pulls tokens ONLY from
+//   `msg.sender` and sends output ONLY to `msg.sender`
+//   (`_pullFromTaker` / `_validate: p.recipient != msg.sender -> revert`).
+//   It is therefore structurally incapable of executing for a user: an
+//   operator broadcaster calling it would trade its OWN balance to itself.
+//   `MPGRExecutorDelegated` is the existing MPGR architecture built for exactly
+//   this: the taker is the recovered Permit2 witness signer (`witness.owner`),
+//   the broadcaster is gas-only, output can never be redirected, and every
+//   signed bound is re-checked on-chain. Both its swap entrypoints
+//   (`swapOnBehalfOfUniswapV3`, `swapOnBehalfOfSlipstream`) cover the two
+//   Base mainnet venues already registered for the v1 executor.
+//
+// NON-CUSTODIAL INVARIANTS (unchanged, restated because they carry real value
+// on mainnet):
+//   * No user private key ever reaches the server. The user signs a bounded
+//     Permit2 witness permit; the server only stores and redeems it.
+//   * The broadcaster is an OPERATOR gas wallet with NO discretionary power:
+//     lib/delegated/delegated-broadcaster.ts refuses to sign anything that is
+//     not a witness-bound delegated swap to the pinned executor on the pinned
+//     chain (see BOUNDED_BROADCAST there).
+//   * The mainnet executor address is NEVER guessed and NEVER inferred. It is
+//     operator-pinned and then proven live on-chain (owner, feeRecipient,
+//     feeBps==25, canonical Permit2, exact witness type string, unpaused,
+//     token allowlist) before a single authorization is accepted. Unpinned or
+//     unverifiable => fail closed everywhere.
+// ===========================================================================
+
+export const DELEGATED_BASE_MAINNET_CHAIN_ID = BASE_MAINNET_CHAIN_ID; // 8453
+
+/** Every chain a delegated (witness-authorized) execution may target. */
+export const DELEGATED_SUPPORTED_CHAIN_IDS = [BASE_SEPOLIA_CHAIN_ID, BASE_MAINNET_CHAIN_ID] as const;
+export type DelegatedChainId = (typeof DELEGATED_SUPPORTED_CHAIN_IDS)[number];
+
+export function isDelegatedChainId(value: unknown): value is DelegatedChainId {
+  return value === BASE_SEPOLIA_CHAIN_ID || value === BASE_MAINNET_CHAIN_ID;
+}
+
+/**
+ * MPGR governance facts EVERY delegated executor must match on-chain. These
+ * are the same operator addresses already pinned for the v1 mainnet executor
+ * and the Sepolia delegated executor (deployments/base-mainnet,
+ * deployments/base-sepolia). The posture check compares live reads against
+ * them, so an operator-supplied address that is not an MPGR-owned, canonical-
+ * fee executor can never be used — even by a misconfigured deployment.
+ */
+export const DELEGATED_EXECUTOR_REQUIRED_OWNER: Address = "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e";
+export const DELEGATED_EXECUTOR_REQUIRED_FEE_RECIPIENT: Address = "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4";
+
+/**
+ * The Base mainnet delegated executor address — OPERATOR-PINNED, never
+ * guessed. There is deliberately no hardcoded default: `MPGRExecutorDelegated`
+ * has not been deployed to Base mainnet by this repository, and inventing an
+ * address would be worse than refusing.
+ *
+ * Set `MPGR_MAINNET_DELEGATED_EXECUTOR` (Vercel env only) to the deployed,
+ * source-verified address. Until it is set AND passes the live posture check,
+ * mainnet autonomous execution is unavailable and every goal stays watch-only.
+ *
+ * This is NOT and must never be the canary key/address
+ * (`MPGR_MAINNET_CANARY_PRIVATE_KEY` / 0xBF6c574b…280b) — see
+ * lib/delegated/delegated-broadcaster.ts, which refuses that address outright.
+ */
+export function mainnetDelegatedExecutorAddress(): Address | null {
+  const raw = process.env.MPGR_MAINNET_DELEGATED_EXECUTOR?.trim();
+  if (!raw) return null;
+  if (!isAddress(raw)) return null;
+  return getAddress(raw);
+}
+
+/** The pinned delegated executor for a chain, or null when not deployed/configured. */
+export function delegatedExecutorAddressFor(chainId: number): Address | null {
+  if (chainId === BASE_SEPOLIA_CHAIN_ID) return DELEGATED_EXECUTOR_ADDRESS;
+  if (chainId === BASE_MAINNET_CHAIN_ID) return mainnetDelegatedExecutorAddress();
+  return null;
+}
+
+/**
+ * Base mainnet delegated-executor registry entry, mirroring the v1 mainnet
+ * executor's tokens and routes exactly (same venues, same pool keys, same
+ * 25 bps fee taken inside the swap). Returns null until the operator pins the
+ * deployed address — so nothing downstream can select a mainnet delegated
+ * route that does not exist.
+ *
+ * `deployTx`/`deployBlock` are informational only (used by mpgr_get_capabilities
+ * output); the authoritative facts are read LIVE from the chain by the adapter
+ * posture check, which is why zeros are acceptable and honest here.
+ */
+export function mainnetDelegatedExecutorDeployment(): ExecutorDeployment | null {
+  const executor = mainnetDelegatedExecutorAddress();
+  if (!executor) return null;
+  return {
+    chainId: BASE_MAINNET_CHAIN_ID,
+    network: "base",
+    executor,
+    owner: DELEGATED_EXECUTOR_REQUIRED_OWNER,
+    feeRecipient: DELEGATED_EXECUTOR_REQUIRED_FEE_RECIPIENT,
+    feeBps: DELEGATED_EXECUTOR_FEE_BPS,
+    weth: CANONICAL_WETH,
+    permit2: CANONICAL_PERMIT2,
+    // Not a pinned deployment fact: verified live by the posture check instead.
+    deployTx: `0x${"00".repeat(32)}`,
+    deployBlock: 0,
+    explorerUrl: `https://basescan.org/address/${executor}`,
+    tokens: BASE_MAINNET_EXECUTOR_DEPLOYMENT.tokens,
+    routes: BASE_MAINNET_EXECUTOR_DEPLOYMENT.routes,
+  };
+}
+
+/** The delegated registry entry for a chain (null => delegated execution unavailable). */
+export function delegatedExecutorDeploymentFor(chainId: number): ExecutorDeployment | null {
+  if (chainId === BASE_SEPOLIA_CHAIN_ID) return BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT;
+  if (chainId === BASE_MAINNET_CHAIN_ID) return mainnetDelegatedExecutorDeployment();
+  return null;
+}
+
+/**
+ * The registered delegated route for a pair on a chain, or null. Fail-closed:
+ * no route => no delegated execution, exactly like the v1 executor path.
+ */
+export function delegatedRouteFor(chainId: number, sellToken: Address, buyToken: Address): ExecutorRoute | null {
+  const deployment = delegatedExecutorDeploymentFor(chainId);
+  if (!deployment) return null;
+  return findExecutorRoute(deployment, sellToken, buyToken);
+}
+
+/** Human-readable chain label for audit/UI messages. */
+export function delegatedChainLabel(chainId: number): string {
+  return chainId === BASE_MAINNET_CHAIN_ID ? "Base mainnet (8453)" : chainId === BASE_SEPOLIA_CHAIN_ID ? "Base Sepolia (84532)" : `chain ${chainId}`;
+}
 
 /**
  * The ActionWitness struct's own canonical EIP-712 type string — used for
@@ -201,8 +340,86 @@ export const DELEGATED_EXECUTOR_ABI = [
     ],
     outputs: [{ name: "amountOut", type: "uint256" }],
   },
+  {
+    // Aerodrome Slipstream variant — the Base mainnet venue for every
+    // USDC <-> B20 tokenized stock route (tickSpacing 10). Identical
+    // witness/permit authorization; only the pool key differs.
+    type: "function",
+    name: "swapOnBehalfOfSlipstream",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "p",
+        type: "tuple",
+        components: [
+          { name: "router", type: "address" },
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
+          { name: "grossAmountIn", type: "uint256" },
+          { name: "expectedFeeAmount", type: "uint256" },
+          { name: "amountOutMinimum", type: "uint256" },
+          { name: "recipient", type: "address" },
+          { name: "deadline", type: "uint256" },
+          { name: "intentId", type: "bytes32" },
+          { name: "unwrapNativeOut", type: "bool" },
+        ],
+      },
+      { name: "tickSpacing", type: "int24" },
+      {
+        name: "auth",
+        type: "tuple",
+        components: [
+          {
+            name: "permit",
+            type: "tuple",
+            components: [
+              {
+                name: "permitted",
+                type: "tuple",
+                components: [
+                  { name: "token", type: "address" },
+                  { name: "amount", type: "uint256" },
+                ],
+              },
+              { name: "nonce", type: "uint256" },
+              { name: "deadline", type: "uint256" },
+            ],
+          },
+          {
+            name: "witness",
+            type: "tuple",
+            components: [
+              { name: "owner", type: "address" },
+              { name: "buyToken", type: "address" },
+              { name: "minAmountOut", type: "uint256" },
+              { name: "deadline", type: "uint256" },
+              { name: "actionId", type: "bytes32" },
+              { name: "policyHash", type: "bytes32" },
+            ],
+          },
+          { name: "signature", type: "bytes" },
+        ],
+      },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
   { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "pendingOwner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "paused", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
+  {
+    type: "function",
+    name: "isTokenAllowed",
+    stateMutability: "view",
+    inputs: [{ name: "token", type: "address" }],
+    outputs: [{ name: "allowed", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "routerKind",
+    stateMutability: "view",
+    inputs: [{ name: "router", type: "address" }],
+    outputs: [{ name: "kind", type: "uint8" }],
+  },
   { type: "function", name: "feeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
   { type: "function", name: "feeRecipient", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "PERMIT2", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
@@ -413,7 +630,11 @@ function encodeAbiConcat(values: readonly [Hex | string, ...Array<Hex | Address 
 }
 
 function permit2FromSameChain(chainId: number): Address {
-  // Only Base Sepolia exists in this phase; anything else must never resolve.
-  if (chainId !== DELEGATED_EXECUTOR_CHAIN_ID) throw new Error(`Delegated execution is Base Sepolia (84532) only; got ${chainId}`);
+  // Permit2 is deployed at the SAME canonical address on every chain MPGR
+  // supports. Chain-generalized (Base mainnet 8453 + Base Sepolia 84532);
+  // anything else must never resolve.
+  if (!isDelegatedChainId(chainId)) {
+    throw new Error(`Delegated execution supports Base (8453) and Base Sepolia (84532) only; got ${chainId}`);
+  }
   return CANONICAL_PERMIT2;
 }

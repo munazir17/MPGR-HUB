@@ -27,17 +27,53 @@
 
 import type { Address } from "viem";
 
-/** Base mainnet is the only chain autonomous policies may ever target. */
+/**
+ * The chain autonomous policies target BY DEFAULT. A policy may also target
+ * Base Sepolia (84532) for the delegated testnet path — see
+ * `SUPPORTED_POLICY_CHAIN_IDS`. Every chain check downstream compares the
+ * policy's own chainId against the proposed action's chainId, so this default
+ * is never a bypass.
+ */
 export const AUTONOMY_CHAIN_ID = 8453 as const;
 export type AutonomyChainId = typeof AUTONOMY_CHAIN_ID;
 
 /**
- * Phase 2 delegated execution (ADDITIVE): the ONLY chain the delegated
- * Permit2-witness adapter executes on is Base Sepolia. Assisted/manual
- * trading and the default runtime chain (Base mainnet) are untouched.
+ * Delegated (Permit2-witness) execution chains.
+ *
+ *   84532 Base Sepolia — the original Phase 2 testnet path (pinned executor).
+ *   8453  Base mainnet — added by the MC-1/MC-2 remediation
+ *         (docs/ACTIVATION-FLOW-AUDIT.md). Requires an operator-pinned,
+ *         live-verified MPGRExecutorDelegated deployment; unavailable and
+ *         fail-closed until then.
+ *
+ * Assisted/manual trading is untouched by either.
  */
 export const DELEGATED_EXECUTION_CHAIN_ID = 84532 as const;
+export const MAINNET_DELEGATED_EXECUTION_CHAIN_ID = 8453 as const;
+export const SUPPORTED_POLICY_CHAIN_IDS = [AUTONOMY_CHAIN_ID, DELEGATED_EXECUTION_CHAIN_ID] as const;
+export type SupportedPolicyChainId = (typeof SUPPORTED_POLICY_CHAIN_IDS)[number];
+
+export function isSupportedPolicyChainId(value: unknown): value is SupportedPolicyChainId {
+  return value === AUTONOMY_CHAIN_ID || value === DELEGATED_EXECUTION_CHAIN_ID;
+}
+
 export const DELEGATED_ADAPTER_ID = "delegated-permit2-sepolia";
+/** Base mainnet delegated adapter (same witness model, chain 8453). */
+export const MAINNET_DELEGATED_ADAPTER_ID = "delegated-permit2-mainnet";
+/** Every adapter id the registry may resolve/install. Anything else throws. */
+export const DELEGATED_ADAPTER_IDS = [DELEGATED_ADAPTER_ID, MAINNET_DELEGATED_ADAPTER_ID] as const;
+export type DelegatedAdapterId = (typeof DELEGATED_ADAPTER_IDS)[number];
+
+export function isDelegatedAdapterId(value: unknown): value is DelegatedAdapterId {
+  return value === DELEGATED_ADAPTER_ID || value === MAINNET_DELEGATED_ADAPTER_ID;
+}
+
+/** The adapter id that serves a given delegated chain. */
+export function delegatedAdapterIdForChain(chainId: number): DelegatedAdapterId | null {
+  if (chainId === DELEGATED_EXECUTION_CHAIN_ID) return DELEGATED_ADAPTER_ID;
+  if (chainId === MAINNET_DELEGATED_EXECUTION_CHAIN_ID) return MAINNET_DELEGATED_ADAPTER_ID;
+  return null;
+}
 
 /** Only "swap" exists today. Other kinds are future extension points (spec §11). */
 export const AUTONOMY_ACTION_TYPES = ["swap"] as const;
@@ -431,6 +467,14 @@ export type DelegatedSwapResult =
 export interface AutonomousExecutionAdapter {
   /** Stable id, persisted on action records for audit (e.g. "none"). */
   readonly id: string;
+  /**
+   * The chain this adapter executes on. Declared BY THE ADAPTER so the runtime
+   * never has to infer a chain from an id string (audit finding: the previous
+   * `adapter.id === DELEGATED_ADAPTER_ID ? 84532 : 8453` mapping could not
+   * express a mainnet delegated adapter). Optional for backwards
+   * compatibility; when absent the runtime falls back to the legacy mapping.
+   */
+  readonly chainId?: number;
   /** True when this adapter can actually delegate signatures today. */
   readonly canDelegate: boolean;
   checkAuthorization(wallet: Address, policy: AutonomyPolicy): Promise<AuthorizationVerdict> | AuthorizationVerdict;
