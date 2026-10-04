@@ -218,9 +218,10 @@ export function useAgentAutonomy() {
     void refresh();
   }, [refresh]);
 
-  // A chat turn that produced a REVIEW-ONLY goal draft can open the panel
-  // pre-filled. Nothing here authorizes anything — the user still has to
-  // press the explicit authorize button in the panel.
+  // A chat turn that produced a REVIEW-ONLY goal draft opens the dedicated
+  // draft review UI (not the manual Autonomous Goals panel). Nothing here
+  // authorizes anything — the user still has to press the explicit
+  // authorize button in that review.
   const openWithDraft = useCallback((next: AutonomyGoalDraft) => setDraft(next), []);
   const clearDraft = useCallback(() => setDraft(null), []);
 

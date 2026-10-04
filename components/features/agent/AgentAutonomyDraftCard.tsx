@@ -4,9 +4,10 @@
 //
 // Autonomous Agent Runtime (ADDITIVE, spec §20) — the card rendered under
 // an assistant reply that detected recurring/conditional trade phrasing.
-// REVIEW-ONLY: tapping opens the Autonomous Goals panel with the draft
-// pre-filled. It never activates, authorizes, or executes anything, and it
-// shows no raw MCP/RPC payloads — just a plain-language summary.
+// REVIEW-ONLY: tapping opens the dedicated chat-draft review UI for THIS
+// draft (AgentAutonomyDraftReview). It never opens the manual Autonomous
+// Goals form, and it never activates, authorizes, or executes anything.
+// No raw MCP/RPC payloads — just a plain-language summary.
 
 import { motion } from "framer-motion";
 import { Repeat, ChevronRight } from "lucide-react";
@@ -26,6 +27,7 @@ export function AgentAutonomyDraftCard({ draft, onReview }: AgentAutonomyDraftCa
       <button
         type="button"
         onClick={() => onReview(draft)}
+        data-testid="agent-autonomy-draft-card"
         className="group flex w-full items-center gap-3 rounded-xl border border-primary/25 bg-gradient-to-br from-primary-glow/10 to-primary/5 p-3 text-left transition-colors duration-200 hover:border-primary/40 hover:bg-primary/10"
       >
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-premium shadow-glow-gold ring-1 ring-white/10">

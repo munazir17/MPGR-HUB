@@ -28,6 +28,7 @@ interface AgentChatWindowProps {
   onReviewTradeProposal?: (proposal: TradeProposal) => void;
   onReviewTransferProposal?: (proposal: TransferProposal) => void;
   // Autonomous Agent Runtime (ADDITIVE) — forwarded to AgentChatBubble.
+  // Opens the dedicated chat-draft review UI, not the manual panel.
   onReviewAutonomyGoal?: (draft: AutonomyGoalDraft) => void;
 }
 

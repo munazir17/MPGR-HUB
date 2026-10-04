@@ -81,24 +81,41 @@ function renderPanel(draft: AutonomyGoalDraft | null) {
 
 function header(tree: ReturnType<typeof AgentAutonomyPanel>) {
   const children = tree.props.children as ReactNode[];
-  return children[0] as ReactElement<{ "aria-expanded": boolean }>;
+  return children[0] as ReactElement<{ "aria-expanded": boolean; onClick: () => void }>;
 }
 
 beforeEach(() => hooks.reset());
 
-describe("AgentAutonomyPanel draft review", () => {
-  it("expands when a draft arrives after the panel has mounted", () => {
+describe("AgentAutonomyPanel is independent of chat drafts", () => {
+  it("does not expand when a chat draft arrives", () => {
     const closed = renderPanel(null);
     expect(header(closed).props["aria-expanded"]).toBe(false);
     hooks.flushEffects();
 
     renderPanel(DRAFT);
     hooks.flushEffects();
-    const opened = renderPanel(DRAFT);
+    const still = renderPanel(DRAFT);
 
+    expect(header(still).props["aria-expanded"]).toBe(false);
+  });
+
+  it("can be opened independently while a chat draft exists", () => {
+    const tree = renderPanel(DRAFT);
+    expect(header(tree).props["aria-expanded"]).toBe(false);
+    header(tree).props.onClick();
+    const opened = renderPanel(DRAFT);
     expect(header(opened).props["aria-expanded"]).toBe(true);
-    const children = opened.props.children as ReactNode[];
-    const presence = children[1] as ReactElement<{ children: ReactNode }>;
-    expect(presence.props.children).toBeTruthy();
+  });
+
+  it("stays however the user left it when the chat draft is cleared", () => {
+    const tree = renderPanel(null);
+    header(tree).props.onClick();
+    expect(header(renderPanel(DRAFT)).props["aria-expanded"]).toBe(true);
+
+    hooks.reset();
+    const closed = renderPanel(DRAFT);
+    expect(header(closed).props["aria-expanded"]).toBe(false);
+    renderPanel(null);
+    expect(header(renderPanel(null)).props["aria-expanded"]).toBe(false);
   });
 });
