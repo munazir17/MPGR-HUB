@@ -12,13 +12,12 @@
 import { NextResponse } from "next/server";
 import { getAddress } from "viem";
 
-import { BASE_MAINNET_CHAIN_ID, MPGR_EXECUTOR_DEPLOYMENTS } from "@/lib/executor/executor-config";
 import { verifyTrustedOrigin, readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 import { checkRateLimit } from "@/lib/trade/trade-rate-limit";
 import { isAutonomousAgentEnabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { normalizeCondition, parseBaseUnits } from "@/lib/autonomy/policy-engine";
-import { publicActionRecord, publicGoal, publicPolicy, requireWallet, system } from "@/lib/autonomy/api-helpers";
-import { AUTONOMY_CHAIN_ID, type AgentGoal, type AutonomyPolicy } from "@/lib/autonomy/types";
+import { executorTokenDecimals, publicActionRecord, publicGoal, publicPolicy, requireWallet, system } from "@/lib/autonomy/api-helpers";
+import { AUTONOMY_CHAIN_ID, isSupportedPolicyChainId, type AgentGoal, type AutonomyPolicy } from "@/lib/autonomy/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -113,8 +112,8 @@ export async function POST(request: Request) {
       : defaultExpiry;
 
     const policyLive = policy.enabled && !policy.revokedAt && policyExpiry.getTime() > now.getTime();
-    const sellDecimals = tokenDecimals(policy.sellToken);
-    const buyDecimals = tokenDecimals(policy.buyToken);
+    const sellDecimals = tokenDecimals(policy.sellToken, policy.chainId);
+    const buyDecimals = tokenDecimals(policy.buyToken, policy.chainId);
     const goal: AgentGoal = {
       id: "",
       wallet: getAddress(auth.wallet.toLowerCase()),
@@ -164,12 +163,16 @@ export async function POST(request: Request) {
 function sellDecimalsFor(policy: AutonomyPolicy): number {
   // The policy was normalized through resolveExecutorToken, which knows the
   // decimals; re-derive them here so user input parsing is decimal-correct.
-  return tokenDecimals(policy.sellToken);
+  return tokenDecimals(policy.sellToken, policy.chainId);
 }
 
-function tokenDecimals(address: string): number {
-  const token = MPGR_EXECUTOR_DEPLOYMENTS[BASE_MAINNET_CHAIN_ID]?.tokens.find(
-    (t) => t.address.toLowerCase() === address.toLowerCase(),
-  );
-  return token?.decimals ?? 18;
+/**
+ * Decimals come from the POLICY'S OWN CHAIN registry (audit MC-1 remediation):
+ * a Base Sepolia delegated policy resolves tUSD(6)/tSTOCK(18) from the
+ * delegated registry, a Base mainnet policy resolves USDC(6)/B20(8) from the
+ * mainnet registry. Reading mainnet decimals for a Sepolia policy would
+ * mis-scale the parsed sell amount. Fallback 18 matches prior behaviour.
+ */
+function tokenDecimals(address: string, chainId: number): number {
+  return executorTokenDecimals(address, isSupportedPolicyChainId(chainId) ? chainId : AUTONOMY_CHAIN_ID);
 }

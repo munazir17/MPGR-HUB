@@ -17,7 +17,16 @@ import { verifyTrustedOrigin, readJsonBody, requestIdFromRequest, withRequestId 
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 import { isAutonomousAgentEnabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { normalizePolicyInput } from "@/lib/autonomy/policy-engine";
-import { authorizationRef, executorRouteExists, publicPolicy, requireWallet, resolveExecutorToken, system } from "@/lib/autonomy/api-helpers";
+import {
+  authorizationRef,
+  executorRouteExists,
+  parsePolicyChainId,
+  policyChainLabel,
+  publicPolicy,
+  requireWallet,
+  resolveExecutorToken,
+  system,
+} from "@/lib/autonomy/api-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,10 +71,23 @@ export async function POST(request: Request) {
     return json({ error: "Autonomous trading requires your explicit authorization.", code: "AUTHORIZATION_NOT_GRANTED" }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
 
+  // CHAIN (audit MC-1 remediation). Explicit, validated, and defaulted to Base
+  // mainnet so existing clients are byte-for-byte unaffected. The chosen chain
+  // is bound into the signed `policyHash` (its canonical tuple carries
+  // `uint256 chainId`) and into the Permit2 EIP-712 domain, so a user's
+  // authorization is cryptographically chain-specific — a mainnet policy can
+  // never be redeemed by a Sepolia slot or vice versa.
+  const chain = parsePolicyChainId(body.chainId);
+  if (!chain.ok) {
+    return json({ error: "Invalid chain.", code: "INVALID_POLICY", details: [chain.message] }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  }
+
   const now = new Date();
   const normalized = normalizePolicyInput({
     wallet: auth.wallet,
-    resolveToken: resolveExecutorToken,
+    chainId: chain.chainId,
+    // Resolve tokens against THIS chain's executor allowlist only.
+    resolveToken: (raw: unknown) => resolveExecutorToken(raw, chain.chainId),
     sellToken: body.sellToken,
     buyToken: body.buyToken,
     maxPerTrade: body.maxPerTrade,
@@ -79,8 +101,14 @@ export async function POST(request: Request) {
   if (!normalized.ok) {
     return json({ error: "Invalid authorization limits.", code: "INVALID_POLICY", details: normalized.errors }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
-  if (!executorRouteExists(normalized.value.sellToken, normalized.value.buyToken)) {
-    return json({ error: "This pair has no MPGR Executor route on Base — autonomous policies are limited to executor-routable pairs.", code: "NO_EXECUTOR_ROUTE" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  if (!executorRouteExists(normalized.value.sellToken, normalized.value.buyToken, chain.chainId)) {
+    return json(
+      {
+        error: `This pair has no MPGR Executor route on ${policyChainLabel(chain.chainId)} — autonomous policies are limited to executor-routable pairs.`,
+        code: "NO_EXECUTOR_ROUTE",
+      },
+      { status: 400, headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   try {
