@@ -173,13 +173,26 @@ describe("hardening: quote / market conditions (§6)", () => {
   });
 
   it("wrong chain fails closed", async () => {
+    // UPDATED BY THE MC-2 REMEDIATION. 8453 is now a delegated chain, so asking
+    // for the SEPOLIA delegated executor on mainnet no longer fails as
+    // "unsupported chain" — it fails as "no mainnet executor pinned", which is
+    // equally fail-closed (no quote, no execution). A genuinely non-delegated
+    // chain still fails as UNSUPPORTED_CHAIN.
     const out = await getQuote(delegatedDeps(state), {
       chainId: 8453, taker: TAKER, executor: DELEGATED_EXECUTOR_ADDRESS,
       sellToken: DELEGATED_BASE_SEPOLIA_TUSD, buyToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
       sellAmount: GROSS.toString(), slippageBps: 100,
     });
     expect(out.ok).toBe(false);
-    if (!out.ok) expect(out.error.code).toBe("UNSUPPORTED_CHAIN");
+    if (!out.ok) expect(out.error.code).toBe("EXECUTOR_NOT_CONFIGURED");
+
+    const wrongChain = await getQuote(delegatedDeps(state), {
+      chainId: 1, taker: TAKER, executor: DELEGATED_EXECUTOR_ADDRESS,
+      sellToken: DELEGATED_BASE_SEPOLIA_TUSD, buyToken: DELEGATED_BASE_SEPOLIA_TSTOCK,
+      sellAmount: GROSS.toString(), slippageBps: 100,
+    });
+    expect(wrongChain.ok).toBe(false);
+    if (!wrongChain.ok) expect(wrongChain.error.code).toBe("UNSUPPORTED_CHAIN");
   });
 
   it("malformed amount fails closed", async () => {

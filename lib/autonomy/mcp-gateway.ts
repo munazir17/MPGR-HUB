@@ -97,6 +97,16 @@ function mapMcpError(code: string): AutonomyFailureCode {
     case "RPC_ERROR":
     case "TX_NOT_FOUND":
       return "RPC_ERROR";
+    // Capability/config refusals are NOT infrastructure faults: retrying the
+    // same tick cannot fix them, so they must not be reported as RPC_ERROR
+    // (which is retryable) and must not be mistaken for a broadcast attempt.
+    case "EXECUTOR_NOT_CONFIGURED":
+    case "BROADCASTER_NOT_CONFIGURED":
+    case "BROADCAST_REFUSED_BY_GATE":
+    case "ROUTE_MISMATCH":
+    case "INVALID_VENUE":
+    case "UNSUPPORTED_CHAIN":
+      return "EXECUTION_UNAVAILABLE";
     default:
       return "RPC_ERROR";
   }

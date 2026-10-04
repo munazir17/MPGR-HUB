@@ -48,7 +48,15 @@ import {
 import { DelegatedExecutionAdapter } from "@/lib/autonomy/delegated-execution-adapter";
 import { InMemoryDelegatedAuthorizationStore } from "@/lib/autonomy/delegated-authorization";
 import { autonomyStatus } from "@/lib/autonomy";
-import { DELEGATED_ADAPTER_ID, DELEGATED_EXECUTION_CHAIN_ID, type AutonomousExecutionAdapter, type AutonomyPolicy } from "@/lib/autonomy/types";
+import {
+  DELEGATED_ADAPTER_IDS,
+  DELEGATED_ADAPTER_ID,
+  DELEGATED_EXECUTION_CHAIN_ID,
+  MAINNET_DELEGATED_ADAPTER_ID,
+  isDelegatedAdapterId,
+  type AutonomousExecutionAdapter,
+  type AutonomyPolicy,
+} from "@/lib/autonomy/types";
 import {
   CANONICAL_PERMIT2,
   DELEGATED_EXECUTOR_ADDRESS,
@@ -554,7 +562,13 @@ describe("B7 — the registry cannot resolve permissively by accident", () => {
     expect(() => getAutonomousExecutionAdapter()).toThrow(/not installed|fail-closed/i);
   });
 
-  it("only the delegated adapter id can ever be installed", () => {
+  it("only a delegated adapter id can ever be installed", () => {
+    // UPDATED BY THE MC-2 REMEDIATION: the registry now accepts BOTH delegated
+    // ids (Base Sepolia + Base mainnet) because they are one class with one
+    // safety machinery, differing only by chain. The property that matters is
+    // unchanged — an arbitrary id still throws instead of resolving
+    // permissively, and the accepted set is closed and explicit.
+    clearInstalledAutonomousExecutionAdapter();
     expect(() =>
       installAutonomousExecutionAdapter({
         id: "rogue-adapter",
@@ -562,7 +576,50 @@ describe("B7 — the registry cannot resolve permissively by accident", () => {
         checkAuthorization: () => ({ authorized: true }),
         executeSwap: async () => ({ ok: true, txHash: "0x" as Hex }),
       } as unknown as AutonomousExecutionAdapter),
-    ).toThrow(/Only the "delegated-permit2-sepolia" adapter can be installed/);
+    ).toThrow(/Only a delegated adapter \(delegated-permit2-sepolia \| delegated-permit2-mainnet\) can be installed/);
+
+    // The accepted set is exactly the two delegated ids — nothing else.
+    expect([...DELEGATED_ADAPTER_IDS].sort()).toEqual(["delegated-permit2-mainnet", "delegated-permit2-sepolia"]);
+    for (const id of DELEGATED_ADAPTER_IDS) {
+      expect(isDelegatedAdapterId(id)).toBe(true);
+      clearInstalledAutonomousExecutionAdapter();
+      installAutonomousExecutionAdapter({
+        id,
+        chainId: id === MAINNET_DELEGATED_ADAPTER_ID ? 8453 : 84532,
+        canDelegate: true,
+        checkAuthorization: () => ({ authorized: true }),
+        executeSwap: async () => ({ ok: true, txHash: "0x" as Hex }),
+      } as unknown as AutonomousExecutionAdapter);
+    }
+    clearInstalledAutonomousExecutionAdapter();
+  });
+
+  it("a configured adapter id that does not match the INSTALLED adapter throws", () => {
+    // New guard added by the MC-2 remediation: selecting the mainnet adapter
+    // while the Sepolia one is wired (or vice versa) must not silently execute
+    // on the wrong chain.
+    clearInstalledAutonomousExecutionAdapter();
+    installAutonomousExecutionAdapter({
+      id: DELEGATED_ADAPTER_ID,
+      chainId: 84532,
+      canDelegate: true,
+      checkAuthorization: () => ({ authorized: true }),
+      executeSwap: async () => ({ ok: true, txHash: "0x" as Hex }),
+    } as unknown as AutonomousExecutionAdapter);
+    vi.stubEnv("MPGR_AUTONOMOUS_EXECUTION_ADAPTER", MAINNET_DELEGATED_ADAPTER_ID);
+    expect(() => getAutonomousExecutionAdapter()).toThrow(/is configured but .* is installed|fail-closed/i);
+
+    // And overwriting an installed adapter with a DIFFERENT one is refused.
+    expect(() =>
+      installAutonomousExecutionAdapter({
+        id: MAINNET_DELEGATED_ADAPTER_ID,
+        chainId: 8453,
+        canDelegate: true,
+        checkAuthorization: () => ({ authorized: true }),
+        executeSwap: async () => ({ ok: true, txHash: "0x" as Hex }),
+      } as unknown as AutonomousExecutionAdapter),
+    ).toThrow(/already installed|refusing to overwrite/i);
+    clearInstalledAutonomousExecutionAdapter();
   });
 
   it("the delegated executor is pinned to Base Sepolia; the mainnet registry has no delegated entry", () => {

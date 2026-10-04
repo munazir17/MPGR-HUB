@@ -39,6 +39,7 @@ import {
   delegatedActionId,
   delegatedPermitDigest,
 } from "@/lib/executor/delegated-executor";
+import { AUTONOMY_CHAIN_ID, type AutonomyPolicy } from "@/lib/autonomy/types";
 
 const redis = new LuaRedis();
 vi.mock("@/lib/api/redis", () => ({ getRedis: () => redis.client() }));
@@ -295,16 +296,26 @@ describe("A4 — the missing capability: delegated execution cannot attach to a 
     expect(policy.buyToken.toLowerCase()).toBe(pair.buy.toLowerCase());
   });
 
-  it("refuses a GENUINELY user-signed Permit2 witness slot for that policy (POLICY_CHAIN_MISMATCH)", async () => {
-    const pair = await allowlistedPair();
-    const { policyBody, goalBody } = await activateGoal(pair);
-    const policyId = policyBody.policy!.id;
-    const goalId = (goalBody as { goal: { id: string } }).goal.id;
-    const [policy] = await systemUnderTest.store.listPolicies(USER.toLowerCase());
-
-    // A cryptographically valid slot: correct owner, correct actionId bound to
-    // the goal, correct policyHash for THIS policy, future deadline, signed by
-    // the session wallet over the exact Permit2 witness digest.
+  /**
+   * A4 — UPDATED BY THE MC-1 REMEDIATION (this test previously PINNED THE GAP).
+   *
+   * The audit found a genuinely user-signed witness slot for a UI-activated
+   * (8453) goal was refused `POLICY_CHAIN_MISMATCH`, because no 84532 policy
+   * could ever be minted and the authorization route only accepted 84532. That
+   * was the missing capability, not a safety property.
+   *
+   * It is now fixed, so this test asserts BOTH halves of the new contract:
+   *   (a) DEFAULT (no mainnet executor pinned): still refused — but with the
+   *       honest reason DELEGATED_EXECUTOR_NOT_CONFIGURED, because the user
+   *       must never sign an authorization for a contract that does not exist.
+   *       Fail-closed, nothing stored, nothing broadcast.
+   *   (b) PINNED (operator set MPGR_MAINNET_DELEGATED_EXECUTOR): the same
+   *       genuinely user-signed 8453 slot IS accepted and stored. The chain
+   *       mismatch is gone; every other check (owner binding, actionId,
+   *       policyHash, deadline, signature recovery against the 8453 domain with
+   *       the 8453 executor as spender) still applies.
+   */
+  async function signedMainnetSlot(policy: AutonomyPolicy, goalId: string, executor: Address) {
     const deadline = Math.floor(Date.now() / 1000) + 3600;
     const permit = { token: policy.sellToken, amount: "50000000", nonce: "987654321", deadline };
     const witness = {
@@ -315,17 +326,78 @@ describe("A4 — the missing capability: delegated execution cannot attach to a 
       actionId: delegatedActionId(goalId),
       policyHash: policyHashFor(policy),
     };
-    const digest = delegatedPermitDigest({ permit, witness }, DELEGATED_EXECUTOR_CHAIN_ID, DELEGATED_EXECUTOR_ADDRESS);
+    // Digest over THIS chain's Permit2 domain with THIS chain's executor as
+    // spender — so the recovered signer is bound to (wallet, chain, executor).
+    const digest = delegatedPermitDigest({ permit, witness }, AUTONOMY_CHAIN_ID, executor);
     const signature: Hex = await userAccount.sign({ hash: digest });
+    return { permit, witness, signature };
+  }
 
+  it("refuses the slot while no mainnet delegated executor is pinned (fail-closed)", async () => {
+    vi.stubEnv("MPGR_MAINNET_DELEGATED_EXECUTOR", "");
+    const pair = await allowlistedPair();
+    const { policyBody, goalBody } = await activateGoal(pair);
+    const policyId = policyBody.policy!.id;
+    const goalId = (goalBody as { goal: { id: string } }).goal.id;
+    const [policy] = await systemUnderTest.store.listPolicies(USER.toLowerCase());
+    expect(policy.chainId).toBe(AUTONOMY_CHAIN_ID);
+
+    const slot = await signedMainnetSlot(policy, goalId, DELEGATED_EXECUTOR_ADDRESS);
     const res = await AUTHORIZATION_POST(
-      post("/api/agent/autonomy/authorization", { policyId, goalId, slots: [{ slotIndex: 0, permit, witness, signature }] }),
+      post("/api/agent/autonomy/authorization", { policyId, goalId, slots: [{ slotIndex: 0, ...slot }] }),
     );
     expect(res.status).toBe(400);
     const body = (await res.json()) as { code: string; error: string };
-    expect(body.code).toBe("POLICY_CHAIN_MISMATCH");
-    expect(body.error).toMatch(/Base Sepolia/i);
-    // Nothing was stored: the goal still has zero delegated capability.
+    expect(body.code).toBe("DELEGATED_EXECUTOR_NOT_CONFIGURED");
+    expect(body.error).toMatch(/watch-only/i);
+    // Nothing was stored and nothing was broadcast.
+    expect(await systemUnderTest.slots.listSlots(USER.toLowerCase(), policyId)).toHaveLength(0);
+    expect(broadcasterSeam.broadcastCalls).toHaveLength(0);
+  });
+
+  it("ACCEPTS the same genuinely user-signed slot once a mainnet executor is pinned (MC-1 fixed)", async () => {
+    // A test address that is deliberately NOT the forbidden canary account.
+    const MAINNET_EXECUTOR = "0x1111111111111111111111111111111111111111" as Address;
+    vi.stubEnv("MPGR_MAINNET_DELEGATED_EXECUTOR", MAINNET_EXECUTOR);
+    const pair = await allowlistedPair();
+    const { policyBody, goalBody } = await activateGoal(pair);
+    const policyId = policyBody.policy!.id;
+    const goalId = (goalBody as { goal: { id: string } }).goal.id;
+    const [policy] = await systemUnderTest.store.listPolicies(USER.toLowerCase());
+    expect(policy.chainId).toBe(AUTONOMY_CHAIN_ID);
+
+    const slot = await signedMainnetSlot(policy, goalId, MAINNET_EXECUTOR);
+    const res = await AUTHORIZATION_POST(
+      post("/api/agent/autonomy/authorization", { policyId, goalId, slots: [{ slotIndex: 0, ...slot }] }),
+    );
+    const raw = await res.text();
+    expect(res.status, raw).toBe(201);
+    const stored = await systemUnderTest.slots.listSlots(USER.toLowerCase(), policyId);
+    expect(stored).toHaveLength(1);
+    // The stored slot is CHAIN-BOUND to mainnet, not to Sepolia.
+    expect(stored[0]!.chainId).toBe(AUTONOMY_CHAIN_ID);
+    expect(stored[0]!.chainId).not.toBe(DELEGATED_EXECUTOR_CHAIN_ID);
+    // Accepting an authorization is still an off-chain control-plane write:
+    // storing a slot must never broadcast anything.
+    expect(broadcasterSeam.broadcastCalls).toHaveLength(0);
+  });
+
+  it("refuses a slot signed for the WRONG chain's executor (cross-chain binding holds)", async () => {
+    const MAINNET_EXECUTOR = "0x1111111111111111111111111111111111111111" as Address;
+    vi.stubEnv("MPGR_MAINNET_DELEGATED_EXECUTOR", MAINNET_EXECUTOR);
+    const pair = await allowlistedPair();
+    const { policyBody, goalBody } = await activateGoal(pair);
+    const policyId = policyBody.policy!.id;
+    const goalId = (goalBody as { goal: { id: string } }).goal.id;
+    const [policy] = await systemUnderTest.store.listPolicies(USER.toLowerCase());
+
+    // Signed over the SEPOLIA domain/spender, presented to a MAINNET policy:
+    // the signature cannot recover to the session wallet, so it is refused.
+    const slot = await signedMainnetSlot(policy, goalId, DELEGATED_EXECUTOR_ADDRESS);
+    const res = await AUTHORIZATION_POST(
+      post("/api/agent/autonomy/authorization", { policyId, goalId, slots: [{ slotIndex: 0, ...slot }] }),
+    );
+    expect(res.status).toBe(400);
     expect(await systemUnderTest.slots.listSlots(USER.toLowerCase(), policyId)).toHaveLength(0);
     expect(broadcasterSeam.broadcastCalls).toHaveLength(0);
   });

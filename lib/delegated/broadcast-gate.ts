@@ -29,6 +29,7 @@ import { decodeFunctionData, getAddress, isAddress, type Address, type Hex } fro
 
 import {
   DELEGATED_EXECUTOR_ABI,
+  DELEGATED_EXECUTOR_FEE_BPS,
   DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR,
   DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR,
   delegatedExecutorAddressFor,
@@ -147,31 +148,59 @@ export function validateDelegatedTransaction(tx: GateTransaction, auth: GateAuth
   if (wantOwner !== addr(auth.wallet)) return refuse("OWNER_NOT_POLICY_WALLET", `${wantOwner} vs ${auth.wallet}`);
 
   // 8. PARAMS == WITNESS. The unsigned swap params must agree with the signed
-  //    witness (the contract enforces the same, but we refuse pre-sign).
+  //    witness (the contract enforces the same, but we refuse pre-sign). Note
+  //    the contract's field is `amountOutMinimum`, the witness's `minAmountOut`.
   if (addr(params.recipient) !== wantOwner) return refuse("RECIPIENT_NOT_OWNER", `${params.recipient} vs ${auth.witness.owner}`);
   if (params.intentId.toLowerCase() !== wantActionId) return refuse("INTENT_ID_MISMATCH", `${params.intentId} vs ${wantActionId}`);
   if (params.deadline !== wantDeadline) return refuse("PARAM_DEADLINE_MISMATCH", `${params.deadline} vs ${wantDeadline}`);
-  if (params.minAmountOut !== wantMinOut) return refuse("PARAM_MIN_OUT_MISMATCH", `${params.minAmountOut} vs ${wantMinOut}`);
+  if (params.amountOutMinimum !== wantMinOut) return refuse("PARAM_MIN_OUT_MISMATCH", `${params.amountOutMinimum} vs ${wantMinOut}`);
   // SwapParams has no `buyToken` field: `tokenOut` IS the buy token, and the
   // contract re-checks tokenOut == witness.buyToken in _validate.
   if (addr(params.tokenOut) !== wantBuy) return refuse("TOKEN_OUT_MISMATCH", `${params.tokenOut} vs ${auth.witness.buyToken}`);
 
-  // 9. PERMIT == WITNESS. The Permit2 permission must grant exactly the
-  //    witnessed token, amount and deadline, to the pinned executor.
+  // 9. PERMIT == EXACTLY WHAT THE USER LET THE OPERATOR PULL.
+  //
+  //    Permit2's TokenPermissions describes the SELL side — the token and
+  //    amount taken FROM the user — while the witness floors the BUY side
+  //    (buyToken / minAmountOut). Together they are the two economic bounds the
+  //    user actually signed: "pull at most THIS much of THIS token, and I must
+  //    receive at least THAT much of THAT token."
+  //
+  //    So the permit must equal params.tokenIn / params.grossAmountIn (NOT the
+  //    witness buyToken/minAmountOut), and the calldata's own permit tuple must
+  //    equal the stored authorization's — otherwise the operator would be
+  //    pulling a different token, or more of it, than the user authorized.
   const permitAmount = big(auth.permit.amount);
   const permitDeadline = big(auth.permit.deadline);
   if (permitAmount === null || permitDeadline === null) return refuse("PERMIT_MALFORMED");
-  if (addr(auth.permit.token) !== wantBuy) return refuse("PERMIT_TOKEN_MISMATCH", `${auth.permit.token} vs ${auth.witness.buyToken}`);
-  if (permitAmount !== wantMinOut) return refuse("PERMIT_AMOUNT_MISMATCH", `${permitAmount} vs ${wantMinOut}`);
+  if (addr(auth.permit.token) !== addr(params.tokenIn)) {
+    return refuse("PERMIT_TOKEN_MISMATCH", `${auth.permit.token} vs tokenIn ${params.tokenIn}`);
+  }
+  if (permitAmount !== params.grossAmountIn) {
+    return refuse("PERMIT_AMOUNT_MISMATCH", `${permitAmount} vs grossAmountIn ${params.grossAmountIn}`);
+  }
   if (permitDeadline !== wantDeadline) return refuse("PERMIT_DEADLINE_MISMATCH", `${permitDeadline} vs ${wantDeadline}`);
-  if (addr(decodedAuth.permit.permitted.token) !== wantBuy) return refuse("CALldata_PERMIT_TOKEN_MISMATCH");
-  if (decodedAuth.permit.permitted.amount !== wantMinOut) return refuse("CALLDATA_PERMIT_AMOUNT_MISMATCH");
+  if (addr(decodedAuth.permit.permitted.token) !== addr(params.tokenIn)) {
+    return refuse("CALLDATA_PERMIT_TOKEN_MISMATCH", `${decodedAuth.permit.permitted.token} vs ${params.tokenIn}`);
+  }
+  if (decodedAuth.permit.permitted.amount !== params.grossAmountIn) {
+    return refuse("CALLDATA_PERMIT_AMOUNT_MISMATCH", `${decodedAuth.permit.permitted.amount} vs ${params.grossAmountIn}`);
+  }
   if (decodedAuth.permit.deadline !== wantDeadline) return refuse("CALLDATA_PERMIT_DEADLINE_MISMATCH");
+  // The stored permit and the calldata permit must be the same permission.
+  if (addr(decodedAuth.permit.permitted.token) !== addr(auth.permit.token)) return refuse("PERMIT_TOKEN_DIVERGENCE");
+  if (decodedAuth.permit.permitted.amount !== permitAmount) return refuse("PERMIT_AMOUNT_DIVERGENCE");
 
-  // 10. AMOUNT BOUND: never zero, never negative. The policy's own caps were
-  //     enforced upstream; this is the last structural floor.
+  // 10. AMOUNT BOUNDS: never zero, never negative, and the committed fee must
+  //     be exactly the canonical floor(gross * feeBps / 1e4) the contract
+  //     re-derives — a mismatch would mean the calldata was rebuilt with
+  //     different fee math than the quote the user's slot was validated against.
   if (params.grossAmountIn <= 0n) return refuse("GROSS_AMOUNT_IN_NON_POSITIVE", `${params.grossAmountIn}`);
   if (wantMinOut <= 0n) return refuse("MIN_AMOUNT_OUT_NON_POSITIVE", `${wantMinOut}`);
+  const canonicalFee = (params.grossAmountIn * BigInt(DELEGATED_EXECUTOR_FEE_BPS)) / 10_000n;
+  if (params.expectedFeeAmount !== canonicalFee) {
+    return refuse("FEE_MISMATCH", `${params.expectedFeeAmount} vs canonical ${canonicalFee}`);
+  }
 
   // 11. DEADLINE IN THE FUTURE. A lapsed authorization is refused pre-sign,
   //     never broadcast to be reverted on-chain (wasting operator gas).

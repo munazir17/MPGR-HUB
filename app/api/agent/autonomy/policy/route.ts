@@ -74,7 +74,7 @@ export async function POST(request: Request) {
   // CHAIN (audit MC-1 remediation). Explicit, validated, and defaulted to Base
   // mainnet so existing clients are byte-for-byte unaffected. The chosen chain
   // is bound into the signed `policyHash` (its canonical tuple carries
-  // `uint256 chainId`) and into the Permit2 EIP-712 domain, so a user's
+  // `uint256 chainId`) and into the EIP-712 domain the user signs, so a user's
   // authorization is cryptographically chain-specific — a mainnet policy can
   // never be redeemed by a Sepolia slot or vice versa.
   const chain = parsePolicyChainId(body.chainId);

@@ -119,6 +119,14 @@ describe("delegated quote path (executor-arg selected registry)", () => {
         }),
       ),
     ).toBe("INVALID_EXECUTOR");
+    // UPDATED BY THE MC-2 REMEDIATION. Base mainnet (8453) is now a delegated
+    // chain, so the refusal is no longer "wrong chain" — it is the more precise
+    // "no mainnet delegated executor is pinned", which is still fail-closed and
+    // still means nothing can be quoted or executed on 8453 by default.
+    // Critically the SEPOLIA executor address can never be used on mainnet:
+    // unpinned => EXECUTOR_NOT_CONFIGURED, and once an operator pins a mainnet
+    // executor the Sepolia address is rejected as EXECUTOR_MISMATCH (asserted
+    // in the next test).
     expect(
       errCode(
         await getQuote(
@@ -133,7 +141,7 @@ describe("delegated quote path (executor-arg selected registry)", () => {
           },
         ),
       ),
-    ).toBe("UNSUPPORTED_CHAIN");
+    ).toBe("EXECUTOR_NOT_CONFIGURED");
   });
 
   it("fails closed when the delegated registry is missing", async () => {

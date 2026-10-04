@@ -19,7 +19,7 @@
 // (0x8C63…4f9) proved the on-chain flow end to end and is now abandoned.
 // No private key can pass through any function in this file.
 
-import { getAddress, isAddress, keccak256, toHex, type Address, type Hex } from "viem";
+import { getAbiItem, getAddress, isAddress, keccak256, toFunctionSelector, toHex, type Address, type Hex } from "viem";
 
 import {
   BASE_MAINNET_CHAIN_ID,
@@ -432,31 +432,41 @@ export const DELEGATED_EXECUTOR_ABI = [
  * The ONLY two calldata selectors an autonomous delegated execution may carry.
  * Pinned here so the bounded hot-wallet gate (lib/delegated/broadcast-gate.ts)
  * refuses any other function BEFORE the operator key signs anything.
+ *
+ * DERIVED from the ABI above, never hand-written: a mistyped literal would
+ * either reject every legitimate execution or (worse) admit the wrong one.
+ * Deriving keeps the gate and the encoder structurally in agreement.
  */
-export const DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR = "0xb1b89728";
-export const DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR = "0xd7ba0133";
+export const DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR = toFunctionSelector(
+  getAbiItem({ abi: DELEGATED_EXECUTOR_ABI, name: "swapOnBehalfOfUniswapV3" }),
+);
+export const DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR = toFunctionSelector(
+  getAbiItem({ abi: DELEGATED_EXECUTOR_ABI, name: "swapOnBehalfOfSlipstream" }),
+);
 export const DELEGATED_SWAP_SELECTORS = [
   DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR,
   DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR,
 ] as const;
 
 /**
- * Swap params as viem DECODES them from calldata (uint256 -> bigint). Distinct
- * from buildDelegatedSwapParams' string-based INPUT type: the gate compares
- * decoded on-chain values against the user's signed witness, so it needs the
- * decoded shape.
+ * Swap params as viem DECODES them from calldata (uint256 -> bigint). Field
+ * names and order mirror the ABI's `p` tuple EXACTLY — note the contract calls
+ * the minimum-output field `amountOutMinimum` (the witness calls it
+ * `minAmountOut`), and there is no `feeBps` field: the fee is the committed
+ * `expectedFeeAmount`. Distinct from buildDelegatedSwapParams' string-based
+ * INPUT type, which the gate compares against.
  */
 export interface DecodedDelegatedSwapParams {
   router: Address;
   tokenIn: Address;
   tokenOut: Address;
   grossAmountIn: bigint;
-  minAmountOut: bigint;
+  expectedFeeAmount: bigint;
+  amountOutMinimum: bigint;
+  recipient: Address;
   deadline: bigint;
   intentId: Hex;
-  recipient: Address;
   unwrapNativeOut: boolean;
-  feeBps: number;
 }
 
 /** The decoded `auth` argument of either swapOnBehalfOf* entrypoint. */
