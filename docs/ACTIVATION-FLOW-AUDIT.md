@@ -709,12 +709,16 @@ boundary, config state, deployment/recording sequence, and current blockers. The
 still has `mainnetDelegatedDeployEnabled: false`, and `typedModules` is empty. Neither value was
 changed to make the deployment script pass.
 
-The current PR head's existing Actions run `37216596746` was green at
-`8e73200643ad9f7ee0712994b356058fbd0f4b20`, but predates the current local contract/module and
-recording-script deltas. A new Actions dispatch was denied with HTTP 403, and detailed job-log
-download failed. GitHub Environment secret/variable enumeration was also denied; no secret
-values were requested or printed. `BASE_MAINNET_RPC_URL` is unavailable in this workspace, so
-there is no secure-runner `eth_chainId`, deployer nonce, or secret-presence result. The exact
-Mainnet Forge simulation was **not** run; there is no predicted address or deployment artifact.
-No Mainnet transaction, deployment, activation, or canary occurred. Do not infer go-live
-readiness from the historical test totals in §9.9 or the green older CI run.
+GitHub Actions CI run `37226740107` succeeded at commit
+`127424c7f22cc207259f26140f6d850e9e5e8ab3`; its `contracts`, `contracts-fork`, `quality`,
+`build`, `slither`, and `secret-scan` jobs passed. The contracts check recorded Foundry
+`1.8.4` (`50af4efe189dc64bad2b75ed6990b835de66c4ae`) and released Solidity
+`0.8.24+commit.e11b9ed9.Linux.g++`, with OpenZeppelin `v5.4.0` and forge-std `v1.9.7`.
+This validates the code and tests at that commit, not a live delegated deployment. Manual
+workflow dispatch and GitHub Environment secret/variable enumeration remain denied with HTTP
+403; detailed raw job-log download returned EOF. No secret values were requested or printed.
+`BASE_MAINNET_RPC_URL` is unavailable in this workspace, so there is no secure-runner
+`eth_chainId`, deployer nonce, or secret-presence result. The exact Mainnet Forge simulation
+was **not** run; there is no predicted address or deployment artifact. No Mainnet transaction,
+deployment, activation, or canary occurred. Do not infer go-live readiness from historical
+application test totals or the CI green status.
