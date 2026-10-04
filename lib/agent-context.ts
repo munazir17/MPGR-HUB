@@ -90,6 +90,26 @@ export interface AgentRewardsContext {
   totalClaimed: number;
 }
 
+// Autonomous Agent Runtime status snapshot — mirrored 1:1 from the app's
+// existing /api/agent/autonomy/config payload (AutonomyConfig in
+// hooks/useAgentAutonomy.ts) plus the caller's goal counts. Pure data: the
+// agent reply layer only ever reads what the runtime actually reported and
+// can never fabricate availability.
+export interface AgentAutonomyContext {
+  enabled: boolean;
+  emergencyDisabled: boolean;
+  executionAvailable: boolean;
+  limits: {
+    maxGoalsPerWallet: number;
+    minCooldownSeconds: number;
+    maxPolicyTtlDays: number;
+    maxPerTradeHuman: string;
+    maxDailyHuman: string;
+    maxSlippageBps: number;
+  } | null;
+  goals: { total: number; active: number } | null;
+}
+
 export interface AgentContext {
   isConnected: boolean;
   xp: AgentXPContext | null;
@@ -100,6 +120,8 @@ export interface AgentContext {
   tokenLock: AgentLockContext | null;
   season: AgentSeasonContext | null;
   rewards: AgentRewardsContext | null;
+  /** Optional: present only when the autonomy runtime state has loaded. */
+  autonomy?: AgentAutonomyContext | null;
 }
 
 export interface BuildAgentContextInput {
@@ -124,10 +146,12 @@ export interface BuildAgentContextInput {
   };
   nativeEth?: string | null;
   usdc?: string | null;
+  /** Autonomy runtime snapshot from useAgentAutonomy, if loaded. */
+  autonomy?: AgentAutonomyContext | null;
 }
 
 export function buildAgentContext(input: BuildAgentContextInput): AgentContext {
-  const { isConnected, xpRecord, premiumStatus, holderTierStatus, seasonStatus, staking, tokenLock, rewards, nativeEth, usdc } =
+  const { isConnected, xpRecord, premiumStatus, holderTierStatus, seasonStatus, staking, tokenLock, rewards, nativeEth, usdc, autonomy } =
     input;
 
   const xp: AgentXPContext | null = xpRecord
@@ -226,5 +250,6 @@ export function buildAgentContext(input: BuildAgentContextInput): AgentContext {
     tokenLock: tokenLockCtx,
     season,
     rewards: rewardsCtx,
+    autonomy: autonomy ?? null,
   };
 }

@@ -1,0 +1,300 @@
+# TEMPORARY operator-triggered redeployment (explicitly approved: witness-type
+# correction). Runs the EXISTING 84532-gated script verbatim against Base
+# Sepolia using the `base-sepolia` environment's stored secret/variables.
+# Remove after use.
+name: Deploy Delegated Executor (Base Sepolia)
+
+on:
+  workflow_dispatch:
+    inputs:
+      verify_only:
+        description: "Skip deployment; verify an already-deployed executor"
+        type: boolean
+        default: false
+      executor:
+        description: "Executor address to verify (verify_only mode)"
+        type: string
+        default: ""
+  push:
+    branches:
+      - "arena/**"
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-delegated-sepolia
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # The push trigger exists ONLY so GitHub indexes this workflow on this
+    # (non-default) branch. It must be armed explicitly: the push's HEAD
+    # commit message must contain the [deploy-delegated] (deploy) or
+    # [verify-delegated] (verify-only) tag.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'deploy-delegated-sepolia' ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[deploy-delegated]')) ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[verify-delegated]'))
+    runs-on: ubuntu-latest
+    environment: base-sepolia
+    timeout-minutes: 25
+    env:
+      RPC_URL: ${{ vars.BASE_SEPOLIA_RPC_URL || secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
+      EXECUTOR_INPUT: ${{ inputs.executor || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mode resolution: push runs are VERIFY-ONLY unless the HEAD commit
+      # message contains the explicit [deploy-delegated] tag; a labeled PR or
+      # a dispatch with verify_only=false deploys.
+      - name: Resolve mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            case "${{ github.event.head_commit.message }}" in
+              *"[deploy-delegated]"*) echo "verify_only=false" >> "$GITHUB_OUTPUT" ;;
+              *) echo "verify_only=true" >> "$GITHUB_OUTPUT" ;;
+            esac
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "verify_only=false" >> "$GITHUB_OUTPUT"
+          else
+            if [ "${{ inputs.verify_only }}" = "true" ]; then
+              echo "verify_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "verify_only=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - run: mkdir -p .forge-deps
+      - run: git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+      - run: git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+
+      - name: Preflight — print target and abort on any mismatch (before broadcasting)
+        env:
+          PK: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+          OWNER: ${{ vars.MPGR_EXECUTOR_OWNER || secrets.MPGR_EXECUTOR_OWNER }}
+          FEE: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT || secrets.MPGR_EXECUTOR_FEE_RECIPIENT }}
+        run: |
+          set -euo pipefail
+          echo "::notice::TARGET=Base Sepolia chain 84532 script=DeployMPGRExecutorDelegatedBaseSepolia.s.sol"
+          CHAIN=""
+          for i in 1 2 3; do
+            if CHAIN=$(cast chain-id --rpc-url "$RPC_URL"); then break; fi
+            sleep 2
+          done
+          echo "::notice::CHAIN_ID=$CHAIN"
+          [ "$CHAIN" = "84532" ] || { echo "::error::ABORT: chain is $CHAIN, not 84532"; exit 1; }
+          [ -n "$PK" ] || { echo "::error::ABORT: BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY missing"; exit 1; }
+          DEPLOYER=$(cast wallet address --private-key "$PK")
+          BAL=$(cast balance "$DEPLOYER" --rpc-url "$RPC_URL")
+          echo "::notice::DEPLOYER=$DEPLOYER BAL_WEI=$BAL"
+          echo "::notice::OWNER=$OWNER FEE_RECIPIENT=$FEE"
+          echo "::notice::CTOR=MPGRExecutorDelegated(owner,feeRecipient,feeBps=25,weth=0x4200000000000000000000000000000000000006,permit2=0x000000000022D473030F116dDEE9F6B43aC78BA3,routers=[0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4/UNISWAP_V3_ROUTER02],tokens=[WETH,tUSD,tSTOCK])"
+          [ -n "$OWNER" ] && [ "$OWNER" != "0x0000000000000000000000000000000000000000" ] || { echo "::error::ABORT: MPGR_EXECUTOR_OWNER unset"; exit 1; }
+          [ -n "$FEE" ] && [ "$FEE" != "0x0000000000000000000000000000000000000000" ] || { echo "::error::ABORT: MPGR_EXECUTOR_FEE_RECIPIENT unset"; exit 1; }
+          [ "$FEE" != "$DEPLOYER" ] || { echo "::error::ABORT: fee recipient must differ from deployer"; exit 1; }
+          [ "$BAL" -ge 8000000000000000 ] || { echo "::error::ABORT: deployer below 0.008 ETH"; exit 1; }
+          P2LEN=$(cast code 0x000000000022D473030F116dDEE9F6B43aC78BA3 --rpc-url "$RPC_URL" | wc -c)
+          [ "$P2LEN" -gt 100 ] || { echo "::error::ABORT: canonical Permit2 not on chain"; exit 1; }
+          echo "::notice::PREFLIGHT=OK Permit2OnChain=true"
+
+      - name: Deploy — existing 84532-gated script (broadcast)
+        if: steps.mode.outputs.verify_only != 'true'
+        env:
+          BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER || secrets.MPGR_EXECUTOR_OWNER }}
+          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT || secrets.MPGR_EXECUTOR_FEE_RECIPIENT }}
+        run: |
+          set -o pipefail
+          forge script script/DeployMPGRExecutorDelegatedBaseSepolia.s.sol \
+            --rpc-url "$RPC_URL" --broadcast --slow 2>&1 | tee deploy.log
+          BC=broadcast/DeployMPGRExecutorDelegatedBaseSepolia.s.sol/84532/run-latest.json
+          EXEC=$(jq -r '[.transactions[] | select(.contractName=="MPGRExecutorDelegated")][0].contractAddress' "$BC")
+          TXH=$(jq -r '[.transactions[] | select(.contractName=="MPGRExecutorDelegated")][0].hash' "$BC")
+          echo "::notice::EXECUTOR=$EXEC"
+          echo "::notice::EXECUTOR_TX=$TXH"
+          echo "EXECUTOR=$EXEC" >> "$GITHUB_ENV"
+          echo "EXECUTOR_TX=$TXH" >> "$GITHUB_ENV"
+
+      - name: Build (for bytecode template)
+        if: always()
+        run: forge build
+
+      - name: Emit deploy failure details as annotations (part 1)
+        if: failure()
+        run: |
+          if [ -f deploy.log ]; then
+            total=$(wc -l < deploy.log)
+            start=$((total - 44)); [ "$start" -lt 1 ] && start=1
+            sed -n "${start},$((start + 13))p" deploy.log | while IFS= read -r line; do
+              echo "::error::T1 ${line:0:900}"
+            done
+          fi
+
+      - name: Emit deploy failure details as annotations (part 2)
+        if: failure()
+        run: |
+          if [ -f deploy.log ]; then
+            total=$(wc -l < deploy.log)
+            start=$((total - 30))
+            sed -n "${start},$((start + 13))p" deploy.log | while IFS= read -r line; do
+              echo "::error::T2 ${line:0:900}"
+            done
+          fi
+
+      - name: Emit deploy failure details as annotations (part 3)
+        if: failure()
+        run: |
+          if [ -f deploy.log ]; then
+            total=$(wc -l < deploy.log)
+            start=$((total - 16))
+            sed -n "${start},${total}p" deploy.log | while IFS= read -r line; do
+              echo "::error::T3 ${line:0:900}"
+            done
+          fi
+
+      - name: Post-deploy on-chain verification
+        run: |
+          set -euo pipefail
+          if [ -z "${EXECUTOR:-}" ]; then
+            if [ -n "$EXECUTOR_INPUT" ]; then
+              echo "EXECUTOR=$EXECUTOR_INPUT" >> "$GITHUB_ENV"
+            elif [ -f deployments/base-sepolia/mpgr-executor-delegated.json ]; then
+              FROMJSON=$(jq -r '.address // .executor // empty' deployments/base-sepolia/mpgr-executor-delegated.json)
+              [ -n "$FROMJSON" ] || { echo "::error::no executor address (input/deployment record)"; exit 1; }
+              echo "EXECUTOR=$FROMJSON" >> "$GITHUB_ENV"
+            else
+              echo "::error::no executor address (input/deployment record)"; exit 1
+            fi
+          fi
+          EXEC="${EXECUTOR,,}"
+          CHAIN=""
+          for i in 1 2 3; do
+            if CHAIN=$(cast chain-id --rpc-url "$RPC_URL"); then break; fi
+            sleep 2
+          done
+          echo "::notice::VERIFY_TARGET=$EXEC chain=$CHAIN"
+          # Public Sepolia RPCs blip — every read retries 3x before failing.
+          cast_try() {
+            local sig="$1" out=""
+            for i in 1 2 3; do
+              if out=$(cast call "$EXEC" "$sig" --rpc-url "$RPC_URL" 2>/tmp/cast.err); then echo "$out"; return 0; fi
+              sleep 5
+            done
+            echo "::error::V cast call $sig failed: $(tail -1 /tmp/cast.err | head -c 200)"; return 1
+          }
+          CODE=""
+          for i in 1 2 3; do
+            if CODE=$(cast code "$EXEC" --rpc-url "$RPC_URL" 2>/tmp/cast.err); then break; fi
+            sleep 5
+          done
+          [ -n "$CODE" ] || { echo "::error::V cast-code failed: $(tail -1 /tmp/cast.err | head -c 200)"; exit 1; }
+          echo "::notice::V code_len=${#CODE}"
+          TPL_JSON=$(forge inspect --json executor/MPGRExecutorDelegated.sol:MPGRExecutorDelegated deployedBytecode 2>/tmp/insp.err) \
+            || TPL_JSON=$(forge inspect --json contracts/executor/MPGRExecutorDelegated.sol:MPGRExecutorDelegated deployedBytecode 2>>/tmp/insp.err) \
+            || { echo "::error::V forge-inspect failed"; tail -3 /tmp/insp.err | while IFS= read -r l; do echo "::error::V $l"; done; exit 1; }
+          echo "::notice::V tpl_head=${TPL_JSON:0:60}"
+          TPL=$(echo "$TPL_JSON" | jq -r 'if type == "object" then (.object // .deployedBytecode.object) else . end') || { echo "::error::V jq failed"; exit 1; }
+          TPLN="$(echo "$TPL" | sed 's/^0x//' | tr 'A-F' 'a-f')"
+          CODEN="$(echo "$CODE" | sed 's/^0x//' | tr 'A-F' 'a-f')"
+          echo "::notice::BYTECODE len(code)=${#CODEN} len(template)=${#TPLN}"
+          ART=$(find out -name 'MPGRExecutorDelegated.json' -print -quit)
+          echo "::notice::V artifact=$ART"
+          IMMREF=$(jq -c '.deployedBytecode.immutableReferences // .immutableReferences // {}' "$ART") || { echo "::error::V immref-jq failed"; exit 1; }
+          echo "::notice::V immref=${IMMREF:0:200}"
+          python3 - "$CODEN" "$TPLN" "$IMMREF" 2>/tmp/py.err <<'PY' || { echo "::error::V python failed"; tail -6 /tmp/py.err | while IFS= read -r l; do echo "::error::PY $l"; done; exit 1; }
+          import json, sys
+          code, tpl, imm = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+
+          def strip_metadata(h):
+              # solc appends CBOR metadata: ... 0x00 <len 2 bytes>; len counts BYTES
+              if len(h) >= 4:
+                  n = int(h[-4:], 16)
+                  if 0 < n < len(h) // 2:
+                      return h[: len(h) - 2 * n - 4]
+              return h
+
+          cm, tm = strip_metadata(code), strip_metadata(tpl)
+          def refs_of(entry):
+              if isinstance(entry, dict) and "offsets" in entry:
+                  for off in entry["offsets"]:
+                      yield off, entry["length"]
+              elif isinstance(entry, list):
+                  for r in entry:
+                      yield r["start"], r["length"]
+
+          mc, mt = cm, tm
+          n = 0
+          for entry in imm.values():
+              for off, ln in refs_of(entry):
+                  a, b = off * 2, (off + ln) * 2
+                  mc = mc[:a] + "ff" * ln + mc[b:]
+                  mt = mt[:a] + "ff" * ln + mt[b:]
+                  n += 1
+          ok = len(cm) == len(tm) and mc == mt
+          print("::notice::BYTECODE_MATCH=%s (runtime == compiled template, metadata hash excluded, %d immutable sites)" % (ok, n))
+          if not ok:
+              d = next((i for i, (x, y) in enumerate(zip(cm, tm)) if x != y), min(len(cm), len(tm)))
+              print("::notice::FIRST_DIFF_AT_BYTE=%d code=%d tmpl=%d" % (d // 2, len(cm) // 2, len(tm) // 2))
+          sys.exit(0 if ok else 1)
+          PY
+          O=$(cast_try "owner()(address)")
+          P=$(cast_try "pendingOwner()(address)")
+          B=$(cast_try "feeBps()(uint16)")
+          F=$(cast_try "feeRecipient()(address)")
+          P2=$(cast_try "PERMIT2()(address)")
+          W=$(cast_try "WETH()(address)")
+          WT=$(cast_try "WITNESS_TYPE_STRING()(string)")
+          echo "::notice::ONCHAIN owner=$O pendingOwner=$P feeBps=$B feeRecipient=$F"
+          echo "::notice::ONCHAIN permit2=$P2 weth=$W"
+          echo "::notice::ONCHAIN witnessTypeString=$WT"
+          [ "$P2" = "0x000000000022D473030F116dDEE9F6B43aC78BA3" ] || { echo "::error::Permit2 config mismatch"; exit 1; }
+          [ "$B" = "25" ] || { echo "::error::feeBps mismatch"; exit 1; }
+          [ "$P" = "0x0000000000000000000000000000000000000000" ] || { echo "::error::unexpected pendingOwner"; exit 1; }
+          echo "ONCHAIN_OWNER=$O" >> "$GITHUB_ENV"
+          echo "ONCHAIN_FEE=$F" >> "$GITHUB_ENV"
+          echo "ONCHAIN_FEEBPS=$B" >> "$GITHUB_ENV"
+          echo "ONCHAIN_P2=$P2" >> "$GITHUB_ENV"
+          echo "ONCHAIN_WETH=$W" >> "$GITHUB_ENV"
+          echo "ONCHAIN_WT=$WT" >> "$GITHUB_ENV"
+          echo "::notice::DEPLOYMENT_VERIFIED=true"
+
+      # The operator's sandbox cannot reach Base RPC; these ::error::-prefixed
+      # annotations (they never fail the run) are the reliable machine-readable
+      # channel for the deployment report.
+      - name: Emit machine-readable deployment results (check annotations)
+        if: always()
+        run: |
+          [ -n "${EXECUTOR:-}" ] || EXECUTOR=unknown
+          [ -n "${EXECUTOR_TX:-}" ] || EXECUTOR_TX=unknown
+          echo "::error::DEPLOY_RESULT executor=$EXECUTOR"
+          echo "::error::DEPLOY_RESULT tx=$EXECUTOR_TX"
+          echo "::error::DEPLOY_RESULT owner=${ONCHAIN_OWNER:-unknown}"
+          echo "::error::DEPLOY_RESULT feeRecipient=${ONCHAIN_FEE:-unknown}"
+          echo "::error::DEPLOY_RESULT feeBps=${ONCHAIN_FEEBPS:-unknown}"
+          echo "::error::DEPLOY_RESULT permit2=${ONCHAIN_P2:-unknown}"
+          TUSD=$(jq -r '.tusd // empty' deployments/base-sepolia/mpgr-executor-delegated.json 2>/dev/null || true)
+          TSTOCK=$(jq -r '.tstock // empty' deployments/base-sepolia/mpgr-executor-delegated.json 2>/dev/null || true)
+          echo "::error::DEPLOY_RESULT tusd=${TUSD:-n/a}"
+          echo "::error::DEPLOY_RESULT tstock=${TSTOCK:-n/a}"
+          echo "::error::DEPLOY_RESULT weth=${ONCHAIN_WETH:-unknown}"
+          echo "::error::DEPLOY_RESULT witnessTypeString=${ONCHAIN_WT:-unknown}"
+
+      - name: Upload deployment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-sepolia-deployment
+          path: |
+            deploy.log
+            deployments/base-sepolia/mpgr-executor-delegated.json
+            broadcast/DeployMPGRExecutorDelegatedBaseSepolia.s.sol/84532/run-latest.json
+          if-no-files-found: warn

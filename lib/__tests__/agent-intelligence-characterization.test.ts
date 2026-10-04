@@ -98,12 +98,13 @@ const mockFullContext: AgentContext = {
 
 describe("agent-intelligence Characterization & Extracted Modules (Task 13)", () => {
   describe("types: AGENT_INTENTS integrity", () => {
-    it("preserves exact list of 19 defined agent intents", () => {
-      expect(AGENT_INTENTS).toHaveLength(19);
+    it("preserves exact list of 20 defined agent intents", () => {
+      expect(AGENT_INTENTS).toHaveLength(20);
       expect(AGENT_INTENTS).toContain("portfolio_summary");
       expect(AGENT_INTENTS).toContain("research_query");
       expect(AGENT_INTENTS).toContain("market_overview");
       expect(AGENT_INTENTS).toContain("suggest_next_action");
+      expect(AGENT_INTENTS).toContain("autonomous_status");
     });
   });
 

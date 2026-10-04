@@ -26,6 +26,7 @@ import {
   type Address,
   type Hex,
   type Log,
+  encodeFunctionData,
 } from "viem";
 
 import {
@@ -85,9 +86,20 @@ const DEFAULT_SLIPPAGE_BPS = 100;
 
 export interface McpDeps {
   registry: Record<ExecutorChainId, ExecutorDeployment | null>;
+  /**
+   * Phase 3 delegated path: route registry for MPGRExecutorDelegated (Base
+   * Sepolia). Selected ONLY when a quote explicitly passes the pinned
+   * delegated executor address as `executor` — never as a silent default.
+   */
+  delegatedRegistry?: Partial<Record<ExecutorChainId, ExecutorDeployment>>;
   reader: (chainId: ExecutorChainId) => ChainReader;
   nowSeconds: () => number;
   quoteSecret?: string;
+  /**
+   * Phase 2 delegated path ONLY: the operator broadcaster (Base Sepolia).
+   * Fail-closed: when absent, mpgr_delegate_swap refuses. Never user keys.
+   */
+  delegatedBroadcaster?: (tx: { to: Address; data: Hex; chainId: number }) => Promise<Hex>;
   /**
    * Base mainnet MCP trading (executor path AND 0x fallback). OFF unless
    * MPGR_MCP_ENABLE_BASE_MAINNET=true. The registry entry is a deployed fact;
@@ -330,6 +342,32 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
   const slippage = parseSlippage(args.slippageBps);
   if (typeof slippage === "string") return fail("INVALID_SLIPPAGE", slippage);
 
+  // ---- Delegated-executor quoting (Phase 3, opt-in) ------------------------
+  // The delegated executor has its OWN run-fresh token allowlist and pools;
+  // quoting the v1 registry against it would cross-wire two contracts. So the
+  // delegated registry is chosen ONLY for an explicit, exact executor match —
+  // anything else fails closed. Omitting `executor` keeps the v1 behaviour.
+  const executorArg = typeof args.executor === "string" ? args.executor.trim() : "";
+  if (executorArg) {
+    if (chainId !== BASE_SEPOLIA_CHAIN_ID) {
+      return fail("UNSUPPORTED_CHAIN", "The delegated executor is Base Sepolia (84532) only.");
+    }
+    let requested: Address;
+    try {
+      requested = getAddress(executorArg);
+    } catch {
+      return fail("INVALID_EXECUTOR", "executor must be a valid address.");
+    }
+    if (requested !== DELEGATED_EXECUTOR_ADDRESS) {
+      return fail("EXECUTOR_MISMATCH", "executor does not match the pinned delegated executor.");
+    }
+    const delegated = deps.delegatedRegistry?.[chainId];
+    if (!delegated) {
+      return fail("EXECUTOR_NOT_DEPLOYED", "The delegated executor is not registered for quoting.");
+    }
+    return quoteExecutor(deps, chainId, delegated, args, null, null, taker, slippage);
+  }
+
   // ---- Base mainnet provider dispatch -------------------------------------
   // 1. Operator switch: nothing is quoted on 8453 while mainnet MCP trading
   //    is disabled (MPGR_MCP_ENABLE_BASE_MAINNET unset/false).
@@ -398,6 +436,11 @@ async function quoteExecutor(
   } catch {
     return fail("QUOTE_FAILED", "The on-chain quoter could not price this trade (insufficient liquidity?).");
   }
+  // Defense-in-depth: a structurally unusable quote must fail CLOSED as a
+  // structured QUOTE_FAILED (goal stays ACTIVE, nothing broadcast) instead of
+  // crashing later at `expectedBuyAmount: expected.toString()`.
+  if (typeof expected !== "bigint" || expected <= 0n)
+    return fail("QUOTE_FAILED", "Quoter returned no usable output amount.");
 
   const now = deps.nowSeconds();
   const payload: QuotePayload = {
@@ -670,10 +713,31 @@ export async function verifyTrade(deps: McpDeps, input: unknown): Promise<ToolOu
 
   if (p.provider === "0x-native-fee") return verifyZeroExReceipt(p, receipt);
 
-  const d = deps.registry[chainId];
-  if (!d) return fail("EXECUTOR_NOT_DEPLOYED", "Executor not deployed on this chain.");
+  const defaultDeployment = deps.registry[chainId];
+  if (!defaultDeployment) return fail("EXECUTOR_NOT_DEPLOYED", "Executor not deployed on this chain.");
+  // Phase 3: select the verification registry by FACT — the receipt's
+  // executed contract. A trade the delegated executor executed is verified
+  // against the delegated registry (its own token allowlist/routes); every
+  // other trade keeps the v1 default. Fail-closed: an unknown executor fails
+  // the executor checks downstream, never passes by heuristic.
+  const delegatedDeployment = deps.delegatedRegistry?.[chainId];
+  const executedTo = typeof receipt.to === "string" ? getAddress(receipt.to) : null;
+  const d = delegatedDeployment && executedTo !== null && executedTo === delegatedDeployment.executor ? delegatedDeployment : defaultDeployment;
   const built = intentFromPayload(d, p, args.quoteId as string, "APPROVAL");
   if (!built.ok) return built;
+  if (typeof args.expectedSender === "string" && isAddress(args.expectedSender)) {
+    // Delegated path ONLY (additive): verification is scoped to the explicit
+    // expectedSender; the event taker check remains the owner binding.
+    built.intent.expectedSender = getAddress(args.expectedSender);
+  }
+  if (typeof args.expectedIntentId === "string") {
+    // Delegated path ONLY: the executor REQUIRES call intentId == the signed
+    // witness actionId (contract line: p.intentId != auth.witness.actionId ->
+    // InvalidWitness), so the event carries the actionId, never the quote-
+    // derived id. The caller pins it explicitly; the event check stays strict.
+    if (!/^0x[0-9a-fA-F]{64}$/.test(args.expectedIntentId)) return fail("INVALID_INTENT_ID", "expectedIntentId must be a 32-byte hex hash.");
+    built.intent.intentId = args.expectedIntentId as `0x${string}`;
+  }
   const result = verifyExecutorReceipt(receipt, built.intent);
   return { ok: true, data: jsonSafe({ ...result, explorerUrl: `${EXECUTOR_EXPLORERS[chainId]}/tx/${receipt.transactionHash}` }) as Record<string, unknown> };
 }
@@ -806,4 +870,91 @@ function verifyZeroExReceipt(p: QuotePayload, receipt: Awaited<ReturnType<ChainR
     ok: true,
     data: { verified: checks.every((c) => c.ok), transactionHash: receipt.transactionHash, blockNumber: receipt.blockNumber.toString(), checks },
   };
+}
+
+// ============================================================ delegated execution (Phase 2, Base Sepolia only)
+
+import { DELEGATED_EXECUTOR_ADDRESS, DELEGATED_EXECUTOR_ABI, DELEGATED_EXECUTOR_CHAIN_ID, DELEGATED_EXECUTOR_FEE_BPS, buildDelegatedSwapParams } from "@/lib/executor/delegated-executor";
+import { delegatedBroadcasterAddress } from "@/lib/delegated/delegated-broadcaster";
+
+/**
+ * mpgr_delegate_swap — the delegated execution capability. The CALLER (the
+ * autonomy runtime's execution adapter) has already validated policy,
+ * authorization slots, quote freshness and idempotency. This function only
+ * rebuilds deterministic parameters from the bound values, encodes the
+ * executor call and broadcasts with the operator broadcaster. The user's
+ * signature travels as authorization bytes; it is never logged.
+ */
+export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolOutcome> {
+  const args = asRecord(input);
+  const chainId = parseChainId(args.chainId);
+  if (chainId !== DELEGATED_EXECUTOR_CHAIN_ID) {
+    return fail("UNSUPPORTED_CHAIN", "Delegated execution is Base Sepolia (84532) only.");
+  }
+  const broadcast = deps.delegatedBroadcaster;
+  if (!broadcast) return fail("BROADCASTER_NOT_CONFIGURED", "Delegated execution is not configured on the server (fail-closed).");
+  const auth = asRecord(args.authorization);
+  const permit = asRecord(auth.permit);
+  const permitted = asRecord(permit.permitted);
+  const witness = asRecord(auth.witness);
+  const sig = auth.signature;
+  const numeric = (v: unknown) => (typeof v === "string" && /^\d{1,78}$/.test(v) ? BigInt(v) : null);
+  const addr = (v: unknown) => (typeof v === "string" && isAddress(v) ? getAddress(v) : null);
+  const tokenIn = addr(permitted.token);
+  const amount = numeric(permitted.amount);
+  const nonce = numeric(permit.nonce);
+  const deadline = numeric(permit.deadline ?? args.deadline);
+  const owner = addr(witness.owner);
+  const buyToken = addr(witness.buyToken);
+  const minOut = numeric(witness.minAmountOut);
+  const policyHash = typeof witness.policyHash === "string" && /^0x[0-9a-fA-F]{64}$/.test(witness.policyHash) ? witness.policyHash : null;
+  const actionId = typeof witness.actionId === "string" && /^0x[0-9a-fA-F]{64}$/.test(witness.actionId) ? witness.actionId : null;
+  const intentId = typeof args.intentId === "string" && /^0x[0-9a-fA-F]{64}$/.test(args.intentId) ? args.intentId : null;
+  const router = addr(args.router);
+  const poolFee = typeof args.poolFee === "number" && [100, 500, 3000, 10000].includes(args.poolFee) ? args.poolFee : null;
+  if (!tokenIn || !buyToken || !owner || amount === null || nonce === null || deadline === null || minOut === null || !policyHash || !actionId || !intentId || !router || poolFee === null) {
+    return fail("INVALID_AUTHORIZATION", "Delegated authorization is incomplete or malformed.");
+  }
+  if (typeof sig !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(sig)) return fail("INVALID_AUTHORIZATION", "Signature must be 65-byte rsv hex.");
+  const grossAmountIn = amount;
+  const fee = (grossAmountIn * BigInt(DELEGATED_EXECUTOR_FEE_BPS)) / 10_000n;
+  if (fee === 0n) return fail("FEE_ROUNDS_TO_ZERO", "Amount too small for the canonical 25 bps fee.");
+  const expectedFeeAmount = typeof args.expectedFeeAmount === "string" && /^\d{1,78}$/.test(args.expectedFeeAmount) ? BigInt(args.expectedFeeAmount) : null;
+  if (expectedFeeAmount !== fee) return fail("FEE_MISMATCH", "Committed fee does not equal floor(gross * 25bps) — refusing (fail-closed).");
+  const params = buildDelegatedSwapParams({
+    router, tokenIn, tokenOut: buyToken, grossAmountIn: grossAmountIn.toString(),
+    minAmountOut: minOut.toString(), deadline: Number(deadline), intentId: intentId as `0x${string}`, owner,
+    feeBps: DELEGATED_EXECUTOR_FEE_BPS,
+  });
+  if (params.expectedFeeAmount !== fee) return fail("FEE_MISMATCH", "Fee math divergence — refusing (fail-closed).");
+  const data = encodeFunctionData({
+    abi: DELEGATED_EXECUTOR_ABI,
+    functionName: "swapOnBehalfOfUniswapV3",
+    args: [
+      params,
+      poolFee,
+      {
+        permit: { permitted: { token: tokenIn, amount }, nonce, deadline },
+        witness: { owner, buyToken, minAmountOut: minOut, deadline, actionId: actionId as Hex, policyHash: policyHash as Hex },
+        signature: sig as Hex,
+      },
+    ],
+  });
+  try {
+    const txHash = await broadcast({ to: DELEGATED_EXECUTOR_ADDRESS, data, chainId: DELEGATED_EXECUTOR_CHAIN_ID });
+    return { ok: true, data: jsonSafe({ txHash, delegatedExecutor: DELEGATED_EXECUTOR_ADDRESS, chainId: DELEGATED_EXECUTOR_CHAIN_ID, expectedSender: delegatedBroadcasterAddress() }) as Record<string, unknown> };
+  } catch (error) {
+    // PHASE 5: sanitized diagnostics — the fail-closed message carries the
+    // underlying cause (viem shortMessage) so operators can diagnose a failed
+    // broadcast WITHOUT weakening the safety semantics. URLs (possible RPC
+    // endpoints) are stripped; the message is length-capped. No key material
+    // can appear here (viem never places the signing key in error messages).
+    const raw = typeof (error as { shortMessage?: unknown })?.shortMessage === "string"
+      ? (error as { shortMessage: string }).shortMessage
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    const sanitized = raw.replace(/https?:\/\/\S+/g, "[rpc]").slice(0, 240);
+    return fail("RPC_ERROR", `Delegated broadcast failed (${sanitized}). The authorization slot stays consumed (uncertain-broadcast safety).`);
+  }
 }

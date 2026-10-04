@@ -26,7 +26,7 @@ const QUOTE_DEDUPE_MS = 6_000;
 
 function statusFor(code: string): number {
   if (code === "CREDENTIALS_MISSING") return 503;
-  if (code === "INVALID_INPUT" || code === "UNSUPPORTED_ASSET") return 400;
+  if (code === "INVALID_INPUT" || code === "UNSUPPORTED_ASSET" || code === "UNSUPPORTED_INPUT") return 400;
   if (code === "WALLET_REQUIRED") return 401;
   if (code === "LIQUIDITY_UNAVAILABLE") return 409;
   return 502;
@@ -80,6 +80,14 @@ export async function POST(request: Request) {
   }
   const amountUnit = rawAmountUnit as "usd" | "token" | undefined;
 
+  // Explicitly named funding asset ("Buy 0.001 AAPLc with ETH"). Absent
+  // keeps the historical USDC-funded behavior byte-for-byte; present, it
+  // must be honored or REFUSED — never silently substituted. It is part
+  // of the dedupe key so a USDC-funded quote can never be served for an
+  // explicitly different funding request (or vice versa).
+  const rawFundingAsset = typeof body?.fundingAsset === "string" ? body.fundingAsset.trim() : "";
+  const fundingAsset = rawFundingAsset.length > 0 && rawFundingAsset.length <= 24 ? rawFundingAsset : undefined;
+
   if (!symbol || !amount) {
     return json(
       { error: "symbol and amount are required.", code: "INVALID_INPUT" },
@@ -95,6 +103,7 @@ export async function POST(request: Request) {
       side,
       amount,
       amountUnit ?? "usd",
+      fundingAsset ?? "",
     ].join(":"),
     QUOTE_DEDUPE_MS,
     () =>
@@ -104,6 +113,7 @@ export async function POST(request: Request) {
         amountHuman: amount,
         taker: session.wallet,
         ...(amountUnit ? { amountUnit } : {}),
+        ...(fundingAsset ? { fundingAsset } : {}),
       }),
   );
   if (!result.ok) {

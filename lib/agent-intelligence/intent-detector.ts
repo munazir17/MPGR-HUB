@@ -128,6 +128,19 @@ export const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
     "bitcoin",
     "market today",
   ],
+  autonomous_status: [
+    "autonomous status",
+    "autonomy status",
+    "show my autonomous status",
+    "what is my autonomous status",
+    "what's my autonomous status",
+    "whats my autonomous status",
+    "is autonomous mode enabled",
+    "is my autonomous agent enabled",
+    "is autonomous mode on",
+    "autonomous mode",
+    "autonomy mode",
+  ],
 };
 
 export const INTENT_PRIORITY: AgentIntent[] = [
@@ -137,6 +150,7 @@ export const INTENT_PRIORITY: AgentIntent[] = [
   "open_staking",
   "open_premium",
   "open_leaderboard",
+  "autonomous_status",
   "suggest_next_action",
   "portfolio_summary",
   "holder_tier",

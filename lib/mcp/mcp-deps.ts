@@ -5,7 +5,12 @@ import "server-only";
 // the tool outputs (the quote secret only keys the HMAC on quote ids).
 
 import { createChainReader, type ChainReader } from "@/lib/executor/executor-chain";
-import { MPGR_EXECUTOR_DEPLOYMENTS, type ExecutorChainId } from "@/lib/executor/executor-config";
+import {
+  MPGR_EXECUTOR_DEPLOYMENTS,
+  BASE_SEPOLIA_CHAIN_ID,
+  type ExecutorChainId,
+} from "@/lib/executor/executor-config";
+import { BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT } from "@/lib/executor/delegated-executor";
 import { getAgentFeeRecipient } from "@/lib/trade/trade-agent-fee";
 
 import type { McpDeps } from "./mcp-trade-service";
@@ -21,6 +26,7 @@ export function createMcpDeps(): McpDeps {
   const secret = process.env.AUTH_SESSION_SECRET;
   return {
     registry: MPGR_EXECUTOR_DEPLOYMENTS,
+    delegatedRegistry: { [BASE_SEPOLIA_CHAIN_ID]: BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT },
     reader: (chainId) => {
       let r = readers.get(chainId);
       if (!r) {

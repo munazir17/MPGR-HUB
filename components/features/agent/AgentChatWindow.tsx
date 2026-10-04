@@ -9,6 +9,7 @@ import type { AgentFeedback, AgentMessage } from "@/lib/agent-engine";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
+import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 
 interface AgentChatWindowProps {
   messages: AgentMessage[];
@@ -26,6 +27,8 @@ interface AgentChatWindowProps {
   onReviewX402Proposal?: (proposal: X402PaymentProposal) => void;
   onReviewTradeProposal?: (proposal: TradeProposal) => void;
   onReviewTransferProposal?: (proposal: TransferProposal) => void;
+  // Autonomous Agent Runtime (ADDITIVE) — forwarded to AgentChatBubble.
+  onReviewAutonomyGoal?: (draft: AutonomyGoalDraft) => void;
 }
 
 // Finds the last assistant message that actually has follow-up prompts to
@@ -65,6 +68,7 @@ export function AgentChatWindow({
   onReviewX402Proposal,
   onReviewTradeProposal,
   onReviewTransferProposal,
+  onReviewAutonomyGoal,
 }: AgentChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -101,6 +105,7 @@ export function AgentChatWindow({
               onReviewX402Proposal={onReviewX402Proposal}
               onReviewTradeProposal={onReviewTradeProposal}
               onReviewTransferProposal={onReviewTransferProposal}
+              onReviewAutonomyGoal={onReviewAutonomyGoal}
             />
             {i === lastFollowUpIndex && (
               <AgentFollowUpChips followUps={message.followUps!} onSelect={onSelectPrompt} disabled={thinking} />

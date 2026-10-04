@@ -366,3 +366,24 @@ export function extractX402ResourceUrl(rawPrompt: string): string | null {
     return null;
   }
 }
+
+/**
+ * The explicitly named funding/input asset of an order, when the user
+ * states one with an unambiguous spend marker: "Buy 0.001 AAPLc with
+ * ETH", "buy AAPLc using my USDC", "pay with WETH". Returns the raw
+ * captured word (caller resolves it against the token catalog) or null
+ * when no explicit funding asset is present.
+ *
+ * Deliberately narrow: "in" alone is excluded ("$10 in AAPLc" names the
+ * TARGET, not the funding asset), and "of" phrases ("$10 of AAPLc") are
+ * target phrasing. Callers must treat null as "not stated" and keep
+ * their existing default — never as license to substitute silently.
+ */
+export function extractExplicitFundingAsset(rawPrompt: string): string | null {
+  if (!rawPrompt) return null;
+  const match = rawPrompt.match(
+    /\b(?:with|using|paid\s+(?:with|in))\s+(?:my\s+)?([a-zA-Z]{2,10})\b/i,
+  );
+  const asset = match?.[1]?.trim();
+  return asset && asset.length > 0 ? asset : null;
+}

@@ -25,7 +25,7 @@ import { estimateSwapPriceImpactBps } from "./trade-price-impact";
 import { createRoutedSwapQuote } from "./trade-swap-router";
 import { findTokenizedStock } from "./tokenized-stocks";
 import { readTokenizedStockOnchain } from "./tokenized-stocks-onchain";
-import { resolveTradeToken } from "./trade-tokens";
+import { findKnownTradeToken, resolveTradeToken } from "./trade-tokens";
 import type { TradeError, TradeProposal } from "./trade-types";
 
 export type TokenizedStockSwapOutcome =
@@ -52,7 +52,33 @@ export async function prepareTokenizedStockSwap(input: {
    * Defaults to "usd" so every existing caller keeps its behavior exactly.
    */
   amountUnit?: "usd" | "token";
+  /**
+   * Explicitly named funding/input asset ("with ETH"). Absent (undefined)
+   * keeps the historical USDC-funded behavior byte-for-byte. When present
+   * it is honored or REFUSED — never silently substituted: only USDC is
+   * supported (the executor's fee-collecting route is USDC-based), and
+   * any other resolvable-or-unknown asset returns UNSUPPORTED_INPUT
+   * before any quote, fee math, or on-chain read runs.
+   */
+  fundingAsset?: string;
 }): Promise<TokenizedStockSwapOutcome> {
+  // Explicit funding asset guard FIRST: pure catalog lookup, no RPC, no
+  // quote. ETH/WETH/USDT/anything non-USDC → clear refusal, never a
+  // USDC proposal under the user's chosen asset's name.
+  const rawFundingAsset = typeof input.fundingAsset === "string" ? input.fundingAsset.trim() : "";
+  if (rawFundingAsset.length > 0) {
+    const fundingToken = findKnownTradeToken(rawFundingAsset);
+    const fundingSymbol = fundingToken?.symbol.toUpperCase() ?? null;
+    if (fundingSymbol !== "USDC") {
+      return {
+        ok: false,
+        error: {
+          code: "UNSUPPORTED_INPUT",
+          message: `Tokenized-stock orders currently fund with USDC only — ${fundingToken ? fundingToken.symbol : rawFundingAsset.toUpperCase()} is not supported for this route. Nothing was signed or submitted. Swap to USDC first, then buy with USDC.`,
+        },
+      };
+    }
+  }
   // SECURITY: reject signed/negative dollar amounts before any
   // catalog lookup, quote generation, or execution preparation.
   // The raw tool input must preserve the user's original sign;

@@ -17,3 +17,12 @@
 # so generic-api-key matches. Only these two exact fingerprints are exempted.
 9e7e6b1ae89b517606683fcd653cc1993120f9bc:deployments/base-sepolia/mpgr-executor.json:generic-api-key:17
 9e7e6b1ae89b517606683fcd653cc1993120f9bc:deployments/base-sepolia/mpgr-executor.json:generic-api-key:18
+#
+# Commit f62ea5d (PR #65) used a fictional placeholder EVM address in the
+# autonomy policy-engine test ("0x1234567890abcdef…" — a made-up reject-case
+# token, never a credential). The `sellToken:` key name contains "Token", so
+# generic-api-key matched the 40-hex placeholder (entropy 4.04 ≥ 3.5). The
+# in-tree literal was replaced by a low-entropy placeholder ("0xabab…") in
+# the same PR; only this exact historical fingerprint is exempted — every
+# rule, path and future commit stays scanned.
+f62ea5d2c5d71d44ea8079e44a49fa2edc29d00c:lib/autonomy/__tests__/policy-engine.test.ts:generic-api-key:60

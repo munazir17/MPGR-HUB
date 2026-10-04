@@ -165,3 +165,75 @@ describe("POST /api/trade/stocks/quote — wallet session", () => {
     });
   });
 });
+
+describe("POST /api/trade/stocks/quote — explicit funding asset", () => {
+  let savedAppOrigin: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    savedAppOrigin = process.env.APP_ORIGIN;
+    process.env.APP_ORIGIN = APP_ORIGIN;
+    getSessionFromRequest.mockReturnValue({ wallet: SESSION_WALLET });
+  });
+
+  afterEach(() => {
+    if (savedAppOrigin === undefined) delete process.env.APP_ORIGIN;
+    else process.env.APP_ORIGIN = savedAppOrigin;
+  });
+
+  it("refuses a non-USDC funding asset with 400 UNSUPPORTED_INPUT (never a substituted proposal)", async () => {
+    prepareTokenizedStockSwap.mockResolvedValue({
+      ok: false,
+      error: {
+        code: "UNSUPPORTED_INPUT",
+        message: "Tokenized-stock orders currently fund with USDC only — ETH is not supported for this route. Nothing was signed or submitted. Swap to USDC first, then buy with USDC.",
+      },
+    });
+    const { POST } = await import("./route");
+    const response = await POST(
+      postStockQuote(
+        { origin: APP_ORIGIN },
+        { symbol: "AAPLc", amount: "0.001", side: "BUY", amountUnit: "token", fundingAsset: "ETH" },
+      ),
+    );
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.code).toBe("UNSUPPORTED_INPUT");
+    expect(body.error).toContain("USDC only");
+    expect(prepareTokenizedStockSwap).toHaveBeenCalledWith(
+      expect.objectContaining({ fundingAsset: "ETH" }),
+    );
+  });
+
+  it("forwards an explicit USDC funding asset into the prepare call", async () => {
+    prepareTokenizedStockSwap.mockResolvedValue({ ok: true, proposal: { id: "p_usdc" } });
+    const { POST } = await import("./route");
+    const response = await POST(
+      postStockQuote(
+        { origin: APP_ORIGIN },
+        { symbol: "AAPLc", amount: "0.001", side: "BUY", amountUnit: "token", fundingAsset: "USDC" },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(prepareTokenizedStockSwap).toHaveBeenCalledWith(
+      expect.objectContaining({ fundingAsset: "USDC" }),
+    );
+  });
+
+  it("keeps historical bodies exactly: no fundingAsset key when the caller does not send one", async () => {
+    prepareTokenizedStockSwap.mockResolvedValue({ ok: true, proposal: { id: "p_plain" } });
+    const { POST } = await import("./route");
+    // Distinct amount so the 6s quote-dedupe cache (keyed on the request
+    // tuple) cannot serve a sibling test's entry.
+    const response = await POST(
+      postStockQuote({ origin: APP_ORIGIN }, { symbol: "AAPLc", amount: "77", side: "BUY" }),
+    );
+    expect(response.status).toBe(200);
+    expect(prepareTokenizedStockSwap).toHaveBeenCalledWith({
+      symbol: "AAPLc",
+      side: "BUY",
+      amountHuman: "77",
+      taker: SESSION_WALLET,
+    });
+  });
+});
