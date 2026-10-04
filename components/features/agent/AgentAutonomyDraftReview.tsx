@@ -43,7 +43,7 @@ interface DraftReviewDialogProps {
 
 function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps) {
   const titleId = useId();
-  const { tokens, busy, error, dismissError, authorizeGoal, config } = autonomy;
+  const { tokens, busy, error, dismissError, authorizeGoal, config, authenticated, authenticating, signIn } = autonomy;
   const [form, setForm] = useState<AutonomyAuthorizeFormState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [activated, setActivated] = useState(false);
@@ -59,6 +59,14 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
     if (!formState.sell || !formState.buy) {
       setNotice("Pick both tokens first.");
       return;
+    }
+    // If the wallet is connected but has no server-side SIWE session,
+    // initiate the existing wallet-auth flow first. After successful
+    // authentication, automatically continue the authorization the user
+    // explicitly requested — signing in alone never auto-authorizes.
+    if (!authenticated) {
+      const signedIn = await signIn();
+      if (!signedIn) return;
     }
     const result = await authorizeGoal(autonomyFormToDraftInput(formState));
     if (result.ok) {
@@ -260,6 +268,11 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
                 {config?.emergencyDisabled ? "Autonomous goals are disabled by the operator." : "Autonomous goals are unavailable right now."}
               </p>
             )}
+            {!authenticated && (
+              <p className="mb-3 text-[11px] text-amber-200" data-testid="agent-autonomy-draft-auth-notice">
+                Sign in with your wallet to authorize this goal.
+              </p>
+            )}
             <div className="flex gap-2">
               <button
                 type="button"
@@ -268,7 +281,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
                 disabled={busy || !canAuthorize}
                 className="min-h-[36px] flex-1 rounded-lg bg-gradient-blue px-3 text-xs font-semibold text-white disabled:opacity-50"
               >
-                {busy ? "Working…" : "Authorize & activate goal"}
+                {busy && authenticating ? "Signing in…" : busy ? "Working…" : !authenticated ? "Sign in & authorize" : "Authorize & activate goal"}
               </button>
               <button
                 type="button"

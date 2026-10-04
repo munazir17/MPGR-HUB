@@ -58,6 +58,10 @@ const fixtures = vi.hoisted(() => {
     signDelegatedSlots: async () => ({ ok: true as const }),
     authorizeGoal: async () => ({ ok: true as const }),
     mutate: async () => true,
+    authenticated: true,
+    authenticating: false,
+    signIn: async () => true,
+    ensureSession: async () => true,
     openWithDraft: (next: AutonomyGoalDraft) => {
       autonomy.draft = next;
     },

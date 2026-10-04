@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount, useSignTypedData } from "wagmi";
 import { fetchWithSession } from "@/lib/api/authenticated-fetch";
+import { useWalletAuth } from "@/hooks/useWalletAuth";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import {
   DELEGATED_EXECUTOR_ADDRESS,
@@ -146,6 +147,7 @@ export interface DelegatedSlotsInput {
 export function useAgentAutonomy() {
   const { address, chainId: connectedChainId } = useAccount();
   const { signTypedDataAsync } = useSignTypedData();
+  const { authenticated: walletAuthenticated, authenticating: walletAuthenticating, authenticate: walletAuthenticate } = useWalletAuth();
   const [config, setConfig] = useState<AutonomyConfig | null>(null);
   const [goals, setGoals] = useState<AutonomyGoalView[]>([]);
   const [policies, setPolicies] = useState<AutonomyPolicyView[]>([]);
@@ -159,6 +161,19 @@ export function useAgentAutonomy() {
   const hasPendingRef = useRef(false);
   const tokensFetchedRef = useRef(false);
   const loadedWalletRef = useRef<string | undefined>(undefined);
+
+  /**
+   * Ensure the connected wallet has a valid server-side SIWE session before
+   * making any authenticated API call. Returns true when the session is
+   * ready (already existed or just established); false when the wallet is
+   * not connected or the sign-in flow failed/was cancelled. This mirrors
+   * the same pattern used by useCampaign and prevents "Authentication
+   * required" errors from silently hitting the autonomy API routes.
+   */
+  const ensureSession = useCallback(async (): Promise<boolean> => {
+    if (walletAuthenticated) return true;
+    return walletAuthenticate();
+  }, [walletAuthenticated, walletAuthenticate]);
 
   const refresh = useCallback(async () => {
     if (!walletKey) return;
@@ -230,6 +245,10 @@ export function useAgentAutonomy() {
       setBusy(true);
       setError(null);
       try {
+        if (!(await ensureSession())) {
+          setError("Sign in with your wallet first.");
+          return false;
+        }
         const res = await fetchWithSession(`/api/agent/autonomy/goals/${encodeURIComponent(goalId)}`, {
           method,
           headers: { "Content-Type": "application/json" },
@@ -243,7 +262,7 @@ export function useAgentAutonomy() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, ensureSession],
   );
 
   const pause = useCallback((goalId: string) => mutate(goalId, { action: "pause" }), [mutate]);
@@ -255,6 +274,10 @@ export function useAgentAutonomy() {
       setBusy(true);
       setError(null);
       try {
+        if (!(await ensureSession())) {
+          setError("Sign in with your wallet first.");
+          return false;
+        }
         const res = await fetchWithSession(`/api/agent/autonomy/policy?id=${encodeURIComponent(policyId)}`, { method: "DELETE" });
         if (!res.ok) setError("The authorization could not be revoked right now.");
         await refresh();
@@ -263,7 +286,7 @@ export function useAgentAutonomy() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, ensureSession],
   );
 
   /**
@@ -276,6 +299,17 @@ export function useAgentAutonomy() {
       setBusy(true);
       setError(null);
       try {
+        // The autonomy API routes require a live SIWE session. If the wallet
+        // is connected but has no server session (the user never signed in),
+        // initiate the existing wallet-auth flow first. After successful
+        // authentication, the authorization proceeds — the user still had to
+        // press the explicit "Authorize & activate goal" button, and signing
+        // in alone never auto-authorizes anything.
+        if (!(await ensureSession())) {
+          const message = "Sign in with your wallet to authorize this goal.";
+          setError(message);
+          return { ok: false, message };
+        }
         const policyRes = await fetchWithSession("/api/agent/autonomy/policy", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -311,7 +345,7 @@ export function useAgentAutonomy() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, ensureSession],
   );
 
   /** Revoke a delegated authorization slot (server enforces ownership). */
@@ -320,6 +354,10 @@ export function useAgentAutonomy() {
       setBusy(true);
       setError(null);
       try {
+        if (!(await ensureSession())) {
+          setError("Sign in with your wallet first.");
+          return false;
+        }
         const res = await fetchWithSession(`/api/agent/autonomy/authorization?id=${encodeURIComponent(slotId)}`, { method: "DELETE" });
         if (!res.ok) setError("The authorization slot could not be revoked right now.");
         await refresh();
@@ -328,7 +366,7 @@ export function useAgentAutonomy() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, ensureSession],
   );
 
   /**
@@ -343,6 +381,9 @@ export function useAgentAutonomy() {
     async (input: DelegatedSlotsInput): Promise<{ ok: boolean; message?: string }> => {
       const wallet = address;
       if (!wallet) return { ok: false, message: "Connect your wallet first." };
+      if (!(await ensureSession())) {
+        return { ok: false, message: "Sign in with your wallet to sign delegated slots." };
+      }
       if (connectedChainId !== undefined && connectedChainId !== DELEGATED_EXECUTOR_CHAIN_ID) {
         return { ok: false, message: "Switch your wallet to Base Sepolia to sign delegated slots." };
       }
@@ -482,5 +523,9 @@ export function useAgentAutonomy() {
     draft,
     openWithDraft,
     clearDraft,
+    authenticated: walletAuthenticated,
+    authenticating: walletAuthenticating,
+    signIn: walletAuthenticate,
+    ensureSession,
   };
 }
