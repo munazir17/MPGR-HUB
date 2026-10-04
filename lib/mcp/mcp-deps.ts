@@ -7,10 +7,15 @@ import "server-only";
 import { createChainReader, type ChainReader } from "@/lib/executor/executor-chain";
 import {
   MPGR_EXECUTOR_DEPLOYMENTS,
+  BASE_MAINNET_CHAIN_ID,
   BASE_SEPOLIA_CHAIN_ID,
   type ExecutorChainId,
+  type ExecutorDeployment,
 } from "@/lib/executor/executor-config";
-import { BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT } from "@/lib/executor/delegated-executor";
+import {
+  BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT,
+  mainnetDelegatedExecutorDeployment,
+} from "@/lib/executor/delegated-executor";
 import { getAgentFeeRecipient } from "@/lib/trade/trade-agent-fee";
 
 import type { McpDeps } from "./mcp-trade-service";
@@ -21,12 +26,30 @@ export function isMcpMainnetEnabled(): boolean {
   return process.env.MPGR_MCP_ENABLE_BASE_MAINNET?.trim() === "true";
 }
 
+/**
+ * The delegated-executor registries, keyed by chain (audit MC-2 remediation).
+ *
+ * Base Sepolia is always present (code-pinned Phase 2 deployment). Base
+ * mainnet is present ONLY when the operator has pinned
+ * MPGR_MAINNET_DELEGATED_EXECUTOR — absent that, no mainnet registry exists,
+ * quoting and execution both fail closed, and nothing silently falls back to
+ * the Sepolia contract.
+ */
+export function delegatedRegistries(): Partial<Record<ExecutorChainId, ExecutorDeployment>> {
+  const registries: Partial<Record<ExecutorChainId, ExecutorDeployment>> = {
+    [BASE_SEPOLIA_CHAIN_ID]: BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT,
+  };
+  const mainnet = mainnetDelegatedExecutorDeployment();
+  if (mainnet) registries[BASE_MAINNET_CHAIN_ID] = mainnet;
+  return registries;
+}
+
 export function createMcpDeps(): McpDeps {
   const fee = getAgentFeeRecipient();
   const secret = process.env.AUTH_SESSION_SECRET;
   return {
     registry: MPGR_EXECUTOR_DEPLOYMENTS,
-    delegatedRegistry: { [BASE_SEPOLIA_CHAIN_ID]: BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT },
+    delegatedRegistry: delegatedRegistries(),
     reader: (chainId) => {
       let r = readers.get(chainId);
       if (!r) {

@@ -428,6 +428,51 @@ export const DELEGATED_EXECUTOR_ABI = [
   { type: "function", name: "quoteFee", stateMutability: "view", inputs: [{ name: "grossAmountIn", type: "uint256" }], outputs: [{ name: "fee", type: "uint256" }, { name: "swapAmount", type: "uint256" }] },
 ] as const;
 
+/**
+ * The ONLY two calldata selectors an autonomous delegated execution may carry.
+ * Pinned here so the bounded hot-wallet gate (lib/delegated/broadcast-gate.ts)
+ * refuses any other function BEFORE the operator key signs anything.
+ */
+export const DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR = "0xb1b89728";
+export const DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR = "0xd7ba0133";
+export const DELEGATED_SWAP_SELECTORS = [
+  DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR,
+  DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR,
+] as const;
+
+/**
+ * Swap params as viem DECODES them from calldata (uint256 -> bigint). Distinct
+ * from buildDelegatedSwapParams' string-based INPUT type: the gate compares
+ * decoded on-chain values against the user's signed witness, so it needs the
+ * decoded shape.
+ */
+export interface DecodedDelegatedSwapParams {
+  router: Address;
+  tokenIn: Address;
+  tokenOut: Address;
+  grossAmountIn: bigint;
+  minAmountOut: bigint;
+  deadline: bigint;
+  intentId: Hex;
+  recipient: Address;
+  unwrapNativeOut: boolean;
+  feeBps: number;
+}
+
+/** The decoded `auth` argument of either swapOnBehalfOf* entrypoint. */
+export interface DecodedDelegatedAuthorization {
+  permit: { permitted: { token: Address; amount: bigint }; nonce: bigint; deadline: bigint };
+  witness: {
+    owner: Address;
+    buyToken: Address;
+    minAmountOut: bigint;
+    deadline: bigint;
+    actionId: Hex;
+    policyHash: Hex;
+  };
+  signature: Hex;
+}
+
 /** The user-signed ActionWitness — field order mirrors the contract struct. */
 export interface DelegatedActionWitness {
   owner: Address;

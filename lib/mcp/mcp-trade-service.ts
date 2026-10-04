@@ -99,7 +99,7 @@ export interface McpDeps {
    * Phase 2 delegated path ONLY: the operator broadcaster (Base Sepolia).
    * Fail-closed: when absent, mpgr_delegate_swap refuses. Never user keys.
    */
-  delegatedBroadcaster?: (tx: { to: Address; data: Hex; chainId: number }) => Promise<Hex>;
+  delegatedBroadcaster?: (tx: { to: Address; data: Hex; chainId: number; value?: bigint }) => Promise<Hex>;
   /**
    * Base mainnet MCP trading (executor path AND 0x fallback). OFF unless
    * MPGR_MCP_ENABLE_BASE_MAINNET=true. The registry entry is a deployed fact;
@@ -349,8 +349,16 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
   // anything else fails closed. Omitting `executor` keeps the v1 behaviour.
   const executorArg = typeof args.executor === "string" ? args.executor.trim() : "";
   if (executorArg) {
-    if (chainId !== BASE_SEPOLIA_CHAIN_ID) {
-      return fail("UNSUPPORTED_CHAIN", "The delegated executor is Base Sepolia (84532) only.");
+    // The delegated executor exists on BOTH delegated chains (8453 + 84532).
+    // The requested address must equal the PINNED executor for THIS chain —
+    // on mainnet that is operator-supplied, so an unpinned chain fails closed
+    // rather than falling back to the Sepolia contract.
+    if (!isDelegatedChainId(chainId)) {
+      return fail("UNSUPPORTED_CHAIN", "The delegated executor runs on Base (8453) or Base Sepolia (84532) only.");
+    }
+    const pinnedExecutor = delegatedExecutorAddressFor(chainId);
+    if (!pinnedExecutor) {
+      return fail("EXECUTOR_NOT_CONFIGURED", `No delegated executor is pinned for ${delegatedChainLabel(chainId)}.`);
     }
     let requested: Address;
     try {
@@ -358,8 +366,8 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
     } catch {
       return fail("INVALID_EXECUTOR", "executor must be a valid address.");
     }
-    if (requested !== DELEGATED_EXECUTOR_ADDRESS) {
-      return fail("EXECUTOR_MISMATCH", "executor does not match the pinned delegated executor.");
+    if (requested.toLowerCase() !== pinnedExecutor.toLowerCase()) {
+      return fail("EXECUTOR_MISMATCH", "executor does not match the pinned delegated executor for this chain.");
     }
     const delegated = deps.delegatedRegistry?.[chainId];
     if (!delegated) {
@@ -872,10 +880,18 @@ function verifyZeroExReceipt(p: QuotePayload, receipt: Awaited<ReturnType<ChainR
   };
 }
 
-// ============================================================ delegated execution (Phase 2, Base Sepolia only)
+// ============================================================ delegated execution (Base Sepolia + Base mainnet)
 
-import { DELEGATED_EXECUTOR_ADDRESS, DELEGATED_EXECUTOR_ABI, DELEGATED_EXECUTOR_CHAIN_ID, DELEGATED_EXECUTOR_FEE_BPS, buildDelegatedSwapParams } from "@/lib/executor/delegated-executor";
-import { delegatedBroadcasterAddress } from "@/lib/delegated/delegated-broadcaster";
+import {
+  DELEGATED_EXECUTOR_ABI,
+  DELEGATED_EXECUTOR_FEE_BPS,
+  buildDelegatedSwapParams,
+  delegatedChainLabel,
+  delegatedExecutorAddressFor,
+  isDelegatedChainId,
+} from "@/lib/executor/delegated-executor";
+import { delegatedBroadcasterAddressFor } from "@/lib/delegated/delegated-broadcaster";
+import { validateDelegatedTransaction } from "@/lib/delegated/broadcast-gate";
 
 /**
  * mpgr_delegate_swap — the delegated execution capability. The CALLER (the
@@ -888,8 +904,18 @@ import { delegatedBroadcasterAddress } from "@/lib/delegated/delegated-broadcast
 export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolOutcome> {
   const args = asRecord(input);
   const chainId = parseChainId(args.chainId);
-  if (chainId !== DELEGATED_EXECUTOR_CHAIN_ID) {
-    return fail("UNSUPPORTED_CHAIN", "Delegated execution is Base Sepolia (84532) only.");
+  if (!isDelegatedChainId(chainId)) {
+    return fail("UNSUPPORTED_CHAIN", "Delegated execution runs on Base (8453) or Base Sepolia (84532) only.");
+  }
+  // The chain's delegated executor must be PINNED. On Base Sepolia that is the
+  // code-pinned Phase 2 deployment; on Base mainnet it is the operator-supplied
+  // MPGR_MAINNET_DELEGATED_EXECUTOR. Absent => fail closed, never a guess.
+  const executor = delegatedExecutorAddressFor(chainId);
+  if (!executor) {
+    return fail(
+      "EXECUTOR_NOT_CONFIGURED",
+      `No delegated executor is pinned for ${delegatedChainLabel(chainId)}, so delegated execution is unavailable there (fail-closed).`,
+    );
   }
   const broadcast = deps.delegatedBroadcaster;
   if (!broadcast) return fail("BROADCASTER_NOT_CONFIGURED", "Delegated execution is not configured on the server (fail-closed).");
@@ -912,7 +938,8 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
   const intentId = typeof args.intentId === "string" && /^0x[0-9a-fA-F]{64}$/.test(args.intentId) ? args.intentId : null;
   const router = addr(args.router);
   const poolFee = typeof args.poolFee === "number" && [100, 500, 3000, 10000].includes(args.poolFee) ? args.poolFee : null;
-  if (!tokenIn || !buyToken || !owner || amount === null || nonce === null || deadline === null || minOut === null || !policyHash || !actionId || !intentId || !router || poolFee === null) {
+  const tickSpacing = typeof args.tickSpacing === "number" && Number.isInteger(args.tickSpacing) ? args.tickSpacing : null;
+  if (!tokenIn || !buyToken || !owner || amount === null || nonce === null || deadline === null || minOut === null || !policyHash || !actionId || !intentId) {
     return fail("INVALID_AUTHORIZATION", "Delegated authorization is incomplete or malformed.");
   }
   if (typeof sig !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(sig)) return fail("INVALID_AUTHORIZATION", "Signature must be 65-byte rsv hex.");
@@ -921,28 +948,99 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
   if (fee === 0n) return fail("FEE_ROUNDS_TO_ZERO", "Amount too small for the canonical 25 bps fee.");
   const expectedFeeAmount = typeof args.expectedFeeAmount === "string" && /^\d{1,78}$/.test(args.expectedFeeAmount) ? BigInt(args.expectedFeeAmount) : null;
   if (expectedFeeAmount !== fee) return fail("FEE_MISMATCH", "Committed fee does not equal floor(gross * 25bps) — refusing (fail-closed).");
+  // VENUE (router + pool key) is derived from the chain's OWN delegated
+  // registry when one is configured, so the caller cannot steer execution to
+  // an arbitrary router. Base mainnet B20 pairs are Aerodrome Slipstream
+  // (tickSpacing), USDC<->WETH is Uniswap V3 (poolFee) — the previous
+  // UniswapV3-only encoding could never express a mainnet B20 trade.
+  const delegatedRegistry = deps.delegatedRegistry?.[chainId];
+  const route = delegatedRegistry ? findExecutorRoute(delegatedRegistry, tokenIn, buyToken) : null;
+  if (delegatedRegistry && !route) {
+    return fail("NO_ROUTE", `No delegated executor route for this pair on ${delegatedChainLabel(chainId)}.`);
+  }
+  if (route && router && route.router.toLowerCase() !== router.toLowerCase()) {
+    return fail("ROUTE_MISMATCH", "router does not match the delegated executor route for this pair.");
+  }
+  const venueRouter = route ? route.router : router;
+  if (!venueRouter) return fail("INVALID_AUTHORIZATION", "router is required when no delegated registry is configured.");
+  type Venue = { kind: number; poolFee: number | null; tickSpacing: number | null };
+  let venue: Venue | null = null;
+  if (route) {
+    venue =
+      route.kind === RouterKind.UNISWAP_V3_ROUTER02
+        ? { kind: RouterKind.UNISWAP_V3_ROUTER02, poolFee: route.poolFee ?? null, tickSpacing: null }
+        : { kind: RouterKind.AERODROME_SLIPSTREAM, poolFee: null, tickSpacing: route.tickSpacing ?? null };
+  } else if (poolFee !== null) {
+    venue = { kind: RouterKind.UNISWAP_V3_ROUTER02, poolFee, tickSpacing: null };
+  } else if (tickSpacing !== null) {
+    venue = { kind: RouterKind.AERODROME_SLIPSTREAM, poolFee: null, tickSpacing };
+  }
+  if (!venue) return fail("INVALID_VENUE", "provide poolFee (Uniswap V3) or tickSpacing (Aerodrome Slipstream).");
+  if (venue.kind === RouterKind.UNISWAP_V3_ROUTER02 && venue.poolFee === null) return fail("INVALID_VENUE", "Uniswap V3 route is missing its poolFee.");
+  if (venue.kind === RouterKind.AERODROME_SLIPSTREAM && venue.tickSpacing === null) return fail("INVALID_VENUE", "Slipstream route is missing its tickSpacing.");
+
   const params = buildDelegatedSwapParams({
-    router, tokenIn, tokenOut: buyToken, grossAmountIn: grossAmountIn.toString(),
+    router: venueRouter, tokenIn, tokenOut: buyToken, grossAmountIn: grossAmountIn.toString(),
     minAmountOut: minOut.toString(), deadline: Number(deadline), intentId: intentId as `0x${string}`, owner,
     feeBps: DELEGATED_EXECUTOR_FEE_BPS,
   });
   if (params.expectedFeeAmount !== fee) return fail("FEE_MISMATCH", "Fee math divergence — refusing (fail-closed).");
-  const data = encodeFunctionData({
-    abi: DELEGATED_EXECUTOR_ABI,
-    functionName: "swapOnBehalfOfUniswapV3",
-    args: [
-      params,
-      poolFee,
-      {
-        permit: { permitted: { token: tokenIn, amount }, nonce, deadline },
-        witness: { owner, buyToken, minAmountOut: minOut, deadline, actionId: actionId as Hex, policyHash: policyHash as Hex },
-        signature: sig as Hex,
-      },
-    ],
-  });
+  const authorizationTuple = {
+    permit: { permitted: { token: tokenIn, amount }, nonce, deadline },
+    witness: { owner, buyToken, minAmountOut: minOut, deadline, actionId: actionId as Hex, policyHash: policyHash as Hex },
+    signature: sig as Hex,
+  };
+  const data =
+    venue.kind === RouterKind.AERODROME_SLIPSTREAM
+      ? encodeFunctionData({
+          abi: DELEGATED_EXECUTOR_ABI,
+          functionName: "swapOnBehalfOfSlipstream",
+          args: [params, venue.tickSpacing as number, authorizationTuple],
+        })
+      : encodeFunctionData({
+          abi: DELEGATED_EXECUTOR_ABI,
+          functionName: "swapOnBehalfOfUniswapV3",
+          args: [params, venue.poolFee as number, authorizationTuple],
+        });
   try {
-    const txHash = await broadcast({ to: DELEGATED_EXECUTOR_ADDRESS, data, chainId: DELEGATED_EXECUTOR_CHAIN_ID });
-    return { ok: true, data: jsonSafe({ txHash, delegatedExecutor: DELEGATED_EXECUTOR_ADDRESS, chainId: DELEGATED_EXECUTOR_CHAIN_ID, expectedSender: delegatedBroadcasterAddress() }) as Record<string, unknown> };
+    // BOUNDED HOT WALLET (audit MC-2 remediation). Before the operator key
+    // signs anything, re-decode this exact calldata and re-verify every signed
+    // field against the user's own witness: chain, pinned executor, allowed
+    // selector, recipient == owner, intentId, deadline, minAmountOut, buyToken,
+    // permit token/amount/deadline, zero native value, positive amounts,
+    // unexpired deadline. Any disagreement => no signature, no broadcast. The
+    // on-chain `_validate` re-checks the same bindings, so this is defence in
+    // depth that also keeps the operator key useless for anything else.
+    const gate = validateDelegatedTransaction(
+      { to: executor, data, chainId, value: 0n },
+      {
+        witness: {
+          owner,
+          buyToken,
+          minAmountOut: minOut.toString(),
+          deadline: Number(deadline),
+          actionId: actionId as Hex,
+          policyHash: policyHash as Hex,
+        },
+        permit: { token: tokenIn, amount: amount.toString(), nonce: nonce.toString(), deadline: Number(deadline) },
+        wallet: owner,
+      },
+      new Date(),
+    );
+    if (!gate.allowed) {
+      return fail("BROADCAST_REFUSED_BY_GATE", `refused to sign: ${gate.reason}${gate.detail ? ` (${gate.detail})` : ""}`);
+    }
+
+    const txHash = await broadcast({ to: executor, data, chainId, value: 0n });
+    return {
+      ok: true,
+      data: jsonSafe({
+        txHash,
+        delegatedExecutor: executor,
+        chainId,
+        expectedSender: delegatedBroadcasterAddressFor(chainId),
+      }) as Record<string, unknown>,
+    };
   } catch (error) {
     // PHASE 5: sanitized diagnostics — the fail-closed message carries the
     // underlying cause (viem shortMessage) so operators can diagnose a failed
