@@ -19,7 +19,7 @@
 // and signatures never appear here (watch mode only, signing stays in the
 // existing user-signature flow).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, PenLine, Repeat, ShieldCheck, ShieldOff, X } from "lucide-react";
 import { clsx } from "clsx";
@@ -130,6 +130,13 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
   const [delegatedCount, setDelegatedCount] = useState(1);
   const [delegatedMinOut, setDelegatedMinOut] = useState("");
   const [delegatedHours, setDelegatedHours] = useState(24);
+
+  useEffect(() => {
+    if (draft) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- a review draft is an explicit request to open this panel.
+      setOpen(true);
+    }
+  }, [draft]);
 
   const activeCount = useMemo(() => goals.filter((g) => !["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"].includes(g.status)).length, [goals]);
 
