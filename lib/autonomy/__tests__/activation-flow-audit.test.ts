@@ -400,12 +400,24 @@ describe("B3 — even a FULLY CAPABLE delegated adapter refuses a UI-activated m
   });
 });
 
-describe("B3b — the delegated adapter's cold on-chain posture (the exact missing capability)", () => {
-  it("a COLD posture cache refuses authorization, and nothing in the server warms it", async () => {
+describe("B3b — the delegated adapter's cold on-chain posture (MC-3, now REMEDIATED)", () => {
+  /**
+   * UPDATED BY THE MC-3 REMEDIATION. This block originally PINNED THE GAP: a
+   * cold posture cache refused with ONCHAIN_CHECK_PENDING and *nothing in the
+   * server ever warmed it*, because the only production caller of
+   * verifyOnChain() was executeSwap(), which the runtime reaches only AFTER
+   * checkAuthorization() said yes — unreachable on a cold server.
+   *
+   * The no-optimism half of that contract is PRESERVED exactly: a cold cache
+   * still answers ONCHAIN_CHECK_PENDING for the current tick and still refuses
+   * a correctly-chained policy. What changed is that the cold cache is no
+   * longer a dead end — it now kicks a single-flight warm-up, and the server
+   * warms the posture eagerly at composition time and before every scheduler
+   * tick.
+   */
+  it("a COLD posture cache still refuses THIS tick (never optimistic), but now warms itself", async () => {
     const h = makeDelegatedHarness();
-    // No verifyOnChain() here — this IS the server's real cold-start posture:
-    // lib/autonomy/index.ts#build() constructs the adapter and never warms it,
-    // and no API route calls verifyOnChain() either.
+    // (1) Cold: refused, exactly as the audit found. No optimism.
     expect(h.adapter.canDelegate).toBe(false);
     expect(h.adapter.checkStatic()).toEqual({ authorized: false, reason: "ONCHAIN_CHECK_PENDING" });
     // Even a correctly-chained Base Sepolia policy is refused while cold.
@@ -413,44 +425,138 @@ describe("B3b — the delegated adapter's cold on-chain posture (the exact missi
       authorized: false,
       reason: "ONCHAIN_CHECK_PENDING",
     });
-    // Warming is the only thing that changes the answer...
-    expect((await h.adapter.verifyOnChain()).authorized).toBe(true);
+
+    // (2) NEW: the cold check kicked a single-flight background warm-up, so the
+    //     posture is proven without any execution attempt.
+    await h.adapter.bootstrapPosture();
+    expect(h.adapter.checkStatic()).toEqual({ authorized: true });
     expect(h.adapter.checkAuthorization(WALLET, makePolicy({ chainId: DELEGATED_EXECUTION_CHAIN_ID })).authorized).toBe(true);
-    // ...and the ONLY production caller of verifyOnChain() is executeSwap(),
-    // which the runtime reaches only AFTER checkAuthorization() said yes.
-    const adapterSrc = readFileSync(join(process.cwd(), "lib/autonomy/delegated-execution-adapter.ts"), "utf8");
-    expect(adapterSrc.match(/this\.verifyOnChain\(\)/g)).toHaveLength(1); // inside executeSwap only
+
+    // (3) The server really does warm it now: the composition root and the tick
+    //     route both drive bootstrapPosture(), which is what the audit found
+    //     missing. Asserted on source so a future refactor cannot silently drop
+    //     the eager warm-up and reintroduce the chicken-and-egg.
     const bootstrapSrc = readFileSync(join(process.cwd(), "lib/autonomy/index.ts"), "utf8");
-    expect(bootstrapSrc).not.toContain("verifyOnChain");
+    expect(bootstrapSrc).toContain("bootstrapPosture");
+    expect(bootstrapSrc).toMatch(/export async function bootstrapAutonomyPosture/);
+    const tickSrc = readFileSync(join(process.cwd(), "app/api/agent/autonomy/tick/route.ts"), "utf8");
+    expect(tickSrc).toContain("await bootstrapAutonomyPosture()");
+    // The warm-up must happen BEFORE the scheduler evaluates, or a cold
+    // instance's first tick still parks.
+    expect(tickSrc.indexOf("await bootstrapAutonomyPosture()")).toBeLessThan(tickSrc.indexOf("scheduler.tick("));
   });
 
-  it("so executionAvailable stays FALSE (the UI's 'not configured') even with the adapter env set and installed", async () => {
-    // A production-shaped adapter: NO injected broadcast/chain, so it reads
-    // the real operator env (MPGR_BROADCASTER_PRIVATE_KEY) and the real
-    // Base Sepolia chain view — exactly like lib/autonomy/index.ts#build().
+  it("the warm-up is SINGLE-FLIGHT: concurrent checks share one RPC pass and never stack", async () => {
+    let bytecodeReads = 0;
+    const adapter = new DelegatedExecutionAdapter({
+      slots: new InMemoryDelegatedAuthorizationStore(),
+      gateway: new McpTradeGateway(
+        testDeps(newFakeState(), { registry: MAINNET_REGISTRY, mainnetEnabled: true, quoteSecret: TEST_SECRET }),
+      ),
+      getPolicy: async () => null,
+      chainId: DELEGATED_EXECUTION_CHAIN_ID,
+      broadcast: async () => {
+        throw new Error("audit: must never broadcast");
+      },
+      chain: {
+        getBytecode: async () => {
+          bytecodeReads += 1;
+          return "0x6080" as Hex;
+        },
+        readContract: async <T,>({ functionName }: { functionName: string }): Promise<T> => {
+          if (functionName === "feeBps") return 25 as never;
+          if (functionName === "PERMIT2") return CANONICAL_PERMIT2 as never;
+          if (functionName === "WITNESS_TYPE_STRING") return DELEGATED_WITNESS_TYPE_STRING as never;
+          throw new Error(`unexpected read ${functionName}`);
+        },
+      },
+      now: () => new Date(),
+    });
+
+    // Many concurrent cold checks + bootstraps => exactly ONE chain pass.
+    const results = await Promise.all([
+      adapter.bootstrapPosture(),
+      adapter.bootstrapPosture(),
+      adapter.bootstrapPosture(),
+    ]);
+    // Each getBytecode call in one pass reads executor + Permit2 = 2 reads.
+    expect(bytecodeReads).toBe(2);
+    expect(results.every((r) => r.authorized)).toBe(true);
+  });
+
+  it("an UNPROVABLE posture still fails closed: a chain-read error leaves it refused, never optimistic", async () => {
+    const adapter = new DelegatedExecutionAdapter({
+      slots: new InMemoryDelegatedAuthorizationStore(),
+      gateway: new McpTradeGateway(
+        testDeps(newFakeState(), { registry: MAINNET_REGISTRY, mainnetEnabled: true, quoteSecret: TEST_SECRET }),
+      ),
+      getPolicy: async () => null,
+      chainId: DELEGATED_EXECUTION_CHAIN_ID,
+      broadcast: async () => {
+        throw new Error("audit: must never broadcast");
+      },
+      chain: {
+        getBytecode: async () => {
+          throw new Error("RPC unavailable");
+        },
+        readContract: async () => {
+          throw new Error("RPC unavailable");
+        },
+      },
+      now: () => new Date(),
+    });
+    expect((await adapter.bootstrapPosture()).authorized).toBe(false);
+    // The failed proof is CACHED as a refusal — it does not flip to optimistic,
+    // and it does not retry-storm within the TTL.
+    expect(adapter.checkStatic()).toEqual({ authorized: false, reason: "RPC_ERROR" });
+    expect(adapter.canDelegate).toBe(false);
+  });
+
+  it("executionAvailable stays FALSE until the posture is PROVEN, even with the adapter env set and installed", async () => {
+    // A production-shaped adapter, but with an INJECTED chain view so this test
+    // never performs real network I/O. Without the injection the MC-3 warm-up
+    // would (correctly) reach for the real Base Sepolia RPC.
     const productionShaped = new DelegatedExecutionAdapter({
       slots: new InMemoryDelegatedAuthorizationStore(),
       gateway: new McpTradeGateway(
         testDeps(newFakeState(), { registry: MAINNET_REGISTRY, mainnetEnabled: true, quoteSecret: TEST_SECRET }),
       ),
       getPolicy: async () => null,
+      chainId: DELEGATED_EXECUTION_CHAIN_ID,
+      chain: {
+        getBytecode: async () => "0x6080" as Hex,
+        readContract: async <T,>({ functionName }: { functionName: string }): Promise<T> => {
+          if (functionName === "feeBps") return 25 as never;
+          if (functionName === "PERMIT2") return CANONICAL_PERMIT2 as never;
+          if (functionName === "WITNESS_TYPE_STRING") return DELEGATED_WITNESS_TYPE_STRING as never;
+          throw new Error(`unexpected read ${functionName}`);
+        },
+      },
+      now: () => new Date(),
     });
     installAutonomousExecutionAdapter(productionShaped);
     vi.stubEnv("MPGR_AUTONOMOUS_EXECUTION_ADAPTER", DELEGATED_ADAPTER_ID);
     expect(getAutonomousExecutionAdapter().id).toBe(DELEGATED_ADAPTER_ID);
 
-    // 1) No operator broadcaster key at all -> the operational gate refuses.
+    // 1) No operator broadcaster key at all -> the operational gate refuses,
+    //    BEFORE any chain I/O.
     vi.stubEnv("MPGR_BROADCASTER_PRIVATE_KEY", "");
     expect(productionShaped.checkStatic().reason).toBe("BROADCASTER_NOT_CONFIGURED");
     expect(autonomyStatus().executionAvailable).toBe(false);
 
     // 2) Key present -> the operational gate passes, but the COLD on-chain
-    //    posture cache still refuses. Nothing in the server warms it.
+    //    posture cache still refuses THIS tick. This is what
+    //    /api/agent/autonomy/config reports to the panel until proven.
     vi.stubEnv("MPGR_BROADCASTER_PRIVATE_KEY", "0x" + "ab".repeat(32));
     expect(productionShaped.checkStatic()).toEqual({ authorized: false, reason: "ONCHAIN_CHECK_PENDING" });
-    // This is exactly what /api/agent/autonomy/config reports to the panel:
-    // "Delegated execution · Base Sepolia · not configured".
     expect(autonomyStatus().executionAvailable).toBe(false);
+
+    // 3) Once PROVEN, executionAvailable turns true — availability is earned by
+    //    verification, never assumed.
+    await productionShaped.bootstrapPosture();
+    expect(productionShaped.checkStatic()).toEqual({ authorized: true });
+    expect(autonomyStatus().executionAvailable).toBe(true);
+    clearInstalledAutonomousExecutionAdapter();
   });
 });
 

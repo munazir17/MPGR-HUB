@@ -16,6 +16,15 @@ Evidence: `lib/autonomy/__tests__/activation-flow-audit.test.ts` (19 tests) and
 green. Full suite: **243 files / 2513 tests passed, 0 failed** (baseline 2484 → +29). `tsc --noEmit` clean.
 `eslint` 0 errors.
 
+> **PHASE 2 UPDATE (same branch, later commits): MC-1, MC-2, MC-3 and MC-4 are now
+> IMPLEMENTED.** §1–§8 below are the original audit and are preserved verbatim as the
+> record of what was found and why. [§9](#9-remediation-what-was-built-on-top-of-this-audit)
+> documents the bounded Base **mainnet** autonomous execution path that was built on top of
+> these findings, its security model, and its tests. Where §4 says "none applied", read
+> "applied in §9". No finding below was weakened to make the new path pass: the audit tests
+> that pinned the *gaps* were updated in place to pin the *remediated* behaviour, and every
+> safety property they asserted still holds.
+
 ---
 
 ## 1. What the UI state you saw actually means
@@ -287,7 +296,8 @@ VERIFICATION
 ## 4. The exact missing capabilities
 
 Identified, not worked around. Each is stated with the precise reason and the fix that
-*would* be required (none applied).
+*would* be required. **At the time of writing none were applied; all four were subsequently
+implemented — see [§9](#9-remediation-what-was-built-on-top-of-this-audit).**
 
 ### MC-1 — No Base Sepolia policy can be created through the API (blocks the delegated path entirely)
 
@@ -423,3 +433,268 @@ Phase 6 fork/mainnet-canary rehearsals). **They remained skipped** — nothing w
 - No transaction was signed or broadcast; no network call to any chain was made by this
   audit (all chain interaction is the pre-existing in-memory fake reader).
 - The UI was not changed to display a different status.
+
+---
+
+## 9. Remediation — what was built on top of this audit
+
+The audit found the activation flow to be **intentional and safe**, and identified four
+missing capabilities (MC-1…MC-4) that together made a Base mainnet autonomous goal
+watch-only forever. All four are now implemented on this branch. The goal was to make the
+path genuinely executable **without moving any safety boundary**, so every change below is
+either (a) a new fail-closed gate, or (b) a generalization of an existing gate from one
+chain to two, with the original single-chain behaviour preserved exactly.
+
+### 9.1 The decisive architectural constraint
+
+`contracts/executor/MPGRExecutor.sol` (deployed on Base mainnet at
+`0xD982726e28275661F8aB64054E6b17a70a63505A`) pulls tokens **only from `msg.sender`**
+(`_pullFromTaker`) and `_validate` reverts `InvalidRecipient` unless `p.recipient ==
+msg.sender`. It is therefore **structurally incapable of executing on behalf of a user**: an
+operator broadcaster calling it would trade its own balance to itself. This is why mainnet
+autonomous execution could not simply reuse the existing deployment, and why
+`MPGRExecutorDelegated.sol` — already written, already deployed on Base Sepolia — is the
+only viable architecture:
+
+- **taker** = the recovered witness signer (`auth.witness.owner`), i.e. the user;
+- **msg.sender** = a gas-only broadcaster that never holds or controls user funds;
+- `_validate()` re-binds every signed field on-chain;
+- two entrypoints: `swapOnBehalfOfUniswapV3(p, uint24 poolFee, auth)` and
+  `swapOnBehalfOfSlipstream(p, int24 tickSpacing, auth)`.
+
+### 9.2 MC-1 — chain-aware control plane (fixed)
+
+Previously no 84532 policy could be minted and no 8453 policy could be authorized, so the
+two halves could never meet. Now the chain is an explicit, validated, first-class field
+end to end:
+
+- `normalizePolicyInput` accepts an optional validated `chainId` (**omitted ⇒ 8453**, so
+  existing clients and every prior test are unaffected; an unsupported value is a hard
+  normalization error, never a silent default).
+- `policyRegistryFor(chainId)`: 8453 ⇒ the deployed v1 mainnet registry (the same allowlist
+  and route set the delegated mainnet executor mirrors); 84532 ⇒ the **delegated** Sepolia
+  registry (each Sepolia deploy mints fresh test tokens, so the v1 Sepolia registry must not
+  be used — PHASE 5 finding F-9).
+- Token resolution, route existence, decimals, the token picker and the authorization route
+  all resolve from the policy's **own** chain. Reading mainnet decimals for a Sepolia policy
+  would have mis-scaled the parsed sell amount.
+- **Chain binding is now three-way and cryptographic**, not a single comparison: the slot
+  record, the Permit2 EIP-712 domain `chainId` the user signs, and `policyHash` (whose
+  canonical tuple carries `uint256 chainId`). `selectDelegatedSlot` and
+  `validateNewSlotAgainstPolicy` additionally require `slot.chainId === policy.chainId`.
+- The recovery digest is computed over the policy's chain with **that chain's** pinned
+  executor as the Permit2 spender, so the recovered signer is bound to
+  `(wallet, chain, executor)` — not merely to a wallet.
+
+### 9.3 MC-2 — Base mainnet execution adapter + bounded hot wallet (fixed)
+
+**One class, two instances.** `DelegatedExecutionAdapter` now takes `chainId` in its
+constructor (default 84532), *declares* `chainId` on the adapter interface, and derives its
+`id` from the chain — so the runtime never infers a chain from an id string. The mainnet
+path reuses the identical safety machinery rather than forking it.
+
+**The executor address is operator-pinned, never guessed.** `MPGR_MAINNET_DELEGATED_EXECUTOR`
+has no hardcoded default. Because that address is operator-supplied rather than code-pinned,
+mainnet posture verification is deliberately **stricter** than Sepolia's. All of the
+following must hold on-chain or the adapter refuses:
+
+| Check | Sepolia | Mainnet |
+|---|---|---|
+| bytecode present at executor and at canonical Permit2 | ✅ | ✅ |
+| `feeBps() == 25` | ✅ | ✅ |
+| `PERMIT2() == 0x0000…8BA3` | ✅ | ✅ |
+| `WITNESS_TYPE_STRING()` exact | ✅ | ✅ |
+| `owner() == 0xE0e0…486e` (MPGR governance) | — | ✅ |
+| `feeRecipient() == 0x96F7…64A4` | — | ✅ |
+| `paused() == false` | — | ✅ |
+| both policy tokens in `isTokenAllowed()` | — | ✅ |
+
+**Two independent operator keys.** `MPGR_BROADCASTER_PRIVATE_KEY` (84532) and
+`MPGR_MAINNET_BROADCASTER_PRIVATE_KEY` (8453) are separate, so a compromised or
+misconfigured testnet key can never gain mainnet reach. The broadcaster resolves **per
+chain**; a chain with no key gets a refusing stub.
+
+**Hard canary separation.** The mainnet broadcaster refuses `MPGR_MAINNET_CANARY_PRIVATE_KEY`
+and any key deriving to `0xBF6c574b9543967f0D528ae49603b0A7574a280b` outright, so the
+one-shot armed canary test can never be promoted into production infrastructure. A source
+boundary test asserts that **exactly one** production file reads that env var, and only to
+refuse it.
+
+**The bounded hot wallet** (`lib/delegated/broadcast-gate.ts`). An operator gas-payer on
+mainnet is a real hot wallet, so it is bounded *structurally, before signing*: the gate
+re-decodes the exact calldata the key is about to sign and re-verifies it against the user's
+own witness. It refuses (no signature, no broadcast) on: unsupported chain; `to` ≠ the
+pinned executor for that chain; any non-zero `msg.value`; any selector other than the two
+`swapOnBehalfOf*` entrypoints; decode failure; witness `owner`/`buyToken`/`minAmountOut`/
+`deadline`/`actionId`/`policyHash` mismatch; owner ≠ policy wallet; `recipient` ≠ owner;
+`intentId`/`deadline`/`amountOutMinimum`/`tokenOut` mismatch; permit token ≠ `tokenIn`;
+permit amount ≠ `grossAmountIn`; calldata permit ≠ stored permit; non-positive amounts;
+committed fee ≠ canonical `floor(gross × 25bps)`; or a lapsed deadline. It is pure (no I/O,
+time injected) and returns a verdict instead of throwing, so a refusal can never be
+mistaken for an infrastructure fault. This is defence in depth **on top of** the on-chain
+`_validate`, and it is what makes the operator key useless for anything but a user-authorized
+swap. The two allowed selectors are **derived from the ABI**, never hand-written, so the gate
+and the encoder cannot drift.
+
+> Permit2 semantics note: `TokenPermissions` describes the **sell** side (the token and
+> amount pulled *from* the user) while the witness floors the **buy** side. The gate binds
+> `permit.token == params.tokenIn` and `permit.amount == params.grossAmountIn` accordingly —
+> together these are the two economic bounds the user actually signed.
+
+**Venue is derived, never chosen by the caller.** On mainnet the router and pool key come
+from the chain's own delegated registry: USDC↔WETH via Uniswap V3 fee 3000, USDC↔each B20
+stock via Aerodrome Slipstream `tickSpacing` 10. The previous UniswapV3-only encoding could
+never have expressed a mainnet B20 trade. A caller-supplied router that disagrees with the
+registry is refused (`ROUTE_MISMATCH`).
+
+### 9.4 MC-3 — cold-cache posture bootstrap (fixed)
+
+The chicken-and-egg is broken in two places, and **neither makes the adapter optimistic**:
+
+1. `checkStatic()` on a cold/stale cache still returns `ONCHAIN_CHECK_PENDING` for the
+   *current* tick — never `true` — but now also kicks a **single-flight background warm-up**,
+   so the posture is proven by the next tick. Previously the cache could only be warmed by
+   `executeSwap()`, which the runtime reaches only *after* `checkAuthorization()` said yes:
+   unreachable on a cold server.
+2. `bootstrapPosture()` is awaited eagerly from the composition root and from the tick route
+   *before* evaluation, so a cold instance's **first** tick is a real evaluation rather than
+   a park. It is single-flight, TTL-cached (60 s), never throws, and a failed bootstrap
+   leaves the adapter refused.
+
+### 9.5 MC-4 — production scheduler (fixed)
+
+`vercel.json` now schedules `/api/agent/autonomy/tick` every minute, matching the runtime's
+60 s evaluation cadence and its 120 s per-goal lease. `GET` was added because **Vercel Cron
+sends GET, not POST** (the same convention as the settlement routes); on GET the
+`CRON_SECRET` bearer is **mandatory with no session fallback**, so an unauthenticated browser
+GET can never trigger an all-wallet pass. POST keeps its original dual behaviour.
+
+Execution still cannot run while autonomous mode is disabled: the route 404s on the feature
+flag before any evaluation, and the runtime parks without a policy *and* a valid user-signed
+authorization slot.
+
+### 9.6 Boundaries explicitly preserved
+
+Nothing below was loosened, bypassed or re-implemented; all are covered by passing tests:
+
+- per-trade cap, daily cap, `maxActionsPerDay`, `maxTrades`;
+- slippage bounds and quote-freshness at broadcast time;
+- authorization expiry (slot deadline checked at selection **and** again before broadcast);
+- idempotency (`claimExecution`) and CAS status transitions;
+- emergency disable, checked at every tick and before every action;
+- receipt verification (`EXECUTION_VERIFIED` only on a confirmed, fully-matching receipt);
+- uncertain/reverted handling — `UNCERTAIN` is terminal, the slot stays consumed, and a tx is
+  **never** re-broadcast;
+- the user's private key never reaches the server; no server-side custodial signing of user
+  transactions (`privateKeyToAccount` appears in exactly one production file, the operator
+  gas-payer broadcaster);
+- Base Sepolia behaviour is byte-for-byte unchanged (its pinned venue, its check set, its
+  env key, its adapter id, and all pre-existing Sepolia tests).
+
+### 9.7 Tests added for the remediation
+
+| File | Tests | Proves |
+|---|---|---|
+| `lib/autonomy/__tests__/mainnet-delegated-execution.test.ts` | 20 | the complete mainnet stage chain, and every refusal broadcasts nothing |
+| `lib/delegated/__tests__/broadcast-gate.test.ts` | 25 | the bounded hot wallet: the allowed case plus every single-field mutation refused |
+| `lib/delegated/__tests__/broadcaster-separation.test.ts` | 13 | per-chain key separation, hard canary refusal, and the key-reading source boundary |
+
+The positive path asserts the **full ordered audit chain** on Base mainnet:
+`QUOTE_CREATED → CONDITION_CHECKED → CONDITION_MET → POLICY_APPROVED → AUTHORIZATION_CHECKED
+→ TRADE_PREPARED → TRANSACTION_SUBMITTED → TRANSACTION_CONFIRMED → EXECUTION_VERIFIED`,
+ending in `COMPLETED` with `triggered == 1`, `verified == 1`, one broadcast on chain 8453 to
+the pinned executor carrying the Slipstream selector and zero native value.
+
+Negative cases, **each asserting zero broadcasts**: no authorization (parked
+`AUTHORIZATION_MISSING`); wrong chain (a Sepolia slot against a mainnet policy); wrong
+wallet; expired authorization; amount above authorization; wrong token; wrong action id;
+daily cap exceeded (`POLICY_REJECTED`); stale quote; emergency stop; duplicate concurrent
+tick (at most one broadcast); adapter unavailable / executor unpinned
+(`EXECUTOR_NOT_CONFIGURED`); unverifiable posture (paused, wrong owner, disallowed token,
+RPC error, no bytecode); uncertain broadcast (never re-broadcast, terminal `FAILED`, slot
+stays consumed); and broadcast failure.
+
+**No real mainnet transaction is sent by any test.** The new suites contain no
+`createWalletClient`, `createPublicClient`, `http()` or `fetch()` at all — the chain is a
+fake reader, the posture view is a fake, and the broadcaster is a spy that records calldata
+and mines a synthetic receipt. The pre-existing live/canary suites remain env-gated and
+still skipped (17 skipped, nothing armed).
+
+### 9.8 Audit tests updated in place (gaps → remediated behaviour)
+
+Three audit assertions pinned the *gaps* and therefore had to change. None was weakened;
+each now asserts a stronger property:
+
+- **A4** previously proved a genuinely user-signed witness slot was refused
+  `POLICY_CHAIN_MISMATCH` — that *was* MC-1. It now asserts both halves of the fix:
+  unpinned ⇒ refused `DELEGATED_EXECUTOR_NOT_CONFIGURED` with nothing stored or broadcast
+  (a user must never sign for a contract that does not exist); pinned ⇒ the same genuinely
+  user-signed 8453 slot **is** accepted and stored chain-bound to 8453, still with zero
+  broadcasts (accepting an authorization remains an off-chain write); plus a new case proving
+  a slot signed for the wrong chain's executor is still refused.
+- **B3b** (cold cache) rewritten: it still asserts the no-optimism half of the original
+  contract (cold ⇒ `ONCHAIN_CHECK_PENDING` for that tick, and a correctly-chained policy
+  still refused while cold), and now additionally asserts the single-flight warm-up (three
+  concurrent bootstraps ⇒ exactly one chain pass), that `index.ts` and the tick route really
+  do warm the posture *before* evaluating (asserted on source, so a refactor cannot silently
+  reintroduce the chicken-and-egg), and that an unprovable posture caches a refusal
+  (`RPC_ERROR`) rather than flipping optimistic. The block grew from 2 to 4 tests, taking
+  `activation-flow-audit.test.ts` from 19 to 22. Its `productionShaped` case now injects a
+  chain view so the MC-3 warm-up cannot reach a real RPC from the test suite.
+- **B6/B7** updated for the widened install guard (both delegated ids, and the new
+  configured-vs-installed mismatch refusal). The B6 source-boundary grep was **not**
+  weakened — a comment in the policy route was rephrased instead so the strict grep still
+  holds.
+- `phase6-mainnet-audit.test.ts` §B previously pinned "mainnet is not a delegated chain".
+  It now pins the real cross-chain property in **both directions**: a Sepolia slot can never
+  authorize a mainnet policy and a mainnet slot can never authorize a Sepolia policy
+  (`CHAIN_MISMATCH`), even when owner, tokens, amount, `policyHash` and deadline all match —
+  with a sanity case proving a slot on its *own* chain with those exact fields **is**
+  accepted, so the refusals are chain-specific rather than a fixture that could never
+  authorize anything.
+- `delegated-quote` / `hardening-quotes-verify`: using the **Sepolia** executor on 8453 now
+  yields the more precise `EXECUTOR_NOT_CONFIGURED` instead of `UNSUPPORTED_CHAIN`; a
+  genuinely non-delegated chain still yields `UNSUPPORTED_CHAIN` (newly asserted).
+
+### 9.9 Verification
+
+- Full suite: **246 files / 2576 tests passed, 0 failed**, 17 skipped (pre-existing
+  env-gated live + canary suites; nothing armed). Baseline at the audit commit was 2513,
+  so **+63 tests** (58 new + 5 audit tests rewritten in place to assert more).
+- Autonomy / delegated / MCP / executor / agent-API suites in isolation: **51 files / 610
+  passed, 17 skipped, 0 failed**, with **zero unhandled errors and zero network I/O**.
+- `npx tsc --noEmit`: clean.
+- `npx eslint .`: **0 errors**, 59 warnings (baseline 60 — one fewer, none new).
+
+A full parallel run additionally reports 4 unhandled `TypeError: fetch failed` rejections
+originating in `node_modules/@coinbase/agentkit/dist/analytics/sendAnalyticsEvent.js`,
+attributed by Vitest to `lib/architecture/agentkit/__tests__/invoke.test.ts`. That file is
+**byte-identical to the audit commit `872e77f`** (untouched by this work), passes cleanly in
+isolation, and the call is third-party SDK telemetry — it is pre-existing and unrelated to
+the autonomy, delegated or mainnet execution code. No autonomy or delegated test performs
+any network call.
+
+### 9.10 Operator checklist to enable mainnet autonomous execution
+
+Mainnet execution stays **off** until an operator explicitly completes all of the following.
+Every one is fail-closed, so a partial configuration leaves goals watch-only rather than
+half-executable.
+
+1. Deploy `MPGRExecutorDelegated` to Base mainnet (the v1 `MPGRExecutor` cannot be reused —
+   see §9.1) and verify its source.
+2. Set `MPGR_MAINNET_DELEGATED_EXECUTOR` to that address. The server then proves it live:
+   bytecode, governance `owner`, `feeRecipient`, `feeBps == 25`, canonical `PERMIT2`,
+   exact `WITNESS_TYPE_STRING`, `!paused`, and the policy tokens allowlisted (§9.3).
+3. Set `MPGR_MAINNET_BROADCASTER_PRIVATE_KEY` to a **dedicated** operator gas wallet that is
+   not the canary key and does not derive to `0xBF6c574b…280b`. Fund it with ETH for gas
+   only — it never needs to hold user funds, because Permit2 pulls from the user.
+4. Set `MPGR_AUTONOMOUS_EXECUTION_ADAPTER=delegated-permit2-mainnet`. The configured id must
+   match the installed adapter or startup refuses.
+5. Set `CRON_SECRET` so the `/api/agent/autonomy/tick` cron can authenticate (§9.5).
+6. Leave `MPGR_AUTONOMOUS_AGENT_ENABLED=true` and `MPGR_AUTONOMOUS_EMERGENCY_DISABLE` unset;
+   the emergency stop remains the immediate kill switch.
+
+Even with all six, a goal executes only when the user has separately signed a bounded
+authorization slot for **that** chain, wallet, token pair, amount and deadline — and the
+bounded hot-wallet gate re-verifies all of it against the calldata before the operator key
+signs.

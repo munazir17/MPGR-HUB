@@ -39,6 +39,7 @@ import {
   DELEGATED_BASE_SEPOLIA_TSTOCK,
   DELEGATED_BASE_SEPOLIA_TUSD,
   DELEGATED_EXECUTOR_ADDRESS,
+  delegatedActionId,
 } from "@/lib/executor/delegated-executor";
 import { buildExecutorIntent } from "@/lib/executor/executor-intent";
 import { delegateSwap } from "@/lib/mcp/mcp-trade-service";
@@ -46,6 +47,7 @@ import {
   delegatedSlotId,
   policyHashFor,
   selectDelegatedSlot,
+  validateNewSlotAgainstPolicy,
   type DelegatedAuthorizationSlot,
 } from "@/lib/autonomy/delegated-authorization";
 import { noDelegationAdapter } from "@/lib/autonomy/execution-adapter";
@@ -192,20 +194,49 @@ describe("PHASE 6 §B: chain separation — Mainnet and Sepolia registries can n
     }
   });
 
-  it("delegateSwap refuses the Mainnet chain; delegated slot selection refuses a Mainnet policy (fail-closed)", async () => {
+  /**
+   * UPDATED BY THE MC-1/MC-2 REMEDIATION. This test originally pinned the fact
+   * that Base mainnet was NOT a delegated chain at all, so `delegateSwap(8453)`
+   * answered UNSUPPORTED_CHAIN and a mainnet policy was refused CHAIN_MISMATCH
+   * before any slot was even considered.
+   *
+   * Mainnet delegated execution now EXISTS, so those two specific codes moved —
+   * but the property this §B section is actually about (Mainnet and Sepolia can
+   * never CROSS) is preserved and is now asserted far more precisely and in
+   * BOTH directions:
+   *
+   *   - unpinned mainnet execution still fails closed (EXECUTOR_NOT_CONFIGURED,
+   *     never a silent fall back to the Sepolia contract);
+   *   - a genuinely non-delegated chain still fails closed (UNSUPPORTED_CHAIN);
+   *   - a SEPOLIA slot can never authorize a MAINNET policy, and a MAINNET slot
+   *     can never authorize a SEPOLIA policy (CHAIN_MISMATCH), even when every
+   *     other field — owner, tokens, amount, policyHash, deadline — matches.
+   */
+  it("delegateSwap fails closed on an unpinned Mainnet executor and on non-delegated chains; slots can never CROSS chains", async () => {
+    // (1) Unpinned mainnet => fail closed with the precise reason. Nothing is
+    //     broadcast, and it never falls back to the Sepolia contract.
+    delete process.env.MPGR_MAINNET_DELEGATED_EXECUTOR;
     const out = await delegateSwap({} as never, { chainId: 8453 });
     expect(out.ok).toBe(false);
-    if (!out.ok) expect(out.error.code).toBe("UNSUPPORTED_CHAIN");
+    if (!out.ok) expect(out.error.code).toBe("EXECUTOR_NOT_CONFIGURED");
+
+    // (2) A chain that is not delegated at all still answers UNSUPPORTED_CHAIN.
+    for (const chainId of [1, 10, 137, 31337]) {
+      const wrongChain = await delegateSwap({} as never, { chainId });
+      expect(wrongChain.ok, `chain ${chainId}`).toBe(false);
+      if (!wrongChain.ok) expect(wrongChain.error.code).toBe("UNSUPPORTED_CHAIN");
+    }
 
     const USER = getAddress("0x0000000000000000000000000000000000000003") as Address;
     const SELL = getAddress("0x00000000000000000000000000000000000000a5") as Address;
     const BUY = getAddress("0x00000000000000000000000000000000000000b7") as Address;
     const NOW = new Date("2026-10-01T00:00:00Z");
     const DEADLINE = Math.floor(NOW.getTime() / 1000) + 1800;
-    const mainnetPolicy: AutonomyPolicy = {
-      id: "pol-p6-m",
+
+    const policyOn = (chainId: 8453 | 84532, id: string): AutonomyPolicy => ({
+      id,
       wallet: USER,
-      chainId: 8453, // WRONG chain for the delegated slot space
+      chainId,
       actions: ["swap"],
       sellToken: SELL,
       buyToken: BUY,
@@ -218,13 +249,68 @@ describe("PHASE 6 §B: chain separation — Mainnet and Sepolia registries can n
       expiresAt: new Date(NOW.getTime() + 6 * 3600_000).toISOString(),
       authorizedAt: new Date(NOW.getTime() - 3600_000).toISOString(),
       authorizationRef: "p6",
-    };
-    const verdict = selectDelegatedSlot([], { now: NOW, policy: mainnetPolicy, sellToken: SELL, buyToken: BUY, sellAmountRaw: "10000", liveMinBuyAmountRaw: "1" });
-    expect(verdict.authorized).toBe(false);
-    expect(verdict.reason).toBe("CHAIN_MISMATCH");
-    void delegatedSlotId;
-    void policyHashFor;
-    void ({} as DelegatedAuthorizationSlot);
+    });
+    const mainnetPolicy = policyOn(8453, "pol-p6-m");
+    const sepoliaPolicy = policyOn(84532, "pol-p6-s");
+
+    // A slot that is PERFECT in every other respect — right owner, right tokens,
+    // right amount, a policyHash computed for the TARGET policy, live deadline —
+    // so the ONLY thing that can stop it is the chain binding.
+    const slotFor = (slotChainId: 8453 | 84532, policy: AutonomyPolicy, goalId: string): DelegatedAuthorizationSlot => ({
+      id: delegatedSlotId(policy.id, goalId, 0),
+      wallet: USER.toLowerCase() as Address,
+      chainId: slotChainId,
+      policyId: policy.id,
+      goalId,
+      slotIndex: 0,
+      permit: { token: SELL, amount: "10000", nonce: "7", deadline: DEADLINE },
+      witness: {
+        owner: USER.toLowerCase() as Address,
+        buyToken: BUY,
+        minAmountOut: "1",
+        deadline: DEADLINE,
+        actionId: delegatedActionId(goalId),
+        policyHash: policyHashFor(policy),
+      },
+      signature: ("0x" + "ab".repeat(65)) as Hex,
+      createdAt: new Date(NOW.getTime() - 60_000).toISOString(),
+    });
+
+    const ctxFor = (policy: AutonomyPolicy) => ({
+      now: NOW,
+      policy,
+      sellToken: SELL,
+      buyToken: BUY,
+      sellAmountRaw: "10000",
+      liveMinBuyAmountRaw: "1",
+    });
+
+    // (3) SEPOLIA slot vs MAINNET policy => CHAIN_MISMATCH.
+    const sepoliaSlotOnMainnet = selectDelegatedSlot([slotFor(84532, mainnetPolicy, "goal-p6")], ctxFor(mainnetPolicy));
+    expect(sepoliaSlotOnMainnet.authorized).toBe(false);
+    expect(sepoliaSlotOnMainnet.reason).toBe("CHAIN_MISMATCH");
+
+    // (4) MAINNET slot vs SEPOLIA policy => CHAIN_MISMATCH (both directions).
+    const mainnetSlotOnSepolia = selectDelegatedSlot([slotFor(8453, sepoliaPolicy, "goal-p6")], ctxFor(sepoliaPolicy));
+    expect(mainnetSlotOnSepolia.authorized).toBe(false);
+    expect(mainnetSlotOnSepolia.reason).toBe("CHAIN_MISMATCH");
+
+    // (5) The same binding is enforced BEFORE a slot is ever stored.
+    expect(validateNewSlotAgainstPolicy(slotFor(84532, mainnetPolicy, "goal-p6"), mainnetPolicy)).toBe("CHAIN_MISMATCH");
+    expect(validateNewSlotAgainstPolicy(slotFor(8453, sepoliaPolicy, "goal-p6"), sepoliaPolicy)).toBe("CHAIN_MISMATCH");
+
+    // (6) A mainnet policy with NO slots is still not authorized — the chain
+    //     becoming valid did not make an unauthorized goal executable.
+    const noSlots = selectDelegatedSlot([], ctxFor(mainnetPolicy));
+    expect(noSlots.authorized).toBe(false);
+    expect(noSlots.reason).toBe("NO_SLOTS");
+
+    // (7) Sanity: the chain check is the ONLY thing stopping (3)/(4). A slot on
+    //     its OWN chain with these exact fields is accepted, proving the
+    //     refusals above are chain-specific rather than an artifact of a fixture
+    //     that could never authorize anything.
+    expect(selectDelegatedSlot([slotFor(8453, mainnetPolicy, "goal-p6")], ctxFor(mainnetPolicy)).authorized).toBe(true);
+    expect(selectDelegatedSlot([slotFor(84532, sepoliaPolicy, "goal-p6")], ctxFor(sepoliaPolicy)).authorized).toBe(true);
   });
 });
 
