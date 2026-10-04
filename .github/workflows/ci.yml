@@ -71,8 +71,8 @@ jobs:
         run: |
           set -euo pipefail
           forge --version
-          SOLC_VERSION="$(forge config --json | jq -r '.solc_version')"
-          test "$SOLC_VERSION" = "0.8.24" || { echo "::error::expected released solc 0.8.24, configured $SOLC_VERSION"; exit 1; }
+          SOLC_VERSION="0.8.24"
+          grep -Eq '^[[:space:]]*solc_version[[:space:]]*=[[:space:]]*"0\.8\.24"' foundry.toml || { echo "::error::foundry.toml must pin solc 0.8.24"; exit 1; }
           forge build --force
           SOLC_BIN="$(find "$HOME/.svm" -type f -name "solc-$SOLC_VERSION" -print -quit 2>/dev/null || true)"
           test -n "$SOLC_BIN" && test -x "$SOLC_BIN" || { echo "::error::released solc $SOLC_VERSION binary missing from the Foundry SVM cache"; exit 1; }
