@@ -383,26 +383,43 @@ network-dependent fork verification and the operator/user actions remain blocked
 ## 11. Go-live runbook (only after the RPC and deployment-approval blockers B1–B2 are resolved)
 
 1. On an operator runner with the pinned Solidity toolchain/dependencies, run `forge build`,
-   `forge test --no-match-path 'test/fork/*'`, then the Base mainnet fork rehearsal suites with
-   RPC configured. Local tests are green here; the **mainnet fork dry-run must be green before
-   any deployment** (B1).
+   `forge test --no-match-path 'test/fork/*'`, and the RPC-backed Base mainnet fork rehearsal
+   suites. The PR's existing `contracts-fork` job covers the v1 executor/deployment path; it
+   does **not** validate this new delegated deployment script. Require a delegated-specific
+   live preflight rehearsal to pass before deploying (B1).
 2. Review and commit `deployments/base-mainnet/delegated-deploy-config.json`; set
    `mainnetDelegatedDeployEnabled: true` in the same reviewed commit.
-3. Deploy with a fresh dedicated key (nonce 0), `--broadcast --slow`, from a machine with RPC
-   egress. Record the address.
-4. Verify source on BaseScan/Sourcify/Blockscout.
-5. Re-read posture on-chain and confirm it matches the config exactly (the script asserts this,
-   but confirm independently).
-6. Write `deployments/base-mainnet/mpgr-executor-delegated.json` (the script emits it) and
-   commit the artifact.
-7. Set the four runtime env vars — `MPGR_MAINNET_DELEGATED_EXECUTOR`,
+3. From a secured operator runner, provision the reviewed owner/fee pins, the explicit env
+   enable flag, a fresh dedicated deployer key (nonce 0, funded for gas), and the RPC endpoint.
+   Do not paste or log keys. If the production broadcaster key is provisioned, verify it is a
+   separate gas-only wallet as required by preflight.
+4. **Simulate first, without `--broadcast`** against Base Mainnet:
+   `forge script script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol:DeployMPGRExecutorDelegatedBaseMainnet --rpc-url "$BASE_MAINNET_RPC_URL" -vv`.
+   Review the full live preflight, predicted CREATE address, postflight and allowlists; stop on
+   any mismatch. This dry run sends no chain transaction.
+5. The script writes a predicted JSON record even during a successful no-broadcast simulation.
+   Do **not** commit or treat that predicted record as deployment evidence. Since preflight
+   required the artifact not to exist before the simulation, remove only that newly generated
+   simulation file before the next run so the one-time artifact guard stays meaningful:
+   `rm deployments/base-mainnet/mpgr-executor-delegated.json`.
+6. Only after the simulation has been independently reviewed and the human has explicitly
+   approved deployment, run the same script with `--broadcast --slow` from the secured runner.
+   Record the actual transaction and resulting executor address; stop if the broadcast result
+   is uncertain.
+7. Verify source on BaseScan/Sourcify/Blockscout, then independently re-read on-chain posture
+   and confirm it matches the reviewed config exactly (the script also asserts this).
+8. Confirm the script's artifact describes the actual mined deployment, reconcile it with the
+   transaction/receipt and on-chain reads, then commit
+   `deployments/base-mainnet/mpgr-executor-delegated.json`. A simulated artifact is never
+   acceptable as the production artifact.
+9. Set the runtime vars — `MPGR_MAINNET_DELEGATED_EXECUTOR`,
    `MPGR_MAINNET_BROADCASTER_PRIVATE_KEY` (dedicated gas-only wallet, **not** the canary),
    `MPGR_AUTONOMOUS_EXECUTION_ADAPTER=delegated-permit2-mainnet`, `CRON_SECRET` — plus
    `MPGR_AUTONOMOUS_AGENT_ENABLED=true`.
-8. Confirm `GET /api/agent/autonomy/config` reports `delegated.chainId == 8453` with the pinned
-   executor and `executionAvailable == true` (posture proven, not assumed).
-9. The user signs exactly one bounded 1-USDC slot in their wallet (B3).
-10. Run one tick, then confirm the full lifecycle and that a duplicate tick cannot re-execute.
+10. Confirm `GET /api/agent/autonomy/config` reports `delegated.chainId == 8453` with the pinned
+    executor and `executionAvailable == true` (posture proven, not assumed).
+11. The user signs exactly one bounded 1-USDC slot in their wallet (B3).
+12. Run one tick, then confirm the full lifecycle and that a duplicate tick cannot re-execute.
 
-Until steps 1–10 have all been done and observed, mainnet autonomous execution is **not** live,
+Until steps 1–12 have all been done and observed, mainnet autonomous execution is **not** live,
 and the system is designed so that it behaves as watch-only rather than half-executable.
