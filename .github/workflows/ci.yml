@@ -70,7 +70,8 @@ jobs:
       - name: Assert and record released Foundry and Solidity versions
         run: |
           set -euo pipefail
-          forge --version
+          FORGE_OUTPUT="$(forge --version)"
+          printf '%s\n' "$FORGE_OUTPUT"
           SOLC_VERSION="0.8.24"
           grep -Eq '^[[:space:]]*solc_version[[:space:]]*=[[:space:]]*"0\.8\.24"' foundry.toml || { echo "::error::foundry.toml must pin solc 0.8.24"; exit 1; }
           forge build --force
@@ -79,6 +80,13 @@ jobs:
           SOLC_OUTPUT="$("$SOLC_BIN" --version)"
           printf '%s\n' "$SOLC_OUTPUT"
           grep -Fq "Version: $SOLC_VERSION+" <<< "$SOLC_OUTPUT" || { echo "::error::Solidity compiler is not the released $SOLC_VERSION build"; exit 1; }
+          {
+            echo "### Released contracts toolchain"
+            echo '```text'
+            printf '%s\n' "$FORGE_OUTPUT" "$SOLC_OUTPUT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Released contracts toolchain::$(printf '%s; %s' "$(tr '\n' ' ' <<< "$FORGE_OUTPUT")" "$(tr '\n' ' ' <<< "$SOLC_OUTPUT")")"
       - name: forge test (failure details as annotations)
         env:
           MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
