@@ -265,8 +265,26 @@ taken; the safe default chosen here is to make the contract accept what the app 
 
 ## 8. Test coverage against the required matrix
 
-Contract tests exist and cover the full A–Z list. **They cannot be executed in this
-environment** — see §9, blocker B2. Coverage was verified by reading the test names:
+Contract tests exist and the relevant local suites **were executed successfully** using Foundry
+1.7.1, native solc 0.8.24, OpenZeppelin v5.4.0 and forge-std v1.9.7. These tools/dependencies
+were installed into ignored temporary/workspace paths; no project dependency or lockfile was
+changed. The RPC-backed fork rehearsal remains unrun/skipped because Base RPC egress is blocked
+(§9, B1) — local mocked/unit/fuzz/invariant coverage is not represented as fork verification.
+
+| Executed gate | Result |
+|---|---|
+| `forge build` (includes the new delegated mainnet deploy script) | **success** — Solidity 0.8.24 |
+| Full local `forge test` | **162 passed, 0 failed, 41 skipped** (15 suites, 203 cases) |
+| `MPGRExecutorDelegated.t.sol` | **48 passed**, including two 256-run fuzz properties |
+| `DeployMPGRExecutorDelegatedBaseMainnet.t.sol` | **8 passed**, no RPC/broadcast |
+| Base mainnet / Base Sepolia fork suites | skipped in this sandbox-local run because their RPC env vars are unset and network egress is unavailable; remote CI fork results are separate |
+
+A separate GitHub Actions `contracts-fork` job can exercise RPC-backed Base fork suites; its
+status and annotations are recorded on PR #78, not in the local Foundry totals above. That
+job's existing executor/deploy coverage must not be mistaken for a live deployment or for the
+new delegated mainnet script's independently verified production posture/artifact.
+
+Coverage mapped to the required A–Z matrix:
 
 | Req | Covered by (`test/executor/`) |
 |---|---|
@@ -300,9 +318,9 @@ environment** — see §9, blocker B2. Coverage was verified by reading the test
 | — output measured not trusted | `test_RouterLiesAboutOutput_BalanceDeltaRules` |
 | — v1/delegated parity | `test_EventParity_V1_vs_Delegated`, `test_QuoteFee_Parity_WithV1` |
 
-Application-layer coverage (runnable and **passing** here — 2576 tests) additionally proves the
-cross-chain matrix, the bounded hot-wallet gate, canary separation, posture fail-closed
-behaviour and the full mainnet stage chain. See
+Application-layer coverage (runnable and **passing** here — 251 test files, 2603 passed and
+17 skipped) additionally proves the cross-chain matrix, the bounded hot-wallet gate, canary
+separation, posture fail-closed behaviour and the full mainnet stage chain. See
 [`docs/ACTIVATION-FLOW-AUDIT.md`](ACTIVATION-FLOW-AUDIT.md) §9.
 
 ---
@@ -316,15 +334,16 @@ faked. Nothing below was worked around, weakened or stubbed.
 
 | # | Blocker | Evidence | Smallest safe fix |
 |---|---|---|---|
-| **B1** | **No network egress to any chain RPC.** Base mainnet is unreachable from this environment, so deploying, verifying on BaseScan, reading posture and broadcasting a canary are all impossible. | `curl https://mainnet.base.org` → HTTP `000`. Earlier full-suite runs showed the same for `cca-lite.coinbase.com` (`ECONNRESET`). | Run the deploy from an operator machine/CI runner with RPC egress. |
-| **B2** | **No Solidity toolchain, and it cannot be installed.** `forge` is absent, `.forge-deps` (OpenZeppelin + forge-std) is not vendored, and the Foundry release binary cannot be downloaded. So the 48 contract tests **cannot be executed here** — their coverage in §8 is verified by reading them, not by running them. | `which forge` → not found; `ls .forge-deps` → missing; download → `SSL_ERROR_SYSCALL` from `release-assets.githubusercontent.com`. | `foundryup && forge install` then `forge test -vvv` on a machine with GitHub-release egress. **Must be green before deploy.** |
-| **B3** | **No deployer private key with ETH on Base mainnet**, and none may ever be requested, pasted into chat, printed or committed. | By policy and by the task's own rules. | Operator supplies `BASE_MAINNET_DEPLOYER_PRIVATE_KEY` from repo secrets to the forge script. The deployer must be a **fresh, dedicated** key (the script requires nonce 0). |
-| **B4** | **The 1-USDC canary requires the *user* to sign the authorization in their own wallet.** This is the non-custodial invariant, and it is not something an agent can or may do: the server/operator must never sign for the user. It also requires real USDC in that wallet. | Invariants 1 and 6; the flow is `signDelegatedSlots` in the user's browser wallet. | The user signs one bounded slot (1 USDC, short expiry, correct `policyHash`/`chainId 8453`) in the Agent UI against the pinned mainnet executor. |
-| **B5** | **The mainnet delegated executor address does not exist yet**, so `MPGR_MAINNET_DELEGATED_EXECUTOR` cannot be pinned and the adapter correctly fails closed everywhere. | `mainnetDelegatedExecutorDeployment()` returns `null` when unset; proven by tests. | Deploy (B1–B3), then pin the address. |
+| **B1** | **No network egress to any chain RPC.** Base mainnet is unreachable from this environment, so deployment, independent on-chain posture verification, and mainnet fork rehearsals / canary are impossible. | Read-only `eth_chainId` to `https://mainnet.base.org` → HTTP `000`; `BASE_MAINNET_RPC_URL` is unset. Fork suites were skipped, not counted as passes. | Run the reviewed deploy/fork workflow on an operator machine or CI runner with Base RPC egress; require the mainnet fork dry-run to pass before any real deployment. |
+| **B2** | **Deployment secrets/approvals are absent.** No deployer key, owner/fee-recipient deployment vars, explicit deployment enable, production executor pin, production broadcaster key, runtime enable, or cron secret is configured in this sandbox. Secret values were never read or printed. | Presence-only environment check: all required deployment/runtime vars `UNSET`. | Operator provisions secrets via the existing secure repository/deployment environment — never chat — and separately approves the one-time deploy. Fresh deployer key must have nonce 0. |
+| **B3** | **The 1-USDC canary requires the user to sign the authorization in their own wallet** and to have at most 1 USDC committed. The server/operator must never sign for them. | Invariants 1 and 6; `signDelegatedSlots` runs in the user's browser wallet. No wallet session or signed authorization was supplied. | After deploy and posture verification, the user signs exactly one bounded 1-USDC slot (short expiry, correct `policyHash`/`chainId 8453`) in the Agent UI. |
+| **B4** | **The mainnet delegated executor address does not exist yet**, so `MPGR_MAINNET_DELEGATED_EXECUTOR` cannot be pinned and the adapter correctly fails closed everywhere. | `mainnetDelegatedExecutorDeployment()` returns `null` when unset; proven by tests. | Deploy after B1–B2, independently verify, then pin the actual address. |
 
 Everything that **can** be done without those has been done: the architecture decision, the
-mainnet deploy script, the reviewed deploy config, the deployment-artifact contract, and the
-tests that make the configuration self-consistent and the cross-chain matrix airtight.
+mainnet deploy script and its eight passing local preflight tests, the reviewed deploy config,
+the deployment-artifact writer, and the tests that make the configuration self-consistent and
+the cross-chain matrix airtight. Local Solidity unit/fuzz/invariant tests are green; only
+network-dependent fork verification and the operator/user actions remain blocked.
 
 ---
 
@@ -337,7 +356,8 @@ tests that make the configuration self-consistent and the cross-chain matrix air
   `MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED=true` *and* committed
   `mainnetDelegatedDeployEnabled: true`); one-time via record-exists **and** deployer nonce 0;
   deployer must differ from owner, fee recipient, the production broadcaster and the canary
-  wallet; the canary address is denied outright; live verification that Permit2, WETH, both
+  wallet; if the broadcaster key is provisioned, its derived address must also differ from
+  governance, fee recipient and every denied/canary/Sepolia address; live verification that Permit2, WETH, both
   routers and all 15 tokens exist and behave on 8453; the Sepolia denylist must not appear;
   deterministic-address assertion; post-deploy assertion that **every** posture value the
   runtime will later verify already matches (owner, `pendingOwner == 0`, `feeBps`,
@@ -348,17 +368,24 @@ tests that make the configuration self-consistent and the cross-chain matrix air
 - **`deployments/base-mainnet/delegated-deploy-config.json`** — committed, reviewed pins
   (owner, fee recipient, feeBps, maxFeeBps, both routers with kinds, all 15 tokens), shipped
   with `mainnetDelegatedDeployEnabled: false` so it cannot fire accidentally.
-- **`lib/executor/__tests__/delegated-architecture.test.ts`** — runnable-now proofs: the
-  cross-chain authorization matrix (including a third chain), the contract's zero
+- **`lib/executor/__tests__/delegated-architecture.test.ts`** (27 Vitest tests) — runnable-now
+  proofs: the cross-chain authorization matrix (including a third chain), the contract's zero
   proxy/`delegatecall`/generic-execute surface, the governed config surface that makes
   redeployment unnecessary, canary/broadcaster separation in config, deploy-script guard
   presence, and config↔route-table consistency.
+- **`test/script/DeployMPGRExecutorDelegatedBaseMainnet.t.sol`** (8 Foundry tests) — locally
+  etches mock infrastructure and proves the mainnet chain gate, both enable flags, one-time
+  artifact/nonce guard, pin consistency, canary/Sepolia denylist, deployer/governance/fee/
+  broadcaster separation, and a fully passing preflight. It performs no RPC or broadcast.
 
 ---
 
-## 11. Go-live runbook (for the operator, once B1–B3 are available)
+## 11. Go-live runbook (only after the RPC and deployment-approval blockers B1–B2 are resolved)
 
-1. `foundryup && forge install`; `forge test -vvv` — **all contract tests green** (B2).
+1. On an operator runner with the pinned Solidity toolchain/dependencies, run `forge build`,
+   `forge test --no-match-path 'test/fork/*'`, then the Base mainnet fork rehearsal suites with
+   RPC configured. Local tests are green here; the **mainnet fork dry-run must be green before
+   any deployment** (B1).
 2. Review and commit `deployments/base-mainnet/delegated-deploy-config.json`; set
    `mainnetDelegatedDeployEnabled: true` in the same reviewed commit.
 3. Deploy with a fresh dedicated key (nonce 0), `--broadcast --slow`, from a machine with RPC
@@ -374,7 +401,7 @@ tests that make the configuration self-consistent and the cross-chain matrix air
    `MPGR_AUTONOMOUS_AGENT_ENABLED=true`.
 8. Confirm `GET /api/agent/autonomy/config` reports `delegated.chainId == 8453` with the pinned
    executor and `executionAvailable == true` (posture proven, not assumed).
-9. The user signs exactly one bounded 1-USDC slot in their wallet (B4).
+9. The user signs exactly one bounded 1-USDC slot in their wallet (B3).
 10. Run one tick, then confirm the full lifecycle and that a duplicate tick cannot re-execute.
 
 Until steps 1–10 have all been done and observed, mainnet autonomous execution is **not** live,

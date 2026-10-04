@@ -270,6 +270,14 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         _deny(c.deployer, "deployer");
         _deny(c.owner, "owner");
         _deny(c.feeRecipient, "feeRecipient");
+        // If the production broadcaster key has already been provisioned, prove it is a
+        // separate, non-canary gas-only wallet — never the governance key, fee wallet, v1
+        // executor, or any Sepolia/test address. Only the derived ADDRESS is inspected.
+        if (c.broadcaster != address(0)) {
+            require(c.broadcaster != c.owner, "MPGR: broadcaster must not be the governance owner");
+            require(c.broadcaster != c.feeRecipient, "MPGR: broadcaster must not be the fee recipient");
+            _deny(c.broadcaster, "production broadcaster");
+        }
         require(c.deployer.balance >= MIN_DEPLOYER_BALANCE, "MPGR: deployer needs >= 0.002 ETH on Base Mainnet");
 
         // (6) live infrastructure
