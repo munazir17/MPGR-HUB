@@ -22,6 +22,7 @@ import {
   isHex,
   parseEventLogs,
   parseUnits,
+  keccak256,
   recoverTypedDataAddress,
   type Address,
   type Hex,
@@ -43,6 +44,7 @@ import {
   type AuthorizationMode,
   type ExecutorChainId,
   type ExecutorDeployment,
+  type ExecutorRoute,
   type ExecutorToken,
 } from "@/lib/executor/executor-config";
 import {
@@ -318,7 +320,12 @@ export function listTokens(deps: McpDeps, input: unknown): ToolOutcome {
       pairs: d.routes.map((r) => ({
         tokenA: r.tokenA,
         tokenB: r.tokenB,
-        venue: r.kind === RouterKind.UNISWAP_V3_ROUTER02 ? "uniswap-v3" : "aerodrome-slipstream",
+        venue:
+          r.kind === RouterKind.UNISWAP_V3_ROUTER02
+            ? "uniswap-v3"
+            : r.kind === RouterKind.AERODROME_SLIPSTREAM
+              ? "aerodrome-slipstream"
+              : "typed-swap-module",
         poolFee: r.poolFee ?? null,
         tickSpacing: r.tickSpacing ?? null,
       })),
@@ -408,6 +415,30 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
   return quoteExecutor(deps, chainId, deps.registry[chainId] as ExecutorDeployment, args, null, null, taker, slippage);
 }
 
+/**
+ * Verify the route's module against the executor's live registry and actual
+ * runtime bytecode. A TypeScript route entry alone is never enough to authorize
+ * a module call.
+ */
+async function typedModulePostureMatches(reader: ChainReader, executor: Address, route: ExecutorRoute): Promise<boolean> {
+  if (route.kind !== RouterKind.TYPED_SWAP_MODULE || !route.moduleAddress || !route.moduleCodeHash) return false;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(route.moduleCodeHash) || !reader.getBytecode) return false;
+  try {
+    const [kind, module, codeHash, bytecode] = await Promise.all([
+      reader.readContract({ address: executor, abi: DELEGATED_EXECUTOR_ABI, functionName: "routerKind", args: [route.router] }),
+      reader.readContract({ address: executor, abi: DELEGATED_EXECUTOR_ABI, functionName: "swapModuleForRouter", args: [route.router] }),
+      reader.readContract({ address: executor, abi: DELEGATED_EXECUTOR_ABI, functionName: "swapModuleCodeHash", args: [route.router] }),
+      reader.getBytecode({ address: route.moduleAddress }),
+    ]);
+    return Number(kind) === RouterKind.TYPED_SWAP_MODULE
+      && String(module).toLowerCase() === route.moduleAddress.toLowerCase()
+      && String(codeHash).toLowerCase() === route.moduleCodeHash.toLowerCase()
+      && Boolean(bytecode && bytecode !== "0x" && keccak256(bytecode).toLowerCase() === route.moduleCodeHash.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 /** Executor-path quote, shared by Base Sepolia and the proven Base mainnet route. */
 async function quoteExecutor(
   deps: McpDeps,
@@ -435,12 +466,37 @@ async function quoteExecutor(
 
   const route = findExecutorRoute(d, sell.token.address, buy.token.address);
   if (!route) return fail("NO_ROUTE", "No allowlisted route for this pair.");
+  const isExplicitDelegatedQuote =
+    typeof args.executor === "string" && isAddress(args.executor) && getAddress(args.executor).toLowerCase() === d.executor.toLowerCase();
+  if (route.kind === RouterKind.TYPED_SWAP_MODULE && !isExplicitDelegatedQuote) {
+    return fail("INVALID_VENUE", "Typed swap modules are supported only through the explicitly pinned delegated executor.");
+  }
+  if (route.kind === RouterKind.TYPED_SWAP_MODULE && (sell.native || buy.native)) {
+    return fail("NATIVE_UNSUPPORTED_FOR_MODULE", "Typed-module routes currently support ERC-20 token pairs only.");
+  }
   let expected: bigint;
   try {
-    expected =
-      route.kind === RouterKind.UNISWAP_V3_ROUTER02
-        ? await quoteUniswapV3(reader, route.quoter, sell.token.address, buy.token.address, fee.value.swapAmountIn, route.poolFee ?? 0)
-        : await quoteSlipstream(reader, route.quoter, sell.token.address, buy.token.address, fee.value.swapAmountIn, route.tickSpacing ?? 0);
+    if (route.kind === RouterKind.TYPED_SWAP_MODULE) {
+      if (!route.moduleAddress || !route.moduleCodeHash) {
+        return fail("INVALID_VENUE", "Typed-module quote requires a pinned module address and code hash.");
+      }
+      if (!(await typedModulePostureMatches(reader, d.executor, route))) {
+        return fail("ROUTE_MISMATCH", "Typed-module quote does not match the executor's live module registration and bytecode.");
+      }
+      const { result } = await reader.simulateContract({
+        address: route.moduleAddress,
+        abi: DELEGATED_SWAP_MODULE_ABI,
+        functionName: "quoteExactInput",
+        args: [sell.token.address, buy.token.address, fee.value.swapAmountIn],
+      });
+      expected = result as bigint;
+    } else if (route.kind === RouterKind.UNISWAP_V3_ROUTER02) {
+      if (!route.quoter || route.poolFee === undefined) return fail("INVALID_VENUE", "Uniswap V3 route is missing its quoter or poolFee.");
+      expected = await quoteUniswapV3(reader, route.quoter, sell.token.address, buy.token.address, fee.value.swapAmountIn, route.poolFee);
+    } else {
+      if (!route.quoter || route.tickSpacing === undefined) return fail("INVALID_VENUE", "Slipstream route is missing its quoter or tickSpacing.");
+      expected = await quoteSlipstream(reader, route.quoter, sell.token.address, buy.token.address, fee.value.swapAmountIn, route.tickSpacing);
+    }
   } catch {
     return fail("QUOTE_FAILED", "The on-chain quoter could not price this trade (insufficient liquidity?).");
   }
@@ -471,6 +527,55 @@ async function quoteExecutor(
   };
   const signed = signQuoteId(payload, deps.quoteSecret);
   if (!signed.ok) return fail(signed.error.code, signed.error.message);
+
+  if (route.kind === RouterKind.TYPED_SWAP_MODULE) {
+    const balance = await readTokenBalance(reader, sell.token.address, taker);
+    const minBuyAmount = (expected * BigInt(10_000 - slippage)) / 10_000n;
+    return {
+      ok: true,
+      data: {
+        quoteId: signed.quoteId,
+        chainId,
+        taker,
+        recipient: taker,
+        sellToken: tokenView(sell.token),
+        buyToken: tokenView(buy.token),
+        sellNative: false,
+        buyNative: false,
+        sellAmount: amount.toString(),
+        sellAmountHuman: formatUnits(amount, sell.token.decimals),
+        expectedBuyAmount: expected.toString(),
+        expectedBuyAmountHuman: formatUnits(expected, buy.token.decimals),
+        minBuyAmount: minBuyAmount.toString(),
+        minBuyAmountHuman: formatUnits(minBuyAmount, buy.token.decimals),
+        slippageBps: slippage,
+        feeBps: live.feeBps,
+        feeAmount: fee.value.feeAmount.toString(),
+        feeAmountHuman: formatUnits(fee.value.feeAmount, sell.token.decimals),
+        feeToken: sell.token.address,
+        feeRecipient: live.feeRecipient,
+        feeCollection: "same-transaction (delegated executor, on-chain, exact)",
+        swapAmount: fee.value.swapAmountIn.toString(),
+        route: {
+          provider: "mpgr-executor",
+          venue: "typed-swap-module",
+          executor: d.executor,
+          router: route.router,
+          moduleAddress: route.moduleAddress,
+          moduleCodeHash: route.moduleCodeHash,
+          hops: 1,
+        },
+        executor: d.executor,
+        spender: d.executor,
+        authorization: "PERMIT2",
+        deadline: now + INTENT_TTL_SECONDS,
+        expiresAt: payload.exp,
+        balanceSufficient: balance >= amount,
+        takerBalance: balance.toString(),
+        nextStep: "Use the delegated authorization slot; the user's wallet signs and the operator never signs for the user.",
+      },
+    };
+  }
 
   const built = intentFromPayload(d, payload, signed.quoteId, "APPROVAL");
   if (!built.ok) return built;
@@ -884,6 +989,7 @@ function verifyZeroExReceipt(p: QuotePayload, receipt: Awaited<ReturnType<ChainR
 
 import {
   DELEGATED_EXECUTOR_ABI,
+  DELEGATED_SWAP_MODULE_ABI,
   DELEGATED_EXECUTOR_FEE_BPS,
   buildDelegatedSwapParams,
   delegatedChainLabel,
@@ -966,18 +1072,30 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
   type Venue = { kind: number; poolFee: number | null; tickSpacing: number | null };
   let venue: Venue | null = null;
   if (route) {
-    venue =
-      route.kind === RouterKind.UNISWAP_V3_ROUTER02
-        ? { kind: RouterKind.UNISWAP_V3_ROUTER02, poolFee: route.poolFee ?? null, tickSpacing: null }
-        : { kind: RouterKind.AERODROME_SLIPSTREAM, poolFee: null, tickSpacing: route.tickSpacing ?? null };
+    if (route.kind === RouterKind.UNISWAP_V3_ROUTER02) {
+      venue = { kind: RouterKind.UNISWAP_V3_ROUTER02, poolFee: route.poolFee ?? null, tickSpacing: null };
+    } else if (route.kind === RouterKind.AERODROME_SLIPSTREAM) {
+      venue = { kind: RouterKind.AERODROME_SLIPSTREAM, poolFee: null, tickSpacing: route.tickSpacing ?? null };
+    } else if (route.kind === RouterKind.TYPED_SWAP_MODULE) {
+      venue = { kind: RouterKind.TYPED_SWAP_MODULE, poolFee: null, tickSpacing: null };
+    }
   } else if (poolFee !== null) {
     venue = { kind: RouterKind.UNISWAP_V3_ROUTER02, poolFee, tickSpacing: null };
   } else if (tickSpacing !== null) {
     venue = { kind: RouterKind.AERODROME_SLIPSTREAM, poolFee: null, tickSpacing };
   }
-  if (!venue) return fail("INVALID_VENUE", "provide poolFee (Uniswap V3) or tickSpacing (Aerodrome Slipstream).");
+  if (!venue) return fail("INVALID_VENUE", "provide a registered Uniswap V3, Slipstream or typed-module route.");
   if (venue.kind === RouterKind.UNISWAP_V3_ROUTER02 && venue.poolFee === null) return fail("INVALID_VENUE", "Uniswap V3 route is missing its poolFee.");
   if (venue.kind === RouterKind.AERODROME_SLIPSTREAM && venue.tickSpacing === null) return fail("INVALID_VENUE", "Slipstream route is missing its tickSpacing.");
+
+  if (venue.kind === RouterKind.TYPED_SWAP_MODULE) {
+    if (!route || route.kind !== RouterKind.TYPED_SWAP_MODULE || !route.moduleAddress || !route.moduleCodeHash) {
+      return fail("INVALID_VENUE", "Typed-module route requires a pinned module address and code hash.");
+    }
+    if (!(await typedModulePostureMatches(deps.reader(chainId), executor, route))) {
+      return fail("ROUTE_MISMATCH", "Typed-module route does not match the executor's live module address and code hash.");
+    }
+  }
 
   const params = buildDelegatedSwapParams({
     router: venueRouter, tokenIn, tokenOut: buyToken, grossAmountIn: grossAmountIn.toString(),
@@ -997,11 +1115,17 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
           functionName: "swapOnBehalfOfSlipstream",
           args: [params, venue.tickSpacing as number, authorizationTuple],
         })
-      : encodeFunctionData({
-          abi: DELEGATED_EXECUTOR_ABI,
-          functionName: "swapOnBehalfOfUniswapV3",
-          args: [params, venue.poolFee as number, authorizationTuple],
-        });
+      : venue.kind === RouterKind.TYPED_SWAP_MODULE
+        ? encodeFunctionData({
+            abi: DELEGATED_EXECUTOR_ABI,
+            functionName: "swapOnBehalfOfTypedModule",
+            args: [params, authorizationTuple],
+          })
+        : encodeFunctionData({
+            abi: DELEGATED_EXECUTOR_ABI,
+            functionName: "swapOnBehalfOfUniswapV3",
+            args: [params, venue.poolFee as number, authorizationTuple],
+          });
   try {
     // BOUNDED HOT WALLET (audit MC-2 remediation). Before the operator key
     // signs anything, re-decode this exact calldata and re-verify every signed

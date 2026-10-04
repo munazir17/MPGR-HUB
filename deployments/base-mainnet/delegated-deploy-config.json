@@ -1,5 +1,5 @@
 {
-  "_comment": "Reviewed, committed pins for the ONE-TIME Base Mainnet MPGRExecutorDelegated deployment (the delegated autonomous executor). This is a SEPARATE artifact from deploy-config.json (the v1 assisted executor 0xD982...505A) and a SEPARATE contract: v1 pulls tokens only from msg.sender and is structurally incapable of executing for a user, so it must NEVER be used for delegated autonomous execution. NOT YET DEPLOYED: mainnetDelegatedDeployEnabled is false, so script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol refuses to run. To deploy, an operator must set it true in a reviewed commit AND set MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED=true in the environment (two independent flags), use a fresh dedicated deployer key (nonce 0), and afterwards pin the resulting address in MPGR_MAINNET_DELEGATED_EXECUTOR. See docs/EXECUTOR-ARCHITECTURE-DECISION.md. Routers: BOTH production venues are allowlisted (see that doc section 7) - Aerodrome Slipstream for every USDC<->B20 tokenized-stock pair, and Uniswap V3 SwapRouter02 for USDC<->WETH, because lib/executor/executor-config.ts declares both as production routes and the deploy script asserts the two never drift. Fee model is identical to v1: 25 bps, hard on-chain cap 100 bps, fee taken in the SELL token.",
+  "_comment": "Reviewed, committed pins for the ONE-TIME Base Mainnet MPGRExecutorDelegated deployment (the delegated autonomous executor). This is a SEPARATE artifact from deploy-config.json (the v1 assisted executor 0xD982...505A) and a SEPARATE contract: v1 pulls tokens only from msg.sender and is structurally incapable of executing for a user, so it must NEVER be used for delegated autonomous execution. NOT YET DEPLOYED: mainnetDelegatedDeployEnabled is false, so script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol refuses to run. To deploy, an operator must set it true in a reviewed commit AND set MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED=true in the environment (two independent flags), use a fresh dedicated deployer key (nonce 0), and afterwards pin the resulting address in MPGR_MAINNET_DELEGATED_EXECUTOR. See docs/EXECUTOR-ARCHITECTURE-DECISION.md. Routers: BOTH production venues are allowlisted (see that doc section 7) - Aerodrome Slipstream for every USDC<->B20 tokenized-stock pair, and Uniswap V3 SwapRouter02 for USDC<->WETH, because lib/executor/executor-config.ts declares both as production routes and the deploy script asserts the two never drift. Fee model is identical to v1: 25 bps, hard on-chain cap 100 bps, fee taken in the SELL token. The executor includes the typed module registry, but it is intentionally empty at initial deployment; no venue module is pre-approved.",
   "chainId": 8453,
   "network": "base",
   "contract": "MPGRExecutorDelegated",
@@ -34,21 +34,82 @@
     }
   ],
   "tokens": [
-    { "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "symbol": "USDC", "decimals": 6 },
-    { "address": "0x4200000000000000000000000000000000000006", "symbol": "WETH", "decimals": 18, "isWeth": true },
-    { "address": "0xb200000000000000000000C2e324d24d7eEcd1fb", "symbol": "AAPLc", "decimals": 8 },
-    { "address": "0xb200000000000000000000d9192b6B456483C2E8", "symbol": "AMZNc", "decimals": 8 },
-    { "address": "0xb200000000000000000000c85a31389D71F3ecfb", "symbol": "COINc", "decimals": 8 },
-    { "address": "0xB20000000000000000000019f6E7C675b73C2e4D", "symbol": "CRCLc", "decimals": 8 },
-    { "address": "0xb2000000000000000000002D0BA3164cc74f58B7", "symbol": "GOOGLc", "decimals": 8 },
-    { "address": "0xB2000000000000000000004AFF16039bA04bdFBc", "symbol": "INTCc", "decimals": 8 },
-    { "address": "0xb2000000000000000000008bC8786B856E61707C", "symbol": "METAc", "decimals": 8 },
-    { "address": "0xB200000000000000000000Ab99cFa739E253872B", "symbol": "MSFTc", "decimals": 8 },
-    { "address": "0xb2000000000000000000004884b426556b92883d", "symbol": "MSTRc", "decimals": 8 },
-    { "address": "0xb20000000000000000000078ee7ce2fE4908108C", "symbol": "NVDAc", "decimals": 8 },
-    { "address": "0xb200000000000000000000397293Cb8cda9a10c5", "symbol": "SNDKc", "decimals": 8 },
-    { "address": "0xb2000000000000000000007b9fcbd005511aCBd5", "symbol": "SPCXc", "decimals": 8 },
-    { "address": "0xb2000000000000000000001e800a7f5189430cD0", "symbol": "TSLAc", "decimals": 8 }
+    {
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "symbol": "USDC",
+      "decimals": 6
+    },
+    {
+      "address": "0x4200000000000000000000000000000000000006",
+      "symbol": "WETH",
+      "decimals": 18,
+      "isWeth": true
+    },
+    {
+      "address": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+      "symbol": "AAPLc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000d9192b6B456483C2E8",
+      "symbol": "AMZNc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000c85a31389D71F3ecfb",
+      "symbol": "COINc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB20000000000000000000019f6E7C675b73C2e4D",
+      "symbol": "CRCLc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000002D0BA3164cc74f58B7",
+      "symbol": "GOOGLc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB2000000000000000000004AFF16039bA04bdFBc",
+      "symbol": "INTCc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000008bC8786B856E61707C",
+      "symbol": "METAc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB200000000000000000000Ab99cFa739E253872B",
+      "symbol": "MSFTc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000004884b426556b92883d",
+      "symbol": "MSTRc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb20000000000000000000078ee7ce2fE4908108C",
+      "symbol": "NVDAc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000397293Cb8cda9a10c5",
+      "symbol": "SNDKc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000007b9fcbd005511aCBd5",
+      "symbol": "SPCXc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000001e800a7f5189430cD0",
+      "symbol": "TSLAc",
+      "decimals": 8
+    }
   ],
   "denied": {
     "_comment": "Addresses that must NEVER appear as the deployer, owner, fee recipient, broadcaster, router or token in a mainnet delegated deployment. The canary wallet is the Phase 5 one-shot test wallet; the Sepolia entries are testnet contracts that must never be allowlisted on mainnet.",
@@ -65,5 +126,8 @@
       "0xb67FCDF437B5FeF64E4b32952dc6d172dc9ec56e"
     ],
     "v1MainnetExecutor": "0xD982726e28275661F8aB64054E6b17a70a63505A"
-  }
+  },
+  "typedModules": [],
+  "_typedModulesNote": "The immutable core includes an owner-governed typed module registry. No modules are configured at initial deployment; a future module must be separately deployed per executor/router, code-reviewed, registered by governance and pinned by runtime bytecode hash. This is not a proxy/upgrade path.",
+  "moduleRegistrySchemaVersion": 1
 }

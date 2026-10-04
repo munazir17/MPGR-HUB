@@ -37,7 +37,10 @@ import type { AutonomyPolicy } from "@/lib/autonomy/types";
 
 const ROOT = process.cwd();
 const CONTRACT = readFileSync(join(ROOT, "contracts/executor/MPGRExecutorDelegated.sol"), "utf8");
+const MODULE_INTERFACE = readFileSync(join(ROOT, "contracts/executor/interfaces/IMPGRExecutorSwapModule.sol"), "utf8");
+const MODULE_BASE = readFileSync(join(ROOT, "contracts/executor/modules/MPGRExecutorSwapModuleBase.sol"), "utf8");
 const DEPLOY_SCRIPT = readFileSync(join(ROOT, "script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol"), "utf8");
+const DEPLOYMENT_RECORDER = readFileSync(join(ROOT, "script/RecordMPGRExecutorDelegatedBaseMainnet.s.sol"), "utf8");
 const DEPLOY_CONFIG = JSON.parse(
   readFileSync(join(ROOT, "deployments/base-mainnet/delegated-deploy-config.json"), "utf8"),
 ) as {
@@ -50,10 +53,16 @@ const DEPLOY_CONFIG = JSON.parse(
   maxFeeBps: number;
   permit2: string;
   weth: string;
+  moduleRegistrySchemaVersion: number;
+  typedModules: Array<{ router: string; module: string; codeHash: string }>;
   routers: Array<{ router: string; kind: number; kindName: string }>;
   tokens: Array<{ address: string; symbol: string; decimals: number }>;
   denied: { canaryWallet: string; sepolia: string[]; v1MainnetExecutor: string };
 };
+
+function solidityExecutable(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+}
 
 const CANARY_WALLET = "0xBF6c574b9543967f0D528ae49603b0A7574a280b";
 const V1_MAINNET_EXECUTOR = "0xD982726e28275661F8aB64054E6b17a70a63505A";
@@ -73,6 +82,7 @@ describe("§A Design A — immutable executor, governed configuration, no upgrad
     // Each of these is a concrete mechanism, not a word in a comment: the file's
     // header legitimately says "No proxy, no upgrade path", so we assert on the
     // mechanisms that would have to exist for upgradeability.
+    const executable = solidityExecutable(CONTRACT);
     for (const forbidden of [
       "delegatecall",
       "callcode",
@@ -88,20 +98,21 @@ describe("§A Design A — immutable executor, governed configuration, no upgrad
       "function upgradeTo",
       "proxiableUUID",
     ]) {
-      expect({ forbidden, present: CONTRACT.includes(forbidden) }).toEqual({ forbidden, present: false });
+      expect({ forbidden, present: executable.includes(forbidden) }).toEqual({ forbidden, present: false });
     }
   });
 
-  it("rejects native input on BOTH entrypoints (msg.value must be zero)", () => {
-    // Two payable entrypoints, each reverting on non-zero value.
-    expect(CONTRACT.match(/if \(msg\.value != 0\) revert NativeInputUnsupported\(\);/g)).toHaveLength(2);
-    expect(CONTRACT.match(/function swapOnBehalfOf(UniswapV3|Slipstream)\(/g)).toHaveLength(2);
+  it("rejects native input on every entrypoint (msg.value must be zero)", () => {
+    // Three payable entrypoints, each reverting on non-zero value.
+    expect(CONTRACT.match(/if \(msg\.value != 0\) revert NativeInputUnsupported\(\);/g)).toHaveLength(3);
+    expect(CONTRACT.match(/function swapOnBehalfOf(UniswapV3|Slipstream|TypedModule)\(/g)).toHaveLength(3);
   });
 
   it("exposes the complete owner-governed configuration surface (=> no redeploy for config changes)", () => {
     const governed = [
       "function setTokenAllowed(address token, bool allowed) external onlyOwner",
       "function setRouter(address router, RouterKind kind) external onlyOwner",
+      "function setRouterModule(address router, address module) external onlyOwner",
       "function setFeeBps(uint16 newFeeBps) external onlyOwner",
       "function setFeeRecipient(address newFeeRecipient) external onlyOwner",
       "function pause() external onlyOwner",
@@ -130,6 +141,24 @@ describe("§A Design A — immutable executor, governed configuration, no upgrad
     expect(CONTRACT).toContain("error RenounceDisabled()");
     // Pause is independent of trading and of every other admin action.
     expect(CONTRACT).toMatch(/whenNotPaused/);
+  });
+
+  it("supports new venues through a router-bound typed module, never arbitrary target/data", () => {
+    expect(CONTRACT).toContain("function setRouterModule(address router, address module) external onlyOwner");
+    expect(CONTRACT).toContain("mapping(address router => address module) public swapModuleForRouter");
+    expect(CONTRACT).toContain("mapping(address router => bytes32 codeHash) public swapModuleCodeHash");
+    expect(CONTRACT).toContain("module.codehash != pinnedCodeHash");
+    expect(CONTRACT).toContain("swapExactInput(");
+    expect(MODULE_INTERFACE).toContain("function swapExactInput(");
+    expect(MODULE_INTERFACE).not.toContain("bytes calldata");
+    expect(MODULE_BASE).toContain("address public immutable override executor");
+    expect(MODULE_BASE).toContain("address public immutable override router");
+    expect(MODULE_BASE).toContain("if (msg.sender != executor) revert UnauthorizedExecutor(msg.sender);");
+    expect(MODULE_BASE).toContain("if (recipient != executor) revert InvalidOutputRecipient(recipient);");
+    const executableModule = solidityExecutable(MODULE_BASE);
+    for (const forbidden of ["delegatecall", "callcode", "execute(address", "bytes calldata data"]) {
+      expect({ forbidden, present: executableModule.includes(forbidden) }).toEqual({ forbidden, present: false });
+    }
   });
 
   it("takes every chain-varying value as a CONSTRUCTOR ARG (=> one implementation, any chain)", () => {
@@ -169,6 +198,8 @@ describe("§B mainnet delegated deploy config ↔ TypeScript route table consist
     expect(DEPLOY_CONFIG.permit2).toBe("0x000000000022D473030F116dDEE9F6B43aC78BA3");
     expect(DEPLOY_CONFIG.weth).toBe("0x4200000000000000000000000000000000000006");
     expect(DEPLOY_CONFIG.contract).toBe("MPGRExecutorDelegated");
+    expect(DEPLOY_CONFIG.moduleRegistrySchemaVersion).toBe(1);
+    expect(DEPLOY_CONFIG.typedModules).toEqual([]);
   });
 
   it("is NOT enabled by default — it cannot fire accidentally", () => {
@@ -191,6 +222,7 @@ describe("§B mainnet delegated deploy config ↔ TypeScript route table consist
   it("router kinds in the config match the contract's RouterKind enum exactly", () => {
     expect(RouterKind.AERODROME_SLIPSTREAM).toBe(1);
     expect(RouterKind.UNISWAP_V3_ROUTER02).toBe(2);
+    expect(RouterKind.TYPED_SWAP_MODULE).toBe(3);
     for (const r of DEPLOY_CONFIG.routers) {
       expect({ router: r.router, kindName: r.kindName, kind: r.kind }).toEqual({
         router: r.router,
@@ -418,11 +450,14 @@ describe("§D deployment safety gates", () => {
     expect(DEPLOY_SCRIPT).toContain("executor holds native ETH at deploy time");
   });
 
-  it("records the artifact as NON-proxy so no consumer can mistake it for one", () => {
-    expect(DEPLOY_SCRIPT).toContain('vm.serializeString(k, "proxy", "none")');
-    expect(DEPLOY_SCRIPT).toContain('vm.serializeString(k, "implementation", "none")');
-    expect(DEPLOY_SCRIPT).toContain('vm.serializeString(k, "upgradeAuthority", "none")');
-    expect(DEPLOY_SCRIPT).toContain("mpgr-executor-delegated.json");
+  it("records the mined artifact as NON-proxy so no consumer can mistake it for one", () => {
+    expect(DEPLOYMENT_RECORDER).toContain('vm.serializeString(k, "proxy", "none")');
+    expect(DEPLOYMENT_RECORDER).toContain('vm.serializeString(k, "implementation", "none")');
+    expect(DEPLOYMENT_RECORDER).toContain('vm.serializeString(k, "upgradeAuthority", "none")');
+    expect(DEPLOYMENT_RECORDER).toContain("mpgr-executor-delegated.json");
+    expect(DEPLOYMENT_RECORDER).toContain("deployment.txHash");
+    expect(DEPLOYMENT_RECORDER).toContain("deployment.blockNumber");
+    expect(DEPLOYMENT_RECORDER).toContain("PENDING_EXTERNAL_VERIFICATION");
   });
 
   it("allowlists BOTH production venues, resolving the §7 route-table drift", () => {

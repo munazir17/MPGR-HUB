@@ -146,6 +146,13 @@ export async function buildExecutorSwapProposal(input: ExecutorQuoteInput): Prom
   }
   const route = findExecutorRoute(deployment, sellAddress, buyAddress);
   if (!route) return { ok: false, supported: false };
+  if (route.kind === RouterKind.TYPED_SWAP_MODULE) {
+    return {
+      ok: false,
+      supported: true,
+      error: { code: "EXECUTION_UNAVAILABLE", message: "Typed swap modules are delegated-only; the v1 assisted executor cannot execute this route." },
+    };
+  }
 
   let grossAmountIn: bigint;
   try {
@@ -188,6 +195,13 @@ export async function buildExecutorSwapProposal(input: ExecutorQuoteInput): Prom
   }
 
   // Pool quote for the POST-fee amount: the executor swaps gross - fee.
+  if (!route.quoter) {
+    return {
+      ok: false,
+      supported: true,
+      error: { code: "EXECUTION_UNAVAILABLE", message: "The executor route has no configured quoter." },
+    };
+  }
   let expectedBuyAmount: bigint;
   try {
     expectedBuyAmount =

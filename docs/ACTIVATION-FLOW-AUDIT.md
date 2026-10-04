@@ -698,3 +698,23 @@ Even with all six, a goal executes only when the user has separately signed a bo
 authorization slot for **that** chain, wallet, token pair, amount and deadline — and the
 bounded hot-wallet gate re-verifies all of it against the calldata before the operator key
 signs.
+
+### 9.11 Subsequent typed-module and Mainnet preflight status (2026-10-05)
+
+The tables above are the verification record for the earlier remediation snapshot; they must
+not be read as test results for later changes. This branch now contains a fixed-selector,
+code-hash-pinned typed-module path alongside the two built-in venue paths. See
+[`docs/EXECUTOR-ARCHITECTURE-DECISION.md`](EXECUTOR-ARCHITECTURE-DECISION.md) for its trust
+boundary, config state, deployment/recording sequence, and current blockers. The Mainnet config
+still has `mainnetDelegatedDeployEnabled: false`, and `typedModules` is empty. Neither value was
+changed to make the deployment script pass.
+
+The current PR head's existing Actions run `37216596746` was green at
+`8e73200643ad9f7ee0712994b356058fbd0f4b20`, but predates the current local contract/module and
+recording-script deltas. A new Actions dispatch was denied with HTTP 403, and detailed job-log
+download failed. GitHub Environment secret/variable enumeration was also denied; no secret
+values were requested or printed. `BASE_MAINNET_RPC_URL` is unavailable in this workspace, so
+there is no secure-runner `eth_chainId`, deployer nonce, or secret-presence result. The exact
+Mainnet Forge simulation was **not** run; there is no predicted address or deployment artifact.
+No Mainnet transaction, deployment, activation, or canary occurred. Do not infer go-live
+readiness from the historical test totals in §9.9 or the green older CI run.

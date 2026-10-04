@@ -67,6 +67,18 @@ jobs:
       - name: Executor ABI in lib/executor is in sync with the contract
         run: node script/gen-executor-abi.mjs --check
       - run: bash script/prepare-uniswap-artifacts.sh
+      - name: Assert and record released Foundry and Solidity versions
+        run: |
+          set -euo pipefail
+          forge --version
+          SOLC_VERSION="$(forge config --json | jq -r '.solc_version')"
+          test "$SOLC_VERSION" = "0.8.24" || { echo "::error::expected released solc 0.8.24, configured $SOLC_VERSION"; exit 1; }
+          forge build --force
+          SOLC_BIN="$(find "$HOME/.svm" -type f -name "solc-$SOLC_VERSION" -print -quit 2>/dev/null || true)"
+          test -n "$SOLC_BIN" && test -x "$SOLC_BIN" || { echo "::error::released solc $SOLC_VERSION binary missing from the Foundry SVM cache"; exit 1; }
+          SOLC_OUTPUT="$("$SOLC_BIN" --version)"
+          printf '%s\n' "$SOLC_OUTPUT"
+          grep -Fq "Version: $SOLC_VERSION+" <<< "$SOLC_OUTPUT" || { echo "::error::Solidity compiler is not the released $SOLC_VERSION build"; exit 1; }
       - name: forge test (failure details as annotations)
         env:
           MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"

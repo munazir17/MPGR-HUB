@@ -32,7 +32,7 @@ import "server-only";
 // plus: policy engine already approved upstream (runtime order), quote is
 // fresh (runtime order), idempotency claimed (runtime order).
 
-import type { Address, Hex } from "viem";
+import { keccak256, type Address, type Hex } from "viem";
 
 import {
   CANONICAL_PERMIT2,
@@ -48,7 +48,7 @@ import {
   delegatedExecutorDeploymentFor,
   isDelegatedChainId,
 } from "@/lib/executor/delegated-executor";
-import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, RouterKind, findExecutorRoute } from "@/lib/executor/executor-config";
+import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, RouterKind, findExecutorRoute, type RouterKindValue } from "@/lib/executor/executor-config";
 import {
   delegatedBroadcasterAddress,
   delegatedChainView,
@@ -90,6 +90,7 @@ export interface DelegatedAdapterDeps {
 
 /** A resolved execution venue for a pair on this adapter's chain. */
 interface ResolvedRoute {
+  kind: RouterKindValue;
   router: Address;
   poolFee: number | null;
   tickSpacing: number | null;
@@ -261,6 +262,26 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
             chain.readContract<boolean>({ address: executor, abi: DELEGATED_EXECUTOR_ABI, functionName: "isTokenAllowed", args: [policy.buyToken] }),
           ]);
           if (!sellAllowed || !buyAllowed) return refuse("TOKEN_NOT_ALLOWED");
+
+          const deployment = delegatedExecutorDeploymentFor(this.chainId);
+          const route = deployment ? findExecutorRoute(deployment, policy.sellToken, policy.buyToken) : null;
+          if (route?.kind === RouterKind.TYPED_SWAP_MODULE) {
+            if (!route.moduleAddress || !route.moduleCodeHash) return refuse("SWAP_MODULE_CONFIG_MISSING");
+            const [kind, module, codeHash, moduleCode] = await Promise.all([
+              chain.readContract<number>({ address: executor, abi: DELEGATED_EXECUTOR_ABI, functionName: "routerKind", args: [route.router] }),
+              chain.readContract<Address>({ address: executor, abi: DELEGATED_EXECUTOR_ABI, functionName: "swapModuleForRouter", args: [route.router] }),
+              chain.readContract<Hex>({ address: executor, abi: DELEGATED_EXECUTOR_ABI, functionName: "swapModuleCodeHash", args: [route.router] }),
+              chain.getBytecode(route.moduleAddress),
+            ]);
+            if (
+              Number(kind) !== RouterKind.TYPED_SWAP_MODULE
+                || module.toLowerCase() !== route.moduleAddress.toLowerCase()
+                || codeHash.toLowerCase() !== route.moduleCodeHash.toLowerCase()
+                || !moduleCode
+                || moduleCode === "0x"
+                || keccak256(moduleCode).toLowerCase() !== route.moduleCodeHash.toLowerCase()
+            ) return refuse("SWAP_MODULE_POSTURE_MISMATCH");
+          }
         }
       }
 
@@ -353,7 +374,8 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
         chainId: this.chainId,
         executor: this.executor ?? undefined,
         router: route.router,
-        ...(route.tickSpacing !== null ? { tickSpacing: route.tickSpacing } : { poolFee: route.poolFee as number }),
+        ...(route.tickSpacing !== null ? { tickSpacing: route.tickSpacing } : {}),
+        ...(route.poolFee !== null ? { poolFee: route.poolFee } : {}),
         intentId: delegatedActionId(request.goalId),
         owner: request.wallet,
         // MCP service parses numeric authorization fields from digit STRINGS
@@ -403,16 +425,19 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
    */
   private resolveRoute(sell: Address, buy: Address): ResolvedRoute | null {
     if (this.chainId === BASE_SEPOLIA_CHAIN_ID) {
-      this.routeCache ??= { router: "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4", poolFee: 3000, tickSpacing: null };
+      this.routeCache ??= { kind: RouterKind.UNISWAP_V3_ROUTER02, router: "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4", poolFee: 3000, tickSpacing: null };
       return this.routeCache;
     }
     const deployment = delegatedExecutorDeploymentFor(BASE_MAINNET_CHAIN_ID);
     if (!deployment) return null;
     const route = findExecutorRoute(deployment, sell, buy);
     if (!route) return null;
-    return route.kind === RouterKind.UNISWAP_V3_ROUTER02
-      ? { router: route.router, poolFee: route.poolFee ?? null, tickSpacing: null }
-      : { router: route.router, poolFee: null, tickSpacing: route.tickSpacing ?? null };
+    return {
+      kind: route.kind,
+      router: route.router,
+      poolFee: route.kind === RouterKind.UNISWAP_V3_ROUTER02 ? route.poolFee ?? null : null,
+      tickSpacing: route.kind === RouterKind.AERODROME_SLIPSTREAM ? route.tickSpacing ?? null : null,
+    };
   }
 
   private async policyOf(policyId: string): Promise<AutonomyPolicy | null> {

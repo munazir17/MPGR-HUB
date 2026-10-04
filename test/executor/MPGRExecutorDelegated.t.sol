@@ -15,7 +15,8 @@ import {
     MockWETH9,
     MockRouterBase,
     MockSlipstreamRouter,
-    MockUniswapV3Router02
+    MockUniswapV3Router02,
+    MockTypedSwapModule
 } from "./mocks/ExecutorMocks.sol";
 import {Permit2WitnessMock} from "./mocks/Permit2WitnessMock.sol";
 
@@ -260,6 +261,26 @@ contract MPGRExecutorDelegatedTest is Test {
         a = _authUniswap(ownerKey, address(usdc), G, address(stock), minOut, DL, ACTION_ID, POLICY_HASH);
     }
 
+    function _registerTestModule() internal returns (MockTypedSwapModule module) {
+        module = new MockTypedSwapModule(address(dex), address(uniDex), RATE_NUM, RATE_DEN);
+        vm.prank(admin);
+        dex.setRouterModule(address(uniDex), address(module));
+    }
+
+    function _happyModule()
+        internal
+        returns (
+            MockTypedSwapModule module,
+            MPGRExecutorDelegated.SwapParams memory p,
+            MPGRExecutorDelegated.Permit2Authorization memory a
+        )
+    {
+        module = _registerTestModule();
+        uint256 minOut = _expectedOut(G, RATE_NUM, RATE_DEN);
+        p = _uniParams(address(uniDex), address(usdc), address(stock), G, minOut, DL, ACTION_ID, false);
+        a = _authUniswap(ownerKey, address(usdc), G, address(stock), minOut, DL, ACTION_ID, POLICY_HASH);
+    }
+
     function _runAsBroadcaster(MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a)
         internal
         returns (uint256 out)
@@ -309,6 +330,185 @@ contract MPGRExecutorDelegatedTest is Test {
 
         assertEq(got, minOut, "returned amountOut");
         assertEq(stock.balanceOf(ownerAddr), ownerStock0 + minOut, "owner received output (slipstream)");
+    }
+
+    function test_TypedModule_ExactInputAndMeasuredOwnerOutput() public {
+        (MockTypedSwapModule module, MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a) =
+            _happyModule();
+        uint256 fee = (G * BPS) / 10_000;
+        uint256 out = _expectedOut(G, RATE_NUM, RATE_DEN);
+        uint256 ownerSellBefore = usdc.balanceOf(ownerAddr);
+        uint256 ownerBuyBefore = stock.balanceOf(ownerAddr);
+        uint256 feeBefore = usdc.balanceOf(feeWallet);
+        uint256 broadcasterBuyBefore = stock.balanceOf(broadcaster);
+
+        vm.prank(broadcaster);
+        uint256 received = dex.swapOnBehalfOfTypedModule(p, a);
+
+        assertEq(received, out, "measured owner output");
+        assertEq(usdc.balanceOf(ownerAddr), ownerSellBefore - G, "owner funded exact gross");
+        assertEq(stock.balanceOf(ownerAddr), ownerBuyBefore + out, "owner is the output recipient");
+        assertEq(usdc.balanceOf(feeWallet), feeBefore + fee, "exact fee");
+        assertEq(stock.balanceOf(broadcaster), broadcasterBuyBefore, "broadcaster receives nothing");
+        assertEq(usdc.balanceOf(address(module)), 0, "module retains no user input");
+        assertEq(usdc.balanceOf(address(dex)), 0, "core retains no input");
+        assertEq(stock.balanceOf(address(dex)), 0, "core retains no output");
+        assertEq(usdc.allowance(address(dex), address(module)), 0, "no module allowance");
+        assertEq(usdc.allowance(address(dex), address(uniDex)), 0, "no router allowance");
+        assertEq(uint8(dex.routerKind(address(uniDex))), uint8(MPGRExecutorDelegated.RouterKind.TYPED_SWAP_MODULE));
+        assertEq(dex.swapModuleForRouter(address(uniDex)), address(module));
+        assertEq(dex.swapModuleCodeHash(address(uniDex)), address(module).codehash);
+    }
+
+    function testFuzz_TypedModule_ExactGrossFeeAndNoCustody(uint128 rawGross) public {
+        uint256 gross = bound(uint256(rawGross), 400, 1e12);
+        MockTypedSwapModule module = _registerTestModule();
+        uint256 fee = (gross * BPS) / 10_000;
+        uint256 minOut = ((gross - fee) * RATE_NUM) / RATE_DEN;
+        bytes32 actionId = bytes32(gross);
+        MPGRExecutorDelegated.SwapParams memory p =
+            _uniParams(address(uniDex), address(usdc), address(stock), gross, minOut, DL, actionId, false);
+        MPGRExecutorDelegated.Permit2Authorization memory a =
+            _authUniswap(ownerKey, address(usdc), gross, address(stock), minOut, DL, actionId, POLICY_HASH);
+        uint256 ownerSellBefore = usdc.balanceOf(ownerAddr);
+        uint256 ownerBuyBefore = stock.balanceOf(ownerAddr);
+        uint256 feeBefore = usdc.balanceOf(feeWallet);
+
+        vm.prank(broadcaster);
+        uint256 received = dex.swapOnBehalfOfTypedModule(p, a);
+
+        assertEq(received, minOut);
+        assertEq(ownerSellBefore - usdc.balanceOf(ownerAddr), gross);
+        assertEq(stock.balanceOf(ownerAddr) - ownerBuyBefore, minOut);
+        assertEq(usdc.balanceOf(feeWallet) - feeBefore, fee);
+        assertEq(usdc.balanceOf(address(module)), 0);
+        assertEq(usdc.balanceOf(address(dex)), 0);
+        assertEq(stock.balanceOf(address(dex)), 0);
+        assertEq(usdc.allowance(address(dex), address(module)), 0);
+    }
+
+    function test_TypedModule_MinOutUsesWhatOwnerActuallyReceives() public {
+        MockTypedSwapModule module = _registerTestModule();
+        uint256 minOut = _expectedOut(G, RATE_NUM, RATE_DEN);
+        MPGRExecutorDelegated.SwapParams memory p =
+            _uniParams(address(uniDex), address(usdc), address(fot), G, minOut, DL, ACTION_ID, false);
+        MPGRExecutorDelegated.Permit2Authorization memory a =
+            _authUniswap(ownerKey, address(usdc), G, address(fot), minOut, DL, ACTION_ID, POLICY_HASH);
+        uint256 actualOwnerOutput = minOut - minOut / 100;
+
+        vm.expectRevert(abi.encodeWithSelector(MPGRExecutorDelegated.InsufficientOutput.selector, actualOwnerOutput, minOut));
+        vm.prank(broadcaster);
+        dex.swapOnBehalfOfTypedModule(p, a);
+        assertEq(fot.balanceOf(ownerAddr), 0, "failed minOut does not deliver taxed output");
+        assertEq(fot.balanceOf(address(dex)), 0, "failed minOut rolls back module output");
+        assertEq(usdc.balanceOf(address(module)), 0);
+    }
+
+    function test_TypedModule_BaseRejectsNonExecutorAndRecipientOverride() public {
+        MockTypedSwapModule module = _registerTestModule();
+        vm.expectRevert();
+        vm.prank(attacker);
+        module.swapExactInput(address(usdc), address(stock), 1, 1, DL, address(dex));
+
+        vm.expectRevert();
+        vm.prank(address(dex));
+        module.swapExactInput(address(usdc), address(stock), 1, 1, DL, ownerAddr);
+    }
+
+    function test_TypedModule_OnlyOwnerCanRegister() public {
+        MockTypedSwapModule module = new MockTypedSwapModule(address(dex), address(uniDex), RATE_NUM, RATE_DEN);
+        vm.expectRevert();
+        vm.prank(attacker);
+        dex.setRouterModule(address(uniDex), address(module));
+        assertEq(uint8(dex.routerKind(address(uniDex))), uint8(MPGRExecutorDelegated.RouterKind.UNISWAP_V3_ROUTER02));
+    }
+
+    function test_TypedModule_RegistrationRequiresExecutorAndRouterBindings() public {
+        MockTypedSwapModule wrongExecutor = new MockTypedSwapModule(address(v1), address(uniDex), RATE_NUM, RATE_DEN);
+        vm.expectRevert(abi.encodeWithSelector(MPGRExecutorDelegated.InvalidSwapModule.selector, address(wrongExecutor)));
+        vm.prank(admin);
+        dex.setRouterModule(address(uniDex), address(wrongExecutor));
+
+        MockTypedSwapModule wrongRouter = new MockTypedSwapModule(address(dex), address(slipDex), RATE_NUM, RATE_DEN);
+        vm.expectRevert(abi.encodeWithSelector(MPGRExecutorDelegated.InvalidSwapModule.selector, address(wrongRouter)));
+        vm.prank(admin);
+        dex.setRouterModule(address(uniDex), address(wrongRouter));
+    }
+
+    function test_TypedModule_RouterKindCannotBeSetWithoutModuleRegistration() public {
+        vm.expectRevert(abi.encodeWithSelector(MPGRExecutorDelegated.SwapModuleNotAllowed.selector, address(uniDex)));
+        vm.prank(admin);
+        dex.setRouter(address(uniDex), MPGRExecutorDelegated.RouterKind.TYPED_SWAP_MODULE);
+    }
+
+    function test_TypedModule_RuntimeCodeHashIsPinned() public {
+        (MockTypedSwapModule module, MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a) =
+            _happyModule();
+        uint256 ownerSellBefore = usdc.balanceOf(ownerAddr);
+        vm.etch(address(module), hex"00");
+
+        vm.expectRevert(abi.encodeWithSelector(MPGRExecutorDelegated.SwapModuleNotAllowed.selector, address(uniDex)));
+        vm.prank(broadcaster);
+        dex.swapOnBehalfOfTypedModule(p, a);
+        assertEq(usdc.balanceOf(ownerAddr), ownerSellBefore, "no Permit2 pull after codehash mismatch");
+        assertEq(permit2.nonceBitmap(ownerAddr, 5), 0, "failed module check does not consume nonce");
+    }
+
+    function test_TypedModule_MustConsumeItsExactInputAtomically() public {
+        (MockTypedSwapModule module, MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a) =
+            _happyModule();
+        module.setMode(MockTypedSwapModule.Mode.LEAVE_INPUT, address(0));
+        uint256 ownerSellBefore = usdc.balanceOf(ownerAddr);
+
+        vm.expectRevert(abi.encodeWithSelector(MPGRExecutorDelegated.ModuleInputNotConsumed.selector, address(module), 0, 1));
+        vm.prank(broadcaster);
+        dex.swapOnBehalfOfTypedModule(p, a);
+        assertEq(usdc.balanceOf(ownerAddr), ownerSellBefore, "reverted trade restores user input");
+        assertEq(usdc.balanceOf(address(module)), 0, "revert leaves module with no input");
+        assertEq(permit2.nonceBitmap(ownerAddr, 5), 0, "reverted trade restores Permit2 nonce");
+    }
+
+    function test_TypedModule_OutputMustReturnToCoreForOwnerDelivery() public {
+        (MockTypedSwapModule module, MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a) =
+            _happyModule();
+        module.setMode(MockTypedSwapModule.Mode.REDIRECT_OUTPUT, attacker);
+        uint256 ownerSellBefore = usdc.balanceOf(ownerAddr);
+
+        vm.expectRevert(abi.encodeWithSelector(MPGRExecutorDelegated.InsufficientOutput.selector, 0, p.amountOutMinimum));
+        vm.prank(broadcaster);
+        dex.swapOnBehalfOfTypedModule(p, a);
+        assertEq(usdc.balanceOf(ownerAddr), ownerSellBefore, "redirect attempt reverts atomically");
+        assertEq(stock.balanceOf(attacker), 0, "redirected output is rolled back");
+    }
+
+    function test_TypedModule_PauseAndNativeInputChecksRemainActive() public {
+        (MockTypedSwapModule module, MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a) =
+            _happyModule();
+        vm.prank(admin);
+        dex.pause();
+        vm.expectRevert();
+        vm.prank(broadcaster);
+        dex.swapOnBehalfOfTypedModule(p, a);
+        vm.prank(admin);
+        dex.unpause();
+
+        vm.deal(broadcaster, 1);
+        vm.expectRevert(MPGRExecutorDelegated.NativeInputUnsupported.selector);
+        vm.prank(broadcaster);
+        dex.swapOnBehalfOfTypedModule{value: 1}(p, a);
+        assertEq(usdc.balanceOf(address(module)), 0);
+    }
+
+    function test_TypedModule_CanBeRemovedWithoutChangingExecutor() public {
+        (MockTypedSwapModule module,,) = _happyModule();
+        address executorBeforeRemoval = address(dex);
+        vm.prank(admin);
+        dex.setRouter(address(uniDex), MPGRExecutorDelegated.RouterKind.NONE);
+        assertEq(address(dex), executorBeforeRemoval, "module removal does not change executor address");
+        assertEq(uint8(dex.routerKind(address(uniDex))), uint8(MPGRExecutorDelegated.RouterKind.NONE));
+        assertEq(dex.swapModuleForRouter(address(uniDex)), address(0));
+        assertEq(dex.swapModuleCodeHash(address(uniDex)), bytes32(0));
+        assertEq(dex.routerForSwapModule(address(module)), address(0));
     }
 
     function test_SwapOnBehalfOf_EmitsIdenticalSwapExecuted_TakerIsOwner() public {

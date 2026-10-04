@@ -17,6 +17,7 @@ import {
   DELEGATED_EXECUTOR_ABI,
   DELEGATED_EXECUTOR_FEE_BPS,
   DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR,
+  DELEGATED_SWAP_ON_BEHALF_OF_TYPED_MODULE_SELECTOR,
   DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR,
   buildDelegatedSwapParams,
   mainnetDelegatedExecutorDeployment,
@@ -67,7 +68,7 @@ interface Build {
   permitAmount?: bigint;
   permitToken?: Address;
   permitDeadline?: number;
-  functionName?: "swapOnBehalfOfSlipstream" | "swapOnBehalfOfUniswapV3";
+  functionName?: "swapOnBehalfOfSlipstream" | "swapOnBehalfOfUniswapV3" | "swapOnBehalfOfTypedModule";
   poolKey?: number;
 }
 
@@ -108,7 +109,9 @@ function buildTx(o: Build = {}): { tx: GateTransaction; auth: GateAuthorization 
   const data =
     functionName === "swapOnBehalfOfSlipstream"
       ? encodeFunctionData({ abi: DELEGATED_EXECUTOR_ABI, functionName, args: [params, o.poolKey ?? 10, authorizationTuple] })
-      : encodeFunctionData({ abi: DELEGATED_EXECUTOR_ABI, functionName, args: [params, o.poolKey ?? 3000, authorizationTuple] });
+      : functionName === "swapOnBehalfOfUniswapV3"
+        ? encodeFunctionData({ abi: DELEGATED_EXECUTOR_ABI, functionName, args: [params, o.poolKey ?? 3000, authorizationTuple] })
+        : encodeFunctionData({ abi: DELEGATED_EXECUTOR_ABI, functionName, args: [params, authorizationTuple] });
 
   return {
     tx: { to: EXECUTOR, data, chainId: 8453, value: 0n },
@@ -153,6 +156,18 @@ describe("broadcast gate — the allowed case", () => {
     const verdict = validateDelegatedTransaction(tx, auth, NOW);
     expect(verdict.allowed, verdict.allowed ? "" : `${verdict.reason} ${verdict.detail ?? ""}`).toBe(true);
     if (verdict.allowed) expect(verdict.selector).toBe(DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR);
+  });
+
+  it("accepts only the fixed typed-module entrypoint with the same exact authorization bindings", () => {
+    const { tx, auth } = buildTx({ functionName: "swapOnBehalfOfTypedModule" });
+    const verdict = validateDelegatedTransaction(tx, auth, NOW);
+    expect(verdict.allowed, verdict.allowed ? "" : `${verdict.reason} ${verdict.detail ?? ""}`).toBe(true);
+    if (verdict.allowed) {
+      expect(verdict.selector).toBe(DELEGATED_SWAP_ON_BEHALF_OF_TYPED_MODULE_SELECTOR);
+      expect(verdict.functionName).toBe("swapOnBehalfOfTypedModule");
+      expect(verdict.params.recipient.toLowerCase()).toBe(USER.toLowerCase());
+      expect(verdict.params.grossAmountIn).toBe(GROSS);
+    }
   });
 
   it("accepts the same shape on Base Sepolia (84532), its own pinned executor", () => {
@@ -347,10 +362,15 @@ describe("broadcast gate — structural guarantees", () => {
   });
 
   it("the allowed selector set is derived from the ABI, not hand-written", () => {
-    // If either selector were a typo, the allowed case above could not pass.
+    // If any selector were a typo, the corresponding allowed case above could not pass.
     expect(DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR).toMatch(/^0x[0-9a-f]{8}$/);
     expect(DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR).toMatch(/^0x[0-9a-f]{8}$/);
-    expect(DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR).not.toBe(DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR);
+    expect(DELEGATED_SWAP_ON_BEHALF_OF_TYPED_MODULE_SELECTOR).toMatch(/^0x[0-9a-f]{8}$/);
+    expect(new Set([
+      DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR,
+      DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR,
+      DELEGATED_SWAP_ON_BEHALF_OF_TYPED_MODULE_SELECTOR,
+    ]).size).toBe(3);
     const { tx } = buildTx();
     expect(tx.data.slice(0, 10).toLowerCase()).toBe(DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR);
   });

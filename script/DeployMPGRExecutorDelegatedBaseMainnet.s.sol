@@ -23,8 +23,8 @@ interface IERC20ViewDelegated {
 
 /// @title DeployMPGRExecutorDelegatedBaseMainnet
 /// @notice BASE MAINNET ONLY (chainId 8453). Deploys MPGRExecutorDelegated — the
-///         NON-CUSTODIAL delegated autonomous executor — and writes a
-///         machine-readable deployment record.
+///         NON-CUSTODIAL delegated autonomous executor. A separate read-only recorder writes
+///         the machine-readable artifact only after Forge has mined and returned the receipt.
 ///
 ///         WHY THIS CONTRACT AND NOT THE DEPLOYED v1 EXECUTOR:
 ///         MPGRExecutor (0xD982726e28275661F8aB64054E6b17a70a63505A) pulls tokens ONLY from
@@ -34,11 +34,12 @@ interface IERC20ViewDelegated {
 ///         taker from the RECOVERED Permit2 witness signer and treats msg.sender as a gas-only
 ///         broadcaster, so the operator never has custody.
 ///
-///         ARCHITECTURE: immutable, NON-upgradeable, governed configuration (Design A — see
-///         docs/EXECUTOR-ARCHITECTURE-DECISION.md). No proxy, no delegatecall, no upgrade
-///         authority exists, so no key in the system can change what a deployed executor does.
-///         Routers, tokens, feeBps (capped) and feeRecipient are all owner-governed at
-///         runtime, so ordinary configuration changes never require redeployment.
+///         ARCHITECTURE: immutable, NON-upgradeable core with governed configuration and
+///         explicitly allowlisted, code-hash-pinned typed swap modules (Design A — see
+///         docs/EXECUTOR-ARCHITECTURE-DECISION.md). No proxy, delegatecall or generic target/data
+///         call exists. Tokens and existing router kinds are owner-configurable; new venues use
+///         a separate executor/router-bound immutable module without replacing the core.
+///         The module registry is intentionally empty in this initial deployment.
 ///
 ///         THIS SCRIPT PERFORMS NO SWAPS. A deploy script must never touch real user funds.
 ///         The 1-USDC mainnet canary is a separate, user-signed, operator-run flow: the user
@@ -71,6 +72,8 @@ interface IERC20ViewDelegated {
 /// Usage (after explicit human approval):
 ///   forge script script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol \
 ///     --rpc-url "$BASE_MAINNET_RPC_URL" --broadcast --slow --verify
+///   # after confirming the mined receipt, run the read-only recorder described in
+///   # script/RecordMPGRExecutorDelegatedBaseMainnet.s.sol to write the deployment artifact
 contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
     uint256 internal constant BASE_MAINNET_CHAIN_ID = 8453;
     uint16 internal constant FEE_BPS = 25;
@@ -351,6 +354,8 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
                 dex.routerKind(routers[i].router) == routers[i].kind,
                 "MPGR: router not allowlisted with the expected kind"
             );
+            require(dex.swapModuleForRouter(routers[i].router) == address(0), "MPGR: built-in route unexpectedly uses a module");
+            require(dex.swapModuleCodeHash(routers[i].router) == bytes32(0), "MPGR: built-in route has an unexpected module code hash");
         }
         // And nothing else is allowlisted that should not be.
         address[] memory denied = deniedAddresses();
@@ -359,6 +364,7 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
                 dex.routerKind(denied[i]) == MPGRExecutorDelegated.RouterKind.NONE,
                 "MPGR: a denied address is allowlisted as a router"
             );
+            require(dex.swapModuleForRouter(denied[i]) == address(0), "MPGR: denied address has a registered module");
             require(!dex.isTokenAllowed(denied[i]), "MPGR: a denied address is allowlisted as a token");
         }
         require(
@@ -395,66 +401,9 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
 
         postflight(dex, c);
         console2.log("MPGRExecutorDelegated:", address(dex));
-        console2.log("postflight: posture verified");
-        console2.log("NEXT: pin MPGR_MAINNET_DELEGATED_EXECUTOR to the address above");
-        _write(dex, c);
-    }
-
-    function _write(MPGRExecutorDelegated dex, Config memory c) internal {
-        (address[] memory tokens, string[] memory symbols) = productionTokens();
-        string memory tk = "tokens";
-        string memory tokensJson;
-        for (uint256 i = 0; i < tokens.length; ++i) {
-            tokensJson = vm.serializeAddress(tk, symbols[i], tokens[i]);
-        }
-
-        string memory rk = "routers";
-        string memory routersJson;
-        MPGRExecutorDelegated.RouterConfig[] memory routers = productionRouters();
-        for (uint256 i = 0; i < routers.length; ++i) {
-            string memory key = vm.toString(i);
-            vm.serializeAddress(string.concat("router", key), "router", routers[i].router);
-            vm.serializeUint(string.concat("router", key), "kind", uint256(routers[i].kind));
-            routersJson = vm.serializeString(
-                rk, key, vm.serializeString(string.concat("router", key), "kindName", _kindName(routers[i].kind))
-            );
-        }
-
-        address[] memory routerAllowlist = new address[](routers.length);
-        for (uint256 i = 0; i < routers.length; ++i) routerAllowlist[i] = routers[i].router;
-
-        string memory k = "deployment";
-        vm.serializeString(k, "contract", "MPGRExecutorDelegated");
-        vm.serializeString(k, "network", "base");
-        vm.serializeUint(k, "chainId", block.chainid);
-        vm.serializeAddress(k, "executor", address(dex));
-        // No proxy under Design A: these are recorded as null-equivalents so a consumer can
-        // never mistake this for a proxy deployment.
-        vm.serializeString(k, "proxy", "none");
-        vm.serializeString(k, "implementation", "none");
-        vm.serializeString(k, "upgradeAuthority", "none");
-        vm.serializeAddress(k, "deployer", c.deployer);
-        vm.serializeAddress(k, "owner", dex.owner());
-        vm.serializeAddress(k, "feeRecipient", dex.feeRecipient());
-        vm.serializeUint(k, "feeBps", dex.feeBps());
-        vm.serializeUint(k, "maxFeeBps", dex.MAX_FEE_BPS());
-        vm.serializeBool(k, "paused", dex.paused());
-        vm.serializeAddress(k, "weth", address(dex.WETH()));
-        vm.serializeAddress(k, "permit2", address(dex.PERMIT2()));
-        vm.serializeString(k, "witnessTypeString", dex.WITNESS_TYPE_STRING());
-        vm.serializeAddress(k, "routerAllowlist", routerAllowlist);
-        vm.serializeString(k, "routers", routersJson);
-        vm.serializeUint(k, "deployedAtBlock", block.number);
-        string memory out = vm.serializeString(k, "allowedTokens", tokensJson);
-
-        vm.createDir("deployments/base-mainnet", true);
-        vm.writeJson(out, _outFile());
-        console2.log("deployment record:", _outFile());
-    }
-
-    function _kindName(MPGRExecutorDelegated.RouterKind kind) internal pure returns (string memory) {
-        if (kind == MPGRExecutorDelegated.RouterKind.AERODROME_SLIPSTREAM) return "AERODROME_SLIPSTREAM";
-        if (kind == MPGRExecutorDelegated.RouterKind.UNISWAP_V3_ROUTER02) return "UNISWAP_V3_ROUTER02";
-        return "NONE";
+        console2.log("postflight: simulated deployment posture verified");
+        console2.log("No deployment artifact written here: Forge mines and returns the receipt after run() completes.");
+        console2.log("After receipt confirmation, run RecordMPGRExecutorDelegatedBaseMainnet.s.sol.");
+        console2.log("Then verify source and pin MPGR_MAINNET_DELEGATED_EXECUTOR; do not enable trading before verification.");
     }
 }

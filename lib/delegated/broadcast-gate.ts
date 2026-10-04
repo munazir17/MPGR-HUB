@@ -30,8 +30,7 @@ import { decodeFunctionData, getAddress, isAddress, type Address, type Hex } fro
 import {
   DELEGATED_EXECUTOR_ABI,
   DELEGATED_EXECUTOR_FEE_BPS,
-  DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR,
-  DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR,
+  DELEGATED_SWAP_SELECTORS,
   delegatedExecutorAddressFor,
   isDelegatedChainId,
   type DecodedDelegatedAuthorization,
@@ -62,8 +61,12 @@ export type BroadcastGateVerdict =
   | { allowed: true; selector: Hex; functionName: string; params: DecodedDelegatedSwapParams }
   | { allowed: false; reason: string; detail?: string };
 
-/** The two delegated entrypoints are the ONLY functions the operator may sign. */
-const ALLOWED_FUNCTION_NAMES = new Set(["swapOnBehalfOfUniswapV3", "swapOnBehalfOfSlipstream"]);
+/** Only the two built-in routes and the fixed typed-module entrypoint may be signed. */
+const ALLOWED_FUNCTION_NAMES = new Set([
+  "swapOnBehalfOfUniswapV3",
+  "swapOnBehalfOfSlipstream",
+  "swapOnBehalfOfTypedModule",
+]);
 
 function addr(a: string): string {
   return (isAddress(a) ? getAddress(a) : a).toLowerCase();
@@ -97,15 +100,15 @@ export function validateDelegatedTransaction(tx: GateTransaction, auth: GateAuth
   if (!isAddress(tx.to)) return refuse("TO_INVALID");
   if (addr(tx.to) !== addr(expectedExecutor)) return refuse("EXECUTOR_MISMATCH", `to=${tx.to} expected=${expectedExecutor}`);
 
-  // 3. NO NATIVE VALUE: both entrypoints revert on msg.value != 0 anyway; we
+  // 3. NO NATIVE VALUE: all entrypoints revert on msg.value != 0 anyway; we
   //    refuse here so the operator key never signs value-carrying calldata.
   const value = tx.value ?? 0n;
   if (typeof value !== "bigint" || value !== 0n) return refuse("NATIVE_VALUE_UNSUPPORTED", `value=${String(value)}`);
 
-  // 4. SELECTOR: exactly one of the two delegated swap entrypoints.
+  // 4. SELECTOR: the two built-in swap entrypoints or the single fixed typed-module selector.
   if (typeof tx.data !== "string" || !/^0x[0-9a-fA-F]*$/.test(tx.data) || tx.data.length < 10) return refuse("DATA_INVALID");
   const selector = tx.data.slice(0, 10).toLowerCase() as Hex;
-  if (selector !== DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR && selector !== DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR) {
+  if (!DELEGATED_SWAP_SELECTORS.some((allowed) => allowed.toLowerCase() === selector)) {
     return refuse("SELECTOR_NOT_ALLOWED", selector);
   }
 
@@ -119,7 +122,8 @@ export function validateDelegatedTransaction(tx: GateTransaction, auth: GateAuth
   if (!ALLOWED_FUNCTION_NAMES.has(decoded.functionName)) return refuse("FUNCTION_NOT_ALLOWED", decoded.functionName);
 
   const params = decoded.args[0] as DecodedDelegatedSwapParams | undefined;
-  const decodedAuth = decoded.args[2] as DecodedDelegatedAuthorization | undefined;
+  const authIndex = decoded.functionName === "swapOnBehalfOfTypedModule" ? 1 : 2;
+  const decodedAuth = decoded.args[authIndex] as DecodedDelegatedAuthorization | undefined;
   if (!params || typeof params !== "object") return refuse("PARAMS_MISSING");
   if (!decodedAuth || typeof decodedAuth !== "object" || !decodedAuth.witness) return refuse("AUTH_MISSING");
   const w = decodedAuth.witness;

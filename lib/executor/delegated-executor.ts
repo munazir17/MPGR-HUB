@@ -403,6 +403,61 @@ export const DELEGATED_EXECUTOR_ABI = [
     ],
     outputs: [{ name: "amountOut", type: "uint256" }],
   },
+  {
+    // Fixed typed external-module entrypoint. The module is selected by the
+    // router's governed on-chain registration; callers provide no target or
+    // arbitrary module calldata.
+    type: "function",
+    name: "swapOnBehalfOfTypedModule",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "p",
+        type: "tuple",
+        components: [
+          { name: "router", type: "address" },
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
+          { name: "grossAmountIn", type: "uint256" },
+          { name: "expectedFeeAmount", type: "uint256" },
+          { name: "amountOutMinimum", type: "uint256" },
+          { name: "recipient", type: "address" },
+          { name: "deadline", type: "uint256" },
+          { name: "intentId", type: "bytes32" },
+          { name: "unwrapNativeOut", type: "bool" },
+        ],
+      },
+      {
+        name: "auth",
+        type: "tuple",
+        components: [
+          {
+            name: "permit",
+            type: "tuple",
+            components: [
+              { name: "permitted", type: "tuple", components: [{ name: "token", type: "address" }, { name: "amount", type: "uint256" }] },
+              { name: "nonce", type: "uint256" },
+              { name: "deadline", type: "uint256" },
+            ],
+          },
+          {
+            name: "witness",
+            type: "tuple",
+            components: [
+              { name: "owner", type: "address" },
+              { name: "buyToken", type: "address" },
+              { name: "minAmountOut", type: "uint256" },
+              { name: "deadline", type: "uint256" },
+              { name: "actionId", type: "bytes32" },
+              { name: "policyHash", type: "bytes32" },
+            ],
+          },
+          { name: "signature", type: "bytes" },
+        ],
+      },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
   { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "pendingOwner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "paused", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
@@ -420,6 +475,8 @@ export const DELEGATED_EXECUTOR_ABI = [
     inputs: [{ name: "router", type: "address" }],
     outputs: [{ name: "kind", type: "uint8" }],
   },
+  { type: "function", name: "swapModuleForRouter", stateMutability: "view", inputs: [{ name: "router", type: "address" }], outputs: [{ type: "address" }] },
+  { type: "function", name: "swapModuleCodeHash", stateMutability: "view", inputs: [{ name: "router", type: "address" }], outputs: [{ type: "bytes32" }] },
   { type: "function", name: "feeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
   { type: "function", name: "feeRecipient", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "PERMIT2", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
@@ -429,7 +486,7 @@ export const DELEGATED_EXECUTOR_ABI = [
 ] as const;
 
 /**
- * The ONLY two calldata selectors an autonomous delegated execution may carry.
+ * The ONLY three calldata selectors an autonomous delegated execution may carry.
  * Pinned here so the bounded hot-wallet gate (lib/delegated/broadcast-gate.ts)
  * refuses any other function BEFORE the operator key signs anything.
  *
@@ -437,15 +494,36 @@ export const DELEGATED_EXECUTOR_ABI = [
  * either reject every legitimate execution or (worse) admit the wrong one.
  * Deriving keeps the gate and the encoder structurally in agreement.
  */
+/** Fixed read/simulation ABI shared by all typed venue modules. */
+export const DELEGATED_SWAP_MODULE_ABI = [
+  {
+    type: "function",
+    name: "quoteExactInput",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "tokenIn", type: "address" },
+      { name: "tokenOut", type: "address" },
+      { name: "amountIn", type: "uint256" },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
+  { type: "function", name: "executor", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "router", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+] as const;
+
 export const DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR = toFunctionSelector(
   getAbiItem({ abi: DELEGATED_EXECUTOR_ABI, name: "swapOnBehalfOfUniswapV3" }),
 );
 export const DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR = toFunctionSelector(
   getAbiItem({ abi: DELEGATED_EXECUTOR_ABI, name: "swapOnBehalfOfSlipstream" }),
 );
+export const DELEGATED_SWAP_ON_BEHALF_OF_TYPED_MODULE_SELECTOR = toFunctionSelector(
+  getAbiItem({ abi: DELEGATED_EXECUTOR_ABI, name: "swapOnBehalfOfTypedModule" }),
+);
 export const DELEGATED_SWAP_SELECTORS = [
   DELEGATED_SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR,
   DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR,
+  DELEGATED_SWAP_ON_BEHALF_OF_TYPED_MODULE_SELECTOR,
 ] as const;
 
 /**
