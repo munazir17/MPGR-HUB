@@ -121,6 +121,14 @@ vi.mock("@/hooks/useTransferQuote", () => ({
     confirmAndSend: () => {},
   }),
 }));
+vi.mock("@/hooks/useWalletAuth", () => ({
+  useWalletAuth: () => ({
+    authenticated: false,
+    authenticating: false,
+    authenticate: async () => false,
+  }),
+  WalletAuthProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
 
 const { useAgentChat } = await import("@/hooks/useAgentChat");
 const { AgentExperience } = await import("@/components/features/agent/AgentExperience");

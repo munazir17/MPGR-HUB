@@ -92,7 +92,7 @@ function relative(iso: string): string {
 }
 
 export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
-  const { config, goals, policies, tokens, busy, error, dismissError, pause, resume, cancel, revokePolicy, revokeSlot, signDelegatedSlots, slots, slotsSigningSupported, authorizeGoal, mutate } =
+  const { config, goals, policies, tokens, busy, error, dismissError, pause, resume, cancel, revokePolicy, revokeSlot, signDelegatedSlots, slots, slotsSigningSupported, authorizeGoal, mutate, authenticated, authenticating, signIn } =
     autonomy;
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<AutonomyAuthorizeFormState | null>(null);
@@ -113,6 +113,14 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
     if (!formState.sell || !formState.buy) {
       setNotice("Pick both tokens first.");
       return;
+    }
+    // If the wallet is connected but has no server-side SIWE session,
+    // initiate the existing wallet-auth flow first. After successful
+    // authentication, automatically continue the authorization the user
+    // explicitly requested — signing in alone never auto-authorizes.
+    if (!authenticated) {
+      const signedIn = await signIn();
+      if (!signedIn) return;
     }
     const result = await authorizeGoal(autonomyFormToDraftInput(formState));
     if (result.ok) {
@@ -492,7 +500,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                       disabled={busy}
                       className="min-h-[36px] flex-1 rounded-lg bg-gradient-blue px-3 text-xs font-semibold text-white disabled:opacity-50"
                     >
-                      {busy ? "Working…" : "Authorize & activate goal"}
+                      {busy && authenticating ? "Signing in…" : busy ? "Working…" : !authenticated ? "Sign in & authorize" : "Authorize & activate goal"}
                     </button>
                     {formDirty && (
                       <button
