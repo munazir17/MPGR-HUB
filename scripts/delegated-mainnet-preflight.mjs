@@ -8,6 +8,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   createPublicClient,
   defineChain,
@@ -122,13 +123,19 @@ function loadConfig() {
   }
 }
 
-function checkStaticConfig(config, environmentOwner, environmentFeeRecipient, environmentDeployFlag) {
-  if (!config) return false;
+export function validateStaticConfig(config, environmentOwner, environmentFeeRecipient, environmentDeployFlag) {
+  const checks = [];
+  const add = (ok, name, detail = "") => checks.push({ ok: Boolean(ok), name, detail });
+  if (!config || typeof config !== "object") {
+    add(false, "deployment_config_read", "configuration object is missing or invalid");
+    return { ok: false, checks };
+  }
+
   const tokenListMatches = Array.isArray(config.tokens)
     && config.tokens.length === EXPECTED_TOKENS.length
     && config.tokens.every((token, index) => {
       const expected = EXPECTED_TOKENS[index];
-      return Boolean(expected)
+      return Boolean(token && expected)
         && sameAddress(token.address, expected[0])
         && token.symbol === expected[1]
         && token.decimals === expected[2];
@@ -137,7 +144,7 @@ function checkStaticConfig(config, environmentOwner, environmentFeeRecipient, en
     && config.routers.length === EXPECTED_ROUTERS.length
     && config.routers.every((router, index) => {
       const expected = EXPECTED_ROUTERS[index];
-      if (!expected) return false;
+      if (!router || !expected) return false;
       const optionalKeys = index === 0
         ? ["b20TickSpacing"]
         : ["usdcWethPoolFee", "usdcWethPool"];
@@ -154,42 +161,49 @@ function checkStaticConfig(config, environmentOwner, environmentFeeRecipient, en
     && config.denied.sepolia.length === EXPECTED_SEPOLIA_DENYLIST.length
     && new Set(config.denied.sepolia.map(addressKey)).size === EXPECTED_SEPOLIA_DENYLIST.length
     && EXPECTED_SEPOLIA_DENYLIST.every((address) => config.denied.sepolia.some((value) => sameAddress(value, address)));
+  const deniedAddresses = [
+    addressKey(config.denied?.canaryWallet),
+    addressKey(config.denied?.v1MainnetExecutor),
+    ...(Array.isArray(config.denied?.sepolia) ? config.denied.sepolia.map(addressKey) : []),
+  ];
+  const allowedAddresses = [
+    ...(Array.isArray(config.tokens) ? config.tokens.map((token) => addressKey(token?.address)) : []),
+    ...(Array.isArray(config.routers) ? config.routers.map((router) => addressKey(router?.router)) : []),
+  ];
+  const allowlistExcludesDenied = deniedAddresses.every((address) => address !== null)
+    && allowedAddresses.every((address) => address !== null && !deniedAddresses.includes(address));
 
-  check(config.chainId === BASE_CHAIN_ID && config.network === "base", "config_chain", "Base Mainnet 8453");
-  check(config.contract === "MPGRExecutorDelegated", "config_contract");
-  check(config.mainnetDelegatedDeployEnabled === false, "config_deploy_flag", "false; deployment remains disabled");
-  check(environmentDeployFlag === "false", "environment_deploy_flag", "false; no enable override");
-  check(config.owner === "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e", "config_owner_pin");
-  check(config.feeRecipient === "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4", "config_fee_recipient_pin");
-  check(sameAddress(environmentOwner, config.owner), "environment_owner_matches_config");
-  check(sameAddress(environmentFeeRecipient, config.feeRecipient), "environment_fee_recipient_matches_config");
-  check(config.feeBps === 25 && config.maxFeeBps === 100, "config_fee_policy", "25 bps fee, 100 bps cap");
-  check(sameAddress(config.permit2, CANONICAL_PERMIT2), "config_canonical_permit2");
-  check(sameAddress(config.weth, CANONICAL_WETH), "config_canonical_weth");
-  check(routerListMatches, "config_router_allowlist", "exact two routers and RouterKinds 1/2");
-  check(tokenListMatches, "config_token_allowlist", "exact 15 intended production tokens");
-  check(sameAddress(config.denied?.canaryWallet, "0xBF6c574b9543967f0D528ae49603b0A7574a280b"), "config_canary_denylist");
-  check(sameAddress(config.denied?.v1MainnetExecutor, "0xD982726e28275661F8aB64054E6b17a70a63505A"), "config_v1_denylist");
-  check(deniedSepoliaMatches, "config_sepolia_denylist", "exact nine Base Sepolia addresses");
-  check(Array.isArray(config.typedModules) && config.typedModules.length === 0, "config_typed_modules", "empty");
-  check(config.moduleRegistrySchemaVersion === 1, "config_module_registry_schema");
-  check(config.outFile === EXPECTED_OUTPUT, "config_artifact_path");
-  check(!existsSync(resolve(process.cwd(), EXPECTED_OUTPUT)), "one_time_artifact_guard", "no existing delegated Mainnet record");
+  add(typeof environmentOwner === "string" && environmentOwner.length > 0, "owner_variable_presence");
+  add(typeof environmentFeeRecipient === "string" && environmentFeeRecipient.length > 0, "fee_recipient_variable_presence");
+  add(config.chainId === BASE_CHAIN_ID && config.network === "base", "config_chain", "Base Mainnet 8453");
+  add(config.contract === "MPGRExecutorDelegated", "config_contract");
+  add(config.mainnetDelegatedDeployEnabled === false, "config_deploy_flag", "false; deployment remains disabled");
+  add(environmentDeployFlag === "false", "environment_deploy_flag", "false is expected for read-only; checks continue");
+  add(config.owner === "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e", "config_owner_pin");
+  add(config.feeRecipient === "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4", "config_fee_recipient_pin");
+  add(sameAddress(environmentOwner, config.owner), "environment_owner_matches_config");
+  add(sameAddress(environmentFeeRecipient, config.feeRecipient), "environment_fee_recipient_matches_config");
+  add(config.feeBps === 25 && config.maxFeeBps === 100, "config_fee_policy", "25 bps fee, 100 bps cap");
+  add(sameAddress(config.permit2, CANONICAL_PERMIT2), "config_canonical_permit2");
+  add(sameAddress(config.weth, CANONICAL_WETH), "config_canonical_weth");
+  add(routerListMatches, "config_router_allowlist", "exact two routers and RouterKinds 1/2");
+  add(tokenListMatches, "config_token_allowlist", "exact 15 intended production tokens");
+  add(sameAddress(config.denied?.canaryWallet, "0xBF6c574b9543967f0D528ae49603b0A7574a280b"), "config_canary_denylist");
+  add(sameAddress(config.denied?.v1MainnetExecutor, "0xD982726e28275661F8aB64054E6b17a70a63505A"), "config_v1_denylist");
+  add(deniedSepoliaMatches, "config_sepolia_denylist", "exact nine Base Sepolia addresses");
+  add(Array.isArray(config.typedModules) && config.typedModules.length === 0, "config_typed_modules", "empty");
+  add(config.moduleRegistrySchemaVersion === 1, "config_module_registry_schema");
+  add(config.outFile === EXPECTED_OUTPUT, "config_artifact_path");
+  add(!existsSync(resolve(process.cwd(), EXPECTED_OUTPUT)), "one_time_artifact_guard", "no existing delegated Mainnet record");
+  add(allowlistExcludesDenied, "config_allowlist_excludes_denied_addresses");
 
-  if (Array.isArray(config.tokens) && Array.isArray(config.routers) && config.denied) {
-    const denied = new Set([
-      addressKey(config.denied.canaryWallet),
-      addressKey(config.denied.v1MainnetExecutor),
-      ...(config.denied.sepolia ?? []).map(addressKey),
-    ]);
-    const allowed = [
-      ...config.tokens.map((token) => addressKey(token.address)),
-      ...config.routers.map((router) => addressKey(router.router)),
-    ];
-    check(allowed.every((address) => address !== null && !denied.has(address)), "config_allowlist_excludes_denied_addresses");
-  }
+  return { ok: checks.every((item) => item.ok), checks };
+}
 
-  return failures.length === 0;
+export async function runReadOnlyChecksWhenDeploymentIsDisabled(environmentDeployFlag, continueReadOnlyChecks) {
+  if (environmentDeployFlag !== "false") return { ok: false, continued: false };
+  await continueReadOnlyChecks();
+  return { ok: true, continued: true };
 }
 
 function deriveDeployerAddress() {
@@ -353,19 +367,24 @@ async function main() {
   const environmentFeeRecipient = process.env.MPGR_EXECUTOR_FEE_RECIPIENT?.trim();
   const environmentDeployFlag = process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED?.trim();
 
-  check(typeof environmentOwner === "string" && environmentOwner.length > 0, "owner_variable_presence");
-  check(typeof environmentFeeRecipient === "string" && environmentFeeRecipient.length > 0, "fee_recipient_variable_presence");
-
-  // Static pins, exact allowlists, environment/config agreement, and the deliberately
-  // disabled deployment flag. A false flag is an expected safe-stop, not authorization.
-  checkStaticConfig(config, environmentOwner, environmentFeeRecipient, environmentDeployFlag);
-  if (failures.length > 0) {
+  const staticValidation = validateStaticConfig(
+    config,
+    environmentOwner,
+    environmentFeeRecipient,
+    environmentDeployFlag,
+  );
+  for (const item of staticValidation.checks) check(item.ok, item.name, item.detail);
+  if (!staticValidation.ok || failures.length > 0) {
     console.error(`[STOP] ${failures.length} static/config preflight check(s) failed; no key derivation or RPC calls made.`);
     process.exit(1);
   }
 
-  const deployerAddress = deriveDeployerAddress();
-  if (deployerAddress) {
+  // A false deployment switch is the required safe state for this phase. It gates off
+  // deployment, but it must not gate off the read-only key derivation or RPC checks below.
+  const continuation = await runReadOnlyChecksWhenDeploymentIsDisabled(environmentDeployFlag, async () => {
+    const deployerAddress = deriveDeployerAddress();
+    if (!deployerAddress || failures.length > 0) return;
+
     const owner = addressKey(environmentOwner);
     const feeRecipient = addressKey(environmentFeeRecipient);
     const deployer = addressKey(deployerAddress);
@@ -383,27 +402,28 @@ async function main() {
       check(!denied.has(owner), "owner_not_canary_v1_or_sepolia");
       check(!denied.has(feeRecipient), "fee_recipient_not_canary_v1_or_sepolia");
     }
+    if (failures.length > 0) return;
+
+    await runLiveChecks(config, deployerAddress);
+  });
+  if (!continuation.continued) {
+    emit("FAIL", "environment_deploy_flag", "read-only preflight requires the configured false value");
   }
 
-  // Stop before RPC if local pins, environment variables, artifact guard, or key checks failed.
-  if (failures.length > 0) {
-    console.error(`[STOP] ${failures.length} static/role preflight check(s) failed; no RPC calls made.`);
-    process.exit(1);
-  }
-
-  await runLiveChecks(config, account);
   if (failures.length > 0) {
     console.error(`[STOP] ${failures.length} read-only preflight check(s) failed. No simulation or transaction was run.`);
     process.exit(1);
   }
 
   console.log("[PASS] Read-only secure-runner preflight checks completed for Base Mainnet 8453.");
-  console.log("[STOP] Both deployment-enable flags are false by design. Do not run forge script simulation; no broadcast/deployment was attempted.");
+  console.log("[STOP] Both deployment-enable flags are false by design. No Forge script simulation, broadcast, or deployment was attempted.");
 }
 
-main().catch(() => {
-  // Provider and account libraries may include a credential-bearing RPC URL in thrown errors.
-  // Suppress raw exceptions so neither that URL nor the deployer key can reach Actions logs.
-  console.error("[STOP] Read-only preflight terminated unexpectedly; raw error details suppressed.");
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch(() => {
+    // Provider and account libraries may include a credential-bearing RPC URL in thrown errors.
+    // Suppress raw exceptions so neither that URL nor the deployer key can reach Actions logs.
+    console.error("[STOP] Read-only preflight terminated unexpectedly; raw error details suppressed.");
+    process.exit(1);
+  });
+}

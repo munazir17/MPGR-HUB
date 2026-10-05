@@ -84,8 +84,11 @@ jobs:
       - name: Verify committed deployment config against app routes
         run: npm test -- lib/executor/__tests__/delegated-architecture.test.ts
 
+      - name: Regress read-only deploy-flag continuation and fail-closed config checks
+        run: npm test -- scripts/delegated-mainnet-preflight.test.ts
+
       - name: Ensure the read-only checker and committed pins were not modified during setup
-        run: git diff --exit-code HEAD -- scripts/delegated-mainnet-preflight.mjs deployments/base-mainnet/delegated-deploy-config.json foundry.toml
+        run: git diff --exit-code HEAD -- scripts/delegated-mainnet-preflight.mjs scripts/delegated-mainnet-preflight.test.ts scripts/delegated-mainnet-preflight.d.mts deployments/base-mainnet/delegated-deploy-config.json foundry.toml
 
       # This is the only step mapped to Mainnet secrets. The checker creates no
       # wallet client and calls only read-only JSON-RPC methods; it never invokes
@@ -94,7 +97,7 @@ jobs:
         env:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
           BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
-          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
-          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
-          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
+          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER || secrets.MPGR_EXECUTOR_OWNER }}
+          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT || secrets.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED || secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
         run: node scripts/delegated-mainnet-preflight.mjs
