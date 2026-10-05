@@ -37,7 +37,7 @@ export function StocksAgentHero({ statuses, thread = false }: StocksAgentHeroPro
       {thread && <AgentCore variant="jewel" state={thinking ? "thinking" : "idle"} />}
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <h1 className="display-xl truncate text-[20px] text-white sm:text-[22px] md:text-[24px] lg:text-[28px]">
+          <h1 className="truncate text-[16px] font-semibold tracking-[-0.01em] text-white sm:text-[17px] md:text-[18px]">
             {MPGR_AGENT_TITLE}
           </h1>
           <div className="flex shrink-0 flex-wrap items-center gap-1.5">
