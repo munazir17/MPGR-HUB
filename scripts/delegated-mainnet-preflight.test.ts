@@ -13,6 +13,7 @@ const committedConfig = JSON.parse(
   readFileSync("deployments/base-mainnet/delegated-deploy-config.json", "utf8"),
 );
 const preflightWorkflow = readFileSync(".github/workflows/preflight-delegated-base-mainnet.yml", "utf8");
+const preflightChecker = readFileSync("scripts/delegated-mainnet-preflight.mjs", "utf8");
 
 function validate(
   config = committedConfig,
@@ -58,7 +59,7 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
     expect(readOnlyDeploymentFlagStatus(["false", undefined])).toMatchObject({
       ok: true,
       configuredSources: 1,
-      detail: expect.stringContaining("false confirmed; read-only checks continue"),
+      detail: "false; deployment remains disabled",
     });
     expect(isReadOnlyDeploymentFlagFalse(["false", undefined])).toBe(true);
     expect(isReadOnlyDeploymentFlagFalse(["false", ""])).toBe(true);
@@ -67,14 +68,22 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
   });
 
   it("passes the Environment variable false through the actual workflow-to-checker boundary", async () => {
+    expect(preflightWorkflow).toContain("environment: base-mainnet");
     expect(preflightWorkflow).toContain(
-      "MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_VAR_JSON: ${{ toJSON(vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED) }}",
+      "MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}",
     );
     expect(preflightWorkflow).toContain(
-      "MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET_JSON: ${{ toJSON(secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED) }}",
+      "MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET: ${{ secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}",
+    );
+    expect(preflightWorkflow).not.toContain("vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED ||");
+    expect(preflightChecker).toContain(
+      "decodeDeploymentFlagSource(process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED)",
+    );
+    expect(preflightChecker).toContain(
+      "decodeDeploymentFlagSource(process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET)",
     );
 
-    const workflowValue = decodeDeploymentFlagSource(JSON.stringify("false"));
+    const workflowValue = decodeDeploymentFlagSource("false");
     const booleanValue = decodeDeploymentFlagSource(JSON.stringify(false));
     expect(workflowValue).toBe("false");
     expect(typeof workflowValue).toBe("string");
@@ -87,6 +96,10 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
       [workflowValue, undefined],
     );
     expect(staticResult.ok).toBe(true);
+    expect(staticResult.checks.find(({ name }) => name === "environment_deploy_flag")).toMatchObject({
+      ok: true,
+      detail: "false; deployment remains disabled",
+    });
 
     const stages = createReadOnlyStages([]);
     const continuation = await runReadOnlyChecksWhenDeploymentIsDisabled([workflowValue, undefined], stages);

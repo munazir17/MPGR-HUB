@@ -22,8 +22,7 @@ jobs:
     name: Secure read-only Base Mainnet checks
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment:
-      name: base-mainnet
+    environment: base-mainnet
     steps:
       - name: Checkout preflight revision
         uses: actions/checkout@v4
@@ -99,6 +98,6 @@ jobs:
           BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
           MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER || secrets.MPGR_EXECUTOR_OWNER }}
           MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT || secrets.MPGR_EXECUTOR_FEE_RECIPIENT }}
-          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_VAR_JSON: ${{ toJSON(vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED) }}
-          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET_JSON: ${{ toJSON(secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED) }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET: ${{ secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
         run: node scripts/delegated-mainnet-preflight.mjs

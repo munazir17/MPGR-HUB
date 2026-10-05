@@ -148,7 +148,7 @@ export function readOnlyDeploymentFlagStatus(environmentDeployFlagValues) {
     ok,
     configuredSources: configuredValues.length,
     detail: ok
-      ? "false confirmed; read-only checks continue; raw values hidden"
+      ? "false; deployment remains disabled"
       : configuredValues.length === 0
         ? "no configured flag source found; raw values hidden"
         : "configured flag source is not false or sources conflict; raw values hidden",
@@ -412,8 +412,8 @@ async function main() {
   const environmentOwner = process.env.MPGR_EXECUTOR_OWNER?.trim();
   const environmentFeeRecipient = process.env.MPGR_EXECUTOR_FEE_RECIPIENT?.trim();
   const environmentDeployFlagValues = [
-    decodeDeploymentFlagSource(process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_VAR_JSON),
-    decodeDeploymentFlagSource(process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET_JSON),
+    decodeDeploymentFlagSource(process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED),
+    decodeDeploymentFlagSource(process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET),
   ];
 
   const staticValidation = validateStaticConfig(
