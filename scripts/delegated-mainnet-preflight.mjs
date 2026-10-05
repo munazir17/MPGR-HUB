@@ -123,7 +123,29 @@ function loadConfig() {
   }
 }
 
-export function validateStaticConfig(config, environmentOwner, environmentFeeRecipient, environmentDeployFlag) {
+export function readOnlyDeploymentFlagStatus(environmentDeployFlagValues) {
+  const values = Array.isArray(environmentDeployFlagValues)
+    ? environmentDeployFlagValues
+    : [environmentDeployFlagValues];
+  const configuredValues = values.filter((value) => value !== undefined && value !== null && !(typeof value === "string" && value.trim() === ""));
+  const isFalse = (value) => value === false || (typeof value === "string" && value.trim() === "false");
+  const ok = configuredValues.length > 0 && configuredValues.every(isFalse);
+  return {
+    ok,
+    configuredSources: configuredValues.length,
+    detail: ok
+      ? "false confirmed; read-only checks continue; raw values hidden"
+      : configuredValues.length === 0
+        ? "no configured flag source found; raw values hidden"
+        : "configured flag source is not false or sources conflict; raw values hidden",
+  };
+}
+
+export function isReadOnlyDeploymentFlagFalse(environmentDeployFlagValues) {
+  return readOnlyDeploymentFlagStatus(environmentDeployFlagValues).ok;
+}
+
+export function validateStaticConfig(config, environmentOwner, environmentFeeRecipient, environmentDeployFlagValues) {
   const checks = [];
   const add = (ok, name, detail = "") => checks.push({ ok: Boolean(ok), name, detail });
   if (!config || typeof config !== "object") {
@@ -172,13 +194,14 @@ export function validateStaticConfig(config, environmentOwner, environmentFeeRec
   ];
   const allowlistExcludesDenied = deniedAddresses.every((address) => address !== null)
     && allowedAddresses.every((address) => address !== null && !deniedAddresses.includes(address));
+  const environmentFlagStatus = readOnlyDeploymentFlagStatus(environmentDeployFlagValues);
 
   add(typeof environmentOwner === "string" && environmentOwner.length > 0, "owner_variable_presence");
   add(typeof environmentFeeRecipient === "string" && environmentFeeRecipient.length > 0, "fee_recipient_variable_presence");
   add(config.chainId === BASE_CHAIN_ID && config.network === "base", "config_chain", "Base Mainnet 8453");
   add(config.contract === "MPGRExecutorDelegated", "config_contract");
   add(config.mainnetDelegatedDeployEnabled === false, "config_deploy_flag", "false; deployment remains disabled");
-  add(environmentDeployFlag === "false", "environment_deploy_flag", "false is expected for read-only; checks continue");
+  add(environmentFlagStatus.ok, "environment_deploy_flag", environmentFlagStatus.detail);
   add(config.owner === "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e", "config_owner_pin");
   add(config.feeRecipient === "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4", "config_fee_recipient_pin");
   add(sameAddress(environmentOwner, config.owner), "environment_owner_matches_config");
@@ -200,10 +223,19 @@ export function validateStaticConfig(config, environmentOwner, environmentFeeRec
   return { ok: checks.every((item) => item.ok), checks };
 }
 
-export async function runReadOnlyChecksWhenDeploymentIsDisabled(environmentDeployFlag, continueReadOnlyChecks) {
-  if (environmentDeployFlag !== "false") return { ok: false, continued: false };
-  await continueReadOnlyChecks();
-  return { ok: true, continued: true };
+export async function runReadOnlyChecksWhenDeploymentIsDisabled(environmentDeployFlagValues, stages) {
+  if (!isReadOnlyDeploymentFlagFalse(environmentDeployFlagValues)) {
+    return { ok: false, continued: false, stage: "deployment-flag" };
+  }
+
+  const deployerAddress = await stages.deriveDeployerAddress();
+  if (!deployerAddress) return { ok: false, continued: true, stage: "deployer" };
+
+  const rolesSeparated = await stages.checkRoleSeparation(deployerAddress);
+  if (!rolesSeparated) return { ok: false, continued: true, stage: "roles" };
+
+  await stages.runRpcChecks(deployerAddress);
+  return { ok: true, continued: true, stage: "rpc" };
 }
 
 function deriveDeployerAddress() {
@@ -365,13 +397,16 @@ async function main() {
 
   const environmentOwner = process.env.MPGR_EXECUTOR_OWNER?.trim();
   const environmentFeeRecipient = process.env.MPGR_EXECUTOR_FEE_RECIPIENT?.trim();
-  const environmentDeployFlag = process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED?.trim();
+  const environmentDeployFlagValues = [
+    process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_VAR,
+    process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET,
+  ];
 
   const staticValidation = validateStaticConfig(
     config,
     environmentOwner,
     environmentFeeRecipient,
-    environmentDeployFlag,
+    environmentDeployFlagValues,
   );
   for (const item of staticValidation.checks) check(item.ok, item.name, item.detail);
   if (!staticValidation.ok || failures.length > 0) {
@@ -381,30 +416,32 @@ async function main() {
 
   // A false deployment switch is the required safe state for this phase. It gates off
   // deployment, but it must not gate off the read-only key derivation or RPC checks below.
-  const continuation = await runReadOnlyChecksWhenDeploymentIsDisabled(environmentDeployFlag, async () => {
-    const deployerAddress = deriveDeployerAddress();
-    if (!deployerAddress || failures.length > 0) return;
-
-    const owner = addressKey(environmentOwner);
-    const feeRecipient = addressKey(environmentFeeRecipient);
-    const deployer = addressKey(deployerAddress);
-    const denied = new Set([
-      addressKey(config.denied.canaryWallet),
-      addressKey(config.denied.v1MainnetExecutor),
-      ...config.denied.sepolia.map(addressKey),
-    ]);
-    check(Boolean(owner) && Boolean(feeRecipient) && Boolean(deployer), "role_addresses_valid");
-    if (owner && feeRecipient && deployer) {
-      check(owner !== feeRecipient, "owner_fee_recipient_separation");
-      check(deployer !== owner, "deployer_owner_separation");
-      check(deployer !== feeRecipient, "deployer_fee_recipient_separation");
-      check(!denied.has(deployer), "deployer_not_canary_v1_or_sepolia");
-      check(!denied.has(owner), "owner_not_canary_v1_or_sepolia");
-      check(!denied.has(feeRecipient), "fee_recipient_not_canary_v1_or_sepolia");
-    }
-    if (failures.length > 0) return;
-
-    await runLiveChecks(config, deployerAddress);
+  const continuation = await runReadOnlyChecksWhenDeploymentIsDisabled(environmentDeployFlagValues, {
+    deriveDeployerAddress: async () => {
+      const deployerAddress = deriveDeployerAddress();
+      return failures.length === 0 ? deployerAddress : null;
+    },
+    checkRoleSeparation: async (deployerAddress) => {
+      const owner = addressKey(environmentOwner);
+      const feeRecipient = addressKey(environmentFeeRecipient);
+      const deployer = addressKey(deployerAddress);
+      const denied = new Set([
+        addressKey(config.denied.canaryWallet),
+        addressKey(config.denied.v1MainnetExecutor),
+        ...config.denied.sepolia.map(addressKey),
+      ]);
+      check(Boolean(owner) && Boolean(feeRecipient) && Boolean(deployer), "role_addresses_valid");
+      if (owner && feeRecipient && deployer) {
+        check(owner !== feeRecipient, "owner_fee_recipient_separation");
+        check(deployer !== owner, "deployer_owner_separation");
+        check(deployer !== feeRecipient, "deployer_fee_recipient_separation");
+        check(!denied.has(deployer), "deployer_not_canary_v1_or_sepolia");
+        check(!denied.has(owner), "owner_not_canary_v1_or_sepolia");
+        check(!denied.has(feeRecipient), "fee_recipient_not_canary_v1_or_sepolia");
+      }
+      return failures.length === 0;
+    },
+    runRpcChecks: (deployerAddress) => runLiveChecks(config, deployerAddress),
   });
   if (!continuation.continued) {
     emit("FAIL", "environment_deploy_flag", "read-only preflight requires the configured false value");
