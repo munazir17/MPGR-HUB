@@ -89,7 +89,7 @@ export function HomeFooter() {
             href={BUY_MPGR_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-gold/35 bg-gold/10 px-3 py-1 text-[11px] font-semibold text-gold transition-colors hover:border-gold/60 hover:bg-gold/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 active:scale-[0.98]"
+            className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-white/[0.12] bg-white/[0.03] px-3 py-1 text-[11px] font-semibold text-white/85 transition-colors hover:border-primary/30 hover:bg-primary/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 active:scale-[0.99]"
           >
             Buy $MPGR
             <ArrowUpRight className="h-3 w-3" aria-hidden />
