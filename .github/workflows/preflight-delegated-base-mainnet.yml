@@ -89,10 +89,12 @@ jobs:
       - name: Ensure the read-only checker and committed pins were not modified during setup
         run: git diff --exit-code HEAD -- scripts/delegated-mainnet-preflight.mjs scripts/delegated-mainnet-preflight.test.ts scripts/delegated-mainnet-preflight.d.mts deployments/base-mainnet/delegated-deploy-config.json foundry.toml
 
-      # This is the only step mapped to Mainnet secrets. The checker creates no
-      # wallet client and calls only read-only JSON-RPC methods; it never invokes
-      # forge script, simulates a deployment, or submits a transaction.
+      # The checker creates no wallet client and calls only read-only JSON-RPC
+      # methods. It derives a public address from the deployer key for its checks,
+      # but never invokes Forge, simulates a deployment, or submits a transaction.
+      # The following simulation step is a separate, key-free process.
       - name: Read-only Mainnet RPC and deployment-guard preflight
+        id: read_only_mainnet_preflight
         env:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
           BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
@@ -101,3 +103,22 @@ jobs:
           MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
           MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET: ${{ secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
         run: node scripts/delegated-mainnet-preflight.mjs
+
+      # Final job step: a key-free, view-only deployment plan. This workflow has no
+      # follow-on deploy/canary step, and this forge invocation deliberately omits
+      # --broadcast. It consumes only the public address emitted by the prior preflight.
+      - name: Run key-free delegated deployment simulation (NO BROADCAST)
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          BASE_MAINNET_DEPLOYER_ADDRESS: ${{ steps.read_only_mainnet_preflight.outputs.deployer_address }}
+          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER || secrets.MPGR_EXECUTOR_OWNER }}
+          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT || secrets.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET: ${{ secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION: "true"
+          MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
+        run: |
+          set -euo pipefail
+          test -n "$BASE_MAINNET_DEPLOYER_ADDRESS" || { echo '::error::public deployer address output is missing'; exit 1; }
+          test "$MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED" = "false" || { echo '::error::production deploy variable must remain false'; exit 1; }
+          forge script script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol --rpc-url "$BASE_MAINNET_RPC_URL" --sig 'simulate()' -vvv

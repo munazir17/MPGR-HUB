@@ -14,6 +14,7 @@ const committedConfig = JSON.parse(
 );
 const preflightWorkflow = readFileSync(".github/workflows/preflight-delegated-base-mainnet.yml", "utf8");
 const preflightChecker = readFileSync("scripts/delegated-mainnet-preflight.mjs", "utf8");
+const deployScript = readFileSync("script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol", "utf8");
 
 function validate(
   config = committedConfig,
@@ -162,4 +163,68 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
     expect(validate(committedConfig, { deployFlag: undefined }).ok).toBe(false);
     expect(validate(committedConfig, { deployFlag: "true" }).ok).toBe(false);
   });
+
+  it("runs the dedicated Forge simulation with only a public deployer address and no broadcast path", () => {
+    const simulationStart = deployScript.indexOf("    function simulate()");
+    const simulationEnd = deployScript.indexOf("\n    function _validateSimulationPlan", simulationStart);
+    expect(simulationStart).toBeGreaterThanOrEqual(0);
+    expect(simulationEnd).toBeGreaterThan(simulationStart);
+    const simulationEntry = deployScript.slice(simulationStart, simulationEnd);
+    expect(simulationEntry).toContain("public view returns (address predictedExecutor)");
+    expect(simulationEntry).not.toContain("_readConfig()");
+    expect(simulationEntry).not.toContain("BASE_MAINNET_DEPLOYER_PRIVATE_KEY");
+    expect(simulationEntry).not.toContain("BASE_MAINNET_BROADCASTER_PRIVATE_KEY");
+    expect(simulationEntry).not.toContain("vm.startBroadcast");
+    expect(simulationEntry).not.toContain("_startBroadcast");
+    expect(simulationEntry).not.toContain("new MPGRExecutorDelegated");
+
+    const simulationConfigStart = deployScript.indexOf("function _readSimulationConfig()");
+    const simulationConfigEnd = deployScript.indexOf("function _simulationModeEnabled()", simulationConfigStart);
+    const publicOnlyConfigReader = deployScript.slice(simulationConfigStart, simulationConfigEnd);
+    expect(publicOnlyConfigReader).toContain("BASE_MAINNET_DEPLOYER_ADDRESS");
+    expect(publicOnlyConfigReader).not.toContain("PRIVATE_KEY");
+
+    const workflowStepStart = preflightWorkflow.indexOf("- name: Run key-free delegated deployment simulation (NO BROADCAST)");
+    expect(workflowStepStart).toBeGreaterThanOrEqual(0);
+    const simulationStep = preflightWorkflow.slice(workflowStepStart);
+    expect(preflightWorkflow).toContain("id: read_only_mainnet_preflight");
+    expect(simulationStep).toContain(
+      "BASE_MAINNET_DEPLOYER_ADDRESS: ${{ steps.read_only_mainnet_preflight.outputs.deployer_address }}",
+    );
+    expect(simulationStep).toContain('MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION: "true"');
+    expect(simulationStep).toContain("--sig 'simulate()'");
+    expect(simulationStep.match(/^\s*-\s*name:/gm)).toHaveLength(1);
+    expect(simulationStep).not.toContain("BASE_MAINNET_DEPLOYER_PRIVATE_KEY");
+    expect(simulationStep).not.toContain("--broadcast");
+    expect(preflightChecker).toContain('writeGitHubOutput("deployer_address", address)');
+    expect(preflightChecker).toContain("appendFileSync(outputPath");
+
+    const runStart = deployScript.indexOf("function run() external returns");
+    const runBody = deployScript.slice(runStart, runStart + 900);
+    expect(runBody.indexOf("require(!_simulationModeEnabled()") < runBody.indexOf("_readConfig()")).toBe(true);
+    expect(deployScript).toContain('require(!_simulationModeEnabled(), "MPGR: simulation mode cannot broadcast")');
+  });
+
+  it("keeps the exact committed constructor pins and disabled production posture in scope", () => {
+    expect(committedConfig.mainnetDelegatedDeployEnabled).toBe(false);
+    expect(committedConfig.owner).toBe("0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e");
+    expect(committedConfig.feeRecipient).toBe("0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4");
+    expect(committedConfig.feeBps).toBe(25);
+    expect(committedConfig.maxFeeBps).toBe(100);
+    expect(committedConfig.permit2).toBe("0x000000000022D473030F116dDEE9F6B43aC78BA3");
+    expect(committedConfig.weth).toBe("0x4200000000000000000000000000000000000006");
+    expect(committedConfig.tokens).toHaveLength(15);
+    expect(committedConfig.routers).toHaveLength(2);
+    expect(committedConfig.routers.map((router: { kindName: string }) => router.kindName)).toEqual([
+      "AERODROME_SLIPSTREAM",
+      "UNISWAP_V3_ROUTER02",
+    ]);
+    expect(preflightChecker).toContain("`${router.kindName}_factory`");
+    expect(preflightChecker).toContain("`${router.kindName}_quoter`");
+    expect(preflightChecker).toContain("`${router.kindName}_USDC_WETH_pool`");
+    expect(committedConfig.denied.canaryWallet).toBe("0xBF6c574b9543967f0D528ae49603b0A7574a280b");
+    expect(committedConfig.denied.sepolia).toHaveLength(9);
+    expect(committedConfig.typedModules).toEqual([]);
+  });
+
 });

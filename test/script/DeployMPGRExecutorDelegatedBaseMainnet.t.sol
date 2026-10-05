@@ -3,8 +3,9 @@ pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {DeployMPGRExecutorDelegatedBaseMainnet} from "../../script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol";
+import {MPGRExecutorDelegated} from "../../contracts/executor/MPGRExecutorDelegated.sol";
 
-/// @dev Exercises only the preflight gates; no broadcast, deployment, signing, or network fork.
+/// @dev Local harness for the preflight and read-only simulation paths; never broadcasts or opens a network fork.
 contract DelegatedMainnetDeployHarness is DeployMPGRExecutorDelegatedBaseMainnet {
     bool public recordExistsFlag;
 
@@ -18,6 +19,26 @@ contract DelegatedMainnetDeployHarness is DeployMPGRExecutorDelegatedBaseMainnet
 
     function preflightForTest(Config memory c, Pins memory p) external view {
         preflight(c, p);
+    }
+
+    function simulationPreflightForTest(Config memory c, Pins memory p) external view {
+        simulationPreflight(c, p);
+    }
+
+    function simulateForTest() external view returns (address) {
+        return simulate();
+    }
+
+    function constructorArgsForTest(Config memory c) external pure returns (ConstructorArgs memory) {
+        return _constructorArgs(c);
+    }
+
+    function pinsForTest() external view returns (Pins memory) {
+        return _readPins();
+    }
+
+    function startBroadcastForTest(uint256 privateKey) external {
+        _startBroadcast(privateKey);
     }
 }
 
@@ -69,6 +90,14 @@ contract DeployMPGRExecutorDelegatedBaseMainnetTest is Test {
 
     function setUp() public {
         vm.chainId(8453);
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION", "");
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED", "");
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET", "");
+        vm.setEnv("BASE_MAINNET_DEPLOYER_PRIVATE_KEY", "");
+        vm.setEnv("BASE_MAINNET_DEPLOYER_ADDRESS", "");
+        vm.setEnv("MPGR_MAINNET_BROADCASTER_PRIVATE_KEY", "");
+        vm.setEnv("MPGR_EXECUTOR_OWNER", vm.toString(OWNER));
+        vm.setEnv("MPGR_EXECUTOR_FEE_RECIPIENT", vm.toString(FEE_RECIPIENT));
         harness = new DelegatedMainnetDeployHarness();
         deployerKey = uint256(keccak256("mpgr-delegated-mainnet-deploy-preflight-test"));
         deployer = vm.addr(deployerKey);
@@ -107,10 +136,19 @@ contract DeployMPGRExecutorDelegatedBaseMainnetTest is Test {
         MockUniswapRouterForDeploy uni = new MockUniswapRouterForDeploy();
 
         (address[] memory tokens,) = harness.productionTokens();
-        for (uint256 i; i < tokens.length; ++i) vm.etch(tokens[i], address(erc20).code);
+        for (uint256 i; i < tokens.length; ++i) {
+            vm.etch(tokens[i], address(erc20).code);
+        }
         vm.etch(0x000000000022D473030F116dDEE9F6B43aC78BA3, address(codeOnly).code);
         vm.etch(0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F, address(slip).code);
         vm.etch(0x2626664c2603336E57B271c5C0b26F421741e481, address(uni).code);
+    }
+
+    function _enableSimulationMode() internal {
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION", "true");
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED", "false");
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET", "false");
+        vm.setEnv("BASE_MAINNET_DEPLOYER_ADDRESS", vm.toString(deployer));
     }
 
     function test_PreflightPassesWithThePinnedMainnetConfigAndMockedLiveInfrastructure() public view {
@@ -128,7 +166,9 @@ contract DeployMPGRExecutorDelegatedBaseMainnetTest is Test {
         DeployMPGRExecutorDelegatedBaseMainnet.Pins memory p = _goodPins();
 
         c.envEnabled = false;
-        vm.expectRevert(bytes("MPGR: MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED != true - mainnet delegated deploy not enabled"));
+        vm.expectRevert(
+            bytes("MPGR: MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED != true - mainnet delegated deploy not enabled")
+        );
         harness.preflightForTest(c, p);
 
         c = _goodConfig();
@@ -254,5 +294,156 @@ contract DeployMPGRExecutorDelegatedBaseMainnetTest is Test {
         c.broadcaster = SEPOLIA_DEPLOYER;
         vm.expectRevert(bytes("MPGR: Base Sepolia deployer used as production broadcaster"));
         harness.preflightForTest(c, p);
+    }
+
+    function test_SimulationPassesWithBothProductionFlagsFalseWithoutCreatingAnExecutorOrMutatingDeployerState()
+        public
+    {
+        _enableSimulationMode();
+        uint256 deployerBalanceBefore = deployer.balance;
+        uint256 deployerNonceBefore = vm.getNonce(deployer);
+
+        address predicted = harness.simulateForTest();
+
+        assertEq(predicted, vm.computeCreateAddress(deployer, 0));
+        assertEq(vm.getNonce(deployer), deployerNonceBefore);
+        assertEq(deployer.balance, deployerBalanceBefore);
+        assertEq(predicted.code.length, 0);
+        assertEq(predicted.balance, 0);
+        assertFalse(harness.recordExistsFlag());
+    }
+
+    function test_SimulationRequiresExplicitModeAndBothDeploymentFlagsFalse() public {
+        _enableSimulationMode();
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED", "true");
+        vm.expectRevert(bytes("MPGR: simulation requires environment deployment flag exactly false"));
+        harness.simulateForTest();
+
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED", "false");
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET", "true");
+        vm.expectRevert(bytes("MPGR: simulation requires secret deployment flag exactly false"));
+        harness.simulateForTest();
+
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET", "false");
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION", "false");
+        vm.expectRevert(bytes("MPGR: set MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION=true to use simulation mode"));
+        harness.simulateForTest();
+    }
+
+    function test_SimulationPreflightKeepsTheCommittedConfigDeployFlagFalse() public {
+        DeployMPGRExecutorDelegatedBaseMainnet.Config memory c = _goodConfig();
+        DeployMPGRExecutorDelegatedBaseMainnet.Pins memory p = _goodPins();
+        c.envEnabled = false;
+        p.enabled = false;
+        harness.simulationPreflightForTest(c, p);
+
+        p.enabled = true;
+        vm.expectRevert(bytes("MPGR: simulation requires committed deployment flag false"));
+        harness.simulationPreflightForTest(c, p);
+
+        p.enabled = false;
+        c.envEnabled = true;
+        vm.expectRevert(bytes("MPGR: simulation requires environment deployment flag false"));
+        harness.simulationPreflightForTest(c, p);
+    }
+
+    function test_SimulationModeCannotReachBroadcastHelper() public {
+        _enableSimulationMode();
+        vm.expectRevert(bytes("MPGR: simulation mode cannot broadcast"));
+        harness.startBroadcastForTest(deployerKey);
+    }
+
+    function test_ProductionRunStillRefusesWhenEnvironmentEnableFlagIsFalse() public {
+        vm.setEnv("BASE_MAINNET_DEPLOYER_PRIVATE_KEY", vm.toString(deployerKey));
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION", "false");
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED", "false");
+        vm.expectRevert(
+            bytes("MPGR: MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED != true - mainnet delegated deploy not enabled")
+        );
+        harness.run();
+    }
+
+    function test_ProductionRunStillRefusesWhenCommittedEnableFlagIsFalse() public {
+        vm.setEnv("BASE_MAINNET_DEPLOYER_PRIVATE_KEY", vm.toString(deployerKey));
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION", "false");
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED", "true");
+        vm.expectRevert(bytes("MPGR: delegated-deploy-config.json mainnetDelegatedDeployEnabled != true"));
+        harness.run();
+    }
+
+    function test_ProductionRunRefusesSimulationBeforeReadingTheDeployerKey() public {
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION", "true");
+        vm.setEnv("BASE_MAINNET_DEPLOYER_PRIVATE_KEY", "");
+        vm.expectRevert(bytes("MPGR: simulation mode must use simulate(); production run refused"));
+        harness.run();
+    }
+
+    function test_ConstructorArgumentsAndInitialPostureMatchTheProductionPlan() public {
+        DeployMPGRExecutorDelegatedBaseMainnet.Config memory c = _goodConfig();
+        DeployMPGRExecutorDelegatedBaseMainnet.ConstructorArgs memory args = harness.constructorArgsForTest(c);
+        DeployMPGRExecutorDelegatedBaseMainnet.Pins memory pins = harness.pinsForTest();
+
+        assertEq(args.owner, pins.owner);
+        assertEq(args.feeRecipient, pins.feeRecipient);
+        assertEq(args.feeBps, 25);
+        assertEq(args.weth, pins.weth);
+        assertEq(args.permit2, pins.permit2);
+        assertEq(pins.chainId, 8453);
+        assertFalse(pins.enabled);
+        assertEq(pins.feeBps, 25);
+        assertEq(pins.maxFeeBps, 100);
+
+        MPGRExecutorDelegated.RouterConfig[] memory productionRouters = harness.productionRouters();
+        assertEq(args.routers.length, 2);
+        for (uint256 i; i < args.routers.length; ++i) {
+            assertEq(args.routers[i].router, productionRouters[i].router);
+            assertEq(uint256(args.routers[i].kind), uint256(productionRouters[i].kind));
+        }
+        assertEq(args.routers[0].router, 0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F);
+        assertEq(uint256(args.routers[0].kind), uint256(MPGRExecutorDelegated.RouterKind.AERODROME_SLIPSTREAM));
+        assertEq(args.routers[1].router, 0x2626664c2603336E57B271c5C0b26F421741e481);
+        assertEq(uint256(args.routers[1].kind), uint256(MPGRExecutorDelegated.RouterKind.UNISWAP_V3_ROUTER02));
+
+        (address[] memory expectedTokens,) = harness.productionTokens();
+        assertEq(args.tokens.length, 15);
+        for (uint256 i; i < args.tokens.length; ++i) {
+            assertEq(args.tokens[i], expectedTokens[i]);
+        }
+
+        MPGRExecutorDelegated dex = new MPGRExecutorDelegated(
+            args.owner, args.feeRecipient, args.feeBps, args.weth, args.permit2, args.routers, args.tokens
+        );
+        assertEq(dex.owner(), OWNER);
+        assertEq(dex.pendingOwner(), address(0));
+        assertEq(dex.feeBps(), 25);
+        assertEq(dex.MAX_FEE_BPS(), 100);
+        assertEq(dex.feeRecipient(), FEE_RECIPIENT);
+        assertEq(address(dex.PERMIT2()), pins.permit2);
+        assertEq(address(dex.WETH()), pins.weth);
+        assertFalse(dex.paused());
+        assertEq(
+            dex.WITNESS_TYPE_STRING(),
+            "ActionWitness witness)ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)TokenPermissions(address token,uint256 amount)"
+        );
+
+        for (uint256 i; i < productionRouters.length; ++i) {
+            assertEq(uint256(dex.routerKind(productionRouters[i].router)), uint256(productionRouters[i].kind));
+            assertEq(dex.swapModuleForRouter(productionRouters[i].router), address(0));
+            assertEq(dex.swapModuleCodeHash(productionRouters[i].router), bytes32(0));
+        }
+        address[] memory denied = harness.deniedAddresses();
+        for (uint256 i; i < denied.length; ++i) {
+            assertEq(uint256(dex.routerKind(denied[i])), uint256(MPGRExecutorDelegated.RouterKind.NONE));
+            assertEq(dex.swapModuleForRouter(denied[i]), address(0));
+            assertEq(dex.swapModuleCodeHash(denied[i]), bytes32(0));
+            assertFalse(dex.isTokenAllowed(denied[i]));
+        }
+        assertEq(uint256(dex.routerKind(SEPOLIA_DEPLOYER)), uint256(MPGRExecutorDelegated.RouterKind.NONE));
+        assertFalse(dex.isTokenAllowed(SEPOLIA_DEPLOYER));
+        for (uint256 i; i < expectedTokens.length; ++i) {
+            assertTrue(dex.isTokenAllowed(expectedTokens[i]));
+            assertEq(MockERC20MetadataForDeploy(expectedTokens[i]).balanceOf(address(dex)), 0);
+        }
+        assertEq(address(dex).balance, 0);
     }
 }

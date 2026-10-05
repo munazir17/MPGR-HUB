@@ -6,7 +6,7 @@
 // block-number, nonce, balance, bytecode and eth_call reads. It never invokes Forge script
 // run(), creates a predicted deployment, broadcasts, deploys, activates, or runs a canary.
 
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -100,6 +100,11 @@ function emit(status, name, detail = "") {
 function check(ok, name, detail = "") {
   emit(ok ? "PASS" : "FAIL", name, detail);
   return Boolean(ok);
+}
+function writeGitHubOutput(name, value) {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof value !== "string" || /[\r\n]/.test(value)) return;
+  appendFileSync(outputPath, `${name}=${value}\n`, "utf8");
 }
 function addressKey(value) {
   if (typeof value !== "string" || !isAddress(value)) return null;
@@ -264,6 +269,7 @@ function deriveDeployerAddress() {
     // Retain only the public address; never pass a signer/wallet object to the RPC client.
     const address = privateKeyToAccount(raw).address;
     emit("PASS", "deployer_address_derived", address);
+    writeGitHubOutput("deployer_address", address);
     return address;
   } catch {
     emit("FAIL", "deployer_address_derived", "key could not be used to derive an address; value hidden");
@@ -349,7 +355,12 @@ async function runLiveChecks(config, deployerAddress) {
   const infrastructure = [
     ["WETH", config.weth],
     ["Permit2", config.permit2],
-    ...config.routers.map((router) => [router.kindName, router.router]),
+    ...config.routers.flatMap((router) => [
+      [router.kindName, router.router],
+      [`${router.kindName}_factory`, router.factory],
+      [`${router.kindName}_quoter`, router.quoterV2],
+      ...(router.usdcWethPool ? [[`${router.kindName}_USDC_WETH_pool`, router.usdcWethPool]] : []),
+    ]),
     ...config.tokens.map((token) => [token.symbol, token.address]),
   ];
   await mapLimit(infrastructure, 4, async ([name, address]) => {

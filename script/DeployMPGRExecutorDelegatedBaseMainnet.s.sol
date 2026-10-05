@@ -64,16 +64,25 @@ interface IERC20ViewDelegated {
 ///   BASE_MAINNET_DEPLOYER_PRIVATE_KEY   (secret) fresh dedicated key, nonce 0, pays gas
 ///   MPGR_EXECUTOR_OWNER                 (var)    must equal config .owner
 ///   MPGR_EXECUTOR_FEE_RECIPIENT         (var)    must equal config .feeRecipient
-///   MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED (var)  must be exactly "true"
+///   MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED (var)  must be exactly "true" for production run()
 ///   MPGR_MAINNET_BROADCASTER_PRIVATE_KEY (secret, OPTIONAL) if present, its derived address
 ///                                          must differ from the deployer. Only its ADDRESS is
 ///                                          ever derived; the key itself is never logged.
+///
+/// Key-free simulation inputs (never mapped to a private key):
+///   MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION (var) exactly "true" to select simulate()
+///   BASE_MAINNET_DEPLOYER_ADDRESS            (var) public address from the read-only preflight
+///   Both production enable flags must stay exactly false, including the committed config pin.
 ///
 /// Usage (after explicit human approval):
 ///   forge script script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol \
 ///     --rpc-url "$BASE_MAINNET_RPC_URL" --broadcast --slow --verify
 ///   # after confirming the mined receipt, run the read-only recorder described in
 ///   # script/RecordMPGRExecutorDelegatedBaseMainnet.s.sol to write the deployment artifact
+///
+/// Read-only plan (no deployer private key, no constructor, no --broadcast):
+///   forge script script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol \
+///     --rpc-url "$BASE_MAINNET_RPC_URL" --sig 'simulate()'
 contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
     uint256 internal constant BASE_MAINNET_CHAIN_ID = 8453;
     uint16 internal constant FEE_BPS = 25;
@@ -94,12 +103,18 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
     /// Aerodrome Slipstream (Gauges V3): the venue for every USDC <-> B20 stock, tickSpacing 10.
     address internal constant SLIP_ROUTER = 0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F;
     address internal constant SLIP_FACTORY = 0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef;
+    address internal constant SLIP_QUOTER_V2 = 0x514c8B5f54112481E28028F1166Bd78501089259;
+    uint256 internal constant SLIP_B20_TICK_SPACING = 10;
     /// Uniswap V3 SwapRouter02: the venue for USDC <-> WETH (pool fee 3000).
     /// NOTE: deliberately allowlisted HERE but NOT on the deployed v1 executor. See
     /// docs/EXECUTOR-ARCHITECTURE-DECISION.md §7 — lib/executor/executor-config.ts declares
     /// this as a production mainnet route, so the delegated executor must accept it or an
     /// autonomous USDC->WETH goal would revert RouterNotAllowed AFTER the user signed.
     address internal constant UNI_V3_ROUTER02 = 0x2626664c2603336E57B271c5C0b26F421741e481;
+    address internal constant UNI_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
+    address internal constant UNI_V3_QUOTER_V2 = 0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a;
+    address internal constant UNI_USDC_WETH_POOL = 0x6c561B446416E1A00E8E93E221854d6eA4171372;
+    uint256 internal constant UNI_USDC_WETH_POOL_FEE = 3000;
 
     /// The v1 assisted executor: structurally unsuitable for delegation, must never be reused.
     address internal constant V1_MAINNET_EXECUTOR = 0xD982726e28275661F8aB64054E6b17a70a63505A;
@@ -144,6 +159,17 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         address weth;
     }
 
+    /// The exact constructor arguments shared by the production run and the no-broadcast plan.
+    struct ConstructorArgs {
+        address owner;
+        address feeRecipient;
+        uint16 feeBps;
+        address weth;
+        address permit2;
+        MPGRExecutorDelegated.RouterConfig[] routers;
+        address[] tokens;
+    }
+
     // ------------------------------------------------------------------
     // Production token / router set
     // ------------------------------------------------------------------
@@ -176,6 +202,17 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         r = new MPGRExecutorDelegated.RouterConfig[](2);
         r[0] = MPGRExecutorDelegated.RouterConfig(SLIP_ROUTER, MPGRExecutorDelegated.RouterKind.AERODROME_SLIPSTREAM);
         r[1] = MPGRExecutorDelegated.RouterConfig(UNI_V3_ROUTER02, MPGRExecutorDelegated.RouterKind.UNISWAP_V3_ROUTER02);
+    }
+
+    /// Single source of truth for both the deployment transaction and its read-only plan.
+    function _constructorArgs(Config memory c) internal pure returns (ConstructorArgs memory args) {
+        args.owner = c.owner;
+        args.feeRecipient = c.feeRecipient;
+        args.feeBps = FEE_BPS;
+        args.weth = WETH;
+        args.permit2 = PERMIT2;
+        args.routers = productionRouters();
+        (args.tokens,) = productionTokens();
     }
 
     /// Addresses that must never hold a role or appear in a mainnet allowlist.
@@ -211,6 +248,46 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         c.broadcaster = bpk == 0 ? address(0) : vm.addr(bpk);
     }
 
+    /// Simulation intentionally reads only a public address. It must never call _readConfig(),
+    /// which reads BASE_MAINNET_DEPLOYER_PRIVATE_KEY and the optional broadcaster key.
+    function _readSimulationConfig() internal view virtual returns (Config memory c) {
+        c.deployer = vm.envAddress("BASE_MAINNET_DEPLOYER_ADDRESS");
+        c.owner = vm.envAddress("MPGR_EXECUTOR_OWNER");
+        c.feeRecipient = vm.envAddress("MPGR_EXECUTOR_FEE_RECIPIENT");
+        c.broadcaster = address(0);
+        c.envEnabled = false;
+    }
+
+    function _simulationModeEnabled() internal view returns (bool) {
+        return
+            keccak256(bytes(vm.envOr("MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION", string(""))))
+                == keccak256(bytes("true"));
+    }
+
+    function _isLiteralFalse(string memory value) internal pure returns (bool) {
+        return keccak256(bytes(value)) == keccak256(bytes("false"));
+    }
+
+    function _requireSimulationModeAndDisabledFlags() internal view {
+        require(
+            _simulationModeEnabled(), "MPGR: set MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION=true to use simulation mode"
+        );
+
+        string memory variableFlag = vm.envOr("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED", string(""));
+        string memory secretFlag = vm.envOr("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET", string(""));
+        bool secretConfigured = bytes(secretFlag).length > 0;
+        require(_isLiteralFalse(variableFlag), "MPGR: simulation requires environment deployment flag exactly false");
+        require(
+            !secretConfigured || _isLiteralFalse(secretFlag),
+            "MPGR: simulation requires secret deployment flag exactly false"
+        );
+    }
+
+    function _startBroadcast(uint256 privateKey) internal {
+        require(!_simulationModeEnabled(), "MPGR: simulation mode cannot broadcast");
+        vm.startBroadcast(privateKey);
+    }
+
     function _readPins() internal view virtual returns (Pins memory p) {
         string memory json = vm.readFile(CONFIG_FILE);
         p.chainId = vm.parseJsonUint(json, ".chainId");
@@ -244,13 +321,33 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
     // ------------------------------------------------------------------
 
     function preflight(Config memory c, Pins memory p) public view virtual {
-        // (1) chain
-        require(block.chainid == BASE_MAINNET_CHAIN_ID, "MPGR: BASE MAINNET (8453) ONLY - refusing to run");
+        _requireBaseMainnetChain();
 
-        // (2) TWO independent enable flags
-        require(c.envEnabled, "MPGR: MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED != true - mainnet delegated deploy not enabled");
+        // Production deployment remains independently gated by both existing true flags.
+        require(
+            c.envEnabled, "MPGR: MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED != true - mainnet delegated deploy not enabled"
+        );
         require(p.enabled, "MPGR: delegated-deploy-config.json mainnetDelegatedDeployEnabled != true");
 
+        _preflightCommon(c, p);
+    }
+
+    /// @notice Simulation counterpart to production preflight. It reuses every non-flag guard
+    ///         but requires both deployment flags to remain false and never reads a private key.
+    function simulationPreflight(Config memory c, Pins memory p) public view virtual {
+        _requireBaseMainnetChain();
+        require(!c.envEnabled, "MPGR: simulation requires environment deployment flag false");
+        require(!p.enabled, "MPGR: simulation requires committed deployment flag false");
+        _preflightCommon(c, p);
+    }
+
+    function _requireBaseMainnetChain() internal view {
+        require(block.chainid == BASE_MAINNET_CHAIN_ID, "MPGR: BASE MAINNET (8453) ONLY - refusing to run");
+    }
+
+    /// All guards other than the mode-specific two-flag check are shared verbatim between
+    /// production preflight and the no-broadcast simulation path.
+    function _preflightCommon(Config memory c, Pins memory p) internal view {
         // (3)/(4) one-time
         require(!_recordExists(), "MPGR: mpgr-executor-delegated.json exists - already deployed");
         require(
@@ -260,6 +357,7 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
 
         // (5) role separation — the deployer is a one-shot key and must hold no ongoing role
         require(c.owner != address(0) && c.feeRecipient != address(0), "MPGR: owner/fee recipient unset");
+        require(c.owner != c.feeRecipient, "MPGR: owner and fee recipient must be separate");
         require(c.owner == p.owner, "MPGR: MPGR_EXECUTOR_OWNER != delegated-deploy-config.json owner");
         require(c.feeRecipient == p.feeRecipient, "MPGR: MPGR_EXECUTOR_FEE_RECIPIENT != config feeRecipient");
         require(p.chainId == BASE_MAINNET_CHAIN_ID, "MPGR: config chainId != 8453");
@@ -267,9 +365,13 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         require(p.maxFeeBps == EXPECTED_MAX_FEE_BPS, "MPGR: config maxFeeBps != 100");
         require(p.permit2 == PERMIT2, "MPGR: config permit2 != canonical Permit2");
         require(p.weth == WETH, "MPGR: config weth != Base WETH");
+        _validateCommittedDeploymentConfigArrays();
         require(c.deployer != c.owner, "MPGR: deployer must not be the owner");
         require(c.deployer != c.feeRecipient, "MPGR: deployer must not be the fee recipient");
-        require(c.broadcaster == address(0) || c.deployer != c.broadcaster, "MPGR: deployer must not be the production broadcaster");
+        require(
+            c.broadcaster == address(0) || c.deployer != c.broadcaster,
+            "MPGR: deployer must not be the production broadcaster"
+        );
         _deny(c.deployer, "deployer");
         _deny(c.owner, "owner");
         _deny(c.feeRecipient, "feeRecipient");
@@ -292,12 +394,10 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
             "MPGR: Slipstream router not bound to the app factory"
         );
         require(
-            ISlipstreamRouterViewDelegated(SLIP_ROUTER).WETH9() == WETH,
-            "MPGR: Slipstream router WETH9 != Base WETH"
+            ISlipstreamRouterViewDelegated(SLIP_ROUTER).WETH9() == WETH, "MPGR: Slipstream router WETH9 != Base WETH"
         );
         require(
-            IUniswapV3RouterViewDelegated(UNI_V3_ROUTER02).WETH9() == WETH,
-            "MPGR: Uniswap V3 router WETH9 != Base WETH"
+            IUniswapV3RouterViewDelegated(UNI_V3_ROUTER02).WETH9() == WETH, "MPGR: Uniswap V3 router WETH9 != Base WETH"
         );
         require(IERC20ViewDelegated(USDC).decimals() == 6, "MPGR: USDC decimals != 6");
 
@@ -320,9 +420,257 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
             } catch {}
             require(
                 okDec && okSup && okBal,
-                string.concat("MPGR: ", symbols[i], " is not a live ERC-20 on 8453 (decimals/totalSupply/balanceOf failed)")
+                string.concat(
+                    "MPGR: ", symbols[i], " is not a live ERC-20 on 8453 (decimals/totalSupply/balanceOf failed)"
+                )
             );
         }
+    }
+
+    /// Verify the complete committed JSON route/token/denylist pins, not just the scalar fields
+    /// used by the Solidity constructor. This is shared by production and simulation preflight.
+    function _validateCommittedDeploymentConfigArrays() internal view {
+        string memory json = vm.readFile(CONFIG_FILE);
+        require(
+            keccak256(bytes(vm.parseJsonString(json, ".network"))) == keccak256(bytes("base")),
+            "MPGR: config network != base"
+        );
+        require(
+            keccak256(bytes(vm.parseJsonString(json, ".contract"))) == keccak256(bytes("MPGRExecutorDelegated")),
+            "MPGR: config contract != MPGRExecutorDelegated"
+        );
+        require(
+            keccak256(bytes(vm.parseJsonString(json, ".outFile"))) == keccak256(bytes(OUT_FILE)),
+            "MPGR: config artifact path mismatch"
+        );
+        require(
+            vm.parseJsonUint(json, ".moduleRegistrySchemaVersion") == 1, "MPGR: config module registry schema mismatch"
+        );
+        require(vm.parseJsonStringArray(json, ".typedModules").length == 0, "MPGR: config typedModules must be empty");
+
+        (address[] memory expectedTokens, string[] memory expectedSymbols) = productionTokens();
+        require(expectedTokens.length == 15, "MPGR: internal production token pin count mismatch");
+        for (uint256 i; i < expectedTokens.length; ++i) {
+            string memory tokenPath = string.concat(".tokens[", vm.toString(i), "]");
+            require(
+                vm.parseJsonAddress(json, string.concat(tokenPath, ".address")) == expectedTokens[i],
+                string.concat("MPGR: committed token address mismatch: ", expectedSymbols[i])
+            );
+            require(
+                keccak256(bytes(vm.parseJsonString(json, string.concat(tokenPath, ".symbol"))))
+                    == keccak256(bytes(expectedSymbols[i])),
+                string.concat("MPGR: committed token symbol mismatch: ", expectedSymbols[i])
+            );
+            uint256 expectedDecimals = i == 0 ? 6 : i == 1 ? 18 : 8;
+            require(
+                vm.parseJsonUint(json, string.concat(tokenPath, ".decimals")) == expectedDecimals,
+                string.concat("MPGR: committed token decimals mismatch: ", expectedSymbols[i])
+            );
+        }
+
+        MPGRExecutorDelegated.RouterConfig[] memory expectedRouters = productionRouters();
+        require(expectedRouters.length == 2, "MPGR: internal production router pin count mismatch");
+        for (uint256 i; i < expectedRouters.length; ++i) {
+            string memory routerPath = string.concat(".routers[", vm.toString(i), "]");
+            require(
+                vm.parseJsonAddress(json, string.concat(routerPath, ".router")) == expectedRouters[i].router,
+                "MPGR: committed router address mismatch"
+            );
+            require(
+                vm.parseJsonUint(json, string.concat(routerPath, ".kind")) == uint256(expectedRouters[i].kind),
+                "MPGR: committed RouterKind mismatch"
+            );
+            require(
+                vm.parseJsonAddress(json, string.concat(routerPath, ".factory"))
+                    == (i == 0 ? SLIP_FACTORY : UNI_V3_FACTORY),
+                "MPGR: committed venue factory mismatch"
+            );
+            require(
+                vm.parseJsonAddress(json, string.concat(routerPath, ".quoterV2"))
+                    == (i == 0 ? SLIP_QUOTER_V2 : UNI_V3_QUOTER_V2),
+                "MPGR: committed venue quoter mismatch"
+            );
+            if (i == 0) {
+                require(
+                    keccak256(bytes(vm.parseJsonString(json, string.concat(routerPath, ".kindName"))))
+                        == keccak256(bytes("AERODROME_SLIPSTREAM")),
+                    "MPGR: committed Slipstream kind name mismatch"
+                );
+                require(
+                    vm.parseJsonUint(json, string.concat(routerPath, ".b20TickSpacing")) == SLIP_B20_TICK_SPACING,
+                    "MPGR: committed Slipstream tick spacing mismatch"
+                );
+            } else {
+                require(
+                    keccak256(bytes(vm.parseJsonString(json, string.concat(routerPath, ".kindName"))))
+                        == keccak256(bytes("UNISWAP_V3_ROUTER02")),
+                    "MPGR: committed Uniswap V3 kind name mismatch"
+                );
+                require(
+                    vm.parseJsonUint(json, string.concat(routerPath, ".usdcWethPoolFee")) == UNI_USDC_WETH_POOL_FEE,
+                    "MPGR: committed USDC/WETH pool fee mismatch"
+                );
+                require(
+                    vm.parseJsonAddress(json, string.concat(routerPath, ".usdcWethPool")) == UNI_USDC_WETH_POOL,
+                    "MPGR: committed USDC/WETH pool mismatch"
+                );
+            }
+        }
+
+        require(
+            vm.parseJsonAddress(json, ".denied.canaryWallet") == CANARY_WALLET,
+            "MPGR: committed canary denylist mismatch"
+        );
+        require(
+            vm.parseJsonAddress(json, ".denied.v1MainnetExecutor") == V1_MAINNET_EXECUTOR,
+            "MPGR: committed v1 executor denylist mismatch"
+        );
+        address[] memory expectedSepolia = new address[](9);
+        expectedSepolia[0] = SEPOLIA_DELEGATED_EXECUTOR;
+        expectedSepolia[1] = SEPOLIA_EXECUTOR;
+        expectedSepolia[2] = SEPOLIA_UNI_ROUTER02;
+        expectedSepolia[3] = SEPOLIA_UNI_FACTORY;
+        expectedSepolia[4] = SEPOLIA_UNI_QUOTER_V2;
+        expectedSepolia[5] = SEPOLIA_UNI_NPM;
+        expectedSepolia[6] = SEPOLIA_TUSD;
+        expectedSepolia[7] = SEPOLIA_TSTOCK;
+        expectedSepolia[8] = SEPOLIA_DEPLOYER;
+        address[] memory pinnedSepolia = vm.parseJsonAddressArray(json, ".denied.sepolia");
+        require(pinnedSepolia.length == expectedSepolia.length, "MPGR: committed Sepolia denylist count mismatch");
+        for (uint256 i; i < expectedSepolia.length; ++i) {
+            require(pinnedSepolia[i] == expectedSepolia[i], "MPGR: committed Sepolia denylist mismatch");
+        }
+    }
+
+    /// @notice Validate the real Mainnet deployment plan without private-key access,
+    ///         contract construction, a CREATE transaction, or any state mutation.
+    /// @dev Invoke only with `forge script ... --sig 'simulate()'` and the explicit
+    ///      MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION=true mode flag. The two production
+    ///      deployment flags must remain false. This function is view-only and never reaches
+    ///      `_startBroadcast` or `new MPGRExecutorDelegated`.
+    function simulate() public view returns (address predictedExecutor) {
+        _requireSimulationModeAndDisabledFlags();
+        Config memory c = _readSimulationConfig();
+        Pins memory p = _readPins();
+        simulationPreflight(c, p);
+
+        uint256 deployerNonce = vm.getNonce(c.deployer);
+        require(deployerNonce == 0, "MPGR: deployer nonce != 0 - use a fresh dedicated key (prevents a 2nd deploy)");
+        ConstructorArgs memory args = _constructorArgs(c);
+        predictedExecutor = vm.computeCreateAddress(c.deployer, deployerNonce);
+        _validateSimulationPlan(c, p, args, predictedExecutor);
+        _logSimulationPlan(c, args, deployerNonce, predictedExecutor);
+    }
+
+    function _validateSimulationPlan(
+        Config memory c,
+        Pins memory p,
+        ConstructorArgs memory args,
+        address predictedExecutor
+    ) internal view {
+        require(args.owner == c.owner && args.owner == p.owner, "MPGR: simulated constructor owner mismatch");
+        require(
+            args.feeRecipient == c.feeRecipient && args.feeRecipient == p.feeRecipient,
+            "MPGR: simulated constructor fee recipient mismatch"
+        );
+        require(args.feeBps == FEE_BPS && p.feeBps == FEE_BPS, "MPGR: simulated constructor feeBps mismatch");
+        require(p.maxFeeBps == EXPECTED_MAX_FEE_BPS, "MPGR: simulated MAX_FEE_BPS mismatch");
+        require(args.weth == WETH && p.weth == WETH, "MPGR: simulated constructor WETH mismatch");
+        require(args.permit2 == PERMIT2 && p.permit2 == PERMIT2, "MPGR: simulated constructor Permit2 mismatch");
+        require(args.routers.length == 2, "MPGR: simulated router count mismatch");
+        require(args.routers[0].router == SLIP_ROUTER, "MPGR: simulated Slipstream router mismatch");
+        require(
+            args.routers[0].kind == MPGRExecutorDelegated.RouterKind.AERODROME_SLIPSTREAM,
+            "MPGR: simulated Slipstream RouterKind mismatch"
+        );
+        require(args.routers[1].router == UNI_V3_ROUTER02, "MPGR: simulated Uniswap V3 router mismatch");
+        require(
+            args.routers[1].kind == MPGRExecutorDelegated.RouterKind.UNISWAP_V3_ROUTER02,
+            "MPGR: simulated Uniswap V3 RouterKind mismatch"
+        );
+        require(args.tokens.length == 15, "MPGR: simulated production token count mismatch");
+        _deny(predictedExecutor, "predicted executor");
+        require(predictedExecutor != args.owner, "MPGR: predicted executor collides with owner");
+        require(predictedExecutor != args.feeRecipient, "MPGR: predicted executor collides with fee recipient");
+        for (uint256 i = 0; i < args.routers.length; ++i) {
+            _deny(args.routers[i].router, "router");
+        }
+        for (uint256 i = 0; i < args.tokens.length; ++i) {
+            _deny(args.tokens[i], "production token");
+        }
+
+        // CREATE must target an unused address. If it already has state, the production
+        // postflight's zero-balance and one-time-address assumptions would not hold.
+        require(predictedExecutor.code.length == 0, "MPGR: predicted executor address already has code");
+        require(vm.getNonce(predictedExecutor) == 0, "MPGR: predicted executor address nonce is not zero");
+        require(predictedExecutor.balance == 0, "MPGR: predicted executor address already has a balance");
+        for (uint256 i; i < args.tokens.length; ++i) {
+            require(
+                IERC20ViewDelegated(args.tokens[i]).balanceOf(predictedExecutor) == 0,
+                "MPGR: predicted executor address already holds a production token balance"
+            );
+        }
+
+        // These are the constructor-derived initial storage values checked by postflight().
+        // No instance is created in this mode: the Foundry regression test separately creates
+        // the exact constructor locally and runs the same postflight assertions against it.
+        require(args.owner != address(0), "MPGR: simulated initial owner is zero");
+        require(args.feeRecipient != address(0), "MPGR: simulated initial fee recipient is zero");
+        require(args.feeBps <= EXPECTED_MAX_FEE_BPS, "MPGR: simulated fee exceeds MAX_FEE_BPS");
+        require(
+            keccak256(bytes(EXPECTED_WITNESS_TYPE_STRING))
+                == keccak256(
+                    bytes(
+                        "ActionWitness witness)ActionWitness(address owner,address buyToken,uint256 minAmountOut,uint256 deadline,bytes32 actionId,bytes32 policyHash)TokenPermissions(address token,uint256 amount)"
+                    )
+                ),
+            "MPGR: expected witness type string pin drifted"
+        );
+    }
+
+    function _logSimulationPlan(
+        Config memory c,
+        ConstructorArgs memory args,
+        uint256 deployerNonce,
+        address predictedExecutor
+    ) internal pure {
+        console2.log("[SIMULATION] mode: explicit no-broadcast validation");
+        console2.log("[SIMULATION] production environment flag: false");
+        console2.log("[SIMULATION] committed deployment flag: false");
+        console2.log("[SIMULATION] deployer address:", c.deployer);
+        console2.log("[SIMULATION] deployer nonce:", deployerNonce);
+        console2.log("[SIMULATION] predicted CREATE address:", predictedExecutor);
+        console2.log("[SIMULATION] constructor owner:", args.owner);
+        console2.log("[SIMULATION] constructor fee recipient:", args.feeRecipient);
+        console2.log("[SIMULATION] constructor feeBps:", uint256(args.feeBps));
+        console2.log("[SIMULATION] constructor WETH:", args.weth);
+        console2.log("[SIMULATION] constructor Permit2:", args.permit2);
+        console2.log("[SIMULATION] production router count:", args.routers.length);
+        for (uint256 i = 0; i < args.routers.length; ++i) {
+            console2.log("[SIMULATION] venue:", i == 0 ? "Aerodrome Slipstream" : "Uniswap V3 SwapRouter02");
+            console2.log("[SIMULATION] router address:", args.routers[i].router);
+            console2.log("[SIMULATION] RouterKind:", uint256(args.routers[i].kind));
+            console2.log("[SIMULATION] router factory:", i == 0 ? SLIP_FACTORY : UNI_V3_FACTORY);
+            console2.log("[SIMULATION] router quoter:", i == 0 ? SLIP_QUOTER_V2 : UNI_V3_QUOTER_V2);
+            if (i == 0) {
+                console2.log("[SIMULATION] B20 tick spacing:", SLIP_B20_TICK_SPACING);
+            } else {
+                console2.log("[SIMULATION] USDC/WETH pool fee:", UNI_USDC_WETH_POOL_FEE);
+                console2.log("[SIMULATION] USDC/WETH pool:", UNI_USDC_WETH_POOL);
+            }
+        }
+        console2.log("[SIMULATION] production token count:", args.tokens.length);
+        (address[] memory pinnedTokens, string[] memory symbols) = productionTokens();
+        for (uint256 i = 0; i < args.tokens.length; ++i) {
+            require(args.tokens[i] == pinnedTokens[i], "MPGR: simulated token constructor list drifted");
+            console2.log("[SIMULATION] token symbol:", symbols[i]);
+            console2.log("[SIMULATION] token address:", args.tokens[i]);
+        }
+        console2.log("[SIMULATION] expected posture: pendingOwner=0, paused=false, feeBps=25, cap=100");
+        console2.log(
+            "[SIMULATION] expected posture: pinned witness type, two built-in routers, empty typed-module registry"
+        );
+        console2.log("[SIMULATION PASS] no constructor transaction created, no broadcast, no Mainnet state change");
     }
 
     // ------------------------------------------------------------------
@@ -354,8 +702,14 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
                 dex.routerKind(routers[i].router) == routers[i].kind,
                 "MPGR: router not allowlisted with the expected kind"
             );
-            require(dex.swapModuleForRouter(routers[i].router) == address(0), "MPGR: built-in route unexpectedly uses a module");
-            require(dex.swapModuleCodeHash(routers[i].router) == bytes32(0), "MPGR: built-in route has an unexpected module code hash");
+            require(
+                dex.swapModuleForRouter(routers[i].router) == address(0),
+                "MPGR: built-in route unexpectedly uses a module"
+            );
+            require(
+                dex.swapModuleCodeHash(routers[i].router) == bytes32(0),
+                "MPGR: built-in route has an unexpected module code hash"
+            );
         }
         // And nothing else is allowlisted that should not be.
         address[] memory denied = deniedAddresses();
@@ -384,6 +738,9 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
     // ------------------------------------------------------------------
 
     function run() external returns (MPGRExecutorDelegated dex) {
+        // Simulation is a separate view-only entrypoint. Refuse before reading any key if a
+        // caller accidentally selects the production `run()` path in simulation mode.
+        require(!_simulationModeEnabled(), "MPGR: simulation mode must use simulate(); production run refused");
         require(block.chainid == BASE_MAINNET_CHAIN_ID, "MPGR: BASE MAINNET (8453) ONLY - refusing to run");
         Config memory c = _readConfig();
         Pins memory p = _readPins();
@@ -394,9 +751,11 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         console2.log("feeRecipient:", c.feeRecipient);
         console2.log("predicted executor:", vm.computeCreateAddress(c.deployer, 0));
 
-        (address[] memory tokens,) = productionTokens();
-        vm.startBroadcast(c.pk);
-        dex = new MPGRExecutorDelegated(c.owner, c.feeRecipient, FEE_BPS, WETH, PERMIT2, productionRouters(), tokens);
+        ConstructorArgs memory args = _constructorArgs(c);
+        _startBroadcast(c.pk);
+        dex = new MPGRExecutorDelegated(
+            args.owner, args.feeRecipient, args.feeBps, args.weth, args.permit2, args.routers, args.tokens
+        );
         vm.stopBroadcast();
 
         postflight(dex, c);
@@ -404,6 +763,8 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         console2.log("postflight: simulated deployment posture verified");
         console2.log("No deployment artifact written here: Forge mines and returns the receipt after run() completes.");
         console2.log("After receipt confirmation, run RecordMPGRExecutorDelegatedBaseMainnet.s.sol.");
-        console2.log("Then verify source and pin MPGR_MAINNET_DELEGATED_EXECUTOR; do not enable trading before verification.");
+        console2.log(
+            "Then verify source and pin MPGR_MAINNET_DELEGATED_EXECUTOR; do not enable trading before verification."
+        );
     }
 }
