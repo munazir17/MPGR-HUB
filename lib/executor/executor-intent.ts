@@ -136,6 +136,9 @@ export function buildExecutorIntent(input: BuildIntentInput): IntentResult<Execu
 
   const route = findExecutorRoute(d, sell.address, buy.address);
   if (!route) return fail("NO_ROUTE", "No allowlisted executor route for this pair.");
+  if (route.kind === RouterKind.TYPED_SWAP_MODULE) {
+    return fail("INVALID_ROUTE", "Typed swap modules are supported only by the delegated executor, not the v1 assisted executor.");
+  }
   if (route.kind === RouterKind.UNISWAP_V3_ROUTER02 && !UNISWAP_V3_POOL_FEES.includes(route.poolFee as never)) {
     return fail("INVALID_ROUTE", "Route has an invalid Uniswap V3 fee tier.");
   }

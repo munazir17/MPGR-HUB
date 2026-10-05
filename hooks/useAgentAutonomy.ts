@@ -26,18 +26,30 @@ import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 import { useWalletAuth } from "@/hooks/useWalletAuth";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import {
-  DELEGATED_EXECUTOR_ADDRESS,
-  DELEGATED_EXECUTOR_CHAIN_ID,
   delegatedActionId,
+  delegatedChainLabel,
   delegatedPermitNonce,
   delegatedPermitTypedData,
   delegatedPolicyHash,
+  isDelegatedChainId,
 } from "@/lib/executor/delegated-executor";
 
 export interface AutonomyConfig {
   enabled: boolean;
   emergencyDisabled: boolean;
   executionAvailable: boolean;
+  /**
+   * Per-chain delegated capability reported by the server. `executor` is the
+   * PINNED delegated contract the user's signature must name as Permit2
+   * spender — on Base mainnet it is operator-supplied, so the client cannot
+   * know it any other way. `null` means delegated execution is not deployed on
+   * that chain and slots must not be offered (the server refuses them too).
+   */
+  delegated?: {
+    chainId: number | null;
+    executor: string | null;
+    walletSigningSupported: boolean;
+  };
   limits: {
     maxGoalsPerWallet: number;
     minCooldownSeconds: number;
@@ -377,6 +389,13 @@ export function useAgentAutonomy() {
    * never sees a private key and the runtime can only ever broadcast what
    * these slots literally say.
    */
+  // Hoisted to plain locals so the memo dependency list below stays
+  // compiler-friendly. `delegatedExecutor` is the PINNED contract the user's
+  // signature names as Permit2 spender, so it is a genuine dependency: a stale
+  // callback could sign against an outdated executor.
+  const delegatedChainId = config?.delegated?.chainId ?? null;
+  const delegatedExecutor = config?.delegated?.executor ?? null;
+
   const signDelegatedSlots = useCallback(
     async (input: DelegatedSlotsInput): Promise<{ ok: boolean; message?: string }> => {
       const wallet = address;
@@ -384,12 +403,32 @@ export function useAgentAutonomy() {
       if (!(await ensureSession())) {
         return { ok: false, message: "Sign in with your wallet to sign delegated slots." };
       }
-      if (connectedChainId !== undefined && connectedChainId !== DELEGATED_EXECUTOR_CHAIN_ID) {
-        return { ok: false, message: "Switch your wallet to Base Sepolia to sign delegated slots." };
-      }
       const policy = policies.find((p) => p.id === input.policyId);
       const goal = goals.find((g) => g.id === input.goalId);
       if (!policy || !goal) return { ok: false, message: "Pick the goal to authorize." };
+
+      // CHAIN BINDING (MC-1 remediation). The signature is produced over the
+      // POLICY'S OWN chain, with the executor the SERVER pinned for that chain
+      // as the Permit2 spender. The client cannot invent or substitute that
+      // address: on Base mainnet it is operator-supplied and only knowable from
+      // the config endpoint, and a signature over the wrong chain/spender
+      // simply fails server-side recovery.
+      const chainId = policy.chainId;
+      if (!isDelegatedChainId(chainId)) {
+        return { ok: false, message: "This policy's chain does not support delegated authorization." };
+      }
+      const chainLabel = delegatedChainLabel(chainId);
+      // Only the executor the server pinned for EXACTLY this chain may be used.
+      const executor = delegatedChainId === chainId ? delegatedExecutor : null;
+      if (!executor) {
+        return {
+          ok: false,
+          message: `Delegated execution is not deployed on ${chainLabel} yet, so slots cannot be signed for it. Your goal stays watch-only.`,
+        };
+      }
+      if (connectedChainId !== undefined && connectedChainId !== chainId) {
+        return { ok: false, message: `Switch your wallet to ${chainLabel} to sign delegated slots.` };
+      }
       const buyTokenDecimals = tokens.find((t) => t.address.toLowerCase() === goal.trade.buyToken.toLowerCase())?.decimals;
       if (!buyTokenDecimals) return { ok: false, message: "Token details are still loading — try again." };
       const cleaned = input.minAmountOutHuman.trim();
@@ -427,7 +466,7 @@ export function useAgentAutonomy() {
             policyHash: delegatedPolicyHash({
               id: policy.id,
               wallet: (wallet.toLowerCase() as `0x${string}`),
-              chainId: DELEGATED_EXECUTOR_CHAIN_ID,
+              chainId,
               sellToken: policy.sellToken as `0x${string}`,
               buyToken: policy.buyToken as `0x${string}`,
               maxPerTradeRaw: policy.maxPerTradeRaw,
@@ -439,8 +478,8 @@ export function useAgentAutonomy() {
         });
         const signed = [];
         for (const item of payloadSlots) {
-          const typed = delegatedPermitTypedData({ permit: item.permit, witness: item.witness }, DELEGATED_EXECUTOR_CHAIN_ID, DELEGATED_EXECUTOR_ADDRESS);
-          const signature = await signTypedDataAsync({ ...typed, domain: { ...typed.domain, chainId: BigInt(DELEGATED_EXECUTOR_CHAIN_ID) } } as Parameters<typeof signTypedDataAsync>[0]);
+          const typed = delegatedPermitTypedData({ permit: item.permit, witness: item.witness }, chainId, executor as `0x${string}`);
+          const signature = await signTypedDataAsync({ ...typed, domain: { ...typed.domain, chainId: BigInt(chainId) } } as Parameters<typeof signTypedDataAsync>[0]);
           signed.push({
             slotIndex: item.slotIndex,
             permit: {
@@ -481,7 +520,7 @@ export function useAgentAutonomy() {
         setBusy(false);
       }
     },
-    [address, connectedChainId, goals, policies, refresh, signTypedDataAsync, slots, tokens],
+    [address, delegatedChainId, delegatedExecutor, connectedChainId, ensureSession, goals, policies, refresh, signTypedDataAsync, slots, tokens],
   );
 
   // Bounded heartbeat — see the header comment for the exact conditions.

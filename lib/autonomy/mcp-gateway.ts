@@ -14,7 +14,8 @@ import "server-only";
 //   2. maps MCP error codes onto the autonomy failure taxonomy;
 //   3. keeps raw MCP payloads out of the runtime (typed views only).
 
-import { createDelegatedBroadcaster } from "@/lib/delegated/delegated-broadcaster";
+import { createDelegatedBroadcasterFor } from "@/lib/delegated/delegated-broadcaster";
+import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID } from "@/lib/executor/executor-config";
 import {
   delegateSwap,
   getCapabilities,
@@ -96,6 +97,16 @@ function mapMcpError(code: string): AutonomyFailureCode {
     case "RPC_ERROR":
     case "TX_NOT_FOUND":
       return "RPC_ERROR";
+    // Capability/config refusals are NOT infrastructure faults: retrying the
+    // same tick cannot fix them, so they must not be reported as RPC_ERROR
+    // (which is retryable) and must not be mistaken for a broadcast attempt.
+    case "EXECUTOR_NOT_CONFIGURED":
+    case "BROADCASTER_NOT_CONFIGURED":
+    case "BROADCAST_REFUSED_BY_GATE":
+    case "ROUTE_MISMATCH":
+    case "INVALID_VENUE":
+    case "UNSUPPORTED_CHAIN":
+      return "EXECUTION_UNAVAILABLE";
     default:
       return "RPC_ERROR";
   }
@@ -117,15 +128,33 @@ export class McpTradeGateway implements McpGateway {
   }
 
   /**
-   * Phase 2 delegated path (Base Sepolia): identical to production() plus
-   * the operator broadcaster (lib/delegated — its own domain, following the
-   * reward-vault operator-key seam). Fail-closed: with the broadcaster key
-   * unset on the server the delegate tool refuses; nothing else in the
-   * gateway changes.
+   * Delegated path (Base Sepolia 84532 + Base mainnet 8453): identical to
+   * production() plus the operator broadcaster (lib/delegated — its own domain,
+   * following the reward-vault operator-key seam).
+   *
+   * ONE dispatcher over TWO INDEPENDENT KEYS. `McpDeps.delegatedBroadcaster`
+   * receives `chainId` on every transaction, so a single function routes to the
+   * correct per-chain operator account: a testnet key can never gain mainnet
+   * reach and vice versa. Fail-closed: a chain whose key is unset (or, on
+   * mainnet, whose key is the forbidden canary) gets a refusing stub, so the
+   * delegate tool reports itself unavailable for THAT chain only.
    */
   static productionWithDelegation(): McpTradeGateway {
-    const broadcaster = createDelegatedBroadcaster();
-    return new McpTradeGateway({ ...createMcpDeps(), delegatedBroadcaster: broadcaster.address ? broadcaster.broadcast : undefined });
+    const sepolia = createDelegatedBroadcasterFor(BASE_SEPOLIA_CHAIN_ID);
+    const mainnet = createDelegatedBroadcasterFor(BASE_MAINNET_CHAIN_ID);
+    const anyConfigured = sepolia.address !== null || mainnet.address !== null;
+    return new McpTradeGateway({
+      ...createMcpDeps(),
+      delegatedBroadcaster: anyConfigured
+        ? async (tx) => {
+            const broadcaster = createDelegatedBroadcasterFor(tx.chainId);
+            if (!broadcaster.address) {
+              throw new Error(`no delegated broadcaster is configured for chain ${tx.chainId} (fail-closed).`);
+            }
+            return broadcaster.broadcast(tx);
+          }
+        : undefined,
+    });
   }
 
   async getCapabilities(): Promise<ToolOutcome> {

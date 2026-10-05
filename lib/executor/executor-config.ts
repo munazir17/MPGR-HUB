@@ -31,17 +31,19 @@
 // B20 <-> B20) is never routed through the executor — its provider keeps
 // charging its own exact 25 bps.
 
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
 
 export const BASE_MAINNET_CHAIN_ID = 8453 as const;
 export const BASE_SEPOLIA_CHAIN_ID = 84532 as const;
 export type ExecutorChainId = typeof BASE_MAINNET_CHAIN_ID | typeof BASE_SEPOLIA_CHAIN_ID;
 
-/** Mirrors `MPGRExecutor.RouterKind` (uint8). Order MUST match the contract enum. */
+/** Mirrors `MPGRExecutorDelegated.RouterKind` (uint8). Order MUST match the contract enum.
+ * The v1 assisted executor intentionally supports only values 1 and 2. */
 export const RouterKind = {
   NONE: 0,
   AERODROME_SLIPSTREAM: 1,
   UNISWAP_V3_ROUTER02: 2,
+  TYPED_SWAP_MODULE: 3,
 } as const;
 export type RouterKindValue = (typeof RouterKind)[keyof typeof RouterKind];
 
@@ -81,6 +83,10 @@ export interface ExecutorRoute {
   /** Pool key: Uniswap V3 fee tier or Slipstream tickSpacing. */
   poolFee?: UniswapV3PoolFee;
   tickSpacing?: number;
+  /** Required for delegated TYPED_SWAP_MODULE routes; deployment-time expected module. */
+  moduleAddress?: Address;
+  /** Required for delegated TYPED_SWAP_MODULE routes; expected runtime bytecode hash. */
+  moduleCodeHash?: Hex;
   tokenA: Address;
   tokenB: Address;
 }

@@ -4,7 +4,9 @@ pragma solidity 0.8.24;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MPGRExecutorSwapModuleBase} from "../../../contracts/executor/modules/MPGRExecutorSwapModuleBase.sol";
 
 import {
     ISlipstreamSwapRouter,
@@ -202,6 +204,58 @@ contract MockUniswapV3Router02 is MockRouterBase {
         require(msg.value == 0, "no value expected");
         lastFee = p.fee;
         return _swap(p.tokenIn, p.tokenOut, p.recipient, p.amountIn, p.amountOutMinimum, p.sqrtPriceLimitX96);
+    }
+}
+
+/// @notice Test-only typed module that models an immutable venue adapter.
+///         NORMAL consumes the exact transferred input and returns minted mock
+///         output. The hostile modes exercise core balance-delta protections.
+contract MockTypedSwapModule is MPGRExecutorSwapModuleBase {
+    using SafeERC20 for IERC20;
+
+    enum Mode {
+        NORMAL,
+        LEAVE_INPUT,
+        REDIRECT_OUTPUT,
+        REVERT_SWAP
+    }
+
+    uint256 public immutable rateNumerator;
+    uint256 public immutable rateDenominator;
+    Mode public mode;
+    address public redirect;
+
+    constructor(address executor_, address router_, uint256 rateNumerator_, uint256 rateDenominator_)
+        MPGRExecutorSwapModuleBase(executor_, router_)
+    {
+        require(rateDenominator_ != 0, "zero denominator");
+        rateNumerator = rateNumerator_;
+        rateDenominator = rateDenominator_;
+    }
+
+    function setMode(Mode newMode, address redirect_) external {
+        mode = newMode;
+        redirect = redirect_;
+    }
+
+    function _quoteExactInput(address, address, uint256 amountIn) internal view override returns (uint256) {
+        return (amountIn * rateNumerator) / rateDenominator;
+    }
+
+    function _swapExactInput(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 amountOutMinimum,
+        uint256
+    ) internal override returns (uint256 amountOut) {
+        if (mode == Mode.REVERT_SWAP) revert("mock module failure");
+        uint256 amountToConsume = mode == Mode.LEAVE_INPUT ? amountIn - 1 : amountIn;
+        IERC20(tokenIn).safeTransfer(router, amountToConsume);
+        amountOut = (amountIn * rateNumerator) / rateDenominator;
+        require(amountOut >= amountOutMinimum, "mock module minimum");
+        address recipient = mode == Mode.REDIRECT_OUTPUT ? redirect : executor;
+        MockPermitToken(tokenOut).mint(recipient, amountOut);
     }
 }
 

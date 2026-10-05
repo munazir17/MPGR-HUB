@@ -24,7 +24,7 @@ import { recoverAddress, type Address, type Hex } from "viem";
 import { verifyTrustedOrigin, readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 import { checkRateLimit } from "@/lib/trade/trade-rate-limit";
 import { isAutonomousAgentEnabled, isAutonomousExecutionEmergencyDisabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
-import { requireWallet, system } from "@/lib/autonomy/api-helpers";
+import { delegatedExecutionConfigured, requireWallet, system } from "@/lib/autonomy/api-helpers";
 import {
   MAX_DELEGATED_SLOTS,
   delegatedSlotId,
@@ -32,7 +32,14 @@ import {
   validateNewSlotAgainstPolicy,
   type DelegatedAuthorizationSlot,
 } from "@/lib/autonomy/delegated-authorization";
-import { DELEGATED_EXECUTOR_ADDRESS, DELEGATED_EXECUTOR_CHAIN_ID, delegatedActionId, delegatedPermitDigest, walletSigningSupported } from "@/lib/executor/delegated-executor";
+import {
+  delegatedActionId,
+  delegatedChainLabel,
+  delegatedExecutorAddressFor,
+  delegatedPermitDigest,
+  isDelegatedChainId,
+  walletSigningSupported,
+} from "@/lib/executor/delegated-executor";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -156,9 +163,27 @@ export async function POST(request: Request) {
     }
     if (policy.revokedAt) return respond({ error: "This policy is revoked.", code: "POLICY_REVOKED" }, { status: 400, headers: { "Cache-Control": "no-store" } });
     if (new Date(policy.expiresAt).getTime() <= Date.now()) return respond({ error: "This policy has expired.", code: "POLICY_EXPIRED" }, { status: 400, headers: { "Cache-Control": "no-store" } });
-    // Base Sepolia ONLY for delegated slots in this phase.
-    if (policy.chainId !== DELEGATED_EXECUTOR_CHAIN_ID) {
-      return respond({ error: "Delegated authorization slots are limited to Base Sepolia policies.", code: "POLICY_CHAIN_MISMATCH" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+    // CHAIN BINDING (audit MC-1 remediation). Delegated slots exist for the
+    // policy's OWN chain — Base mainnet (8453) or Base Sepolia (84532). The
+    // chain is bound three ways: this record, the Permit2 EIP-712 domain the
+    // user signs, and `policyHash` (whose canonical tuple carries
+    // `uint256 chainId`). A cross-chain slot therefore cannot verify, and is
+    // refused here first with an honest reason.
+    if (!isDelegatedChainId(policy.chainId)) {
+      return respond({ error: "Delegated authorization slots require a Base (8453) or Base Sepolia (84532) policy.", code: "POLICY_CHAIN_MISMATCH" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+    }
+    // The chain must have a PINNED delegated executor, otherwise the user would
+    // be signing an authorization for a contract that does not exist. Fail
+    // closed with an explicit, operator-actionable reason.
+    const executor = delegatedExecutorAddressFor(policy.chainId);
+    if (!executor || !delegatedExecutionConfigured(policy.chainId)) {
+      return respond(
+        {
+          error: `Delegated execution is not deployed on ${delegatedChainLabel(policy.chainId)} yet, so slots cannot be signed for it. The goal stays watch-only.`,
+          code: "DELEGATED_EXECUTOR_NOT_CONFIGURED",
+        },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      );
     }
     // 2) The goal must exist, belong to the wallet, and bind to the policy —
     //    the actionId is recomputed from the goal id, never trusted.
@@ -209,7 +234,7 @@ export async function POST(request: Request) {
       const record: DelegatedAuthorizationSlot = {
         id: delegatedSlotId(policyId, goalIdRaw, slotIndex),
         wallet: walletBinding,
-        chainId: DELEGATED_EXECUTOR_CHAIN_ID,
+        chainId: policy.chainId,
         policyId,
         goalId: goalIdRaw,
         slotIndex,
@@ -248,8 +273,11 @@ export async function POST(request: Request) {
       // 8) CRYPTOGRAPHIC OWNERSHIP: recover the signer from the Permit2
       //    EIP-712 digest and require it to be the authenticated wallet.
       //    This is what makes the slot unforgeable even if every other
-      //    check were bypassed.
-      const digest = delegatedPermitDigest({ permit: record.permit, witness: record.witness }, DELEGATED_EXECUTOR_CHAIN_ID, DELEGATED_EXECUTOR_ADDRESS);
+      //    check were bypassed. The digest is computed over THIS policy's
+      //    chain and THIS chain's pinned executor as the Permit2 spender, so
+      //    the recovered signer is bound to (wallet, chain, executor) — not
+      //    merely to a wallet.
+      const digest = delegatedPermitDigest({ permit: record.permit, witness: record.witness }, policy.chainId, executor);
       const signer = await recoverAddress({ hash: digest, signature: record.signature });
       if (signer.toLowerCase() !== auth.wallet.toLowerCase()) {
         return respond({ error: "Signature does not belong to the authenticated wallet.", code: "SIGNATURE_INVALID" }, { status: 400, headers: { "Cache-Control": "no-store" } });

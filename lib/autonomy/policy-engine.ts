@@ -15,6 +15,7 @@ import {
   AUTONOMY_ACTION_TYPES,
   AUTONOMY_CHAIN_ID,
   AUTONOMY_THRESHOLD_SCALE,
+  isSupportedPolicyChainId,
   type AgentGoal,
   type AutonomyActionType,
   type AutonomyChainId,
@@ -24,10 +25,14 @@ import {
   type PolicyDecision,
   type PolicyRejection,
   type SpendContext,
+  type SupportedPolicyChainId,
   isPolicyRevoked,
 } from "./types";
 
 export type NormalizeResult<T> = { ok: true; value: T } | { ok: false; errors: string[] };
+
+/** Human-readable list of chains an autonomous policy may target. */
+const SUPPORTED_POLICY_CHAIN_IDS_LABEL = "8453 (Base) or 84532 (Base Sepolia)";
 
 const DECIMAL_RE = /^\d{1,40}(\.\d{1,18})?$/;
 const INT_RE = /^\d{1,12}$/;
@@ -95,6 +100,15 @@ export function normalizeCondition(input: unknown): NormalizeResult<GoalConditio
 
 export interface NormalizePolicyArgs {
   wallet: unknown;
+  /**
+   * The chain this authorization targets. OPTIONAL — omitted means Base
+   * mainnet (8453), preserving the pre-remediation behaviour exactly. Any
+   * supplied value is validated against SUPPORTED_POLICY_CHAIN_IDS; an
+   * unsupported chain is a hard normalization error, never a silent default.
+   * The chosen chain is then bound into the signed `policyHash`, so the user's
+   * authorization is cryptographically chain-specific.
+   */
+  chainId?: unknown;
   /** Token resolver injected by the caller (MCP/discovery-backed). */
   resolveToken: (raw: unknown) => { ok: true; address: Address; decimals: number } | { ok: false; message: string };
   sellToken: unknown;
@@ -114,6 +128,22 @@ export function normalizePolicyInput(args: NormalizePolicyArgs): NormalizeResult
   if (typeof args.authorizationRef !== "string" || args.authorizationRef.length === 0 || args.authorizationRef.length > 128) {
     errors.push("authorizationRef is required.");
   }
+
+  // CHAIN (audit MC-1 remediation). Explicit, validated, never inferred from
+  // the token pair. Omitted => Base mainnet, exactly as before.
+  const rawChain = args.chainId;
+  const chainProvided = rawChain !== undefined && rawChain !== null && rawChain !== "";
+  const parsedChain = chainProvided
+    ? typeof rawChain === "number"
+      ? rawChain
+      : typeof rawChain === "string" && /^\d+$/.test(rawChain.trim())
+        ? Number(rawChain.trim())
+        : NaN
+    : AUTONOMY_CHAIN_ID;
+  if (!Number.isFinite(parsedChain) || !isSupportedPolicyChainId(parsedChain)) {
+    errors.push(`chainId must be one of ${SUPPORTED_POLICY_CHAIN_IDS_LABEL}.`);
+  }
+  const chainId = (Number.isFinite(parsedChain) ? parsedChain : AUTONOMY_CHAIN_ID) as SupportedPolicyChainId;
 
   if (args.sellToken !== null && typeof args.sellToken === "string" && getAddressSafe(args.sellToken) && String(args.sellToken).toLowerCase() === String(args.buyToken ?? "").toLowerCase()) {
     errors.push("sellToken and buyToken must differ.");
@@ -174,7 +204,7 @@ export function normalizePolicyInput(args: NormalizePolicyArgs): NormalizeResult
     value: {
       id: "", // assigned by the store on persist
       wallet: getAddress(String(args.wallet).toLowerCase()) as Address,
-      chainId: AUTONOMY_CHAIN_ID,
+      chainId,
       actions: AUTONOMY_ACTION_TYPES,
       sellToken: (sell as { address: Address }).address,
       buyToken: (buy as { address: Address }).address,

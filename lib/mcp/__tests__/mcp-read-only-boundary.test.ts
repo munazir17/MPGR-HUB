@@ -48,7 +48,7 @@ const productionFiles = [
 describe("MCP / executor non-custodial source boundary", () => {
   it("exposes only chain reads and eth_call simulation through ChainReader", () => {
     expectTypeOf<keyof ChainReader>().toEqualTypeOf<
-      "chainId" | "readContract" | "simulateContract" | "getBalance" | "getTransactionReceipt"
+      "chainId" | "getBytecode" | "readContract" | "simulateContract" | "getBalance" | "getTransactionReceipt"
     >();
   });
 

@@ -15,6 +15,7 @@ import {
     IPermit2SignatureTransfer
 } from "./interfaces/IMPGRExecutorRouters.sol";
 import {IPermit2SignatureTransferWitness} from "./interfaces/IPermit2SignatureTransferWitness.sol";
+import {IMPGRExecutorSwapModule} from "./interfaces/IMPGRExecutorSwapModule.sol";
 
 /// @title MPGRExecutorDelegated
 /// @author MPGR HUB
@@ -26,8 +27,8 @@ import {IPermit2SignatureTransferWitness} from "./interfaces/IPermit2SignatureTr
 ///           owner (user wallet, signs the permit offline)
 ///             ──exact grossAmountIn via Permit2 witness permit──▶ this contract
 ///           this contract ──fee = floor(gross * feeBps / 10_000)──▶ feeRecipient
-///           this contract ──(gross - fee)──▶ allowlisted router (typed swap call)
-///           router ──amountOut──▶ owner   (verified by balance delta ≥ minOut)
+///           this contract ──(gross - fee)──▶ allowlisted typed venue
+///           venue ──amountOut──▶ owner   (modules return to core; measured ≥ minOut)
 ///
 ///         The user's EIP-712 Permit2 witness permit authorizes EXACTLY ONE
 ///         trade: exact sell token, exact gross amount, exact buy token, exact
@@ -53,8 +54,13 @@ import {IPermit2SignatureTransferWitness} from "./interfaces/IPermit2SignatureTr
 ///                 path — a broadcaster must never fund a user's trade).
 ///
 /// @dev    Security model (docs/MPGR_EXECUTOR.md threat model + spec):
-///         - NO generic `execute(target, data)`: every router call is a typed,
-///           executor-encoded `exactInputSingle` for an owner-allowlisted router.
+///         - NO proxy, upgrade, delegatecall, generic `execute(target,data)`, or
+///           caller-selected target/calldata path. Built-in venues use fixed
+///           router ABIs; future venues use one fixed typed module selector.
+///         - Typed modules are owner-allowlisted per router, bound to this
+///           executor/router, code-hash pinned, and receive only the exact
+///           post-fee input transfer (never a standing core allowance). The
+///           core measures their output and forwards it only to the signer.
 ///         - Tokens pulled ONLY via canonical Permit2 witness permits with
 ///           spender == this contract (Permit2 binds msg.sender in the digest).
 ///         - Output always to `witness.owner` (`recipient` must equal it).
@@ -114,7 +120,8 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
     enum RouterKind {
         NONE,
         AERODROME_SLIPSTREAM,
-        UNISWAP_V3_ROUTER02
+        UNISWAP_V3_ROUTER02,
+        TYPED_SWAP_MODULE
     }
 
     /// @notice Router configuration used at construction (identical to v1).
@@ -177,6 +184,7 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 inBalanceBefore;
         address outReceiver;
         uint256 outBalanceBefore;
+        uint256 recipientOutBalanceBefore;
         uint256 amountOut;
     }
 
@@ -198,6 +206,18 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Router allowlist: router => adapter kind (NONE = not allowed).
     mapping(address router => RouterKind kind) public routerKind;
+
+    /// @notice Typed immutable module selected for routers configured as
+    ///         TYPED_SWAP_MODULE. Each module is bound to exactly one executor
+    ///         and router; it receives only the exact post-fee input amount.
+    mapping(address router => address module) public swapModuleForRouter;
+
+    /// @notice Runtime bytecode hash pinned when a module is registered.
+    mapping(address router => bytes32 codeHash) public swapModuleCodeHash;
+
+    /// @notice Reverse lookup prevents a module address from also being used
+    ///         as a token or another router.
+    mapping(address module => address router) public routerForSwapModule;
 
     /// @notice Token allowlist (both sell and buy side).
     mapping(address token => bool allowed) public isTokenAllowed;
@@ -226,6 +246,9 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
     event FeeBpsUpdated(uint16 previousFeeBps, uint16 newFeeBps);
     event FeeRecipientUpdated(address indexed previousRecipient, address indexed newRecipient);
     event RouterUpdated(address indexed router, RouterKind previousKind, RouterKind newKind);
+    event SwapModuleUpdated(
+        address indexed router, address indexed previousModule, address indexed newModule, bytes32 codeHash
+    );
     event TokenAllowlistUpdated(address indexed token, bool allowed);
     event TokensRescued(address indexed token, address indexed to, uint256 amount);
     event NativeRescued(address indexed to, uint256 amount);
@@ -264,6 +287,9 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice msg.value was sent — delegated swaps pull from the OWNER's
     ///         Permit2 allowance; a broadcaster must never fund a user's trade.
     error NativeInputUnsupported();
+    error SwapModuleNotAllowed(address router);
+    error InvalidSwapModule(address module);
+    error ModuleInputNotConsumed(address module, uint256 balanceBefore, uint256 balanceAfter);
 
     // ---------------------------------------------------------------------
     // Construction (identical signature to v1 — deploy tooling reuses it)
@@ -372,6 +398,49 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
         amountOut = _finish(p, t, auth.witness.owner);
     }
 
+    /// @notice Fee + exact-input swap through one governance-allowlisted,
+    ///         immutable typed venue module. The module is bound to `p.router`
+    ///         and this executor; it receives only the post-fee input amount,
+    ///         and output must return here so this core can measure it and send
+    ///         it to the signed owner. No target or arbitrary calldata is
+    ///         supplied by the caller.
+    function swapOnBehalfOfTypedModule(SwapParams calldata p, Permit2Authorization calldata auth)
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+        returns (uint256 amountOut)
+    {
+        if (msg.value != 0) revert NativeInputUnsupported();
+        Trade memory t = _begin(p, RouterKind.TYPED_SWAP_MODULE, auth);
+        address module = swapModuleForRouter[p.router];
+        IERC20 tokenIn = IERC20(p.tokenIn);
+
+        // No allowance is granted to the module. It receives exactly the
+        // authorized post-fee amount for this one atomic call only.
+        uint256 moduleInputBefore = tokenIn.balanceOf(module);
+        tokenIn.safeTransfer(module, t.swapAmount);
+        uint256 moduleInputReceived = tokenIn.balanceOf(module) - moduleInputBefore;
+        if (moduleInputReceived != t.swapAmount) {
+            revert UnsupportedTransferAmount(t.swapAmount, moduleInputReceived);
+        }
+
+        // The module's return value is untrusted. _finish measures output at
+        // this executor and then measures the exact amount delivered to owner.
+        // slither-disable-next-line unused-return
+        IMPGRExecutorSwapModule(module).swapExactInput(
+            p.tokenIn, p.tokenOut, t.swapAmount, p.amountOutMinimum, p.deadline, address(this)
+        );
+
+        uint256 moduleInputAfter = tokenIn.balanceOf(module);
+        if (moduleInputAfter != moduleInputBefore) {
+            revert ModuleInputNotConsumed(module, moduleInputBefore, moduleInputAfter);
+        }
+        if (module.codehash != swapModuleCodeHash[p.router]) revert SwapModuleNotAllowed(p.router);
+
+        amountOut = _finish(p, t, auth.witness.owner);
+    }
+
     // ---------------------------------------------------------------------
     // Views
     // ---------------------------------------------------------------------
@@ -408,6 +477,15 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
 
     function setRouter(address router, RouterKind kind) external onlyOwner {
         _setRouter(router, kind);
+    }
+
+    /// @notice Register or replace an immutable typed module for one router.
+    ///         The module must declare this executor and the same router, and
+    ///         its deployed runtime code hash is pinned for every execution.
+    ///         Module additions/replacements therefore do not change this
+    ///         executor address, but are privileged governance actions.
+    function setRouterModule(address router, address module) external onlyOwner {
+        _setRouterModule(router, module);
     }
 
     function setTokenAllowed(address token, bool allowed) external onlyOwner {
@@ -484,12 +562,18 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
         if (received != p.grossAmountIn) revert UnsupportedTransferAmount(p.grossAmountIn, received);
         if (t.fee != 0) tokenIn.safeTransfer(feeRecipient, t.fee);
 
-        // Exact, single-use router allowance for (G - fee).
-        tokenIn.forceApprove(p.router, t.swapAmount);
+        // Built-in routers receive an exact, single-use allowance. Modules
+        // instead receive an exact token transfer below and never get a core
+        // allowance.
+        if (kind != RouterKind.TYPED_SWAP_MODULE) tokenIn.forceApprove(p.router, t.swapAmount);
 
-        // Output can only ever land on the signing owner — never the broadcaster.
-        t.outReceiver = p.unwrapNativeOut ? address(this) : taker;
+        // Module output (like WETH awaiting unwrap) first lands in the core so
+        // it can measure and forward exactly what the signing owner receives.
+        t.outReceiver = (p.unwrapNativeOut || kind == RouterKind.TYPED_SWAP_MODULE) ? address(this) : taker;
         t.outBalanceBefore = IERC20(p.tokenOut).balanceOf(t.outReceiver);
+        if (kind == RouterKind.TYPED_SWAP_MODULE) {
+            t.recipientOutBalanceBefore = IERC20(p.tokenOut).balanceOf(taker);
+        }
     }
     // slither-disable-end reentrancy-balance
 
@@ -524,8 +608,21 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 inBalanceAfter = tokenIn.balanceOf(address(this));
         if (inBalanceAfter != t.inBalanceBefore) revert InputNotFullyConsumed(t.inBalanceBefore, inBalanceAfter);
 
-        // Output measured by balance delta, never trusted from the router.
-        t.amountOut = IERC20(p.tokenOut).balanceOf(t.outReceiver) - t.outBalanceBefore;
+        // Output measured by balance delta, never trusted from a router or
+        // module. For modules, measure the second transfer too: minOut means
+        // the actual amount received by the signed owner, including any
+        // output-token transfer tax.
+        if (t.kind == RouterKind.TYPED_SWAP_MODULE) {
+            uint256 outputAtExecutor = IERC20(p.tokenOut).balanceOf(address(this)) - t.outBalanceBefore;
+            if (p.unwrapNativeOut) {
+                t.amountOut = outputAtExecutor;
+            } else {
+                if (outputAtExecutor != 0) IERC20(p.tokenOut).safeTransfer(taker, outputAtExecutor);
+                t.amountOut = IERC20(p.tokenOut).balanceOf(taker) - t.recipientOutBalanceBefore;
+            }
+        } else {
+            t.amountOut = IERC20(p.tokenOut).balanceOf(t.outReceiver) - t.outBalanceBefore;
+        }
         if (t.amountOut < p.amountOutMinimum) revert InsufficientOutput(t.amountOut, p.amountOutMinimum);
 
         if (p.unwrapNativeOut) {
@@ -560,6 +657,18 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
         address taker = auth.witness.owner;
         if (taker == address(0)) revert InvalidWitness();
         if (routerKind[p.router] != kind) revert RouterNotAllowed(p.router, kind);
+        if (kind == RouterKind.TYPED_SWAP_MODULE) {
+            address module = swapModuleForRouter[p.router];
+            bytes32 pinnedCodeHash = swapModuleCodeHash[p.router];
+            if (
+                module == address(0) || module.code.length == 0 || pinnedCodeHash == bytes32(0)
+                    || module.codehash != pinnedCodeHash || routerForSwapModule[module] != p.router
+            ) revert SwapModuleNotAllowed(p.router);
+            if (
+                IMPGRExecutorSwapModule(module).executor() != address(this)
+                    || IMPGRExecutorSwapModule(module).router() != p.router
+            ) revert SwapModuleNotAllowed(p.router);
+        }
         if (!isTokenAllowed[p.tokenIn]) revert TokenNotAllowed(p.tokenIn);
         if (!isTokenAllowed[p.tokenOut]) revert TokenNotAllowed(p.tokenOut);
         if (p.tokenIn == p.tokenOut) revert SameToken();
@@ -611,14 +720,60 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
 
     function _setRouter(address router, RouterKind kind) private {
         if (router == address(0)) revert ZeroAddress();
-        if (router == address(this)) revert ConflictingAllowlist(router);
+        if (router == address(this) || routerForSwapModule[router] != address(0)) {
+            revert ConflictingAllowlist(router);
+        }
+        if (kind == RouterKind.TYPED_SWAP_MODULE) revert SwapModuleNotAllowed(router);
         if (kind != RouterKind.NONE) {
             if (router.code.length == 0) revert NotAContract(router);
             // A token can never double as a router (and vice versa).
             if (isTokenAllowed[router]) revert ConflictingAllowlist(router);
         }
-        emit RouterUpdated(router, routerKind[router], kind);
+
+        RouterKind previousKind = routerKind[router];
+        address previousModule = swapModuleForRouter[router];
+        if (previousModule != address(0)) {
+            delete swapModuleForRouter[router];
+            delete swapModuleCodeHash[router];
+            delete routerForSwapModule[previousModule];
+            emit SwapModuleUpdated(router, previousModule, address(0), bytes32(0));
+        }
+        emit RouterUpdated(router, previousKind, kind);
         routerKind[router] = kind;
+    }
+
+    function _setRouterModule(address router, address module) private {
+        if (router == address(0) || module == address(0)) revert ZeroAddress();
+        if (router == address(this) || module == address(this) || router == module) {
+            revert ConflictingAllowlist(module);
+        }
+        if (router.code.length == 0) revert NotAContract(router);
+        if (module.code.length == 0) revert NotAContract(module);
+        if (
+            isTokenAllowed[router] || isTokenAllowed[module] || routerKind[module] != RouterKind.NONE
+                || routerForSwapModule[router] != address(0)
+        ) revert ConflictingAllowlist(module);
+
+        address boundRouter = routerForSwapModule[module];
+        if (boundRouter != address(0) && boundRouter != router) revert ConflictingAllowlist(module);
+        if (
+            IMPGRExecutorSwapModule(module).executor() != address(this)
+                || IMPGRExecutorSwapModule(module).router() != router
+        ) revert InvalidSwapModule(module);
+
+        RouterKind previousKind = routerKind[router];
+        address previousModule = swapModuleForRouter[router];
+        if (previousModule != address(0) && previousModule != module) {
+            delete routerForSwapModule[previousModule];
+        }
+        bytes32 codeHash = module.codehash;
+        routerKind[router] = RouterKind.TYPED_SWAP_MODULE;
+        swapModuleForRouter[router] = module;
+        swapModuleCodeHash[router] = codeHash;
+        routerForSwapModule[module] = router;
+
+        emit RouterUpdated(router, previousKind, RouterKind.TYPED_SWAP_MODULE);
+        emit SwapModuleUpdated(router, previousModule, module, codeHash);
     }
 
     function _setToken(address token, bool allowed) private {
@@ -626,7 +781,9 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
         if (token == address(this)) revert ConflictingAllowlist(token);
         if (allowed) {
             if (token.code.length == 0) revert NotAContract(token);
-            if (routerKind[token] != RouterKind.NONE) revert ConflictingAllowlist(token);
+            if (routerKind[token] != RouterKind.NONE || routerForSwapModule[token] != address(0)) {
+                revert ConflictingAllowlist(token);
+            }
         }
         isTokenAllowed[token] = allowed;
         emit TokenAllowlistUpdated(token, allowed);

@@ -30,7 +30,7 @@
 
 import type { Address } from "viem";
 
-import { DELEGATED_ADAPTER_ID } from "./types";
+import { DELEGATED_ADAPTER_IDS, isDelegatedAdapterId } from "./types";
 import type {
   AuthorizationVerdict,
   AutonomousExecutionAdapter,
@@ -82,8 +82,17 @@ export const noDelegationAdapter: AutonomousExecutionAdapter = {
 let installedDelegatedAdapter: AutonomousExecutionAdapter | null = null;
 
 export function installAutonomousExecutionAdapter(adapter: AutonomousExecutionAdapter): void {
-  if (adapter.id !== DELEGATED_ADAPTER_ID) {
-    throw new Error(`Only the "${DELEGATED_ADAPTER_ID}" adapter can be installed; got "${adapter.id}".`);
+  // Both delegated adapters are installable: the Base Sepolia one (the original
+  // Phase 2 path) and the Base mainnet one added by the MC-2 remediation. They
+  // share one class and one safety machinery, differ only by chain. Anything
+  // else still throws — an unknown id must never resolve permissively.
+  if (!isDelegatedAdapterId(adapter.id)) {
+    throw new Error(`Only a delegated adapter (${DELEGATED_ADAPTER_IDS.join(" | ")}) can be installed; got "${adapter.id}".`);
+  }
+  if (installedDelegatedAdapter && installedDelegatedAdapter.id !== adapter.id) {
+    throw new Error(
+      `A different delegated adapter ("${installedDelegatedAdapter.id}") is already installed; refusing to overwrite it with "${adapter.id}".`,
+    );
   }
   installedDelegatedAdapter = adapter;
 }
@@ -95,10 +104,18 @@ export function clearInstalledAutonomousExecutionAdapter(): void {
 export function getAutonomousExecutionAdapter(): AutonomousExecutionAdapter {
   const configured = process.env.MPGR_AUTONOMOUS_EXECUTION_ADAPTER?.trim();
   if (!configured || configured === NO_DELEGATION_ADAPTER_ID) return noDelegationAdapter;
-  if (configured === DELEGATED_ADAPTER_ID) {
+  if (isDelegatedAdapterId(configured)) {
     if (!installedDelegatedAdapter) {
       throw new Error(
-        `Delegated adapter "${DELEGATED_ADAPTER_ID}" is configured but not installed (server wiring missing) — refusing (fail-closed).`,
+        `Delegated adapter "${configured}" is configured but not installed (server wiring missing) — refusing (fail-closed).`,
+      );
+    }
+    // The configured id must match the INSTALLED adapter's id exactly. This
+    // stops an operator from selecting the mainnet adapter while the Sepolia
+    // one is wired (or vice versa) and silently executing on the wrong chain.
+    if (installedDelegatedAdapter.id !== configured) {
+      throw new Error(
+        `Delegated adapter "${configured}" is configured but "${installedDelegatedAdapter.id}" is installed — refusing (fail-closed).`,
       );
     }
     return installedDelegatedAdapter;

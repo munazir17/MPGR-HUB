@@ -1,0 +1,133 @@
+{
+  "_comment": "Reviewed, committed pins for the ONE-TIME Base Mainnet MPGRExecutorDelegated deployment (the delegated autonomous executor). This is a SEPARATE artifact from deploy-config.json (the v1 assisted executor 0xD982...505A) and a SEPARATE contract: v1 pulls tokens only from msg.sender and is structurally incapable of executing for a user, so it must NEVER be used for delegated autonomous execution. NOT YET DEPLOYED: mainnetDelegatedDeployEnabled is false, so script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol refuses to run. To deploy, an operator must set it true in a reviewed commit AND set MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED=true in the environment (two independent flags), use a fresh dedicated deployer key (nonce 0), and afterwards pin the resulting address in MPGR_MAINNET_DELEGATED_EXECUTOR. See docs/EXECUTOR-ARCHITECTURE-DECISION.md. Routers: BOTH production venues are allowlisted (see that doc section 7) - Aerodrome Slipstream for every USDC<->B20 tokenized-stock pair, and Uniswap V3 SwapRouter02 for USDC<->WETH, because lib/executor/executor-config.ts declares both as production routes and the deploy script asserts the two never drift. Fee model is identical to v1: 25 bps, hard on-chain cap 100 bps, fee taken in the SELL token. The executor includes the typed module registry, but it is intentionally empty at initial deployment; no venue module is pre-approved.",
+  "chainId": 8453,
+  "network": "base",
+  "contract": "MPGRExecutorDelegated",
+  "mainnetDelegatedDeployEnabled": false,
+  "owner": "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
+  "feeRecipient": "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
+  "feeBps": 25,
+  "maxFeeBps": 100,
+  "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+  "weth": "0x4200000000000000000000000000000000000006",
+  "outFile": "deployments/base-mainnet/mpgr-executor-delegated.json",
+  "routers": [
+    {
+      "router": "0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F",
+      "kind": 1,
+      "kindName": "AERODROME_SLIPSTREAM",
+      "factory": "0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef",
+      "quoterV2": "0x514c8B5f54112481E28028F1166Bd78501089259",
+      "b20TickSpacing": 10,
+      "purpose": "USDC <-> every B20 tokenized stock"
+    },
+    {
+      "router": "0x2626664c2603336E57B271c5C0b26F421741e481",
+      "kind": 2,
+      "kindName": "UNISWAP_V3_ROUTER02",
+      "factory": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+      "quoterV2": "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+      "usdcWethPoolFee": 3000,
+      "usdcWethPool": "0x6c561B446416E1A00E8E93E221854d6eA4171372",
+      "purpose": "USDC <-> WETH",
+      "_note": "Deliberately allowlisted HERE but NOT on the deployed v1 executor (its routerAllowlist is Slipstream-only). See docs/EXECUTOR-ARCHITECTURE-DECISION.md section 7: the TS mainnet route table declares this venue, so the delegated executor must accept it or autonomous USDC->WETH goals would revert RouterNotAllowed after the user signed."
+    }
+  ],
+  "tokens": [
+    {
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "symbol": "USDC",
+      "decimals": 6
+    },
+    {
+      "address": "0x4200000000000000000000000000000000000006",
+      "symbol": "WETH",
+      "decimals": 18,
+      "isWeth": true
+    },
+    {
+      "address": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+      "symbol": "AAPLc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000d9192b6B456483C2E8",
+      "symbol": "AMZNc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000c85a31389D71F3ecfb",
+      "symbol": "COINc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB20000000000000000000019f6E7C675b73C2e4D",
+      "symbol": "CRCLc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000002D0BA3164cc74f58B7",
+      "symbol": "GOOGLc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB2000000000000000000004AFF16039bA04bdFBc",
+      "symbol": "INTCc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000008bC8786B856E61707C",
+      "symbol": "METAc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB200000000000000000000Ab99cFa739E253872B",
+      "symbol": "MSFTc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000004884b426556b92883d",
+      "symbol": "MSTRc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb20000000000000000000078ee7ce2fE4908108C",
+      "symbol": "NVDAc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000397293Cb8cda9a10c5",
+      "symbol": "SNDKc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000007b9fcbd005511aCBd5",
+      "symbol": "SPCXc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000001e800a7f5189430cD0",
+      "symbol": "TSLAc",
+      "decimals": 8
+    }
+  ],
+  "denied": {
+    "_comment": "Addresses that must NEVER appear as the deployer, owner, fee recipient, broadcaster, router or token in a mainnet delegated deployment. The canary wallet is the Phase 5 one-shot test wallet; the Sepolia entries are testnet contracts that must never be allowlisted on mainnet.",
+    "canaryWallet": "0xBF6c574b9543967f0D528ae49603b0A7574a280b",
+    "sepolia": [
+      "0xa9568499D7e58854F2590a56B6D32788DbfA58F9",
+      "0xDFcB00fB1Fe83A6333302E55E23feCF6884376C4",
+      "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4",
+      "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24",
+      "0xC5290058841028F1614F3A6F0F5816cAd0df5E27",
+      "0x27F971cb582BF9E50F397e4d29a5C7A34f11faA2",
+      "0xc5C9F70A7F3EB18FC33406275Bffe31a922fcde5",
+      "0x9102c5B535d25A9265e2793174701BdaCeEAAfC4",
+      "0xb67FCDF437B5FeF64E4b32952dc6d172dc9ec56e"
+    ],
+    "v1MainnetExecutor": "0xD982726e28275661F8aB64054E6b17a70a63505A"
+  },
+  "typedModules": [],
+  "_typedModulesNote": "The immutable core includes an owner-governed typed module registry. No modules are configured at initial deployment; a future module must be separately deployed per executor/router, code-reviewed, registered by governance and pinned by runtime bytecode hash. This is not a proxy/upgrade path.",
+  "moduleRegistrySchemaVersion": 1
+}

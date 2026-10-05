@@ -16,6 +16,7 @@ import { MPGR_EXECUTOR_ABI } from "./mpgr-executor-abi";
 
 export interface ChainReader {
   chainId: number;
+  getBytecode?(args: { address: Address }): Promise<Hex | null>;
   readContract(args: { address: Address; abi: readonly unknown[]; functionName: string; args?: readonly unknown[] }): Promise<unknown>;
   simulateContract(args: {
     address: Address;
@@ -180,6 +181,7 @@ export function createChainReader(chainId: ExecutorChainId): ChainReader {
         });
   return {
     chainId,
+    getBytecode: async ({ address }) => (await client.getBytecode({ address })) ?? null,
     readContract: (a) => client.readContract(a as never),
     simulateContract: (a) => client.simulateContract(a as never) as Promise<{ result: unknown }>,
     getBalance: (a) => client.getBalance(a),

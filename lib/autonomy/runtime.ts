@@ -23,11 +23,13 @@
 //   * uncertain broadcasts are terminal (FAILED), never re-submitted;
 //   * the LLM appears NOWHERE in this file — there is nothing to prompt.
 
+import type { Address } from "viem";
+
 import type { Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
-import { DELEGATED_EXECUTOR_ADDRESS, delegatedActionId } from "@/lib/executor/delegated-executor";
+import { delegatedActionId, delegatedExecutorAddressFor, isDelegatedChainId } from "@/lib/executor/delegated-executor";
 
 import { AUTONOMY_LIMITS } from "./config";
-import { DELEGATED_ADAPTER_ID, DELEGATED_EXECUTION_CHAIN_ID, type DelegatedSwapRequest } from "./types";
+import { AUTONOMY_CHAIN_ID, DELEGATED_EXECUTION_CHAIN_ID, isDelegatedAdapterId, type DelegatedSwapRequest } from "./types";
 import { evaluateCondition, evaluatePolicyAgainstAction } from "./policy-engine";
 import { utcDayKey } from "./idempotency";
 import { isTerminalGoalStatus, type AgentGoal, type AutonomyFailureCode, type GoalActionRecord, type GoalStatus } from "./types";
@@ -37,11 +39,27 @@ import type { McpGateway } from "./mcp-gateway";
 import type { AutonomyStore } from "./store";
 import { verifyExecution } from "./verify";
 import type { AutonomousExecutionAdapter } from "./types";
-import { delegatedBroadcasterAddress } from "@/lib/delegated/delegated-broadcaster";
+import { delegatedBroadcasterAddressFor } from "@/lib/delegated/delegated-broadcaster";
 
-/** The chain the runtime operates on for THIS adapter (delegated = 84532). */
+/**
+ * The chain the runtime operates on for THIS adapter.
+ *
+ * The adapter DECLARES its chain (`adapter.chainId`), which is what makes a
+ * Base mainnet delegated adapter expressible at all: the previous
+ * `adapter.id === DELEGATED_ADAPTER_ID ? 84532 : 8453` mapping had no way to
+ * say "delegated, on mainnet". The legacy id-based mapping is kept as the
+ * fallback so adapters that predate the field (including every test adapter)
+ * behave exactly as before.
+ */
 function executionChainId(adapter: AutonomousExecutionAdapter): number {
-  return adapter.id === DELEGATED_ADAPTER_ID ? DELEGATED_EXECUTION_CHAIN_ID : 8453;
+  if (typeof adapter.chainId === "number") return adapter.chainId;
+  return isDelegatedAdapterId(adapter.id) ? DELEGATED_EXECUTION_CHAIN_ID : AUTONOMY_CHAIN_ID;
+}
+
+/** The operator broadcaster that will send for THIS adapter's chain, if any. */
+function expectedSenderFor(adapter: AutonomousExecutionAdapter): Address | undefined {
+  if (!isDelegatedAdapterId(adapter.id)) return undefined;
+  return delegatedBroadcasterAddressFor(executionChainId(adapter)) ?? undefined;
 }
 
 export interface AutonomyRuntimeDeps {
@@ -132,7 +150,10 @@ export class AutonomyRuntime {
       expectedSender: pending.expectedSender,
       // Delegated path: the executor binds the event intentId to the signed
       // witness actionId (delegatedActionId(goalId)).
-      ...(executionChainId(this.deps.adapter) === DELEGATED_EXECUTION_CHAIN_ID
+      // Keyed off the ADAPTER, not the chain: 8453 is now also a delegated
+      // chain, but a non-delegated (assisted/test) adapter running on 8453 must
+      // not be held to the delegated intentId event.
+      ...(isDelegatedAdapterId(this.deps.adapter.id)
         ? { expectedIntentId: delegatedActionId(goal.id) }
         : {}),
     });
@@ -307,7 +328,16 @@ export class AutonomyRuntime {
       buyToken: goal.trade.buyToken,
       sellAmount: goal.trade.sellAmountRaw,
       slippageBps,
-      ...(quoteChainId === DELEGATED_EXECUTION_CHAIN_ID ? { executor: DELEGATED_EXECUTOR_ADDRESS } : {}),
+      // Delegated adapters quote against THAT chain's pinned executor. Keyed off
+      // the ADAPTER (not the chain), because 8453 is now also a delegated chain
+      // and an assisted adapter on 8453 must keep quoting the v1 registry. On
+      // mainnet the executor is operator-supplied, so an unpinned chain yields
+      // no `executor` and the quote path fails closed instead of silently
+      // quoting the v1 registry (which the delegated contract cannot execute
+      // against — PHASE 5 finding F-9).
+      ...(isDelegatedAdapterId(this.deps.adapter.id) && isDelegatedChainId(quoteChainId) && delegatedExecutorAddressFor(quoteChainId)
+        ? { executor: delegatedExecutorAddressFor(quoteChainId) }
+        : {}),
     });
 
     if (!quoteOutcome.ok) {
@@ -443,7 +473,7 @@ export class AutonomyRuntime {
     // finding F-9). There, preparation IS the adapter's own signed slot
     // re-validation (witness actionId/policyHash/minOut vs the live quote),
     // and the adapter constructs the broadcast calldata itself.
-    const delegatedPath = this.deps.adapter.id === DELEGATED_ADAPTER_ID;
+    const delegatedPath = isDelegatedAdapterId(this.deps.adapter.id);
     let preparedSteps: DelegatedSwapRequest["steps"] = [];
     let preparedTransactionRequest: DelegatedSwapRequest["transactionRequest"] = null;
     if (delegatedPath) {
@@ -501,7 +531,7 @@ export class AutonomyRuntime {
         verifyAttempts: 0,
         expectedBuyAmountRaw: quote.expectedBuyAmountRaw,
         minBuyAmountRaw: quote.minBuyAmountRaw,
-        expectedSender: this.deps.adapter.id === DELEGATED_ADAPTER_ID ? delegatedBroadcasterAddress() ?? undefined : undefined,
+        expectedSender: expectedSenderFor(this.deps.adapter),
       },
       lastAction: `transaction submitted ${result.txHash}`,
       lastResult: { at: submittedAt, outcome: "WAITING_VERIFICATION", code: null, message: "Transaction submitted — verifying receipt before reporting any result." },

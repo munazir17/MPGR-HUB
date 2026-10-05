@@ -22,6 +22,7 @@ import {
   isHex,
   parseEventLogs,
   parseUnits,
+  keccak256,
   recoverTypedDataAddress,
   type Address,
   type Hex,
@@ -43,6 +44,7 @@ import {
   type AuthorizationMode,
   type ExecutorChainId,
   type ExecutorDeployment,
+  type ExecutorRoute,
   type ExecutorToken,
 } from "@/lib/executor/executor-config";
 import {
@@ -99,7 +101,7 @@ export interface McpDeps {
    * Phase 2 delegated path ONLY: the operator broadcaster (Base Sepolia).
    * Fail-closed: when absent, mpgr_delegate_swap refuses. Never user keys.
    */
-  delegatedBroadcaster?: (tx: { to: Address; data: Hex; chainId: number }) => Promise<Hex>;
+  delegatedBroadcaster?: (tx: { to: Address; data: Hex; chainId: number; value?: bigint }) => Promise<Hex>;
   /**
    * Base mainnet MCP trading (executor path AND 0x fallback). OFF unless
    * MPGR_MCP_ENABLE_BASE_MAINNET=true. The registry entry is a deployed fact;
@@ -318,7 +320,12 @@ export function listTokens(deps: McpDeps, input: unknown): ToolOutcome {
       pairs: d.routes.map((r) => ({
         tokenA: r.tokenA,
         tokenB: r.tokenB,
-        venue: r.kind === RouterKind.UNISWAP_V3_ROUTER02 ? "uniswap-v3" : "aerodrome-slipstream",
+        venue:
+          r.kind === RouterKind.UNISWAP_V3_ROUTER02
+            ? "uniswap-v3"
+            : r.kind === RouterKind.AERODROME_SLIPSTREAM
+              ? "aerodrome-slipstream"
+              : "typed-swap-module",
         poolFee: r.poolFee ?? null,
         tickSpacing: r.tickSpacing ?? null,
       })),
@@ -349,8 +356,16 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
   // anything else fails closed. Omitting `executor` keeps the v1 behaviour.
   const executorArg = typeof args.executor === "string" ? args.executor.trim() : "";
   if (executorArg) {
-    if (chainId !== BASE_SEPOLIA_CHAIN_ID) {
-      return fail("UNSUPPORTED_CHAIN", "The delegated executor is Base Sepolia (84532) only.");
+    // The delegated executor exists on BOTH delegated chains (8453 + 84532).
+    // The requested address must equal the PINNED executor for THIS chain —
+    // on mainnet that is operator-supplied, so an unpinned chain fails closed
+    // rather than falling back to the Sepolia contract.
+    if (!isDelegatedChainId(chainId)) {
+      return fail("UNSUPPORTED_CHAIN", "The delegated executor runs on Base (8453) or Base Sepolia (84532) only.");
+    }
+    const pinnedExecutor = delegatedExecutorAddressFor(chainId);
+    if (!pinnedExecutor) {
+      return fail("EXECUTOR_NOT_CONFIGURED", `No delegated executor is pinned for ${delegatedChainLabel(chainId)}.`);
     }
     let requested: Address;
     try {
@@ -358,8 +373,8 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
     } catch {
       return fail("INVALID_EXECUTOR", "executor must be a valid address.");
     }
-    if (requested !== DELEGATED_EXECUTOR_ADDRESS) {
-      return fail("EXECUTOR_MISMATCH", "executor does not match the pinned delegated executor.");
+    if (requested.toLowerCase() !== pinnedExecutor.toLowerCase()) {
+      return fail("EXECUTOR_MISMATCH", "executor does not match the pinned delegated executor for this chain.");
     }
     const delegated = deps.delegatedRegistry?.[chainId];
     if (!delegated) {
@@ -400,6 +415,30 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
   return quoteExecutor(deps, chainId, deps.registry[chainId] as ExecutorDeployment, args, null, null, taker, slippage);
 }
 
+/**
+ * Verify the route's module against the executor's live registry and actual
+ * runtime bytecode. A TypeScript route entry alone is never enough to authorize
+ * a module call.
+ */
+async function typedModulePostureMatches(reader: ChainReader, executor: Address, route: ExecutorRoute): Promise<boolean> {
+  if (route.kind !== RouterKind.TYPED_SWAP_MODULE || !route.moduleAddress || !route.moduleCodeHash) return false;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(route.moduleCodeHash) || !reader.getBytecode) return false;
+  try {
+    const [kind, module, codeHash, bytecode] = await Promise.all([
+      reader.readContract({ address: executor, abi: DELEGATED_EXECUTOR_ABI, functionName: "routerKind", args: [route.router] }),
+      reader.readContract({ address: executor, abi: DELEGATED_EXECUTOR_ABI, functionName: "swapModuleForRouter", args: [route.router] }),
+      reader.readContract({ address: executor, abi: DELEGATED_EXECUTOR_ABI, functionName: "swapModuleCodeHash", args: [route.router] }),
+      reader.getBytecode({ address: route.moduleAddress }),
+    ]);
+    return Number(kind) === RouterKind.TYPED_SWAP_MODULE
+      && String(module).toLowerCase() === route.moduleAddress.toLowerCase()
+      && String(codeHash).toLowerCase() === route.moduleCodeHash.toLowerCase()
+      && Boolean(bytecode && bytecode !== "0x" && keccak256(bytecode).toLowerCase() === route.moduleCodeHash.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 /** Executor-path quote, shared by Base Sepolia and the proven Base mainnet route. */
 async function quoteExecutor(
   deps: McpDeps,
@@ -427,12 +466,37 @@ async function quoteExecutor(
 
   const route = findExecutorRoute(d, sell.token.address, buy.token.address);
   if (!route) return fail("NO_ROUTE", "No allowlisted route for this pair.");
+  const isExplicitDelegatedQuote =
+    typeof args.executor === "string" && isAddress(args.executor) && getAddress(args.executor).toLowerCase() === d.executor.toLowerCase();
+  if (route.kind === RouterKind.TYPED_SWAP_MODULE && !isExplicitDelegatedQuote) {
+    return fail("INVALID_VENUE", "Typed swap modules are supported only through the explicitly pinned delegated executor.");
+  }
+  if (route.kind === RouterKind.TYPED_SWAP_MODULE && (sell.native || buy.native)) {
+    return fail("NATIVE_UNSUPPORTED_FOR_MODULE", "Typed-module routes currently support ERC-20 token pairs only.");
+  }
   let expected: bigint;
   try {
-    expected =
-      route.kind === RouterKind.UNISWAP_V3_ROUTER02
-        ? await quoteUniswapV3(reader, route.quoter, sell.token.address, buy.token.address, fee.value.swapAmountIn, route.poolFee ?? 0)
-        : await quoteSlipstream(reader, route.quoter, sell.token.address, buy.token.address, fee.value.swapAmountIn, route.tickSpacing ?? 0);
+    if (route.kind === RouterKind.TYPED_SWAP_MODULE) {
+      if (!route.moduleAddress || !route.moduleCodeHash) {
+        return fail("INVALID_VENUE", "Typed-module quote requires a pinned module address and code hash.");
+      }
+      if (!(await typedModulePostureMatches(reader, d.executor, route))) {
+        return fail("ROUTE_MISMATCH", "Typed-module quote does not match the executor's live module registration and bytecode.");
+      }
+      const { result } = await reader.simulateContract({
+        address: route.moduleAddress,
+        abi: DELEGATED_SWAP_MODULE_ABI,
+        functionName: "quoteExactInput",
+        args: [sell.token.address, buy.token.address, fee.value.swapAmountIn],
+      });
+      expected = result as bigint;
+    } else if (route.kind === RouterKind.UNISWAP_V3_ROUTER02) {
+      if (!route.quoter || route.poolFee === undefined) return fail("INVALID_VENUE", "Uniswap V3 route is missing its quoter or poolFee.");
+      expected = await quoteUniswapV3(reader, route.quoter, sell.token.address, buy.token.address, fee.value.swapAmountIn, route.poolFee);
+    } else {
+      if (!route.quoter || route.tickSpacing === undefined) return fail("INVALID_VENUE", "Slipstream route is missing its quoter or tickSpacing.");
+      expected = await quoteSlipstream(reader, route.quoter, sell.token.address, buy.token.address, fee.value.swapAmountIn, route.tickSpacing);
+    }
   } catch {
     return fail("QUOTE_FAILED", "The on-chain quoter could not price this trade (insufficient liquidity?).");
   }
@@ -463,6 +527,55 @@ async function quoteExecutor(
   };
   const signed = signQuoteId(payload, deps.quoteSecret);
   if (!signed.ok) return fail(signed.error.code, signed.error.message);
+
+  if (route.kind === RouterKind.TYPED_SWAP_MODULE) {
+    const balance = await readTokenBalance(reader, sell.token.address, taker);
+    const minBuyAmount = (expected * BigInt(10_000 - slippage)) / 10_000n;
+    return {
+      ok: true,
+      data: {
+        quoteId: signed.quoteId,
+        chainId,
+        taker,
+        recipient: taker,
+        sellToken: tokenView(sell.token),
+        buyToken: tokenView(buy.token),
+        sellNative: false,
+        buyNative: false,
+        sellAmount: amount.toString(),
+        sellAmountHuman: formatUnits(amount, sell.token.decimals),
+        expectedBuyAmount: expected.toString(),
+        expectedBuyAmountHuman: formatUnits(expected, buy.token.decimals),
+        minBuyAmount: minBuyAmount.toString(),
+        minBuyAmountHuman: formatUnits(minBuyAmount, buy.token.decimals),
+        slippageBps: slippage,
+        feeBps: live.feeBps,
+        feeAmount: fee.value.feeAmount.toString(),
+        feeAmountHuman: formatUnits(fee.value.feeAmount, sell.token.decimals),
+        feeToken: sell.token.address,
+        feeRecipient: live.feeRecipient,
+        feeCollection: "same-transaction (delegated executor, on-chain, exact)",
+        swapAmount: fee.value.swapAmountIn.toString(),
+        route: {
+          provider: "mpgr-executor",
+          venue: "typed-swap-module",
+          executor: d.executor,
+          router: route.router,
+          moduleAddress: route.moduleAddress,
+          moduleCodeHash: route.moduleCodeHash,
+          hops: 1,
+        },
+        executor: d.executor,
+        spender: d.executor,
+        authorization: "PERMIT2",
+        deadline: now + INTENT_TTL_SECONDS,
+        expiresAt: payload.exp,
+        balanceSufficient: balance >= amount,
+        takerBalance: balance.toString(),
+        nextStep: "Use the delegated authorization slot; the user's wallet signs and the operator never signs for the user.",
+      },
+    };
+  }
 
   const built = intentFromPayload(d, payload, signed.quoteId, "APPROVAL");
   if (!built.ok) return built;
@@ -872,10 +985,19 @@ function verifyZeroExReceipt(p: QuotePayload, receipt: Awaited<ReturnType<ChainR
   };
 }
 
-// ============================================================ delegated execution (Phase 2, Base Sepolia only)
+// ============================================================ delegated execution (Base Sepolia + Base mainnet)
 
-import { DELEGATED_EXECUTOR_ADDRESS, DELEGATED_EXECUTOR_ABI, DELEGATED_EXECUTOR_CHAIN_ID, DELEGATED_EXECUTOR_FEE_BPS, buildDelegatedSwapParams } from "@/lib/executor/delegated-executor";
-import { delegatedBroadcasterAddress } from "@/lib/delegated/delegated-broadcaster";
+import {
+  DELEGATED_EXECUTOR_ABI,
+  DELEGATED_SWAP_MODULE_ABI,
+  DELEGATED_EXECUTOR_FEE_BPS,
+  buildDelegatedSwapParams,
+  delegatedChainLabel,
+  delegatedExecutorAddressFor,
+  isDelegatedChainId,
+} from "@/lib/executor/delegated-executor";
+import { delegatedBroadcasterAddressFor } from "@/lib/delegated/delegated-broadcaster";
+import { validateDelegatedTransaction } from "@/lib/delegated/broadcast-gate";
 
 /**
  * mpgr_delegate_swap — the delegated execution capability. The CALLER (the
@@ -888,8 +1010,18 @@ import { delegatedBroadcasterAddress } from "@/lib/delegated/delegated-broadcast
 export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolOutcome> {
   const args = asRecord(input);
   const chainId = parseChainId(args.chainId);
-  if (chainId !== DELEGATED_EXECUTOR_CHAIN_ID) {
-    return fail("UNSUPPORTED_CHAIN", "Delegated execution is Base Sepolia (84532) only.");
+  if (!isDelegatedChainId(chainId)) {
+    return fail("UNSUPPORTED_CHAIN", "Delegated execution runs on Base (8453) or Base Sepolia (84532) only.");
+  }
+  // The chain's delegated executor must be PINNED. On Base Sepolia that is the
+  // code-pinned Phase 2 deployment; on Base mainnet it is the operator-supplied
+  // MPGR_MAINNET_DELEGATED_EXECUTOR. Absent => fail closed, never a guess.
+  const executor = delegatedExecutorAddressFor(chainId);
+  if (!executor) {
+    return fail(
+      "EXECUTOR_NOT_CONFIGURED",
+      `No delegated executor is pinned for ${delegatedChainLabel(chainId)}, so delegated execution is unavailable there (fail-closed).`,
+    );
   }
   const broadcast = deps.delegatedBroadcaster;
   if (!broadcast) return fail("BROADCASTER_NOT_CONFIGURED", "Delegated execution is not configured on the server (fail-closed).");
@@ -912,7 +1044,8 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
   const intentId = typeof args.intentId === "string" && /^0x[0-9a-fA-F]{64}$/.test(args.intentId) ? args.intentId : null;
   const router = addr(args.router);
   const poolFee = typeof args.poolFee === "number" && [100, 500, 3000, 10000].includes(args.poolFee) ? args.poolFee : null;
-  if (!tokenIn || !buyToken || !owner || amount === null || nonce === null || deadline === null || minOut === null || !policyHash || !actionId || !intentId || !router || poolFee === null) {
+  const tickSpacing = typeof args.tickSpacing === "number" && Number.isInteger(args.tickSpacing) ? args.tickSpacing : null;
+  if (!tokenIn || !buyToken || !owner || amount === null || nonce === null || deadline === null || minOut === null || !policyHash || !actionId || !intentId) {
     return fail("INVALID_AUTHORIZATION", "Delegated authorization is incomplete or malformed.");
   }
   if (typeof sig !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(sig)) return fail("INVALID_AUTHORIZATION", "Signature must be 65-byte rsv hex.");
@@ -921,28 +1054,117 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
   if (fee === 0n) return fail("FEE_ROUNDS_TO_ZERO", "Amount too small for the canonical 25 bps fee.");
   const expectedFeeAmount = typeof args.expectedFeeAmount === "string" && /^\d{1,78}$/.test(args.expectedFeeAmount) ? BigInt(args.expectedFeeAmount) : null;
   if (expectedFeeAmount !== fee) return fail("FEE_MISMATCH", "Committed fee does not equal floor(gross * 25bps) — refusing (fail-closed).");
+  // VENUE (router + pool key) is derived from the chain's OWN delegated
+  // registry when one is configured, so the caller cannot steer execution to
+  // an arbitrary router. Base mainnet B20 pairs are Aerodrome Slipstream
+  // (tickSpacing), USDC<->WETH is Uniswap V3 (poolFee) — the previous
+  // UniswapV3-only encoding could never express a mainnet B20 trade.
+  const delegatedRegistry = deps.delegatedRegistry?.[chainId];
+  const route = delegatedRegistry ? findExecutorRoute(delegatedRegistry, tokenIn, buyToken) : null;
+  if (delegatedRegistry && !route) {
+    return fail("NO_ROUTE", `No delegated executor route for this pair on ${delegatedChainLabel(chainId)}.`);
+  }
+  if (route && router && route.router.toLowerCase() !== router.toLowerCase()) {
+    return fail("ROUTE_MISMATCH", "router does not match the delegated executor route for this pair.");
+  }
+  const venueRouter = route ? route.router : router;
+  if (!venueRouter) return fail("INVALID_AUTHORIZATION", "router is required when no delegated registry is configured.");
+  type Venue = { kind: number; poolFee: number | null; tickSpacing: number | null };
+  let venue: Venue | null = null;
+  if (route) {
+    if (route.kind === RouterKind.UNISWAP_V3_ROUTER02) {
+      venue = { kind: RouterKind.UNISWAP_V3_ROUTER02, poolFee: route.poolFee ?? null, tickSpacing: null };
+    } else if (route.kind === RouterKind.AERODROME_SLIPSTREAM) {
+      venue = { kind: RouterKind.AERODROME_SLIPSTREAM, poolFee: null, tickSpacing: route.tickSpacing ?? null };
+    } else if (route.kind === RouterKind.TYPED_SWAP_MODULE) {
+      venue = { kind: RouterKind.TYPED_SWAP_MODULE, poolFee: null, tickSpacing: null };
+    }
+  } else if (poolFee !== null) {
+    venue = { kind: RouterKind.UNISWAP_V3_ROUTER02, poolFee, tickSpacing: null };
+  } else if (tickSpacing !== null) {
+    venue = { kind: RouterKind.AERODROME_SLIPSTREAM, poolFee: null, tickSpacing };
+  }
+  if (!venue) return fail("INVALID_VENUE", "provide a registered Uniswap V3, Slipstream or typed-module route.");
+  if (venue.kind === RouterKind.UNISWAP_V3_ROUTER02 && venue.poolFee === null) return fail("INVALID_VENUE", "Uniswap V3 route is missing its poolFee.");
+  if (venue.kind === RouterKind.AERODROME_SLIPSTREAM && venue.tickSpacing === null) return fail("INVALID_VENUE", "Slipstream route is missing its tickSpacing.");
+
+  if (venue.kind === RouterKind.TYPED_SWAP_MODULE) {
+    if (!route || route.kind !== RouterKind.TYPED_SWAP_MODULE || !route.moduleAddress || !route.moduleCodeHash) {
+      return fail("INVALID_VENUE", "Typed-module route requires a pinned module address and code hash.");
+    }
+    if (!(await typedModulePostureMatches(deps.reader(chainId), executor, route))) {
+      return fail("ROUTE_MISMATCH", "Typed-module route does not match the executor's live module address and code hash.");
+    }
+  }
+
   const params = buildDelegatedSwapParams({
-    router, tokenIn, tokenOut: buyToken, grossAmountIn: grossAmountIn.toString(),
+    router: venueRouter, tokenIn, tokenOut: buyToken, grossAmountIn: grossAmountIn.toString(),
     minAmountOut: minOut.toString(), deadline: Number(deadline), intentId: intentId as `0x${string}`, owner,
     feeBps: DELEGATED_EXECUTOR_FEE_BPS,
   });
   if (params.expectedFeeAmount !== fee) return fail("FEE_MISMATCH", "Fee math divergence — refusing (fail-closed).");
-  const data = encodeFunctionData({
-    abi: DELEGATED_EXECUTOR_ABI,
-    functionName: "swapOnBehalfOfUniswapV3",
-    args: [
-      params,
-      poolFee,
-      {
-        permit: { permitted: { token: tokenIn, amount }, nonce, deadline },
-        witness: { owner, buyToken, minAmountOut: minOut, deadline, actionId: actionId as Hex, policyHash: policyHash as Hex },
-        signature: sig as Hex,
-      },
-    ],
-  });
+  const authorizationTuple = {
+    permit: { permitted: { token: tokenIn, amount }, nonce, deadline },
+    witness: { owner, buyToken, minAmountOut: minOut, deadline, actionId: actionId as Hex, policyHash: policyHash as Hex },
+    signature: sig as Hex,
+  };
+  const data =
+    venue.kind === RouterKind.AERODROME_SLIPSTREAM
+      ? encodeFunctionData({
+          abi: DELEGATED_EXECUTOR_ABI,
+          functionName: "swapOnBehalfOfSlipstream",
+          args: [params, venue.tickSpacing as number, authorizationTuple],
+        })
+      : venue.kind === RouterKind.TYPED_SWAP_MODULE
+        ? encodeFunctionData({
+            abi: DELEGATED_EXECUTOR_ABI,
+            functionName: "swapOnBehalfOfTypedModule",
+            args: [params, authorizationTuple],
+          })
+        : encodeFunctionData({
+            abi: DELEGATED_EXECUTOR_ABI,
+            functionName: "swapOnBehalfOfUniswapV3",
+            args: [params, venue.poolFee as number, authorizationTuple],
+          });
   try {
-    const txHash = await broadcast({ to: DELEGATED_EXECUTOR_ADDRESS, data, chainId: DELEGATED_EXECUTOR_CHAIN_ID });
-    return { ok: true, data: jsonSafe({ txHash, delegatedExecutor: DELEGATED_EXECUTOR_ADDRESS, chainId: DELEGATED_EXECUTOR_CHAIN_ID, expectedSender: delegatedBroadcasterAddress() }) as Record<string, unknown> };
+    // BOUNDED HOT WALLET (audit MC-2 remediation). Before the operator key
+    // signs anything, re-decode this exact calldata and re-verify every signed
+    // field against the user's own witness: chain, pinned executor, allowed
+    // selector, recipient == owner, intentId, deadline, minAmountOut, buyToken,
+    // permit token/amount/deadline, zero native value, positive amounts,
+    // unexpired deadline. Any disagreement => no signature, no broadcast. The
+    // on-chain `_validate` re-checks the same bindings, so this is defence in
+    // depth that also keeps the operator key useless for anything else.
+    const gate = validateDelegatedTransaction(
+      { to: executor, data, chainId, value: 0n },
+      {
+        witness: {
+          owner,
+          buyToken,
+          minAmountOut: minOut.toString(),
+          deadline: Number(deadline),
+          actionId: actionId as Hex,
+          policyHash: policyHash as Hex,
+        },
+        permit: { token: tokenIn, amount: amount.toString(), nonce: nonce.toString(), deadline: Number(deadline) },
+        wallet: owner,
+      },
+      new Date(),
+    );
+    if (!gate.allowed) {
+      return fail("BROADCAST_REFUSED_BY_GATE", `refused to sign: ${gate.reason}${gate.detail ? ` (${gate.detail})` : ""}`);
+    }
+
+    const txHash = await broadcast({ to: executor, data, chainId, value: 0n });
+    return {
+      ok: true,
+      data: jsonSafe({
+        txHash,
+        delegatedExecutor: executor,
+        chainId,
+        expectedSender: delegatedBroadcasterAddressFor(chainId),
+      }) as Record<string, unknown>,
+    };
   } catch (error) {
     // PHASE 5: sanitized diagnostics — the fail-closed message carries the
     // underlying cause (viem shortMessage) so operators can diagnose a failed
