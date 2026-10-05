@@ -24,6 +24,8 @@ export interface ReadOnlyStages {
 export type DeployFlagValue = string | boolean | null | undefined;
 export type DeployFlagValues = DeployFlagValue | DeployFlagValue[];
 
+export function decodeDeploymentFlagSource(serializedValue: string | null | undefined): string | undefined;
+
 export function readOnlyDeploymentFlagStatus(environmentDeployFlagValues: DeployFlagValues): {
   ok: boolean;
   configuredSources: number;

@@ -123,6 +123,20 @@ function loadConfig() {
   }
 }
 
+export function decodeDeploymentFlagSource(serializedValue) {
+  if (typeof serializedValue !== "string" || serializedValue.trim() === "") return undefined;
+  try {
+    const decoded = JSON.parse(serializedValue);
+    if (decoded === false) return "false";
+    if (decoded === true) return "true";
+    if (typeof decoded === "string") return decoded;
+    if (decoded === null) return undefined;
+    return "[invalid deployment flag type]";
+  } catch {
+    return serializedValue.trim();
+  }
+}
+
 export function readOnlyDeploymentFlagStatus(environmentDeployFlagValues) {
   const values = Array.isArray(environmentDeployFlagValues)
     ? environmentDeployFlagValues
@@ -398,8 +412,8 @@ async function main() {
   const environmentOwner = process.env.MPGR_EXECUTOR_OWNER?.trim();
   const environmentFeeRecipient = process.env.MPGR_EXECUTOR_FEE_RECIPIENT?.trim();
   const environmentDeployFlagValues = [
-    process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_VAR,
-    process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET,
+    decodeDeploymentFlagSource(process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_VAR_JSON),
+    decodeDeploymentFlagSource(process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET_JSON),
   ];
 
   const staticValidation = validateStaticConfig(

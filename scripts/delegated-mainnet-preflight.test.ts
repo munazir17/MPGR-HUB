@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  decodeDeploymentFlagSource,
   isReadOnlyDeploymentFlagFalse,
   readOnlyDeploymentFlagStatus,
   runReadOnlyChecksWhenDeploymentIsDisabled,
@@ -11,6 +12,7 @@ import {
 const committedConfig = JSON.parse(
   readFileSync("deployments/base-mainnet/delegated-deploy-config.json", "utf8"),
 );
+const preflightWorkflow = readFileSync(".github/workflows/preflight-delegated-base-mainnet.yml", "utf8");
 
 function validate(
   config = committedConfig,
@@ -62,6 +64,36 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
     expect(isReadOnlyDeploymentFlagFalse(["false", ""])).toBe(true);
     expect(isReadOnlyDeploymentFlagFalse(["false", "true"])).toBe(false);
     expect(isReadOnlyDeploymentFlagFalse(true)).toBe(false);
+  });
+
+  it("passes the Environment variable false through the actual workflow-to-checker boundary", async () => {
+    expect(preflightWorkflow).toContain(
+      "MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_VAR_JSON: ${{ toJSON(vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED) }}",
+    );
+    expect(preflightWorkflow).toContain(
+      "MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET_JSON: ${{ toJSON(secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED) }}",
+    );
+
+    const workflowValue = decodeDeploymentFlagSource(JSON.stringify("false"));
+    const booleanValue = decodeDeploymentFlagSource(JSON.stringify(false));
+    expect(workflowValue).toBe("false");
+    expect(typeof workflowValue).toBe("string");
+    expect(booleanValue).toBe("false");
+
+    const staticResult = validateStaticConfig(
+      committedConfig,
+      committedConfig.owner,
+      committedConfig.feeRecipient,
+      [workflowValue, undefined],
+    );
+    expect(staticResult.ok).toBe(true);
+
+    const stages = createReadOnlyStages([]);
+    const continuation = await runReadOnlyChecksWhenDeploymentIsDisabled([workflowValue, undefined], stages);
+    expect(continuation).toEqual({ ok: true, continued: true, stage: "rpc" });
+    expect(stages.deriveDeployerAddress).toHaveBeenCalledTimes(1);
+    expect(stages.checkRoleSeparation).toHaveBeenCalledTimes(1);
+    expect(stages.runRpcChecks).toHaveBeenCalledTimes(1);
   });
 
   it("continues through deployer, role, and RPC stages when the deployment flag is false", async () => {
