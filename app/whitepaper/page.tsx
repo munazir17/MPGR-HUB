@@ -541,7 +541,7 @@ export default function WhitepaperPage() {
         </Callout>
         <P>
           Additional titles (Clicker, Memory Challenge, Space Shooter, 2048 Daily,
-          Pet Raising, Speed Run, Roguelike RPG, AI Battle Arena) exist in the
+          Pet Raising, Speed Run, Roguelike RPG, Battle Arena) exist in the
           game registry as <Strong>coming soon</Strong> and are never shown as
           playable. See{" "}
           <TLink href="/roadmap#gaming">Roadmap → gaming ecosystem</TLink>.
