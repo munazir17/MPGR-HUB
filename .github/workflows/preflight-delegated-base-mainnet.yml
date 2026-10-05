@@ -1,0 +1,100 @@
+name: Delegated Base Mainnet Preflight (Read-Only)
+
+on:
+  push:
+    branches: [arena/01a105ea-mpgr-hub]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delegated-mainnet-readonly-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    # Pushes only run this protected-environment job when deliberately tagged in
+    # the commit message. Manual dispatch is restricted to this session branch.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/arena/01a105ea-mpgr-hub') ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[mainnet-preflight]'))
+    name: Secure read-only Base Mainnet checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: base-mainnet
+    steps:
+      - name: Checkout preflight revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install locked JavaScript dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install released Foundry toolchain
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.4
+
+      - name: Install pinned Solidity dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+          test "$(git -C .forge-deps/openzeppelin-contracts describe --tags --exact-match HEAD)" = "v5.4.0"
+          test "$(git -C .forge-deps/forge-std describe --tags --exact-match HEAD)" = "v1.9.7"
+
+      - name: Assert exact released toolchain and compile only
+        run: |
+          set -euo pipefail
+          FORGE_OUTPUT="$(forge --version)"
+          printf '%s\n' "$FORGE_OUTPUT"
+          grep -Fq '1.8.4' <<< "$FORGE_OUTPUT" || { echo '::error::Foundry 1.8.4 is required'; exit 1; }
+          grep -Fq '50af4efe189dc64bad2b75ed6990b835de66c4ae' <<< "$FORGE_OUTPUT" || { echo '::error::Foundry release commit mismatch'; exit 1; }
+          grep -Eq '^[[:space:]]*solc_version[[:space:]]*=[[:space:]]*"0\.8\.24"' foundry.toml || { echo '::error::foundry.toml must pin released solc 0.8.24'; exit 1; }
+          node script/gen-executor-abi.mjs --check
+          bash script/prepare-uniswap-artifacts.sh
+          forge build --force
+          SOLC_BIN="$(find "$HOME/.svm" -type f -name 'solc-0.8.24' -print -quit 2>/dev/null || true)"
+          test -n "$SOLC_BIN" && test -x "$SOLC_BIN" || { echo '::error::released solc 0.8.24 binary missing from Foundry SVM cache'; exit 1; }
+          SOLC_OUTPUT="$("$SOLC_BIN" --version)"
+          printf '%s\n' "$SOLC_OUTPUT"
+          grep -Fq 'Version: 0.8.24+commit.e11b9ed9' <<< "$SOLC_OUTPUT" || { echo '::error::compiler is not released Solidity 0.8.24'; exit 1; }
+          {
+            echo '### Secure-runner toolchain'
+            echo '```text'
+            printf '%s\n' "$FORGE_OUTPUT" "$SOLC_OUTPUT"
+            echo 'OpenZeppelin Contracts: v5.4.0'
+            echo 'forge-std: v1.9.7'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run local mocked Mainnet preflight guard tests
+        env:
+          MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
+        run: forge test --match-path 'test/script/DeployMPGRExecutorDelegatedBaseMainnet.t.sol' -vvv
+
+      - name: Verify committed deployment config against app routes
+        run: npm test -- lib/executor/__tests__/delegated-architecture.test.ts
+
+      - name: Ensure the read-only checker and committed pins were not modified during setup
+        run: git diff --exit-code HEAD -- scripts/delegated-mainnet-preflight.mjs deployments/base-mainnet/delegated-deploy-config.json foundry.toml
+
+      # This is the only step mapped to Mainnet secrets. The checker creates no
+      # wallet client and calls only read-only JSON-RPC methods; it never invokes
+      # forge script, simulates a deployment, or submits a transaction.
+      - name: Read-only Mainnet RPC and deployment-guard preflight
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
+          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
+          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
+        run: node scripts/delegated-mainnet-preflight.mjs
