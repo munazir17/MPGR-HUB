@@ -1,0 +1,398 @@
+name: Deploy MPGRExecutorDelegated (Base Mainnet)
+
+# Manual, one-shot production deployment. This workflow never deploys the legacy
+# MPGRExecutor, never deploys to Sepolia, and has no swap/canary/autonomy step.
+# The committed delegated-deploy-config.json flag remains the second independent
+# gate; this workflow does not edit or override it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_deployment:
+        description: Type DEPLOY_ONE_MPGR_EXECUTOR_DELEGATED to request one deployment attempt
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Share the Base Mainnet lock with the legacy workflow so two production deploy
+# jobs cannot run concurrently. Cancellation is disabled; a queued run must pass
+# the protected environment and every preflight again before it can broadcast.
+concurrency:
+  group: deploy-executor-base-mainnet
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  read-only-preflight:
+    name: Read-only delegated Base Mainnet preflight
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm_deployment == 'DEPLOY_ONE_MPGR_EXECUTOR_DELEGATED' &&
+      github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: base-mainnet
+    env:
+      FOUNDRY_PROFILE: default
+    steps:
+      - name: Checkout reviewed deployment revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install locked JavaScript dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install exact released Foundry toolchain
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.4
+
+      - name: Install pinned Solidity dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+          test "$(git -C .forge-deps/openzeppelin-contracts describe --tags --exact-match HEAD)" = "v5.4.0"
+          test "$(git -C .forge-deps/forge-std describe --tags --exact-match HEAD)" = "v1.9.7"
+
+      - name: Assert exact Foundry and Solidity releases; compile reviewed sources
+        run: |
+          set -euo pipefail
+          FORGE_OUTPUT="$(forge --version)"
+          grep -Fq '1.8.4' <<< "$FORGE_OUTPUT" || { echo '::error::Foundry 1.8.4 is required'; exit 1; }
+          grep -Fq '50af4efe189dc64bad2b75ed6990b835de66c4ae' <<< "$FORGE_OUTPUT" || { echo '::error::Foundry release commit mismatch'; exit 1; }
+          grep -Eq '^[[:space:]]*solc_version[[:space:]]*=[[:space:]]*"0\.8\.24"' foundry.toml || { echo '::error::foundry.toml must pin released solc 0.8.24'; exit 1; }
+          node script/gen-executor-abi.mjs --check
+          bash script/prepare-uniswap-artifacts.sh
+          forge build --force
+          SOLC_BIN="$(find "$HOME/.svm" -type f -name 'solc-0.8.24' -print -quit 2>/dev/null || true)"
+          test -n "$SOLC_BIN" && test -x "$SOLC_BIN" || { echo '::error::released solc 0.8.24 binary missing'; exit 1; }
+          SOLC_OUTPUT="$("$SOLC_BIN" --version)"
+          grep -Fq 'Version: 0.8.24+commit.e11b9ed9' <<< "$SOLC_OUTPUT" || { echo '::error::compiler is not released Solidity 0.8.24'; exit 1; }
+          {
+            echo '### Deployment preflight toolchain'
+            echo '```text'
+            printf '%s\n' "$FORGE_OUTPUT" "$SOLC_OUTPUT"
+            echo 'OpenZeppelin Contracts: v5.4.0'
+            echo 'forge-std: v1.9.7'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # No deployer private key is mapped into this read-only job. Both the
+      # Environment deployment variable and committed config flag must be true;
+      # the current false config deliberately stops this workflow fail-closed.
+      - name: Read-only config, chain, deployer, nonce, and CREATE-address checks
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
+          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
+        run: node scripts/delegated-mainnet-deployment-guard.mjs --phase=preflight
+
+  deploy:
+    name: Deploy exactly one delegated executor
+    needs: read-only-preflight
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm_deployment == 'DEPLOY_ONE_MPGR_EXECUTOR_DELEGATED' &&
+      github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # GitHub Environment protection reviewers must approve this job before it
+    # starts or receives the production secrets/enablement value.
+    environment: base-mainnet
+    env:
+      FOUNDRY_PROFILE: default
+    steps:
+      - name: Checkout the same reviewed deployment revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install locked JavaScript dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install exact released Foundry toolchain
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.4
+
+      - name: Install pinned Solidity dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+          test "$(git -C .forge-deps/openzeppelin-contracts describe --tags --exact-match HEAD)" = "v5.4.0"
+          test "$(git -C .forge-deps/forge-std describe --tags --exact-match HEAD)" = "v1.9.7"
+
+      - name: Assert exact Foundry and Solidity releases; compile reviewed sources
+        run: |
+          set -euo pipefail
+          FORGE_OUTPUT="$(forge --version)"
+          grep -Fq '1.8.4' <<< "$FORGE_OUTPUT" || { echo '::error::Foundry 1.8.4 is required'; exit 1; }
+          grep -Fq '50af4efe189dc64bad2b75ed6990b835de66c4ae' <<< "$FORGE_OUTPUT" || { echo '::error::Foundry release commit mismatch'; exit 1; }
+          grep -Eq '^[[:space:]]*solc_version[[:space:]]*=[[:space:]]*"0\.8\.24"' foundry.toml || { echo '::error::foundry.toml must pin released solc 0.8.24'; exit 1; }
+          node script/gen-executor-abi.mjs --check
+          bash script/prepare-uniswap-artifacts.sh
+          forge build --force
+          SOLC_BIN="$(find "$HOME/.svm" -type f -name 'solc-0.8.24' -print -quit 2>/dev/null || true)"
+          test -n "$SOLC_BIN" && test -x "$SOLC_BIN" || { echo '::error::released solc 0.8.24 binary missing'; exit 1; }
+          SOLC_OUTPUT="$("$SOLC_BIN" --version)"
+          grep -Fq 'Version: 0.8.24+commit.e11b9ed9' <<< "$SOLC_OUTPUT" || { echo '::error::compiler is not released Solidity 0.8.24'; exit 1; }
+
+      # Production-gate dry run: this invokes the existing hardened run() entrypoint
+      # without broadcast mode. Forge simulates its one CREATE locally and the script
+      # independently checks chain, both gates, nonce, roles, infra and constructor posture.
+      - name: Simulate the production entrypoint without broadcast
+        env:
+          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
+          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/delegated-mainnet-production-dry-run.log"
+          if ! forge script script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol --rpc-url "$BASE_MAINNET_RPC_URL" --sig 'run()' -vv >"$LOG" 2>&1; then
+            echo '::error::Hardened production dry run failed; raw output suppressed.'
+            exit 1
+          fi
+          grep -E 'preflight:|deployer \(dedicated\):|predicted executor:|postflight:|No deployment artifact' "$LOG" | head -20 || true
+
+      # This is the last step before the sole broadcast command. It derives only
+      # the public address from the Environment key, re-reads latest/pending state,
+      # and refuses unless every required pin and the exact expected CREATE target match.
+      - name: Mandatory immediate pre-broadcast verification
+        id: pre_broadcast
+        env:
+          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
+          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
+        run: node scripts/delegated-mainnet-deployment-guard.mjs --phase=prebroadcast
+
+      # Exactly one Forge invocation, no shell retry loop and no automatic rerun.
+      # A nonzero/timeout result is reconciled read-only below; never repeat this command.
+      - name: Broadcast exactly one MPGRExecutorDelegated CREATE transaction
+        id: broadcast
+        continue-on-error: true
+        env:
+          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER }}
+          MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/delegated-mainnet-broadcast.log"
+          set +e
+          timeout --signal=TERM --kill-after=30s 40m forge script \
+            script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol \
+            --rpc-url "$BASE_MAINNET_RPC_URL" --sig 'run()' --broadcast --slow -vv >"$LOG" 2>&1
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::Forge broadcast exited with status ${STATUS}; no retry will be attempted. Read-only reconciliation follows."
+            exit "$STATUS"
+          fi
+          echo 'Forge broadcast command returned success; continuing to read-only receipt and posture verification.'
+
+      # Check the one recorded transaction receipt read-only even when Forge exits nonzero.
+      # An RPC failure is not interpreted as a failed deployment; it triggers reconciliation.
+      - name: Confirm the single deployment receipt (read-only)
+        id: receipt_confirmation
+        if: ${{ always() && steps.pre_broadcast.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          EXPECTED_EXECUTOR: ${{ steps.pre_broadcast.outputs.predicted_executor }}
+        run: |
+          set -euo pipefail
+          BROADCAST='broadcast/DeployMPGRExecutorDelegatedBaseMainnet.s.sol/8453/run-latest.json'
+          RECEIPT="$RUNNER_TEMP/delegated-mainnet-receipt.json"
+          test -f "$BROADCAST" || { echo '::error::Broadcast record missing; read-only reconciliation follows.'; exit 1; }
+          jq -e --arg expected "${EXPECTED_EXECUTOR,,}" '
+            (.transactions | length) == 1 and
+            .transactions[0].transactionType == "CREATE" and
+            .transactions[0].contractName == "MPGRExecutorDelegated" and
+            (.transactions[0].contractAddress | ascii_downcase) == $expected and
+            (.transactions[0].hash | type == "string" and test("^0x[0-9a-fA-F]{64}$"))
+          ' "$BROADCAST" >/dev/null || { echo '::error::Broadcast record is not the expected single delegated CREATE; read-only reconciliation follows.'; exit 1; }
+          TX_HASH="$(jq -r '.transactions[0].hash' "$BROADCAST")"
+          if ! cast receipt "$TX_HASH" --json --rpc-url "$BASE_MAINNET_RPC_URL" >"$RECEIPT" 2>/dev/null; then
+            echo '::error::Receipt lookup was inconclusive; read-only reconciliation follows. Do not retry.'
+            exit 1
+          fi
+          jq -e --arg expected "${EXPECTED_EXECUTOR,,}" '
+            (.status == "0x1" or .status == "1") and
+            (.contractAddress | ascii_downcase) == $expected and
+            (.blockNumber | type == "string" and test("^0x[0-9a-fA-F]+$"))
+          ' "$RECEIPT" >/dev/null || { echo '::error::Receipt was not successful for the predicted address; read-only reconciliation follows.'; exit 1; }
+          echo 'receipt_confirmed=true' >> "$GITHUB_OUTPUT"
+          echo 'Exactly one delegated CREATE receipt confirmed read-only.'
+
+      # If the single broadcast command fails or receipt lookup is inconclusive,
+      # inspect its local record and live chain state. This step never signs or retries.
+      - name: Reconcile an uncertain broadcast without retry
+        id: reconcile
+        if: ${{ always() && steps.pre_broadcast.outcome == 'success' && (steps.broadcast.outcome == 'failure' || steps.receipt_confirmation.outcome == 'failure') }}
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+        run: node scripts/delegated-mainnet-deployment-guard.mjs --phase=reconcile
+
+      # The existing recorder is read-only on-chain. It verifies the mined receipt,
+      # runtime code, constructor posture, all 15 tokens, both routers, and denylist.
+      - name: Verify the mined deployment and write the concise run report
+        if: ${{ always() && steps.pre_broadcast.outcome == 'success' && ((steps.broadcast.outcome == 'success' && steps.receipt_confirmation.outcome == 'success') || steps.reconcile.outputs.receipt_confirmed == 'true') }}
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          MPGR_MAINNET_DELEGATED_EXECUTOR: ${{ steps.pre_broadcast.outputs.predicted_executor }}
+          MPGR_MAINNET_DELEGATED_DEPLOYER_ADDRESS: ${{ steps.pre_broadcast.outputs.deployer_address }}
+          EXPECTED_EXECUTOR: ${{ steps.pre_broadcast.outputs.predicted_executor }}
+        run: |
+          set -euo pipefail
+          BROADCAST='broadcast/DeployMPGRExecutorDelegatedBaseMainnet.s.sol/8453/run-latest.json'
+          ARTIFACT='deployments/base-mainnet/mpgr-executor-delegated.json'
+          test -f "$BROADCAST" || { echo '::error::Forge broadcast record missing; do not retry.'; exit 1; }
+          jq -e --arg expected "${EXPECTED_EXECUTOR,,}" '
+            (.transactions | length) == 1 and
+            .transactions[0].transactionType == "CREATE" and
+            .transactions[0].contractName == "MPGRExecutorDelegated" and
+            (.transactions[0].contractAddress | ascii_downcase) == $expected and
+            (.transactions[0].hash | type == "string" and test("^0x[0-9a-fA-F]{64}$"))
+          ' "$BROADCAST" >/dev/null || { echo '::error::Expected exactly one delegated CREATE transaction; read-only verification stopped.'; exit 1; }
+          BROADCAST_TX_HASH="$(jq -r '.transactions[0].hash' "$BROADCAST")"
+          RECEIPT="$RUNNER_TEMP/delegated-mainnet-receipt.json"
+          if ! jq -e --arg expected "${EXPECTED_EXECUTOR,,}" '
+            (.status == "0x1" or .status == "1") and
+            (.contractAddress | ascii_downcase) == $expected and
+            (.blockNumber | type == "string" and test("^0x[0-9a-fA-F]+$"))
+          ' "$RECEIPT" >/dev/null 2>&1; then
+            if ! cast receipt "$BROADCAST_TX_HASH" --json --rpc-url "$BASE_MAINNET_RPC_URL" >"$RECEIPT" 2>/dev/null; then
+              echo '::error::Read-only receipt lookup remains inconclusive after reconciliation. Do not retry deployment.'
+              exit 1
+            fi
+          fi
+          jq -e --arg expected "${EXPECTED_EXECUTOR,,}" '
+            (.status == "0x1" or .status == "1") and
+            (.contractAddress | ascii_downcase) == $expected and
+            (.blockNumber | type == "string" and test("^0x[0-9a-fA-F]+$"))
+          ' "$RECEIPT" >/dev/null || { echo '::error::Receipt status/address mismatch; do not retry.'; exit 1; }
+          RECEIPT_BLOCK_HEX="$(jq -r '.blockNumber' "$RECEIPT")"
+          RECEIPT_BLOCK="$(node -e 'console.log(BigInt(process.argv[1]).toString())' "$RECEIPT_BLOCK_HEX")"
+          forge script script/RecordMPGRExecutorDelegatedBaseMainnet.s.sol --rpc-url "$BASE_MAINNET_RPC_URL" --sig 'run()' -vv >"$RUNNER_TEMP/delegated-mainnet-postflight.log" 2>&1 || {
+            echo '::error::On-chain post-deployment posture verification failed; no follow-on action will run.'
+            exit 1
+          }
+          test -f "$ARTIFACT" || { echo '::error::Verified deployment artifact was not produced.'; exit 1; }
+          CONFIG='deployments/base-mainnet/delegated-deploy-config.json'
+          TX_HASH="$(jq -r '.deployTx' "$ARTIFACT")"
+          BLOCK="$(jq -r '.deployedAtBlock' "$ARTIFACT")"
+          ACTUAL="$(jq -r '.executor' "$ARTIFACT")"
+          OWNER="$(jq -r '.owner' "$ARTIFACT")"
+          FEE_RECIPIENT="$(jq -r '.feeRecipient' "$ARTIFACT")"
+          FEE_BPS="$(jq -r '.feeBps' "$ARTIFACT")"
+          WETH="$(jq -r '.weth' "$ARTIFACT")"
+          PERMIT2="$(jq -r '.permit2' "$ARTIFACT")"
+          CODE_HASH="$(jq -r '.runtimeCodeHash' "$ARTIFACT")"
+          BYTECODE="$(cast code "$ACTUAL" --rpc-url "$BASE_MAINNET_RPC_URL" 2>/dev/null)"
+          [[ "$BYTECODE" =~ ^0x[0-9a-fA-F]+$ ]] || { echo '::error::Runtime bytecode missing or malformed.'; exit 1; }
+          BYTECODE_BYTES=$(( (${#BYTECODE} - 2) / 2 ))
+          BYTECODE_HASH="$(node --input-type=module -e 'import { keccak256 } from "viem"; console.log(keccak256(process.argv[1]));' "$BYTECODE")"
+          PREDICTED="${EXPECTED_EXECUTOR}"
+          [ "${ACTUAL,,}" = "${PREDICTED,,}" ] || { echo '::error::Actual executor differs from guarded prediction.'; exit 1; }
+          [ "${TX_HASH,,}" = "${BROADCAST_TX_HASH,,}" ] || { echo '::error::Recorder tx hash differs from the sole broadcast record.'; exit 1; }
+          [ "$BLOCK" = "$RECEIPT_BLOCK" ] || { echo '::error::Recorder block differs from the mined receipt.'; exit 1; }
+          [ "${BYTECODE_HASH,,}" = "${CODE_HASH,,}" ] || { echo '::error::Runtime bytecode hash differs from the recorder.'; exit 1; }
+          CONFIG_TOKENS="$(jq -c '[.tokens[].address]' "$CONFIG")"
+          CONFIG_SYMBOLS="$(jq -c '[.tokens[].symbol]' "$CONFIG")"
+          CONFIG_ROUTERS="$(jq -c '[.routers[].router]' "$CONFIG")"
+          CONFIG_ROUTER_KINDS="$(jq -c '[.routers[].kind]' "$CONFIG")"
+          CONFIG_OWNER="$(jq -r '.owner' "$CONFIG")"
+          CONFIG_FEE_RECIPIENT="$(jq -r '.feeRecipient' "$CONFIG")"
+          jq -e \
+            --arg executor "${PREDICTED,,}" \
+            --arg deployer "${MPGR_MAINNET_DELEGATED_DEPLOYER_ADDRESS,,}" \
+            --arg tx "${BROADCAST_TX_HASH,,}" \
+            --arg block "$RECEIPT_BLOCK" \
+            --arg owner "${CONFIG_OWNER,,}" \
+            --arg feeRecipient "${CONFIG_FEE_RECIPIENT,,}" \
+            --arg weth "$(jq -r '.weth' "$CONFIG" | tr '[:upper:]' '[:lower:]')" \
+            --arg permit2 "$(jq -r '.permit2' "$CONFIG" | tr '[:upper:]' '[:lower:]')" \
+            --arg codeHash "${BYTECODE_HASH,,}" \
+            --argjson tokens "$CONFIG_TOKENS" \
+            --argjson symbols "$CONFIG_SYMBOLS" \
+            --argjson routers "$CONFIG_ROUTERS" \
+            --argjson kinds "$CONFIG_ROUTER_KINDS" '
+              .contract == "MPGRExecutorDelegated" and
+              .chainId == 8453 and
+              (.executor | ascii_downcase) == $executor and
+              (.deployer | ascii_downcase) == $deployer and
+              (.deployTx | ascii_downcase) == $tx and
+              (.deployedAtBlock | tostring) == $block and
+              .deploymentReceiptSuccess == true and
+              (.runtimeCodeHash | ascii_downcase) == $codeHash and
+              (.owner | ascii_downcase) == $owner and
+              (.feeRecipient | ascii_downcase) == $feeRecipient and
+              .feeBps == 25 and .maxFeeBps == 100 and
+              (.weth | ascii_downcase) == $weth and
+              (.permit2 | ascii_downcase) == $permit2 and
+              .paused == false and
+              .proxy == "none" and .implementation == "none" and .upgradeAuthority == "none" and
+              .moduleRegistrySchemaVersion == 1 and
+              .typedModuleRegistryStatus == "EMPTY_AT_DEPLOYMENT" and
+              .registeredTypedModules == [] and
+              ([.allowedTokenAddresses[] | ascii_downcase] == [$tokens[] | ascii_downcase]) and
+              .allowedTokenSymbols == $symbols and
+              ([.routerAllowlist[] | ascii_downcase] == [$routers[] | ascii_downcase]) and
+              .routerKinds == $kinds
+            ' "$ARTIFACT" >/dev/null || { echo '::error::Recorded runtime posture does not match the reviewed config/pins.'; exit 1; }
+          {
+            echo '## MPGRExecutorDelegated Base Mainnet deployment report'
+            echo
+            echo '- Chain: Base Mainnet (8453)'
+            echo "- Transaction: \`$TX_HASH\` (receipt: SUCCESS)"
+            echo "- Block: \`$BLOCK\`"
+            echo "- Predicted address: \`$PREDICTED\`"
+            echo "- Actual address: \`$ACTUAL\`"
+            echo "- Runtime bytecode: present, ${BYTECODE_BYTES} bytes; Keccak hash \`$BYTECODE_HASH\`"
+            echo "- Owner: \`$OWNER\`; fee recipient: \`$FEE_RECIPIENT\`; fee: ${FEE_BPS} bps (maximum 100 bps)"
+            echo "- WETH: \`$WETH\`; Permit2: \`$PERMIT2\`; paused: false"
+            echo '- Posture: non-proxy; owner/policy verified; no pending owner; empty typed-module registry; zero executor ETH/token balances; denylist excluded'
+            echo '- Broadcast transactions: exactly one CREATE for MPGRExecutorDelegated'
+            echo '- Swaps, canary trades, approvals, and autonomous actions: none'
+            echo
+            echo '<details><summary>Verified token allowlist (15)</summary>'
+            echo
+            jq -r '.allowedTokenAddresses as $addresses | .allowedTokenSymbols as $symbols | range(0; ($addresses | length)) | "- \($symbols[.]) — `\($addresses[.])`"' "$ARTIFACT"
+            echo
+            echo '</details>'
+            echo
+            echo '<details><summary>Verified router configurations (2)</summary>'
+            echo
+            jq -r '.routers[] | if .kindName == "AERODROME_SLIPSTREAM" then "- AERODROME_SLIPSTREAM: router `\(.router)`, factory `\(.factory)`, quoter `\(.quoterV2)`, tick spacing \(.b20TickSpacing)" else "- UNISWAP_V3_ROUTER02: router `\(.router)`, factory `\(.factory)`, quoter `\(.quoterV2)`, USDC/WETH pool `\(.usdcWethPool)` (fee \(.usdcWethPoolFee))" end' "$CONFIG"
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'Receipt, runtime bytecode and delegated-executor posture verified. No swap, canary, approval, or autonomous action was performed.'
