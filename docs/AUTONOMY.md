@@ -72,9 +72,11 @@ executing are limited to cooldown / trade cap / maxTrades.
 Audit events flow over the EXISTING `agentEventBus` (additive
 `autonomy_audit` type); jobs through the EXISTING `agentTaskQueue`; goals,
 policies, day ledgers and idempotency in the EXISTING Upstash Redis
-(`lib/api/redis.ts`); scheduling joins the EXISTING Vercel Cron +
-`CRON_SECRET` pattern; execution goes through the EXISTING MCP server. No
-new event bus, queue, database, wallet, or scheduler was introduced.
+(`lib/api/redis.ts`); unattended scheduling requires the authenticated tick
+route to be called by an operator-provided external scheduler/VPS (Vercel Cron
+is intentionally not registered for the per-minute cadence on Hobby). Execution
+goes through the EXISTING MCP server. No new event bus, queue, database,
+wallet, or in-app scheduler was introduced.
 
 ### 8. MCP tools are the only execution interface
 The runtime orchestrates `mpgr_get_quote` → `mpgr_prepare_trade` →
@@ -200,18 +202,23 @@ v1 ships WATCH-ONLY execution: goals evaluate, notify (audit + goal
 adapter, because no delegated-signing adapter exists (by design —
 enabling autonomous broadcast requires a future, separately-reviewed
 adapter bound to the same policy engine). Suggested next steps, all
-behind the same flag: wire the tick to a Vercel cron schedule when
-enabling, add a notification channel (existing tape/notification seam),
-and consider per-goal slippage overrides within policy bounds.
+behind the same flag: provision an external scheduler/VPS to call
+`GET /api/agent/autonomy/tick` every minute with
+`Authorization: Bearer <CRON_SECRET>` when enabling (Vercel Hobby does not
+support that cadence), add a notification channel (existing tape/notification
+seam), and consider per-goal slippage overrides within policy bounds.
 
 ---
 
 ## Operator runbook (when / if enabling)
 
 1. Set `MPGR_AUTONOMOUS_AGENT_ENABLED=true` in the deployment env.
-2. (Recommended) schedule `POST /api/agent/autonomy/tick` with the
-   existing `CRON_SECRET` header (Vercel Cron, like settlement/reconcile).
-   In-session users also get a bounded 60 s client heartbeat.
+2. For unattended evaluation, provision an external scheduler/VPS to call
+   `GET /api/agent/autonomy/tick` once per minute with
+   `Authorization: Bearer <CRON_SECRET>`. Do not put the secret in the URL or
+   logs. The route keeps its mandatory, timing-safe cron-secret check; Vercel
+   does not register this minute-cadence job on the Hobby plan. In-session users
+   also get a bounded 60 s client heartbeat.
 3. Users authorize per pair via the Autonomous Goals panel: explicit
    "Authorize & activate goal" creates the policy (limits + expiry) then
    binds the goal. Revoke or pause at any time; the global kill switch is

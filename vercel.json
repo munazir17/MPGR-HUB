@@ -8,10 +8,6 @@
     {
       "path": "/api/games/mpgr-run/settlement/reconcile",
       "schedule": "15 6 * * *"
-    },
-    {
-      "path": "/api/agent/autonomy/tick",
-      "schedule": "* * * * *"
     }
   ]
 }

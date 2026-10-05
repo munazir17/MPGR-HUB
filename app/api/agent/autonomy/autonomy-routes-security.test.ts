@@ -49,7 +49,7 @@ import { GET as GOALS_GET, POST as GOALS_POST } from "./goals/route";
 import { GET as GOAL_GET, PATCH as GOAL_PATCH, DELETE as GOAL_DELETE } from "./goals/[id]/route";
 import { GET as POLICY_GET, POST as POLICY_POST, DELETE as POLICY_DELETE } from "./policy/route";
 import { GET as CONFIG_GET } from "./config/route";
-import { POST as TICK_POST } from "./tick/route";
+import { GET as TICK_GET, POST as TICK_POST } from "./tick/route";
 import { GET as TOKENS_GET } from "./tokens/route";
 import type { AutonomySystem } from "@/lib/autonomy/index";
 
@@ -137,6 +137,28 @@ describe("hardening §16: session enforcement across every autonomy route", () =
     for (const [label, p] of probes) {
       const res = await p;
       expect(res.status, label).toBe(401);
+    }
+  });
+
+  it("tick GET requires the CRON_SECRET bearer even when a wallet session exists", async () => {
+    vi.stubEnv("CRON_SECRET", "cron-secret-value");
+    currentWallet = USER; // GET must not fall back to a wallet-scoped session.
+    const tick = vi.spyOn(systemUnderTest.scheduler, "tick");
+    try {
+      const missing = await TICK_GET(new Request("http://x/api/tick"));
+      expect(missing.status).toBe(401);
+      const missingBody = await missing.json() as { code: string };
+      expect(missingBody.code).toBe("CRON_AUTH_REQUIRED");
+
+      const wrong = await TICK_GET(new Request("http://x/api/tick", { headers: { authorization: "Bearer wrong" } }));
+      expect(wrong.status).toBe(401);
+      expect(tick).not.toHaveBeenCalled();
+
+      const authorized = await TICK_GET(new Request("http://x/api/tick", { headers: { authorization: "Bearer cron-secret-value" } }));
+      expect(authorized.status).toBe(200);
+      expect(tick).toHaveBeenCalledTimes(1);
+    } finally {
+      tick.mockRestore();
     }
   });
 

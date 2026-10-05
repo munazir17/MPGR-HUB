@@ -16,14 +16,16 @@ Evidence: `lib/autonomy/__tests__/activation-flow-audit.test.ts` (19 tests) and
 green. Full suite: **243 files / 2513 tests passed, 0 failed** (baseline 2484 → +29). `tsc --noEmit` clean.
 `eslint` 0 errors.
 
-> **PHASE 2 UPDATE (same branch, later commits): MC-1, MC-2, MC-3 and MC-4 are now
-> IMPLEMENTED.** §1–§8 below are the original audit and are preserved verbatim as the
-> record of what was found and why. [§9](#9-remediation-what-was-built-on-top-of-this-audit)
-> documents the bounded Base **mainnet** autonomous execution path that was built on top of
-> these findings, its security model, and its tests. Where §4 says "none applied", read
-> "applied in §9". No finding below was weakened to make the new path pass: the audit tests
-> that pinned the *gaps* were updated in place to pin the *remediated* behaviour, and every
-> safety property they asserted still holds.
+> **PHASE 2 UPDATE (same branch, later commits): MC-1, MC-2 and MC-3 are implemented;
+> MC-4's authenticated tick endpoint is ready, but unattended scheduling is an operator
+> prerequisite.** Vercel's per-minute cron registration is intentionally omitted on Hobby;
+> an external scheduler/VPS must call the endpoint every minute. §1–§8 below are the original
+> audit and are preserved as the record of what was found and why. [§9](#9-remediation-what-was-built-on-top-of-this-audit)
+> documents the bounded Base **mainnet** autonomous execution path, its security model,
+> tests, and the external-scheduler handoff. Where §4 says "none applied", read "applied in
+> §9". No finding below was weakened to make the new path pass: the audit tests that pinned
+> the *gaps* were updated in place to pin the *remediated* behaviour, and every safety
+> property they asserted still holds.
 
 ---
 
@@ -36,11 +38,12 @@ green. Full suite: **243 files / 2513 tests passed, 0 failed** (baseline 2484 �
 | `No transaction hash` | Nothing was submitted. `pendingExecution` is `null`. | `publicGoal()` |
 | `Delegated Execution · Base Sepolia: NOT CONFIGURED` | `autonomyStatus().executionAvailable === false`, i.e. the resolved adapter's `canDelegate` is false. **This is a truthful fail-closed signal, not a UI bug.** | `AgentAutonomyPanel.tsx:253`, `lib/autonomy/index.ts` |
 
-One nuance worth knowing: `ACTIVE` is the *pre-first-evaluation* state. There is **no cron
-scheduled for the tick endpoint** (`vercel.json` schedules only the two `mpgr-run`
-settlement jobs), so evaluation happens only via the 60 s client heartbeat while the tab is
-visible, or a manual/cron `POST /api/agent/autonomy/tick`. After the first tick the goal
-will read `WAITING` with:
+One nuance worth knowing: `ACTIVE` is the *pre-first-evaluation* state. There is **no
+Vercel cron scheduled for the tick endpoint** (`vercel.json` retains only the two `mpgr-run`
+settlement jobs). Evaluation happens via the 60 s client heartbeat while the tab is visible,
+a manual session `POST /api/agent/autonomy/tick`, or—when unattended evaluation is required—
+an operator-provided external scheduler/VPS issuing the authenticated `GET` every minute
+(see §9.5). After the first tick the goal will read `WAITING` with:
 
 > Last check …: **Authorization missing** — No valid autonomous authorization
 > (NO_DELEGATION_MECHANISM). Review and authorize this goal to enable execution — until
@@ -216,7 +219,8 @@ Full trace for a goal activated through the UI today (Base mainnet pair, default
 ```
 TRIGGER
   A tick fires — client heartbeat (60 s, tab visible, goal non-terminal) or
-  POST /api/agent/autonomy/tick (SIWE session, or Vercel Cron + CRON_SECRET).
+  POST /api/agent/autonomy/tick (SIWE session), or GET via an external scheduler/VPS with
+  the CRON_SECRET bearer (see §9.5; no per-minute Vercel cron is registered).
   NOTE: vercel.json does NOT schedule this endpoint — see MC-4.
   Scheduler: flag check -> due-goal selection -> per-goal lease (SET-NX, 120 s)
   -> bounded fan-out (<=20/tick, <=5/wallet, <=3 concurrent).
@@ -393,8 +397,9 @@ name the missing piece.
    entirely until it is, so users are not shown a control that can never render.
 4. Decide MC-3 before any delegated go-live: add a posture warm-up at bootstrap or in the
    authorization stage, and re-examine the 60 s TTL against the tick interval.
-5. Decide MC-4: schedule `POST /api/agent/autonomy/tick` with `CRON_SECRET` if goals should
-   evaluate while the user is away.
+5. MC-4 for unattended operation: provision an external scheduler/VPS to call
+   `GET /api/agent/autonomy/tick` once per minute with `Authorization: Bearer
+   <CRON_SECRET>`; Vercel Hobby cannot host this cadence (see §9.5).
 6. Keep MC-2 closed pending the `docs/PHASE6-MAINNET-AUDIT.md` §12 operator gates and
    `docs/MAINNET-CANARY-RUNBOOK.md`.
 
@@ -561,13 +566,17 @@ The chicken-and-egg is broken in two places, and **neither makes the adapter opt
    a park. It is single-flight, TTL-cached (60 s), never throws, and a failed bootstrap
    leaves the adapter refused.
 
-### 9.5 MC-4 — production scheduler (fixed)
+### 9.5 MC-4 — external scheduler handoff (Hobby-compatible)
 
-`vercel.json` now schedules `/api/agent/autonomy/tick` every minute, matching the runtime's
-60 s evaluation cadence and its 120 s per-goal lease. `GET` was added because **Vercel Cron
-sends GET, not POST** (the same convention as the settlement routes); on GET the
-`CRON_SECRET` bearer is **mandatory with no session fallback**, so an unauthenticated browser
-GET can never trigger an all-wallet pass. POST keeps its original dual behaviour.
+`vercel.json` deliberately does **not** register `/api/agent/autonomy/tick`: Vercel Hobby
+supports only daily cron jobs, while MC-4 requires the existing 60 s evaluation cadence.
+Do not replace the minute cadence with an hourly/daily Vercel schedule. To evaluate while a
+user is away, an operator-provided external scheduler/VPS must call
+`GET /api/agent/autonomy/tick` once per minute with
+`Authorization: Bearer <CRON_SECRET>`. Keep the secret out of URLs and logs. The GET route
+requires the timing-safe bearer check and has no session fallback; POST keeps its original
+dual behaviour. The endpoint is ready, but provisioning and monitoring the external
+scheduler is a separate operational prerequisite.
 
 Execution still cannot run while autonomous mode is disabled: the route 404s on the feature
 flag before any evaluation, and the runtime parks without a policy *and* a valid user-signed
@@ -690,7 +699,9 @@ half-executable.
    only — it never needs to hold user funds, because Permit2 pulls from the user.
 4. Set `MPGR_AUTONOMOUS_EXECUTION_ADAPTER=delegated-permit2-mainnet`. The configured id must
    match the installed adapter or startup refuses.
-5. Set `CRON_SECRET` so the `/api/agent/autonomy/tick` cron can authenticate (§9.5).
+5. Provision an external scheduler/VPS to call `GET /api/agent/autonomy/tick` once per
+   minute with `Authorization: Bearer <CRON_SECRET>`; see §9.5. Vercel Hobby does not
+   register this per-minute cron.
 6. Leave `MPGR_AUTONOMOUS_AGENT_ENABLED=true` and `MPGR_AUTONOMOUS_EMERGENCY_DISABLE` unset;
    the emergency stop remains the immediate kill switch.
 

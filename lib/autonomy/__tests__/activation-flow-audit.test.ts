@@ -741,4 +741,20 @@ describe("B7 — the registry cannot resolve permissively by accident", () => {
       BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT.tokens.some((t) => t.address.toLowerCase() === MAINNET_USDC.toLowerCase()),
     ).toBe(false);
   });
+
+  it("leaves the per-minute autonomy tick to an external scheduler, not Vercel Cron", () => {
+    const vercel = JSON.parse(readFileSync(join(process.cwd(), "vercel.json"), "utf8")) as {
+      crons: Array<{ path: string; schedule: string }>;
+    };
+    expect(vercel.crons).toEqual([
+      { path: "/api/games/mpgr-run/settlement", schedule: "10 0 * * 1" },
+      { path: "/api/games/mpgr-run/settlement/reconcile", schedule: "15 6 * * *" },
+    ]);
+
+    const operatorGuide = readFileSync(join(process.cwd(), "docs/AUTONOMY.md"), "utf8");
+    expect(operatorGuide).toContain("external scheduler/VPS");
+    expect(operatorGuide).toContain("GET /api/agent/autonomy/tick");
+    expect(operatorGuide).toContain("once per minute");
+    expect(operatorGuide).toContain("Authorization: Bearer <CRON_SECRET>");
+  });
 });
