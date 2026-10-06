@@ -237,6 +237,8 @@ export function predictedExecutorAddress(deployerAddress, nonce = 0n) {
   return getCreateAddress({ from: deployerAddress, nonce });
 }
 
+export const PUBLIC_BASE_MAINNET_FALLBACK_RPC = "https://base-rpc.publicnode.com";
+
 function makeBaseChain(rpcUrl) {
   let parsed;
   try {
@@ -254,9 +256,50 @@ function makeBaseChain(rpcUrl) {
   });
 }
 
-function makeClient(rpcUrl) {
+export function makeClient(rpcUrl) {
   const chain = makeBaseChain(rpcUrl);
   return createPublicClient({ chain, transport: http(rpcUrl, { retryCount: 1, timeout: 20_000 }) });
+}
+
+export function makeFallbackClient() {
+  const configuredFallback = process.env.BASE_MAINNET_FALLBACK_RPC_URL?.trim();
+  const fallbackUrl = configuredFallback || PUBLIC_BASE_MAINNET_FALLBACK_RPC;
+  try {
+    return makeClient(fallbackUrl);
+  } catch {
+    return null;
+  }
+}
+
+export async function readWithRetryAndFallback(fn, fallbackFn, opts = {}) {
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const baseDelayMs = opts.baseDelayMs ?? 150;
+  const maxDelayMs = opts.maxDelayMs ?? 1000;
+  const sleepFn = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+
+  let lastError;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxAttempts - 1) {
+        const exp = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
+        const delay = Math.floor(exp * (0.8 + Math.random() * 0.4));
+        await sleepFn(delay);
+      }
+    }
+  }
+
+  if (typeof fallbackFn === "function") {
+    try {
+      return await fallbackFn();
+    } catch {
+      // Fallback failed as well; fail closed with the original/last error
+    }
+  }
+
+  throw lastError;
 }
 
 function writeOutput(name, value) {
@@ -348,8 +391,20 @@ async function runLiveGuards(phase, config, deployerAddress) {
   );
   check(!sameAddress(deployerAddress, EXPECTED_EXECUTOR), "deployer_not_predicted_executor");
 
+  let fallbackClient = makeFallbackClient();
+  const readContractCall = (args) =>
+    readWithRetryAndFallback(
+      () => client.readContract(args),
+      fallbackClient ? () => fallbackClient.readContract(args) : undefined,
+    );
+  const getBytecodeCall = (args) =>
+    readWithRetryAndFallback(
+      () => client.getBytecode(args),
+      fallbackClient ? () => fallbackClient.getBytecode(args) : undefined,
+    );
+
   try {
-    const code = await client.getBytecode({ address: predicted });
+    const code = await getBytecodeCall({ address: predicted });
     check(code === undefined || code === "0x", "predicted_executor_empty_code", `${code === undefined || code === "0x" ? "empty" : "nonempty"}`);
   } catch {
     check(false, "predicted_executor_empty_code", "read-only RPC failed; endpoint details hidden");
@@ -380,7 +435,7 @@ async function runLiveGuards(phase, config, deployerAddress) {
   ];
   for (const [name, address] of infrastructure) {
     try {
-      const code = await client.getBytecode({ address });
+      const code = await getBytecodeCall({ address });
       check(code !== undefined && code !== "0x", `code_present_${name}`);
     } catch {
       check(false, `code_present_${name}`, "read-only RPC failed; endpoint details hidden");
@@ -390,19 +445,19 @@ async function runLiveGuards(phase, config, deployerAddress) {
   const slipstream = EXPECTED_ROUTERS[0];
   const uniswap = EXPECTED_ROUTERS[1];
   try {
-    const factory = await client.readContract({ address: slipstream.router, abi: SLIPSTREAM_ROUTER_ABI, functionName: "factory" });
+    const factory = await readContractCall({ address: slipstream.router, abi: SLIPSTREAM_ROUTER_ABI, functionName: "factory" });
     check(sameAddress(factory, slipstream.factory), "slipstream_factory_matches_config");
   } catch {
     check(false, "slipstream_factory_matches_config", "read-only eth_call failed; details hidden");
   }
   try {
-    const weth = await client.readContract({ address: slipstream.router, abi: SLIPSTREAM_ROUTER_ABI, functionName: "WETH9" });
+    const weth = await readContractCall({ address: slipstream.router, abi: SLIPSTREAM_ROUTER_ABI, functionName: "WETH9" });
     check(sameAddress(weth, config.weth), "slipstream_weth_matches_config");
   } catch {
     check(false, "slipstream_weth_matches_config", "read-only eth_call failed; details hidden");
   }
   try {
-    const weth = await client.readContract({ address: uniswap.router, abi: UNISWAP_ROUTER_ABI, functionName: "WETH9" });
+    const weth = await readContractCall({ address: uniswap.router, abi: UNISWAP_ROUTER_ABI, functionName: "WETH9" });
     check(sameAddress(weth, config.weth), "uniswap_weth_matches_config");
   } catch {
     check(false, "uniswap_weth_matches_config", "read-only eth_call failed; details hidden");
@@ -410,25 +465,25 @@ async function runLiveGuards(phase, config, deployerAddress) {
 
   for (const [address, symbol, decimals] of EXPECTED_TOKENS) {
     try {
-      const actualDecimals = await client.readContract({ address, abi: ERC20_ABI, functionName: "decimals" });
+      const actualDecimals = await readContractCall({ address, abi: ERC20_ABI, functionName: "decimals" });
       check(actualDecimals === decimals, `erc20_${symbol}_decimals_matches_pin`);
     } catch {
       check(false, `erc20_${symbol}_decimals_matches_pin`, "read-only eth_call failed; details hidden");
     }
     try {
-      await client.readContract({ address, abi: ERC20_ABI, functionName: "totalSupply" });
+      await readContractCall({ address, abi: ERC20_ABI, functionName: "totalSupply" });
       check(true, `erc20_${symbol}_total_supply_readable`);
     } catch {
       check(false, `erc20_${symbol}_total_supply_readable`, "read-only eth_call failed; details hidden");
     }
     try {
-      await client.readContract({ address, abi: ERC20_ABI, functionName: "balanceOf", args: [PROBE_HOLDER] });
+      await readContractCall({ address, abi: ERC20_ABI, functionName: "balanceOf", args: [PROBE_HOLDER] });
       check(true, `erc20_${symbol}_balance_probe_readable`);
     } catch {
       check(false, `erc20_${symbol}_balance_probe_readable`, "read-only eth_call failed; details hidden");
     }
     try {
-      const balance = await client.readContract({ address, abi: ERC20_ABI, functionName: "balanceOf", args: [predicted] });
+      const balance = await readContractCall({ address, abi: ERC20_ABI, functionName: "balanceOf", args: [predicted] });
       check(balance === 0n, `erc20_${symbol}_predicted_balance_zero`);
     } catch {
       check(false, `erc20_${symbol}_predicted_balance_zero`, "read-only eth_call failed; details hidden");

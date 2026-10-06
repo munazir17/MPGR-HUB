@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   EXPECTED_DEPLOYER,
   EXPECTED_EXECUTOR,
@@ -166,4 +166,58 @@ describe("protected delegated Base Mainnet deployment workflow", () => {
     expect(disabledEnvironment.ok).toBe(false);
     expect(disabledEnvironment.checks.find((item) => item.name === "environment_deploy_flag")?.ok).toBe(false);
   });
+
+  it("recovers from transient read-only RPC failures and preserves fail-closed behavior on persistent failures", async () => {
+    const { readWithRetryAndFallback } = await import("./delegated-mainnet-deployment-guard.mjs");
+
+    // Case 1: Transient failure on primary recovers within maxAttempts without touching fallback
+    let attempts1 = 0;
+    const fallbackFn1 = vi.fn(async () => "from-fallback");
+    const result1 = await readWithRetryAndFallback(
+      async () => {
+        attempts1++;
+        if (attempts1 < 3) throw new Error("transient network drop");
+        return "success-primary";
+      },
+      fallbackFn1,
+      { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 5 },
+    );
+    expect(result1).toBe("success-primary");
+    expect(attempts1).toBe(3);
+    expect(fallbackFn1).not.toHaveBeenCalled();
+
+    // Case 2: Primary persistently fails; recovers via fallback client
+    let attempts2 = 0;
+    const fallbackFn2 = vi.fn(async () => "recovered-by-fallback");
+    const result2 = await readWithRetryAndFallback(
+      async () => {
+        attempts2++;
+        throw new Error("persistent primary 429");
+      },
+      fallbackFn2,
+      { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 5 },
+    );
+    expect(result2).toBe("recovered-by-fallback");
+    expect(attempts2).toBe(3);
+    expect(fallbackFn2).toHaveBeenCalledTimes(1);
+
+    // Case 3: Both primary and fallback fail -> fail-closed (re-throws, never invents data)
+    let attempts3 = 0;
+    const fallbackFn3 = vi.fn(async () => {
+      throw new Error("fallback unavailable");
+    });
+    await expect(
+      readWithRetryAndFallback(
+        async () => {
+          attempts3++;
+          throw new Error("primary fatal 500");
+        },
+        fallbackFn3,
+        { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 5 },
+      ),
+    ).rejects.toThrow();
+    expect(attempts3).toBe(3);
+    expect(fallbackFn3).toHaveBeenCalledTimes(1);
+  });
 });
+
