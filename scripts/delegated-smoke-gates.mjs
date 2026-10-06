@@ -121,6 +121,32 @@ export const GROSS_AMOUNT_IN = 500_000n;
 export const EXPECTED_FEE_AMOUNT = (GROSS_AMOUNT_IN * FEE_BPS) / BPS_DENOMINATOR; // 1 250
 export const SWAP_AMOUNT_IN = GROSS_AMOUNT_IN - EXPECTED_FEE_AMOUNT; // 498 750
 
+/**
+ * The ERC-20 allowance the signing wallet MUST have granted to the CANONICAL
+ * PERMIT2 CONTRACT before any delegated swap can be redeemed.
+ *
+ * This is NOT an approval of the executor and NOT a standing spend authority.
+ * Permit2's `SignatureTransfer` moves the user's tokens by calling
+ * `ERC20(token).transferFrom(owner, spender, amount)` **from the Permit2
+ * contract itself** (permit2 `src/SignatureTransfer.sol::_permitTransferFrom`,
+ * via solmate `SafeTransferLib`), so without this one-time token allowance the
+ * pull inside `MPGRExecutorDelegated._pullFromOwner` reverts
+ * `Error("TRANSFER_FROM_FAILED")` before the executor can do anything at all.
+ *
+ * The delegated safety property is untouched by it: Permit2 can only move the
+ * allowance against a live, single-use, witness-bound EIP-712 signature whose
+ * spender is this executor and whose output recipient is the signer. The
+ * properties the gate still enforces are the ones that matter — zero ERC-20
+ * allowance to the EXECUTOR, and zero standing Permit2 *AllowanceTransfer*
+ * approval (`PERMIT2.allowance(wallet, USDC, executor)`).
+ *
+ * Least privilege: the canary asks for EXACTLY the campaign gross, mirroring
+ * `lib/mcp/mcp-trade-service.ts` ("Approve Permit2 to spend exactly …", never
+ * unlimited). A larger (e.g. unbounded) approval is accepted but reported as a
+ * non-fatal note so it stays visible.
+ */
+export const REQUIRED_PERMIT2_TOKEN_ALLOWANCE = GROSS_AMOUNT_IN;
+
 /** Slippage floor applied to a FRESH quote, in bps (1.00%). */
 export const SLIPPAGE_BPS = 100n;
 /** How long a signed authorization stays valid (short on purpose). */
@@ -769,9 +795,30 @@ export function evaluateLivePreconditions(facts = {}) {
   const worstCaseGas = EXPECTED_GAS_LIMIT * (bigintOf(f("maxFeePerGas")) ?? 0n) + L1_FEE_MARGIN_WEI;
   push("smoke wallet ETH covers the worst-case gas for exactly one tx", (bigintOf(f("walletEth")) ?? -1n) >= worstCaseGas, `${f("walletEth")} >= ${worstCaseGas}`);
 
-  // -- allowance / permit state (the delegated path must need NEITHER) --------
+  // -- allowance / permit state ----------------------------------------------
+  // The executor is NEVER approved, and Permit2 is NEVER given a standing
+  // AllowanceTransfer approval. The ONE allowance that must exist is the
+  // canonical one-time ERC-20 approval to the Permit2 CONTRACT: Permit2's
+  // SignatureTransfer executes `USDC.transferFrom(owner, executor, gross)`
+  // itself, so a zero token allowance makes `_pullFromOwner` revert
+  // `Error("TRANSFER_FROM_FAILED")` before any executor logic runs.
   push("ERC-20 allowance wallet->executor is 0 (delegated trades never rely on an approval)", bigintOf(f("walletAllowanceToExecutor")) === 0n, `${f("walletAllowanceToExecutor")}`);
-  push("ERC-20 allowance wallet->Permit2 is 0 (signature permit only)", bigintOf(f("walletAllowanceToPermit2")) === 0n, `${f("walletAllowanceToPermit2")}`);
+  const permit2TokenAllowance = bigintOf(f("walletAllowanceToPermit2"));
+  push(
+    "ERC-20 allowance wallet->Permit2 covers the gross (the one-time approval every SignatureTransfer pull needs)",
+    permit2TokenAllowance !== null && permit2TokenAllowance >= REQUIRED_PERMIT2_TOKEN_ALLOWANCE,
+    permit2TokenAllowance === null
+      ? unavailable("walletAllowanceToPermit2")
+      : `${permit2TokenAllowance} raw (need >= ${REQUIRED_PERMIT2_TOKEN_ALLOWANCE}; Permit2 calls USDC.transferFrom itself)`,
+  );
+  push(
+    "ERC-20 allowance wallet->Permit2 is exactly the campaign gross (least privilege; larger is allowed but noted)",
+    permit2TokenAllowance === REQUIRED_PERMIT2_TOKEN_ALLOWANCE,
+    permit2TokenAllowance === null
+      ? unavailable("walletAllowanceToPermit2")
+      : `${permit2TokenAllowance} raw vs exactly ${REQUIRED_PERMIT2_TOKEN_ALLOWANCE}`,
+    false,
+  );
   push("Permit2 standing allowance wallet->executor is 0", bigintOf(f("permit2AllowanceAmount")) === 0n, `${f("permit2AllowanceAmount")}`);
   push("Permit2 nonce for this campaign is UNUSED (single-use replay guard)", f("permit2NonceUsed") === false, `nonce ${f("permit2Nonce")} used=${f("permit2NonceUsed")}`);
   const nonce = bigintOf(f("permit2Nonce"));
@@ -819,8 +866,27 @@ export function evaluateLivePreconditions(facts = {}) {
     skip("simulation returns amountOut >= the signed amountOutMinimum", "not attempted before signing");
     skip("the authorization signature recovers to the smoke wallet (witness.owner)", "not attempted before signing");
   } else {
-    push("eth_call simulation of the signed delegated swap succeeds", f("simulationOk") === true, f("simulationError") ? String(f("simulationError")).slice(0, 240) : f("simulationOk") ? "ok" : unavailable("simulationOk"));
-    push("simulation returns amountOut >= the signed amountOutMinimum", minOut !== null && (bigintOf(f("simulationAmountOut")) ?? -1n) >= minOut, `${f("simulationAmountOut")} >= ${minOut}`);
+    // The detail carries the DECODED revert (see describeContractError), so a
+    // failing simulation names its cause instead of only saying "it reverted".
+    const simulationCause = [f("simulationRevert"), f("simulationError")].filter((v) => typeof v === "string" && v.length > 0).join(" | ");
+    push(
+      "eth_call simulation of the signed delegated swap succeeds",
+      f("simulationOk") === true,
+      simulationCause.length > 0 ? simulationCause.slice(0, 300) : f("simulationOk") ? "ok" : unavailable("simulationOk"),
+    );
+    // A reverted simulation produces NO amountOut. This check must therefore
+    // depend on the simulation having actually succeeded — otherwise a
+    // fallback value (e.g. the quoter's number) would make the slippage proof
+    // "pass" for a trade that never executed, which is exactly the misleading
+    // signal that made a reverting canary look like a healthy one.
+    const simulatedOut = bigintOf(f("simulationAmountOut"));
+    push(
+      "simulation returns amountOut >= the signed amountOutMinimum",
+      f("simulationOk") === true && minOut !== null && simulatedOut !== null && simulatedOut >= minOut,
+      f("simulationOk") === true
+        ? `${f("simulationAmountOut")} >= ${minOut}`
+        : "no simulation result — the eth_call reverted (see the preceding check for the decoded revert)",
+    );
     push(
       "the authorization signature recovers to the smoke wallet (witness.owner)",
       f("signatureRecoversToSigner") === true && sameAddress(f("recoveredSigner"), f("signer")),
@@ -1014,4 +1080,207 @@ export function summarizeChecks(checks = []) {
 export function safeErrorMessage(err, secrets = []) {
   const raw = err instanceof Error ? (err.shortMessage ?? err.message ?? String(err)) : String(err);
   return redact(String(raw).split("\n")[0].slice(0, 500), secrets);
+}
+
+// ---------------------------------------------------------------------------
+// Revert decoding — so a failing eth_call reports WHY, not just "it reverted"
+//
+// `safeErrorMessage` keeps only the FIRST line of viem's `shortMessage`, and
+// viem puts the actual revert reason on the SECOND line
+// ("The contract function "x" reverted with the following reason:\n<reason>").
+// A simulation failure therefore used to be reported as a bare
+// "...reverted..." with the cause silently dropped. These helpers are pure
+// (no network, no clock, no key material) so the decoding is unit-testable
+// offline, exactly like every other gate in this file.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every custom error that can legitimately come out of the delegated swap
+ * call frame: the executor's own set, the canonical Permit2 set, and the
+ * OpenZeppelin v5 ERC-20 set. Order is irrelevant (selectors are unique).
+ */
+export const KNOWN_REVERT_SIGNATURES = Object.freeze([
+  // --- MPGRExecutorDelegated (contracts/executor/MPGRExecutorDelegated.sol) --
+  "ZeroAddress()",
+  "NotAContract(address)",
+  "FeeBpsAboveCap(uint16,uint16)",
+  "InvalidFeeRecipient(address)",
+  "RouterNotAllowed(address,uint8)",
+  "TokenNotAllowed(address)",
+  "SameToken()",
+  "ZeroAmount()",
+  "ZeroMinimumOutput()",
+  "DeadlineExpired(uint256,uint256)",
+  "InvalidRecipient(address,address)",
+  "OwnerIsFeeRecipient(address)",
+  "FeeMismatch(uint256,uint256)",
+  "FeeRoundsToZero(uint256)",
+  "InvalidTickSpacing(int24)",
+  "InvalidPoolFee(uint24)",
+  "UnsupportedTransferAmount(uint256,uint256)",
+  "InputNotFullyConsumed(uint256,uint256)",
+  "InsufficientOutput(uint256,uint256)",
+  "UnwrapRequiresWethOut()",
+  "NativeTransferFailed(address,uint256)",
+  "UnexpectedNativeSender(address)",
+  "RenounceDisabled()",
+  "ConflictingAllowlist(address)",
+  "InvalidWitness()",
+  "NativeInputUnsupported()",
+  "SwapModuleNotAllowed(address)",
+  "InvalidSwapModule(address)",
+  "ModuleInputNotConsumed(address,uint256,uint256)",
+  // --- Pausable / Ownable (OpenZeppelin v5) ---------------------------------
+  "EnforcedPause()",
+  "ReentrancyGuardReentrantCall()",
+  "OwnableUnauthorizedAccount(address)",
+  // --- canonical Permit2 (SignatureTransfer + AllowanceTransfer) ------------
+  "SignatureExpired(uint256)",
+  "InvalidNonce()",
+  "InvalidAmount(uint256)",
+  "LengthMismatch()",
+  "InvalidSignature()",
+  "InvalidSigner()",
+  "InvalidSignatureLength()",
+  "InvalidContractSignature()",
+  "AllowanceExpired(uint256)",
+  "InsufficientAllowance(uint256)",
+  "ExcessiveInvalidation()",
+  // --- ERC-20 (OpenZeppelin v5 custom errors) -------------------------------
+  "ERC20InsufficientAllowance(address,uint256,uint256)",
+  "ERC20InsufficientBalance(address,uint256,uint256)",
+  "ERC20InvalidApprover(address)",
+  "ERC20InvalidSpender(address)",
+  "ERC20InvalidReceiver(address)",
+  "ERC20InvalidSender(address)",
+]);
+
+/** selector (lowercase 0x + 8 hex) -> signature, built once from the list above. */
+export const KNOWN_REVERT_SELECTORS = Object.freeze(
+  Object.fromEntries(KNOWN_REVERT_SIGNATURES.map((sig) => [keccak256(toHex(sig)).slice(0, 10).toLowerCase(), sig])),
+);
+
+/** `Error(string)` — the shape solmate's SafeTransferLib (and `require`) uses. */
+const ERROR_STRING_SELECTOR = "0x08c379a0";
+/** `Panic(uint256)` — solidity assertion/overflow panics. */
+const PANIC_SELECTOR = "0x4e487b71";
+
+const PANIC_REASONS = Object.freeze({
+  0x01: "assert(false)",
+  0x11: "arithmetic overflow/underflow",
+  0x12: "division or modulo by zero",
+  0x21: "invalid enum value",
+  0x22: "invalid storage byte array encoding",
+  0x31: "pop() on an empty array",
+  0x32: "array index out of bounds",
+  0x41: "out of memory",
+  0x51: "call to an uninitialized internal function",
+});
+
+/** Decodes an ABI-encoded `string` that starts at `words[0]` (offset form). */
+function decodeAbiString(body) {
+  if (body.length < 128) return null;
+  const offset = Number(BigInt(`0x${body.slice(0, 64)}`));
+  const start = offset * 2;
+  if (!Number.isSafeInteger(offset) || body.length < start + 64) return null;
+  const length = Number(BigInt(`0x${body.slice(start, start + 64)}`));
+  if (!Number.isSafeInteger(length) || length > 1024) return null;
+  const hex = body.slice(start + 64, start + 64 + length * 2);
+  if (hex.length !== length * 2) return null;
+  try {
+    return Buffer.from(hex, "hex").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decodes raw EVM revert data into `{ selector, kind, name, reason, text }`.
+ * Never throws — unknown data is reported verbatim (truncated) so an operator
+ * can still paste it into a decoder.
+ */
+export function decodeRevertData(data) {
+  if (typeof data !== "string" || !/^0x[0-9a-fA-F]*$/.test(data)) {
+    return { selector: null, kind: "none", name: null, reason: null, text: "no revert data" };
+  }
+  if (data === "0x" || data.length < 10) {
+    return {
+      selector: null,
+      kind: "empty",
+      name: null,
+      reason: null,
+      text: "reverted with EMPTY return data (out-of-gas, invalid opcode, or a bare revert())",
+    };
+  }
+  const selector = data.slice(0, 10).toLowerCase();
+  const body = data.slice(10);
+  if (selector === ERROR_STRING_SELECTOR) {
+    const reason = decodeAbiString(body);
+    return {
+      selector,
+      kind: "Error(string)",
+      name: "Error",
+      reason,
+      text: reason === null ? `Error(string) with undecodable payload ${data.slice(0, 74)}` : `Error("${reason}")`,
+    };
+  }
+  if (selector === PANIC_SELECTOR) {
+    const code = body.length >= 64 ? Number(BigInt(`0x${body.slice(0, 64)}`)) : null;
+    const reason = code !== null ? (PANIC_REASONS[code] ?? `panic code 0x${code.toString(16)}`) : null;
+    return { selector, kind: "Panic(uint256)", name: "Panic", reason, text: `Panic(${reason ?? "unknown"})` };
+  }
+  const signature = KNOWN_REVERT_SELECTORS[selector];
+  if (signature) {
+    const name = signature.slice(0, signature.indexOf("("));
+    return { selector, kind: "custom", name, reason: null, text: `${signature} [${selector}]` };
+  }
+  return { selector, kind: "unknown", name: null, reason: null, text: `unknown revert selector ${selector} data ${data.slice(0, 138)}` };
+}
+
+/** Pulls the first `0x…` revert payload out of a (possibly nested) error object. */
+function revertDataOf(err) {
+  const seen = new Set();
+  let node = err;
+  for (let depth = 0; node && typeof node === "object" && depth < 12; depth++) {
+    if (seen.has(node)) break;
+    seen.add(node);
+    for (const key of ["data", "raw", "returnData"]) {
+      const value = node[key];
+      if (typeof value === "string" && /^0x[0-9a-fA-F]*$/.test(value) && value.length >= 10) return value;
+      // viem wraps decoded errors as { data: { errorName, args } }
+      if (value && typeof value === "object" && typeof value.errorName === "string") {
+        return { errorName: value.errorName, args: value.args };
+      }
+    }
+    node = node.cause;
+  }
+  return null;
+}
+
+/**
+ * A single-line, SECRET-REDACTED description of a contract call failure that
+ * keeps the decoded revert instead of dropping it.
+ *
+ * Used for the delegated swap's eth_call simulation, so a failing rehearsal or
+ * preflight names the exact on-chain cause (e.g.
+ * `Error("TRANSFER_FROM_FAILED")` — the Permit2 pull — rather than a bare
+ * "execution reverted").
+ */
+export function describeContractError(err, secrets = []) {
+  const parts = [];
+  const payload = revertDataOf(err);
+  let decoded = null;
+  if (typeof payload === "string") {
+    decoded = decodeRevertData(payload);
+    parts.push(decoded.text);
+  } else if (payload && typeof payload === "object") {
+    const args = Array.isArray(payload.args) ? payload.args.map((a) => String(a)).join(", ") : "";
+    decoded = { selector: null, kind: "custom", name: payload.errorName, reason: null, text: `${payload.errorName}(${args})` };
+    parts.push(decoded.text);
+  }
+  const message = err instanceof Error ? (err.shortMessage ?? err.message ?? String(err)) : String(err);
+  const flattened = String(message).replace(/\s*\n+\s*/g, " | ").trim();
+  if (flattened.length > 0) parts.push(flattened);
+  const joined = parts.join(" — ") || "unknown error";
+  return { detail: redact(joined.slice(0, 500), secrets), decoded };
 }

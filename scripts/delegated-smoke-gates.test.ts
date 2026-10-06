@@ -62,6 +62,7 @@ import {
   QUOTE_MAX_WEI,
   QUOTE_MIN_WEI,
   REHEARSAL_LOG_WINDOW,
+  REQUIRED_PERMIT2_TOKEN_ALLOWANCE,
   REVIEWED_CONFIG_PATH,
   RPC_ENV,
   SEPOLIA_DELEGATED_EXECUTOR,
@@ -89,6 +90,8 @@ import {
   buildSwapParams,
   canaryIdentityFor,
   codeDispatchesSelector,
+  decodeRevertData,
+  describeContractError,
   evaluateConfigPins,
   evaluateLedgerClaim,
   evaluateLedgerGuard,
@@ -100,6 +103,7 @@ import {
   isBytes32,
   isLocalRpc,
   isPrivateKeyShape,
+  KNOWN_REVERT_SELECTORS,
   ledgerFileName,
   minOutFromQuote,
   nonceBitmapWordMarks,
@@ -996,7 +1000,7 @@ function greenFacts(overrides: Record<string, unknown> = {}): Record<string, unk
     executorEth: 0n,
     feeRecipientUsdc: 0n,
     walletAllowanceToExecutor: 0n,
-    walletAllowanceToPermit2: 0n,
+    walletAllowanceToPermit2: REQUIRED_PERMIT2_TOKEN_ALLOWANCE,
     permit2AllowanceAmount: 0n,
     permit2NonceUsed: false,
     permit2Nonce: identity.permitNonce,
@@ -1101,7 +1105,13 @@ describe("live precondition gate — every refusal", () => {
   refuses("an excessive priority tip", { maxPriorityFeePerGas: PRIORITY_FEE_CAP + 1n }, "within the 0.05 gwei cap");
   refuses("an estimated L2 cost above the cap", { swapGasEstimate: EXPECTED_GAS_LIMIT, maxFeePerGas: MAX_FEE_PER_GAS_CAP }, "within the cap");
   refuses("a standing ERC-20 approval to the executor", { walletAllowanceToExecutor: 1n }, "allowance wallet->executor is 0");
-  refuses("a standing ERC-20 approval to Permit2", { walletAllowanceToPermit2: 1n }, "allowance wallet->Permit2 is 0");
+  // Permit2's SignatureTransfer pulls with `transferFrom` FROM the Permit2
+  // contract, so a MISSING (or short) one-time token approval is the refusal —
+  // it is the state that makes the delegated eth_call revert
+  // Error("TRANSFER_FROM_FAILED") (regression: the rehearsal's fork principal).
+  refuses("a wallet that never granted the one-time Permit2 token approval", { walletAllowanceToPermit2: 0n }, "allowance wallet->Permit2 covers the gross");
+  refuses("a Permit2 token approval that is short of the gross", { walletAllowanceToPermit2: GROSS_AMOUNT_IN - 1n }, "allowance wallet->Permit2 covers the gross");
+  refuses("an unreadable Permit2 token approval", { walletAllowanceToPermit2: undefined }, "allowance wallet->Permit2 covers the gross");
   refuses("a standing Permit2 allowance", { permit2AllowanceAmount: GROSS_AMOUNT_IN }, "Permit2 standing allowance");
   refuses("a campaign nonce that is already spent", { permit2NonceUsed: true }, "nonce for this campaign is UNUSED");
   refuses("a bitmap word that already marks the nonce (recomputed)", { permit2NonceBitmapWord: nonceBitPosition(canaryIdentityFor(SIGNER).permitNonce)?.bit ?? 1n }, "independent recomputation");
@@ -1112,6 +1122,13 @@ describe("live precondition gate — every refusal", () => {
   refuses("a wallet that already swapped through the delegated executor", { priorSwapEvents: 1 }, "one-shot");
   refuses("a prior canary broadcast recorded in the ledger", { ledgerExists: true, ledgerTx: `0x${"ab".repeat(32)}` }, "no earlier canary broadcast");
   refuses("a simulation that reverts (the decisive read-only proof)", { simulationOk: false, simulationError: "execution reverted: InsufficientOutput" }, "simulation of the signed delegated swap succeeds");
+  // Regression: a reverted simulation must NEVER leave the minOut proof green
+  // on a fallback value (the quoter's number). Both rows have to go red.
+  refuses(
+    "a reverted simulation even when a stale amountOut is still carried",
+    { simulationOk: false, simulationRevert: 'Error("TRANSFER_FROM_FAILED")', simulationAmountOut: QUOTE },
+    "amountOut >=",
+  );
   refuses("a simulation whose output is below the signed minimum", { simulationAmountOut: minOutFromQuote(QUOTE)! - 1n }, "amountOut >=");
   refuses("a signature that does not recover to the signer", { signatureRecoversToSigner: false, recoveredSigner: null }, "recovers to the smoke wallet");
   refuses("a signature recovered to the wrong address", { recoveredSigner: BROADCASTER }, "recovers to the smoke wallet");
@@ -1439,6 +1456,115 @@ describe("report helpers", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Regression: the delegated swap's eth_call reverted with
+// Error("TRANSFER_FROM_FAILED") because the signing wallet had never granted
+// the canonical one-time ERC-20 approval to the PERMIT2 CONTRACT. Permit2's
+// SignatureTransfer pulls with `ERC20.transferFrom(owner, executor, gross)`
+// from inside Permit2 (permit2 src/SignatureTransfer.sol -> solmate
+// SafeTransferLib), so a zero token allowance makes _pullFromOwner revert
+// before any executor logic runs — and the old gate actively REQUIRED that
+// impossible state while reporting the revert without its reason.
+// ---------------------------------------------------------------------------
+describe("Permit2 token allowance — the precondition every SignatureTransfer pull needs", () => {
+  it("requires exactly the campaign gross as the minimum", () => {
+    expect(REQUIRED_PERMIT2_TOKEN_ALLOWANCE).toBe(GROSS_AMOUNT_IN);
+    expect(REQUIRED_PERMIT2_TOKEN_ALLOWANCE).toBe(500_000n);
+  });
+
+  it("accepts the least-privilege approval of exactly the gross with no notes", () => {
+    const r = evaluateLivePreconditions(greenFacts({ walletAllowanceToPermit2: GROSS_AMOUNT_IN }));
+    expect(r.allowed).toBe(true);
+    expect(checkNamed(r, "allowance wallet->Permit2 covers the gross")?.ok).toBe(true);
+    expect(checkNamed(r, "allowance wallet->Permit2 is exactly the campaign gross")?.ok).toBe(true);
+  });
+
+  it("accepts an unbounded approval but reports it as a NON-FATAL note", () => {
+    const unlimited = 2n ** 256n - 1n;
+    const r = evaluateLivePreconditions(greenFacts({ walletAllowanceToPermit2: unlimited }));
+    expect(r.allowed).toBe(true);
+    const note = checkNamed(r, "allowance wallet->Permit2 is exactly the campaign gross");
+    expect(note?.ok).toBe(false);
+    expect(note?.fatal).toBe(false);
+    expect(blockerNames(r)).toEqual([]);
+  });
+
+  it("still refuses any allowance to the EXECUTOR and any standing Permit2 allowance", () => {
+    expect(evaluateLivePreconditions(greenFacts({ walletAllowanceToExecutor: 1n })).allowed).toBe(false);
+    expect(evaluateLivePreconditions(greenFacts({ permit2AllowanceAmount: 1n })).allowed).toBe(false);
+    // ...even when the (correct) Permit2 token approval is in place.
+    const r = evaluateLivePreconditions(greenFacts({ walletAllowanceToExecutor: GROSS_AMOUNT_IN, permit2AllowanceAmount: GROSS_AMOUNT_IN }));
+    expect(blockerNames(r).join(" | ")).toContain("allowance wallet->executor is 0");
+    expect(blockerNames(r).join(" | ")).toContain("Permit2 standing allowance");
+  });
+});
+
+describe("revert decoding — a failing eth_call must name its cause", () => {
+  // Captured from a local EVM reproduction that runs the REAL Permit2
+  // deployment source (Uniswap/permit2 @ cc56ad0f, solc 0.8.17 + via-ir)
+  // against MPGRExecutorDelegated with allowance(owner -> Permit2) == 0.
+  const TRANSFER_FROM_FAILED =
+    "0x08c379a0" +
+    "0000000000000000000000000000000000000000000000000000000000000020" +
+    "0000000000000000000000000000000000000000000000000000000000000014" +
+    "5452414e534645525f46524f4d5f4641494c4544000000000000000000000000";
+
+  it("decodes the exact Permit2 pull failure of the rehearsal", () => {
+    const d = decodeRevertData(TRANSFER_FROM_FAILED);
+    expect(d.kind).toBe("Error(string)");
+    expect(d.reason).toBe("TRANSFER_FROM_FAILED");
+    expect(d.text).toBe('Error("TRANSFER_FROM_FAILED")');
+  });
+
+  it("decodes the executor's own custom errors by selector", () => {
+    const insufficientOutput = keccak256(toHex("InsufficientOutput(uint256,uint256)")).slice(0, 10);
+    const d = decodeRevertData(`${insufficientOutput}${"00".repeat(64)}`);
+    expect(d.name).toBe("InsufficientOutput");
+    expect(d.kind).toBe("custom");
+    expect(KNOWN_REVERT_SELECTORS[insufficientOutput]).toBe("InsufficientOutput(uint256,uint256)");
+  });
+
+  it("decodes Permit2's own custom errors (nonce / deadline / signer)", () => {
+    for (const sig of ["InvalidNonce()", "SignatureExpired(uint256)", "InvalidSigner()", "InvalidAmount(uint256)"]) {
+      const selector = keccak256(toHex(sig)).slice(0, 10);
+      expect(decodeRevertData(`${selector}${"00".repeat(32)}`).name).toBe(sig.slice(0, sig.indexOf("(")));
+    }
+  });
+
+  it("reports empty and unknown revert data instead of pretending to know", () => {
+    expect(decodeRevertData("0x").kind).toBe("empty");
+    expect(decodeRevertData("0x").text).toContain("EMPTY return data");
+    expect(decodeRevertData(undefined).kind).toBe("none");
+    const unknown = decodeRevertData(`0xdeadbeef${"11".repeat(32)}`);
+    expect(unknown.kind).toBe("unknown");
+    expect(unknown.text).toContain("0xdeadbeef");
+  });
+
+  it("keeps the reason viem puts on the SECOND line, which safeErrorMessage drops", () => {
+    const viemLike = Object.assign(
+      new Error('The contract function "swapOnBehalfOfUniswapV3" reverted with the following reason:\nTRANSFER_FROM_FAILED'),
+      {
+        shortMessage: 'The contract function "swapOnBehalfOfUniswapV3" reverted with the following reason:\nTRANSFER_FROM_FAILED',
+        cause: { data: TRANSFER_FROM_FAILED },
+      },
+    );
+    // The old helper silently lost the cause; the new one must not.
+    expect(safeErrorMessage(viemLike)).not.toContain("TRANSFER_FROM_FAILED");
+    const described = describeContractError(viemLike);
+    expect(described.detail).toContain('Error("TRANSFER_FROM_FAILED")');
+    expect(described.decoded?.reason).toBe("TRANSFER_FROM_FAILED");
+    expect(described.detail.split("\n").length).toBe(1);
+  });
+
+  it("redacts secrets out of a decoded revert description", () => {
+    const secret = `0x${"cd".repeat(32)}`;
+    const err = Object.assign(new Error(`boom ${secret}`), { shortMessage: `boom ${secret}` });
+    const described = describeContractError(err, [secret]);
+    expect(described.detail).toContain("<redacted>");
+    expect(described.detail).not.toContain(secret);
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe("the runner script keeps its promises (static invariants)", () => {
   const gate = (re: RegExp, label: string) => expect(runnerSource, label).not.toMatch(re);
 
@@ -1447,6 +1573,29 @@ describe("the runner script keeps its promises (static invariants)", () => {
     gate(/forge\s+(script|deploy|create)/, "forge deploy");
     gate(/new MPGRExecutor|DeployMPGRExecutor/, "contract creation");
     gate(/"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"\s*,\s*"approve"/, "an ERC-20 approve call");
+  });
+
+  it("provisions the one-time Permit2 token approval in FORK STATE ONLY, never by a transaction", () => {
+    // The fork principal must get the approval a real user grants once; it is
+    // written with anvil_setStorageAt (local state), guarded by REHEARSAL, and
+    // capped at exactly the campaign gross — never an approve() broadcast and
+    // never an approval of the executor.
+    expect(runnerSource).toContain("REQUIRED_PERMIT2_TOKEN_ALLOWANCE");
+    expect(runnerSource).toMatch(/if \(REHEARSAL && walletAllowanceToPermit2 < REQUIRED_PERMIT2_TOKEN_ALLOWANCE\)/);
+    expect(runnerSource).toContain("fork-only one-time USDC->Permit2 approval applied for exactly the gross");
+    expect(runnerSource).toContain("the fork-only approval went to Permit2 ONLY — the executor is still not approved");
+    gate(/functionName:\s*"approve"/, "an approve() call");
+    // The gate must judge the post-provisioning state, not a stale read.
+    expect(runnerSource).toContain("walletAllowanceToPermit2: walletAllowanceToPermit2Now");
+    expect(runnerSource.indexOf("forkPermit2ApprovalUnits")).toBeLessThan(runnerSource.indexOf("const walletAllowanceToPermit2Now"));
+  });
+
+  it("decodes the simulation revert instead of dropping it, and keeps no stale amountOut", () => {
+    expect(runnerSource).toContain("describeContractError(err, SECRETS)");
+    expect(runnerSource).toContain("simulationRevert");
+    expect(runnerSource).toContain('fact("simulationFailure"');
+    // A reverted simulation must not leave the quoter's number behind.
+    expect(runnerSource).toMatch(/simulationOk = false;[\s\S]{0,320}simulationAmountOut = null;/);
   });
 
   it("signs only after the pre-sign gate and broadcasts only after the full gate", () => {

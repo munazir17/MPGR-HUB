@@ -105,6 +105,7 @@ import {
   OWNER,
   PRIORITY_FEE_CAP,
   REHEARSAL_LOG_WINDOW,
+  REQUIRED_PERMIT2_TOKEN_ALLOWANCE,
   REVIEWED_CONFIG_PATH,
   RPC_ENV,
   SLIPPAGE_BPS,
@@ -126,6 +127,7 @@ import {
   buildPermitTypedData,
   buildSwapParams,
   canaryIdentityFor,
+  describeContractError,
   evaluateConfigPins,
   evaluateLedgerClaim,
   evaluateLedgerGuard,
@@ -936,6 +938,66 @@ async function main() {
     fact("forkEthTopUpWei", (10n ** 16n).toString());
   }
 
+  /**
+   * Rehearsal only — the canonical one-time Permit2 token approval.
+   *
+   * Permit2's SignatureTransfer does NOT move tokens by magic: it calls
+   * `USDC.transferFrom(owner, executor, gross)` FROM THE PERMIT2 CONTRACT
+   * (permit2 `src/SignatureTransfer.sol::_permitTransferFrom` -> solmate
+   * `SafeTransferLib.safeTransferFrom`). A wallet that has never approved
+   * Permit2 therefore makes `MPGRExecutorDelegated._pullFromOwner` revert
+   * `Error("TRANSFER_FROM_FAILED")` before any executor logic runs — which is
+   * exactly what a freshly derived fork principal looks like.
+   *
+   * A real user grants this ONCE, off-band, before signing anything (see
+   * docs/DELEGATED-MAINNET-SMOKE-RUNBOOK.md §3 and the `sendApprovalTransaction`
+   * step in lib/mcp/mcp-trade-service.ts). On the fork we reproduce that
+   * precondition in LOCAL ANVIL STATE ONLY, at EXACTLY the campaign gross
+   * (least privilege — never unlimited), so the rehearsal exercises the real
+   * delegated sequence instead of a state that cannot exist for a live user.
+   * Nothing is approved, signed or broadcast on Base Mainnet, and the
+   * executor is still never approved by anyone.
+   */
+  if (REHEARSAL && walletAllowanceToPermit2 < REQUIRED_PERMIT2_TOKEN_ALLOWANCE) {
+    check(
+      "rehearsal principal already holds the one-time USDC->Permit2 approval on real mainnet (informational: a fork-only approval follows)",
+      false,
+      `allowance ${walletAllowanceToPermit2} raw < ${REQUIRED_PERMIT2_TOKEN_ALLOWANCE} — a fork-only approval of exactly the gross is applied so the Permit2 pull is rehearsed against the real Permit2 contract`,
+      { stageName: "3. live posture reads (read-only)" },
+    );
+    const allowanceData = encodeFunctionData({ abi: ERC20_ABI, functionName: "allowance", args: [wallet, CANONICAL_PERMIT2] });
+    // FiatToken keeps allowances in a nested mapping: allowed[owner][spender].
+    const foundAllowance = await probeMappingSlot(pub, USDC, allowanceData, REQUIRED_PERMIT2_TOKEN_ALLOWANCE, (slot) =>
+      keccak256(
+        encodeAbiParameters(
+          [{ type: "address" }, { type: "bytes32" }],
+          [CANONICAL_PERMIT2, keccak256(encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [wallet, slot]))],
+        ),
+      ),
+    );
+    must(
+      "located the USDC allowance slot for the fork-only Permit2 approval",
+      foundAllowance !== null,
+      foundAllowance ? `mapping slot ${foundAllowance.slot}` : "not found",
+    );
+    await pub.request({
+      method: "anvil_setStorageAt",
+      params: [USDC, foundAllowance.key, pad(toHex(REQUIRED_PERMIT2_TOKEN_ALLOWANCE), { size: 32 })],
+    });
+    const approved = await allowance(USDC, wallet, CANONICAL_PERMIT2);
+    must(
+      "fork-only one-time USDC->Permit2 approval applied for exactly the gross (local anvil state only)",
+      approved === REQUIRED_PERMIT2_TOKEN_ALLOWANCE,
+      `${approved} raw`,
+    );
+    must(
+      "the fork-only approval went to Permit2 ONLY — the executor is still not approved",
+      (await allowance(USDC, wallet, DELEGATED_EXECUTOR)) === 0n,
+      "wallet->executor allowance remains 0",
+    );
+    fact("forkPermit2ApprovalUnits", REQUIRED_PERMIT2_TOKEN_ALLOWANCE.toString());
+  }
+
   // ------------------------------------------------------------ stage 4
   stage("4. quote, witness and the PRE-SIGN gate (the key is used only after this)");
   const latestBlock = await pub.getBlock({ blockTag: "latest" });
@@ -1009,6 +1071,15 @@ async function main() {
 
   const walletUsdcNow = await bal(USDC, wallet);
   const walletEthNow = await pub.getBalance({ address: wallet });
+  // Re-read after the rehearsal's fork-only provisioning: the gate must judge
+  // the state the simulation will actually run against, never a stale read.
+  const walletAllowanceToPermit2Now = await allowance(USDC, wallet, CANONICAL_PERMIT2);
+  const walletAllowanceToExecutorNow = await allowance(USDC, wallet, DELEGATED_EXECUTOR);
+  fact("permit2TokenAllowance", {
+    walletToPermit2: walletAllowanceToPermit2Now.toString(),
+    walletToExecutor: walletAllowanceToExecutorNow.toString(),
+    requiredForGross: REQUIRED_PERMIT2_TOKEN_ALLOWANCE.toString(),
+  });
   const ledger = readLedger(wallet);
   applyGate(evaluateLedgerGuard({ mode: MODE, ledger, wallet, ack: env(LEDGER_ACK_ENV) }));
   if (ledger) fact("ledger", { path: ledger.path, claimId: ledger.claimId ?? null, broadcastTx: ledger.broadcastTx ?? null, status: ledger.status ?? null });
@@ -1060,8 +1131,8 @@ async function main() {
     executorWeth,
     executorEth,
     feeRecipientUsdc,
-    walletAllowanceToExecutor,
-    walletAllowanceToPermit2,
+    walletAllowanceToExecutor: walletAllowanceToExecutorNow,
+    walletAllowanceToPermit2: walletAllowanceToPermit2Now,
     permit2AllowanceAmount: permit2Amount,
     permit2NonceUsed: permit2UsedBefore === true,
     permit2Nonce: identity.permitNonce,
@@ -1108,6 +1179,7 @@ async function main() {
   let simulationOk = true;
   let simulationAmountOut = quoteAmountOut;
   let simulationError = null;
+  let simulationRevert = null;
   let swapGasEstimate = EXPECTED_GAS_LIMIT;
   if (LIVE || REHEARSAL) {
     const simAccount = getAddress(broadcasterAccount.address);
@@ -1122,7 +1194,52 @@ async function main() {
       simulationAmountOut = sim.result;
     } catch (err) {
       simulationOk = false;
-      simulationError = safeErrorMessage(err, SECRETS);
+      // No simulated output exists when the call reverted: never fall back to
+      // the quoter's number, or the minOut proof would pass on a trade that
+      // did not execute.
+      simulationAmountOut = null;
+      // The DECODED revert, not just "execution reverted": viem keeps the
+      // reason on the second line of shortMessage and safeErrorMessage drops
+      // everything after the first newline, which used to hide the cause
+      // (e.g. Permit2's Error("TRANSFER_FROM_FAILED")) completely.
+      const described = describeContractError(err, SECRETS);
+      simulationError = described.detail; // already redacted by describeContractError
+      // Chain-returned bytes cannot carry the key, but the JSON report is
+      // written with a replacer that only stringifies bigints — so every
+      // string that reaches an artifact goes through redact() regardless.
+      simulationRevert = described.decoded?.text ? redact(String(described.decoded.text), SECRETS) : null;
+      const simulationRevertReason = described.decoded?.reason ? redact(String(described.decoded.reason), SECRETS) : null;
+      // Non-secret diagnostics for the report: the exact frame that reverted.
+      // Deliberately absent: the private key (never in scope here), the
+      // signature, the raw calldata and the typed-data message.
+      fact("simulationFailure", {
+        revert: simulationRevert,
+        selector: described.decoded?.selector ?? null,
+        kind: described.decoded?.kind ?? null,
+        reason: simulationRevertReason,
+        from: simAccount,
+        to: DELEGATED_EXECUTOR,
+        value: "0",
+        calldataSelector: swapData.slice(0, 10),
+        calldataBytes: (swapData.length - 2) / 2,
+        tokenIn: USDC,
+        tokenOut: CANONICAL_WETH,
+        grossAmountIn: GROSS_AMOUNT_IN.toString(),
+        expectedFeeAmount: EXPECTED_FEE_AMOUNT.toString(),
+        amountOutMinimum: amountOutMinimum.toString(),
+        recipient: wallet,
+        deadline: deadline.toString(),
+        blockTimestamp: latestBlock.timestamp.toString(),
+        permitNonce: identity.permitNonce,
+        witnessHash: witnessHashLocal,
+        signatureRecoversToSigner: signatureRecovers === true,
+        walletUsdc: walletUsdcNow.toString(),
+        walletAllowanceToPermit2: walletAllowanceToPermit2Now.toString(),
+        walletAllowanceToExecutor: walletAllowanceToExecutorNow.toString(),
+        permit2StandingAllowance: String(permit2Amount),
+        executorUsdcBefore: executorUsdc.toString(),
+      });
+      console.log(`REVERT simulation: ${redact(String(simulationError), SECRETS).slice(0, 300)}`);
     }
     if (simulationOk) {
       swapGasEstimate = await pub.estimateContractGas({
@@ -1138,7 +1255,8 @@ async function main() {
     selector: swapData.slice(0, 10),
     signatureRecoversToSigner: signatureRecovers === true,
     simulationOk,
-    simulationAmountOut: String(simulationAmountOut),
+    simulationAmountOut: simulationAmountOut === null ? null : String(simulationAmountOut),
+    simulationRevert,
     swapGasEstimate: String(swapGasEstimate),
   });
   fact("fees", { maxFeePerGas, maxPriorityFeePerGas, swapGasEstimate });
@@ -1151,6 +1269,7 @@ async function main() {
     simulationOk,
     simulationAmountOut,
     simulationError,
+    simulationRevert,
     calldataSelector: swapData.slice(0, 10),
     calldataMatchesParams,
     signatureRecoversToSigner: signatureRecovers === true,
@@ -1381,8 +1500,37 @@ function renderMarkdown() {
     lines.push(`| ${c.skipped ? "⏭️" : c.ok ? "✅" : "❌"} | ${cell(c.stage)} | ${cell(c.name)} | ${cell(redact(c.detail, SECRETS)).slice(0, 400)} |`);
   }
   lines.push("", "</details>", "");
+  if (f.simulationFailure) {
+    const sf = f.simulationFailure;
+    lines.push(
+      "<details open><summary>Decoded revert of the signed delegated <code>eth_call</code></summary>",
+      "",
+      "| | |",
+      "|---|---|",
+      `| Decoded revert | \`${cell(sf.revert ?? "—")}\` |`,
+      `| Selector / kind | \`${sf.selector ?? "—"}\` · ${sf.kind ?? "—"}${sf.reason ? ` · reason \`${cell(sf.reason)}\`` : ""} |`,
+      `| eth_call from → to (value) | \`${sf.from}\` → \`${sf.to}\` (${sf.value} wei) |`,
+      `| Calldata | selector \`${sf.calldataSelector}\`, ${sf.calldataBytes} bytes |`,
+      `| tokenIn → tokenOut | \`${sf.tokenIn}\` → \`${sf.tokenOut}\` |`,
+      `| gross / fee / minOut | ${sf.grossAmountIn} / ${sf.expectedFeeAmount} / ${sf.amountOutMinimum} |`,
+      `| recipient · deadline (block ts) | \`${sf.recipient}\` · ${sf.deadline} (${sf.blockTimestamp}) |`,
+      `| Permit2 nonce · witness hash | ${sf.permitNonce} · \`${sf.witnessHash}\` |`,
+      `| Signature recovers to signer | ${sf.signatureRecoversToSigner} |`,
+      `| Wallet USDC · allowance →Permit2 · →executor | ${sf.walletUsdc} · ${sf.walletAllowanceToPermit2} · ${sf.walletAllowanceToExecutor} |`,
+      `| Permit2 standing allowance · executor USDC before | ${sf.permit2StandingAllowance} · ${sf.executorUsdcBefore} |`,
+      "",
+      "</details>",
+      "",
+    );
+  }
   if (f.forkTopUpUnits) {
     lines.push(`> ⚠️ A fork-only USDC top-up of ${f.forkTopUpUnits} raw units was applied on the LOCAL anvil fork only. It is never a mainnet state change.`, "");
+  }
+  if (f.forkPermit2ApprovalUnits) {
+    lines.push(
+      `> ⚠️ A fork-only one-time USDC→Permit2 approval of exactly ${f.forkPermit2ApprovalUnits} raw units was written to LOCAL anvil state. Permit2's SignatureTransfer pulls with \`transferFrom\`, so a live wallet needs this approval once, granted by its owner — it is never a mainnet state change made by this script, and the executor is never approved.`,
+      "",
+    );
   }
   if (f.walletBefore && BigInt(f.walletBefore.usdc) < GROSS_AMOUNT_IN && !REHEARSAL) {
     lines.push(
