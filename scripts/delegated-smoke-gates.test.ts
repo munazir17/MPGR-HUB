@@ -14,7 +14,8 @@
  * environment, signer identity, config pins, live preconditions, post-trade
  * verification and the one-shot ledger.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { encodeAbiParameters, encodeFunctionData, getAddress, hashTypedData, keccak256, toHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -848,6 +849,88 @@ describe("committed configuration gate", () => {
       const r = evaluateConfigPins({ config: committedConfig, record: recordFor(patch) });
       expect(r.allowed, JSON.stringify(patch)).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * The committed record is the artifact the repo reads at runtime
+ * (`script/smoke-delegated-executor-base-mainnet.mjs`, the preflight
+ * `one_time_artifact_guard`, and the deploy script's refuse-to-redeploy check),
+ * so it is asserted here against the pinned deployment facts and the reviewed
+ * config rather than only against a fixture.
+ *
+ * `runtimeCodeHash` is keccak256 of the deployed executor runtime code. Rebuilding
+ * `contracts/executor/MPGRExecutorDelegated.sol` with the CI build settings
+ * (solc 0.8.24+commit.e11b9ed9, evmVersion cancun, optimizer runs 200,
+ * `metadata.bytecodeHash = ipfs`, the pinned remappings) reproduces the mined
+ * creation bytecode: same length, same head/tail, and the same embedded metadata
+ * digest `20b41a1e403632f30f0c5386857f9c42c9b6f76f3c431eeb2f67110e79481b78`, which pins
+ * every source and setting. Patching that rebuild's six immutable sites (4x WETH
+ * `0x4200…0006`, 2x Permit2 `0x0000…78BA3`, each read back from the live runtime at
+ * offsets 527/1403/7291/11611 and 1124/11740) yields the hash asserted below — the
+ * same equality the deployment workflow's postflight assertion
+ * (`runtimeCodeHash == keccak256(cast code <executor>)`) enforced on the run that
+ * mined block 52252520. The optional pre-deployment observation `0xc6114750…a4d6`
+ * in docs/DELEGATED-MAINNET-SMOKE-RUNBOOK.md §3 is NOT this value and must not be
+ * used as `SMOKE_DELEGATED_EXPECTED_CODE_HASH`.
+ */
+describe("committed Base Mainnet deployment record", () => {
+  const recordPath = resolve(process.cwd(), DEPLOYMENT_RECORD_PATH);
+
+  it("is committed at the guarded path", () => {
+    expect(existsSync(recordPath), `${DEPLOYMENT_RECORD_PATH} must be committed after the deployment`).toBe(true);
+  });
+
+  const record = JSON.parse(readFileSync(recordPath, "utf8"));
+
+  it("pins the mined deployment exactly as the gates and the guard do", () => {
+    expect(evaluateConfigPins({ config: committedConfig, record }).allowed).toBe(true);
+    expect(record.artifactSchemaVersion).toBe(1);
+    expect(record.contract).toBe("MPGRExecutorDelegated");
+    expect(record.network).toBe("base");
+    expect(record.chainId).toBe(CHAIN_ID);
+    expect(record.executor).toBe(DELEGATED_EXECUTOR);
+    expect(record.executor).toBe(EXPECTED_EXECUTOR);
+    expect(record.deployer).toBe(DELEGATED_DEPLOYER);
+    expect(record.deployTx).toBe(DELEGATED_DEPLOY_TX);
+    expect(record.deployedAtBlock).toBe(Number(DELEGATED_DEPLOY_BLOCK));
+    expect(record.deploymentReceiptSuccess).toBe(true);
+    expect(record.paused).toBe(false);
+    expect(record.proxy).toBe("none");
+    expect(record.implementation).toBe("none");
+    expect(record.upgradeAuthority).toBe("none");
+    expect(record.owner).toBe(OWNER);
+    expect(record.owner).toBe(EXPECTED_OWNER);
+    expect(record.feeRecipient).toBe(FEE_RECIPIENT);
+    expect(record.feeRecipient).toBe(EXPECTED_FEE_RECIPIENT);
+    expect(record.feeBps).toBe(Number(FEE_BPS));
+    expect(record.maxFeeBps).toBe(Number(MAX_FEE_BPS));
+    expect(record.weth).toBe(CANONICAL_WETH);
+    expect(record.weth).toBe(GUARD_WETH);
+    expect(record.permit2).toBe(CANONICAL_PERMIT2);
+    expect(record.permit2).toBe(GUARD_PERMIT2);
+    expect(record.witnessTypeString).toBe(WITNESS_TYPE_STRING);
+  });
+
+  it("carries the reviewed allowlist and the recorder's empty-module schema", () => {
+    expect(record.routerAllowlist).toEqual(committedConfig.routers.map((r: { router: string }) => r.router));
+    expect(record.routerKinds).toEqual(committedConfig.routers.map((r: { kind: number }) => r.kind));
+    expect(record.allowedTokenAddresses).toEqual(committedConfig.tokens.map((t: { address: string }) => t.address));
+    expect(record.allowedTokenSymbols).toEqual(committedConfig.tokens.map((t: { symbol: string }) => t.symbol));
+    expect(record.allowedTokenAddresses).toHaveLength(50);
+    expect(record.moduleRegistrySchemaVersion).toBe(1);
+    expect(record.typedModuleRegistryStatus).toBe("EMPTY_AT_DEPLOYMENT");
+    expect(record.registeredTypedModules).toEqual([]);
+    expect(record.configFile).toBe(REVIEWED_CONFIG_PATH);
+  });
+
+  it("records the reproduced runtime code hash and the pending source verification", () => {
+    expect(record.runtimeCodeHash).toBe(
+      "0xc232d9d36cabcefd5f97029d2b4c1f2d60a1b0cd54d020f12d0b517eb3cf085c",
+    );
+    expect(record.sourceVerificationStatus).toBe("PENDING_EXTERNAL_VERIFICATION");
+    expect(record.sourceVerificationUrl).toBe(`https://basescan.org/address/${DELEGATED_EXECUTOR}`);
   });
 });
 
