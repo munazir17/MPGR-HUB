@@ -1,0 +1,313 @@
+# Dedicated smoke/canary test for MPGRExecutorDelegated on BASE MAINNET (real funds, smallest safe amount).
+#
+# Exactly 0.50 USDC -> WETH through the deployed MPGRExecutorDelegated
+# (0x39B1C6Ea88A01e70cbF4899BF3cEfB2c43cD32Bb) via swapOnBehalfOfUniswapV3, authorized
+# by a user-signed Permit2 WITNESS PERMIT (no ERC-20 approval anywhere) with the 25 bps
+# MPGR fee taken atomically inside the same swap. Signer MUST be a FRESH dedicated smoke
+# wallet whose address is pinned in the `base-mainnet` environment variable
+# SMOKE_DELEGATED_WALLET_ADDRESS; the v1 smoke wallet 0xB54900f2c355CB0A61c62f8220191D3aAA6f4455
+# and the spent Phase-5 canary wallet are refused by the script before any network call.
+# See script/smoke-delegated-executor-base-mainnet.mjs + docs/DELEGATED-MAINNET-SMOKE-RUNBOOK.md.
+#
+# This workflow is SEPARATE from (and does not modify) the v1 workflow
+# .github/workflows/smoke-executor-base-mainnet.yml. It NEVER deploys or reconfigures
+# anything: there is no forge build/deploy step, no broadcast of a contract creation, and
+# no call to any setter on the executor.
+#
+# Trigger: add the `smoke-delegated-base-mainnet` label to a PR from this repository.
+#   Manual: Actions > Run workflow on `main` only, with input confirm = `smoke-delegated-base-mainnet`.
+#   Job 1 `rehearse`  - NO secrets, NO key. Runs the offline gate test suite, then the exact
+#                       sequence against a LOCAL anvil fork of Base Mainnet using fork-only
+#                       derived principals (a separate signer and broadcaster). Nothing is
+#                       broadcast to Base Mainnet.
+#   Job 2 `preflight` - NO key. Strictly READ-ONLY against real Base Mainnet for the pinned
+#                       smoke wallet: every precondition (chain id, executor address/posture,
+#                       router/pool/tokens, owner/fee, funding, allowance/permit state, one-shot
+#                       guards) is evaluated and reported. A failing preflight means live is refused.
+#   Job 3 `live`      - Only after BOTH jobs above pass. Uses environment `base-mainnet`, whose
+#                       required reviewer must APPROVE the deployment in the Actions UI before the
+#                       job starts; the signer key is only injected after that approval. The script
+#                       re-runs every precondition, re-checks the key against the pinned address,
+#                       claims a one-shot ledger exclusively, and then sends EXACTLY ONE Base
+#                       Mainnet transaction before verifying the confirmed receipt on-chain.
+#
+# Permissions: read contents, write PR comments. No write access to anything on-chain.
+name: Delegated executor smoke test (Base Mainnet)
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type smoke-delegated-base-mainnet to run the fork rehearsal, the read-only preflight, then the approval-gated LIVE canary from main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: smoke-delegated-executor-base-mainnet
+  cancel-in-progress: false
+
+env:
+  # Non-secret pin for the dedicated smoke wallet. Set it in the repository/environment
+  # variables (Settings > Environments > base-mainnet > Variables). Empty => live is refused.
+  SMOKE_DELEGATED_WALLET_ADDRESS: ${{ vars.SMOKE_DELEGATED_WALLET_ADDRESS }}
+
+jobs:
+  rehearse:
+    name: Rehearse the delegated sequence on a local Base Mainnet fork (no key, nothing broadcast)
+    if: (github.event_name == 'pull_request' && github.event.label.name == 'smoke-delegated-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm == 'smoke-delegated-base-mainnet')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Offline safety-gate suite (every refusal, no network)
+        run: npx vitest run scripts/delegated-smoke-gates.test.ts test/workflows/smoke-delegated-executor-base-mainnet.test.ts --reporter=basic
+
+      - name: Full delegated sequence on a LOCAL anvil fork (fork-only principals, no key)
+        id: rehearse
+        env:
+          SECRET_RPC: ${{ secrets.BASE_MAINNET_RPC_URL }}
+        run: |
+          set +e
+          # Pick the first healthy Base Mainnet upstream (chainId 8453 + block number) to fork from.
+          UPSTREAM_RPC=""; FORK_BLOCK=""
+          for a in 1 2 3; do
+            for U in $SECRET_RPC https://mainnet.base.org https://base-rpc.publicnode.com https://base.drpc.org https://base.llamarpc.com https://1rpc.io/base; do
+              [ "$(cast chain-id --rpc-url "$U" 2>/dev/null)" = "8453" ] || continue
+              FORK_BLOCK="$(cast block-number --rpc-url "$U" 2>/dev/null)"
+              if [ -n "$FORK_BLOCK" ]; then UPSTREAM_RPC="$U"; break 2; fi
+            done
+            sleep $((a * 5))
+          done
+          if [ -z "$FORK_BLOCK" ]; then echo "::error::no healthy Base Mainnet RPC for the fork"; echo "status=1" >> "$GITHUB_OUTPUT"; exit 0; fi
+          anvil --fork-url "$UPSTREAM_RPC" --fork-block-number "$FORK_BLOCK" --host 127.0.0.1 --port 8545 \
+            --retries 10 --fork-retry-backoff 2000 --timeout 60000 > anvil.log 2>&1 &
+          ANVIL_PID=$!
+          trap 'kill $ANVIL_PID 2>/dev/null || true' EXIT
+          CID=""
+          for _ in $(seq 1 120); do CID="$(cast chain-id --rpc-url http://127.0.0.1:8545 2>/dev/null)"; [ -n "$CID" ] && break; sleep 1; done
+          if [ "$CID" != "8453" ]; then
+            echo "::error title=anvil fork did not start::chain-id='${CID}' log: $(grep -v -iE 'private key|0x[0-9a-f]{64}' anvil.log | tail -c 800 | tr '\n' ' ')"
+            echo "status=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "Forked Base Mainnet at block $FORK_BLOCK via $( [ "$UPSTREAM_RPC" = "$SECRET_RPC" ] && echo 'secret RPC' || echo "${UPSTREAM_RPC#https://}" )"
+          SMOKE_DELEGATED_MODE=rehearsal SMOKE_DELEGATED_RPC_URL=http://127.0.0.1:8545 \
+          SMOKE_DELEGATED_JSON=smoke-delegated-rehearsal.json SMOKE_DELEGATED_MD=smoke-delegated-rehearsal.md \
+            node script/smoke-delegated-executor-base-mainnet.mjs
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Report (summary + PR comment)
+        if: always() && hashFiles('smoke-delegated-rehearsal.json') != ''
+        run: |
+          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) == 0 then "::notice title=Delegated fork rehearsal::\(.status) - \(.checks | length) checks passed" else ($f[0:9][] | "::error title=Delegated fork rehearsal FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-delegated-rehearsal.json
+          if [ "$(jq -r .status smoke-delegated-rehearsal.json)" = "passed" ]; then
+            NEXT="**Next:** the read-only \`preflight\` job audits real Base Mainnet state for the pinned smoke wallet. Only if it is green does \`live\` wait for approval of environment \`base-mainnet\`; approving that sends EXACTLY ONE real swap (0.50 USDC -> WETH, signed Permit2 witness permit, no approval) from the dedicated smoke wallet."
+          else
+            NEXT="**Fork rehearsal did not pass - \`preflight\` and \`live\` will NOT run.**"
+          fi
+          { echo "<!-- mpgr-smoke-delegated-base-mainnet-rehearsal -->"; cat smoke-delegated-rehearsal.md; echo; echo "$NEXT"; } > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR" ]; then
+          ID=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("<!-- mpgr-smoke-delegated-base-mainnet-rehearsal -->"))][0].id // empty')
+          if [ -n "$ID" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@comment.md >/dev/null
+          else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('smoke-delegated-rehearsal.json') != ''
+        with:
+          name: smoke-delegated-rehearsal
+          path: |
+            smoke-delegated-rehearsal.json
+            smoke-delegated-rehearsal.md
+
+      - name: Result
+        if: always()
+        run: exit "${{ steps.rehearse.outputs.status || 1 }}"
+
+  preflight:
+    name: Read-only mainnet preflight for the pinned smoke wallet (no key, signs nothing)
+    needs: rehearse
+    if: needs.rehearse.result == 'success' && ((github.event_name == 'pull_request' && github.event.label.name == 'smoke-delegated-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm == 'smoke-delegated-base-mainnet'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # NO secrets.* context is referenced in this job except the optional RPC URL:
+      # preflight is read-only and must never see a key.
+      - name: Refuse to run without the non-secret wallet pin
+        run: |
+          set -e
+          if [ -z "${SMOKE_DELEGATED_WALLET_ADDRESS:-}" ]; then
+            echo "::error title=missing wallet pin::SMOKE_DELEGATED_WALLET_ADDRESS (an environment VARIABLE, not a secret) must name the fresh dedicated smoke wallet before preflight can audit it."
+            exit 1
+          fi
+
+      - name: Evaluate every live precondition against real mainnet state
+        id: preflight
+        env:
+          SMOKE_DELEGATED_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          SMOKE_DELEGATED_MODE: preflight
+          SMOKE_DELEGATED_JSON: smoke-delegated-preflight.json
+          SMOKE_DELEGATED_MD: smoke-delegated-preflight.md
+        run: |
+          set +e
+          node script/smoke-delegated-executor-base-mainnet.mjs
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Report (summary + PR comment)
+        if: always() && hashFiles('smoke-delegated-preflight.json') != ''
+        run: |
+          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) == 0 then "::notice title=Delegated mainnet preflight::\(.status) - \(.checks | length) checks passed; a live run would be allowed" else ($f[0:9][] | "::error title=Delegated preflight FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-delegated-preflight.json
+          { echo "<!-- mpgr-smoke-delegated-base-mainnet-preflight -->"; cat smoke-delegated-preflight.md; } > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR" ]; then
+          ID=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("<!-- mpgr-smoke-delegated-base-mainnet-preflight -->"))][0].id // empty')
+          if [ -n "$ID" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@comment.md >/dev/null
+          else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('smoke-delegated-preflight.json') != ''
+        with:
+          name: smoke-delegated-preflight
+          path: |
+            smoke-delegated-preflight.json
+            smoke-delegated-preflight.md
+
+      - name: Result
+        if: always()
+        run: exit "${{ steps.preflight.outputs.status || 1 }}"
+
+  live:
+    name: LIVE delegated canary on Base Mainnet (requires base-mainnet environment approval)
+    needs: [rehearse, preflight]
+    if: needs.rehearse.result == 'success' && needs.preflight.result == 'success' && ((github.event_name == 'pull_request' && github.event.label.name == 'smoke-delegated-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm == 'smoke-delegated-base-mainnet'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Required reviewer gate: the job (and access to the key) starts only after approval.
+    environment: base-mainnet
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # The one-shot ledger is the local half of the "cannot run twice" guard. The
+      # authoritative half is on-chain (the deterministic single-use Permit2 nonce +
+      # the SwapExecuted scan), which holds even if this cache is evicted.
+      - name: Restore the one-shot smoke ledger
+        uses: actions/cache/restore@v4
+        with:
+          path: .mpgr-delegated-smoke
+          key: mpgr-delegated-smoke-${{ github.ref_name }}-${{ env.SMOKE_DELEGATED_WALLET_ADDRESS }}
+          restore-keys: mpgr-delegated-smoke-
+
+      - name: Refuse to run without the dedicated smoke key, the pin and the confirmation phrase
+        env:
+          CANDIDATE_KEY: ${{ secrets.BASE_MAINNET_DELEGATED_SMOKE_PRIVATE_KEY }}
+        run: |
+          set -e
+          if [ -z "${CANDIDATE_KEY:-}" ]; then
+            echo "::error title=no smoke key::BASE_MAINNET_DELEGATED_SMOKE_PRIVATE_KEY is not configured. Create a FRESH dedicated wallet, fund it with ~1 USDC of gas, store its key as that secret and its address as the SMOKE_DELEGATED_WALLET_ADDRESS variable. The v1 smoke key is never used."
+            exit 1
+          fi
+          if [ -z "${SMOKE_DELEGATED_WALLET_ADDRESS:-}" ]; then
+            echo "::error title=missing wallet pin::SMOKE_DELEGATED_WALLET_ADDRESS must be set (environment variable) to the fresh smoke wallet address, or the script cannot verify which key it is allowed to use."
+            exit 1
+          fi
+
+      - name: Sign + broadcast EXACTLY ONE delegated swap, then verify on-chain
+        id: live
+        env:
+          # Key is passed to this single step only, via env (never argv), never printed,
+          # and deleted from the process environment by the script once it is loaded.
+          SMOKE_DELEGATED_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DELEGATED_SMOKE_PRIVATE_KEY }}
+          # The non-secret pin the derived address must match.
+          SMOKE_DELEGATED_WALLET_ADDRESS: ${{ env.SMOKE_DELEGATED_WALLET_ADDRESS }}
+          # Optional private RPC first; the script adds public Base RPC fallbacks
+          # (mainnet.base.org, publicnode, drpc, llamarpc, 1rpc) with retry/backoff/failover.
+          SMOKE_DELEGATED_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          # Second confirmation layer, independent of the job condition: the script refuses
+          # to sign unless this equals smoke-delegated-base-mainnet exactly.
+          SMOKE_DELEGATED_CONFIRM: ${{ github.event.label.name || inputs.confirm }}
+          SMOKE_DELEGATED_MODE: live
+          SMOKE_DELEGATED_JSON: smoke-delegated-live.json
+          SMOKE_DELEGATED_MD: smoke-delegated-live.md
+        run: |
+          set +e
+          node script/smoke-delegated-executor-base-mainnet.mjs
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Save the one-shot smoke ledger (even if the run failed)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .mpgr-delegated-smoke
+          key: mpgr-delegated-smoke-${{ github.ref_name }}-${{ env.SMOKE_DELEGATED_WALLET_ADDRESS }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report (annotations, summary, PR comment)
+        if: always() && hashFiles('smoke-delegated-live.json') != ''
+        run: |
+          jq -r '"::notice title=Delegated mainnet smoke tx::swap=\(.txs.swap.hash // "not sent") status=\(.status) broadcasts=\(.broadcastCount)"' smoke-delegated-live.json
+          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) == 0 then "::notice title=Delegated mainnet smoke checks::\(.checks | length) passed, 0 failed" else ($f[0:9][] | "::error title=Delegated mainnet smoke FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-delegated-live.json
+          { echo "<!-- mpgr-smoke-delegated-base-mainnet-live -->"; cat smoke-delegated-live.md; } > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR" ]; then
+          ID=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("<!-- mpgr-smoke-delegated-base-mainnet-live -->"))][0].id // empty')
+          if [ -n "$ID" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@comment.md >/dev/null
+          else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('smoke-delegated-live.json') != ''
+        with:
+          name: smoke-delegated-live
+          path: |
+            smoke-delegated-live.json
+            smoke-delegated-live.md
+
+      - name: Result
+        if: always()
+        run: exit "${{ steps.live.outputs.status || 1 }}"
