@@ -461,6 +461,26 @@ describe("delegated smoke workflow: one-shot ledger and reporting", () => {
     }
   });
 
+  it("never annotates the rehearsal's informational mainnet-readiness notes as failures", () => {
+    const rehearse = jobText("rehearse");
+    // The fork principals are derived fresh from public labels, so on real
+    // mainnet they hold 0 USDC and have approved Permit2 nothing — recorded as
+    // informational notes, which must never raise an ::error annotation.
+    expect(rehearse).toContain("map(select((.ok | not) and (.informational | not)))");
+    expect(rehearse).toContain("informational note(s) about real mainnet state the fork provisions locally");
+    // Every genuine failure is still annotated, and the job's verdict is still
+    // the script's own exit code.
+    expect(rehearse).toContain("::error title=Delegated fork rehearsal FAILED");
+    expect(rehearse).toContain('exit "${{ steps.rehearse.outputs.status || 1 }}"');
+    // preflight and live keep the strict `.ok | not` filter: they audit the
+    // REAL wallet, where these same preconditions are fatal, and the runner's
+    // rehearsalNote() aborts outside rehearsal so no note can exist there.
+    for (const job of ["preflight", "live"] as const) {
+      expect(jobText(job), job).toContain("map(select(.ok | not))");
+      expect(jobText(job), job).not.toContain("informational");
+    }
+  });
+
   it("keeps the key and RPC secrets out of argv and out of logs", () => {
     // Keys are injected as env for one step; never echoed, never on a command line.
     expect(workflow).not.toMatch(/echo[^\n]*\$\{\{ secrets\./);

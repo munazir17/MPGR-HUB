@@ -1071,9 +1071,42 @@ export function renderTitle(mode) {
   return "MPGRExecutorDelegated — Base Mainnet delegated smoke (LOCAL FORK REHEARSAL, nothing broadcast)";
 }
 
+/**
+ * True for a recorded OBSERVATION that is deliberately not a verdict.
+ *
+ * The only such rows are the REHEARSAL's notes about REAL MAINNET state that
+ * the fork then provisions locally (the principal's mainnet USDC balance and
+ * its mainnet USDC->Permit2 approval). They are derived from freshly derived,
+ * never-funded fork accounts, so they are ALWAYS unsatisfied by construction —
+ * recording them keeps the report honest, but letting them decide the run
+ * would mean a local fork rehearsal can never succeed.
+ *
+ * Informational is a REHEARSAL-ONLY concept applied to reads of mainnet state
+ * the fork is about to replace. It never applies to a fork-state check and
+ * never to `preflight`/`live`, where those same preconditions are read from
+ * the real wallet and stay fatal in `evaluateLivePreconditions`.
+ */
+export function isInformational(check) {
+  return check?.informational === true;
+}
+
+/**
+ * The checks that DECIDE the run — the single source of truth for the exit
+ * code. Everything that is not an informational note must hold.
+ */
+export function blockingFailures(checks = []) {
+  return checks.filter((c) => !c.ok && !isInformational(c));
+}
+
 export function summarizeChecks(checks = []) {
-  const passed = checks.filter((c) => c.ok).length;
-  return { passed, total: checks.length, failed: checks.filter((c) => !c.ok).map((c) => `${c.stage}: ${c.name}`) };
+  const decisive = checks.filter((c) => !isInformational(c));
+  const passed = decisive.filter((c) => c.ok).length;
+  return {
+    passed,
+    total: decisive.length,
+    failed: blockingFailures(checks).map((c) => `${c.stage}: ${c.name}`),
+    informational: checks.length - decisive.length,
+  };
 }
 
 /** Trims the noise out of an error before it can reach a report. */

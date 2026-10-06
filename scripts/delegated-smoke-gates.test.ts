@@ -87,6 +87,7 @@ import {
   buildLedgerEntry,
   buildPermit2Authorization,
   buildPermitTypedData,
+  blockingFailures,
   buildSwapParams,
   canaryIdentityFor,
   codeDispatchesSelector,
@@ -101,6 +102,7 @@ import {
   evaluateSignerIdentity,
   feeSplit,
   isBytes32,
+  isInformational,
   isLocalRpc,
   isPrivateKeyShape,
   KNOWN_REVERT_SELECTORS,
@@ -1450,8 +1452,163 @@ describe("report helpers", () => {
       { stage: "a", name: "bad", ok: false, detail: "x" },
       { stage: "b", name: "worse", ok: false, detail: "y" },
     ]);
-    expect(s).toEqual({ passed: 1, total: 3, failed: ["a: bad", "b: worse"] });
-    expect(summarizeChecks()).toEqual({ passed: 0, total: 0, failed: [] });
+    expect(s).toEqual({ passed: 1, total: 3, failed: ["a: bad", "b: worse"], informational: 0 });
+    expect(summarizeChecks()).toEqual({ passed: 0, total: 0, failed: [], informational: 0 });
+  });
+
+  it("keeps informational notes out of the pass/fail tally entirely", () => {
+    const s = summarizeChecks([
+      { stage: "a", name: "ok", ok: true, detail: "" },
+      { stage: "3. live posture reads (read-only)", name: "note", ok: false, detail: "0 USDC on mainnet", informational: true },
+    ]);
+    // 1/1 — not 1/2, and certainly not a failure.
+    expect(s).toEqual({ passed: 1, total: 1, failed: [], informational: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: a LOCAL FORK rehearsal must not be failed by REAL MAINNET facts
+// it cannot possibly satisfy.
+//
+// The rehearsal principals are derived fresh from public labels, so on real
+// mainnet they hold 0 USDC and have approved Permit2 nothing — by
+// construction, forever. Both observations are recorded (the report stays
+// honest) but they are INFORMATIONAL: they can never decide the exit code.
+// `preflight` and `live` read the same two preconditions from the real pinned
+// wallet, where they remain FATAL.
+// ---------------------------------------------------------------------------
+describe("rehearsal 'real mainnet readiness' notes cannot fail the fork rehearsal", () => {
+  // The exact names the runner emits, so renaming one without revisiting this
+  // guarantee breaks the suite.
+  const MAINNET_USDC_NOTE = "rehearsal principal holds 0.50 USDC on real mainnet (informational: a fork top-up follows)";
+  const MAINNET_APPROVAL_NOTE =
+    "rehearsal principal already holds the one-time USDC->Permit2 approval on real mainnet (informational: a fork-only approval follows)";
+
+  /** Exactly how the runner records them: observed-false, flagged informational. */
+  const mainnetNotes = () => [
+    { stage: "3. live posture reads (read-only)", name: MAINNET_USDC_NOTE, ok: false, detail: "holds 0.000000 USDC (0 raw)", informational: true },
+    { stage: "3. live posture reads (read-only)", name: MAINNET_APPROVAL_NOTE, ok: false, detail: "allowance 0 raw < 500000", informational: true },
+  ];
+
+  it("emits both notes through rehearsalNote(), which refuses to run outside rehearsal", () => {
+    expect(runnerSource).toContain(`rehearsalNote(\n      ${JSON.stringify(MAINNET_USDC_NOTE)}`);
+    expect(runnerSource).toContain(`rehearsalNote(\n      ${JSON.stringify(MAINNET_APPROVAL_NOTE)}`);
+    // The helper is the ONLY way to mark a check informational, and it aborts
+    // in any other mode — a live/preflight gate can never be downgraded.
+    expect(runnerSource).toMatch(/function rehearsalNote\([\s\S]{0,400}?if \(!REHEARSAL\) \{\s*\n\s*throw new Abort\(/);
+    expect(runnerSource).toMatch(/rehearsal-only — \$\{MODE\} must enforce this precondition/);
+    // Nothing else in the runner may set the flag by hand.
+    expect(runnerSource.match(/informational: true/g)?.length).toBe(2); // the check() record + the rehearsalNote() call
+    expect(runnerSource).not.toMatch(/must\([^)]*informational/);
+  });
+
+  it("derives the exit code from blockingFailures(), not from a raw !ok filter", () => {
+    expect(runnerSource).toContain("const failed = blockingFailures(report.checks);");
+    expect(runnerSource).toContain("exitCode = failed.length === 0 ? 0 : 1;");
+    expect(runnerSource).not.toContain("report.checks.filter((c) => !c.ok)");
+  });
+
+  it("PROOF: a rehearsal whose every real check passes exits 0 despite both notes", () => {
+    const rehearsalChecks = [
+      { stage: "0. environment", name: "rehearsal uses exactly ONE local anvil RPC", ok: true, detail: "" },
+      ...mainnetNotes(),
+      { stage: "3. live posture reads (read-only)", name: "fork-only USDC top-up applied for exactly the campaign gross (local anvil state only)", ok: true, detail: "" },
+      { stage: "3. live posture reads (read-only)", name: "fork-only one-time USDC->Permit2 approval applied for exactly the gross (local anvil state only)", ok: true, detail: "" },
+      { stage: "3. live preconditions", name: "eth_call simulation of the signed delegated swap succeeds", ok: true, detail: "ok" },
+      { stage: "7. post-trade", name: "all post-trade conditions hold", ok: true, detail: "" },
+    ];
+    expect(blockingFailures(rehearsalChecks)).toEqual([]);
+    // This is literally the runner's exit expression.
+    expect(blockingFailures(rehearsalChecks).length === 0 ? 0 : 1).toBe(0);
+    const s = summarizeChecks(rehearsalChecks);
+    expect(s.failed).toEqual([]);
+    expect(s).toMatchObject({ passed: 5, total: 5, informational: 2 });
+  });
+
+  it("is not a blanket amnesty: any NON-informational failure still exits 1", () => {
+    const withRealFailure = [
+      ...mainnetNotes(),
+      { stage: "3. live preconditions", name: "eth_call simulation of the signed delegated swap succeeds", ok: false, detail: 'Error("TRANSFER_FROM_FAILED")' },
+    ];
+    expect(blockingFailures(withRealFailure).map((c) => c.name)).toEqual(["eth_call simulation of the signed delegated swap succeeds"]);
+    expect(blockingFailures(withRealFailure).length === 0 ? 0 : 1).toBe(1);
+    // A fork-state assertion failing is equally fatal.
+    expect(
+      blockingFailures([
+        ...mainnetNotes(),
+        { stage: "3. live posture reads (read-only)", name: "fork-only USDC top-up applied for exactly the campaign gross (local anvil state only)", ok: false, detail: "" },
+      ]),
+    ).toHaveLength(1);
+  });
+
+  it("only the two mainnet-readiness rows are informational — never a fork-state or gate row", () => {
+    expect(isInformational({ ok: false, informational: true })).toBe(true);
+    expect(isInformational({ ok: false })).toBe(false);
+    expect(isInformational({ ok: false, informational: false })).toBe(false);
+    expect(isInformational(undefined)).toBe(false);
+    // `skipped` is a different concept and must not be swallowed by it.
+    expect(isInformational({ ok: true, skipped: true })).toBe(false);
+    // No gate in the pure module ever emits an informational row: the gates are
+    // verdicts, and the rehearsal notes are produced by the runner alone.
+    for (const result of [
+      evaluateLivePreconditions(greenFacts()),
+      evaluateLivePreconditions(greenFacts({ walletUsdc: 0n, walletAllowanceToPermit2: 0n })),
+      evaluateModeGuard({
+        mode: MODES.REHEARSAL,
+        rpcUrls: ["http://127.0.0.1:8545"],
+        keyEnvValue: undefined,
+        walletPinEnvValue: undefined,
+        githubActions: undefined,
+        emergencyDisabled: false,
+      }),
+    ]) {
+      expect(result.checks.some((c: { informational?: boolean }) => c.informational === true)).toBe(false);
+    }
+  });
+
+  it("PREFLIGHT and LIVE still REFUSE the very state the rehearsal only notes", () => {
+    // Zero mainnet USDC and zero mainnet Permit2 approval: a note on the fork,
+    // a hard refusal for a real wallet.
+    for (const mode of [MODES.PREFLIGHT, MODES.LIVE]) {
+      const r = evaluateLivePreconditions(greenFacts({ mode, walletUsdc: 0n, walletAllowanceToPermit2: 0n }));
+      expect(r.allowed).toBe(false);
+      const blockers = blockerNames(r).join(" | ");
+      expect(blockers).toContain("smoke wallet USDC balance >= 500,000 raw");
+      expect(blockers).toContain("allowance wallet->Permit2 covers the gross");
+      // Both are fatal verdicts, not notes and not non-fatal advisories.
+      for (const name of ["smoke wallet USDC balance >= 500,000 raw", "allowance wallet->Permit2 covers the gross"]) {
+        const c = checkNamed(r, name);
+        expect(c?.ok).toBe(false);
+        expect(c?.fatal).not.toBe(false);
+        expect((c as { informational?: boolean } | undefined)?.informational).toBeUndefined();
+      }
+    }
+  });
+
+  it("REHEARSAL's own gate still judges the provisioned FORK state, unweakened", () => {
+    // The notes describe mainnet; the gate runs against post-provisioning fork
+    // state, where the same two preconditions must hold exactly.
+    const forkReady = greenFacts({ mode: MODES.REHEARSAL, walletUsdc: GROSS_AMOUNT_IN, walletAllowanceToPermit2: GROSS_AMOUNT_IN });
+    expect(evaluateLivePreconditions(forkReady).allowed).toBe(true);
+    for (const broken of [
+      { walletUsdc: GROSS_AMOUNT_IN - 1n },
+      { walletAllowanceToPermit2: GROSS_AMOUNT_IN - 1n },
+      { walletAllowanceToExecutor: 1n },
+      { permit2AllowanceAmount: 1n },
+    ]) {
+      expect(evaluateLivePreconditions({ ...forkReady, ...broken }).allowed).toBe(false);
+    }
+  });
+
+  it("provisions the fork with EXACTLY the gross — balance and approval — and nothing for the executor", () => {
+    expect(runnerSource).toContain("const target = GROSS_AMOUNT_IN;");
+    expect(runnerSource).not.toContain("GROSS_AMOUNT_IN * 3n");
+    // Exact-equality must() assertions, so a drifting top-up aborts the run.
+    expect(runnerSource).toMatch(/must\(\s*\n\s*"fork-only USDC top-up applied for exactly the campaign gross \(local anvil state only\)",\s*\n\s*topped === GROSS_AMOUNT_IN,/);
+    expect(runnerSource).toMatch(/must\(\s*\n\s*"fork-only one-time USDC->Permit2 approval applied for exactly the gross \(local anvil state only\)",\s*\n\s*approved === REQUIRED_PERMIT2_TOKEN_ALLOWANCE,/);
+    expect(runnerSource).toMatch(/must\(\s*\n\s*"the fork-only approval went to Permit2 ONLY — the executor is still not approved",\s*\n\s*\(await allowance\(USDC, wallet, DELEGATED_EXECUTOR\)\) === 0n,/);
+    expect(REQUIRED_PERMIT2_TOKEN_ALLOWANCE).toBe(500_000n);
+    expect(GROSS_AMOUNT_IN).toBe(500_000n);
   });
 });
 

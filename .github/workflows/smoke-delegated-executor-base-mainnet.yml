@@ -2,7 +2,8 @@
 #
 # Exactly 0.50 USDC -> WETH through the deployed MPGRExecutorDelegated
 # (0x39B1C6Ea88A01e70cbF4899BF3cEfB2c43cD32Bb) via swapOnBehalfOfUniswapV3, authorized
-# by a user-signed Permit2 WITNESS PERMIT (no ERC-20 approval anywhere) with the 25 bps
+# by a user-signed Permit2 WITNESS PERMIT plus the ONE-TIME USDC.approve(Permit2, 500000) the
+# SignatureTransfer pull needs (the executor itself is NEVER approved), with the 25 bps
 # MPGR fee taken atomically inside the same swap. Signer MUST be a FRESH dedicated smoke
 # wallet whose address is pinned in the `base-mainnet` environment variable
 # SMOKE_DELEGATED_WALLET_ADDRESS; the v1 smoke wallet 0xB54900f2c355CB0A61c62f8220191D3aAA6f4455
@@ -120,9 +121,9 @@ jobs:
       - name: Report (summary + PR comment)
         if: always() && hashFiles('smoke-delegated-rehearsal.json') != ''
         run: |
-          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) == 0 then "::notice title=Delegated fork rehearsal::\(.status) - \(.checks | length) checks passed" else ($f[0:9][] | "::error title=Delegated fork rehearsal FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-delegated-rehearsal.json
+          jq -r '(.checks | map(select((.ok | not) and (.informational | not)))) as $f | (.checks | map(select(.informational)) | length) as $n | if ($f | length) == 0 then "::notice title=Delegated fork rehearsal::\(.status) - \((.checks | length) - $n) checks passed, \($n) informational note(s) about real mainnet state the fork provisions locally" else ($f[0:9][] | "::error title=Delegated fork rehearsal FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-delegated-rehearsal.json
           if [ "$(jq -r .status smoke-delegated-rehearsal.json)" = "passed" ]; then
-            NEXT="**Next:** the read-only \`preflight\` job audits real Base Mainnet state for the pinned smoke wallet. Only if it is green does \`live\` wait for approval of environment \`base-mainnet\`; approving that sends EXACTLY ONE real swap (0.50 USDC -> WETH, signed Permit2 witness permit, no approval) from the dedicated smoke wallet."
+            NEXT="**Next:** the read-only \`preflight\` job audits real Base Mainnet state for the pinned smoke wallet. Only if it is green does \`live\` wait for approval of environment \`base-mainnet\`; approving that sends EXACTLY ONE real swap (0.50 USDC -> WETH, signed Permit2 witness permit, which needs the operator's one-time USDC.approve(Permit2, 500000) — the executor is never approved) from the dedicated smoke wallet."
           else
             NEXT="**Fork rehearsal did not pass - \`preflight\` and \`live\` will NOT run.**"
           fi

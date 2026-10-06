@@ -19,6 +19,12 @@ export interface GateCheck {
   detail: string;
   fatal?: boolean;
   skipped?: boolean;
+  /**
+   * A recorded observation that is deliberately NOT a verdict: rehearsal-only
+   * notes about real mainnet state the local fork then provisions. Never set
+   * on a fork-state check, and never in preflight/live.
+   */
+  informational?: boolean;
 }
 
 export interface GateResult {
@@ -337,4 +343,13 @@ export declare function evaluateLedgerClaim(input?: { wallet?: string; ledgerDir
 export declare function rehearsalPrincipal(label: string): { privateKey: Hex; label: string };
 export declare function rehearsalPrincipals(): { owner: { privateKey: Hex; label: string }; broadcaster: { privateKey: Hex; label: string } };
 export declare function renderTitle(mode: unknown): string;
-export declare function summarizeChecks(checks?: GateCheck[]): { passed: number; total: number; failed: string[] };
+/** True for a recorded observation that is deliberately not a verdict. */
+export declare function isInformational(check: unknown): boolean;
+/** The checks that decide the exit code: everything that is not informational. */
+export declare function blockingFailures(checks?: GateCheck[]): GateCheck[];
+export declare function summarizeChecks(checks?: GateCheck[]): {
+  passed: number;
+  total: number;
+  failed: string[];
+  informational: number;
+};

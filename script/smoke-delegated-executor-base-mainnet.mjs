@@ -125,6 +125,7 @@ import {
   buildLedgerEntry,
   buildPermit2Authorization,
   buildPermitTypedData,
+  blockingFailures,
   buildSwapParams,
   canaryIdentityFor,
   describeContractError,
@@ -376,10 +377,43 @@ function stage(name) {
   console.log(`\n== ${name}`);
 }
 
-function check(name, ok, detail = "", { skipped = false, stageName = report.stage } = {}) {
-  report.checks.push({ stage: stageName, name, ok: Boolean(ok), detail: String(detail), skipped });
-  console.log(`${skipped ? "SKIP" : ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${redact(String(detail), SECRETS).slice(0, 300)})` : ""}`);
+function check(name, ok, detail = "", { skipped = false, stageName = report.stage, informational = false } = {}) {
+  report.checks.push({
+    stage: stageName,
+    name,
+    ok: Boolean(ok),
+    detail: String(detail),
+    skipped,
+    ...(informational ? { informational: true } : {}),
+  });
+  const label = informational ? "INFO" : skipped ? "SKIP" : ok ? "PASS" : "FAIL";
+  console.log(`${label}  ${name}${detail ? `  (${redact(String(detail), SECRETS).slice(0, 300)})` : ""}`);
   return Boolean(ok);
+}
+
+/**
+ * A REHEARSAL-ONLY observation of REAL MAINNET state that the local fork is
+ * about to provision — recorded and printed, but never a verdict.
+ *
+ * The rehearsal's principals are derived fresh from public labels
+ * (`keccak256("mpgr-delegated-smoke-rehearsal:<label>")`), so on real mainnet
+ * they hold 0 USDC and have granted Permit2 nothing. That is true BY
+ * CONSTRUCTION and can never be otherwise: letting it decide the run would
+ * mean the fork rehearsal always exits non-zero no matter how perfectly the
+ * delegated sequence executed. The note keeps the report honest about what
+ * mainnet actually looks like; the fork-state `must()` assertions that follow
+ * are what the rehearsal is judged on.
+ *
+ * This refuses to exist outside rehearsal: `preflight` and `live` read these
+ * same two preconditions from the REAL pinned wallet, where they stay FATAL
+ * in `evaluateLivePreconditions`. No live gate can ever be downgraded to a
+ * note by reusing this helper.
+ */
+function rehearsalNote(name, detail, stageName = report.stage) {
+  if (!REHEARSAL) {
+    throw new Abort(`internal: rehearsalNote(${JSON.stringify(name)}) is rehearsal-only — ${MODE} must enforce this precondition`);
+  }
+  check(name, false, detail, { stageName, informational: true });
 }
 
 /** A single must-hold check: a failure aborts before anything can be signed. */
@@ -914,21 +948,28 @@ async function main() {
   // LOCAL FORK (never on Base Mainnet) and record the mainnet shortfall.
   if (REHEARSAL && walletUsdc < GROSS_AMOUNT_IN) {
     const shortfall = usdcFmt(walletUsdc);
-    check(
+    rehearsalNote(
       "rehearsal principal holds 0.50 USDC on real mainnet (informational: a fork top-up follows)",
-      false,
       `${shortallNote(shortfall)} — fork-only top-up applied so the sequence is still rehearsed against real mainnet contracts`,
-      { stageName: "3. live posture reads (read-only)" },
+      "3. live posture reads (read-only)",
     );
     const balanceData = encodeFunctionData({ abi: ERC20_ABI, functionName: "balanceOf", args: [wallet] });
-    const target = GROSS_AMOUNT_IN * 3n;
+    // Least privilege, mirroring the fork-only Permit2 approval below: the
+    // principal is given EXACTLY the campaign gross and nothing more, so the
+    // one canary trade consumes its whole balance and no fork-only surplus can
+    // ever mask a wrong amount.
+    const target = GROSS_AMOUNT_IN;
     const found = await probeMappingSlot(pub, USDC, balanceData, target, (slot) =>
       keccak256(encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [wallet, slot])),
     );
     must("located the USDC balance slot for the fork-only top-up", found !== null, found ? `mapping slot ${found.slot}` : "not found");
     await pub.request({ method: "anvil_setStorageAt", params: [USDC, found.key, pad(toHex(target), { size: 32 })] });
     const topped = await bal(USDC, wallet);
-    must("fork-only USDC top-up applied (local anvil state only)", topped === target, usdcFmt(topped));
+    must(
+      "fork-only USDC top-up applied for exactly the campaign gross (local anvil state only)",
+      topped === GROSS_AMOUNT_IN,
+      `${usdcFmt(topped)} == exactly ${GROSS_AMOUNT_IN} raw`,
+    );
     fact("forkTopUpUnits", (target - walletUsdc).toString());
   }
   if (REHEARSAL) {
@@ -959,11 +1000,10 @@ async function main() {
    * executor is still never approved by anyone.
    */
   if (REHEARSAL && walletAllowanceToPermit2 < REQUIRED_PERMIT2_TOKEN_ALLOWANCE) {
-    check(
+    rehearsalNote(
       "rehearsal principal already holds the one-time USDC->Permit2 approval on real mainnet (informational: a fork-only approval follows)",
-      false,
       `allowance ${walletAllowanceToPermit2} raw < ${REQUIRED_PERMIT2_TOKEN_ALLOWANCE} — a fork-only approval of exactly the gross is applied so the Permit2 pull is rehearsed against the real Permit2 contract`,
-      { stageName: "3. live posture reads (read-only)" },
+      "3. live posture reads (read-only)",
     );
     const allowanceData = encodeFunctionData({ abi: ERC20_ABI, functionName: "allowance", args: [wallet, CANONICAL_PERMIT2] });
     // FiatToken keeps allowances in a nested mapping: allowed[owner][spender].
@@ -1470,7 +1510,9 @@ function renderMarkdown() {
   lines.push(`| Broadcaster (msg.sender) | \`${report.broadcaster ?? "— (read-only mode)"}\` |`);
   lines.push(`| Chain | ${NETWORK_LABEL} ${CHAIN_ID} |`);
   lines.push(`| Executor (delegated) | \`${DELEGATED_EXECUTOR}\` |`);
-  lines.push(`| Authorization | Permit2 witness permit (no ERC-20 approval) via \`swapOnBehalfOfUniswapV3\` |`);
+  lines.push(
+    `| Authorization | Permit2 witness permit via \`swapOnBehalfOfUniswapV3\`, which needs the operator's one-time USDC.approve(Permit2, 500000); the executor is NEVER approved |`,
+  );
   lines.push(
     `| Trade | 0.50 USDC → WETH · gross ${GROSS_AMOUNT_IN} / fee ${EXPECTED_FEE_AMOUNT} (25 bps) / swap ${SWAP_AMOUNT_IN} · Uniswap V3 fee ${UNISWAP_V3_POOL_FEE} · recipient = signer · unwrapNativeOut false |`,
   );
@@ -1493,11 +1535,15 @@ function renderMarkdown() {
     );
   lines.push("");
   const summary = summarizeChecks(report.checks);
-  lines.push(`<details${ok ? "" : " open"}><summary>Checks: ${summary.passed}/${summary.total} passed</summary>`, "");
+  lines.push(
+    `<details${ok ? "" : " open"}><summary>Checks: ${summary.passed}/${summary.total} passed${summary.informational > 0 ? ` (+ ${summary.informational} informational rehearsal note${summary.informational === 1 ? "" : "s"} — real mainnet state the fork provisions locally; never a verdict)` : ""}</summary>`,
+    "",
+  );
   lines.push("| | Stage | Check | Detail |", "|---|---|---|---|");
   const cell = (text) => String(text).replace(/\|/g, "\\|").replace(/\n/g, " ");
   for (const c of report.checks) {
-    lines.push(`| ${c.skipped ? "⏭️" : c.ok ? "✅" : "❌"} | ${cell(c.stage)} | ${cell(c.name)} | ${cell(redact(c.detail, SECRETS)).slice(0, 400)} |`);
+    const icon = c.informational ? "ℹ️" : c.skipped ? "⏭️" : c.ok ? "✅" : "❌";
+    lines.push(`| ${icon} | ${cell(c.stage)} | ${cell(c.name)} | ${cell(redact(c.detail, SECRETS)).slice(0, 400)} |`);
   }
   lines.push("", "</details>", "");
   if (f.simulationFailure) {
@@ -1551,7 +1597,11 @@ function jsonReplacer(_k, v) {
 let exitCode = 1;
 try {
   await main();
-  const failed = report.checks.filter((c) => !c.ok);
+  // The exit code is decided by blockingFailures(): every check EXCEPT the
+  // rehearsal-only notes about real mainnet state the fork then provisions.
+  // Those are unsatisfiable by construction for a freshly derived principal,
+  // so counting them would make a perfect rehearsal exit non-zero forever.
+  const failed = blockingFailures(report.checks);
   report.status = failed.length === 0 ? "passed" : "failed";
   exitCode = failed.length === 0 ? 0 : 1;
 } catch (err) {
@@ -1571,7 +1621,9 @@ try {
     console.log(`report write failed: ${err?.code ?? err}`);
   }
   const summary = summarizeChecks(report.checks);
-  console.log(`\nresult: ${report.status} (${summary.passed}/${summary.total} checks passed)`);
+  console.log(
+    `\nresult: ${report.status} (${summary.passed}/${summary.total} checks passed${summary.informational > 0 ? `, ${summary.informational} informational rehearsal note(s) not counted` : ""})`,
+  );
   console.log(`swap tx:  ${report.txs.swap?.hash ?? "not sent"}`);
   if (report.broadcastCount > 1) console.log(`!! ${report.broadcastCount} broadcasts (at most 1 is allowed)`);
 }
