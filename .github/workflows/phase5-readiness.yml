@@ -50,7 +50,7 @@ jobs:
     outputs:
       armed: ${{ steps.mode.outputs.armed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Resolve arming mode
         id: mode
         run: |
@@ -119,7 +119,7 @@ jobs:
     timeout-minutes: 25
     environment: base-sepolia
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -161,7 +161,7 @@ jobs:
     timeout-minutes: 10
     environment: base-sepolia
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 20
