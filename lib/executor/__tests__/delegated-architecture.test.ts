@@ -26,6 +26,8 @@ import { getAddress, type Address, type Hex } from "viem";
 
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, RouterKind } from "@/lib/executor/executor-config";
 import { delegatedActionId, isDelegatedChainId } from "@/lib/executor/delegated-executor";
+import { BASE_PAIRS } from "@/lib/markets/base-pairs";
+import { COINBASE_B20_TOKENIZED_STOCKS } from "@/lib/trade/tokenized-stocks";
 import {
   delegatedSlotId,
   policyHashFor,
@@ -240,11 +242,69 @@ describe("§B mainnet delegated deploy config ↔ TypeScript route table consist
     const configured = new Set(DEPLOY_CONFIG.tokens.map((t) => t.address.toLowerCase()));
     const missing = BASE_MAINNET_EXECUTOR_DEPLOYMENT.tokens.filter((t) => !configured.has(t.address.toLowerCase()));
     expect(missing).toEqual([]);
-    expect(DEPLOY_CONFIG.tokens).toHaveLength(15);
-    // Decimals agree with the registry (a mismatch would mis-scale parsed amounts).
+    expect(DEPLOY_CONFIG.tokens).toHaveLength(50);
+    // Decimals agree with the v1 registry for every token the registry carries
+    // (a mismatch would mis-scale parsed amounts). Tokens beyond the v1 set are
+    // pinned by the canonical-source invariants below.
     for (const t of DEPLOY_CONFIG.tokens) {
       const reg = BASE_MAINNET_EXECUTOR_DEPLOYMENT.tokens.find((x) => x.address.toLowerCase() === t.address.toLowerCase());
-      expect({ symbol: t.symbol, decimals: reg?.decimals }).toEqual({ symbol: t.symbol, decimals: t.decimals });
+      if (!reg) continue;
+      expect({ symbol: t.symbol, decimals: reg.decimals }).toEqual({ symbol: t.symbol, decimals: t.decimals });
+    }
+  });
+
+  it("is UNIVERSAL: every live B20 stock and every official wrapped asset is allowlisted", () => {
+    const configured = new Set(DEPLOY_CONFIG.tokens.map((t) => t.address.toLowerCase()));
+    // (a) ALL currently live Coinbase B20 tokenized stocks (38) are in the config.
+    const liveStocks = BASE_PAIRS.filter((p) => p.kind === "b20-stock" && p.live);
+    expect(liveStocks.length).toBeGreaterThan(0);
+    expect(liveStocks.filter((p) => !configured.has(p.address.toLowerCase()))).toEqual([]);
+    // (b) The three issued-but-launch-pending B20s stay pinned ahead of launch
+    //     (refused by every app trade surface until Base lists them live).
+    for (const ticker of ["COINc", "CRCLc", "INTCc"]) {
+      const pair = BASE_PAIRS.find((p) => p.symbol === ticker);
+      expect({ ticker, configured: configured.has(pair!.address.toLowerCase()) }).toEqual({ ticker, configured: true });
+    }
+    // (c) Every official Coinbase wrapped asset from the typed base-pairs
+    //     allowlist (cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA) plus cbZEC
+    //     (official Coinbase announcement 2026-09-02, address pinned in
+    //     lib/markets/__tests__/base-pairs.test.ts) is in the config.
+    const wrapped = BASE_PAIRS.filter((p) => p.kind === "wrapped");
+    expect(wrapped.filter((p) => !configured.has(p.address.toLowerCase()))).toEqual([]);
+    const CBZEC = "0xB2000000000000000000008501b13360000cb2EC";
+    expect(configured.has(CBZEC.toLowerCase())).toBe(true);
+  });
+
+  it("never invents an allowlist address: every config token comes from a canonical repo source", () => {
+    const canonical = new Set<string>([
+      ...COINBASE_B20_TOKENIZED_STOCKS.map((s) => s.address.toLowerCase()),
+      ...BASE_PAIRS.map((p) => p.address.toLowerCase()),
+      // cbZEC: committed in lib/markets/__tests__/base-pairs.test.ts with its
+      // official Coinbase source; cbHYPE stays a runtime setTokenAllowed candidate.
+      "0xB2000000000000000000008501b13360000cb2EC".toLowerCase(),
+      // Canonical Base USDC + WETH (the same pins as config.weth, the v1
+      // executor registry, executor-config.ts and the deploy script constants).
+      "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".toLowerCase(),
+      "0x4200000000000000000000000000000000000006".toLowerCase(),
+    ]);
+    const invented = DEPLOY_CONFIG.tokens.filter((t) => !canonical.has(t.address.toLowerCase()));
+    expect(invented).toEqual([]);
+  });
+
+  it("EXCLUDES the 19 announced-not-live B20 addresses until Base lists them live", () => {
+    const configured = new Set(DEPLOY_CONFIG.tokens.map((t) => t.address.toLowerCase()));
+    const announced = BASE_PAIRS.filter((p) => p.kind === "b20-stock" && !p.live);
+    // 22 not-live total: the 3 launch-pending originals are pinned (asserted
+    // above); the 19 announced-only addresses must NOT be in the deploy config —
+    // they join at launch through the owner-governed runtime setTokenAllowed
+    // path, which needs no redeployment.
+    const launchPending = new Set(["COINc", "CRCLc", "INTCc"]);
+    const announcedOnly = announced.filter((p) => !launchPending.has(p.symbol));
+    expect(announcedOnly).toHaveLength(19);
+    expect(announcedOnly.filter((p) => configured.has(p.address.toLowerCase()))).toEqual([]);
+    // And decimals pins follow the canonical family rules: every 0xb200 token 8.
+    for (const t of DEPLOY_CONFIG.tokens) {
+      if (t.address.toLowerCase().startsWith("0xb200")) expect({ symbol: t.symbol, decimals: t.decimals }).toEqual({ symbol: t.symbol, decimals: 8 });
     }
   });
 

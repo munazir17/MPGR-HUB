@@ -213,7 +213,7 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
     expect(committedConfig.maxFeeBps).toBe(100);
     expect(committedConfig.permit2).toBe("0x000000000022D473030F116dDEE9F6B43aC78BA3");
     expect(committedConfig.weth).toBe("0x4200000000000000000000000000000000000006");
-    expect(committedConfig.tokens).toHaveLength(15);
+    expect(committedConfig.tokens).toHaveLength(50);
     expect(committedConfig.routers).toHaveLength(2);
     expect(committedConfig.routers.map((router: { kindName: string }) => router.kindName)).toEqual([
       "AERODROME_SLIPSTREAM",

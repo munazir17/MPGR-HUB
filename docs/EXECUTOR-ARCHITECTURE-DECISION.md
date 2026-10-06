@@ -61,7 +61,7 @@ Tokens and existing built-in router kinds are owner-configurable. A new venue ca
 - Fee: 25 bps; on-chain maximum: 100 bps.
 - Canonical Base Permit2 and WETH.
 - Aerodrome Slipstream (kind 1) and Uniswap V3 SwapRouter02 (kind 2).
-- The 15 configured production tokens: USDC, WETH, and the 13 listed B20 assets.
+- The 50 configured production tokens (UNIVERSAL initial allowlist): USDC, WETH, all 41 ISSUED Coinbase B20 addresses — the 38 live tokenized stocks of `lib/trade/tokenized-stocks.ts` plus COINc/CRCLc/INTCc, which remain launch-pending per base/docs#1955 and are refused by every app trade surface until live — and the official Coinbase wrapped assets cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA (`lib/markets/base-pairs.ts`) plus cbZEC (official Coinbase announcement 2026-09-02; address pinned in `lib/markets/__tests__/base-pairs.test.ts`). The 19 announced-not-live B20 addresses are deliberately excluded until Base lists them live. New tokens are added at RUNTIME by the owner via `setTokenAllowed(token, true)` — one governance transaction with built-in contract-existence and router/module-conflict checks; no redeployment and no executor address change. An on-chain allowlist addition never enables app routing by itself: the TypeScript route table and the delegated runtime registry stay fail-closed until each pair is separately compatibility-verified. (The deployed v1 assisted executor keeps its own separate 15-token allowlist; this config is a strict superset of it.)
 - Canary wallet, v1 Mainnet executor, and Sepolia contracts/addresses in the denylist.
 - `moduleRegistrySchemaVersion: 1` and `typedModules: []`.
 

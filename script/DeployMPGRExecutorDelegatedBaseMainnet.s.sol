@@ -54,7 +54,7 @@ interface IERC20ViewDelegated {
 ///           4. one-time: deployer nonce must be 0 (a fresh dedicated key cannot deploy twice)
 ///           5. deployer != owner, != feeRecipient, != the production broadcaster,
 ///              != the canary wallet, != any Base Sepolia address
-///           6. Permit2, WETH, both routers and all 15 tokens must exist and behave on 8453
+///           6. Permit2, WETH, both routers and all 50 tokens must exist and behave on 8453
 ///           7. deterministic address: executor == CREATE(deployer, 0)
 ///           8. post-deploy, EVERY value the runtime later verifies on-chain must already
 ///              match: owner, pendingOwner==0, feeBps, feeRecipient, MAX_FEE_BPS, PERMIT2,
@@ -174,11 +174,19 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
     // Production token / router set
     // ------------------------------------------------------------------
 
-    /// USDC, WETH and every Coinbase B20 tokenized stock — identical to the set allowlisted on
-    /// the deployed v1 mainnet executor (lib/executor/executor-config.ts).
+    /// The UNIVERSAL initial allowlist: USDC, WETH, every ISSUED Coinbase B20 tokenized stock
+    /// (the 38 live stocks of lib/trade/tokenized-stocks.ts plus COINc/CRCLc/INTCc, which stay
+    /// launch-pending per base/docs#1955 and are refused by every app trade surface until live),
+    /// and the official Coinbase wrapped assets (cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA from
+    /// lib/markets/base-pairs.ts plus cbZEC pinned in lib/markets/__tests__/base-pairs.test.ts).
+    /// A SUPERSET of the 15 tokens allowlisted on the deployed v1 executor. The 19 announced-
+    /// not-live B20 addresses are deliberately excluded until Base lists them live; the owner
+    /// adds any future token at RUNTIME via setTokenAllowed(token, true) — one governance
+    /// transaction, no redeployment, no address change (docs/EXECUTOR-ARCHITECTURE-DECISION.md
+    /// §§1,4). Addresses come ONLY from the committed canonical catalogs — never invented.
     function productionTokens() public pure returns (address[] memory t, string[] memory s) {
-        t = new address[](15);
-        s = new string[](15);
+        t = new address[](50);
+        s = new string[](50);
         (t[0], s[0]) = (USDC, "USDC");
         (t[1], s[1]) = (WETH, "WETH");
         (t[2], s[2]) = (0xb200000000000000000000C2e324d24d7eEcd1fb, "AAPLc");
@@ -194,6 +202,101 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         (t[12], s[12]) = (0xb200000000000000000000397293Cb8cda9a10c5, "SNDKc");
         (t[13], s[13]) = (0xb2000000000000000000007b9fcbd005511aCBd5, "SPCXc");
         (t[14], s[14]) = (0xb2000000000000000000001e800a7f5189430cD0, "TSLAc");
+        (t[15], s[15]) = (0xB2000000000000000000000d8Ce462E99ee7A47B, "AMDc");
+        (t[16], s[16]) = (0xB200000000000000000000B1a29cF17A1819288a, "ASTSc");
+        (t[17], s[17]) = (0xB200000000000000000000Fc737aeA6196aB5a4c, "AVGOc");
+        (t[18], s[18]) = (0xb20000000000000000000016f9dfe862feBA122b, "BEc");
+        (t[19], s[19]) = (0xb200000000000000000000f215E4C890CFb7176B, "CAKEc");
+        (t[20], s[20]) = (0xb200000000000000000000428E3a3eebBb20692B, "DJTc");
+        (t[21], s[21]) = (0xb200000000000000000000A613D12dEAfBBb1Db7, "DUOLc");
+        (t[22], s[22]) = (0xb2000000000000000000007790ed6E48e06eD935, "GMEc");
+        (t[23], s[23]) = (0xB20000000000000000000043a599976181Bcf336, "HIMSc");
+        (t[24], s[24]) = (0xb2000000000000000000002601C5C94F435da168, "HTZc");
+        (t[25], s[25]) = (0xB200000000000000000000f1a0F91e34892E4718, "LLYc");
+        (t[26], s[26]) = (0xB200000000000000000000e215e9B76ecBA02468, "MRNAc");
+        (t[27], s[27]) = (0xB200000000000000000000eC3c4c7395Cc609813, "MRVLc");
+        (t[28], s[28]) = (0xb200000000000000000000Fd2f87532B90095211, "MUc");
+        (t[29], s[29]) = (0xb20000000000000000000058B8c947e44011dFE6, "NFLXc");
+        (t[30], s[30]) = (0xB200000000000000000000C597c476FCf9Aed3a8, "NVAXc");
+        (t[31], s[31]) = (0xb200000000000000000000347AFbA223D7B6b63C, "ORCLc");
+        (t[32], s[32]) = (0xB20000000000000000000018FE7eC7d6DfeeB528, "PFEc");
+        (t[33], s[33]) = (0xb2000000000000000000007d16372840dF4dAbbe, "PLTRc");
+        (t[34], s[34]) = (0xB2000000000000000000008FC2A8C23cf5937b66, "PMc");
+        (t[35], s[35]) = (0xB2000000000000000000009272A491812842Aa84, "PTONc");
+        (t[36], s[36]) = (0xb200000000000000000000450ad3abE5d4846c6E, "PYPLc");
+        (t[37], s[37]) = (0xb200000000000000000000CA425ab42e07C35bC3, "QUBTc");
+        (t[38], s[38]) = (0xB2000000000000000000005bd7AE89b9E6189Bb5, "RBLXc");
+        (t[39], s[39]) = (0xb20000000000000000000066242d4067724cB7A1, "RDDTc");
+        (t[40], s[40]) = (0xB2000000000000000000002137743D4a01Fe4e88, "SOUNc");
+        (t[41], s[41]) = (0xB200000000000000000000f720C26062Bc3067Da, "TTWOc");
+        (t[42], s[42]) = (0xB20000000000000000000044E3CD7a0E1028E57a, "WENc");
+        (t[43], s[43]) = (0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf, "cbBTC");
+        (t[44], s[44]) = (0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22, "cbETH");
+        (t[45], s[45]) = (0xcbD06E5A2B0C65597161de254AA074E489dEb510, "cbDOGE");
+        (t[46], s[46]) = (0xcb585250f852C6c6bf90434AB21A00f02833a4af, "cbXRP");
+        (t[47], s[47]) = (0xcb17C9Db87B595717C857a08468793f5bAb6445F, "cbLTC");
+        (t[48], s[48]) = (0xcbADA732173e39521CDBE8bf59a6Dc85A9fc7b8c, "cbADA");
+        (t[49], s[49]) = (0xB2000000000000000000008501b13360000cb2EC, "cbZEC");
+    }
+
+    /// Committed decimals pin per productionTokens() index: USDC 6, WETH 18, every issued B20
+    /// stock 8 (read live from each contract and consistent across the family), cbBTC 8,
+    /// cbETH 18, cbDOGE 8, cbXRP 6, cbLTC 8, cbADA 6 (verified on Basescan per
+    /// lib/markets/base-pairs.ts), cbZEC 8 (B20-standard wrapped crypto). The read-only
+    /// preflight and the live deploy preflight each re-verify decimals() on 8453 before any
+    /// deployment; a mismatch fails closed and nothing is broadcast.
+    function productionTokenDecimals() public pure returns (uint8[] memory d) {
+        d = new uint8[](50);
+        d[0] = 6;
+        d[1] = 18;
+        d[2] = 8;
+        d[3] = 8;
+        d[4] = 8;
+        d[5] = 8;
+        d[6] = 8;
+        d[7] = 8;
+        d[8] = 8;
+        d[9] = 8;
+        d[10] = 8;
+        d[11] = 8;
+        d[12] = 8;
+        d[13] = 8;
+        d[14] = 8;
+        d[15] = 8;
+        d[16] = 8;
+        d[17] = 8;
+        d[18] = 8;
+        d[19] = 8;
+        d[20] = 8;
+        d[21] = 8;
+        d[22] = 8;
+        d[23] = 8;
+        d[24] = 8;
+        d[25] = 8;
+        d[26] = 8;
+        d[27] = 8;
+        d[28] = 8;
+        d[29] = 8;
+        d[30] = 8;
+        d[31] = 8;
+        d[32] = 8;
+        d[33] = 8;
+        d[34] = 8;
+        d[35] = 8;
+        d[36] = 8;
+        d[37] = 8;
+        d[38] = 8;
+        d[39] = 8;
+        d[40] = 8;
+        d[41] = 8;
+        d[42] = 8;
+        d[43] = 8;
+        d[44] = 18;
+        d[45] = 8;
+        d[46] = 6;
+        d[47] = 8;
+        d[48] = 6;
+        d[49] = 8;
     }
 
     /// BOTH production venues. `kind` values mirror the contract's RouterKind enum
@@ -449,7 +552,12 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         require(vm.parseJsonStringArray(json, ".typedModules").length == 0, "MPGR: config typedModules must be empty");
 
         (address[] memory expectedTokens, string[] memory expectedSymbols) = productionTokens();
-        require(expectedTokens.length == 15, "MPGR: internal production token pin count mismatch");
+        uint8[] memory expectedTokenDecimals = productionTokenDecimals();
+        require(expectedTokens.length == 50, "MPGR: internal production token pin count mismatch");
+        require(
+            expectedTokenDecimals.length == expectedTokens.length,
+            "MPGR: internal production token decimals pin count mismatch"
+        );
         for (uint256 i; i < expectedTokens.length; ++i) {
             string memory tokenPath = string.concat(".tokens[", vm.toString(i), "]");
             require(
@@ -461,7 +569,7 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
                     == keccak256(bytes(expectedSymbols[i])),
                 string.concat("MPGR: committed token symbol mismatch: ", expectedSymbols[i])
             );
-            uint256 expectedDecimals = i == 0 ? 6 : i == 1 ? 18 : 8;
+            uint256 expectedDecimals = expectedTokenDecimals[i];
             require(
                 vm.parseJsonUint(json, string.concat(tokenPath, ".decimals")) == expectedDecimals,
                 string.concat("MPGR: committed token decimals mismatch: ", expectedSymbols[i])
@@ -588,7 +696,7 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
             args.routers[1].kind == MPGRExecutorDelegated.RouterKind.UNISWAP_V3_ROUTER02,
             "MPGR: simulated Uniswap V3 RouterKind mismatch"
         );
-        require(args.tokens.length == 15, "MPGR: simulated production token count mismatch");
+        require(args.tokens.length == 50, "MPGR: simulated production token count mismatch");
         _deny(predictedExecutor, "predicted executor");
         require(predictedExecutor != args.owner, "MPGR: predicted executor collides with owner");
         require(predictedExecutor != args.feeRecipient, "MPGR: predicted executor collides with fee recipient");

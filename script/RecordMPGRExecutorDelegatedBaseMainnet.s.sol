@@ -25,7 +25,7 @@ contract RecordMPGRExecutorDelegatedBaseMainnet is Script {
     uint256 internal constant BASE_MAINNET_CHAIN_ID = 8453;
     uint256 internal constant EXPECTED_FEE_BPS = 25;
     uint256 internal constant EXPECTED_MAX_FEE_BPS = 100;
-    uint256 internal constant TOKEN_COUNT = 15;
+    uint256 internal constant TOKEN_COUNT = 50;
     uint256 internal constant ROUTER_COUNT = 2;
 
     address internal constant WETH = 0x4200000000000000000000000000000000000006;
@@ -107,7 +107,7 @@ contract RecordMPGRExecutorDelegatedBaseMainnet is Script {
 
         address[] memory configuredModules = vm.parseJsonAddressArray(config, ".typedModules");
         require(configuredModules.length == 0, "MPGR: initial typed-module registry config is not empty");
-        require(!vm.keyExistsJson(config, ".tokens[15].address"), "MPGR: unexpected extra token in deployment config");
+        require(!vm.keyExistsJson(config, ".tokens[50].address"), "MPGR: unexpected extra token in deployment config");
         require(!vm.keyExistsJson(config, ".routers[2].router"), "MPGR: unexpected extra router in deployment config");
         _verifyRouters(config, dex);
         _verifyTokens(config, dex, executor);
