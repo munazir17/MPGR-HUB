@@ -28,3 +28,19 @@ deployments/.local/
 deployments/base-mainnet/.fork-dry-run*.json
 rehearse-sim.txt
 rehearse-bc.txt
+
+# Smoke/canary reports (written by script/smoke-delegated-executor-base-mainnet.mjs, locally
+# and in CI job workspaces). They contain no secrets, but they are run artifacts.
+smoke-delegated-results.json
+smoke-delegated-report.md
+smoke-delegated-rehearsal.json
+smoke-delegated-rehearsal.md
+smoke-delegated-preflight.json
+smoke-delegated-preflight.md
+smoke-delegated-live.json
+smoke-delegated-live.md
+
+# One-shot ledger for the dedicated MPGRExecutorDelegated Base Mainnet smoke canary
+# (script/smoke-delegated-executor-base-mainnet.mjs). Local state only: it records that a
+# live canary was already broadcast for a given wallet. Never commit it.
+.mpgr-delegated-smoke/
