@@ -82,7 +82,7 @@ jobs:
           version: stable
 
       - name: Offline safety-gate suite (every refusal, no network)
-        run: npx vitest run scripts/delegated-smoke-gates.test.ts test/workflows/smoke-delegated-executor-base-mainnet.test.ts --reporter=basic
+        run: npx vitest run scripts/delegated-smoke-gates.test.ts test/workflows/smoke-delegated-executor-base-mainnet.test.ts --reporter=default
 
       - name: Full delegated sequence on a LOCAL anvil fork (fork-only principals, no key)
         id: rehearse
