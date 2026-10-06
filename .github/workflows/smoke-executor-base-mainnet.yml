@@ -7,6 +7,9 @@
 # aborts before any network call otherwise). See script/smoke-executor-base-mainnet.mjs.
 #
 # Trigger: add the `smoke-base-mainnet` label to a PR from this repository.
+#   Manual: Actions > Run workflow on `main` only, with input confirm = `smoke-base-mainnet`.
+#           Runs the same `rehearse` -> `live` path against `main` (github.sha); `live` still
+#           waits for `base-mainnet` environment approval. No PR comment for manual runs.
 #   Job 1 `rehearse` - NO secrets, NO key. Runs the exact script against a LOCAL anvil
 #                      fork of Base Mainnet with the test wallet impersonated. Nothing is
 #                      broadcast to Base Mainnet. Publishes the planned parameters.
@@ -22,6 +25,12 @@ name: Executor smoke test (Base Mainnet)
 on:
   pull_request:
     types: [labeled]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type smoke-base-mainnet to run the fork rehearsal, then the approval-gated LIVE smoke test from main
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -35,7 +44,7 @@ concurrency:
 jobs:
   rehearse:
     name: Rehearse on a local Base Mainnet fork (no key, nothing broadcast)
-    if: github.event.label.name == 'smoke-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event_name == 'pull_request' && github.event.label.name == 'smoke-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm == 'smoke-base-mainnet')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -45,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -99,9 +108,11 @@ jobs:
           fi
           { echo "<!-- mpgr-smoke-executor-mainnet-rehearsal -->"; cat smoke-rehearsal.md; echo; echo "$NEXT"; } > comment.md
           cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR" ]; then
           ID=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("<!-- mpgr-smoke-executor-mainnet-rehearsal -->"))][0].id // empty')
           if [ -n "$ID" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@comment.md >/dev/null
           else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always() && hashFiles('smoke-rehearsal.json') != ''
@@ -118,7 +129,7 @@ jobs:
   live:
     name: LIVE on Base Mainnet (requires base-mainnet environment approval)
     needs: rehearse
-    if: needs.rehearse.result == 'success' && github.event.label.name == 'smoke-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository
+    if: needs.rehearse.result == 'success' && ((github.event_name == 'pull_request' && github.event.label.name == 'smoke-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm == 'smoke-base-mainnet'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Required reviewer gate: the job (and access to the key) starts only after approval.
@@ -130,7 +141,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -160,9 +171,11 @@ jobs:
           jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) == 0 then "::notice title=Mainnet smoke checks::\(.checks | length) passed, 0 failed" else ($f[0:9][] | "::error title=Mainnet smoke FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-live.json
           { echo "<!-- mpgr-smoke-executor-mainnet-live -->"; cat smoke-live.md; } > comment.md
           cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR" ]; then
           ID=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("<!-- mpgr-smoke-executor-mainnet-live -->"))][0].id // empty')
           if [ -n "$ID" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@comment.md >/dev/null
           else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always() && hashFiles('smoke-live.json') != ''
