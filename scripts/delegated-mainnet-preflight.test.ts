@@ -20,6 +20,20 @@ const committedConfig = JSON.parse(
   readFileSync("deployments/base-mainnet/delegated-deploy-config.json", "utf8"),
 );
 const disabledConfig = { ...committedConfig, mainnetDelegatedDeployEnabled: false };
+
+/**
+ * The delegated Mainnet deployment is mined and `deployments/base-mainnet/mpgr-executor-delegated.json`
+ * is committed, so the preflight's one-time artifact guard is now the single intended refusal: the
+ * deployment it protected has happened and the record exists. Every other static pin still has to
+ * pass, which is why assertions that predate the deployment become "nothing but the artifact guard
+ * fails" instead of "every check passes".
+ */
+function refusesOnlyBecauseTheDeploymentIsRecorded(result: {
+  checks: Array<{ name: string; ok: boolean }>;
+}) {
+  const failing = result.checks.filter((check) => !check.ok).map((check) => check.name);
+  return failing.length === 1 && failing[0] === "one_time_artifact_guard";
+}
 const preflightWorkflow = readFileSync(".github/workflows/preflight-delegated-base-mainnet.yml", "utf8");
 const preflightChecker = readFileSync("scripts/delegated-mainnet-preflight.mjs", "utf8");
 const deployScript = readFileSync("script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol", "utf8");
@@ -57,13 +71,13 @@ function createReadOnlyStages(steps: string[]) {
 }
 
 describe("read-only delegated Base Mainnet preflight state machine", () => {
-  it("passes read-only preflight only for the disabled committed-config posture", () => {
+  it("holds the disabled committed-config posture apart from the now-recorded deployment", () => {
     const result = validate(disabledConfig);
 
-    expect(result.ok).toBe(true);
+    expect(refusesOnlyBecauseTheDeploymentIsRecorded(result)).toBe(true);
     expect(result.checks.find(({ name }) => name === "config_deploy_flag")?.ok).toBe(true);
     expect(result.checks.find(({ name }) => name === "environment_deploy_flag")?.ok).toBe(true);
-    expect(validate(disabledConfig, { deployFlag: false }).ok).toBe(true);
+    expect(refusesOnlyBecauseTheDeploymentIsRecorded(validate(disabledConfig, { deployFlag: false }))).toBe(true);
     expect(isReadOnlyDeploymentFlagFalse(false)).toBe(true);
     expect(readOnlyDeploymentFlagStatus(["false", undefined])).toMatchObject({
       ok: true,
@@ -104,7 +118,7 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
       disabledConfig.feeRecipient,
       [workflowValue, undefined],
     );
-    expect(staticResult.ok).toBe(true);
+    expect(refusesOnlyBecauseTheDeploymentIsRecorded(staticResult)).toBe(true);
     expect(staticResult.checks.find(({ name }) => name === "environment_deploy_flag")).toMatchObject({
       ok: true,
       detail: "explicit and consistent; production deployment authorization disarmed (raw values hidden)",
@@ -249,7 +263,7 @@ describe("post-arm read-only delegated Base Mainnet preflight", () => {
       { armedPosture: true },
     );
 
-    expect(result.ok).toBe(true);
+    expect(refusesOnlyBecauseTheDeploymentIsRecorded(result)).toBe(true);
     expect(result.checks.find(({ name }) => name === "config_deploy_flag")).toMatchObject({
       ok: true,
       detail: "true; reviewed armed posture",
@@ -300,7 +314,11 @@ describe("post-arm read-only delegated Base Mainnet preflight", () => {
     }
 
     // An explicit armed authorization is accepted ONLY by the reviewed armed posture.
-    expect(validateStaticConfig(committedConfig, owner, feeRecipient, "true", { armedPosture: true }).ok).toBe(true);
+    expect(
+      refusesOnlyBecauseTheDeploymentIsRecorded(
+        validateStaticConfig(committedConfig, owner, feeRecipient, "true", { armedPosture: true }),
+      ),
+    ).toBe(true);
     expect(validateStaticConfig(committedConfig, owner, feeRecipient, "true").ok).toBe(false);
 
     // An armed environment can never substitute for the reviewed armed committed config.
@@ -399,29 +417,43 @@ describe("production deploy authorization audit in the read-only preflight", () 
     }
   });
 
-  it("passes the read-only preflight while the protected base-mainnet environment is already armed for production", () => {
+  it("holds every armed-posture static pin while the protected base-mainnet environment is already armed for production", () => {
     const result = validateStaticConfig(committedConfig, owner, feeRecipient, "true", { armedPosture: true });
 
-    expect(result.ok).toBe(true);
+    expect(refusesOnlyBecauseTheDeploymentIsRecorded(result)).toBe(true);
     expect(result.checks.find(({ name }) => name === "config_deploy_flag")).toMatchObject({
       ok: true,
       detail: "true; reviewed armed posture",
     });
     expect(result.checks.find(({ name }) => name === "environment_deploy_flag")?.ok).toBe(true);
-    expect(validateStaticConfig(committedConfig, owner, feeRecipient, ["true", "true"], { armedPosture: true }).ok).toBe(
-      true,
-    );
-    expect(validateStaticConfig(committedConfig, owner, feeRecipient, [true, "true"], { armedPosture: true }).ok).toBe(
-      true,
-    );
+    expect(
+      refusesOnlyBecauseTheDeploymentIsRecorded(
+        validateStaticConfig(committedConfig, owner, feeRecipient, ["true", "true"], { armedPosture: true }),
+      ),
+    ).toBe(true);
+    expect(
+      refusesOnlyBecauseTheDeploymentIsRecorded(
+        validateStaticConfig(committedConfig, owner, feeRecipient, [true, "true"], { armedPosture: true }),
+      ),
+    ).toBe(true);
     // A leading/trailing-whitespace value is still the literal the Environment stores.
-    expect(validateStaticConfig(committedConfig, owner, feeRecipient, " true ", { armedPosture: true }).ok).toBe(true);
+    expect(
+      refusesOnlyBecauseTheDeploymentIsRecorded(
+        validateStaticConfig(committedConfig, owner, feeRecipient, " true ", { armedPosture: true }),
+      ),
+    ).toBe(true);
   });
 
-  it("keeps the disarmed verification posture passing for the reviewed armed config", () => {
-    expect(validateStaticConfig(committedConfig, owner, feeRecipient, "false", { armedPosture: true }).ok).toBe(true);
+  it("holds every disarmed-posture static pin for the reviewed armed config", () => {
     expect(
-      validateStaticConfig(committedConfig, owner, feeRecipient, ["false", undefined], { armedPosture: true }).ok,
+      refusesOnlyBecauseTheDeploymentIsRecorded(
+        validateStaticConfig(committedConfig, owner, feeRecipient, "false", { armedPosture: true }),
+      ),
+    ).toBe(true);
+    expect(
+      refusesOnlyBecauseTheDeploymentIsRecorded(
+        validateStaticConfig(committedConfig, owner, feeRecipient, ["false", undefined], { armedPosture: true }),
+      ),
     ).toBe(true);
   });
 
