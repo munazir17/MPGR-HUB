@@ -1510,7 +1510,9 @@ function renderMarkdown() {
   lines.push(`| Broadcaster (msg.sender) | \`${report.broadcaster ?? "— (read-only mode)"}\` |`);
   lines.push(`| Chain | ${NETWORK_LABEL} ${CHAIN_ID} |`);
   lines.push(`| Executor (delegated) | \`${DELEGATED_EXECUTOR}\` |`);
-  lines.push(`| Authorization | Permit2 witness permit (no ERC-20 approval) via \`swapOnBehalfOfUniswapV3\` |`);
+  lines.push(
+    `| Authorization | Permit2 witness permit via \`swapOnBehalfOfUniswapV3\`, which needs the operator's one-time USDC.approve(Permit2, 500000); the executor is NEVER approved |`,
+  );
   lines.push(
     `| Trade | 0.50 USDC → WETH · gross ${GROSS_AMOUNT_IN} / fee ${EXPECTED_FEE_AMOUNT} (25 bps) / swap ${SWAP_AMOUNT_IN} · Uniswap V3 fee ${UNISWAP_V3_POOL_FEE} · recipient = signer · unwrapNativeOut false |`,
   );
