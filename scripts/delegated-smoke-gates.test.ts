@@ -111,12 +111,14 @@ import {
   nonceBitmapWordMarks,
   nonceBitPosition,
   normalizeAddress,
+  planLogScan,
   priorSwapScanWindow,
   quoteWithinSanityBand,
   redact,
   renderTitle,
   rehearsalPrincipal,
   rehearsalPrincipals,
+  runLogScan,
   safeErrorMessage,
   sameAddress,
   summarizeChecks,
@@ -134,6 +136,7 @@ import { EXPECTED_EXECUTOR, EXPECTED_OWNER, EXPECTED_FEE_RECIPIENT, CANONICAL_PE
 
 const committedConfig = JSON.parse(readFileSync("deployments/base-mainnet/delegated-deploy-config.json", "utf8"));
 const runnerSource = readFileSync("script/smoke-delegated-executor-base-mainnet.mjs", "utf8");
+const gatesSource = readFileSync("scripts/delegated-smoke-gates.mjs", "utf8");
 const v1WorkflowSource = readFileSync(".github/workflows/smoke-executor-base-mainnet.yml", "utf8");
 
 /** A wallet that is none of the forbidden roles — the canary identity under test. */
@@ -247,6 +250,10 @@ describe("pinned deployment facts", () => {
     expect(ACTION_WITNESS_TYPEHASH).toMatch(/^0x[0-9a-f]{64}$/);
     expect(PERMIT2_DOMAIN_NAME).toBe("Permit2");
     expect(LOG_CHUNK).toBeGreaterThan(0n);
+    // Conservative bounded chunk: restrictive Base RPC providers reject wide
+    // eth_getLogs ranges ("limited to 0 - 50 blocks range"; some cap at 10).
+    expect(LOG_CHUNK).toBe(10n);
+    expect(LOG_CHUNK).toBeLessThanOrEqual(50n);
   });
 
   it("names every env var the runner reads and the confirmation phrase", () => {
@@ -1835,8 +1842,205 @@ describe("historical SwapExecuted scan window", () => {
   it("is what the runner actually scans (not a copy of it)", () => {
     const call = runnerSource.match(/priorSwapScanWindow\(\{\s*head,\s*rehearsal:\s*REHEARSAL\s*\}\)/);
     expect(call, "the runner must derive its scan window from priorSwapScanWindow").not.toBeNull();
-    expect(runnerSource).toContain("for (let from = scanFrom; from <= scanTo; from += LOG_CHUNK)");
+    // The runner delegates the chunked requests to the shared bounded scanner
+    // (runLogScan in the gates module) — no inline chunk loop may remain to
+    // drift from the tested implementation.
+    expect(runnerSource.match(/await runLogScan\(\{/g)?.length).toBe(1);
+    expect(runnerSource).not.toMatch(/from \+= LOG_CHUNK/);
     // No unconditional scan anchored at the deployment block may remain.
     expect(runnerSource).not.toMatch(/for \(let from = DELEGATED_DEPLOY_BLOCK/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * Regression suite for the bounded historical log scan itself. Run #5 died in
+ * preflight because a 2 000-block eth_getLogs request was rejected by public
+ * Base RPCs ("eth_getLogs is limited to 0 - 50 blocks range"); the scan must
+ * walk the SAME complete deployment->head window in small bounded chunks, with
+ * zero gaps, zero overlaps, both boundary blocks included, a correct final
+ * partial chunk, deterministic ordering, no request wider than LOG_CHUNK, and
+ * a provider failure that FAILS CLOSED instead of certifying a partial scan.
+ * The scanner takes its eth_getLogs request as an injected `fetchChunk`, so
+ * these tests exercise the exact production loop with a mock provider.
+ */
+describe("bounded historical log scanning (restrictive Base eth_getLogs caps)", () => {
+  const HEAD = 52_800_000n;
+
+  /** Mock provider: events at chosen blocks + a recording of every request. */
+  const mockProvider = (blocks: bigint[] = []) => {
+    const calls: Array<{ from: bigint; to: bigint }> = [];
+    return {
+      calls,
+      fetchChunk: (from: bigint, to: bigint) => {
+        calls.push({ from, to });
+        return Promise.resolve(blocks.filter((b) => b >= from && b <= to).map((b) => ({ blockNumber: b })));
+      },
+    };
+  };
+
+  it("scans a single block as exactly one single-block request", async () => {
+    expect(planLogScan({ from: 7n, to: 7n })).toEqual([{ from: 7n, to: 7n }]);
+    const { calls, fetchChunk } = mockProvider([7n]);
+    const r = await runLogScan({ fetchChunk, from: 7n, to: 7n });
+    expect(calls).toEqual([{ from: 7n, to: 7n }]);
+    expect(r.logs).toEqual([{ blockNumber: 7n }]);
+    expect(r.chunks).toBe(1n);
+    expect(r.from).toBe(7n);
+    expect(r.to).toBe(7n);
+  });
+
+  it("keeps a range smaller than one chunk in a single request", () => {
+    const plan = planLogScan({ from: 100n, to: 100n + LOG_CHUNK - 2n }); // 9 blocks < one chunk
+    expect(plan).toEqual([{ from: 100n, to: 100n + LOG_CHUNK - 2n }]);
+    expect(plan[0].to - plan[0].from + 1n).toBe(LOG_CHUNK - 1n);
+  });
+
+  it("splits an exact chunk multiple into whole chunks (no phantom partial)", () => {
+    const plan = planLogScan({ from: 100n, to: 100n + 2n * LOG_CHUNK - 1n });
+    expect(plan).toEqual([
+      { from: 100n, to: 100n + LOG_CHUNK - 1n },
+      { from: 100n + LOG_CHUNK, to: 100n + 2n * LOG_CHUNK - 1n },
+    ]);
+    for (const c of plan) expect(c.to - c.from + 1n).toBe(LOG_CHUNK);
+    expect(planLogScan({ from: 0n, to: 3n * LOG_CHUNK - 1n })).toHaveLength(3);
+  });
+
+  it("handles the final partial chunk without widening, padding or dropping it", () => {
+    const plan = planLogScan({ from: 100n, to: 100n + 2n * LOG_CHUNK + 4n }); // 25 blocks: 10+10+5
+    expect(plan).toHaveLength(3);
+    expect(plan.map((c) => c.to - c.from + 1n)).toEqual([LOG_CHUNK, LOG_CHUNK, 5n]);
+    expect(plan[2]).toEqual({ from: 100n + 2n * LOG_CHUNK, to: 100n + 2n * LOG_CHUNK + 4n });
+  });
+
+  it("includes boundary events exactly once (first block, chunk seam, last block)", async () => {
+    const first = 100n;
+    const seamLeft = 100n + LOG_CHUNK - 1n; // last block of chunk 1
+    const seamRight = 100n + LOG_CHUNK; // first block of chunk 2
+    const last = 100n + 2n * LOG_CHUNK + 4n; // last block of the final partial chunk
+    const { calls, fetchChunk } = mockProvider([first, seamLeft, seamRight, last]);
+    const r = await runLogScan({ fetchChunk, from: first, to: last });
+    expect(r.logs.map((l) => l.blockNumber)).toEqual([first, seamLeft, seamRight, last]);
+    expect(calls).toEqual([
+      { from: first, to: seamLeft },
+      { from: seamRight, to: seamRight + LOG_CHUNK - 1n },
+      { from: seamRight + LOG_CHUNK, to: last }, // final partial chunk (5 blocks)
+    ]);
+    expect(r.chunks).toBe(3n);
+  });
+
+  it("covers the complete deployment->head range with zero gaps and zero overlaps", () => {
+    // preflight/live window: deployment block -> captured head, in full.
+    const { from, to } = priorSwapScanWindow({ head: HEAD });
+    expect(from).toBe(DELEGATED_DEPLOY_BLOCK);
+    expect(to).toBe(HEAD);
+    const plan = planLogScan({ from, to });
+    expect(plan[0].from).toBe(from); // first block included
+    expect(plan[plan.length - 1].to).toBe(to); // last block included
+    let covered = 0n;
+    for (let i = 0; i < plan.length; i++) {
+      covered += plan[i].to - plan[i].from + 1n;
+      if (i > 0) {
+        expect(plan[i].from).toBeGreaterThan(plan[i - 1].to); // no overlaps
+        expect(plan[i].from).toBe(plan[i - 1].to + 1n); // no gaps
+      }
+    }
+    expect(covered).toBe(to - from + 1n); // every block exactly once
+    expect(planLogScan({ from, to })).toEqual(plan); // deterministic ordering
+  });
+
+  it("never issues an eth_getLogs request wider than the configured chunk size", async () => {
+    // Every block of the range carries an event, so every request is exercised.
+    const blocks = Array.from({ length: 25 }, (_, i) => 100n + BigInt(i));
+    const { calls, fetchChunk } = mockProvider(blocks);
+    const r = await runLogScan({ fetchChunk, from: 100n, to: 124n });
+    expect(calls).toHaveLength(3);
+    for (const c of calls) expect(c.to - c.from + 1n).toBeLessThanOrEqual(LOG_CHUNK);
+    // Ascending deterministic order, complete coverage of the events.
+    expect(r.logs.map((l) => l.blockNumber)).toEqual(blocks);
+    // The full deployment->head plan is uniformly bounded too.
+    for (const c of planLogScan({ from: DELEGATED_DEPLOY_BLOCK, to: HEAD })) {
+      expect(c.to - c.from + 1n).toBeLessThanOrEqual(LOG_CHUNK);
+    }
+  });
+
+  it("fails closed when any chunk cannot be read — never a partial certification", async () => {
+    const blocks = [100n, 105n, 110n, 115n, 120n, 124n];
+    for (const failAtChunk of [1, 2, 3]) {
+      // First, middle and last chunk: every failure rejects the whole scan.
+      let n = 0;
+      const calls: Array<{ from: bigint; to: bigint }> = [];
+      const fetchChunk = (from: bigint, to: bigint) => {
+        calls.push({ from, to });
+        n += 1;
+        if (n === failAtChunk) return Promise.reject(new Error("upstream unavailable"));
+        return Promise.resolve(blocks.filter((b) => b >= from && b <= to).map((b) => ({ blockNumber: b })));
+      };
+      const err = await runLogScan({ fetchChunk, from: 100n, to: 124n }).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err, `chunk ${failAtChunk} failing must reject the scan`).not.toBeNull();
+      expect(err?.message).toMatch(/could not be read/);
+      expect(err?.message).toMatch(/refusing to certify a one-shot from a partial scan/);
+      expect((err as Error & { cause?: unknown }).cause).toBeInstanceOf(Error);
+      // The scan stops at the failing chunk: later chunks are never requested.
+      expect(calls).toHaveLength(failAtChunk);
+    }
+  });
+
+  it("refuses an oversized scan before the first request (the MAX_LOG_CHUNKS-style cap)", async () => {
+    const { calls, fetchChunk } = mockProvider();
+    await expect(
+      runLogScan({ fetchChunk, from: 100n, to: 100n + 3n * LOG_CHUNK, maxChunks: 2n }), // 4 chunks > 2
+    ).rejects.toThrow(/refusing to certify a one-shot from a partial scan/);
+    expect(calls).toEqual([]); // fail closed BEFORE any eth_getLogs
+  });
+
+  it("preflight and live certify the full window through the shared bounded scanner", () => {
+    // One scan call site, driven by the mode flag alone: preflight and live
+    // take the identical bounded path over the deployment->head window.
+    expect(runnerSource.match(/await runLogScan\(\{/g)?.length).toBe(1);
+    expect(runnerSource.match(/priorSwapScanWindow\(\{\s*head,\s*rehearsal:\s*REHEARSAL\s*\}\)/)).not.toBeNull();
+    expect(runnerSource).toContain("maxChunks: MAX_LOG_CHUNKS");
+    // The fail-closed chunk-budget cap remains in force in the runner...
+    expect(runnerSource).toContain("if (chunks > MAX_LOG_CHUNKS)");
+    expect(runnerSource).toMatch(/use a full-node RPC/);
+    // ...and still budgets the documented ~4M blocks (~3 months of Base 2s
+    // blocks) at whatever chunk size is configured.
+    const cap = runnerSource.match(/const MAX_LOG_CHUNKS = ([0-9_]+)n;/);
+    expect(cap, "MAX_LOG_CHUNKS must remain a bigint constant").not.toBeNull();
+    const maxChunks = BigInt((cap as RegExpMatchArray)[1].replace(/_/g, ""));
+    expect(maxChunks * LOG_CHUNK).toBeGreaterThanOrEqual(4_000_000n);
+    // The full deployment->head window fits inside that fail-closed budget.
+    const needed = (HEAD - DELEGATED_DEPLOY_BLOCK + LOG_CHUNK) / LOG_CHUNK;
+    expect(needed).toBeLessThanOrEqual(maxChunks);
+  });
+
+  it("rehearsal keeps its bounded window and scans it in one bounded request", async () => {
+    const { from, to } = priorSwapScanWindow({ head: HEAD, rehearsal: true });
+    const plan = planLogScan({ from, to });
+    expect(plan).toHaveLength(1); // REHEARSAL_LOG_WINDOW (10) == one chunk
+    expect(plan[0].to - plan[0].from + 1n).toBeLessThanOrEqual(LOG_CHUNK);
+    const { calls, fetchChunk } = mockProvider([from]);
+    await runLogScan({ fetchChunk, from, to });
+    expect(calls).toEqual([{ from, to }]);
+  });
+
+  it("reads no private key in preflight (and none anywhere in the scan path)", () => {
+    // The key is read ONLY in the live branch, from the single env var.
+    expect(runnerSource).toMatch(/if \(LIVE\) \{\s*\n\s*ownerAccount = readLiveKey\(\);/);
+    expect(runnerSource.match(/readLiveKey\(\)/g)?.length).toBe(2); // definition + the live-only call
+    // Preflight builds its identity from the non-secret pin alone.
+    expect(runnerSource).toContain("ownerAccount = { address: pin.address }; // read-only: no signer, no key");
+  });
+
+  it("introduces no broadcast capability with this fix", () => {
+    // The scanner's only side effect is the injected fetchChunk — the shared
+    // gates module must not know how to send anything.
+    expect(gatesSource.match(/eth_sendRawTransaction|eth_sendTransaction|sendTransaction\(|writeContract\(/g)).toBeNull();
+    expect(runnerSource).toContain("fetchChunk: (fromBlock, toBlock) =>");
+    // The runner still broadcasts at most once (the pre-existing live step).
+    expect(runnerSource.match(/writeContract\(/g)?.length).toBe(1);
   });
 });

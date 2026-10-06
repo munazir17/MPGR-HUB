@@ -145,6 +145,7 @@ import {
   redact,
   renderTitle,
   rehearsalPrincipal,
+  runLogScan,
   safeErrorMessage,
   sameAddress,
   summarizeChecks,
@@ -309,13 +310,17 @@ const EMERGENCY_DISABLED = env(EMERGENCY_ENV).toLowerCase() === "true";
  * (the full one-shot certification). `rehearsal` scans only the last
  * REHEARSAL_LOG_WINDOW blocks of the local fork — see priorSwapScanWindow.
  *
- * Span: 2 000 chunks x 2 000 blocks covers ~4M blocks (~3 months of Base 2s
- * blocks) since the deployment. Beyond that the run FAILS CLOSED rather than
+ * Span: every eth_getLogs request is at most LOG_CHUNK (10) blocks wide,
+ * because public Base RPC providers reject wider ranges ("eth_getLogs is
+ * limited to 0 - 50 blocks range"; some cap at 10). The fail-closed budget is
+ * therefore 400 000 chunks x 10 blocks ≈ 4M blocks (~3 months of Base 2s
+ * blocks) since the deployment — the same block budget the previous 2 000 x
+ * 2 000 sizing covered. Beyond that the run FAILS CLOSED rather than
  * certifying a one-shot on a partial scan — an operator facing that must point
- * SMOKE_DELEGATED_RPC_URL at their own full node (or start a new campaign with a
- * new wallet, which is the intended answer anyway).
+ * SMOKE_DELEGATED_RPC_URL at their own full node (or start a new campaign with
+ * a new wallet, which is the intended answer anyway).
  */
-const MAX_LOG_CHUNKS = 2_000n;
+const MAX_LOG_CHUNKS = 400_000n;
 
 /** The zero signature used ONLY to build and re-decode calldata in preflight. */
 const UNSIGNED_SENTINEL_SIGNATURE = `0x${"00".repeat(65)}`;
@@ -634,6 +639,12 @@ async function probeMappingSlot(pub, token, callData, expected, keyForSlot) {
  * scan in `live`/`preflight`, and the last REHEARSAL_LOG_WINDOW blocks in
  * `rehearsal` — a local anvil fork cannot serve its pre-fork history locally, and
  * its upstream caps how many blocks one eth_getLogs may span.
+ *
+ * The requests themselves come from runLogScan (scripts/delegated-smoke-gates.mjs):
+ * gap-free, in deterministic order, every eth_getLogs at most LOG_CHUNK (10)
+ * blocks wide so restrictive Base RPC providers serve them, and ANY unreadable
+ * chunk aborts the run (fail closed) — a one-shot is never certified from a
+ * partial scan.
  */
 async function countPriorSwapEvents(pub, wallet) {
   const head = await pub.getBlockNumber();
@@ -643,21 +654,20 @@ async function countPriorSwapEvents(pub, wallet) {
   if (chunks > MAX_LOG_CHUNKS) {
     throw new Abort(`prior-swap scan would need ${chunks} chunks (> ${MAX_LOG_CHUNKS}): refusing to certify a one-shot from a partial scan — use a full-node RPC`);
   }
-  let count = 0;
-  let used = 0n;
-  for (let from = scanFrom; from <= scanTo; from += LOG_CHUNK) {
-    used += 1n;
-    const to = from + LOG_CHUNK - 1n > scanTo ? scanTo : from + LOG_CHUNK - 1n;
-    const logs = await pub.getLogs({
-      address: DELEGATED_EXECUTOR,
-      event: SWAP_EXECUTED_EVENT,
-      args: { taker: wallet },
-      fromBlock: from,
-      toBlock: to,
-    });
-    count += logs.length;
-  }
-  return { count, from: scanFrom, to: scanTo, chunks: used };
+  const { logs, chunks: used } = await runLogScan({
+    fetchChunk: (fromBlock, toBlock) =>
+      pub.getLogs({
+        address: DELEGATED_EXECUTOR,
+        event: SWAP_EXECUTED_EVENT,
+        args: { taker: wallet },
+        fromBlock,
+        toBlock,
+      }),
+    from: scanFrom,
+    to: scanTo,
+    maxChunks: MAX_LOG_CHUNKS,
+  });
+  return { count: logs.length, from: scanFrom, to: scanTo, chunks: used };
 }
 
 // ---------------------------------------------------------------------------

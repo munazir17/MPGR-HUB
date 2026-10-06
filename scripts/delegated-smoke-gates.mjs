@@ -231,8 +231,17 @@ export const CAMPAIGN = "mpgr-delegated-smoke-8453-v1";
 export const LEDGER_VERSION = 1;
 export const LEDGER_DIR = ".mpgr-delegated-smoke";
 
-/** Log-scan chunk size for the historical SwapExecuted scan. */
-export const LOG_CHUNK = 2_000n;
+/**
+ * Log-scan chunk size for the historical SwapExecuted scan.
+ *
+ * Public Base RPC providers reject wide `eth_getLogs` requests ("eth_getLogs is
+ * limited to 0 - 50 blocks range" on the public Base endpoints; Alchemy's Base
+ * free tier caps one request at 10 blocks), so every historical scan request is
+ * bounded to this many blocks. 10 is the strictest published cap — the value
+ * REHEARSAL_LOG_WINDOW already assumed — and keeps every chunk servable by
+ * every provider the workflow may point at.
+ */
+export const LOG_CHUNK = 10n;
 
 /**
  * Rehearsal-only bound for the historical SwapExecuted scan.
@@ -327,6 +336,77 @@ function bigintOf(value) {
 export function priorSwapScanWindow({ head, deployBlock = DELEGATED_DEPLOY_BLOCK, rehearsal = false, window = REHEARSAL_LOG_WINDOW }) {
   const start = rehearsal ? head - window + 1n : deployBlock;
   return { from: start > deployBlock ? start : deployBlock, to: head };
+}
+
+/**
+ * The exact inclusive [from, to] chunk plan for a bounded eth_getLogs scan.
+ *
+ * Guarantees: ascending deterministic order, zero gaps, zero overlaps, the
+ * first block included, the last block included, every chunk at most
+ * `chunkSize` blocks, and the final partial chunk kept intact (never padded
+ * into a neighbour and never widened). A range that cannot be planned
+ * (inverted/empty range, non-positive chunk) throws — a scan that cannot be
+ * planned must never run.
+ */
+export function planLogScan({ from, to, chunkSize = LOG_CHUNK } = {}) {
+  const start = bigintOf(from);
+  const end = bigintOf(to);
+  const size = bigintOf(chunkSize);
+  if (start === null || end === null) throw new Error("planLogScan: from/to must be integers");
+  if (size === null || size <= 0n) throw new Error("planLogScan: chunkSize must be a positive integer");
+  if (start > end) throw new Error(`planLogScan: empty/inverted range (${start} > ${end})`);
+  const chunks = [];
+  for (let lo = start; lo <= end; lo += size) {
+    const hi = lo + size - 1n > end ? end : lo + size - 1n;
+    chunks.push({ from: lo, to: hi });
+  }
+  return chunks;
+}
+
+/**
+ * Runs a bounded historical log scan over planLogScan's chunks, in order.
+ *
+ * `fetchChunk(from, to)` is the ONLY side effect (the caller injects the
+ * eth_getLogs request); this function never issues a request wider than
+ * `chunkSize` blocks, never reorders chunks, and never overlaps them.
+ *
+ * FAILS CLOSED: any chunk that cannot be read rejects with a wrapped error
+ * (the underlying cause is preserved) and NO partial result — a one-shot must
+ * never be certified from a partial scan. An optional `maxChunks` budget
+ * refuses oversized scans BEFORE the first request, mirroring the runner's
+ * MAX_LOG_CHUNKS safety cap.
+ */
+export async function runLogScan({ fetchChunk, from, to, chunkSize = LOG_CHUNK, maxChunks = null } = {}) {
+  if (typeof fetchChunk !== "function") throw new Error("runLogScan: fetchChunk must be a function");
+  const plan = planLogScan({ from, to, chunkSize });
+  if (maxChunks !== null) {
+    const budget = bigintOf(maxChunks);
+    if (budget === null || budget <= 0n) throw new Error("runLogScan: maxChunks must be a positive integer");
+    if (BigInt(plan.length) > budget) {
+      throw new Error(
+        `log scan would need ${plan.length} chunks (> ${budget}): refusing to certify a one-shot from a partial scan`,
+      );
+    }
+  }
+  const logs = [];
+  for (const chunk of plan) {
+    let part;
+    try {
+      part = await fetchChunk(chunk.from, chunk.to);
+    } catch (err) {
+      throw new Error(
+        `log-scan chunk ${chunk.from}-${chunk.to} could not be read: refusing to certify a one-shot from a partial scan`,
+        { cause: err },
+      );
+    }
+    if (!Array.isArray(part)) {
+      throw new Error(
+        `log-scan chunk ${chunk.from}-${chunk.to} returned a non-array result: refusing to certify a one-shot from a partial scan`,
+      );
+    }
+    for (const item of part) logs.push(item);
+  }
+  return { logs, from: plan[0].from, to: plan[plan.length - 1].to, chunks: BigInt(plan.length) };
 }
 
 // ---------------------------------------------------------------------------
