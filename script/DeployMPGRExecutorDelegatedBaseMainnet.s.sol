@@ -73,6 +73,8 @@ interface IERC20ViewDelegated {
 ///   MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION (var) exactly "true" to select simulate()
 ///   BASE_MAINNET_DEPLOYER_ADDRESS            (var) public address from the read-only preflight
 ///   Both production enable flags must stay exactly false, including the committed config pin.
+///   simulateArmed() is the reviewed-arm counterpart: identical view-only validation against
+///   the armed committed config (mainnetDelegatedDeployEnabled=true); environment flags stay false.
 ///
 /// Usage (after explicit human approval):
 ///   forge script script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol \
@@ -83,6 +85,9 @@ interface IERC20ViewDelegated {
 /// Read-only plan (no deployer private key, no constructor, no --broadcast):
 ///   forge script script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol \
 ///     --rpc-url "$BASE_MAINNET_RPC_URL" --sig 'simulate()'
+///   # reviewed armed posture (committed flag true, environment flags false):
+///   forge script script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol \
+///     --rpc-url "$BASE_MAINNET_RPC_URL" --sig 'simulateArmed()'
 contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
     uint256 internal constant BASE_MAINNET_CHAIN_ID = 8453;
     uint16 internal constant FEE_BPS = 25;
@@ -444,6 +449,16 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         _preflightCommon(c, p);
     }
 
+    /// @notice Armed-posture counterpart to simulationPreflight for the REVIEWED armed
+    ///         committed config. It reuses every non-flag guard, still requires both
+    ///         environment flags to remain false, and never reads a private key.
+    function simulationPreflightArmed(Config memory c, Pins memory p) public view virtual {
+        _requireBaseMainnetChain();
+        require(!c.envEnabled, "MPGR: simulation requires environment deployment flag false");
+        require(p.enabled, "MPGR: armed simulation requires committed deployment flag true");
+        _preflightCommon(c, p);
+    }
+
     function _requireBaseMainnetChain() internal view {
         require(block.chainid == BASE_MAINNET_CHAIN_ID, "MPGR: BASE MAINNET (8453) ONLY - refusing to run");
     }
@@ -667,7 +682,28 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         ConstructorArgs memory args = _constructorArgs(c);
         predictedExecutor = vm.computeCreateAddress(c.deployer, deployerNonce);
         _validateSimulationPlan(c, p, args, predictedExecutor);
-        _logSimulationPlan(c, args, deployerNonce, predictedExecutor);
+        _logSimulationPlan(c, args, deployerNonce, predictedExecutor, p.enabled);
+    }
+
+    /// @notice Armed-posture counterpart to simulate(): identical view-only validation of the
+    ///         real Mainnet deployment plan against the REVIEWED armed committed config.
+    /// @dev Invoke only with `forge script ... --sig 'simulateArmed()'` and the explicit
+    ///      MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION=true mode flag. The environment
+    ///      deployment flags must remain false. This function is view-only: it never
+    ///      broadcasts, never constructs the executor, never reads a private key, and never
+    ///      mutates Mainnet state.
+    function simulateArmed() public view returns (address predictedExecutor) {
+        _requireSimulationModeAndDisabledFlags();
+        Config memory c = _readSimulationConfig();
+        Pins memory p = _readPins();
+        simulationPreflightArmed(c, p);
+
+        uint256 deployerNonce = vm.getNonce(c.deployer);
+        require(deployerNonce == 0, "MPGR: deployer nonce != 0 - use a fresh dedicated key (prevents a 2nd deploy)");
+        ConstructorArgs memory args = _constructorArgs(c);
+        predictedExecutor = vm.computeCreateAddress(c.deployer, deployerNonce);
+        _validateSimulationPlan(c, p, args, predictedExecutor);
+        _logSimulationPlan(c, args, deployerNonce, predictedExecutor, p.enabled);
     }
 
     function _validateSimulationPlan(
@@ -740,11 +776,12 @@ contract DeployMPGRExecutorDelegatedBaseMainnet is Script {
         Config memory c,
         ConstructorArgs memory args,
         uint256 deployerNonce,
-        address predictedExecutor
+        address predictedExecutor,
+        bool committedDeployFlag
     ) internal pure {
         console2.log("[SIMULATION] mode: explicit no-broadcast validation");
         console2.log("[SIMULATION] production environment flag: false");
-        console2.log("[SIMULATION] committed deployment flag: false");
+        console2.log("[SIMULATION] committed deployment flag:", committedDeployFlag);
         console2.log("[SIMULATION] deployer address:", c.deployer);
         console2.log("[SIMULATION] deployer nonce:", deployerNonce);
         console2.log("[SIMULATION] predicted CREATE address:", predictedExecutor);
