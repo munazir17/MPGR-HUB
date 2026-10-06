@@ -104,6 +104,7 @@ import {
   NETWORK_LABEL,
   OWNER,
   PRIORITY_FEE_CAP,
+  REHEARSAL_LOG_WINDOW,
   REVIEWED_CONFIG_PATH,
   RPC_ENV,
   SLIPPAGE_BPS,
@@ -137,6 +138,7 @@ import {
   nonceBitPosition,
   nonceBitmapWordMarks,
   normalizeAddress,
+  priorSwapScanWindow,
   redact,
   renderTitle,
   rehearsalPrincipal,
@@ -298,11 +300,17 @@ const CONFIRM_PHRASE = env("SMOKE_DELEGATED_CONFIRM");
 const EXPECTED_CODE_HASH = env(CODE_HASH_PIN_ENV) || null;
 const EMERGENCY_DISABLED = env(EMERGENCY_ENV).toLowerCase() === "true";
 /**
- * The historical SwapExecuted scan is bounded: 2 000 chunks x 2 000 blocks covers
- * ~4M blocks (~3 months of Base 2s blocks) since the deployment. Beyond that the
- * run FAILS CLOSED rather than certifying a one-shot on a partial scan — an
- * operator facing that must point SMOKE_DELEGATED_RPC_URL at their own full node
- * (or start a new campaign with a new wallet, which is the intended answer anyway).
+ * The historical SwapExecuted scan is bounded on two axes.
+ *
+ * Window: `live`/`preflight` scan from the deployment block to the observed head
+ * (the full one-shot certification). `rehearsal` scans only the last
+ * REHEARSAL_LOG_WINDOW blocks of the local fork — see priorSwapScanWindow.
+ *
+ * Span: 2 000 chunks x 2 000 blocks covers ~4M blocks (~3 months of Base 2s
+ * blocks) since the deployment. Beyond that the run FAILS CLOSED rather than
+ * certifying a one-shot on a partial scan — an operator facing that must point
+ * SMOKE_DELEGATED_RPC_URL at their own full node (or start a new campaign with a
+ * new wallet, which is the intended answer anyway).
  */
 const MAX_LOG_CHUNKS = 2_000n;
 
@@ -583,19 +591,27 @@ async function probeMappingSlot(pub, token, callData, expected, keyForSlot) {
   return null;
 }
 
-/** Chunks the historical SwapExecuted scan; a range it cannot cover is fatal. */
+/**
+ * Chunks the historical SwapExecuted scan; a range it cannot cover is fatal.
+ *
+ * The window comes from priorSwapScanWindow: the deployment-block-anchored full
+ * scan in `live`/`preflight`, and the last REHEARSAL_LOG_WINDOW blocks in
+ * `rehearsal` — a local anvil fork cannot serve its pre-fork history locally, and
+ * its upstream caps how many blocks one eth_getLogs may span.
+ */
 async function countPriorSwapEvents(pub, wallet) {
   const head = await pub.getBlockNumber();
   if (head < DELEGATED_DEPLOY_BLOCK) return { count: 0, from: DELEGATED_DEPLOY_BLOCK, to: head, chunks: 0n };
-  const chunks = (head - DELEGATED_DEPLOY_BLOCK + LOG_CHUNK) / LOG_CHUNK;
+  const { from: scanFrom, to: scanTo } = priorSwapScanWindow({ head, rehearsal: REHEARSAL });
+  const chunks = (scanTo - scanFrom + LOG_CHUNK) / LOG_CHUNK;
   if (chunks > MAX_LOG_CHUNKS) {
     throw new Abort(`prior-swap scan would need ${chunks} chunks (> ${MAX_LOG_CHUNKS}): refusing to certify a one-shot from a partial scan — use a full-node RPC`);
   }
   let count = 0;
   let used = 0n;
-  for (let from = DELEGATED_DEPLOY_BLOCK; from <= head; from += LOG_CHUNK) {
+  for (let from = scanFrom; from <= scanTo; from += LOG_CHUNK) {
     used += 1n;
-    const to = from + LOG_CHUNK - 1n > head ? head : from + LOG_CHUNK - 1n;
+    const to = from + LOG_CHUNK - 1n > scanTo ? scanTo : from + LOG_CHUNK - 1n;
     const logs = await pub.getLogs({
       address: DELEGATED_EXECUTOR,
       event: SWAP_EXECUTED_EVENT,
@@ -605,7 +621,7 @@ async function countPriorSwapEvents(pub, wallet) {
     });
     count += logs.length;
   }
-  return { count, from: DELEGATED_DEPLOY_BLOCK, to: head, chunks: used };
+  return { count, from: scanFrom, to: scanTo, chunks: used };
 }
 
 // ---------------------------------------------------------------------------
@@ -881,7 +897,16 @@ async function main() {
     nonceWord: permit2NonceBitmapWord,
     nonceUsed: permit2UsedBefore,
   });
-  fact("priorSwapScan", { count: priorScan.count, from: priorScan.from.toString(), to: priorScan.to.toString(), chunks: priorScan.chunks.toString() });
+  fact("priorSwapScan", {
+    count: priorScan.count,
+    from: priorScan.from.toString(),
+    to: priorScan.to.toString(),
+    chunks: priorScan.chunks.toString(),
+    // Rehearsal scans only the fork's most recent blocks (REHEARSAL_LOG_WINDOW);
+    // live/preflight scan from the deployment block. Recorded so the report can
+    // never present the bounded rehearsal scan as a full mainnet certification.
+    rehearsalBounded: REHEARSAL ? REHEARSAL_LOG_WINDOW.toString() : null,
+  });
 
   // Rehearsal only: the fork principals start penniless, so fund them on the
   // LOCAL FORK (never on Base Mainnet) and record the mainnet shortfall.
@@ -1343,7 +1368,10 @@ function renderMarkdown() {
     );
   }
   if (f.executorBalancesAfter) lines.push(`| Executor after (USDC / WETH / ETH) | ${f.executorBalancesAfter.usdc} / ${f.executorBalancesAfter.weth} / ${f.executorBalancesAfter.eth} |`);
-  if (f.priorSwapScan) lines.push(`| One-shot scan | ${f.priorSwapScan.count} prior SwapExecuted for this wallet (blocks ${f.priorSwapScan.from}→${f.priorSwapScan.to}) |`);
+  if (f.priorSwapScan)
+    lines.push(
+      `| One-shot scan | ${f.priorSwapScan.count} prior SwapExecuted for this wallet (blocks ${f.priorSwapScan.from}→${f.priorSwapScan.to})${f.priorSwapScan.rehearsalBounded ? ` — **rehearsal only**: the last ${f.priorSwapScan.rehearsalBounded} blocks of the local fork; live/preflight scan from the deployment block` : ""} |`,
+    );
   lines.push("");
   const summary = summarizeChecks(report.checks);
   lines.push(`<details${ok ? "" : " open"}><summary>Checks: ${summary.passed}/${summary.total} passed</summary>`, "");

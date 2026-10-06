@@ -208,6 +208,21 @@ export const LEDGER_DIR = ".mpgr-delegated-smoke";
 /** Log-scan chunk size for the historical SwapExecuted scan. */
 export const LOG_CHUNK = 2_000n;
 
+/**
+ * Rehearsal-only bound for the historical SwapExecuted scan.
+ *
+ * `live`/`preflight` certify the one-shot guard against the REAL chain, so they
+ * scan every block from the deployment to the observed head. `rehearsal` runs
+ * against a LOCAL anvil fork whose pre-fork history is not local: a full scan
+ * would push hundreds of chunked eth_getLogs calls at the fork's upstream, and
+ * public Base endpoints cap how many blocks one eth_getLogs call may span
+ * (Alchemy's Base free tier caps it at 10). The fork-only principals are
+ * derived from public labels and cannot have real history, and the fork's own
+ * broadcasts can only live in its most recent blocks — so the rehearsal scans
+ * the last 10 blocks of the fork, which any upstream serves in one call.
+ */
+export const REHEARSAL_LOG_WINDOW = 10n;
+
 // ---------------------------------------------------------------------------
 // Small pure helpers
 // ---------------------------------------------------------------------------
@@ -273,6 +288,19 @@ function bigintOf(value) {
   if (typeof value === "number" && Number.isInteger(value)) return BigInt(value);
   if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return BigInt(value.trim());
   return null;
+}
+
+/**
+ * The inclusive block window the historical SwapExecuted scan must cover.
+ *
+ * `live`/`preflight`: the deployment block -> observed head, i.e. the full
+ * one-shot certification. `rehearsal`: the last `window` blocks of the local
+ * fork (never reaching back before the deployment block), so the fork never
+ * pulls pre-fork history from its upstream — see REHEARSAL_LOG_WINDOW.
+ */
+export function priorSwapScanWindow({ head, deployBlock = DELEGATED_DEPLOY_BLOCK, rehearsal = false, window = REHEARSAL_LOG_WINDOW }) {
+  const start = rehearsal ? head - window + 1n : deployBlock;
+  return { from: start > deployBlock ? start : deployBlock, to: head };
 }
 
 // ---------------------------------------------------------------------------

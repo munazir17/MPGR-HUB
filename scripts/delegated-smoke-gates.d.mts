@@ -219,6 +219,7 @@ export declare const CAMPAIGN: string;
 export declare const LEDGER_VERSION: number;
 export declare const LEDGER_DIR: string;
 export declare const LOG_CHUNK: bigint;
+export declare const REHEARSAL_LOG_WINDOW: bigint;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -229,6 +230,12 @@ export declare function isPrivateKeyShape(value: unknown): boolean;
 export declare function isBytes32(value: unknown): boolean;
 export declare function redact(text: string, secrets?: ReadonlyArray<string | undefined>): string;
 export declare function isLocalRpc(url: unknown): boolean;
+export declare function priorSwapScanWindow(input: {
+  head: bigint;
+  deployBlock?: bigint;
+  rehearsal?: boolean;
+  window?: bigint;
+}): { from: bigint; to: bigint };
 export declare function codeDispatchesSelector(code: unknown, selector: string): boolean;
 export declare function safeErrorMessage(err: unknown, secrets?: ReadonlyArray<string | undefined>): string;
 
