@@ -83,8 +83,19 @@ node script/smoke-delegated-executor-base-mainnet.mjs
   **two different accounts**: this is the only mode that proves the delegated property
   that *anyone* may relay a user-signed permit while the output still lands on the signer.
 * The rehearsal funds its principals on the **fork only** (a located-slot
-  `anvil_setStorageAt` USDC top-up plus `anvil_setBalance` for ETH) and records that as an
-  explicit non-mainnet annotation in the report.
+  `anvil_setStorageAt` USDC top-up to **exactly the 500000 raw gross** — least privilege,
+  so the one canary trade consumes the whole balance — plus `anvil_setBalance` for ETH)
+  and records that as an explicit non-mainnet annotation in the report.
+* The two reads of **real mainnet readiness** that precede that provisioning (the
+  principal's mainnet USDC balance and its mainnet `USDC → Permit2` approval) are
+  **informational only**, printed as `INFO` and rendered ℹ️. A principal derived from a
+  public label holds nothing on mainnet and has approved nothing — that is true by
+  construction, so letting it decide the run would mean the fork rehearsal can never
+  succeed. They are excluded from the pass/fail tally and from the exit code
+  (`blockingFailures()`); everything else, including every fork-state assertion, still
+  decides it. In `preflight` and `live` the same two preconditions are read from the real
+  pinned wallet and remain **fatal** — the helper that marks a row informational aborts
+  outside rehearsal, so a live gate cannot be downgraded to a note.
 * It also writes the **canonical one-time `USDC → Permit2` approval** into fork state
   (same located-slot technique, for **exactly the 500000 raw gross** — never unlimited,
   never the executor). A real user grants this once, off-band, before signing anything;

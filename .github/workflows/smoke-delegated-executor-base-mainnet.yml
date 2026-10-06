@@ -120,7 +120,7 @@ jobs:
       - name: Report (summary + PR comment)
         if: always() && hashFiles('smoke-delegated-rehearsal.json') != ''
         run: |
-          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) == 0 then "::notice title=Delegated fork rehearsal::\(.status) - \(.checks | length) checks passed" else ($f[0:9][] | "::error title=Delegated fork rehearsal FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-delegated-rehearsal.json
+          jq -r '(.checks | map(select((.ok | not) and (.informational | not)))) as $f | (.checks | map(select(.informational)) | length) as $n | if ($f | length) == 0 then "::notice title=Delegated fork rehearsal::\(.status) - \((.checks | length) - $n) checks passed, \($n) informational note(s) about real mainnet state the fork provisions locally" else ($f[0:9][] | "::error title=Delegated fork rehearsal FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-delegated-rehearsal.json
           if [ "$(jq -r .status smoke-delegated-rehearsal.json)" = "passed" ]; then
             NEXT="**Next:** the read-only \`preflight\` job audits real Base Mainnet state for the pinned smoke wallet. Only if it is green does \`live\` wait for approval of environment \`base-mainnet\`; approving that sends EXACTLY ONE real swap (0.50 USDC -> WETH, signed Permit2 witness permit, no approval) from the dedicated smoke wallet."
           else
