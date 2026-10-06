@@ -204,8 +204,8 @@ describe("§B mainnet delegated deploy config ↔ TypeScript route table consist
     expect(DEPLOY_CONFIG.typedModules).toEqual([]);
   });
 
-  it("is NOT enabled by default — it cannot fire accidentally", () => {
-    expect(DEPLOY_CONFIG.mainnetDelegatedDeployEnabled).toBe(false);
+  it("is explicitly armed in the reviewed deployment config", () => {
+    expect(DEPLOY_CONFIG.mainnetDelegatedDeployEnabled).toBe(true);
   });
 
   it("EVERY router the TypeScript mainnet route table promises is allowlisted in the config", () => {

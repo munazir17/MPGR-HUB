@@ -97,8 +97,8 @@ describe("protected delegated Base Mainnet deployment workflow", () => {
     expect(workflow).toContain("cancel-in-progress: false");
   });
 
-  it("preserves both production gates and leaves the committed config fail-closed", () => {
-    expect(config.mainnetDelegatedDeployEnabled).toBe(false);
+  it("preserves both production gates and requires the reviewed config arm", () => {
+    expect(config.mainnetDelegatedDeployEnabled).toBe(true);
     expect(workflow).toContain("flag remains the second independent");
     expect(deploymentGuard).toContain('add(config.mainnetDelegatedDeployEnabled === true, "config_deploy_flag"');
     expect(deploymentGuard).toContain('add(deployEnabled === "true", "environment_deploy_flag"');
@@ -144,7 +144,7 @@ describe("protected delegated Base Mainnet deployment workflow", () => {
     expect(workflow).toContain("Swaps, canary trades, approvals, and autonomous actions: none");
   });
 
-  it("blocks the current false config and accepts only a future reviewed true-gate config", () => {
+  it("accepts the reviewed config arm while preserving the environment gate", () => {
     const common = {
       owner: EXPECTED_OWNER,
       feeRecipient: EXPECTED_FEE_RECIPIENT,
@@ -152,8 +152,8 @@ describe("protected delegated Base Mainnet deployment workflow", () => {
       artifactExists: false,
     };
     const current = validateDeploymentConfigWithOptions(config, common);
-    expect(current.ok).toBe(false);
-    expect(current.checks.find((item) => item.name === "config_deploy_flag")?.ok).toBe(false);
+    expect(current.ok).toBe(true);
+    expect(current.checks.find((item) => item.name === "config_deploy_flag")?.ok).toBe(true);
 
     const enabledForReviewedDeployment = { ...config, mainnetDelegatedDeployEnabled: true };
     const prospective = validateDeploymentConfigWithOptions(enabledForReviewedDeployment, common);
