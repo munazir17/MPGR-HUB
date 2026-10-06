@@ -8,13 +8,25 @@ import {MPGRExecutorDelegated} from "../../contracts/executor/MPGRExecutorDelega
 /// @dev Local harness for the preflight and read-only simulation paths; never broadcasts or opens a network fork.
 contract DelegatedMainnetDeployHarness is DeployMPGRExecutorDelegatedBaseMainnet {
     bool public recordExistsFlag;
+    bool public committedDeployFlagOverrideEnabled;
+    bool public committedDeployFlagOverride;
 
     function setRecordExists(bool value) external {
         recordExistsFlag = value;
     }
 
+    function setCommittedDeployFlagOverride(bool enabled, bool value) external {
+        committedDeployFlagOverrideEnabled = enabled;
+        committedDeployFlagOverride = value;
+    }
+
     function _recordExists() internal view override returns (bool) {
         return recordExistsFlag;
+    }
+
+    function _readPins() internal view override returns (Pins memory p) {
+        p = super._readPins();
+        if (committedDeployFlagOverrideEnabled) p.enabled = committedDeployFlagOverride;
     }
 
     function preflightForTest(Config memory c, Pins memory p) external view {
@@ -296,9 +308,10 @@ contract DeployMPGRExecutorDelegatedBaseMainnetTest is Test {
         harness.preflightForTest(c, p);
     }
 
-    function test_SimulationPassesWithBothProductionFlagsFalseWithoutCreatingAnExecutorOrMutatingDeployerState()
+    function test_SimulationPassesWithBothProductionFlagsFalseInAnExplicitDisabledTestFixture()
         public
     {
+        harness.setCommittedDeployFlagOverride(true, false);
         _enableSimulationMode();
         uint256 deployerBalanceBefore = deployer.balance;
         uint256 deployerNonceBefore = vm.getNonce(deployer);
@@ -364,6 +377,7 @@ contract DeployMPGRExecutorDelegatedBaseMainnetTest is Test {
     }
 
     function test_ProductionRunStillRefusesWhenCommittedEnableFlagIsFalse() public {
+        harness.setCommittedDeployFlagOverride(true, false);
         vm.setEnv("BASE_MAINNET_DEPLOYER_PRIVATE_KEY", vm.toString(deployerKey));
         vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION", "false");
         vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED", "true");
@@ -389,7 +403,7 @@ contract DeployMPGRExecutorDelegatedBaseMainnetTest is Test {
         assertEq(args.weth, pins.weth);
         assertEq(args.permit2, pins.permit2);
         assertEq(pins.chainId, 8453);
-        assertFalse(pins.enabled);
+        assertTrue(pins.enabled);
         assertEq(pins.feeBps, 25);
         assertEq(pins.maxFeeBps, 100);
 

@@ -3,7 +3,7 @@
   "chainId": 8453,
   "network": "base",
   "contract": "MPGRExecutorDelegated",
-  "mainnetDelegatedDeployEnabled": false,
+  "mainnetDelegatedDeployEnabled": true,
   "owner": "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
   "feeRecipient": "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
   "feeBps": 25,

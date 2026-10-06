@@ -12,6 +12,7 @@ import {
 const committedConfig = JSON.parse(
   readFileSync("deployments/base-mainnet/delegated-deploy-config.json", "utf8"),
 );
+const disabledConfig = { ...committedConfig, mainnetDelegatedDeployEnabled: false };
 const preflightWorkflow = readFileSync(".github/workflows/preflight-delegated-base-mainnet.yml", "utf8");
 const preflightChecker = readFileSync("scripts/delegated-mainnet-preflight.mjs", "utf8");
 const deployScript = readFileSync("script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol", "utf8");
@@ -49,13 +50,13 @@ function createReadOnlyStages(steps: string[]) {
 }
 
 describe("read-only delegated Base Mainnet preflight state machine", () => {
-  it("treats both committed and environment false flags as PASS", () => {
-    const result = validate();
+  it("passes read-only preflight only for the disabled committed-config posture", () => {
+    const result = validate(disabledConfig);
 
     expect(result.ok).toBe(true);
     expect(result.checks.find(({ name }) => name === "config_deploy_flag")?.ok).toBe(true);
     expect(result.checks.find(({ name }) => name === "environment_deploy_flag")?.ok).toBe(true);
-    expect(validate(committedConfig, { deployFlag: false }).ok).toBe(true);
+    expect(validate(disabledConfig, { deployFlag: false }).ok).toBe(true);
     expect(isReadOnlyDeploymentFlagFalse(false)).toBe(true);
     expect(readOnlyDeploymentFlagStatus(["false", undefined])).toMatchObject({
       ok: true,
@@ -91,9 +92,9 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
     expect(booleanValue).toBe("false");
 
     const staticResult = validateStaticConfig(
-      committedConfig,
-      committedConfig.owner,
-      committedConfig.feeRecipient,
+      disabledConfig,
+      disabledConfig.owner,
+      disabledConfig.feeRecipient,
       [workflowValue, undefined],
     );
     expect(staticResult.ok).toBe(true);
@@ -205,8 +206,8 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
     expect(deployScript).toContain('require(!_simulationModeEnabled(), "MPGR: simulation mode cannot broadcast")');
   });
 
-  it("keeps the exact committed constructor pins and disabled production posture in scope", () => {
-    expect(committedConfig.mainnetDelegatedDeployEnabled).toBe(false);
+  it("keeps the exact constructor pins and explicitly armed production posture in scope", () => {
+    expect(committedConfig.mainnetDelegatedDeployEnabled).toBe(true);
     expect(committedConfig.owner).toBe("0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e");
     expect(committedConfig.feeRecipient).toBe("0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4");
     expect(committedConfig.feeBps).toBe(25);
