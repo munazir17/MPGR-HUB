@@ -167,6 +167,38 @@ describe("protected delegated Base Mainnet deployment workflow", () => {
     expect(disabledEnvironment.checks.find((item) => item.name === "environment_deploy_flag")?.ok).toBe(false);
   });
 
+  it("keeps the production gate literal-true and untouched by the read-only preflight posture", () => {
+    const preflightWorkflow = readFileSync(".github/workflows/preflight-delegated-base-mainnet.yml", "utf8");
+
+    // The deploy workflow still reads the real Environment authorization and never a literal.
+    expect(workflow).toContain(
+      "MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}",
+    );
+    expect(workflow).not.toContain('MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: "false"');
+
+    // Missing or disarmed authorization still fails the deploy guard closed.
+    for (const deployEnabled of [undefined, "", "false", "False", "0"]) {
+      const result = validateDeploymentConfigWithOptions(config, {
+        owner: EXPECTED_OWNER,
+        feeRecipient: EXPECTED_FEE_RECIPIENT,
+        deployEnabled,
+        artifactExists: false,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.checks.find((item) => item.name === "environment_deploy_flag")?.ok).toBe(false);
+    }
+
+    // The read-only preflight cannot reach, call, or alter the deployment workflow.
+    expect(preflightWorkflow).not.toContain("deploy-delegated-base-mainnet.yml");
+    expect(preflightWorkflow).not.toContain("--phase=prebroadcast");
+    expect(preflightWorkflow).not.toContain("--phase=reconcile");
+    const broadcastLines = preflightWorkflow
+      .split("\n")
+      .map((line) => line.trimStart())
+      .filter((line) => line.includes("--broadcast"));
+    expect(broadcastLines.every((line) => line.startsWith("#"))).toBe(true);
+  });
+
   it("recovers from transient read-only RPC failures and preserves fail-closed behavior on persistent failures", async () => {
     const { readWithRetryAndFallback } = await import("./delegated-mainnet-deployment-guard.mjs");
 

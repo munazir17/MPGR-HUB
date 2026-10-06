@@ -15,6 +15,43 @@ export interface ReadOnlyContinuationResult {
   stage: "deployment-flag" | "deployer" | "roles" | "rpc";
 }
 
+export interface ReadOnlyContinuationOptions {
+  armedPosture?: boolean;
+}
+
+export type DeploymentAuthorizationState = "missing" | "disarmed" | "armed" | "conflict" | "invalid";
+
+export interface DeploymentAuthorization {
+  state: DeploymentAuthorizationState;
+  configuredSources: number;
+  armed: boolean;
+  disarmed: boolean;
+  explicit: boolean;
+}
+
+export declare const DEPLOY_FLAG_STATES: {
+  readonly MISSING: "missing";
+  readonly DISARMED: "disarmed";
+  readonly ARMED: "armed";
+  readonly CONFLICT: "conflict";
+  readonly INVALID: "invalid";
+};
+
+export function readDeploymentAuthorization(
+  environmentDeployFlagValues: DeployFlagValues,
+): DeploymentAuthorization;
+
+export function deploymentAuthorizationExpectation(
+  authorization: DeploymentAuthorization,
+  armedPosture?: boolean,
+): { ok: boolean; detail: string };
+
+export function runReadOnlyChecksForDeclaredPosture(
+  environmentDeployFlagValues: DeployFlagValues,
+  stages: ReadOnlyStages,
+  options?: ReadOnlyContinuationOptions,
+): Promise<ReadOnlyContinuationResult>;
+
 export interface ReadOnlyStages {
   deriveDeployerAddress: () => string | null | Promise<string | null>;
   checkRoleSeparation: (deployerAddress: string) => boolean | Promise<boolean>;
@@ -51,7 +88,10 @@ export function validateStaticConfig(
   options?: ValidateStaticConfigOptions,
 ): StaticConfigValidation;
 
-export function runReadOnlyChecksWhenDeploymentIsDisabled(
-  environmentDeployFlagValues: DeployFlagValues,
-  stages: ReadOnlyStages,
-): Promise<ReadOnlyContinuationResult>;
+/**
+ * Alias of `runReadOnlyChecksForDeclaredPosture`, kept for existing importers. Despite the legacy
+ * name it is posture-aware: an explicitly disarmed environment always continues, an explicitly
+ * armed one continues only when `options.armedPosture` is true, and missing/invalid/conflicting
+ * configuration always fails closed.
+ */
+export declare const runReadOnlyChecksWhenDeploymentIsDisabled: typeof runReadOnlyChecksForDeclaredPosture;

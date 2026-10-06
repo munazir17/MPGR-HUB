@@ -5,6 +5,13 @@
 // It derives one public address from the deployment key, then uses only chain-id,
 // block-number, nonce, balance, bytecode and eth_call reads. It never invokes Forge script
 // run(), creates a predicted deployment, broadcasts, deploys, activates, or runs a canary.
+//
+// Production deploy authorization: the protected `base-mainnet` Environment legitimately carries
+// MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED once an operator arms it for the pending production run.
+// This read-only path AUDITS that authorization (explicit, non-conflicting, and consistent with
+// the posture declared for the ref under test) but never requires it to be disarmed, never
+// defaults it, and never sets or enables it. Missing, malformed or contradictory configuration
+// still fails closed before any key derivation or RPC call.
 
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -186,19 +193,105 @@ export function decodeDeploymentFlagSource(serializedValue) {
   }
 }
 
-export function readOnlyDeploymentFlagStatus(environmentDeployFlagValues) {
+/**
+ * Classification of the protected environment's production deploy-authorization sources.
+ *
+ * This is an AUDIT of an input, never a switch: the read-only preflight never sets, enables,
+ * defaults or requires an armed value, it only reports what the `base-mainnet` Environment
+ * already declares so that missing, malformed and contradictory configuration still fails closed.
+ */
+export const DEPLOY_FLAG_STATES = Object.freeze({
+  MISSING: "missing",
+  DISARMED: "disarmed",
+  ARMED: "armed",
+  CONFLICT: "conflict",
+  INVALID: "invalid",
+});
+
+export function readDeploymentAuthorization(environmentDeployFlagValues) {
   const values = Array.isArray(environmentDeployFlagValues)
     ? environmentDeployFlagValues
     : [environmentDeployFlagValues];
-  const configuredValues = values.filter((value) => value !== undefined && value !== null && !(typeof value === "string" && value.trim() === ""));
-  const isFalse = (value) => value === false || (typeof value === "string" && value.trim() === "false");
-  const ok = configuredValues.length > 0 && configuredValues.every(isFalse);
+  const decoded = values
+    .map((value) => {
+      // The workflow always passes strings, but the checker must also classify boolean
+      // inputs the same way the rest of the preflight always has.
+      if (typeof value === "boolean") return value ? "true" : "false";
+      return decodeDeploymentFlagSource(value);
+    })
+    .filter((value) => value !== undefined);
+  const literals = decoded.map((value) => {
+    if (value === "true") return "true";
+    if (value === "false") return "false";
+    return "invalid";
+  });
+  const configuredSources = decoded.length;
+  let state;
+  if (configuredSources === 0) state = DEPLOY_FLAG_STATES.MISSING;
+  else if (literals.includes("invalid")) state = DEPLOY_FLAG_STATES.INVALID;
+  else if (literals.every((literal) => literal === "true")) state = DEPLOY_FLAG_STATES.ARMED;
+  else if (literals.every((literal) => literal === "false")) state = DEPLOY_FLAG_STATES.DISARMED;
+  else state = DEPLOY_FLAG_STATES.CONFLICT;
+  return {
+    state,
+    configuredSources,
+    armed: state === DEPLOY_FLAG_STATES.ARMED,
+    disarmed: state === DEPLOY_FLAG_STATES.DISARMED,
+    explicit: configuredSources > 0,
+  };
+}
+
+/**
+ * The read-only preflight accepts BOTH consistent authorization postures, because the same
+ * protected `base-mainnet` Environment must serve the pending production deployment (armed) and
+ * ordinary verification (disarmed):
+ *   - armed   -> accepted only where the ref declares the reviewed armed posture (main / the
+ *                reviewed session branch); rejected by the legacy unarmed pre-arm refs so an
+ *                armed environment can never silently satisfy a pre-arm check list;
+ *   - disarmed-> accepted everywhere (the classic verification posture);
+ *   - missing / invalid / conflicting -> rejected everywhere (fail closed).
+ */
+export function deploymentAuthorizationExpectation(authorization, armedPosture) {
+  switch (authorization.state) {
+    case DEPLOY_FLAG_STATES.DISARMED:
+      return {
+        ok: true,
+        detail: "explicit and consistent; production deployment authorization disarmed (raw values hidden)",
+      };
+    case DEPLOY_FLAG_STATES.ARMED:
+      return armedPosture
+        ? {
+            ok: true,
+            detail:
+              "explicit and consistent; production deployment authorization armed for the reviewed posture (raw values hidden)",
+          }
+        : {
+            ok: false,
+            detail:
+              "production deployment authorization is armed while this ref declares the unarmed pre-arm posture; raw values hidden",
+          };
+    case DEPLOY_FLAG_STATES.MISSING:
+      return { ok: false, detail: "no configured flag source found; raw values hidden" };
+    case DEPLOY_FLAG_STATES.INVALID:
+      return { ok: false, detail: "configured flag value is not the literal true/false; raw values hidden" };
+    default:
+      return { ok: false, detail: "configured flag sources conflict; raw values hidden" };
+  }
+}
+
+/**
+ * Legacy unarmed-posture view of the same audit, retained for the pre-arm regression path and for
+ * callers that must prove the production switch is explicitly false.
+ */
+export function readOnlyDeploymentFlagStatus(environmentDeployFlagValues) {
+  const authorization = readDeploymentAuthorization(environmentDeployFlagValues);
+  const ok = authorization.state === DEPLOY_FLAG_STATES.DISARMED;
   return {
     ok,
-    configuredSources: configuredValues.length,
+    configuredSources: authorization.configuredSources,
     detail: ok
       ? "false; deployment remains disabled"
-      : configuredValues.length === 0
+      : authorization.configuredSources === 0
         ? "no configured flag source found; raw values hidden"
         : "configured flag source is not false or sources conflict; raw values hidden",
   };
@@ -261,7 +354,8 @@ export function validateStaticConfig(config, environmentOwner, environmentFeeRec
   ];
   const allowlistExcludesDenied = deniedAddresses.every((address) => address !== null)
     && allowedAddresses.every((address) => address !== null && !deniedAddresses.includes(address));
-  const environmentFlagStatus = readOnlyDeploymentFlagStatus(environmentDeployFlagValues);
+  const authorization = readDeploymentAuthorization(environmentDeployFlagValues);
+  const authorizationExpectation = deploymentAuthorizationExpectation(authorization, armedPosture);
 
   add(typeof environmentOwner === "string" && environmentOwner.length > 0, "owner_variable_presence");
   add(typeof environmentFeeRecipient === "string" && environmentFeeRecipient.length > 0, "fee_recipient_variable_presence");
@@ -272,7 +366,7 @@ export function validateStaticConfig(config, environmentOwner, environmentFeeRec
   } else {
     add(config.mainnetDelegatedDeployEnabled === false, "config_deploy_flag", "false; deployment remains disabled");
   }
-  add(environmentFlagStatus.ok, "environment_deploy_flag", environmentFlagStatus.detail);
+  add(authorizationExpectation.ok, "environment_deploy_flag", authorizationExpectation.detail);
   add(config.owner === "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e", "config_owner_pin");
   add(config.feeRecipient === "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4", "config_fee_recipient_pin");
   add(sameAddress(environmentOwner, config.owner), "environment_owner_matches_config");
@@ -294,8 +388,19 @@ export function validateStaticConfig(config, environmentOwner, environmentFeeRec
   return { ok: checks.every((item) => item.ok), checks };
 }
 
-export async function runReadOnlyChecksWhenDeploymentIsDisabled(environmentDeployFlagValues, stages) {
-  if (!isReadOnlyDeploymentFlagFalse(environmentDeployFlagValues)) {
+/**
+ * Gate the read-only continuation on the DECLARED posture, not on an artificial "disarmed"
+ * requirement: the RPC/key-derivation/role stages run whenever the environment authorization is
+ * explicit and consistent with the posture the protected workflow declared for this ref
+ * (disarmed everywhere, armed only where the reviewed armed posture applies).
+ *
+ * `runReadOnlyChecksWhenDeploymentIsDisabled` is kept as an alias so existing importers keep
+ * working; it is the same posture-aware function, NOT a stronger "must be disarmed" gate.
+ */
+export async function runReadOnlyChecksForDeclaredPosture(environmentDeployFlagValues, stages, options = {}) {
+  const authorization = readDeploymentAuthorization(environmentDeployFlagValues);
+  const expectation = deploymentAuthorizationExpectation(authorization, options.armedPosture === true);
+  if (!expectation.ok) {
     return { ok: false, continued: false, stage: "deployment-flag" };
   }
 
@@ -308,6 +413,8 @@ export async function runReadOnlyChecksWhenDeploymentIsDisabled(environmentDeplo
   await stages.runRpcChecks(deployerAddress);
   return { ok: true, continued: true, stage: "rpc" };
 }
+
+export const runReadOnlyChecksWhenDeploymentIsDisabled = runReadOnlyChecksForDeclaredPosture;
 
 function deriveDeployerAddress() {
   const raw = process.env.BASE_MAINNET_DEPLOYER_PRIVATE_KEY;
@@ -516,37 +623,47 @@ async function main() {
     process.exit(1);
   }
 
-  // A false deployment switch is the required safe state for this phase. It gates off
-  // deployment, but it must not gate off the read-only key derivation or RPC checks below.
-  const continuation = await runReadOnlyChecksWhenDeploymentIsDisabled(environmentDeployFlagValues, {
-    deriveDeployerAddress: async () => {
-      const deployerAddress = deriveDeployerAddress();
-      return failures.length === 0 ? deployerAddress : null;
+  // The read-only path audits the protected environment's production authorization but never
+  // requires it to be disarmed and never enables it. A disarmed environment always continues;
+  // an explicitly armed one continues only under the reviewed armed posture declared for this
+  // ref; missing/invalid/conflicting configuration fails closed before any key derivation.
+  const continuation = await runReadOnlyChecksForDeclaredPosture(
+    environmentDeployFlagValues,
+    {
+      deriveDeployerAddress: async () => {
+        const deployerAddress = deriveDeployerAddress();
+        return failures.length === 0 ? deployerAddress : null;
+      },
+      checkRoleSeparation: async (deployerAddress) => {
+        const owner = addressKey(environmentOwner);
+        const feeRecipient = addressKey(environmentFeeRecipient);
+        const deployer = addressKey(deployerAddress);
+        const denied = new Set([
+          addressKey(config.denied.canaryWallet),
+          addressKey(config.denied.v1MainnetExecutor),
+          ...config.denied.sepolia.map(addressKey),
+        ]);
+        check(Boolean(owner) && Boolean(feeRecipient) && Boolean(deployer), "role_addresses_valid");
+        if (owner && feeRecipient && deployer) {
+          check(owner !== feeRecipient, "owner_fee_recipient_separation");
+          check(deployer !== owner, "deployer_owner_separation");
+          check(deployer !== feeRecipient, "deployer_fee_recipient_separation");
+          check(!denied.has(deployer), "deployer_not_canary_v1_or_sepolia");
+          check(!denied.has(owner), "owner_not_canary_v1_or_sepolia");
+          check(!denied.has(feeRecipient), "fee_recipient_not_canary_v1_or_sepolia");
+        }
+        return failures.length === 0;
+      },
+      runRpcChecks: (deployerAddress) => runLiveChecks(config, deployerAddress),
     },
-    checkRoleSeparation: async (deployerAddress) => {
-      const owner = addressKey(environmentOwner);
-      const feeRecipient = addressKey(environmentFeeRecipient);
-      const deployer = addressKey(deployerAddress);
-      const denied = new Set([
-        addressKey(config.denied.canaryWallet),
-        addressKey(config.denied.v1MainnetExecutor),
-        ...config.denied.sepolia.map(addressKey),
-      ]);
-      check(Boolean(owner) && Boolean(feeRecipient) && Boolean(deployer), "role_addresses_valid");
-      if (owner && feeRecipient && deployer) {
-        check(owner !== feeRecipient, "owner_fee_recipient_separation");
-        check(deployer !== owner, "deployer_owner_separation");
-        check(deployer !== feeRecipient, "deployer_fee_recipient_separation");
-        check(!denied.has(deployer), "deployer_not_canary_v1_or_sepolia");
-        check(!denied.has(owner), "owner_not_canary_v1_or_sepolia");
-        check(!denied.has(feeRecipient), "fee_recipient_not_canary_v1_or_sepolia");
-      }
-      return failures.length === 0;
-    },
-    runRpcChecks: (deployerAddress) => runLiveChecks(config, deployerAddress),
-  });
+    { armedPosture },
+  );
   if (!continuation.continued) {
-    emit("FAIL", "environment_deploy_flag", "read-only preflight requires the configured false value");
+    emit(
+      "FAIL",
+      "environment_deploy_flag",
+      "environment deploy authorization is missing, invalid, conflicting, or contradicts the declared posture; raw values hidden",
+    );
   }
 
   if (failures.length > 0) {
@@ -556,10 +673,14 @@ async function main() {
 
   if (armedPosture) {
     console.log("[PASS] Read-only secure-runner preflight checks completed for Base Mainnet 8453 (reviewed armed posture).");
-    console.log("[STOP] Committed flag is true (reviewed arm); environment flags remain false by design. No broadcast or deployment was attempted.");
+    console.log(
+      "[STOP] Committed flag is true (reviewed arm). The protected environment's production authorization was audited, not required and not enabled: this job derives a public address, performs read-only RPC reads, and has no broadcast path. No deployment was attempted.",
+    );
   } else {
     console.log("[PASS] Read-only secure-runner preflight checks completed for Base Mainnet 8453.");
-    console.log("[STOP] Both deployment-enable flags are false by design. No Forge script simulation, broadcast, or deployment was attempted.");
+    console.log(
+      "[STOP] Environment production authorization is explicitly disarmed for this ref. No Forge script simulation, broadcast, or deployment was attempted.",
+    );
   }
 }
 
