@@ -2,12 +2,16 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  DEPLOY_FLAG_STATES,
   EXPECTED_DEPLOYER,
   EXPECTED_EXECUTOR,
   decodeDeploymentFlagSource,
+  deploymentAuthorizationExpectation,
   isReadOnlyDeploymentFlagFalse,
   predictedCreateAddress,
+  readDeploymentAuthorization,
   readOnlyDeploymentFlagStatus,
+  runReadOnlyChecksForDeclaredPosture,
   runReadOnlyChecksWhenDeploymentIsDisabled,
   validateStaticConfig,
 } from "./delegated-mainnet-preflight.mjs";
@@ -103,7 +107,7 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
     expect(staticResult.ok).toBe(true);
     expect(staticResult.checks.find(({ name }) => name === "environment_deploy_flag")).toMatchObject({
       ok: true,
-      detail: "false; deployment remains disabled",
+      detail: "explicit and consistent; production deployment authorization disarmed (raw values hidden)",
     });
 
     const stages = createReadOnlyStages([]);
@@ -278,20 +282,35 @@ describe("post-arm read-only delegated Base Mainnet preflight", () => {
     }
   });
 
-  it("still requires false environment deployment flags and rejects a disabled config when armed", () => {
+  it("keeps fail-closed behavior for missing, malformed, or conflicting environment flags", () => {
     const owner = committedConfig.owner as string;
     const feeRecipient = committedConfig.feeRecipient as string;
 
-    const nonFalseEnvFlags: Array<string | boolean | undefined | string[]> = [undefined, "", "true", true, ["false", "true"]];
-    for (const deployFlag of nonFalseEnvFlags) {
+    const failClosedEnvFlags: Array<string | boolean | undefined | string[]> = [
+      undefined,
+      "",
+      "False",
+      "0",
+      ["false", "true"],
+    ];
+    for (const deployFlag of failClosedEnvFlags) {
       const result = validateStaticConfig(committedConfig, owner, feeRecipient, deployFlag, { armedPosture: true });
       expect(result.ok).toBe(false);
       expect(result.checks.find(({ name }) => name === "environment_deploy_flag")?.ok).toBe(false);
     }
 
-    const disabledArmed = validateStaticConfig(disabledConfig, owner, feeRecipient, "false", { armedPosture: true });
-    expect(disabledArmed.ok).toBe(false);
-    expect(disabledArmed.checks.find(({ name }) => name === "config_deploy_flag")?.ok).toBe(false);
+    // An explicit armed authorization is accepted ONLY by the reviewed armed posture.
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, "true", { armedPosture: true }).ok).toBe(true);
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, "true").ok).toBe(false);
+
+    // An armed environment can never substitute for the reviewed armed committed config.
+    for (const deployFlag of ["true", "false"]) {
+      const disabledArmed = validateStaticConfig(disabledConfig, owner, feeRecipient, deployFlag, {
+        armedPosture: true,
+      });
+      expect(disabledArmed.ok).toBe(false);
+      expect(disabledArmed.checks.find(({ name }) => name === "config_deploy_flag")?.ok).toBe(false);
+    }
   });
 
   it("pins the dedicated deployer and the predicted CREATE executor independently of the deployment guard", () => {
@@ -348,5 +367,143 @@ describe("post-arm read-only delegated Base Mainnet preflight", () => {
     expect(deployScript).toContain('console2.log("[SIMULATION] committed deployment flag:", committedDeployFlag);');
     expect(deployScript).toContain('"MPGR: simulation requires committed deployment flag false"');
     expect(deployScript).toContain('require(!_simulationModeEnabled(), "MPGR: simulation mode cannot broadcast")');
+  });
+});
+
+describe("production deploy authorization audit in the read-only preflight", () => {
+  const owner = committedConfig.owner as string;
+  const feeRecipient = committedConfig.feeRecipient as string;
+
+  it("classifies the protected environment sources without requiring or echoing a raw value", () => {
+    expect(readDeploymentAuthorization("true").state).toBe(DEPLOY_FLAG_STATES.ARMED);
+    expect(readDeploymentAuthorization(["true", true]).state).toBe(DEPLOY_FLAG_STATES.ARMED);
+    expect(readDeploymentAuthorization(JSON.stringify(true)).state).toBe(DEPLOY_FLAG_STATES.ARMED);
+    expect(readDeploymentAuthorization("false").state).toBe(DEPLOY_FLAG_STATES.DISARMED);
+    expect(readDeploymentAuthorization([undefined, ""]).state).toBe(DEPLOY_FLAG_STATES.MISSING);
+    expect(readDeploymentAuthorization(["false", "true"]).state).toBe(DEPLOY_FLAG_STATES.CONFLICT);
+    expect(readDeploymentAuthorization("False").state).toBe(DEPLOY_FLAG_STATES.INVALID);
+    expect(readDeploymentAuthorization("0").state).toBe(DEPLOY_FLAG_STATES.INVALID);
+
+    const armed = readDeploymentAuthorization("true");
+    expect(armed).toMatchObject({ armed: true, disarmed: false, explicit: true, configuredSources: 1 });
+    expect(deploymentAuthorizationExpectation(armed, false).ok).toBe(false);
+    expect(deploymentAuthorizationExpectation(armed, true).ok).toBe(true);
+    expect(deploymentAuthorizationExpectation(readDeploymentAuthorization("false"), false).ok).toBe(true);
+    expect(deploymentAuthorizationExpectation(readDeploymentAuthorization("false"), true).ok).toBe(true);
+
+    for (const posture of [true, false]) {
+      for (const value of ["true", "false"]) {
+        const expectation = deploymentAuthorizationExpectation(readDeploymentAuthorization(value), posture);
+        expect(expectation.detail).not.toMatch(/\btrue\b|\bfalse\b/);
+      }
+    }
+  });
+
+  it("passes the read-only preflight while the protected base-mainnet environment is already armed for production", () => {
+    const result = validateStaticConfig(committedConfig, owner, feeRecipient, "true", { armedPosture: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.checks.find(({ name }) => name === "config_deploy_flag")).toMatchObject({
+      ok: true,
+      detail: "true; reviewed armed posture",
+    });
+    expect(result.checks.find(({ name }) => name === "environment_deploy_flag")?.ok).toBe(true);
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, ["true", "true"], { armedPosture: true }).ok).toBe(
+      true,
+    );
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, [true, "true"], { armedPosture: true }).ok).toBe(
+      true,
+    );
+    // A leading/trailing-whitespace value is still the literal the Environment stores.
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, " true ", { armedPosture: true }).ok).toBe(true);
+  });
+
+  it("keeps the disarmed verification posture passing for the reviewed armed config", () => {
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, "false", { armedPosture: true }).ok).toBe(true);
+    expect(
+      validateStaticConfig(committedConfig, owner, feeRecipient, ["false", undefined], { armedPosture: true }).ok,
+    ).toBe(true);
+  });
+
+  it("fails closed for missing, malformed, conflicting, or posture-contradicting authorization", () => {
+    for (const deployFlag of [undefined, "", "False", "0", "yes", 1, ["false", "true"], ["true", "false"]]) {
+      const result = validateStaticConfig(committedConfig, owner, feeRecipient, deployFlag as never, {
+        armedPosture: true,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.checks.find(({ name }) => name === "environment_deploy_flag")?.ok).toBe(false);
+    }
+
+    // An armed environment must never satisfy the legacy unarmed pre-arm refs.
+    const preArmRef = validateStaticConfig(committedConfig, owner, feeRecipient, "true");
+    expect(preArmRef.ok).toBe(false);
+    expect(preArmRef.checks.find(({ name }) => name === "environment_deploy_flag")?.ok).toBe(false);
+
+    // An armed environment must never substitute for the reviewed armed committed config:
+    // the config pin fails closed, so the environment/config PAIR can never deploy.
+    const contradiction = validateStaticConfig(disabledConfig, owner, feeRecipient, "true", { armedPosture: true });
+    expect(contradiction.ok).toBe(false);
+    expect(contradiction.checks.find(({ name }) => name === "config_deploy_flag")?.ok).toBe(false);
+  });
+
+  it("continues the read-only RPC stages for both consistent postures and stops otherwise", async () => {
+    const armedStages = createReadOnlyStages([]);
+    expect(await runReadOnlyChecksForDeclaredPosture("true", armedStages, { armedPosture: true })).toEqual({
+      ok: true,
+      continued: true,
+      stage: "rpc",
+    });
+    expect(armedStages.runRpcChecks).toHaveBeenCalledTimes(1);
+
+    const disarmedStages = createReadOnlyStages([]);
+    expect(await runReadOnlyChecksForDeclaredPosture("false", disarmedStages, { armedPosture: true })).toEqual({
+      ok: true,
+      continued: true,
+      stage: "rpc",
+    });
+    expect(disarmedStages.runRpcChecks).toHaveBeenCalledTimes(1);
+
+    const blocked = createReadOnlyStages([]);
+    expect(await runReadOnlyChecksForDeclaredPosture("true", blocked)).toEqual({
+      ok: false,
+      continued: false,
+      stage: "deployment-flag",
+    });
+    expect(blocked.deriveDeployerAddress).not.toHaveBeenCalled();
+    expect(blocked.checkRoleSeparation).not.toHaveBeenCalled();
+    expect(blocked.runRpcChecks).not.toHaveBeenCalled();
+  });
+
+  it("audits the ambient authorization but never enables it, and disarms only the key-free simulation scope", () => {
+    // The checker step still receives what the protected Environment stores (audit input only).
+    expect(preflightWorkflow).toContain(
+      "MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}",
+    );
+    expect(preflightWorkflow).toContain(
+      "MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET: ${{ secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}",
+    );
+    // The job never exports or flips the production flag and has no broadcast invocation
+    // (the only "--broadcast" occurrences are the explanatory comments).
+    expect(preflightWorkflow).not.toContain("GITHUB_ENV");
+    const broadcastLines = preflightWorkflow
+      .split("\n")
+      .map((line) => line.trimStart())
+      .filter((line) => line.includes("--broadcast"));
+    expect(broadcastLines.length).toBeGreaterThan(0);
+    expect(broadcastLines.every((line) => line.startsWith("#"))).toBe(true);
+    expect(preflightWorkflow).not.toContain("--sig 'run()'");
+    expect((preflightWorkflow.match(/--sig 'simulateArmed\(\)'/g) ?? [])).toHaveLength(1);
+
+    const simulationStep = preflightWorkflow.slice(
+      preflightWorkflow.indexOf("- name: Run key-free delegated deployment simulation (NO BROADCAST)"),
+    );
+    expect(simulationStep).toContain('MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: "false"');
+    expect(simulationStep).toContain('MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET: "false"');
+    expect(simulationStep).not.toContain("vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED");
+    expect(simulationStep).not.toContain("secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED");
+    expect(simulationStep).not.toContain("BASE_MAINNET_DEPLOYER_PRIVATE_KEY");
+    expect(simulationStep).toContain('MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION: "true"');
+    expect(preflightChecker).toContain("export function readDeploymentAuthorization(");
+    expect(preflightChecker).not.toContain("process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED =");
   });
 });

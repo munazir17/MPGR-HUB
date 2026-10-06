@@ -101,6 +101,13 @@ jobs:
       # methods. It derives a public address from the deployer key for its checks,
       # but never invokes Forge, simulates a deployment, or submits a transaction.
       # The following simulation step is a separate, key-free process.
+      #
+      # The production deploy authorization is AUDITED here, never required and never
+      # enabled: the protected `base-mainnet` Environment is legitimately armed once an
+      # operator prepares the pending production run, so this read-only path accepts an
+      # explicitly armed value under the reviewed armed posture (main) exactly as it
+      # accepts the disarmed verification posture - while missing, malformed or
+      # conflicting sources still fail closed. Nothing in this job can broadcast.
       - name: Read-only Mainnet RPC and deployment-guard preflight
         id: read_only_mainnet_preflight
         env:
@@ -115,20 +122,28 @@ jobs:
       # Final job step: a key-free, view-only deployment plan. This workflow has no
       # follow-on deploy/canary step, and this forge invocation deliberately omits
       # --broadcast. It consumes only the public address emitted by the prior preflight.
+      #
+      # Simulation-scoped posture: the deploy script's simulation entrypoints require the two
+      # production gate env names to be exactly "false" so a simulation can never run inside an
+      # armed process. This read-only job therefore declares a disarmed, simulation-only scope
+      # for that child process - it neither reads nor mutates the Environment's stored
+      # authorization (the ambient values above are only audited by the checker step). The
+      # production armed value stays with the deploy workflow, which still requires it literal
+      # true, and this process has no broadcast capability at all.
       - name: Run key-free delegated deployment simulation (NO BROADCAST)
         env:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
           BASE_MAINNET_DEPLOYER_ADDRESS: ${{ steps.read_only_mainnet_preflight.outputs.deployer_address }}
           MPGR_EXECUTOR_OWNER: ${{ vars.MPGR_EXECUTOR_OWNER || secrets.MPGR_EXECUTOR_OWNER }}
           MPGR_EXECUTOR_FEE_RECIPIENT: ${{ vars.MPGR_EXECUTOR_FEE_RECIPIENT || secrets.MPGR_EXECUTOR_FEE_RECIPIENT }}
-          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: ${{ vars.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
-          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET: ${{ secrets.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED }}
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED: "false"
+          MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET: "false"
           MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION: "true"
           MPGR_REQUIRE_UNISWAP_ARTIFACTS: "true"
         run: |
           set -euo pipefail
           test -n "$BASE_MAINNET_DEPLOYER_ADDRESS" || { echo '::error::public deployer address output is missing'; exit 1; }
-          test "$MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED" = "false" || { echo '::error::production deploy variable must remain false'; exit 1; }
+          test "$MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED" = "false" || { echo '::error::simulation scope must stay disarmed (no production authorization in this job)'; exit 1; }
           if [ "${MPGR_PREFLIGHT_ARMED_POSTURE:-false}" = "true" ]; then
             forge script script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol --rpc-url "$BASE_MAINNET_RPC_URL" --sig 'simulateArmed()' -vvv
           else
