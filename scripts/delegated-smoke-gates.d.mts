@@ -248,6 +248,45 @@ export declare function priorSwapScanWindow(input: {
   rehearsal?: boolean;
   window?: bigint;
 }): { from: bigint; to: bigint };
+
+/** One inclusive [from, to] eth_getLogs chunk of a bounded historical scan. */
+export interface LogScanChunk {
+  from: bigint;
+  to: bigint;
+}
+
+/** The aggregated result of a bounded historical scan (chunks in deterministic order). */
+export interface LogScanResult<T = unknown> {
+  logs: T[];
+  from: bigint;
+  to: bigint;
+  chunks: bigint;
+}
+
+/**
+ * The exact inclusive chunk plan for a bounded eth_getLogs scan: ascending,
+ * gap-free, overlap-free, first/last block included, every chunk at most
+ * `chunkSize` (default LOG_CHUNK) blocks, final partial chunk intact.
+ */
+export declare function planLogScan(input: {
+  from: bigint | number | string;
+  to: bigint | number | string;
+  chunkSize?: bigint | number | string;
+}): LogScanChunk[];
+
+/**
+ * Runs a bounded historical scan through the injected `fetchChunk`, one
+ * planned chunk at a time. FAILS CLOSED: any unreadable chunk rejects (cause
+ * preserved) with no partial result, and an optional `maxChunks` budget
+ * refuses oversized scans before the first request.
+ */
+export declare function runLogScan<T = unknown>(input: {
+  fetchChunk: (from: bigint, to: bigint) => Promise<T[]> | T[];
+  from: bigint | number | string;
+  to: bigint | number | string;
+  chunkSize?: bigint | number | string;
+  maxChunks?: bigint | number | string | null;
+}): Promise<LogScanResult<T>>;
 export declare function codeDispatchesSelector(code: unknown, selector: string): boolean;
 export declare function safeErrorMessage(err: unknown, secrets?: ReadonlyArray<string | undefined>): string;
 

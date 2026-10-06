@@ -116,8 +116,11 @@ node script/smoke-delegated-executor-base-mainnet.mjs
   Anvil proxies pre-fork `eth_getLogs` to the upstream, which caps the range a single call
   may span (as low as 10 blocks on public Base endpoints), so an unbounded scan fails
   there; and the fork-derived principals cannot have real history. `preflight` and `live`
-  are unchanged — they scan from the deployment block for the pinned wallet. The report's
-  "One-shot scan" line states which window was used.
+  scan the full deployment block → observed head window for the pinned wallet **in bounded
+  chunks of at most 10 blocks** (`LOG_CHUNK` in `scripts/delegated-smoke-gates.mjs`):
+  public RPC providers impose `eth_getLogs` range limits (public Base endpoints reject
+  anything above 50 blocks; some cap at 10), so Mainnet historical log scanning is always
+  performed in bounded chunks. The report's "One-shot scan" line states which window was used.
 
 ### 4.2 Preflight — strictly read-only against real mainnet
 
@@ -151,7 +154,7 @@ verifies, never broadcasts a creation, and never calls a setter.
 | Layer | Mechanism | Failure it prevents |
 |---|---|---|
 | Deterministic single-use Permit2 nonce | `permitNonce = uint256(keccak256("mpgr-delegated-nonce:<campaign>:<wallet>"))`; the gate reads `nonceBitmap(wallet, nonce >> 8)` and refuses unless that exact bit is **unset**; after a successful swap it is set on-chain, so a replay reverts | re-running the same canary with the same wallet, from any machine, even with the local state deleted |
-| Historical `SwapExecuted` scan | chunked `eth_getLogs` (2 000 blocks/chunk) from the deployment block (`52252520`) for `taker == wallet`; any hit refuses. The scan is bounded at 2 000 chunks (~4M blocks, ~3 months of Base blocks) and **fails closed** beyond that — point `BASE_MAINNET_RPC_URL` at your own full node, or (the intended answer) start a new campaign with a new wallet. **`rehearsal` scans only the last 10 blocks of the local fork** (`REHEARSAL_LOG_WINDOW` in `scripts/delegated-smoke-gates.mjs`): a local anvil fork does not hold its pre-fork history, so the deployment-block-anchored scan would push hundreds of chunked calls at the fork's upstream, whose `eth_getLogs` range cap (public Base endpoints: as low as 10 blocks) it cannot satisfy — and the fork-only principals cannot have real history anyway. The report's one-shot line marks the rehearsal bound explicitly; `live`/`preflight` keep the full certification | a broadcast that happened outside this workflow's knowledge |
+| Historical `SwapExecuted` scan | chunked `eth_getLogs` (**10 blocks/chunk** — `LOG_CHUNK`; public RPC providers impose `eth_getLogs` range limits: public Base endpoints reject requests above 50 blocks, some cap at 10) from the deployment block (`52252520`) to the observed head for `taker == wallet`; any hit refuses. The scan is bounded at 400 000 chunks (10 blocks each ≈ 4M blocks, ~3 months of Base blocks — the same block budget as the former 2 000 × 2 000 sizing) and **fails closed** beyond that, and every individual chunk that cannot be read also **fails closed** — point `BASE_MAINNET_RPC_URL` at your own full node, or (the intended answer) start a new campaign with a new wallet. **`rehearsal` scans only the last 10 blocks of the local fork** (`REHEARSAL_LOG_WINDOW` in `scripts/delegated-smoke-gates.mjs`): a local anvil fork does not hold its pre-fork history, so the deployment-block-anchored scan would push hundreds of chunked calls at the fork's upstream, whose `eth_getLogs` range cap (public Base endpoints: as low as 10 blocks) it cannot satisfy — and the fork-only principals cannot have real history anyway. The report's one-shot line marks the rehearsal bound explicitly; `live`/`preflight` keep the full certification | a broadcast that happened outside this workflow's knowledge |
 | Local one-shot ledger | `.mpgr-delegated-smoke/<campaign>-8453-<wallet>.json`, created with `O_EXCL` **before** the broadcast, then updated with the tx hash; a recorded broadcast = permanent refusal for that wallet; an interrupted claim needs the operator to echo the recorded `claimId` via `SMOKE_DELEGATED_LEDGER_ACK`; CI caches the directory keyed by the wallet and never cancels a run mid-broadcast | a double-clicked dispatch, a retried job, two concurrent runs |
 
 **Re-running the canary after a success requires a NEW wallet** (new key, new secret, new
