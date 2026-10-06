@@ -2,7 +2,7 @@ name: Delegated Base Mainnet Preflight (Read-Only)
 
 on:
   push:
-    branches: [arena/01a105ea-mpgr-hub]
+    branches: [arena/01a105ea-mpgr-hub, arena/01a10cb1-mpgr-hub]
   workflow_dispatch:
 
 permissions:
@@ -15,9 +15,9 @@ concurrency:
 jobs:
   preflight:
     # Pushes only run this protected-environment job when deliberately tagged in
-    # the commit message. Manual dispatch is restricted to this session branch.
+    # the commit message. Manual dispatch is restricted to the session branches.
     if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/arena/01a105ea-mpgr-hub') ||
+      (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/arena/01a105ea-mpgr-hub' || github.ref == 'refs/heads/arena/01a10cb1-mpgr-hub')) ||
       (github.event_name == 'push' && contains(github.event.head_commit.message, '[mainnet-preflight]'))
     name: Secure read-only Base Mainnet checks
     runs-on: ubuntu-latest

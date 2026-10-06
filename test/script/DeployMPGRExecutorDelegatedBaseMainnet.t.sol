@@ -405,7 +405,7 @@ contract DeployMPGRExecutorDelegatedBaseMainnetTest is Test {
         assertEq(uint256(args.routers[1].kind), uint256(MPGRExecutorDelegated.RouterKind.UNISWAP_V3_ROUTER02));
 
         (address[] memory expectedTokens,) = harness.productionTokens();
-        assertEq(args.tokens.length, 15);
+        assertEq(args.tokens.length, 50);
         for (uint256 i; i < args.tokens.length; ++i) {
             assertEq(args.tokens[i], expectedTokens[i]);
         }

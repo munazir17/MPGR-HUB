@@ -262,7 +262,7 @@ jobs:
         run: node scripts/delegated-mainnet-deployment-guard.mjs --phase=reconcile
 
       # The existing recorder is read-only on-chain. It verifies the mined receipt,
-      # runtime code, constructor posture, all 15 tokens, both routers, and denylist.
+      # runtime code, constructor posture, all 50 tokens, both routers, and denylist.
       - name: Verify the mined deployment and write the concise run report
         if: ${{ always() && steps.pre_broadcast.outcome == 'success' && ((steps.broadcast.outcome == 'success' && steps.receipt_confirmation.outcome == 'success') || steps.reconcile.outputs.receipt_confirmed == 'true') }}
         env:
@@ -383,7 +383,7 @@ jobs:
             echo '- Broadcast transactions: exactly one CREATE for MPGRExecutorDelegated'
             echo '- Swaps, canary trades, approvals, and autonomous actions: none'
             echo
-            echo '<details><summary>Verified token allowlist (15)</summary>'
+            echo '<details><summary>Verified token allowlist (50)</summary>'
             echo
             jq -r '.allowedTokenAddresses as $addresses | .allowedTokenSymbols as $symbols | range(0; ($addresses | length)) | "- \($symbols[.]) — `\($addresses[.])`"' "$ARTIFACT"
             echo

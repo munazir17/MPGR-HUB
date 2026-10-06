@@ -122,7 +122,7 @@ describe("protected delegated Base Mainnet deployment workflow", () => {
   });
 
   it("requires the exact deployed token/router/denylist pins and emits read-only post-deploy verification", () => {
-    expect(EXPECTED_TOKENS).toHaveLength(15);
+    expect(EXPECTED_TOKENS).toHaveLength(50);
     expect(EXPECTED_ROUTERS).toHaveLength(2);
     expect(EXPECTED_SEPOLIA_DENYLIST).toHaveLength(9);
     expect(EXPECTED_ROUTERS[0].kindName).toBe("AERODROME_SLIPSTREAM");
@@ -137,7 +137,7 @@ describe("protected delegated Base Mainnet deployment workflow", () => {
     expect(workflow).toContain("WETH:");
     expect(workflow).toContain("Permit2:");
     expect(workflow).toContain("paused: false");
-    expect(workflow).toContain("Verified token allowlist (15)");
+    expect(workflow).toContain("Verified token allowlist (50)");
     expect(workflow).toContain("Verified router configurations (2)");
     expect(workflow).toContain("exactly one delegated CREATE transaction");
     expect(workflow).toContain("RecordMPGRExecutorDelegatedBaseMainnet.s.sol");

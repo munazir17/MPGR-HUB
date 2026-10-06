@@ -1,5 +1,5 @@
 {
-  "_comment": "Reviewed, committed pins for the ONE-TIME Base Mainnet MPGRExecutorDelegated deployment (the delegated autonomous executor). This is a SEPARATE artifact from deploy-config.json (the v1 assisted executor 0xD982...505A) and a SEPARATE contract: v1 pulls tokens only from msg.sender and is structurally incapable of executing for a user, so it must NEVER be used for delegated autonomous execution. NOT YET DEPLOYED: mainnetDelegatedDeployEnabled is false, so script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol refuses to run. To deploy, an operator must set it true in a reviewed commit AND set MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED=true in the environment (two independent flags), use a fresh dedicated deployer key (nonce 0), and afterwards pin the resulting address in MPGR_MAINNET_DELEGATED_EXECUTOR. See docs/EXECUTOR-ARCHITECTURE-DECISION.md. Routers: BOTH production venues are allowlisted (see that doc section 7) - Aerodrome Slipstream for every USDC<->B20 tokenized-stock pair, and Uniswap V3 SwapRouter02 for USDC<->WETH, because lib/executor/executor-config.ts declares both as production routes and the deploy script asserts the two never drift. Fee model is identical to v1: 25 bps, hard on-chain cap 100 bps, fee taken in the SELL token. The executor includes the typed module registry, but it is intentionally empty at initial deployment; no venue module is pre-approved.",
+  "_comment": "Reviewed, committed pins for the ONE-TIME Base Mainnet MPGRExecutorDelegated deployment (the UNIVERSAL delegated autonomous executor). This is a SEPARATE artifact from deploy-config.json (the v1 assisted executor 0xD982...505A) and a SEPARATE contract: v1 pulls tokens only from msg.sender and is structurally incapable of executing for a user, so it must NEVER be used for delegated autonomous execution. NOT YET DEPLOYED: mainnetDelegatedDeployEnabled is false, so script/DeployMPGRExecutorDelegatedBaseMainnet.s.sol refuses to run. To deploy, an operator must set it true in a reviewed commit AND set MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED=true in the environment (two independent flags), use a fresh dedicated deployer key (nonce 0), and afterwards pin the resulting address in MPGR_MAINNET_DELEGATED_EXECUTOR. See docs/EXECUTOR-ARCHITECTURE-DECISION.md. UNIVERSAL TOKEN MODEL: the initial allowlist carries USDC, WETH, ALL 41 issued Coinbase B20 addresses (the 38 live stocks from lib/trade/tokenized-stocks.ts + COINc/CRCLc/INTCc which remain launch-pending per base/docs#1955), the official Coinbase wrapped assets from lib/markets/base-pairs.ts (cbBTC, cbETH, cbDOGE, cbXRP, cbLTC, cbADA) and cbZEC (official Coinbase announcement 2026-09-02, pinned in lib/markets/__tests__/base-pairs.test.ts). The 19 announced-not-live B20 addresses are deliberately EXCLUDED until Base lists them live: the immutable executor is universal by governance, not by construction - the Ownable2Step owner adds any future token at RUNTIME with setTokenAllowed(token,true) (one owner transaction; contract-existence and router/module conflict checks are built in; NO redeployment, NO address change), exactly as docs/EXECUTOR-ARCHITECTURE-DECISION.md sections 1 and 4 require. Adding a token to the on-chain allowlist does NOT by itself enable app routing: the TypeScript route table (lib/executor) and delegated runtime registry stay fail-closed until each pair is separately compatibility-verified. B20 security is address-first: ticker/name input is resolved through the canonical 60-entry catalog and every trade surface verifies the exact 0xb200 contract (lib/markets/base-pairs.ts verifyB20Address); look-alike or fake AAPLc/NVDAc contracts are never allowlisted here and are rejected as unlisted. Routers: BOTH production venues are allowlisted (see that doc section 7) - Aerodrome Slipstream for every USDC<->B20/wrapped-asset pair that has a live pool, and Uniswap V3 SwapRouter02 for USDC<->WETH; quotes remain fail-closed per pair (no pool or no liquidity = refused). Fee model is identical to v1: 25 bps, hard on-chain cap 100 bps, fee taken in the SELL token on every swap (BUY and SELL alike); there is no fee-bypass entrypoint. The executor includes the typed module registry, but it is intentionally empty at initial deployment; no venue module is pre-approved.",
   "chainId": 8453,
   "network": "base",
   "contract": "MPGRExecutorDelegated",
@@ -108,6 +108,181 @@
     {
       "address": "0xb2000000000000000000001e800a7f5189430cD0",
       "symbol": "TSLAc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB2000000000000000000000d8Ce462E99ee7A47B",
+      "symbol": "AMDc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB200000000000000000000B1a29cF17A1819288a",
+      "symbol": "ASTSc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB200000000000000000000Fc737aeA6196aB5a4c",
+      "symbol": "AVGOc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb20000000000000000000016f9dfe862feBA122b",
+      "symbol": "BEc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000f215E4C890CFb7176B",
+      "symbol": "CAKEc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000428E3a3eebBb20692B",
+      "symbol": "DJTc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000A613D12dEAfBBb1Db7",
+      "symbol": "DUOLc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000007790ed6E48e06eD935",
+      "symbol": "GMEc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB20000000000000000000043a599976181Bcf336",
+      "symbol": "HIMSc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000002601C5C94F435da168",
+      "symbol": "HTZc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB200000000000000000000f1a0F91e34892E4718",
+      "symbol": "LLYc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB200000000000000000000e215e9B76ecBA02468",
+      "symbol": "MRNAc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB200000000000000000000eC3c4c7395Cc609813",
+      "symbol": "MRVLc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000Fd2f87532B90095211",
+      "symbol": "MUc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb20000000000000000000058B8c947e44011dFE6",
+      "symbol": "NFLXc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB200000000000000000000C597c476FCf9Aed3a8",
+      "symbol": "NVAXc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000347AFbA223D7B6b63C",
+      "symbol": "ORCLc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB20000000000000000000018FE7eC7d6DfeeB528",
+      "symbol": "PFEc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb2000000000000000000007d16372840dF4dAbbe",
+      "symbol": "PLTRc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB2000000000000000000008FC2A8C23cf5937b66",
+      "symbol": "PMc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB2000000000000000000009272A491812842Aa84",
+      "symbol": "PTONc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000450ad3abE5d4846c6E",
+      "symbol": "PYPLc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb200000000000000000000CA425ab42e07C35bC3",
+      "symbol": "QUBTc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB2000000000000000000005bd7AE89b9E6189Bb5",
+      "symbol": "RBLXc",
+      "decimals": 8
+    },
+    {
+      "address": "0xb20000000000000000000066242d4067724cB7A1",
+      "symbol": "RDDTc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB2000000000000000000002137743D4a01Fe4e88",
+      "symbol": "SOUNc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB200000000000000000000f720C26062Bc3067Da",
+      "symbol": "TTWOc",
+      "decimals": 8
+    },
+    {
+      "address": "0xB20000000000000000000044E3CD7a0E1028E57a",
+      "symbol": "WENc",
+      "decimals": 8
+    },
+    {
+      "address": "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+      "symbol": "cbBTC",
+      "decimals": 8
+    },
+    {
+      "address": "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22",
+      "symbol": "cbETH",
+      "decimals": 18
+    },
+    {
+      "address": "0xcbD06E5A2B0C65597161de254AA074E489dEb510",
+      "symbol": "cbDOGE",
+      "decimals": 8
+    },
+    {
+      "address": "0xcb585250f852C6c6bf90434AB21A00f02833a4af",
+      "symbol": "cbXRP",
+      "decimals": 6
+    },
+    {
+      "address": "0xcb17C9Db87B595717C857a08468793f5bAb6445F",
+      "symbol": "cbLTC",
+      "decimals": 8
+    },
+    {
+      "address": "0xcbADA732173e39521CDBE8bf59a6Dc85A9fc7b8c",
+      "symbol": "cbADA",
+      "decimals": 6
+    },
+    {
+      "address": "0xB2000000000000000000008501b13360000cb2EC",
+      "symbol": "cbZEC",
       "decimals": 8
     }
   ],
