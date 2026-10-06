@@ -61,6 +61,7 @@ import {
   PRIORITY_FEE_CAP,
   QUOTE_MAX_WEI,
   QUOTE_MIN_WEI,
+  REHEARSAL_LOG_WINDOW,
   REVIEWED_CONFIG_PATH,
   RPC_ENV,
   SEPOLIA_DELEGATED_EXECUTOR,
@@ -104,6 +105,7 @@ import {
   nonceBitmapWordMarks,
   nonceBitPosition,
   normalizeAddress,
+  priorSwapScanWindow,
   quoteWithinSanityBand,
   redact,
   renderTitle,
@@ -1484,3 +1486,51 @@ describe("the runner script keeps its promises (static invariants)", () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+/**
+ * The historical SwapExecuted scan is the one-shot guard's on-chain leg. On a
+ * LOCAL anvil fork its pre-fork history is not local, so a scan anchored at the
+ * deployment block pushes hundreds of chunked eth_getLogs calls at the fork's
+ * upstream — and public Base endpoints cap how many blocks one such call may
+ * span (regression: the fork rehearsal died on that scan). The rehearsal is
+ * therefore bounded to the last REHEARSAL_LOG_WINDOW blocks of the fork, while
+ * `live`/`preflight` keep the full deployment-block-anchored certification.
+ */
+describe("historical SwapExecuted scan window", () => {
+  const HEAD = 52_800_000n;
+
+  it("certifies the full range from the deployment block outside rehearsal", () => {
+    expect(priorSwapScanWindow({ head: HEAD })).toEqual({ from: DELEGATED_DEPLOY_BLOCK, to: HEAD });
+    expect(priorSwapScanWindow({ head: HEAD, rehearsal: false })).toEqual({ from: DELEGATED_DEPLOY_BLOCK, to: HEAD });
+  });
+
+  it("bounds a rehearsal to the last 10 blocks of the local fork", () => {
+    expect(REHEARSAL_LOG_WINDOW).toBe(10n);
+    const { from, to } = priorSwapScanWindow({ head: HEAD, rehearsal: true });
+    expect(to).toBe(HEAD);
+    expect(from).toBe(HEAD - REHEARSAL_LOG_WINDOW + 1n);
+    expect(to - from + 1n).toBe(REHEARSAL_LOG_WINDOW);
+  });
+
+  it("never reaches back before the deployment block", () => {
+    const head = DELEGATED_DEPLOY_BLOCK + 3n;
+    expect(priorSwapScanWindow({ head, rehearsal: true })).toEqual({ from: DELEGATED_DEPLOY_BLOCK, to: head });
+  });
+
+  it("keeps the rehearsal scan to a single upstream-friendly eth_getLogs call", () => {
+    const { from, to } = priorSwapScanWindow({ head: HEAD, rehearsal: true });
+    // The bounded window is narrower than one chunk, so the rehearsal issues
+    // exactly one eth_getLogs call — a range a public endpoint will serve.
+    expect(to - from + 1n).toBeLessThanOrEqual(LOG_CHUNK);
+    expect((to - from + LOG_CHUNK) / LOG_CHUNK).toBe(1n);
+  });
+
+  it("is what the runner actually scans (not a copy of it)", () => {
+    const call = runnerSource.match(/priorSwapScanWindow\(\{\s*head,\s*rehearsal:\s*REHEARSAL\s*\}\)/);
+    expect(call, "the runner must derive its scan window from priorSwapScanWindow").not.toBeNull();
+    expect(runnerSource).toContain("for (let from = scanFrom; from <= scanTo; from += LOG_CHUNK)");
+    // No unconditional scan anchored at the deployment block may remain.
+    expect(runnerSource).not.toMatch(/for \(let from = DELEGATED_DEPLOY_BLOCK/);
+  });
+});
