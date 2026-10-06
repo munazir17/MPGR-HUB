@@ -185,6 +185,12 @@ export declare const SWAP_ON_BEHALF_OF_TYPED_MODULE_SELECTOR: string;
 export declare const GROSS_AMOUNT_IN: bigint;
 export declare const EXPECTED_FEE_AMOUNT: bigint;
 export declare const SWAP_AMOUNT_IN: bigint;
+/**
+ * The one-time ERC-20 allowance the signing wallet must have granted to the
+ * CANONICAL PERMIT2 CONTRACT (not to the executor) so Permit2's
+ * SignatureTransfer `transferFrom` pull can succeed.
+ */
+export declare const REQUIRED_PERMIT2_TOKEN_ALLOWANCE: bigint;
 export declare const SLIPPAGE_BPS: bigint;
 export declare const DEADLINE_SECONDS: bigint;
 export declare const MIN_DEADLINE_MARGIN_SECONDS: bigint;
@@ -238,6 +244,30 @@ export declare function priorSwapScanWindow(input: {
 }): { from: bigint; to: bigint };
 export declare function codeDispatchesSelector(code: unknown, selector: string): boolean;
 export declare function safeErrorMessage(err: unknown, secrets?: ReadonlyArray<string | undefined>): string;
+
+/** A decoded EVM revert payload (never throws; unknown data is reported verbatim). */
+export interface DecodedRevert {
+  selector: string | null;
+  kind: "none" | "empty" | "custom" | "unknown" | "Error(string)" | "Panic(uint256)";
+  name: string | null;
+  reason: string | null;
+  text: string;
+}
+
+/** Every custom error reachable from the delegated swap call frame. */
+export declare const KNOWN_REVERT_SIGNATURES: ReadonlyArray<string>;
+/** selector -> signature, derived from KNOWN_REVERT_SIGNATURES. */
+export declare const KNOWN_REVERT_SELECTORS: Readonly<Record<string, string>>;
+export declare function decodeRevertData(data: unknown): DecodedRevert;
+/**
+ * One-line, secret-redacted description of a failed contract call that KEEPS
+ * the decoded revert reason (viem puts it on the second line of
+ * `shortMessage`, which `safeErrorMessage` drops).
+ */
+export declare function describeContractError(
+  err: unknown,
+  secrets?: ReadonlyArray<string | undefined>,
+): { detail: string; decoded: DecodedRevert | null };
 
 // ---------------------------------------------------------------------------
 // Deterministic identity + math

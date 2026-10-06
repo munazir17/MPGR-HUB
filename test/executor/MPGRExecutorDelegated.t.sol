@@ -710,6 +710,73 @@ contract MPGRExecutorDelegatedTest is Test {
     }
 
     // ------------------------------------------------------------------
+    // The owner's one-time Permit2 TOKEN approval is a hard precondition
+    //
+    // Regression for the Base Mainnet fork rehearsal: a freshly derived
+    // principal that had never run `USDC.approve(PERMIT2, …)` made the signed
+    // delegated eth_call revert. Permit2's SignatureTransfer does not move
+    // tokens by itself — it calls `ERC20.transferFrom(owner, spender, amount)`
+    // FROM the Permit2 contract (permit2 `src/SignatureTransfer.sol`
+    // -> solmate `SafeTransferLib`, which surfaces it as
+    // `Error("TRANSFER_FROM_FAILED")` on the real deployment). These tests pin
+    // that the executor itself is never approved, that the pull is the frame
+    // that fails, and that nothing leaks when it does.
+    // ------------------------------------------------------------------
+
+    function test_Permit2TokenApproval_Missing_PullReverts_NothingMoves() public {
+        (MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a) = _happyUni();
+
+        // Exactly the rehearsal's fork state: a wallet that never approved Permit2.
+        vm.prank(ownerAddr);
+        usdc.approve(address(permit2), 0);
+        assertEq(usdc.allowance(ownerAddr, address(permit2)), 0, "precondition: no Permit2 token approval");
+        assertEq(usdc.allowance(ownerAddr, address(dex)), 0, "the executor is never approved either");
+
+        uint256 ownerBefore = usdc.balanceOf(ownerAddr);
+        uint256 feeBefore = usdc.balanceOf(feeWallet);
+        uint256 stockBefore = stock.balanceOf(ownerAddr);
+
+        vm.prank(broadcaster);
+        vm.expectRevert(); // ERC-20 allowance failure inside Permit2's transferFrom
+        dex.swapOnBehalfOfUniswapV3(p, POOL_FEE, a);
+
+        // The whole trade is atomic: no pull, no fee, no output, no nonce burn.
+        assertEq(usdc.balanceOf(ownerAddr), ownerBefore, "no USDC left the owner");
+        assertEq(usdc.balanceOf(feeWallet), feeBefore, "no fee was taken");
+        assertEq(stock.balanceOf(ownerAddr), stockBefore, "no output was produced");
+        assertEq(usdc.balanceOf(address(dex)), 0, "no residue on the executor");
+        assertEq(permit2.nonceBitmap(ownerAddr, 5), 0, "a failed pull must NOT burn the nonce");
+    }
+
+    function test_Permit2TokenApproval_ShortOfGross_PullReverts() public {
+        (MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a) = _happyUni();
+
+        vm.prank(ownerAddr);
+        usdc.approve(address(permit2), G - 1); // one raw unit short of the signed gross
+
+        vm.prank(broadcaster);
+        vm.expectRevert();
+        dex.swapOnBehalfOfUniswapV3(p, POOL_FEE, a);
+        assertEq(permit2.nonceBitmap(ownerAddr, 5), 0, "nonce survives a short-allowance failure");
+    }
+
+    function test_Permit2TokenApproval_ExactlyGross_IsEnough() public {
+        (MPGRExecutorDelegated.SwapParams memory p, MPGRExecutorDelegated.Permit2Authorization memory a) = _happyUni();
+
+        // Least privilege: approve Permit2 for EXACTLY the signed gross, as the
+        // smoke campaign (and lib/mcp/mcp-trade-service.ts) does — never unlimited.
+        vm.startPrank(ownerAddr);
+        usdc.approve(address(permit2), 0);
+        usdc.approve(address(permit2), G);
+        vm.stopPrank();
+
+        uint256 expected = _expectedOut(G, RATE_NUM, RATE_DEN);
+        assertEq(_runAsBroadcaster(p, a), expected, "the exact-gross approval redeems the permit");
+        assertEq(usdc.allowance(ownerAddr, address(permit2)), 0, "the exact approval is fully consumed");
+        assertEq(usdc.allowance(ownerAddr, address(dex)), 0, "the executor is STILL never approved");
+    }
+
+    // ------------------------------------------------------------------
     // Wrong-token / wrong-amount / wrong-owner / wrong-policy bindings
     // ------------------------------------------------------------------
 
