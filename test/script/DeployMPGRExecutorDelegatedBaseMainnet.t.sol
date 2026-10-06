@@ -37,8 +37,16 @@ contract DelegatedMainnetDeployHarness is DeployMPGRExecutorDelegatedBaseMainnet
         simulationPreflight(c, p);
     }
 
+    function simulationPreflightArmedForTest(Config memory c, Pins memory p) external view {
+        simulationPreflightArmed(c, p);
+    }
+
     function simulateForTest() external view returns (address) {
         return simulate();
+    }
+
+    function simulateArmedForTest() external view returns (address) {
+        return simulateArmed();
     }
 
     function constructorArgsForTest(Config memory c) external pure returns (ConstructorArgs memory) {
@@ -364,6 +372,57 @@ contract DeployMPGRExecutorDelegatedBaseMainnetTest is Test {
         _enableSimulationMode();
         vm.expectRevert(bytes("MPGR: simulation mode cannot broadcast"));
         harness.startBroadcastForTest(deployerKey);
+    }
+
+    function test_SimulationPreflightArmedRequiresTheReviewedArmedCommittedFlag() public {
+        DeployMPGRExecutorDelegatedBaseMainnet.Config memory c = _goodConfig();
+        DeployMPGRExecutorDelegatedBaseMainnet.Pins memory p = _goodPins();
+        c.envEnabled = false;
+        p.enabled = true;
+        harness.simulationPreflightArmedForTest(c, p);
+
+        p.enabled = false;
+        vm.expectRevert(bytes("MPGR: armed simulation requires committed deployment flag true"));
+        harness.simulationPreflightArmedForTest(c, p);
+
+        p.enabled = true;
+        c.envEnabled = true;
+        vm.expectRevert(bytes("MPGR: simulation requires environment deployment flag false"));
+        harness.simulationPreflightArmedForTest(c, p);
+    }
+
+    function test_SimulateArmedPassesAgainstTheArmedCommittedConfigWithoutBroadcastOrStateChange()
+        public
+    {
+        _enableSimulationMode();
+        uint256 deployerBalanceBefore = deployer.balance;
+        uint256 deployerNonceBefore = vm.getNonce(deployer);
+
+        address predicted = harness.simulateArmedForTest();
+
+        assertEq(predicted, vm.computeCreateAddress(deployer, 0));
+        assertEq(vm.getNonce(deployer), deployerNonceBefore);
+        assertEq(deployer.balance, deployerBalanceBefore);
+        assertEq(predicted.code.length, 0);
+        assertEq(predicted.balance, 0);
+        assertFalse(harness.recordExistsFlag());
+    }
+
+    function test_SimulateArmedRequiresExplicitModeAndBothEnvironmentFlagsFalse() public {
+        _enableSimulationMode();
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED", "true");
+        vm.expectRevert(bytes("MPGR: simulation requires environment deployment flag exactly false"));
+        harness.simulateArmedForTest();
+
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED", "false");
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET", "true");
+        vm.expectRevert(bytes("MPGR: simulation requires secret deployment flag exactly false"));
+        harness.simulateArmedForTest();
+
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET", "false");
+        vm.setEnv("MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION", "false");
+        vm.expectRevert(bytes("MPGR: set MPGR_MAINNET_DELEGATED_DEPLOY_SIMULATION=true to use simulation mode"));
+        harness.simulateArmedForTest();
     }
 
     function test_ProductionRunStillRefusesWhenEnvironmentEnableFlagIsFalse() public {

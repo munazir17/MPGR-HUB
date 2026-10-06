@@ -14,6 +14,7 @@ import {
   defineChain,
   formatEther,
   getAddress,
+  getCreateAddress,
   http,
   isAddress,
 } from "viem";
@@ -24,6 +25,10 @@ const EXPECTED_OUTPUT = "deployments/base-mainnet/mpgr-executor-delegated.json";
 const BASE_CHAIN_ID = 8453;
 const CANONICAL_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 const CANONICAL_WETH = "0x4200000000000000000000000000000000000006";
+// Public pins shared with the deployment guard: the dedicated one-shot deployer and its
+// CREATE(deployer, 0) executor address. Addresses only; no key material ever lives here.
+export const EXPECTED_DEPLOYER = "0x954BFdf0b3A262D537c825a40F7ba960830be88A";
+export const EXPECTED_EXECUTOR = "0x39B1C6Ea88A01e70cbF4899BF3cEfB2c43cD32Bb";
 const PROBE_HOLDER = "0x000000000000000000000000000000000000dEaD";
 const MIN_DEPLOYER_BALANCE = 2_000_000_000_000_000n; // 0.002 ETH, matching deploy-script guard
 
@@ -154,6 +159,10 @@ function hasCode(code) {
   return typeof code === "string" && code !== "0x" && code.length > 2;
 }
 
+export function predictedCreateAddress(deployerAddress, nonce = 0n) {
+  return getCreateAddress({ from: deployerAddress, nonce });
+}
+
 function loadConfig() {
   try {
     return JSON.parse(readFileSync(resolve(process.cwd(), CONFIG_PATH), "utf8"));
@@ -199,13 +208,17 @@ export function isReadOnlyDeploymentFlagFalse(environmentDeployFlagValues) {
   return readOnlyDeploymentFlagStatus(environmentDeployFlagValues).ok;
 }
 
-export function validateStaticConfig(config, environmentOwner, environmentFeeRecipient, environmentDeployFlagValues) {
+export function validateStaticConfig(config, environmentOwner, environmentFeeRecipient, environmentDeployFlagValues, options) {
   const checks = [];
   const add = (ok, name, detail = "") => checks.push({ ok: Boolean(ok), name, detail });
   if (!config || typeof config !== "object") {
     add(false, "deployment_config_read", "configuration object is missing or invalid");
     return { ok: false, checks };
   }
+  // Posture is declared by the protected workflow for the ref under test, never derived
+  // from the config file itself, so the committed-flag pin below stays a real pin.
+  // Anything but an explicit boolean true keeps the original pre-arm expectation.
+  const armedPosture = options?.armedPosture === true;
 
   const tokenListMatches = Array.isArray(config.tokens)
     && config.tokens.length === EXPECTED_TOKENS.length
@@ -254,7 +267,11 @@ export function validateStaticConfig(config, environmentOwner, environmentFeeRec
   add(typeof environmentFeeRecipient === "string" && environmentFeeRecipient.length > 0, "fee_recipient_variable_presence");
   add(config.chainId === BASE_CHAIN_ID && config.network === "base", "config_chain", "Base Mainnet 8453");
   add(config.contract === "MPGRExecutorDelegated", "config_contract");
-  add(config.mainnetDelegatedDeployEnabled === false, "config_deploy_flag", "false; deployment remains disabled");
+  if (armedPosture) {
+    add(config.mainnetDelegatedDeployEnabled === true, "config_deploy_flag", "true; reviewed armed posture");
+  } else {
+    add(config.mainnetDelegatedDeployEnabled === false, "config_deploy_flag", "false; deployment remains disabled");
+  }
   add(environmentFlagStatus.ok, "environment_deploy_flag", environmentFlagStatus.detail);
   add(config.owner === "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e", "config_owner_pin");
   add(config.feeRecipient === "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4", "config_fee_recipient_pin");
@@ -387,6 +404,27 @@ async function runLiveChecks(config, deployerAddress) {
   );
   if (balance !== undefined) check(balance >= MIN_DEPLOYER_BALANCE, "deployer_minimum_balance", "deployment script requires at least 0.002 ETH");
 
+  // Predicted deployment target: pure CREATE math off the pinned deployer, then read-only
+  // proofs that no deployment transaction has landed there yet. Same check names as the
+  // deployment guard so both read-only paths report one vocabulary.
+  check(sameAddress(deployerAddress, EXPECTED_DEPLOYER), "deployer_matches_pinned", deployerAddress);
+  const predictedExecutor = predictedCreateAddress(deployerAddress, 0n);
+  check(sameAddress(predictedExecutor, EXPECTED_EXECUTOR), "predicted_create_address", predictedExecutor);
+  const predictedCode = await rpcRead("predicted_executor_code", () => client.getBytecode({ address: predictedExecutor }), (code) =>
+    (hasCode(code) ? "nonempty" : "empty"));
+  if (predictedCode !== undefined) check(!hasCode(predictedCode), "predicted_executor_empty_code");
+  const predictedNonce = await rpcRead(
+    "predicted_executor_nonce",
+    () => client.getTransactionCount({ address: predictedExecutor, blockTag: "latest" }),
+  );
+  if (predictedNonce !== undefined) check(predictedNonce === 0, "predicted_executor_nonce_zero");
+  const predictedBalance = await rpcRead(
+    "predicted_executor_balance",
+    () => client.getBalance({ address: predictedExecutor }),
+    (value) => `${value} wei`,
+  );
+  if (predictedBalance !== undefined) check(predictedBalance === 0n, "predicted_executor_native_balance_zero");
+
   const infrastructure = [
     ["WETH", config.weth],
     ["Permit2", config.permit2],
@@ -461,12 +499,16 @@ async function main() {
     decodeDeploymentFlagSource(process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED),
     decodeDeploymentFlagSource(process.env.MPGR_MAINNET_DELEGATED_DEPLOY_ENABLED_SECRET),
   ];
+  // Declared by the protected workflow for the ref under test (main and reviewed armed
+  // session branches). Only the exact literal "true" selects the armed posture.
+  const armedPosture = process.env.MPGR_PREFLIGHT_ARMED_POSTURE === "true";
 
   const staticValidation = validateStaticConfig(
     config,
     environmentOwner,
     environmentFeeRecipient,
     environmentDeployFlagValues,
+    { armedPosture },
   );
   for (const item of staticValidation.checks) check(item.ok, item.name, item.detail);
   if (!staticValidation.ok || failures.length > 0) {
@@ -512,8 +554,13 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("[PASS] Read-only secure-runner preflight checks completed for Base Mainnet 8453.");
-  console.log("[STOP] Both deployment-enable flags are false by design. No Forge script simulation, broadcast, or deployment was attempted.");
+  if (armedPosture) {
+    console.log("[PASS] Read-only secure-runner preflight checks completed for Base Mainnet 8453 (reviewed armed posture).");
+    console.log("[STOP] Committed flag is true (reviewed arm); environment flags remain false by design. No broadcast or deployment was attempted.");
+  } else {
+    console.log("[PASS] Read-only secure-runner preflight checks completed for Base Mainnet 8453.");
+    console.log("[STOP] Both deployment-enable flags are false by design. No Forge script simulation, broadcast, or deployment was attempted.");
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

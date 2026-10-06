@@ -24,6 +24,15 @@ export interface ReadOnlyStages {
 export type DeployFlagValue = string | boolean | null | undefined;
 export type DeployFlagValues = DeployFlagValue | DeployFlagValue[];
 
+export interface ValidateStaticConfigOptions {
+  armedPosture?: boolean;
+}
+
+export declare const EXPECTED_DEPLOYER: string;
+export declare const EXPECTED_EXECUTOR: string;
+
+export function predictedCreateAddress(deployerAddress: string, nonce?: bigint): string;
+
 export function decodeDeploymentFlagSource(serializedValue: string | null | undefined): string | undefined;
 
 export function readOnlyDeploymentFlagStatus(environmentDeployFlagValues: DeployFlagValues): {
@@ -39,6 +48,7 @@ export function validateStaticConfig(
   environmentOwner: string | undefined,
   environmentFeeRecipient: string | undefined,
   environmentDeployFlagValues: DeployFlagValues,
+  options?: ValidateStaticConfigOptions,
 ): StaticConfigValidation;
 
 export function runReadOnlyChecksWhenDeploymentIsDisabled(

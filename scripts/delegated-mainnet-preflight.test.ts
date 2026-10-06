@@ -2,8 +2,11 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  EXPECTED_DEPLOYER,
+  EXPECTED_EXECUTOR,
   decodeDeploymentFlagSource,
   isReadOnlyDeploymentFlagFalse,
+  predictedCreateAddress,
   readOnlyDeploymentFlagStatus,
   runReadOnlyChecksWhenDeploymentIsDisabled,
   validateStaticConfig,
@@ -228,4 +231,122 @@ describe("read-only delegated Base Mainnet preflight state machine", () => {
     expect(committedConfig.typedModules).toEqual([]);
   });
 
+});
+
+describe("post-arm read-only delegated Base Mainnet preflight", () => {
+  it("passes read-only preflight for the reviewed armed committed-config posture", () => {
+    expect(committedConfig.mainnetDelegatedDeployEnabled).toBe(true);
+
+    const result = validateStaticConfig(
+      committedConfig,
+      committedConfig.owner,
+      committedConfig.feeRecipient,
+      "false",
+      { armedPosture: true },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.checks.find(({ name }) => name === "config_deploy_flag")).toMatchObject({
+      ok: true,
+      detail: "true; reviewed armed posture",
+    });
+    expect(result.checks.find(({ name }) => name === "environment_deploy_flag")?.ok).toBe(true);
+  });
+
+  it("keeps the pre-arm expectation as the fail-closed default", () => {
+    const owner = committedConfig.owner as string;
+    const feeRecipient = committedConfig.feeRecipient as string;
+
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, "false").ok).toBe(false);
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, "false", {}).ok).toBe(false);
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, "false", { armedPosture: false }).ok).toBe(false);
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, "false", undefined).ok).toBe(false);
+    expect(
+      validateStaticConfig(committedConfig, owner, feeRecipient, "false", null as unknown as { armedPosture?: boolean })
+        .ok,
+    ).toBe(false);
+    const stringPosture = JSON.parse('{"armedPosture":"true"}') as { armedPosture?: boolean };
+    expect(validateStaticConfig(committedConfig, owner, feeRecipient, "false", stringPosture).ok).toBe(false);
+    for (const result of [
+      validateStaticConfig(committedConfig, owner, feeRecipient, "false"),
+      validateStaticConfig(committedConfig, owner, feeRecipient, "false", { armedPosture: false }),
+    ]) {
+      expect(result.checks.find(({ name }) => name === "config_deploy_flag")).toMatchObject({
+        ok: false,
+        detail: "false; deployment remains disabled",
+      });
+    }
+  });
+
+  it("still requires false environment deployment flags and rejects a disabled config when armed", () => {
+    const owner = committedConfig.owner as string;
+    const feeRecipient = committedConfig.feeRecipient as string;
+
+    const nonFalseEnvFlags: Array<string | boolean | undefined | string[]> = [undefined, "", "true", true, ["false", "true"]];
+    for (const deployFlag of nonFalseEnvFlags) {
+      const result = validateStaticConfig(committedConfig, owner, feeRecipient, deployFlag, { armedPosture: true });
+      expect(result.ok).toBe(false);
+      expect(result.checks.find(({ name }) => name === "environment_deploy_flag")?.ok).toBe(false);
+    }
+
+    const disabledArmed = validateStaticConfig(disabledConfig, owner, feeRecipient, "false", { armedPosture: true });
+    expect(disabledArmed.ok).toBe(false);
+    expect(disabledArmed.checks.find(({ name }) => name === "config_deploy_flag")?.ok).toBe(false);
+  });
+
+  it("pins the dedicated deployer and the predicted CREATE executor independently of the deployment guard", () => {
+    expect(EXPECTED_DEPLOYER).toBe("0x954BFdf0b3A262D537c825a40F7ba960830be88A");
+    expect(EXPECTED_EXECUTOR).toBe("0x39B1C6Ea88A01e70cbF4899BF3cEfB2c43cD32Bb");
+    expect(predictedCreateAddress("0x954BFdf0b3A262D537c825a40F7ba960830be88A", 0n).toLowerCase()).toBe(
+      "0x39b1c6ea88a01e70cbf4899bf3cefb2c43cd32bb",
+    );
+  });
+
+  it("checks the predicted CREATE address and its virgin state with read-only RPC only", () => {
+    expect(preflightChecker).toContain(
+      'check(sameAddress(deployerAddress, EXPECTED_DEPLOYER), "deployer_matches_pinned"',
+    );
+    expect(preflightChecker).toContain(
+      'check(sameAddress(predictedExecutor, EXPECTED_EXECUTOR), "predicted_create_address"',
+    );
+    expect(preflightChecker).toContain('"predicted_executor_empty_code"');
+    expect(preflightChecker).toContain('"predicted_executor_nonce_zero"');
+    expect(preflightChecker).toContain('"predicted_executor_native_balance_zero"');
+    expect(preflightChecker).toContain("getCreateAddress");
+    expect(preflightChecker).not.toContain("createWalletClient");
+    expect(preflightChecker).not.toContain("sendTransaction");
+    expect(preflightChecker).not.toContain("eth_sendTransaction");
+  });
+
+  it("declares the armed posture in the protected workflow and selects the armed simulation only when armed", () => {
+    expect(preflightWorkflow).toContain(
+      "branches: [arena/01a105ea-mpgr-hub, arena/01a10cb1-mpgr-hub, arena/b8096a0d-mpgr-hub, main]",
+    );
+    expect(preflightWorkflow).toContain("github.ref == 'refs/heads/main'");
+    expect(preflightWorkflow).toContain(
+      "MPGR_PREFLIGHT_ARMED_POSTURE: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/arena/b8096a0d-mpgr-hub' }}",
+    );
+    expect(preflightWorkflow).toContain("--sig 'simulateArmed()'");
+    expect(preflightWorkflow).toContain("--sig 'simulate()'");
+    expect(preflightChecker).toContain("process.env.MPGR_PREFLIGHT_ARMED_POSTURE");
+
+    const armedStart = deployScript.indexOf("    function simulateArmed()");
+    const armedEnd = deployScript.indexOf("\n    function _validateSimulationPlan", armedStart);
+    expect(armedStart).toBeGreaterThan(0);
+    expect(armedEnd).toBeGreaterThan(armedStart);
+    const armedEntry = deployScript.slice(armedStart, armedEnd);
+    expect(armedEntry).toContain("public view returns (address predictedExecutor)");
+    expect(armedEntry).toContain("simulationPreflightArmed(c, p)");
+    expect(armedEntry).not.toContain("_readConfig()");
+    expect(armedEntry).not.toContain("BASE_MAINNET_DEPLOYER_PRIVATE_KEY");
+    expect(armedEntry).not.toContain("BASE_MAINNET_BROADCASTER_PRIVATE_KEY");
+    expect(armedEntry).not.toContain("vm.startBroadcast");
+    expect(armedEntry).not.toContain("_startBroadcast");
+    expect(armedEntry).not.toContain("new MPGRExecutorDelegated");
+    expect(deployScript).toContain("function simulationPreflightArmed(Config memory c, Pins memory p)");
+    expect(deployScript).toContain('"MPGR: armed simulation requires committed deployment flag true"');
+    expect(deployScript).toContain('console2.log("[SIMULATION] committed deployment flag:", committedDeployFlag);');
+    expect(deployScript).toContain('"MPGR: simulation requires committed deployment flag false"');
+    expect(deployScript).toContain('require(!_simulationModeEnabled(), "MPGR: simulation mode cannot broadcast")');
+  });
 });
