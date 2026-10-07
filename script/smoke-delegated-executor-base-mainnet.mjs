@@ -62,6 +62,7 @@ import {
   encodeFunctionData,
   formatEther,
   formatUnits,
+  getEventSelector,
   getAddress,
   hexToBigInt,
   http,
@@ -100,6 +101,9 @@ import {
   LEDGER_VERSION,
   LOG_CHUNK,
   MAX_FEE_PER_GAS_CAP,
+  MAX_LOG_CHUNK_ENV,
+  MAX_LOG_SCAN_BLOCKS,
+  MAX_SAFE_LOG_CHUNK,
   MODES,
   NETWORK_LABEL,
   OWNER,
@@ -108,6 +112,8 @@ import {
   REQUIRED_PERMIT2_TOKEN_ALLOWANCE,
   REVIEWED_CONFIG_PATH,
   RPC_ENV,
+  RPC_MISSING_MESSAGE,
+  RPC_RATE_LIMITED_MESSAGE,
   SLIPPAGE_BPS,
   SWAP_AMOUNT_IN,
   UNISWAP_V3_FACTORY,
@@ -128,6 +134,8 @@ import {
   blockingFailures,
   buildSwapParams,
   canaryIdentityFor,
+  clampChunkSize,
+  classifyRpcError,
   describeContractError,
   evaluateConfigPins,
   evaluateLedgerClaim,
@@ -135,20 +143,27 @@ import {
   evaluateLivePreconditions,
   evaluateModeGuard,
   evaluatePostTradeVerification,
+  evaluateRpcReadiness,
   evaluateSignerIdentity,
   isPrivateKeyShape,
   minOutFromQuote,
   nonceBitPosition,
   nonceBitmapWordMarks,
   normalizeAddress,
+  parseRetryAfter,
   priorSwapScanWindow,
+  probeLogChunkSize,
+  RATE_LIMIT_HTTP_STATUSES,
   redact,
   renderTitle,
   rehearsalPrincipal,
-  runLogScan,
+  runAdaptiveLogScan,
   safeErrorMessage,
   sameAddress,
+  shouldRetryRateLimit,
   summarizeChecks,
+  swapExecutedLogFilter,
+  SWAP_EXECUTED_TOPIC,
 } from "../scripts/delegated-smoke-gates.mjs";
 
 // ---------------------------------------------------------------------------
@@ -280,22 +295,19 @@ const LIVE = MODE === MODES.LIVE;
 const PREFLIGHT = MODE === MODES.PREFLIGHT;
 const REHEARSAL = MODE === MODES.REHEARSAL;
 
+// ONE endpoint per run, in every mode. There is deliberately NO public-fallback
+// list any more:
+//   * rehearsal -> the local anvil fork (http://127.0.0.1:8545);
+//   * preflight/live -> the dedicated configured smoke RPC (RPC_ENV, supplied by
+//     the workflow from the BASE_MAINNET_RPC_URL secret).
+// Rotating through public/free Base endpoints used to look like resilience, but
+// the historical certification issues thousands of eth_getLogs calls, so a
+// fallback list only spread the load until EVERY public endpoint answered 429
+// ("1rpc usage limit exceeded", compute-unit/sec caps) — smoke run #6's
+// preflight died that way after ~13 minutes. A rate-limited endpoint is now a
+// fail-closed provisioning error with an operator message, not a cue to grind.
 const RPC_URL = env(RPC_ENV);
-// Public Base Mainnet fallbacks for preflight/live. Every value the script acts
-// on is re-read from the chain and judged by the gate table; a failing or
-// lagging endpoint is simply skipped.
-const PUBLIC_BASE_RPCS = [
-  "https://mainnet.base.org",
-  "https://base-rpc.publicnode.com",
-  "https://base.drpc.org",
-  "https://base.llamarpc.com",
-  "https://1rpc.io/base",
-];
-const RPC_URLS = REHEARSAL
-  ? RPC_URL.length > 0
-    ? [RPC_URL]
-    : []
-  : [...new Set([RPC_URL, ...PUBLIC_BASE_RPCS].filter((u) => u.length > 0))];
+const RPC_URLS = RPC_URL.length > 0 ? [RPC_URL] : [];
 
 const OUT_JSON = env("SMOKE_DELEGATED_JSON") || "smoke-delegated-results.json";
 const OUT_MD = env("SMOKE_DELEGATED_MD") || "smoke-delegated-report.md";
@@ -304,23 +316,39 @@ const CONFIRM_PHRASE = env("SMOKE_DELEGATED_CONFIRM");
 const EXPECTED_CODE_HASH = env(CODE_HASH_PIN_ENV) || null;
 const EMERGENCY_DISABLED = env(EMERGENCY_ENV).toLowerCase() === "true";
 /**
- * The historical SwapExecuted scan is bounded on two axes.
+ * The historical SwapExecuted scan is bounded on three axes, and none of the
+ * three may be relaxed to make a run finish.
  *
  * Window: `live`/`preflight` scan from the deployment block to the observed head
  * (the full one-shot certification). `rehearsal` scans only the last
  * REHEARSAL_LOG_WINDOW blocks of the local fork — see priorSwapScanWindow.
  *
- * Span: every eth_getLogs request is at most LOG_CHUNK (10) blocks wide,
- * because public Base RPC providers reject wider ranges ("eth_getLogs is
- * limited to 0 - 50 blocks range"; some cap at 10). The fail-closed budget is
- * therefore 400 000 chunks x 10 blocks ≈ 4M blocks (~3 months of Base 2s
- * blocks) since the deployment — the same block budget the previous 2 000 x
- * 2 000 sizing covered. Beyond that the run FAILS CLOSED rather than
- * certifying a one-shot on a partial scan — an operator facing that must point
- * SMOKE_DELEGATED_RPC_URL at their own full node (or start a new campaign with
- * a new wallet, which is the intended answer anyway).
+ * Requests: MAX_LOG_CHUNKS caps how many eth_getLogs calls one run may make, and
+ * MAX_LOG_SCAN_BLOCKS caps how many blocks it may certify. Both are enforced
+ * BEFORE the first request and both FAIL CLOSED — the same ~4M-block budget
+ * (400 000 x the 10-block floor) the scan has always had.
+ *
+ * Span: one request is at most MAX_LOG_CHUNK blocks wide, and that width is not
+ * assumed — it is the widest width the configured endpoint actually SERVED
+ * during the stage-2b probe (see probeLogChunkSize), starting from the
+ * conservative LOG_CHUNK (10) floor and never above MAX_SAFE_LOG_CHUNK. A wider
+ * verified width makes the identical deployment->head certification two orders
+ * of magnitude cheaper; it never narrows the coverage.
  */
 const MAX_LOG_CHUNKS = 400_000n;
+/**
+ * The widest eth_getLogs this run may ask for. An operator may LOWER it per
+ * endpoint with the non-secret SMOKE_DELEGATED_MAX_LOG_CHUNK variable;
+ * clampChunkSize refuses to raise it above the reviewed MAX_SAFE_LOG_CHUNK and
+ * refuses to drop below the LOG_CHUNK floor, so the knob can only ever make the
+ * scan more conservative. The endpoint still has to serve it before it is used.
+ */
+const MAX_LOG_CHUNK = clampChunkSize(env(MAX_LOG_CHUNK_ENV) || MAX_SAFE_LOG_CHUNK, {
+  min: LOG_CHUNK,
+  max: MAX_SAFE_LOG_CHUNK,
+});
+/** The eth_getLogs width in force for the scan; the stage-2b probe raises it. */
+let SCAN_CHUNK = LOG_CHUNK;
 
 /** The zero signature used ONLY to build and re-decode calldata in preflight. */
 const UNSIGNED_SENTINEL_SIGNATURE = `0x${"00".repeat(65)}`;
@@ -376,6 +404,19 @@ const report = {
 };
 
 class Abort extends Error {}
+
+/**
+ * The dedicated smoke RPC refused to serve the historical certification because
+ * it is over quota. Deliberately an Abort: it is a provisioning failure the
+ * operator must fix (a properly provisioned Base Mainnet RPC), never something
+ * to retry endlessly, paper over with a public fallback, or downgrade to a note.
+ */
+class RpcRateLimited extends Abort {
+  constructor(detail) {
+    super(`${RPC_RATE_LIMITED_MESSAGE}${detail ? ` Last response: ${detail}` : ""}`);
+    this.name = "RpcRateLimited";
+  }
+}
 
 function stage(name) {
   report.stage = name;
@@ -501,17 +542,56 @@ function isRevert(err) {
 
 class RpcPool {
   constructor(urls) {
-    this.endpoints = urls.map((url) => ({
-      url,
-      label: rpcLabel(url),
-      transport: http(url, { retryCount: 0, timeout: RPC_TIMEOUT_MS })({ chain: base, retryCount: 0 }),
-      needsSyncCheck: false,
-    }));
+    this.endpoints = urls.map((url) => {
+      const endpoint = {
+        url,
+        label: rpcLabel(url),
+        needsSyncCheck: false,
+        // Quota bookkeeping per endpoint, read by the stage-2b readiness gate and
+        // the report. `onFetchResponse` sees the RAW response, so a provider that
+        // answers 429 with a JSON-RPC error body (which viem does not turn into
+        // an HttpRequestError) is still counted, and its Retry-After is captured.
+        quota: { hits: 0, lastStatus: null, lastRetryAfterMs: null },
+        transport: null,
+      };
+      endpoint.transport = http(url, {
+        retryCount: 0,
+        timeout: RPC_TIMEOUT_MS,
+        onFetchResponse: (response) => {
+          const status = response?.status;
+          if (typeof status !== "number" || !RATE_LIMIT_HTTP_STATUSES.includes(status)) return;
+          endpoint.quota.hits += 1;
+          endpoint.quota.lastStatus = status;
+          const retryAfterMs = parseRetryAfter(response.headers?.get?.("retry-after") ?? null);
+          if (retryAfterMs !== null) endpoint.quota.lastRetryAfterMs = retryAfterMs;
+        },
+      })({ chain: base, retryCount: 0 });
+      return endpoint;
+    });
     this.active = 0;
     this.fails = 0;
     this.highWater = 0n;
     this.inFlight = 0;
     this.waiters = [];
+    /** Attempts already spent on quota errors; the budget is finite and shared. */
+    this.quotaAttempts = 0;
+  }
+
+  /** True when any endpoint has been answered with a 429/quota response. */
+  rateLimited() {
+    return this.endpoints.some((ep) => ep.quota.hits > 0);
+  }
+
+  quotaFacts() {
+    const ep = this.endpoints[this.active];
+    return ep
+      ? {
+          endpoint: ep.label,
+          quotaResponses: ep.quota.hits,
+          lastStatus: ep.quota.lastStatus,
+          lastRetryAfterMs: ep.quota.lastRetryAfterMs,
+        }
+      : null;
   }
 
   async acquire() {
@@ -585,6 +665,23 @@ class RpcPool {
         } else if (isRevert(err)) {
           throw err; // deterministic: never retried, never masked
         }
+        // A quota response gets its OWN bounded budget: Retry-After-aware, finite,
+        // and fatal when exhausted. It never rotates into a public endpoint (there
+        // is no fallback list any more) and never loops.
+        const cls = classifyRpcError(err);
+        if (cls.kind === "rate-limit") {
+          this.quotaAttempts += 1;
+          const decision = shouldRetryRateLimit({
+            attempt: this.quotaAttempts,
+            retryAfterMs: cls.retryAfterMs ?? ep.quota.lastRetryAfterMs,
+          });
+          if (!decision.retry) throw new RpcRateLimited(`${method} on ${ep.label}: ${decision.reason}`);
+          console.log(
+            `RPC   quota ${this.quotaAttempts} on ${ep.label}, waiting ${decision.waitMs}ms (${decision.source}): ${redact(errText(err), SECRETS).slice(0, 160)}`,
+          );
+          await sleep(decision.waitMs);
+          continue;
+        }
         this.fails++;
         if (this.fails >= RPC_FAILS_BEFORE_ROTATE) this.rotate(`${method}: ${errText(err)}`);
         if (attempt < RPC_MAX_ATTEMPTS) {
@@ -633,41 +730,174 @@ async function probeMappingSlot(pub, token, callData, expected, keyForSlot) {
 }
 
 /**
- * Chunks the historical SwapExecuted scan; a range it cannot cover is fatal.
+ * The RPC readiness probe that runs BEFORE the historical certification.
  *
- * The window comes from priorSwapScanWindow: the deployment-block-anchored full
- * scan in `live`/`preflight`, and the last REHEARSAL_LOG_WINDOW blocks in
- * `rehearsal` — a local anvil fork cannot serve its pre-fork history locally, and
- * its upstream caps how many blocks one eth_getLogs may span.
+ * It answers, in seconds and with a handful of requests, the question run #6
+ * answered in ~13 minutes of grinding tens of thousands of eth_getLogs calls
+ * through public endpoints: is THIS endpoint actually able to certify the
+ * deployment -> head scan?
  *
- * The requests themselves come from runLogScan (scripts/delegated-smoke-gates.mjs):
- * gap-free, in deterministic order, every eth_getLogs at most LOG_CHUNK (10)
- * blocks wide so restrictive Base RPC providers serve them, and ANY unreadable
- * chunk aborts the run (fail closed) — a one-shot is never certified from a
- * partial scan.
+ *   1. the endpoint serves chain 8453;
+ *   2. it reports a readable head block;
+ *   3. it serves a SMALL known eth_getLogs carrying the real scan filter
+ *      (executor address + SwapExecuted topic0 + the pinned wallet as indexed
+ *      topic1);
+ *   4. for preflight/live it then discovers the widest eth_getLogs width it
+ *      actually serves, ascending the explicit LOG_CHUNK_PROBE_LADDER and
+ *      stopping at the first refusal or the first quota response — never
+ *      assuming MAX_SAFE_LOG_CHUNK.
+ *
+ * Rehearsal deliberately does NOT probe widths: it reads the local anvil fork,
+ * its scan is a single REHEARSAL_LOG_WINDOW request, and poking the fork's
+ * upstream for wide ranges would be exactly the behaviour this design removes.
+ * Every failure is returned as a fact for evaluateRpcReadiness to turn into a
+ * fatal check — this function never decides anything itself.
+ */
+async function probeRpcReadiness(pub, wallet) {
+  // The topic0 pinned in the gates module must be the topic0 of the ABI this
+  // runner decodes with; a drift would silently narrow the historical scan.
+  const abiTopic = getEventSelector(SWAP_EXECUTED_EVENT);
+  if (abiTopic !== SWAP_EXECUTED_TOPIC) {
+    throw new Abort(`SwapExecuted topic0 drift: the ABI hashes to ${abiTopic} but the scan filter pins ${SWAP_EXECUTED_TOPIC}`);
+  }
+  const facts = {
+    role: MODE,
+    endpoint: rpcLabel(RPC_URL),
+    requestedMaxChunk: MAX_LOG_CHUNK.toString(),
+    reviewedCeiling: MAX_SAFE_LOG_CHUNK.toString(),
+    chainId: null,
+    head: null,
+    probe: null,
+    probedWidths: [],
+    refusedWidth: null,
+    chunkSize: REHEARSAL ? LOG_CHUNK.toString() : null,
+    rateLimited: false,
+    retryAfterMs: null,
+  };
+  const note = (err) => {
+    const cls = classifyRpcError(err);
+    if (cls.kind === "rate-limit") {
+      facts.rateLimited = true;
+      if (cls.retryAfterMs !== null) facts.retryAfterMs = cls.retryAfterMs;
+    }
+    return cls;
+  };
+
+  let head;
+  try {
+    facts.chainId = await pub.getChainId();
+  } catch (err) {
+    note(err);
+    facts.probe = { ok: false, detail: `chainId could not be read: ${safeErrorMessage(err, SECRETS)}` };
+    return facts;
+  }
+  try {
+    head = await pub.getBlockNumber();
+    facts.head = head;
+  } catch (err) {
+    note(err);
+    facts.probe = { ok: false, detail: `head block could not be read: ${safeErrorMessage(err, SECRETS)}` };
+    return facts;
+  }
+
+  /** One real eth_getLogs of exactly `width` blocks, with the production filter. */
+  const requestChunk = async (width) => {
+    const toBlock = head;
+    const fromBlock = head - width + 1n > 0n ? head - width + 1n : 0n;
+    const logs = await pub.request({
+      method: "eth_getLogs",
+      params: [swapExecutedLogFilter({ wallet, fromBlock, toBlock })],
+    });
+    facts.probedWidths.push(width.toString());
+    return logs.length;
+  };
+
+  try {
+    if (REHEARSAL) {
+      const matches = await requestChunk(LOG_CHUNK);
+      facts.probe = { ok: true, width: LOG_CHUNK.toString(), logs: matches };
+      facts.chunkSize = LOG_CHUNK.toString();
+      return facts;
+    }
+    const probe = await probeLogChunkSize({ requestChunk, maxChunk: MAX_LOG_CHUNK });
+    facts.chunkSize = probe.chunkSize.toString();
+    facts.refusedWidth = probe.refused ? probe.refused.chunkSize.toString() : null;
+    facts.probe = { ok: true, width: probe.chunkSize.toString(), logs: 0, accepted: probe.accepted.map(String) };
+    SCAN_CHUNK = probe.chunkSize;
+  } catch (err) {
+    note(err);
+    facts.probe = { ok: false, detail: safeErrorMessage(err, SECRETS) };
+  }
+  return facts;
+}
+
+/**
+ * The historical SwapExecuted scan — the on-chain half of the one-shot guard.
+ * A range it cannot cover COMPLETELY is fatal.
+ *
+ * Window: priorSwapScanWindow — the deployment-block-anchored full scan in
+ * `live`/`preflight`, and the last REHEARSAL_LOG_WINDOW blocks in `rehearsal`
+ * (a local anvil fork cannot serve its pre-fork history locally).
+ *
+ * Filter: swapExecutedLogFilter puts the executor address, the SwapExecuted
+ * topic0 AND the pinned wallet as indexed topic1 into the RPC request itself, so
+ * the node's log index does the filtering instead of the runner. Coverage is
+ * unchanged — every block from the deployment to the head is still requested,
+ * and `router`/`intentId` are deliberately NOT filtered so a prior swap through
+ * any venue or under any intent still refuses this run.
+ *
+ * Requests: runAdaptiveLogScan walks that window gap-free in deterministic
+ * order, at the width the endpoint was verified to serve (SCAN_CHUNK, from the
+ * stage-2b probe), shrinking — never skipping — if the endpoint rejects a range,
+ * and failing closed on anything else. Both the chunk budget and the block
+ * budget are checked before the first request.
  */
 async function countPriorSwapEvents(pub, wallet) {
   const head = await pub.getBlockNumber();
-  if (head < DELEGATED_DEPLOY_BLOCK) return { count: 0, from: DELEGATED_DEPLOY_BLOCK, to: head, chunks: 0n };
+  if (head < DELEGATED_DEPLOY_BLOCK) {
+    return { count: 0, from: DELEGATED_DEPLOY_BLOCK, to: head, chunks: 0n, chunkSize: LOG_CHUNK.toString(), shrinks: 0 };
+  }
   const { from: scanFrom, to: scanTo } = priorSwapScanWindow({ head, rehearsal: REHEARSAL });
   const chunks = (scanTo - scanFrom + LOG_CHUNK) / LOG_CHUNK;
   if (chunks > MAX_LOG_CHUNKS) {
     throw new Abort(`prior-swap scan would need ${chunks} chunks (> ${MAX_LOG_CHUNKS}): refusing to certify a one-shot from a partial scan — use a full-node RPC`);
   }
-  const { logs, chunks: used } = await runLogScan({
+  const { logs, chunks: used, chunkSize: finalChunk, shrinks } = await runAdaptiveLogScan({
     fetchChunk: (fromBlock, toBlock) =>
-      pub.getLogs({
-        address: DELEGATED_EXECUTOR,
-        event: SWAP_EXECUTED_EVENT,
-        args: { taker: wallet },
-        fromBlock,
-        toBlock,
+      pub.request({
+        method: "eth_getLogs",
+        params: [swapExecutedLogFilter({ wallet, fromBlock, toBlock, maxChunk: MAX_LOG_CHUNK })],
       }),
     from: scanFrom,
     to: scanTo,
+    chunkSize: REHEARSAL ? LOG_CHUNK : SCAN_CHUNK,
+    maxChunk: MAX_LOG_CHUNK,
     maxChunks: MAX_LOG_CHUNKS,
+    maxBlocks: MAX_LOG_SCAN_BLOCKS,
+    onShrink: ({ from, to: next, at }) =>
+      console.log(`RPC   eth_getLogs width ${from} refused at block ${at}; continuing the SAME range at ${next} (coverage unchanged)`),
   });
-  return { count: logs.length, from: scanFrom, to: scanTo, chunks: used };
+  // The topic filter is an optimisation, not the verdict: re-check that every
+  // returned log really is SwapExecuted by THIS wallet, so an endpoint that
+  // ignored the topics cannot quietly change the count.
+  const decoded = parseEventLogs({ abi: DELEGATED_ABI, logs });
+  for (const log of decoded) {
+    if (!sameAddress(log.args?.taker, wallet)) {
+      throw new Abort(
+        `the RPC returned a SwapExecuted log for ${log.args?.taker} under a filter pinned to ${wallet}: refusing to certify a one-shot from an endpoint that ignores its log filter`,
+      );
+    }
+  }
+  return {
+    count: decoded.length,
+    from: scanFrom,
+    to: scanTo,
+    chunks: used,
+    chunkSize: finalChunk.toString(),
+    requestedChunkSize: SCAN_CHUNK.toString(),
+    shrinks: shrinks.length,
+    blocks: (scanTo - scanFrom + 1n).toString(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -754,6 +984,9 @@ async function main() {
     evaluateModeGuard({
       mode: MODE,
       rpcUrls: RPC_URLS,
+      // The one endpoint this run is allowed to use: preflight/live must certify
+      // against it and nothing else (no public fallback rotation).
+      configuredRpcUrl: RPC_URL,
       keyEnvValue: keyPresentInEnv,
       walletPinEnvValue: pinnedEnv,
       githubActions: process.env.GITHUB_ACTIONS,
@@ -816,6 +1049,45 @@ async function main() {
   const pub = createPublicClient({ chain: base, transport });
   const walletClient = broadcasterAccount ? createWalletClient({ account: broadcasterAccount, chain: base, transport }) : null;
   const confirmations = LIVE ? 2 : 1;
+
+  // ------------------------------------------------------------ stage 2b
+  // BEFORE any historical read: prove the ONE configured endpoint can serve the
+  // deployment -> head certification, and discover the widest eth_getLogs width
+  // it actually accepts. A missing, foreign, fork-shaped or rate-limited RPC
+  // stops here in seconds with an operator message instead of after ~13 minutes
+  // of grinding (smoke run #6). Every row is fatal — see evaluateRpcReadiness.
+  stage("2b. RPC readiness (dedicated endpoint for the historical certification)");
+  if (RPC_URLS.length === 0) {
+    throw new Abort(RPC_MISSING_MESSAGE);
+  }
+  const rpcReadiness = await probeRpcReadiness(pub, wallet);
+  rpcReadiness.quota = rpcPool.quotaFacts();
+  // A quota response observed at the transport layer counts even when the error
+  // itself was unclassifiable (a 429 carrying a JSON-RPC body, for instance).
+  if (rpcPool.rateLimited()) {
+    rpcReadiness.rateLimited = true;
+    rpcReadiness.retryAfterMs = rpcReadiness.quota?.lastRetryAfterMs ?? rpcReadiness.retryAfterMs;
+  }
+  applyGate(
+    evaluateRpcReadiness({
+      mode: MODE,
+      rpcUrl: RPC_URL,
+      chainId: rpcReadiness.chainId,
+      headBlock: rpcReadiness.head,
+      probe: rpcReadiness.probe,
+      rateLimited: rpcReadiness.rateLimited,
+      retryAfterMs: rpcReadiness.retryAfterMs,
+      chunkSize: rpcReadiness.chunkSize ?? LOG_CHUNK,
+      requestedChunkSize: rpcReadiness.requestedMaxChunk,
+    }),
+  );
+  fact("rpcReadiness", rpcReadiness);
+  fact("rpcRole", REHEARSAL ? "local anvil fork (rehearsal only)" : "dedicated configured Base Mainnet RPC (no public fallback)");
+  console.log(
+    `RPC   ${rpcReadiness.endpoint}: chainId ${rpcReadiness.chainId}, head ${rpcReadiness.head}, eth_getLogs width ${
+      rpcReadiness.chunkSize ?? LOG_CHUNK
+    } block(s)${rpcReadiness.refusedWidth ? ` (a ${rpcReadiness.refusedWidth}-block range was refused)` : ""}`,
+  );
 
   // ------------------------------------------------------------ stage 3
   stage("3. live posture reads (read-only)");
@@ -948,6 +1220,15 @@ async function main() {
     from: priorScan.from.toString(),
     to: priorScan.to.toString(),
     chunks: priorScan.chunks.toString(),
+    // The eth_getLogs width actually used, and how many blocks were certified:
+    // the request count is an efficiency fact, the block span is the coverage
+    // fact, and the report shows both so a cheap scan can never be mistaken for
+    // a narrow one.
+    chunkSize: priorScan.chunkSize,
+    requestedChunkSize: priorScan.requestedChunkSize ?? null,
+    blocks: priorScan.blocks ?? null,
+    shrinks: priorScan.shrinks ?? 0,
+    takerFiltered: true, // the pinned wallet is an indexed topic of every request
     // Rehearsal scans only the fork's most recent blocks (REHEARSAL_LOG_WINDOW);
     // live/preflight scan from the deployment block. Recorded so the report can
     // never present the bounded rehearsal scan as a full mainnet certification.
@@ -1542,6 +1823,14 @@ function renderMarkdown() {
   if (f.priorSwapScan)
     lines.push(
       `| One-shot scan | ${f.priorSwapScan.count} prior SwapExecuted for this wallet (blocks ${f.priorSwapScan.from}→${f.priorSwapScan.to})${f.priorSwapScan.rehearsalBounded ? ` — **rehearsal only**: the last ${f.priorSwapScan.rehearsalBounded} blocks of the local fork; live/preflight scan from the deployment block` : ""} |`,
+    );
+  if (f.priorSwapScan && !f.priorSwapScan.rehearsalBounded)
+    lines.push(
+      `| Scan coverage | **every** block ${f.priorSwapScan.from}→${f.priorSwapScan.to} (${f.priorSwapScan.blocks ?? "?"} blocks, zero gaps) in ${f.priorSwapScan.chunks} eth_getLogs request(s) of ≤ ${f.priorSwapScan.chunkSize} blocks, filtered at the RPC by executor + SwapExecuted topic + this wallet as indexed \`taker\`${f.priorSwapScan.shrinks ? ` (width reduced ${f.priorSwapScan.shrinks}×, coverage unchanged)` : ""} |`,
+    );
+  if (f.rpcReadiness)
+    lines.push(
+      `| Smoke RPC | ${f.rpcRole ?? "—"} — \`${f.rpcReadiness.endpoint}\`, chainId ${f.rpcReadiness.chainId}, head ${f.rpcReadiness.head}, verified eth_getLogs width ${f.rpcReadiness.chunkSize ?? LOG_CHUNK} block(s)${f.rpcReadiness.rateLimited ? " — **rate-limited during this run**" : ""} |`,
     );
   lines.push("");
   const summary = summarizeChecks(report.checks);

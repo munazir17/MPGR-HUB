@@ -233,6 +233,29 @@ export declare const LEDGER_DIR: string;
 export declare const LOG_CHUNK: bigint;
 export declare const REHEARSAL_LOG_WINDOW: bigint;
 
+/** Hard ceiling for one eth_getLogs request; only a PROBED width is ever used. */
+export declare const MAX_SAFE_LOG_CHUNK: bigint;
+/** The explicit ascending widths the readiness probe offers an endpoint. */
+export declare const LOG_CHUNK_PROBE_LADDER: ReadonlyArray<bigint>;
+/** Non-secret operator override for MAX_SAFE_LOG_CHUNK (clamped, never wider). */
+export declare const MAX_LOG_CHUNK_ENV: string;
+/** Block budget one run may certify (400 000 x the 10-block floor). */
+export declare const MAX_LOG_SCAN_BLOCKS: bigint;
+/** Bounded 429/quota policy: attempts, backoff and the Retry-After cap. */
+export declare const RATE_LIMIT_MAX_ATTEMPTS: number;
+export declare const RATE_LIMIT_BACKOFF_BASE_MS: number;
+export declare const RATE_LIMIT_BACKOFF_MAX_MS: number;
+export declare const RETRY_AFTER_MAX_MS: number;
+/** HTTP statuses that mean "over quota", and the JSON-RPC codes that say the same. */
+export declare const RATE_LIMIT_HTTP_STATUSES: ReadonlyArray<number>;
+export declare const RATE_LIMIT_RPC_CODES: ReadonlyArray<number>;
+/** The exact operator messages for a missing / rate-limited dedicated smoke RPC. */
+export declare const RPC_RATE_LIMITED_MESSAGE: string;
+export declare const RPC_MISSING_MESSAGE: string;
+/** The delegated executor's one event, and its topic0. */
+export declare const SWAP_EXECUTED_EVENT_SIGNATURE: string;
+export declare const SWAP_EXECUTED_TOPIC: Hex;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -242,6 +265,10 @@ export declare function isPrivateKeyShape(value: unknown): boolean;
 export declare function isBytes32(value: unknown): boolean;
 export declare function redact(text: string, secrets?: ReadonlyArray<string | undefined>): string;
 export declare function isLocalRpc(url: unknown): boolean;
+/** True for loopback, RFC-1918/link-local or `.local` endpoints (refused in preflight/live). */
+export declare function isPrivateOrLocalRpc(url: unknown): boolean;
+/** True only for a TLS endpoint — required for preflight/live. */
+export declare function isHttpsRpc(url: unknown): boolean;
 export declare function priorSwapScanWindow(input: {
   head: bigint;
   deployBlock?: bigint;
@@ -287,6 +314,134 @@ export declare function runLogScan<T = unknown>(input: {
   chunkSize?: bigint | number | string;
   maxChunks?: bigint | number | string | null;
 }): Promise<LogScanResult<T>>;
+
+/** Clamps a requested eth_getLogs width into [min, max]; rejects garbage. */
+export declare function clampChunkSize(
+  value: bigint | number | string,
+  bounds?: { min?: bigint | number; max?: bigint | number },
+): bigint;
+/** Halves a width, never below `min`. Strictly decreasing. */
+export declare function shrinkChunkSize(size: bigint | number | string, min?: bigint | number): bigint;
+/** The strictly-ascending ladder widths above `current`, inside [min, max]. */
+export declare function probeWidthsAbove(
+  current: bigint | number | string,
+  input?: { ladder?: ReadonlyArray<bigint | number>; min?: bigint | number; max?: bigint | number },
+): bigint[];
+
+/** What the readiness probe discovered about one endpoint's eth_getLogs width. */
+export interface LogChunkProbe {
+  chunkSize: bigint;
+  accepted: bigint[];
+  refused: { chunkSize: bigint; detail: string } | null;
+  unavailable: { chunkSize: bigint; detail: string } | null;
+}
+
+/**
+ * Discovers the widest eth_getLogs width an endpoint actually SERVED, one
+ * request per width, ascending, stopping at the first refusal or quota error.
+ * Throws when even the conservative floor cannot be served.
+ */
+export declare function probeLogChunkSize(input: {
+  requestChunk: (width: bigint) => Promise<unknown> | unknown;
+  ladder?: ReadonlyArray<bigint | number>;
+  maxChunk?: bigint | number;
+  isRangeError?: (err: unknown) => boolean;
+  isQuotaError?: (err: unknown) => boolean;
+}): Promise<LogChunkProbe>;
+
+/** One recorded width reduction during an adaptive scan. */
+export interface LogScanShrink {
+  from: bigint;
+  to: bigint;
+  at: bigint;
+}
+
+export interface AdaptiveLogScanResult<T = unknown> extends LogScanResult<T> {
+  /** The width in force when the scan finished (only ever narrower than asked). */
+  chunkSize: bigint;
+  requestedChunkSize: bigint;
+  shrinks: LogScanShrink[];
+}
+
+/**
+ * The adaptive superset of runLogScan: the same complete, gap-free, ordered
+ * certification, allowed to shrink the width when the endpoint refuses a range.
+ * Fails closed on anything else, and enforces the chunk/block budgets (worst
+ * case, at the floor width) before the first request.
+ */
+export declare function runAdaptiveLogScan<T = unknown>(input: {
+  fetchChunk: (from: bigint, to: bigint) => Promise<T[]> | T[];
+  from: bigint | number | string;
+  to: bigint | number | string;
+  chunkSize?: bigint | number | string;
+  maxChunk?: bigint | number | string;
+  minChunk?: bigint | number | string;
+  maxChunks?: bigint | number | string | null;
+  maxBlocks?: bigint | number | string | null;
+  isRangeError?: (err: unknown) => boolean;
+  onShrink?: (shrink: LogScanShrink & { detail: string }) => void;
+}): Promise<AdaptiveLogScanResult<T>>;
+
+/** How an RPC failure must be treated. */
+export type RpcErrorKind = "rate-limit" | "range-limit" | "revert" | "transient" | "unknown";
+
+export interface ClassifiedRpcError {
+  kind: RpcErrorKind;
+  status: number | null;
+  code: number | null;
+  retryAfterMs: number | null;
+  reason: string;
+}
+
+/** Classifies an RPC failure (never throws). */
+export declare function classifyRpcError(err: unknown, opts?: { nowMs?: number }): ClassifiedRpcError;
+/** Parses a `Retry-After` value (delta-seconds or HTTP-date) into milliseconds. */
+export declare function parseRetryAfter(value: unknown, opts?: { nowMs?: number }): number | null;
+
+export interface RateLimitBackoff {
+  waitMs: number;
+  source: "retry-after" | "exponential";
+  exceedsBudget: boolean;
+}
+export declare function rateLimitBackoffMs(input?: {
+  attempt: number;
+  retryAfterMs?: number | null;
+  baseMs?: number;
+  maxMs?: number;
+  retryAfterCapMs?: number;
+  jitterMs?: number;
+}): RateLimitBackoff;
+
+export interface RateLimitDecision extends RateLimitBackoff {
+  retry: boolean;
+  reason: string | null;
+}
+export declare function shouldRetryRateLimit(input?: {
+  attempt: number;
+  maxAttempts?: number;
+  retryAfterMs?: number | null;
+  baseMs?: number;
+  maxMs?: number;
+  retryAfterCapMs?: number;
+  jitterMs?: number;
+}): RateLimitDecision;
+
+/** The exact JSON-RPC `eth_getLogs` params for the historical one-shot scan. */
+export interface SwapExecutedLogFilter {
+  address: Hex;
+  topics: [Hex, Hex];
+  fromBlock: Hex;
+  toBlock: Hex;
+}
+/** An address as an indexed topic (left-padded to 32 bytes, lowercase). */
+export declare function takerTopicFor(wallet: string): Hex;
+export declare function swapExecutedLogFilter(input: {
+  executor?: string;
+  wallet: string;
+  fromBlock: bigint | number | string;
+  toBlock: bigint | number | string;
+  maxChunk?: bigint | number | string;
+}): SwapExecutedLogFilter;
 export declare function codeDispatchesSelector(code: unknown, selector: string): boolean;
 export declare function safeErrorMessage(err: unknown, secrets?: ReadonlyArray<string | undefined>): string;
 
@@ -354,10 +509,29 @@ export declare function buildPermit2Authorization(input: {
 export declare function evaluateModeGuard(input: {
   mode: unknown;
   rpcUrls: unknown;
+  /** The one endpoint this run may use (SMOKE_DELEGATED_RPC_URL). */
+  configuredRpcUrl?: unknown;
   keyEnvValue: unknown;
   walletPinEnvValue: unknown;
   githubActions: unknown;
   emergencyDisabled: unknown;
+}): GateResult;
+/**
+ * Readiness of the ONE endpoint that will certify the historical scan. Every
+ * row is fatal: a run that cannot read the chain completely may not certify a
+ * one-shot and may not broadcast.
+ */
+export declare function evaluateRpcReadiness(input: {
+  mode: unknown;
+  rpcUrl: unknown;
+  chainId: unknown;
+  headBlock: unknown;
+  probe: unknown;
+  rateLimited?: unknown;
+  retryAfterMs?: unknown;
+  chunkSize?: bigint | number | string;
+  requestedChunkSize?: bigint | number | string;
+  deployBlock?: bigint | number | string;
 }): GateResult;
 export declare function evaluateSignerIdentity(input: { mode: unknown; derivedSigner: unknown; pinnedWallet: unknown; extraForbidden?: unknown[] }): GateResult;
 export declare function evaluateConfigPins(input: { config: unknown; record: unknown }): GateResult;

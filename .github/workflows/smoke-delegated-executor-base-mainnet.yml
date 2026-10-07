@@ -25,6 +25,12 @@
 #                       smoke wallet: every precondition (chain id, executor address/posture,
 #                       router/pool/tokens, owner/fee, funding, allowance/permit state, one-shot
 #                       guards) is evaluated and reported. A failing preflight means live is refused.
+#                       It reads through exactly ONE endpoint: the dedicated smoke RPC
+#                       (BASE_MAINNET_RPC_URL secret -> SMOKE_DELEGATED_RPC_URL). The one-shot
+#                       guard certifies every block from the deployment to the head, so that RPC
+#                       must be properly provisioned; public/free endpoints answer HTTP 429 and the
+#                       job FAILS CLOSED with an operator message instead of grinding them or
+#                       certifying from a partial scan.
 #   Job 3 `live`      - Only after BOTH jobs above pass. Uses environment `base-mainnet`, whose
 #                       required reviewer must APPROVE the deployment in the Actions UI before the
 #                       job starts; the signer key is only injected after that approval. The script
@@ -167,7 +173,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
 
-      # NO secrets.* context is referenced in this job except the optional RPC URL:
+      # NO secrets.* context is referenced in this job except the RPC URL:
       # preflight is read-only and must never see a key.
       - name: Refuse to run without the non-secret wallet pin
         run: |
@@ -177,10 +183,31 @@ jobs:
             exit 1
           fi
 
+      # The historical one-shot certification scans deployment -> head, so it needs
+      # a properly provisioned endpoint. Failing here is instant and actionable;
+      # failing inside the scan is ~13 minutes of rate-limited requests (run #6).
+      - name: Refuse to run without a dedicated Base Mainnet smoke RPC
+        env:
+          CANDIDATE_RPC: ${{ secrets.BASE_MAINNET_RPC_URL }}
+        run: |
+          set -e
+          if [ -z "${CANDIDATE_RPC:-}" ]; then
+            echo "::error title=no dedicated smoke RPC::BASE_MAINNET_RPC_URL (a secret) must hold a properly provisioned Base Mainnet RPC. The deployment-to-head SwapExecuted certification issues thousands of eth_getLogs calls, so public/free endpoints are not sufficient and are not used as fallbacks."
+            exit 1
+          fi
+          case "$CANDIDATE_RPC" in
+            https://*) ;;
+            *) echo "::error title=smoke RPC must be https::preflight audits real Base Mainnet state over https; a loopback/private/fork endpoint is refused."; exit 1 ;;
+          esac
+
       - name: Evaluate every live precondition against real mainnet state
         id: preflight
         env:
+          # The ONE endpoint preflight certifies against (no public fallback list).
           SMOKE_DELEGATED_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          # Optional, non-secret ceiling for one eth_getLogs request. The script
+          # clamps it to [10, 1000] and still has to PROBE the endpoint before use.
+          SMOKE_DELEGATED_MAX_LOG_CHUNK: ${{ vars.SMOKE_DELEGATED_MAX_LOG_CHUNK }}
           SMOKE_DELEGATED_MODE: preflight
           SMOKE_DELEGATED_JSON: smoke-delegated-preflight.json
           SMOKE_DELEGATED_MD: smoke-delegated-preflight.md
@@ -245,6 +272,20 @@ jobs:
           key: mpgr-delegated-smoke-${{ github.ref_name }}-${{ env.SMOKE_DELEGATED_WALLET_ADDRESS }}
           restore-keys: mpgr-delegated-smoke-
 
+      - name: Refuse to run without the dedicated smoke RPC preflight certified with
+        env:
+          CANDIDATE_RPC: ${{ secrets.BASE_MAINNET_RPC_URL }}
+        run: |
+          set -e
+          if [ -z "${CANDIDATE_RPC:-}" ]; then
+            echo "::error title=no dedicated smoke RPC::BASE_MAINNET_RPC_URL (a secret) must hold the same properly provisioned Base Mainnet RPC preflight certified against. Live re-runs the full read-only certification before it signs anything."
+            exit 1
+          fi
+          case "$CANDIDATE_RPC" in
+            https://*) ;;
+            *) echo "::error title=smoke RPC must be https::live reads real Base Mainnet state over https; a loopback/private/fork endpoint is refused."; exit 1 ;;
+          esac
+
       - name: Refuse to run without the dedicated smoke key, the pin and the confirmation phrase
         env:
           CANDIDATE_KEY: ${{ secrets.BASE_MAINNET_DELEGATED_SMOKE_PRIVATE_KEY }}
@@ -267,9 +308,12 @@ jobs:
           SMOKE_DELEGATED_PRIVATE_KEY: ${{ secrets.BASE_MAINNET_DELEGATED_SMOKE_PRIVATE_KEY }}
           # The non-secret pin the derived address must match.
           SMOKE_DELEGATED_WALLET_ADDRESS: ${{ env.SMOKE_DELEGATED_WALLET_ADDRESS }}
-          # Optional private RPC first; the script adds public Base RPC fallbacks
-          # (mainnet.base.org, publicnode, drpc, llamarpc, 1rpc) with retry/backoff/failover.
+          # REQUIRED: the same dedicated RPC preflight certified against. It is the
+          # ONLY endpoint used — the script has no public fallback list any more, so
+          # a rate-limited endpoint fails closed with an operator message instead of
+          # being papered over by grinding free endpoints.
           SMOKE_DELEGATED_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          SMOKE_DELEGATED_MAX_LOG_CHUNK: ${{ vars.SMOKE_DELEGATED_MAX_LOG_CHUNK }}
           # Second confirmation layer, independent of the job condition: the script refuses
           # to sign unless this equals smoke-delegated-base-mainnet exactly.
           SMOKE_DELEGATED_CONFIRM: ${{ github.event.label.name || inputs.confirm }}
