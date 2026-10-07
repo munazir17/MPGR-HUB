@@ -491,3 +491,81 @@ describe("delegated smoke workflow: one-shot ledger and reporting", () => {
     expect(jobText("rehearse")).toContain("grep -v -iE 'private key|0x[0-9a-f]{64}' anvil.log");
   });
 });
+
+// ---------------------------------------------------------------------------
+/**
+ * Run #6 regression: the preflight's historical one-shot certification scanned
+ * deployment -> head in 10-block eth_getLogs requests across a public/free
+ * fallback list until every endpoint answered 429, and the job died after ~13
+ * minutes. Preflight and live must therefore read through ONE properly
+ * provisioned endpoint, and must fail fast and loudly when it is absent.
+ */
+describe("delegated smoke workflow: dedicated mainnet RPC for the historical certification", () => {
+  const RPC_SECRET = "secrets.BASE_MAINNET_RPC_URL";
+
+  it("gives preflight and live the dedicated RPC and nothing else", () => {
+    for (const job of ["preflight", "live"] as const) {
+      const text = jobText(job);
+      expect(text, job).toContain(`SMOKE_DELEGATED_RPC_URL: \${{ ${RPC_SECRET} }}`);
+      // No public fallback endpoint is named anywhere in the workflow's RPC wiring.
+      for (const host of ["mainnet.base.org", "base-rpc.publicnode.com", "base.drpc.org", "base.llamarpc.com", "1rpc.io/base"]) {
+        expect(text, `${job} ${host}`).not.toContain(host);
+      }
+    }
+    // The only place a public endpoint list may still appear is the rehearsal's
+    // FORK UPSTREAM selection, which reads a head block and chain id — not the
+    // tens of thousands of eth_getLogs calls the certification makes.
+    const rehearse = jobText("rehearse");
+    expect(rehearse).toContain("for U in $SECRET_RPC https://mainnet.base.org");
+    expect(rehearse).toContain("SMOKE_DELEGATED_MODE=rehearsal SMOKE_DELEGATED_RPC_URL=http://127.0.0.1:8545");
+  });
+
+  it("fails closed, before any RPC work, when the dedicated RPC is missing or not https", () => {
+    const preflight = jobText("preflight");
+    const guardAt = preflight.indexOf("Refuse to run without a dedicated Base Mainnet smoke RPC");
+    expect(guardAt).toBeGreaterThan(-1);
+    // It must run before the script (and after the checkout/npm steps).
+    expect(guardAt).toBeLessThan(preflight.indexOf("node script/smoke-delegated-executor-base-mainnet.mjs"));
+    expect(preflight.slice(guardAt, preflight.indexOf("node script/smoke-delegated-executor-base-mainnet.mjs"))).toMatch(/exit 1/);
+    expect(preflight).toContain("CANDIDATE_RPC: ${{ " + RPC_SECRET + " }}");
+    expect(preflight).toContain("https://*) ;;");
+    expect(preflight).toContain("::error title=no dedicated smoke RPC::");
+
+    const live = jobText("live");
+    const liveGuardAt = live.indexOf("Refuse to run without the dedicated smoke RPC preflight certified with");
+    expect(liveGuardAt).toBeGreaterThan(-1);
+    // The RPC guard runs before the broadcast, alongside the key/pin guard.
+    expect(liveGuardAt).toBeLessThan(live.indexOf("node script/smoke-delegated-executor-base-mainnet.mjs"));
+    expect(liveGuardAt).toBeLessThan(live.indexOf("Refuse to run without the dedicated smoke key"));
+    expect(live.slice(liveGuardAt, live.indexOf("Refuse to run without the dedicated smoke key"))).toMatch(/exit 1/);
+  });
+
+  it("documents that the endpoint must be provisioned, and never hides a 429", () => {
+    expect(workflow).toContain("properly provisioned Base Mainnet RPC");
+    expect(workflow).toContain("public/free endpoints are not sufficient and are not used as fallbacks");
+    expect(workflow).not.toMatch(/::(notice|warning)[^\n]*(429|rate[- ]limit)/i);
+  });
+
+  it("keeps the optional width knob non-secret, bounded and optional", () => {
+    const preflight = jobText("preflight");
+    expect(preflight).toContain("SMOKE_DELEGATED_MAX_LOG_CHUNK: ${{ vars.SMOKE_DELEGATED_MAX_LOG_CHUNK }}");
+    // It is a VARIABLE (non-secret: it names no endpoint), never a secret.
+    expect(preflight).not.toContain("secrets.SMOKE_DELEGATED_MAX_LOG_CHUNK");
+    expect(jobText("live")).toContain("SMOKE_DELEGATED_MAX_LOG_CHUNK: ${{ vars.SMOKE_DELEGATED_MAX_LOG_CHUNK }}");
+  });
+
+  it("still cannot reach live without a green rehearsal AND a green preflight", () => {
+    // The LIVE gate itself is untouched by this fix.
+    for (const [rehearse, preflight] of [
+      ["failure", "success"],
+      ["success", "failure"],
+      ["cancelled", "success"],
+      ["skipped", "success"],
+    ] as const) {
+      expect(runs("live", withNeeds(prLabeled(), { rehearse, preflight })), `${rehearse}/${preflight}`).toBe(false);
+    }
+    expect(runs("live", allGreen(prLabeled()))).toBe(true);
+    expect(jobKey(jobBlock("live"), "environment")).toBe("base-mainnet");
+    expect(jobBlock("live").join("\n")).toContain("needs: [rehearse, preflight]");
+  });
+});

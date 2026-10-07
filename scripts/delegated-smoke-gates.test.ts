@@ -17,7 +17,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { encodeAbiParameters, encodeFunctionData, getAddress, hashTypedData, keccak256, toHex } from "viem";
+import { createPublicClient, custom, encodeAbiParameters, encodeFunctionData, getAddress, getEventSelector, hashTypedData, keccak256, pad, toHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import {
@@ -50,6 +50,10 @@ import {
   LEDGER_VERSION,
   LIVE_CONFIRM_PHRASE,
   LOG_CHUNK,
+  LOG_CHUNK_PROBE_LADDER,
+  MAX_LOG_CHUNK_ENV,
+  MAX_LOG_SCAN_BLOCKS,
+  MAX_SAFE_LOG_CHUNK,
   MAX_FEE_BPS,
   MAX_FEE_PER_GAS_CAP,
   MIN_DEADLINE_MARGIN_SECONDS,
@@ -64,10 +68,18 @@ import {
   REHEARSAL_LOG_WINDOW,
   REQUIRED_PERMIT2_TOKEN_ALLOWANCE,
   REVIEWED_CONFIG_PATH,
+  RATE_LIMIT_MAX_ATTEMPTS,
+  RATE_LIMIT_BACKOFF_BASE_MS,
+  RATE_LIMIT_BACKOFF_MAX_MS,
+  RETRY_AFTER_MAX_MS,
   RPC_ENV,
+  RPC_MISSING_MESSAGE,
+  RPC_RATE_LIMITED_MESSAGE,
   SEPOLIA_DELEGATED_EXECUTOR,
   SLIPPAGE_BPS,
   SWAP_AMOUNT_IN,
+  SWAP_EXECUTED_EVENT_SIGNATURE,
+  SWAP_EXECUTED_TOPIC,
   SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR,
   SWAP_ON_BEHALF_OF_TYPED_MODULE_SELECTOR,
   SWAP_ON_BEHALF_OF_UNISWAP_V3_SELECTOR,
@@ -90,6 +102,8 @@ import {
   blockingFailures,
   buildSwapParams,
   canaryIdentityFor,
+  clampChunkSize,
+  classifyRpcError,
   codeDispatchesSelector,
   decodeRevertData,
   describeContractError,
@@ -99,8 +113,11 @@ import {
   evaluateLivePreconditions,
   evaluateModeGuard,
   evaluatePostTradeVerification,
+  evaluateRpcReadiness,
   evaluateSignerIdentity,
   feeSplit,
+  isHttpsRpc,
+  isPrivateOrLocalRpc,
   isBytes32,
   isInformational,
   isLocalRpc,
@@ -111,17 +128,25 @@ import {
   nonceBitmapWordMarks,
   nonceBitPosition,
   normalizeAddress,
+  parseRetryAfter,
   planLogScan,
   priorSwapScanWindow,
+  probeLogChunkSize,
+  probeWidthsAbove,
   quoteWithinSanityBand,
   redact,
   renderTitle,
   rehearsalPrincipal,
   rehearsalPrincipals,
+  runAdaptiveLogScan,
   runLogScan,
   safeErrorMessage,
   sameAddress,
+  shouldRetryRateLimit,
+  shrinkChunkSize,
   summarizeChecks,
+  swapExecutedLogFilter,
+  takerTopicFor,
 } from "./delegated-smoke-gates.mjs";
 
 // Cross-checked against the production code path, not a copy of it.
@@ -615,13 +640,18 @@ describe("authorization construction agrees with the deployed contract", () => {
 
 // ---------------------------------------------------------------------------
 describe("mode + environment gate", () => {
+  // The ONE endpoint each mode is allowed to use. `configuredRpcUrl` is what the
+  // runner passes as SMOKE_DELEGATED_RPC_URL; preflight/live must use exactly it.
+  const MAINNET_RPC = "https://base-mainnet.example/abcdef";
   const base = {
     rpcUrls: ["http://127.0.0.1:8545"],
+    configuredRpcUrl: "http://127.0.0.1:8545",
     keyEnvValue: undefined,
     walletPinEnvValue: SIGNER,
     githubActions: "true",
     emergencyDisabled: false,
   };
+  const mainnetRpc = { rpcUrls: [MAINNET_RPC], configuredRpcUrl: MAINNET_RPC };
 
   it("accepts a keyless rehearsal against exactly one local fork", () => {
     const r = evaluateModeGuard({ ...base, mode: MODES.REHEARSAL });
@@ -630,7 +660,7 @@ describe("mode + environment gate", () => {
   });
 
   it("accepts a keyless read-only preflight against real mainnet", () => {
-    const r = evaluateModeGuard({ ...base, mode: MODES.PREFLIGHT, rpcUrls: ["https://mainnet.base.org"] });
+    const r = evaluateModeGuard({ ...base, ...mainnetRpc, mode: MODES.PREFLIGHT });
     expect(r.allowed).toBe(true);
     expect(checkNamed(r, "preflight reads no private key")?.ok).toBe(true);
   });
@@ -638,8 +668,8 @@ describe("mode + environment gate", () => {
   it("accepts live only in CI with a well-formed key and a valid pin", () => {
     const r = evaluateModeGuard({
       ...base,
+      ...mainnetRpc,
       mode: MODES.LIVE,
-      rpcUrls: ["https://mainnet.base.org"],
       keyEnvValue: `0x${"cd".repeat(32)}`,
     });
     expect(r.allowed).toBe(true);
@@ -659,7 +689,7 @@ describe("mode + environment gate", () => {
 
   it("honours the emergency kill switch in every mode", () => {
     for (const mode of [MODES.REHEARSAL, MODES.PREFLIGHT, MODES.LIVE]) {
-      const r = evaluateModeGuard({ ...base, mode, emergencyDisabled: true, rpcUrls: mode === MODES.REHEARSAL ? base.rpcUrls : ["https://mainnet.base.org"], keyEnvValue: mode === MODES.LIVE ? `0x${"cd".repeat(32)}` : undefined });
+      const r = evaluateModeGuard({ ...base, mode, emergencyDisabled: true, ...(mode === MODES.REHEARSAL ? {} : mainnetRpc), keyEnvValue: mode === MODES.LIVE ? `0x${"cd".repeat(32)}` : undefined });
       expect(r.allowed, mode).toBe(false);
       expect(checkNamed(r, "emergency kill switch")?.ok).toBe(false);
     }
@@ -673,7 +703,7 @@ describe("mode + environment gate", () => {
   it("refuses a key present in the environment for rehearsal and preflight", () => {
     const key = `0x${"cd".repeat(32)}`;
     expect(evaluateModeGuard({ ...base, mode: MODES.REHEARSAL, keyEnvValue: key }).allowed).toBe(false);
-    expect(evaluateModeGuard({ ...base, mode: MODES.PREFLIGHT, rpcUrls: ["https://mainnet.base.org"], keyEnvValue: key }).allowed).toBe(false);
+    expect(evaluateModeGuard({ ...base, ...mainnetRpc, mode: MODES.PREFLIGHT, keyEnvValue: key }).allowed).toBe(false);
   });
 
   it("refuses to read mainnet state from a local fork during preflight", () => {
@@ -681,7 +711,7 @@ describe("mode + environment gate", () => {
   });
 
   it("refuses live outside GitHub Actions (no environment approval possible)", () => {
-    const live = { mode: MODES.LIVE, rpcUrls: ["https://mainnet.base.org"], keyEnvValue: `0x${"cd".repeat(32)}`, walletPinEnvValue: SIGNER };
+    const live = { mode: MODES.LIVE, ...mainnetRpc, keyEnvValue: `0x${"cd".repeat(32)}`, walletPinEnvValue: SIGNER };
     for (const githubActions of [undefined, "", "false", "1"]) {
       const r = evaluateModeGuard({ ...live, githubActions, emergencyDisabled: false });
       expect(r.allowed, `GITHUB_ACTIONS=${String(githubActions)}`).toBe(false);
@@ -713,7 +743,7 @@ describe("mode + environment gate", () => {
   ])("refuses a %s private key without echoing it", (_label, value) => {
     const r = evaluateModeGuard({
       mode: MODES.LIVE,
-      rpcUrls: ["https://mainnet.base.org"],
+      ...mainnetRpc,
       keyEnvValue: value as string | undefined,
       walletPinEnvValue: SIGNER,
       githubActions: "true",
@@ -726,8 +756,8 @@ describe("mode + environment gate", () => {
 
   it("refuses a malformed wallet pin for preflight and live", () => {
     for (const mode of [MODES.PREFLIGHT, MODES.LIVE]) {
-      expect(evaluateModeGuard({ mode, rpcUrls: ["https://mainnet.base.org"], keyEnvValue: mode === MODES.LIVE ? `0x${"cd".repeat(32)}` : undefined, walletPinEnvValue: "0xnope", githubActions: "true", emergencyDisabled: false }).allowed, mode).toBe(false);
-      expect(evaluateModeGuard({ mode, rpcUrls: ["https://mainnet.base.org"], keyEnvValue: mode === MODES.LIVE ? `0x${"cd".repeat(32)}` : undefined, walletPinEnvValue: "", githubActions: "true", emergencyDisabled: false }).allowed, `${mode} empty pin`).toBe(false);
+      expect(evaluateModeGuard({ mode, ...mainnetRpc, keyEnvValue: mode === MODES.LIVE ? `0x${"cd".repeat(32)}` : undefined, walletPinEnvValue: "0xnope", githubActions: "true", emergencyDisabled: false }).allowed, mode).toBe(false);
+      expect(evaluateModeGuard({ mode, ...mainnetRpc, keyEnvValue: mode === MODES.LIVE ? `0x${"cd".repeat(32)}` : undefined, walletPinEnvValue: "", githubActions: "true", emergencyDisabled: false }).allowed, `${mode} empty pin`).toBe(false);
     }
   });
 });
@@ -1843,9 +1873,10 @@ describe("historical SwapExecuted scan window", () => {
     const call = runnerSource.match(/priorSwapScanWindow\(\{\s*head,\s*rehearsal:\s*REHEARSAL\s*\}\)/);
     expect(call, "the runner must derive its scan window from priorSwapScanWindow").not.toBeNull();
     // The runner delegates the chunked requests to the shared bounded scanner
-    // (runLogScan in the gates module) — no inline chunk loop may remain to
-    // drift from the tested implementation.
-    expect(runnerSource.match(/await runLogScan\(\{/g)?.length).toBe(1);
+    // (runAdaptiveLogScan in the gates module) — no inline chunk loop may remain
+    // to drift from the tested implementation.
+    expect(runnerSource.match(/await runAdaptiveLogScan\(\{/g)?.length).toBe(1);
+    expect(runnerSource).not.toMatch(/await runLogScan\(\{/);
     expect(runnerSource).not.toMatch(/from \+= LOG_CHUNK/);
     // No unconditional scan anchored at the deployment block may remain.
     expect(runnerSource).not.toMatch(/for \(let from = DELEGATED_DEPLOY_BLOCK/);
@@ -2000,7 +2031,8 @@ describe("bounded historical log scanning (restrictive Base eth_getLogs caps)", 
   it("preflight and live certify the full window through the shared bounded scanner", () => {
     // One scan call site, driven by the mode flag alone: preflight and live
     // take the identical bounded path over the deployment->head window.
-    expect(runnerSource.match(/await runLogScan\(\{/g)?.length).toBe(1);
+    expect(runnerSource.match(/await runAdaptiveLogScan\(\{/g)?.length).toBe(1);
+    expect(runnerSource).not.toMatch(/await runLogScan\(\{/);
     expect(runnerSource.match(/priorSwapScanWindow\(\{\s*head,\s*rehearsal:\s*REHEARSAL\s*\}\)/)).not.toBeNull();
     expect(runnerSource).toContain("maxChunks: MAX_LOG_CHUNKS");
     // The fail-closed chunk-budget cap remains in force in the runner...
@@ -2042,5 +2074,636 @@ describe("bounded historical log scanning (restrictive Base eth_getLogs caps)", 
     expect(runnerSource).toContain("fetchChunk: (fromBlock, toBlock) =>");
     // The runner still broadcasts at most once (the pre-existing live step).
     expect(runnerSource.match(/writeContract\(/g)?.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * Run #6 regression: PR #93 bounded every eth_getLogs to 10 blocks, which fixed
+ * the per-request RANGE limit but turned the deployment->head certification into
+ * tens of thousands of requests. Those requests went out across a public/free
+ * fallback list until every endpoint answered 429 ("1rpc usage limit exceeded",
+ * compute-unit/sec caps), and preflight died after ~13 minutes.
+ *
+ * The architecture that replaces it, asserted here:
+ *   ONE dedicated configured RPC per mode, no public fallback list;
+ *   a readiness gate that proves the endpoint can serve the scan BEFORE it runs;
+ *   a bounded, Retry-After-aware quota policy that FAILS CLOSED;
+ *   an endpoint-VERIFIED eth_getLogs width (never assumed) over the SAME
+ *   complete, gap-free deployment->head window.
+ */
+describe("RPC roles: one dedicated endpoint per mode, never a public fallback grind", () => {
+  const DEDICATED = "https://base-mainnet.example/abcdef0123456789";
+  const LOCAL = "http://127.0.0.1:8545";
+  const base = {
+    keyEnvValue: undefined,
+    walletPinEnvValue: SIGNER,
+    githubActions: "true",
+    emergencyDisabled: false,
+  };
+  const preflight = (rpcUrls: unknown, configuredRpcUrl: unknown = DEDICATED) =>
+    evaluateModeGuard({ ...base, mode: MODES.PREFLIGHT, rpcUrls, configuredRpcUrl });
+  const live = (rpcUrls: unknown, configuredRpcUrl: unknown = DEDICATED) =>
+    evaluateModeGuard({ ...base, mode: MODES.LIVE, rpcUrls, configuredRpcUrl, keyEnvValue: `0x${"cd".repeat(32)}` });
+
+  it("requires the configured smoke RPC for preflight and live, with an operator message", () => {
+    for (const r of [preflight([]), preflight(undefined, undefined), live([]), live([""], "")]) {
+      expect(r.allowed).toBe(false);
+      const detail = r.checks.map((c) => c.detail).join(" | ");
+      expect(detail).toContain(RPC_MISSING_MESSAGE);
+    }
+    expect(preflight([DEDICATED]).allowed).toBe(true);
+    expect(live([DEDICATED]).allowed).toBe(true);
+    expect(RPC_ENV).toBe("SMOKE_DELEGATED_RPC_URL");
+  });
+
+  it("refuses a second endpoint or a mismatched endpoint: rotation is not resilience here", () => {
+    expect(preflight([DEDICATED, "https://mainnet.base.org"]).allowed).toBe(false);
+    expect(live([DEDICATED, "https://base-rpc.publicnode.com"]).allowed).toBe(false);
+    // The list may not silently stand in for the configured endpoint either.
+    expect(preflight(["https://mainnet.base.org"], DEDICATED).allowed).toBe(false);
+    expect(live(["https://mainnet.base.org"], DEDICATED).allowed).toBe(false);
+  });
+
+  it("rehearsal still reads ONLY the local anvil fork", () => {
+    expect(evaluateModeGuard({ ...base, mode: MODES.REHEARSAL, rpcUrls: [LOCAL], configuredRpcUrl: LOCAL }).allowed).toBe(true);
+    // A real remote endpoint is refused for rehearsal, exactly as before.
+    expect(evaluateModeGuard({ ...base, mode: MODES.REHEARSAL, rpcUrls: [DEDICATED], configuredRpcUrl: DEDICATED }).allowed).toBe(false);
+    expect(isLocalRpc(LOCAL)).toBe(true);
+    expect(isLocalRpc(DEDICATED)).toBe(false);
+  });
+
+  it("preflight and live refuse a local, private or fork-shaped endpoint", () => {
+    for (const url of [LOCAL, "http://localhost:8545", "http://10.0.0.5:8545", "http://192.168.1.20:8545", "http://172.16.4.4:8545", "http://169.254.1.1:8545", "http://node.local:8545"]) {
+      expect(isPrivateOrLocalRpc(url), url).toBe(true);
+      expect(preflight([url], url).allowed, `preflight ${url}`).toBe(false);
+      expect(live([url], url).allowed, `live ${url}`).toBe(false);
+      expect(isHttpsRpc(url), url).toBe(false);
+    }
+    expect(isPrivateOrLocalRpc(DEDICATED)).toBe(false);
+    expect(isHttpsRpc(DEDICATED)).toBe(true);
+  });
+
+  it("the runner has no public fallback list left to grind", () => {
+    expect(runnerSource).not.toContain("PUBLIC_BASE_RPCS");
+    for (const host of ["mainnet.base.org", "base-rpc.publicnode.com", "base.drpc.org", "base.llamarpc.com", "1rpc.io"]) {
+      expect(runnerSource, host).not.toContain(host);
+    }
+    // Exactly one endpoint per run, taken from the configured env var.
+    expect(runnerSource).toContain("const RPC_URLS = RPC_URL.length > 0 ? [RPC_URL] : [];");
+    expect(runnerSource).toContain("configuredRpcUrl: RPC_URL");
+  });
+
+  it("the workflow supplies that endpoint as a secret and fails clearly when it is absent", () => {
+    const workflowSource = readFileSync(".github/workflows/smoke-delegated-executor-base-mainnet.yml", "utf8");
+    for (const job of ["preflight", "live"]) {
+      expect(workflowSource, job).toContain("SMOKE_DELEGATED_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}");
+    }
+    expect(workflowSource).toContain("Refuse to run without a dedicated Base Mainnet smoke RPC");
+    expect(workflowSource).toContain("Refuse to run without the dedicated smoke RPC preflight certified with");
+    // The rehearsal still forks from a local anvil; only its upstream may be public.
+    expect(workflowSource).toContain("SMOKE_DELEGATED_MODE=rehearsal SMOKE_DELEGATED_RPC_URL=http://127.0.0.1:8545");
+    // No hardcoded private endpoint is introduced anywhere.
+    expect(workflowSource).not.toMatch(/https:\/\/[a-z0-9.-]*(alchemy|infura|quicknode|ankr|getblock|tenderly)\.[a-z.]+\//i);
+    expect(gatesSource).not.toMatch(/https:\/\/[a-z0-9.-]*(alchemy|infura|quicknode|ankr|getblock|tenderly)\.[a-z.]+\//i);
+    expect(runnerSource).not.toMatch(/https:\/\/[a-z0-9.-]*(alchemy|infura|quicknode|ankr|getblock|tenderly)\.[a-z.]+\//i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("RPC readiness gate (runs BEFORE the historical certification)", () => {
+  const DEDICATED = "https://base-mainnet.example/abcdef0123456789";
+  const HEAD = 52_900_000n;
+  const ok = {
+    mode: MODES.PREFLIGHT,
+    rpcUrl: DEDICATED,
+    chainId: CHAIN_ID,
+    headBlock: HEAD,
+    probe: { ok: true, width: "1000", logs: 0 },
+    rateLimited: false,
+    chunkSize: "1000",
+    requestedChunkSize: "1000",
+  };
+  const named = (r: { checks: { name: string; ok: boolean; detail: string }[] }, needle: string) =>
+    r.checks.find((c) => c.name.includes(needle));
+
+  it("accepts a provisioned Base Mainnet endpoint", () => {
+    const r = evaluateRpcReadiness(ok);
+    expect(r.allowed).toBe(true);
+    expect(r.checks.length).toBeGreaterThanOrEqual(6);
+    for (const c of r.checks) expect(c.fatal, c.name).toBe(true);
+  });
+
+  it("refuses an endpoint that is not Base Mainnet (chainId validation)", () => {
+    for (const chainId of [1, 11155111, 84532, 0, undefined, null]) {
+      const r = evaluateRpcReadiness({ ...ok, chainId });
+      expect(r.allowed, `chainId=${String(chainId)}`).toBe(false);
+      expect(named(r, `chainId ${CHAIN_ID}`)?.ok).toBe(false);
+    }
+  });
+
+  it("refuses an unreadable head, or a head before the deployment block", () => {
+    for (const headBlock of [undefined, null, "nope", DELEGATED_DEPLOY_BLOCK - 1n]) {
+      expect(evaluateRpcReadiness({ ...ok, headBlock }).allowed, String(headBlock)).toBe(false);
+    }
+    expect(evaluateRpcReadiness({ ...ok, headBlock: DELEGATED_DEPLOY_BLOCK }).allowed).toBe(true);
+  });
+
+  it("requires a small known eth_getLogs probe to have succeeded", () => {
+    const failing = evaluateRpcReadiness({ ...ok, probe: { ok: false, detail: "eth_getLogs refused" } });
+    expect(failing.allowed).toBe(false);
+    const detail = named(failing, "small known eth_getLogs")?.detail ?? "";
+    expect(detail).toContain("the historical certification cannot proceed");
+    expect(evaluateRpcReadiness({ ...ok, probe: undefined }).allowed).toBe(false);
+  });
+
+  it("fails closed with the operator message when the endpoint is rate-limited", () => {
+    const r = evaluateRpcReadiness({ ...ok, rateLimited: true, retryAfterMs: 5_000 });
+    expect(r.allowed).toBe(false);
+    const detail = named(r, "HTTP 429")?.detail ?? "";
+    expect(detail).toContain(RPC_RATE_LIMITED_MESSAGE);
+    expect(detail).toContain("Retry-After 5000ms");
+    expect(RPC_RATE_LIMITED_MESSAGE).toContain("Configure a properly provisioned Base Mainnet RPC");
+  });
+
+  it("refuses a local/fork endpoint for preflight and live, and demands https", () => {
+    for (const mode of [MODES.PREFLIGHT, MODES.LIVE]) {
+      const local = evaluateRpcReadiness({ ...ok, mode, rpcUrl: "http://127.0.0.1:8545" });
+      expect(local.allowed, mode).toBe(false);
+      expect(named(local, "REAL Base Mainnet endpoint")?.ok).toBe(false);
+      const insecure = evaluateRpcReadiness({ ...ok, mode, rpcUrl: "http://base-mainnet.example/abc" });
+      expect(insecure.allowed, `${mode} http`).toBe(false);
+      expect(named(insecure, "https")?.ok).toBe(false);
+      const missing = evaluateRpcReadiness({ ...ok, mode, rpcUrl: "" });
+      expect(missing.allowed, `${mode} missing`).toBe(false);
+      expect(missing.checks[0].detail).toContain(RPC_MISSING_MESSAGE);
+    }
+  });
+
+  it("rehearsal requires the LOCAL fork and skips the width probe", () => {
+    const rehearsal = evaluateRpcReadiness({
+      mode: MODES.REHEARSAL,
+      rpcUrl: "http://127.0.0.1:8545",
+      chainId: CHAIN_ID,
+      headBlock: HEAD,
+      probe: { ok: true, width: "10", logs: 0 },
+      chunkSize: LOG_CHUNK,
+    });
+    expect(rehearsal.allowed).toBe(true);
+    expect(named(rehearsal, "LOCAL anvil fork")?.ok).toBe(true);
+    // A remote endpoint is NOT an acceptable rehearsal source.
+    expect(evaluateRpcReadiness({ mode: MODES.REHEARSAL, rpcUrl: DEDICATED, chainId: CHAIN_ID, headBlock: HEAD, probe: { ok: true } }).allowed).toBe(false);
+  });
+
+  it("only accepts a scan width inside the reviewed floor/ceiling", () => {
+    expect(evaluateRpcReadiness({ ...ok, chunkSize: "5" }).allowed).toBe(false);
+    expect(evaluateRpcReadiness({ ...ok, chunkSize: String(MAX_SAFE_LOG_CHUNK + 1n) }).allowed).toBe(false);
+    // A width wider than what the operator allowed is refused too.
+    expect(evaluateRpcReadiness({ ...ok, chunkSize: "1000", requestedChunkSize: "200" }).allowed).toBe(false);
+    expect(evaluateRpcReadiness({ ...ok, chunkSize: "200", requestedChunkSize: "1000" }).allowed).toBe(true);
+  });
+
+  it("runs before the scan in the runner, and its rows decide the run", () => {
+    const readinessAt = runnerSource.indexOf('stage("2b. RPC readiness');
+    const readsAt = runnerSource.indexOf('stage("3. live posture reads');
+    expect(readinessAt).toBeGreaterThan(-1);
+    // Stage order: the endpoint is proven BEFORE the mainnet reads that include
+    // the historical scan.
+    expect(readinessAt).toBeLessThan(readsAt);
+    // The single scan call site lives in countPriorSwapEvents, which the stage-3
+    // read set invokes — so the readiness gate necessarily precedes it.
+    const scanAt = runnerSource.indexOf("await runAdaptiveLogScan({");
+    const scanFn = runnerSource.indexOf("async function countPriorSwapEvents(pub, wallet) {");
+    expect(scanAt).toBeGreaterThan(scanFn);
+    expect(runnerSource.indexOf("countPriorSwapEvents(pub, wallet)").toString().length).toBeGreaterThan(0);
+    expect(runnerSource.lastIndexOf("countPriorSwapEvents(pub, wallet)")).toBeGreaterThan(readsAt);
+    expect(runnerSource).toContain("applyGate(\n    evaluateRpcReadiness({");
+    expect(runnerSource).toContain("if (RPC_URLS.length === 0) {\n    throw new Abort(RPC_MISSING_MESSAGE);");
+    // Every readiness row is fatal, so a red gate can never be a note.
+    expect(gatesSource).toMatch(/stage, name, ok: Boolean\(ok\), detail: String\(detail\), fatal: true/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("HTTP 429 / quota handling: bounded, Retry-After-aware, fail closed", () => {
+  it("classifies provider quota responses as rate limits, distinctly from range limits", () => {
+    const quotas = [
+      Object.assign(new Error("Too Many Requests"), { status: 429 }),
+      new Error("HTTP request failed. Status: 429"),
+      new Error("1rpc usage limit exceeded, visit https://www.1rpc.io"),
+      new Error("Exceeded your current plan's compute units per second capacity"),
+      new Error("rate limit reached, please slow down"),
+      new Error("over your current quota, please try again in 30 seconds"),
+      Object.assign(new Error("limit exceeded"), { code: -32005 }),
+    ];
+    for (const err of quotas) expect(classifyRpcError(err).kind, String(err)).toBe("rate-limit");
+
+    const ranges = [
+      new Error("eth_getLogs is limited to 0 - 50 blocks range"),
+      new Error("exceed maximum block range: 500"),
+      new Error("query returned more than 10000 results"),
+      new Error("Log response size exceeded, you can request a smaller range"),
+      new Error("query timeout exceeded"),
+    ];
+    for (const err of ranges) expect(classifyRpcError(err).kind, String(err)).toBe("range-limit");
+
+    // A revert is neither, and must stay non-retryable.
+    expect(classifyRpcError(Object.assign(new Error("execution reverted"), { code: 3 })).kind).toBe("revert");
+    expect(classifyRpcError(Object.assign(new Error("boom"), { status: 503 })).kind).toBe("transient");
+    // A nested viem error chain is still classified.
+    const nested = Object.assign(new Error("request failed"), { cause: Object.assign(new Error("Too Many Requests"), { status: 429 }) });
+    expect(classifyRpcError(nested).kind).toBe("rate-limit");
+  });
+
+  it("parses Retry-After as delta-seconds and as an HTTP-date", () => {
+    expect(parseRetryAfter("120")).toBe(120_000);
+    expect(parseRetryAfter(3)).toBe(3_000);
+    const now = Date.parse("Wed, 07 Oct 2026 05:00:00 GMT");
+    expect(parseRetryAfter("Wed, 07 Oct 2026 05:00:45 GMT", { nowMs: now })).toBe(45_000);
+    expect(parseRetryAfter("Wed, 07 Oct 2026 04:59:00 GMT", { nowMs: now })).toBe(0);
+    for (const junk of [undefined, null, "", "soon", "0", "-5"]) expect(parseRetryAfter(junk), String(junk)).toBeNull();
+  });
+
+  it("backs off exponentially, respects a longer Retry-After, and stays capped", () => {
+    expect(RATE_LIMIT_BACKOFF_BASE_MS).toBe(1_000);
+    const waits = [1, 2, 3, 4, 5, 6, 7].map((attempt) => shouldRetryRateLimit({ attempt }).waitMs);
+    expect(waits[0]).toBe(RATE_LIMIT_BACKOFF_BASE_MS);
+    // Attempts inside the budget grow exponentially and stay capped; the attempt
+    // that exhausts the budget is not waited at all (waitMs 0, retry false).
+    for (let i = 1; i < RATE_LIMIT_MAX_ATTEMPTS - 1; i++) {
+      expect(waits[i], `attempt ${i + 1}`).toBeGreaterThan(waits[i - 1]);
+    }
+    for (const w of waits.slice(0, RATE_LIMIT_MAX_ATTEMPTS - 1)) expect(w).toBeLessThanOrEqual(RATE_LIMIT_BACKOFF_MAX_MS);
+    expect(waits[RATE_LIMIT_MAX_ATTEMPTS - 1]).toBe(0);
+    // The provider's own Retry-After wins when it is longer than the backoff...
+    expect(shouldRetryRateLimit({ attempt: 1, retryAfterMs: 9_000 }).waitMs).toBe(9_000);
+    expect(shouldRetryRateLimit({ attempt: 1, retryAfterMs: 9_000 }).source).toBe("retry-after");
+    // ...but an unaffordable one is not slept through: it fails closed instead.
+    const long = shouldRetryRateLimit({ attempt: 1, retryAfterMs: RETRY_AFTER_MAX_MS + 1 });
+    expect(long.retry).toBe(false);
+    expect(long.reason).toContain("budget");
+  });
+
+  it("has a finite retry budget and never loops", () => {
+    expect(RATE_LIMIT_MAX_ATTEMPTS).toBe(4);
+    for (let attempt = 1; attempt < RATE_LIMIT_MAX_ATTEMPTS; attempt++) {
+      expect(shouldRetryRateLimit({ attempt }).retry, `attempt ${attempt}`).toBe(true);
+    }
+    for (const attempt of [RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_MAX_ATTEMPTS + 1, 99]) {
+      const decision = shouldRetryRateLimit({ attempt });
+      expect(decision.retry, `attempt ${attempt}`).toBe(false);
+      expect(decision.waitMs).toBe(0);
+      expect(decision.reason).toContain("budget exhausted");
+    }
+    // The budget is also honoured when every response carries a Retry-After.
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      if (!shouldRetryRateLimit({ attempt, retryAfterMs: 2_000 }).retry) break;
+      expect(attempt).toBeLessThanOrEqual(RATE_LIMIT_MAX_ATTEMPTS);
+    }
+    expect(attempt).toBe(RATE_LIMIT_MAX_ATTEMPTS);
+  });
+
+  it("the runner spends that budget and then fails closed with the operator message", () => {
+    expect(runnerSource).toContain("class RpcRateLimited extends Abort");
+    expect(runnerSource).toContain("if (cls.kind === \"rate-limit\")");
+    expect(runnerSource).toContain("this.quotaAttempts += 1");
+    expect(runnerSource).toContain("shouldRetryRateLimit({");
+    expect(runnerSource).toContain("if (!decision.retry) throw new RpcRateLimited(");
+    // The operator message is defined once (in the gates module) and thrown by
+    // the runner through the imported constant — never re-worded locally.
+    expect(RPC_RATE_LIMITED_MESSAGE).toContain("Dedicated smoke RPC is rate-limited");
+    expect(runnerSource).toContain("RPC_RATE_LIMITED_MESSAGE");
+    expect(runnerSource).toContain("super(`${RPC_RATE_LIMITED_MESSAGE}${detail ? ` Last response: ${detail}` : \"\"}`);");
+    // Retry-After is read off the RAW response, so a 429 that carries a JSON-RPC
+    // body (which viem does not turn into an HttpRequestError) is still honoured.
+    expect(runnerSource).toContain("onFetchResponse: (response) =>");
+    expect(runnerSource).toContain("parseRetryAfter(response.headers?.get?.(\"retry-after\")");
+    // No unbounded loop: the quota counter is initialised exactly once (in the
+    // constructor) and never reset per request, and there is no infinite loop.
+    expect(runnerSource.match(/quotaAttempts = 0/g)?.length).toBe(1);
+    expect(runnerSource.match(/quotaAttempts \+= 1/g)?.length).toBe(1);
+    expect(runnerSource).not.toMatch(/while \(true\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("adaptive eth_getLogs chunking: verified width, identical coverage", () => {
+  const HEAD = 52_900_000n;
+  const mock = (blocks: bigint[] = [], opts: { rangeErrorAt?: number; floorErrors?: boolean } = {}) => {
+    const calls: Array<{ from: bigint; to: bigint }> = [];
+    let n = 0;
+    return {
+      calls,
+      fetchChunk: (from: bigint, to: bigint) => {
+        calls.push({ from, to });
+        n += 1;
+        if (opts.rangeErrorAt === n) return Promise.reject(new Error("exceed maximum block range: 500"));
+        if (opts.floorErrors) return Promise.reject(new Error("exceed maximum block range: 1"));
+        return Promise.resolve(blocks.filter((b) => b >= from && b <= to).map((b) => ({ blockNumber: b })));
+      },
+    };
+  };
+
+  it("keeps the reviewed floor and an explicit ceiling, and never assumes the ceiling", () => {
+    expect(LOG_CHUNK).toBe(10n);
+    expect(MAX_SAFE_LOG_CHUNK).toBe(1_000n);
+    expect(MAX_SAFE_LOG_CHUNK).toBeGreaterThan(LOG_CHUNK);
+    // The ladder is explicit, ascending and inside the reviewed window.
+    expect(LOG_CHUNK_PROBE_LADDER[0]).toBe(LOG_CHUNK);
+    expect(LOG_CHUNK_PROBE_LADDER[LOG_CHUNK_PROBE_LADDER.length - 1]).toBe(MAX_SAFE_LOG_CHUNK);
+    for (let i = 1; i < LOG_CHUNK_PROBE_LADDER.length; i++) {
+      expect(LOG_CHUNK_PROBE_LADDER[i]).toBeGreaterThan(LOG_CHUNK_PROBE_LADDER[i - 1]);
+    }
+    expect(probeWidthsAbove(0n).map(String)).toEqual(LOG_CHUNK_PROBE_LADDER.map(String));
+    expect(probeWidthsAbove(50n).map(String)).toEqual(["200", "1000"]);
+    // A lower operator ceiling shortens the ladder instead of exceeding it.
+    expect(probeWidthsAbove(0n, { max: 50n }).map(String)).toEqual(["10", "50"]);
+    expect(MAX_LOG_CHUNK_ENV).toBe("SMOKE_DELEGATED_MAX_LOG_CHUNK");
+  });
+
+  it("clamps a requested width into [floor, ceiling] and only ever shrinks", () => {
+    expect(clampChunkSize(5n)).toBe(LOG_CHUNK);
+    expect(clampChunkSize(50_000n)).toBe(MAX_SAFE_LOG_CHUNK);
+    expect(clampChunkSize("500")).toBe(500n);
+    for (const junk of [0n, -1n, "abc", null, {}, undefined]) expect(() => clampChunkSize(junk as never)).toThrow();
+    // The runner's own expression: an unset operator knob falls back to the ceiling.
+    const envOrCeiling = (value: string) => (value.length > 0 ? value : MAX_SAFE_LOG_CHUNK);
+    expect(clampChunkSize(envOrCeiling(""), { min: LOG_CHUNK, max: MAX_SAFE_LOG_CHUNK })).toBe(MAX_SAFE_LOG_CHUNK);
+    expect(clampChunkSize(envOrCeiling("50"), { min: LOG_CHUNK, max: MAX_SAFE_LOG_CHUNK })).toBe(50n);
+    expect(clampChunkSize(envOrCeiling("999999"), { min: LOG_CHUNK, max: MAX_SAFE_LOG_CHUNK })).toBe(MAX_SAFE_LOG_CHUNK);
+    expect(shrinkChunkSize(1_000n)).toBe(500n);
+    expect(shrinkChunkSize(50n)).toBe(25n);
+    expect(shrinkChunkSize(20n)).toBe(LOG_CHUNK);
+    expect(shrinkChunkSize(10n)).toBe(LOG_CHUNK); // never below the floor
+    // The runner clamps the operator knob with exactly these bounds.
+    expect(runnerSource).toContain("clampChunkSize(env(MAX_LOG_CHUNK_ENV) || MAX_SAFE_LOG_CHUNK");
+  });
+
+  it("grows only where the endpoint explicitly served the width, and stops at the first refusal", async () => {
+    const served: bigint[] = [];
+    const probe = await probeLogChunkSize({
+      requestChunk: async (width) => {
+        if (width > 200n) throw new Error("eth_getLogs is limited to 0 - 200 blocks range");
+        served.push(width);
+        return 0;
+      },
+    });
+    expect(probe.chunkSize).toBe(200n);
+    expect(served).toEqual([10n, 50n, 200n]);
+    expect(probe.refused?.chunkSize).toBe(1_000n);
+    expect(probe.accepted.map(String)).toEqual(["10", "50", "200"]);
+    // The refused width is never retried: exactly one request per width.
+    expect(served.filter((w) => w === 200n)).toHaveLength(1);
+  });
+
+  it("never requests a width above the configured ceiling", async () => {
+    const seen: bigint[] = [];
+    await probeLogChunkSize({ requestChunk: async (width) => { seen.push(width); return 0; }, maxChunk: 50n });
+    expect(seen.map(String)).toEqual(["10", "50"]);
+    for (const w of seen) expect(w).toBeLessThanOrEqual(50n);
+  });
+
+  it("stops probing a rate-limited endpoint instead of hammering it, and throws if even the floor fails", async () => {
+    let requests = 0;
+    const probe = await probeLogChunkSize({
+      requestChunk: async (width) => {
+        requests += 1;
+        if (width > 50n) throw Object.assign(new Error("Too Many Requests"), { status: 429 });
+        return 0;
+      },
+    });
+    expect(probe.chunkSize).toBe(50n);
+    expect(requests).toBe(3); // 10, 50 accepted, then ONE 429 — no retry storm
+    expect(probe.unavailable?.detail).toContain(RPC_RATE_LIMITED_MESSAGE);
+
+    await expect(
+      probeLogChunkSize({ requestChunk: async () => { throw Object.assign(new Error("Too Many Requests"), { status: 429 }); } }),
+    ).rejects.toThrow(/could not serve a probe eth_getLogs/);
+  });
+
+  it("covers the FULL deployment->head window with zero gaps and zero overlaps at a verified width", async () => {
+    const { from, to } = priorSwapScanWindow({ head: HEAD });
+    expect(from).toBe(DELEGATED_DEPLOY_BLOCK);
+    const blocks = [from, from + 999n, from + 1_000n, to - 1n, to];
+    const { calls, fetchChunk } = mock(blocks);
+    const r = await runAdaptiveLogScan({ fetchChunk, from, to, chunkSize: 1_000n, maxChunks: 400_000n, maxBlocks: MAX_LOG_SCAN_BLOCKS });
+    expect(r.from).toBe(from);
+    expect(r.to).toBe(to);
+    expect(calls[0].from).toBe(from); // first block included
+    expect(calls[calls.length - 1].to).toBe(to); // last block included
+    let covered = 0n;
+    for (let i = 0; i < calls.length; i++) {
+      const span = calls[i].to - calls[i].from + 1n;
+      expect(span).toBeGreaterThan(0n);
+      expect(span).toBeLessThanOrEqual(1_000n); // never wider than the verified width
+      covered += span;
+      if (i > 0) {
+        expect(calls[i].from).toBe(calls[i - 1].to + 1n); // no gaps, no overlaps
+      }
+    }
+    expect(covered).toBe(to - from + 1n); // every block exactly once
+    // The same coverage the 10-block floor gives, in ~1/100th of the requests.
+    const floorChunks = planLogScan({ from, to }).length;
+    expect(calls.length).toBeLessThan(floorChunks / 50);
+    expect(r.logs.map((l) => l.blockNumber)).toEqual(blocks); // boundary events intact
+  });
+
+  it("shrinks on a range refusal WITHOUT skipping or re-requesting a block", async () => {
+    const blocks = [100n, 1_005n, 1_999n];
+    const { calls, fetchChunk } = mock(blocks, { rangeErrorAt: 1 });
+    const shrinks: Array<{ from: bigint; to: bigint }> = [];
+    const r = await runAdaptiveLogScan({
+      fetchChunk,
+      from: 100n,
+      to: 1_999n,
+      chunkSize: 1_000n,
+      onShrink: (s) => shrinks.push({ from: s.from, to: s.to }),
+    });
+    expect(shrinks).toEqual([{ from: 1_000n, to: 500n }]);
+    // The retried chunk restarts at the SAME block, so nothing is skipped.
+    expect(calls[0]).toEqual({ from: 100n, to: 1_099n });
+    expect(calls[1]).toEqual({ from: 100n, to: 599n });
+    expect(calls[1].from).toBe(calls[0].from);
+    let covered = 0n;
+    const served = calls.slice(1); // the refused request returned nothing
+    for (let i = 0; i < served.length; i++) {
+      covered += served[i].to - served[i].from + 1n;
+      if (i > 0) expect(served[i].from).toBe(served[i - 1].to + 1n);
+    }
+    expect(covered).toBe(1_900n); // complete coverage of 100..1999
+    expect(r.logs.map((l) => l.blockNumber)).toEqual(blocks);
+    expect(r.chunks).toBe(BigInt(served.length));
+    expect(r.shrinks).toHaveLength(1);
+  });
+
+  it("never retries the same oversized width indefinitely", async () => {
+    const { calls, fetchChunk } = mock([], { floorErrors: true });
+    const err = await runAdaptiveLogScan({ fetchChunk, from: 100n, to: 10_000n, chunkSize: 1_000n }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err?.message).toMatch(/refusing to certify a one-shot from a partial scan/);
+    // 1000 -> 500 -> 250 -> 125 -> 62 -> 31 -> 15 -> 10, then fail closed.
+    expect(calls.length).toBeLessThanOrEqual(9);
+    const widths = calls.map((c) => c.to - c.from + 1n);
+    expect(new Set(widths.map(String)).size).toBe(widths.length); // no width requested twice
+    expect(calls.every((c) => c.from === 100n)).toBe(true); // it never advanced on a refusal
+  });
+
+  it("fails closed on a non-range error and on a non-array result", async () => {
+    const rejecting = () => Promise.reject(Object.assign(new Error("Too Many Requests"), { status: 429 }));
+    await expect(runAdaptiveLogScan({ fetchChunk: rejecting, from: 100n, to: 200n })).rejects.toThrow(/refusing to certify a one-shot from a partial scan/);
+    await expect(
+      runAdaptiveLogScan({ fetchChunk: () => Promise.resolve({ nope: true } as never), from: 100n, to: 200n }),
+    ).rejects.toThrow(/non-array result/);
+  });
+
+  it("enforces the chunk and block budgets BEFORE the first request", async () => {
+    const { calls, fetchChunk } = mock();
+    await expect(runAdaptiveLogScan({ fetchChunk, from: 100n, to: 10_000n, maxChunks: 5n })).rejects.toThrow(/refusing to certify a one-shot from a partial scan/);
+    expect(calls).toEqual([]);
+    await expect(
+      runAdaptiveLogScan({ fetchChunk, from: 100n, to: 100n + MAX_LOG_SCAN_BLOCKS, chunkSize: 1_000n, maxBlocks: MAX_LOG_SCAN_BLOCKS }),
+    ).rejects.toThrow(/refusing to certify a one-shot from a partial scan/);
+    expect(calls).toEqual([]);
+    // The block budget is unchanged by adaptive chunking: 400 000 x the floor.
+    expect(MAX_LOG_SCAN_BLOCKS).toBe(4_000_000n);
+    expect(MAX_LOG_SCAN_BLOCKS).toBe(400_000n * LOG_CHUNK);
+    expect(runnerSource).toContain("maxBlocks: MAX_LOG_SCAN_BLOCKS");
+    expect(runnerSource).toContain("maxChunks: MAX_LOG_CHUNKS");
+    expect(runnerSource).toContain("if (chunks > MAX_LOG_CHUNKS)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("the historical scan filters the pinned wallet as an indexed topic", () => {
+  // The event exactly as deployed (contracts/executor/MPGRExecutorDelegated.sol,
+  // RouterKind is a uint8 enum) — independently re-hashed here so a drift in the
+  // pinned signature fails the suite instead of silently narrowing the scan.
+  const SWAP_EXECUTED_ABI = {
+    type: "event",
+    name: "SwapExecuted",
+    inputs: [
+      { name: "taker", type: "address", indexed: true },
+      { name: "router", type: "address", indexed: true },
+      { name: "intentId", type: "bytes32", indexed: true },
+      { name: "tokenIn", type: "address", indexed: false },
+      { name: "tokenOut", type: "address", indexed: false },
+      { name: "grossAmountIn", type: "uint256", indexed: false },
+      { name: "feeAmount", type: "uint256", indexed: false },
+      { name: "swapAmountIn", type: "uint256", indexed: false },
+      { name: "amountOut", type: "uint256", indexed: false },
+      { name: "feeRecipient", type: "address", indexed: false },
+      { name: "feeBps", type: "uint16", indexed: false },
+      { name: "routerKind", type: "uint8", indexed: false },
+      { name: "flags", type: "uint8", indexed: false },
+    ],
+  } as const;
+
+  it("pins topic0 to the deployed event signature", () => {
+    expect(SWAP_EXECUTED_EVENT_SIGNATURE).toBe(
+      "SwapExecuted(address,address,bytes32,address,address,uint256,uint256,uint256,uint256,address,uint16,uint8,uint8)",
+    );
+    expect(SWAP_EXECUTED_TOPIC).toBe(keccak256(toHex(SWAP_EXECUTED_EVENT_SIGNATURE)));
+    expect(SWAP_EXECUTED_TOPIC).toBe(getEventSelector(SWAP_EXECUTED_ABI));
+  });
+
+  it("left-pads the pinned wallet into topic1", () => {
+    expect(takerTopicFor(SIGNER)).toBe(pad(SIGNER.toLowerCase() as `0x${string}`, { size: 32 }));
+    expect(takerTopicFor(SIGNER.toLowerCase())).toBe(takerTopicFor(SIGNER));
+    expect(() => takerTopicFor("0xnope")).toThrow();
+  });
+
+  it("builds the RPC filter: executor + event topic + indexed taker, and nothing narrower", () => {
+    const f = swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 100n, toBlock: 109n });
+    expect(f.address).toBe(DELEGATED_EXECUTOR);
+    expect(f.topics).toEqual([SWAP_EXECUTED_TOPIC, takerTopicFor(SIGNER)]);
+    // Wire-ready: exactly the JSON-RPC params an eth_getLogs call takes.
+    expect(Object.keys(f).sort()).toEqual(["address", "fromBlock", "toBlock", "topics"]);
+    expect(f.fromBlock).toBe("0x64");
+    expect(f.toBlock).toBe("0x6d");
+    // router and intentId are deliberately NOT filtered: a prior swap through any
+    // venue or under any intent must still refuse the run.
+    expect(f.topics).toHaveLength(2);
+    expect(() => swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 100n, toBlock: 99n })).toThrow();
+    expect(() => swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 0n, toBlock: MAX_SAFE_LOG_CHUNK })).toThrow(/verified/);
+    expect(swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 0n, toBlock: MAX_SAFE_LOG_CHUNK - 1n }).topics).toHaveLength(2);
+  });
+
+  it("puts those topics on the wire in the actual eth_getLogs request", async () => {
+    const seen: unknown[] = [];
+    const transport = custom({
+      request: async (args: { method: string; params?: unknown }) => {
+        seen.push(args);
+        if (args.method === "eth_getLogs") return [];
+        return null;
+      },
+    });
+    const pub = createPublicClient({ transport });
+    // Exactly what the runner does: the filter is the eth_getLogs parameter object.
+    await pub.request({ method: "eth_getLogs", params: [swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 100n, toBlock: 109n })] });
+    expect(seen).toHaveLength(1);
+    const [req] = seen as Array<{ method: string; params: Array<Record<string, unknown>> }>;
+    expect(req.method).toBe("eth_getLogs");
+    expect(req.params[0].address).toBe(DELEGATED_EXECUTOR);
+    expect(req.params[0].topics).toEqual([SWAP_EXECUTED_TOPIC, takerTopicFor(SIGNER)]);
+    expect(req.params[0].fromBlock).toBe("0x64");
+    expect(req.params[0].toBlock).toBe("0x6d");
+  });
+
+  it("is what the runner sends, and the runner still re-checks the taker locally", () => {
+    expect(runnerSource).toContain("params: [swapExecutedLogFilter({ wallet, fromBlock, toBlock, maxChunk: MAX_LOG_CHUNK })],");
+    expect(runnerSource).toContain('method: "eth_getLogs",');
+    expect(runnerSource).toContain("const decoded = parseEventLogs({ abi: DELEGATED_ABI, logs });");
+    expect(runnerSource).toContain("if (!sameAddress(log.args?.taker, wallet))");
+    expect(runnerSource).toMatch(/refusing to certify a one-shot from an endpoint that ignores its log filter/);
+    // The pinned wallet is a topic of the readiness probe too.
+    expect(runnerSource).toContain("params: [swapExecutedLogFilter({ wallet, fromBlock, toBlock })],");
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("what this fix must NOT change", () => {
+  it("reads no private key in preflight, and none anywhere in the RPC/scan path", () => {
+    // The key is read only in the live branch, from the single env var.
+    expect(runnerSource.match(/readLiveKey\(\)/g)?.length).toBe(2);
+    expect(runnerSource).toContain("ownerAccount = { address: pin.address }; // read-only: no signer, no key");
+    // The readiness gate and the scan take a public client and an address only.
+    expect(runnerSource).toContain("async function probeRpcReadiness(pub, wallet) {");
+    expect(runnerSource).toContain("async function countPriorSwapEvents(pub, wallet) {");
+    expect(gatesSource).not.toMatch(/process\.env/);
+    expect(gatesSource).not.toMatch(/privateKeyToAccount|signTypedData|signMessage/);
+  });
+
+  it("introduces no broadcast, approval or write capability", () => {
+    expect(gatesSource.match(/eth_sendRawTransaction|eth_sendTransaction|sendTransaction\(|writeContract\(|approve\(/g)).toBeNull();
+    expect(runnerSource.match(/writeContract\(/g)?.length).toBe(1);
+    expect(runnerSource.match(/eth_sendRawTransaction/g)?.length).toBe(1); // the pre-existing idempotency guard
+    // The runner never *calls* an approval; it only ever READS allowances. The
+    // one-time USDC->Permit2 approval stays a separate manual operator action.
+    expect(runnerSource).not.toMatch(/functionName:\s*"approve"/);
+    expect(runnerSource).not.toMatch(/encodeFunctionData\(\{[^}]*"approve"/);
+    expect(runnerSource).toContain("report.broadcastCount += 1");
+  });
+
+  it("leaves the LIVE gate exactly as it was", () => {
+    // Every live row is still evaluated, and still blocking.
+    const live = evaluateLivePreconditions({ chainId: CHAIN_ID });
+    expect(live.checks.length).toBeGreaterThan(20);
+    expect(live.blockers.length).toBeGreaterThan(0);
+    expect(runnerSource).toContain("applyGate(evaluateLivePreconditions(");
+    expect(runnerSource).toContain("const failed = blockingFailures(report.checks);");
+    // The confirmation phrase, the one-shot ledger and the exact amount pins.
+    expect(LIVE_CONFIRM_PHRASE).toBe("smoke-delegated-base-mainnet");
+    expect(runnerSource).toContain('const CONFIRM_PHRASE = env("SMOKE_DELEGATED_CONFIRM");');
+    expect(runnerSource).toContain("confirmedPhrase: CONFIRM_PHRASE");
+    expect(GROSS_AMOUNT_IN).toBe(500_000n);
+    expect(EXPECTED_FEE_AMOUNT).toBe(1_250n);
+    expect(SWAP_AMOUNT_IN).toBe(498_750n);
+    expect(REQUIRED_PERMIT2_TOKEN_ALLOWANCE).toBe(500_000n);
+    // The rehearsal-only note mechanism is untouched and still rehearsal-only.
+    expect(runnerSource).toMatch(/if \(!REHEARSAL\) \{\s*\n\s*throw new Abort\(`internal: rehearsalNote/);
   });
 });
