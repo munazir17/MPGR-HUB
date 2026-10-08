@@ -998,6 +998,7 @@ import {
 } from "@/lib/executor/delegated-executor";
 import { delegatedBroadcasterAddressFor } from "@/lib/delegated/delegated-broadcaster";
 import { validateDelegatedTransaction } from "@/lib/delegated/broadcast-gate";
+import { isAutonomousProductionEnabled } from "@/lib/autonomy/config";
 
 /**
  * mpgr_delegate_swap — the delegated execution capability. The CALLER (the
@@ -1021,6 +1022,21 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
     return fail(
       "EXECUTOR_NOT_CONFIGURED",
       `No delegated executor is pinned for ${delegatedChainLabel(chainId)}, so delegated execution is unavailable there (fail-closed).`,
+    );
+  }
+  // EXPLICIT PRODUCTION GATE (Base mainnet only). Defence in depth at the
+  // broadcast chokepoint: even if a caller somehow bypassed the autonomy
+  // runtime's adapter gate, a mainnet delegated broadcast additionally
+  // requires AUTONOMOUS_PRODUCTION_ENABLED=true in the deployment env.
+  // Missing/false/malformed fails closed BEFORE any parameter is parsed,
+  // any calldata is built, or any key is touched. Base Sepolia is unaffected.
+  // Ordered after the executor pin so the Phase-6 refusal taxonomy
+  // (EXECUTOR_NOT_CONFIGURED on an unpinned mainnet) is preserved exactly —
+  // both reasons are fail-closed; neither can ever produce a broadcast.
+  if (chainId === BASE_MAINNET_CHAIN_ID && !isAutonomousProductionEnabled()) {
+    return fail(
+      "PRODUCTION_GATE_DISABLED",
+      "Autonomous production execution on Base mainnet is gated by AUTONOMOUS_PRODUCTION_ENABLED (fail-closed). Nothing was signed or broadcast.",
     );
   }
   const broadcast = deps.delegatedBroadcaster;

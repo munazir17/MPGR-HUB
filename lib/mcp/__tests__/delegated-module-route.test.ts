@@ -101,7 +101,16 @@ function makeDeps(overrides: { code?: Hex; codeHash?: Hex } = {}): {
 }
 
 describe("delegated typed-module quoting", () => {
-  beforeEach(() => vi.stubEnv("MPGR_MAINNET_DELEGATED_EXECUTOR", EXECUTOR));
+  beforeEach(() => {
+    vi.stubEnv("MPGR_MAINNET_DELEGATED_EXECUTOR", EXECUTOR);
+    // The delegateSwap broadcast below targets Base mainnet (8453), which is
+    // additionally gated by the explicit production flag
+    // (AUTONOMOUS_PRODUCTION_ENABLED). This suite proves the typed-module
+    // ENCODING path, so it opens the gate exactly the way an operator would.
+    // The gate-OFF refusal itself is pinned in
+    // lib/autonomy/__tests__/production-gate.test.ts.
+    vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", "true");
+  });
   afterEach(() => vi.unstubAllEnvs());
 
   it("simulates quoteExactInput only after live registry and runtime bytecode match", async () => {

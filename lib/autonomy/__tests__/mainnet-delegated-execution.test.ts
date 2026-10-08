@@ -19,7 +19,7 @@
 // mainnet token/route registry. Only the chain and the operator key are faked.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getAddress, type Address, type Hex } from "viem";
+import { decodeFunctionData, getAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
@@ -35,6 +35,7 @@ import { AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { utcDayKey } from "@/lib/autonomy/idempotency";
 import {
   CANONICAL_PERMIT2,
+  DELEGATED_EXECUTOR_ABI,
   DELEGATED_EXECUTOR_REQUIRED_FEE_RECIPIENT,
   DELEGATED_EXECUTOR_REQUIRED_OWNER,
   DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR,
@@ -71,12 +72,17 @@ const SELL_AMOUNT = usdc("20");
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-  for (const k of ["MPGR_MAINNET_DELEGATED_EXECUTOR", "MPGR_MAINNET_BROADCASTER_PRIVATE_KEY", "MPGR_AUTONOMOUS_EMERGENCY_DISABLE", "MPGR_AUTONOMOUS_AGENT_ENABLED"]) {
+  for (const k of ["MPGR_MAINNET_DELEGATED_EXECUTOR", "MPGR_MAINNET_BROADCASTER_PRIVATE_KEY", "MPGR_AUTONOMOUS_EMERGENCY_DISABLE", "MPGR_AUTONOMOUS_AGENT_ENABLED", "AUTONOMOUS_PRODUCTION_ENABLED"]) {
     savedEnv[k] = process.env[k];
   }
   process.env.MPGR_MAINNET_DELEGATED_EXECUTOR = MAINNET_DELEGATED_EXECUTOR;
   process.env.MPGR_MAINNET_BROADCASTER_PRIVATE_KEY = MAINNET_BROADCASTER_KEY;
   process.env.MPGR_AUTONOMOUS_AGENT_ENABLED = "true";
+  // The explicit Base-mainnet production gate. This suite proves the mainnet
+  // execution path, so it opens the gate exactly the way an operator would —
+  // deliberately and explicitly. The gate-OFF refusals are proven separately
+  // in production-gate.test.ts.
+  process.env.AUTONOMOUS_PRODUCTION_ENABLED = "true";
   delete process.env.MPGR_AUTONOMOUS_EMERGENCY_DISABLE;
 });
 
@@ -211,7 +217,7 @@ function makeMainnetHarness(options: HarnessOptions = {}) {
 
 type MainnetHarness = ReturnType<typeof makeMainnetHarness>;
 
-/** Mine a synthetic SUCCESS receipt for a delegated mainnet swap. */
+/** Mine a synthetic SUCCESS receipt for a delegated mainnet swap (BUY or SELL). */
 function mineReceipt(
   state: FakeChainState,
   txHash: Hex,
@@ -219,7 +225,7 @@ function mineReceipt(
   feeRecipient: Address,
   over: { status?: "success" | "reverted"; taker?: Address } = {},
 ) {
-  const sell = BigInt(SELL_AMOUNT);
+  const sell = currentGross;
   const fee = (sell * 25n) / 10_000n;
   state.receipts.set(txHash.toLowerCase(), {
     status: over.status ?? "success",
@@ -233,8 +239,8 @@ function mineReceipt(
         taker: over.taker ?? WALLET,
         router: "0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F",
         intentId: currentIntentId,
-        tokenIn: USDC,
-        tokenOut: AAPLC,
+        tokenIn: currentTokenIn,
+        tokenOut: currentTokenOut,
         grossAmountIn: sell,
         feeAmount: fee,
         swapAmountIn: sell - fee,
@@ -249,8 +255,14 @@ function mineReceipt(
 }
 
 // Set per-execution so the mined receipt matches the intent the runtime pins.
+// Direction-generalized: the BUY goal sets USDC->AAPLc, the SELL goal sets
+// AAPLc->USDC (same machinery, mirrored pair — the fee is ALWAYS 25 bps of
+// the SELL amount, whichever token that is).
 let currentIntentId = ("0x" + "11".repeat(32)) as Hex;
 let currentExpectedOut = "40000000";
+let currentTokenIn: Address = USDC;
+let currentTokenOut: Address = AAPLC;
+let currentGross = BigInt(SELL_AMOUNT);
 
 async function createMainnetGoal(h: MainnetHarness, over: { goalId?: string; maxTrades?: number | null; policyOver?: Partial<Parameters<typeof makePolicy>[0]> } = {}) {
   const policy = await h.store.createPolicy(makePolicy({ chainId: 8453, sellToken: USDC, buyToken: AAPLC, maxPerTradeRaw: SELL_AMOUNT, ...over.policyOver }));
@@ -276,6 +288,56 @@ async function createMainnetGoal(h: MainnetHarness, over: { goalId?: string; max
     maxTrades: over.maxTrades ?? 1,
   });
   currentIntentId = delegatedActionId(goal.id);
+  // BUY defaults (USDC -> AAPLc) so a preceding SELL test can never leak its
+  // direction into this one.
+  currentTokenIn = USDC;
+  currentTokenOut = AAPLC;
+  currentGross = BigInt(SELL_AMOUNT);
+  currentExpectedOut = "40000000";
+  return { goal, policy: policy! };
+}
+
+/** SELL direction: 1 AAPLc (8dp) -> USDC through the SAME delegated machinery. */
+const SELL_GOAL_AMOUNT_RAW = "100000000"; // 1.00000000 AAPLc
+const SELL_GOAL_EXPECTED_USDC = "199500000"; // fake quoter: 2x the post-fee swap amount
+
+async function createMainnetSellGoal(h: MainnetHarness) {
+  const policy = await h.store.createPolicy(
+    makePolicy({
+      chainId: 8453,
+      sellToken: AAPLC,
+      buyToken: USDC,
+      // Limits are denominated in the SELL token — here AAPLc base units.
+      maxPerTradeRaw: SELL_GOAL_AMOUNT_RAW,
+      maxDailyRaw: "500000000",
+    }),
+  );
+  const now = h.now();
+  const goal = await h.store.createGoal({
+    id: "",
+    wallet: WALLET,
+    policyId: policy!.id,
+    type: "conditional_swap",
+    description: "Sell AAPLc for USDC below 200 on Base mainnet",
+    status: "ACTIVE",
+    condition: { kind: "price_below", threshold: "200" },
+    trade: { sellToken: AAPLC, buyToken: USDC, sellAmountRaw: SELL_GOAL_AMOUNT_RAW, slippageBps: 100, sellDecimals: 8, buyDecimals: 6 },
+    cooldownSeconds: 60,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 86_400_000).toISOString(),
+    nextEvaluationAt: now.toISOString(),
+    lastAction: null,
+    lastResult: null,
+    pendingExecution: null,
+    stats: { evaluations: 0, triggered: 0, verified: 0, consecutiveFailures: 0 },
+    maxTrades: 1,
+  });
+  currentIntentId = delegatedActionId(goal.id);
+  currentTokenIn = AAPLC;
+  currentTokenOut = USDC;
+  currentGross = BigInt(SELL_GOAL_AMOUNT_RAW);
+  currentExpectedOut = SELL_GOAL_EXPECTED_USDC;
   return { goal, policy: policy! };
 }
 
@@ -293,6 +355,8 @@ async function signMainnetSlot(
     deadline?: number;
     expired?: boolean;
     buyToken?: Address;
+    /** Permit (SELL-side) token; defaults to USDC (the BUY goal's sell leg). */
+    sellToken?: Address;
     actionId?: Hex;
   } = {},
 ) {
@@ -302,7 +366,7 @@ async function signMainnetSlot(
   const deadline = over.deadline ?? (over.expired ? nowSeconds - 60 : nowSeconds + 1800);
   const wallet = (over.wallet ?? WALLET).toLowerCase() as Address;
   const permit = {
-    token: over.buyToken ? USDC : USDC,
+    token: over.sellToken ?? USDC,
     amount: over.amount ?? SELL_AMOUNT,
     nonce: delegatedPermitNonce(goalId, slotIndex),
     deadline,
@@ -466,6 +530,58 @@ describe("mainnet delegated execution — the complete authorized path", () => {
     const after = (await h.store.getGoal(goal.id))!;
     expect(after.status).toBe("COMPLETED");
     expect(h.auditEvents).toContain("EXECUTION_VERIFIED");
+  });
+
+  it("SELL path: AAPLc -> USDC runs the SAME delegated machinery, and the 25 bps fee is computed from the SELL-side fromAmount (AAPLc units)", async () => {
+    const h = makeMainnetHarness();
+    const { goal, policy } = await createMainnetSellGoal(h);
+    await signMainnetSlot(h, goal.id, policy, { sellToken: AAPLC, amount: SELL_GOAL_AMOUNT_RAW });
+    await h.adapter.bootstrapPosture(policy);
+
+    await h.scheduler.tick({ now: h.now() });
+
+    // Exactly one mainnet broadcast, to the pinned executor, Slipstream entrypoint.
+    expect(h.broadcasts).toHaveLength(1);
+    const tx = h.broadcasts[0]!;
+    expect(tx.chainId).toBe(8453);
+    expect(getAddress(tx.to)).toBe(MAINNET_DELEGATED_EXECUTOR);
+    expect(tx.data.slice(0, 10).toLowerCase()).toBe(DELEGATED_SWAP_ON_BEHALF_OF_SLIPSTREAM_SELECTOR);
+    expect(tx.value ?? 0n).toBe(0n);
+
+    // Decode the broadcast calldata: the SELL direction is expressed by
+    // tokenIn/tokenOut, and the fee is floor(gross * 25 / 10_000) of the
+    // SELL amount in AAPLc base units — never of the buy-side amount.
+    const decoded = decodeFunctionData({ abi: DELEGATED_EXECUTOR_ABI, data: tx.data });
+    expect(decoded.functionName).toBe("swapOnBehalfOfSlipstream");
+    const params = decoded.args[0] as {
+      tokenIn: Address;
+      tokenOut: Address;
+      grossAmountIn: bigint;
+      expectedFeeAmount: bigint;
+      amountOutMinimum: bigint;
+      recipient: Address;
+      intentId: Hex;
+    };
+    expect(params.tokenIn.toLowerCase()).toBe(AAPLC.toLowerCase());
+    expect(params.tokenOut.toLowerCase()).toBe(USDC.toLowerCase());
+    expect(params.grossAmountIn).toBe(BigInt(SELL_GOAL_AMOUNT_RAW));
+    expect(params.expectedFeeAmount).toBe((BigInt(SELL_GOAL_AMOUNT_RAW) * 25n) / 10_000n); // 250000 AAPLc-units
+    expect(params.expectedFeeAmount).not.toBe((BigInt(SELL_GOAL_EXPECTED_USDC) * 25n) / 10_000n); // NOT the buy side
+    expect(params.amountOutMinimum).toBe(1n); // the SIGNED floor, never weaker
+    expect(params.recipient.toLowerCase()).toBe(WALLET.toLowerCase());
+    expect(params.intentId.toLowerCase()).toBe(delegatedActionId(goal.id).toLowerCase());
+
+    // Verification against the mined SELL receipt completes the goal.
+    h.advanceClock(31_000);
+    await h.scheduler.tick({ now: h.now() });
+    const after = (await h.store.getGoal(goal.id))!;
+    expect(after.status, `lastResult=${JSON.stringify(after.lastResult ?? null)}`).toBe("COMPLETED");
+    expect(after.stats.triggered).toBe(1);
+    expect(after.stats.verified).toBe(1);
+    // The verified action record carries the SELL-side fee, in AAPLc units.
+    const records = await h.store.listActionRecords(goal.id);
+    const confirmed = records.find((r) => r.status === "CONFIRMED");
+    expect(confirmed?.feeAmountRaw).toBe(((BigInt(SELL_GOAL_AMOUNT_RAW) * 25n) / 10_000n).toString());
   });
 });
 
