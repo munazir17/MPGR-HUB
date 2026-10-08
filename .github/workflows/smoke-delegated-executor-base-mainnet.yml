@@ -27,11 +27,15 @@
 #                       guards) is evaluated and reported. A failing preflight means live is refused.
 #                       It reads through exactly ONE endpoint: the dedicated smoke RPC
 #                       (BASE_MAINNET_RPC_URL secret -> SMOKE_DELEGATED_RPC_URL). The one-shot
-#                       guard certifies every block from the deployment to the head, so that RPC
-#                       must be properly provisioned; public/free endpoints answer HTTP 429 and the
-#                       job FAILS CLOSED with an operator message instead of grinding them or
-#                       certifying from a partial scan.
-#   Job 3 `live`      - Only after BOTH jobs above pass. Uses environment `base-mainnet`, whose
+#                       guard certifies every block from the deployment to the head in eth_getLogs
+#                       requests of at most 10 blocks, ONE in flight, paced under the endpoint's
+#                       compute-units-per-second ceiling — so a FREE Alchemy Base endpoint is a
+#                       supported configuration, and the job timeout is sized for the ~30 minutes
+#                       that walk takes. A run that cannot certify every block FAILS CLOSED with an
+#                       operator message: it never grinds the endpoint into 429s, and it never
+#                       certifies a one-shot from a partial scan.
+#   Job 3 `live`      - Only after BOTH jobs above pass. Re-runs the identical certified walk before
+#                       it signs anything. Uses environment `base-mainnet`, whose
 #                       required reviewer must APPROVE the deployment in the Actions UI before the
 #                       job starts; the signer key is only injected after that approval. The script
 #                       re-runs every precondition, re-checks the key against the pinned address,
@@ -158,7 +162,14 @@ jobs:
     needs: rehearse
     if: needs.rehearse.result == 'success' && ((github.event_name == 'pull_request' && github.event.label.name == 'smoke-delegated-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm == 'smoke-delegated-base-mainnet'))
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Sized, not guessed: the job must outlive the scan's own budget
+    # (LOG_SCAN_TIME_BUDGET_MS, asserted in test/workflows/) so that a run which
+    # cannot certify every block REFUSES with an operator message instead of being
+    # killed mid-walk by a CI timeout — a killed walk is the one outcome that can
+    # never produce a report. Today's window (~46.6k blocks since the pinned
+    # deployment) scans in ~28 min; the budget is 300 min because the window ages
+    # ~26 min per day of campaign history, and GitHub's job ceiling is 6h.
+    timeout-minutes: 330
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -183,16 +194,18 @@ jobs:
             exit 1
           fi
 
-      # The historical one-shot certification scans deployment -> head, so it needs
-      # a properly provisioned endpoint. Failing here is instant and actionable;
-      # failing inside the scan is ~13 minutes of rate-limited requests (run #6).
+      # The historical one-shot certification walks deployment -> head, one paced
+      # eth_getLogs at a time. A free-tier endpoint is a supported configuration
+      # (that is what the walk is built for); having NO endpoint configured is not,
+      # and neither is a list of public ones to grind. Failing here is instant and
+      # actionable; failing inside the scan was ~13 minutes of rate-limited requests.
       - name: Refuse to run without a dedicated Base Mainnet smoke RPC
         env:
           CANDIDATE_RPC: ${{ secrets.BASE_MAINNET_RPC_URL }}
         run: |
           set -e
           if [ -z "${CANDIDATE_RPC:-}" ]; then
-            echo "::error title=no dedicated smoke RPC::BASE_MAINNET_RPC_URL (a secret) must hold a properly provisioned Base Mainnet RPC. The deployment-to-head SwapExecuted certification issues thousands of eth_getLogs calls, so public/free endpoints are not sufficient and are not used as fallbacks."
+            echo "::error title=no dedicated smoke RPC::BASE_MAINNET_RPC_URL (a secret) must hold ONE Base Mainnet RPC endpoint for the certification to walk deployment->head against. A free-tier key is sufficient — every eth_getLogs it makes is capped at 10 blocks, issued one at a time, and paced under the free tier's throughput — but no public fallback list is used: rotating a long paced scan across free endpoints is how run #6 spent 13 minutes collecting 429s."
             exit 1
           fi
           case "$CANDIDATE_RPC" in
@@ -205,9 +218,18 @@ jobs:
         env:
           # The ONE endpoint preflight certifies against (no public fallback list).
           SMOKE_DELEGATED_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
-          # Optional, non-secret ceiling for one eth_getLogs request. The script
-          # clamps it to [10, 1000] and still has to PROBE the endpoint before use.
+          # Optional, non-secret override of the eth_getLogs WIDTH. It may only
+          # LOWER the walk's 10-block tile to something smaller inside [1, 10]: the
+          # script clamps anything wider down to the free-tier maximum and never
+          # probes for a wider range, so no repository variable can reintroduce a
+          # request the endpoint documents as invalid.
           SMOKE_DELEGATED_MAX_LOG_CHUNK: ${{ vars.SMOKE_DELEGATED_MAX_LOG_CHUNK }}
+          # Optional, non-secret override of the scan PACE (ms between request
+          # starts). It may only SLOW the walk down, inside [200ms, 60s]: 200ms is
+          # the free tier's own throughput ceiling (5 requests/s x 60 CU = 300
+          # CUPs/s), so this knob exists to protect a shared key, and nothing can
+          # push the scan back over the rate that got runs #6/#7 throttled.
+          SMOKE_DELEGATED_LOG_SCAN_PACE_MS: ${{ vars.SMOKE_DELEGATED_LOG_SCAN_PACE_MS }}
           SMOKE_DELEGATED_MODE: preflight
           SMOKE_DELEGATED_JSON: smoke-delegated-preflight.json
           SMOKE_DELEGATED_MD: smoke-delegated-preflight.md
@@ -219,7 +241,11 @@ jobs:
       - name: Report (summary + PR comment)
         if: always() && hashFiles('smoke-delegated-preflight.json') != ''
         run: |
-          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) == 0 then "::notice title=Delegated mainnet preflight::\(.status) - \(.checks | length) checks passed; a live run would be allowed" else ($f[0:9][] | "::error title=Delegated preflight FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-delegated-preflight.json
+          # "a live run would be allowed" requires status == "passed", not merely
+          # an empty failure list: an ABORTED run has no failed checks (it died
+          # between the last check and the verdict), and used to announce 36 checks
+          # passed from the middle of a scan that had stopped.
+          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) > 0 then ($f[0:9][] | "::error title=Delegated preflight FAILED::\(.stage): \(.name) [\(.detail[0:300])]") elif .status != "passed" then "::error title=Delegated preflight did not finish::\(.status) in stage \(.stage): \(.abortReason // "no reason recorded") — a live run is not allowed" else "::notice title=Delegated mainnet preflight::\(.status) - \(.checks | length) checks passed; a live run would be allowed; one-shot scan certified \(.facts.priorSwapScan.blocks // "?") blocks (\(.facts.priorSwapScan.from // "?")->\(.facts.priorSwapScan.to // "?")) with \(.facts.priorSwapScan.requests // "?") paced \(.facts.priorSwapScan.chunkSize // "?")-block eth_getLogs" end' smoke-delegated-preflight.json
           { echo "<!-- mpgr-smoke-delegated-base-mainnet-preflight -->"; cat smoke-delegated-preflight.md; } > comment.md
           cat comment.md >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$PR" ]; then
@@ -245,7 +271,11 @@ jobs:
     needs: [rehearse, preflight]
     if: needs.rehearse.result == 'success' && needs.preflight.result == 'success' && ((github.event_name == 'pull_request' && github.event.label.name == 'smoke-delegated-base-mainnet' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm == 'smoke-delegated-base-mainnet'))
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Preflight's budget again — live re-runs the identical certification before it
+    # signs — plus the broadcast, the confirmations and the post-trade reads. This
+    # is within GitHub's 6h job ceiling by design; the scan's own budget refuses
+    # anything that would not fit.
+    timeout-minutes: 345
     # Required reviewer gate: the job (and access to the key) starts only after approval.
     environment: base-mainnet
     env:
@@ -278,7 +308,7 @@ jobs:
         run: |
           set -e
           if [ -z "${CANDIDATE_RPC:-}" ]; then
-            echo "::error title=no dedicated smoke RPC::BASE_MAINNET_RPC_URL (a secret) must hold the same properly provisioned Base Mainnet RPC preflight certified against. Live re-runs the full read-only certification before it signs anything."
+            echo "::error title=no dedicated smoke RPC::BASE_MAINNET_RPC_URL (a secret) must hold the SAME Base Mainnet RPC endpoint preflight certified against (a free-tier key is a supported configuration). Live re-runs the identical paced, read-only certification before it signs anything."
             exit 1
           fi
           case "$CANDIDATE_RPC" in
@@ -313,7 +343,10 @@ jobs:
           # a rate-limited endpoint fails closed with an operator message instead of
           # being papered over by grinding free endpoints.
           SMOKE_DELEGATED_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+          # Same lowerable-only width/pace knobs as preflight (see above): live
+          # re-runs the identical certified walk before it signs anything.
           SMOKE_DELEGATED_MAX_LOG_CHUNK: ${{ vars.SMOKE_DELEGATED_MAX_LOG_CHUNK }}
+          SMOKE_DELEGATED_LOG_SCAN_PACE_MS: ${{ vars.SMOKE_DELEGATED_LOG_SCAN_PACE_MS }}
           # Second confirmation layer, independent of the job condition: the script refuses
           # to sign unless this equals smoke-delegated-base-mainnet exactly.
           SMOKE_DELEGATED_CONFIRM: ${{ github.event.label.name || inputs.confirm }}
@@ -336,7 +369,7 @@ jobs:
         if: always() && hashFiles('smoke-delegated-live.json') != ''
         run: |
           jq -r '"::notice title=Delegated mainnet smoke tx::swap=\(.txs.swap.hash // "not sent") status=\(.status) broadcasts=\(.broadcastCount)"' smoke-delegated-live.json
-          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) == 0 then "::notice title=Delegated mainnet smoke checks::\(.checks | length) passed, 0 failed" else ($f[0:9][] | "::error title=Delegated mainnet smoke FAILED::\(.stage): \(.name) [\(.detail[0:300])]") end' smoke-delegated-live.json
+          jq -r '(.checks | map(select(.ok | not))) as $f | if ($f | length) > 0 then ($f[0:9][] | "::error title=Delegated mainnet smoke FAILED::\(.stage): \(.name) [\(.detail[0:300])]") elif .status != "passed" then "::error title=Delegated mainnet smoke did not finish::\(.status) in stage \(.stage): \(.abortReason // "no reason recorded")" else "::notice title=Delegated mainnet smoke checks::\(.checks | length) passed, 0 failed; one-shot scan certified \(.facts.priorSwapScan.blocks // "?") blocks in \(.facts.priorSwapScan.requests // "?") paced request(s)" end' smoke-delegated-live.json
           { echo "<!-- mpgr-smoke-delegated-base-mainnet-live -->"; cat smoke-delegated-live.md; } > comment.md
           cat comment.md >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$PR" ]; then
