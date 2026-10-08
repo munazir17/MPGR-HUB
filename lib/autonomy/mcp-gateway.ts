@@ -103,6 +103,7 @@ function mapMcpError(code: string): AutonomyFailureCode {
     case "EXECUTOR_NOT_CONFIGURED":
     case "BROADCASTER_NOT_CONFIGURED":
     case "BROADCAST_REFUSED_BY_GATE":
+    case "PRODUCTION_GATE_DISABLED":
     case "ROUTE_MISMATCH":
     case "INVALID_VENUE":
     case "UNSUPPORTED_CHAIN":

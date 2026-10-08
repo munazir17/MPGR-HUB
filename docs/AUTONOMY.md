@@ -145,6 +145,21 @@ overrides everything at the policy/runtime layer with zero deploy: goals
 stop evaluating (pending verification still finishes safely), routes
 report the kill state, and manual trading is unaffected.
 
+`AUTONOMOUS_PRODUCTION_ENABLED` (default **false**, fail-closed) is the
+EXPLICIT PRODUCTION GATE for autonomous execution on **Base mainnet
+(8453)**. Missing/false/malformed keeps every mainnet delegated execution
+refused with the auditable reason `PRODUCTION_GATE_DISABLED` — goals stay
+watch-only (quotes and conditions still evaluate). It is enforced twice:
+in the mainnet `DelegatedExecutionAdapter` operational layer (so
+`checkAuthorization` / `checkStatic` / `executeSwap` all refuse) and again
+at the MCP `delegateSwap` broadcast chokepoint, so no code path reaches a
+mainnet delegated broadcast without it. Base Sepolia (84532) is not gated
+by this flag. Opening the gate never enables execution on its own — the
+adapter selection, the pinned + live-verified executor, the operator
+broadcaster key, a valid policy and a user-signed Permit2 witness slot all
+still apply. The gate's boolean state is public via
+`GET /api/agent/autonomy/config` (`productionGate`).
+
 ### 16. Minimal UI
 Exactly the spec's minimum, below the chat stage: mode display ("Off until
 you activate a goal" / "Disabled by operator" / active count), goal list
@@ -225,6 +240,22 @@ seam), and consider per-goal slippage overrides within policy bounds.
    `MPGR_AUTONOMOUS_EMERGENCY_DISABLE=true`.
 4. Audit: every goal's audit trail is queryable via the goals API and
    mirrored on the agent event bus.
+5. **Base mainnet (8453) production go-live only:** after the delegated
+   smoke certification has passed (see
+   `.github/workflows/smoke-delegated-executor-base-mainnet.yml` and
+   `docs/DELEGATED-MAINNET-SMOKE-RUNBOOK.md`), the operator pins
+   `MPGR_MAINNET_DELEGATED_EXECUTOR` to the deployed, source-verified
+   contract (currently `0x39B1C6Ea88A01e70cbF4899BF3cEfB2c43cD32Bb`,
+   recorded in `deployments/base-mainnet/mpgr-executor-delegated.json`),
+   configures `MPGR_MAINNET_BROADCASTER_PRIVATE_KEY` (operator gas wallet,
+   never the canary key), selects
+   `MPGR_AUTONOMOUS_EXECUTION_ADAPTER=delegated-permit2-mainnet`, enables
+   `MPGR_MCP_ENABLE_BASE_MAINNET=true` for mainnet quoting, and ONLY THEN
+   sets `AUTONOMOUS_PRODUCTION_ENABLED=true` as the final deliberate step.
+   Until that gate is exactly `true`, every mainnet delegated execution
+   fails closed with `PRODUCTION_GATE_DISABLED` and mainnet goals stay
+   watch-only. Removing the gate (or setting it to anything else) stops
+   mainnet execution on the next tick with zero deploy of new code.
 
 ## File inventory
 

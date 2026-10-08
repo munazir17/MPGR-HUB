@@ -263,7 +263,11 @@ describe("hardening §16: response hygiene — no key material or internal detai
     // ever execute, and which contract their signature will name as spender.
     // It carries only a chain id, a deployed PUBLIC contract address (or null)
     // and a boolean — never the operator broadcaster key or address.
-    expect(Object.keys(cfg).sort()).toEqual(["delegated", "emergencyDisabled", "enabled", "executionAvailable", "limits"].sort());
+    // UPDATED BY THE PRODUCTION-GATE REMEDIATION: `productionGate` is the
+    // public boolean state of AUTONOMOUS_PRODUCTION_ENABLED (Base-mainnet
+    // execution gate) — a flag, exactly what this endpoint may expose.
+    expect(Object.keys(cfg).sort()).toEqual(["delegated", "emergencyDisabled", "enabled", "executionAvailable", "limits", "productionGate"].sort());
+    expect(typeof cfg.productionGate).toBe("boolean");
     const delegated = cfg.delegated as Record<string, unknown>;
     expect(Object.keys(delegated).sort()).toEqual(["chainId", "executor", "walletSigningSupported"]);
     expect(delegated.executor === null || /^0x[0-9a-fA-F]{40}$/.test(String(delegated.executor))).toBe(true);

@@ -21,12 +21,13 @@ import "server-only";
 // Checks enforced (adapter.executeSwap re-validates everything again):
 //   1 autonomous feature flag          9 slot unrevoked
 //   2 emergency stop not engaged      10 slot unconsumed (nonce unused)
-//   3 chain == this adapter's chain   11 owner binding (slot.wallet)
-//   4 executor pinned + has code      12 input token binding
-//   5 canonical Permit2 has code      13 output token binding
-//   6 on-chain feeBps == 25           14 exact amount binding
-//   7 witness type string exact       15 minOut: live quote >= signed floor
-//   8 policy binding (policyHash)     16 deadline not passed (slot + request)
+//   3 PRODUCTION GATE — mainnet only: 11 owner binding (slot.wallet)
+//     AUTONOMOUS_PRODUCTION_ENABLED   12 input token binding
+//   4 chain == this adapter's chain   13 output token binding
+//   5 executor pinned + has code      14 exact amount binding
+//   6 canonical Permit2 has code      15 minOut: live quote >= signed floor
+//   7 on-chain feeBps == 25           16 deadline not passed (slot + request)
+//   8 witness type string exact + policy binding (policyHash)
 //  mainnet only: owner/feeRecipient governance match, not paused, and both
 //  policy tokens on the executor's own allowlist.
 // plus: policy engine already approved upstream (runtime order), quote is
@@ -56,7 +57,7 @@ import {
   mainnetDelegatedChainView,
 } from "@/lib/delegated/delegated-broadcaster";
 
-import { isAutonomousAgentEnabled, isAutonomousExecutionEmergencyDisabled } from "./config";
+import { isAutonomousAgentEnabled, isAutonomousExecutionEmergencyDisabled, isAutonomousProductionEnabled } from "./config";
 import { DELEGATED_ADAPTER_ID, selectDelegatedSlot, type DelegatedAuthorizationStore } from "./delegated-authorization";
 import type { McpGateway } from "./mcp-gateway";
 import {
@@ -143,6 +144,16 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
   private checkOperational(): AuthorizationVerdict {
     if (!isAutonomousAgentEnabled()) return { authorized: false, reason: "AUTONOMOUS_FLAG_DISABLED" };
     if (isAutonomousExecutionEmergencyDisabled()) return { authorized: false, reason: "EMERGENCY_DISABLE" };
+    // EXPLICIT PRODUCTION GATE (Base mainnet only). AUTONOMOUS_PRODUCTION_ENABLED
+    // must be the exact string "true" in the deployment env before ANY mainnet
+    // delegated execution is even considered; missing/false/malformed fails
+    // closed with an auditable reason. Observation (quotes/conditions) is
+    // unaffected — goals stay watch-only. Base Sepolia is not gated: it is a
+    // testnet with no production value, and gating it would only push testing
+    // toward mainnet.
+    if (this.chainId === BASE_MAINNET_CHAIN_ID && !isAutonomousProductionEnabled()) {
+      return { authorized: false, reason: "PRODUCTION_GATE_DISABLED" };
+    }
     if (this.deps.gateway === undefined) return { authorized: false, reason: "MCP_UNAVAILABLE" };
     if (!this.executor) return { authorized: false, reason: "EXECUTOR_NOT_CONFIGURED" };
     const broadcaster = this.deps.broadcast

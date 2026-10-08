@@ -13,16 +13,45 @@
 //     any action. True => no autonomous transaction may execute. Manual
 //     (assisted, user-signed) trading is unaffected.
 //
-// Neither flag can sign anything. Even with both on, execution additionally
-// requires a live authorization verdict from the (currently refusing)
+//   AUTONOMOUS_PRODUCTION_ENABLED (default: false)
+//     EXPLICIT PRODUCTION GATE for autonomous execution on BASE MAINNET
+//     (8453). Fail-closed: missing, empty, "false", or any value other than
+//     the exact string "true" (case-insensitive) keeps every mainnet
+//     delegated execution refused with reason PRODUCTION_GATE_DISABLED —
+//     goals stay watch-only. Enforced at BOTH the mainnet
+//     DelegatedExecutionAdapter (checkOperational, so checkAuthorization /
+//     checkStatic / executeSwap all refuse) AND the MCP delegateSwap
+//     broadcast chokepoint, so no code path can reach a mainnet delegated
+//     broadcast without it. Base Sepolia (84532) testnet execution is NOT
+//     gated by this flag (it has no production value to protect). This flag
+//     can never sign anything and never enables execution on its own: every
+//     other gate (feature flag, emergency stop, pinned+verified executor,
+//     broadcaster, policy, user-signed slot, posture) still applies.
+//
+// None of these flags can sign anything. Even with all of them on, execution
+// additionally requires a live authorization verdict from the installed
 // AutonomousExecutionAdapter — see execution-adapter.ts.
 
 function envFlag(name: string): boolean {
   return process.env[name]?.trim().toLowerCase() === "true";
 }
 
+/** Env var name of the explicit mainnet production gate (exported for tests/pins). */
+export const AUTONOMOUS_PRODUCTION_GATE_ENV = "AUTONOMOUS_PRODUCTION_ENABLED";
+
 export function isAutonomousAgentEnabled(): boolean {
   return envFlag("MPGR_AUTONOMOUS_AGENT_ENABLED");
+}
+
+/**
+ * Explicit PRODUCTION gate for autonomous execution on Base mainnet (8453).
+ * Default false; fail-closed on missing/false/malformed. Only the exact
+ * string "true" (case-insensitive, trimmed) opens the gate — the operator
+ * must set it deliberately in the deployment env (Vercel), and it is never
+ * inferred from any other flag.
+ */
+export function isAutonomousProductionEnabled(): boolean {
+  return envFlag(AUTONOMOUS_PRODUCTION_GATE_ENV);
 }
 
 /** Emergency global disable — checked at every tick and before every action. */

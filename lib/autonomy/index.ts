@@ -21,7 +21,7 @@ import { agentPerformanceMonitor } from "@/lib/architecture/core/performance-mon
 import { logger as coreLogger } from "@/lib/architecture/core/logger";
 
 import { BusAuditSink } from "./audit";
-import { isAutonomousAgentEnabled } from "./config";
+import { isAutonomousAgentEnabled, isAutonomousProductionEnabled } from "./config";
 import { DelegatedExecutionAdapter } from "./delegated-execution-adapter";
 import { RedisDelegatedAuthorizationStore } from "./delegated-redis-store";
 import type { DelegatedAuthorizationStore } from "./delegated-authorization";
@@ -136,6 +136,13 @@ export function autonomyStatus() {
   return {
     enabled: isAutonomousAgentEnabled(),
     emergencyDisabled: process.env.MPGR_AUTONOMOUS_EMERGENCY_DISABLE?.trim().toLowerCase() === "true",
+    /**
+     * The explicit Base-mainnet production gate (AUTONOMOUS_PRODUCTION_ENABLED).
+     * A public, non-secret boolean: false means every mainnet delegated
+     * execution refuses with PRODUCTION_GATE_DISABLED regardless of any other
+     * configuration, and the UI can say so honestly.
+     */
+    productionGate: isAutonomousProductionEnabled(),
     executionAvailable: (() => {
       try {
         return getAutonomousExecutionAdapter().canDelegate;
