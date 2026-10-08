@@ -870,7 +870,7 @@ export default function DocsPage() {
         </Callout>
         <P>
           Other titles (Clicker, Memory Challenge, Space Shooter, 2048 Daily, Pet
-          Raising, Speed Run, Roguelike RPG, AI Battle Arena) exist in the game
+          Raising, Speed Run, Roguelike RPG, Battle Arena) exist in the game
           registry as <Strong>coming soon</Strong> and are not presented as
           playable. See{" "}
           <TLink href="/roadmap#gaming">Roadmap → gaming ecosystem</TLink>.
