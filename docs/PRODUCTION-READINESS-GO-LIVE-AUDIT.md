@@ -114,11 +114,14 @@ throw; the server never holds a user key and never falls back to one.
 ## E. VERCEL PRODUCTION VERIFICATION
 
 This sandbox has no Vercel access (no connected Vercel integration/token), so the live
-project settings could not be read. Repo-side verification (all ✅): `vercel.json` present
-with the production build command and only the two game-settlement crons; all seven
+project settings could not be read directly. Repo-side verification (all ✅): `vercel.json`
+present with the production build command and only the two game-settlement crons; all seven
 autonomy API routes exist under `app/api/agent/autonomy/`; the tick route keeps its
 mandatory timing-safe `CRON_SECRET` bearer check; the README documents "connect the GitHub
-repo … deploy from `main`".
+repo … deploy from `main`". **Live evidence from this PR:** the `Vercel` status check ran
+and PASSED on PR #96 (project `mpgr-hub-ezxs`), proving the production Vercel project is
+connected to this GitHub repository and building this branch — the remaining dashboard
+confirmation is the Production **branch = `main`** and the env-var NAMES below.
 
 **Operator must confirm in the Vercel dashboard (Production scope, values never printed):**
 
@@ -147,7 +150,15 @@ repo … deploy from `main`".
 * Required GitHub config for the smoke (names only): secrets `BASE_MAINNET_RPC_URL`,
   `BASE_MAINNET_DELEGATED_SMOKE_PRIVATE_KEY`; variable `SMOKE_DELEGATED_WALLET_ADDRESS`;
   environment `base-mainnet` with a required reviewer.
-* `ci.yml` runs lint/typecheck/tests on PRs — this branch's PR exercises it.
+* `ci.yml` runs lint/typecheck/tests on PRs — this branch's PR (**#96**) exercised it:
+  `build`, `quality`, `contracts`, `contracts-fork`, `secret-scan`, `slither` all **pass**;
+  `deploy`/`e2e` skipped (main-only, by design). The **Vercel** check also passed on the PR,
+  which confirms the Vercel project (`mpgr-hub-ezxs`) is live-connected to this GitHub repo
+  and building its branches; the Production-branch + env-name confirmation in §E still
+  requires dashboard access.
+* The delegated smoke workflow was **not** triggered by this PR (it only runs on the
+  `smoke-delegated-base-mainnet` label or a confirmed dispatch from `main`) and was **not**
+  dispatched.
 
 ## G. TEST RESULTS
 
