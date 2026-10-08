@@ -50,10 +50,24 @@ import {
   LEDGER_VERSION,
   LIVE_CONFIRM_PHRASE,
   LOG_CHUNK,
-  LOG_CHUNK_PROBE_LADDER,
+  LOG_SCAN_CHUNK_MAX_ATTEMPTS,
+  LOG_SCAN_CONCURRENCY,
+  LOG_SCAN_LATENCY_ESTIMATE_MS,
+  LOG_SCAN_PACE_ENV,
+  LOG_SCAN_PACE_MAX_MS,
+  LOG_SCAN_PACE_MIN_MS,
+  LOG_SCAN_PACE_MS,
+  LOG_SCAN_PACE_PENALTY_FACTOR,
+  LOG_SCAN_PACE_PENALTY_MAX_MS,
+  LOG_SCAN_RETRY_AFTER_MAX_MS,
+  LOG_SCAN_RETRY_BASE_MS,
+  LOG_SCAN_RETRY_MAX_MS,
+  LOG_SCAN_TAIL_MAX_ROUNDS,
+  LOG_SCAN_TIME_BUDGET_MS,
+  FREE_TIER_MAX_LOG_BLOCKS,
+  MIN_LOG_CHUNK,
   MAX_LOG_CHUNK_ENV,
   MAX_LOG_SCAN_BLOCKS,
-  MAX_SAFE_LOG_CHUNK,
   MAX_FEE_BPS,
   MAX_FEE_PER_GAS_CAP,
   MIN_DEADLINE_MARGIN_SECONDS,
@@ -102,7 +116,16 @@ import {
   blockingFailures,
   buildSwapParams,
   canaryIdentityFor,
+  assertLogScanPlan,
   clampChunkSize,
+  clampPaceMs,
+  isPermanentScanError,
+  logScanCacheKey,
+  nextPaceMs,
+  planHistoricalLogScan,
+  runCertifiedLogScan,
+  scanChunkSize,
+  shouldRetryScanChunk,
   classifyRpcError,
   codeDispatchesSelector,
   decodeRevertData,
@@ -131,19 +154,15 @@ import {
   parseRetryAfter,
   planLogScan,
   priorSwapScanWindow,
-  probeLogChunkSize,
-  probeWidthsAbove,
   quoteWithinSanityBand,
   redact,
   renderTitle,
   rehearsalPrincipal,
   rehearsalPrincipals,
-  runAdaptiveLogScan,
   runLogScan,
   safeErrorMessage,
   sameAddress,
   shouldRetryRateLimit,
-  shrinkChunkSize,
   summarizeChecks,
   swapExecutedLogFilter,
   takerTopicFor,
@@ -1841,11 +1860,18 @@ describe("the runner script keeps its promises (static invariants)", () => {
  * `live`/`preflight` keep the full deployment-block-anchored certification.
  */
 describe("historical SwapExecuted scan window", () => {
-  const HEAD = 52_800_000n;
+  // The real shape of this campaign today: one day of Base history (2s blocks)
+  // past the pinned deployment block, i.e. ~46.6k blocks and ~4 660 tiles.
+  const HEAD = DELEGATED_DEPLOY_BLOCK + 46_599n;
 
   it("certifies the full range from the deployment block outside rehearsal", () => {
-    expect(priorSwapScanWindow({ head: HEAD })).toEqual({ from: DELEGATED_DEPLOY_BLOCK, to: HEAD });
-    expect(priorSwapScanWindow({ head: HEAD, rehearsal: false })).toEqual({ from: DELEGATED_DEPLOY_BLOCK, to: HEAD });
+    expect(priorSwapScanWindow({ head: HEAD })).toEqual({ from: DELEGATED_DEPLOY_BLOCK, to: HEAD, required: true, rehearsalBounded: false });
+    expect(priorSwapScanWindow({ head: HEAD, rehearsal: false })).toEqual({ from: DELEGATED_DEPLOY_BLOCK, to: HEAD, required: true, rehearsalBounded: false });
+    // `required` is what makes the readiness gate recompute the window instead of
+    // trusting a plan handed to it: the object that decides what gets scanned is
+    // the same object the gate checks, and nothing may mark a narrowed window
+    // optional.
+    expect(priorSwapScanWindow({ head: HEAD }).required).toBe(true);
   });
 
   it("bounds a rehearsal to the last 10 blocks of the local fork", () => {
@@ -1858,7 +1884,12 @@ describe("historical SwapExecuted scan window", () => {
 
   it("never reaches back before the deployment block", () => {
     const head = DELEGATED_DEPLOY_BLOCK + 3n;
-    expect(priorSwapScanWindow({ head, rehearsal: true })).toEqual({ from: DELEGATED_DEPLOY_BLOCK, to: head });
+    expect(priorSwapScanWindow({ head, rehearsal: true })).toEqual({ from: DELEGATED_DEPLOY_BLOCK, to: head, required: true, rehearsalBounded: false });
+    // A fork that has only just passed the deployment block is scanned whole; the
+    // rehearsal bound may only ever NARROW towards the head, never widen past
+    // the deployment pin, and `rehearsalBounded` reports which one happened.
+    expect(priorSwapScanWindow({ head, rehearsal: true }).rehearsalBounded).toBe(false);
+    expect(priorSwapScanWindow({ head: HEAD, rehearsal: true }).rehearsalBounded).toBe(true);
   });
 
   it("keeps the rehearsal scan to a single upstream-friendly eth_getLogs call", () => {
@@ -1870,16 +1901,27 @@ describe("historical SwapExecuted scan window", () => {
   });
 
   it("is what the runner actually scans (not a copy of it)", () => {
-    const call = runnerSource.match(/priorSwapScanWindow\(\{\s*head,\s*rehearsal:\s*REHEARSAL\s*\}\)/);
-    expect(call, "the runner must derive its scan window from priorSwapScanWindow").not.toBeNull();
-    // The runner delegates the chunked requests to the shared bounded scanner
-    // (runAdaptiveLogScan in the gates module) — no inline chunk loop may remain
-    // to drift from the tested implementation.
-    expect(runnerSource.match(/await runAdaptiveLogScan\(\{/g)?.length).toBe(1);
+    // The runner does not own a single line of scan logic: it builds the one
+    // historical-scan object, lets the gates module plan the window from the mode
+    // flag, and reads the result. That is what keeps the paced walk, the coverage
+    // proof and the retry policy — all unit-tested here — the same code that runs
+    // against mainnet.
+    expect(runnerSource).toContain("createHistoricalSwapScan({ pub, wallet, rpcPool })");
+    expect(runnerSource).toContain("planHistoricalLogScan({");
+    expect(runnerSource.match(/runCertifiedLogScan\(\{/g)?.length).toBe(1);
     expect(runnerSource).not.toMatch(/await runLogScan\(\{/);
-    expect(runnerSource).not.toMatch(/from \+= LOG_CHUNK/);
-    // No unconditional scan anchored at the deployment block may remain.
-    expect(runnerSource).not.toMatch(/for \(let from = DELEGATED_DEPLOY_BLOCK/);
+    expect(runnerSource).not.toMatch(/from \+= LOG_CHUNK|for \(let from = DELEGATED_DEPLOY_BLOCK|for \(let from =/);
+    // No probe, no ladder, no adaptive width, and no ceiling constant that could
+    // be quoted back as "the endpoint was verified to serve 1000 blocks": nothing
+    // this run does may be decided by what the endpoint happens to tolerate.
+    for (const gone of ["probeLogChunkSize", "runAdaptiveLogScan", "MAX_SAFE_LOG_CHUNK", "shrinkChunkSize", "LOG_CHUNK_PROBE_LADDER", "probeWidthsAbove"]) {
+      expect(runnerSource, gone).not.toContain(gone);
+      expect(gatesSource, gone).not.toContain(gone);
+    }
+    // The scan is planned and certified through the SHARED window helper: the
+    // planner takes the mode flag, and the gates module owns the window maths.
+    expect(runnerSource).toMatch(/head,\s*\n\s*rehearsal: REHEARSAL,/);
+    expect(gatesSource).toContain("priorSwapScanWindow({ head: headBlock, deployBlock: deploy, rehearsal, window })");
   });
 });
 
@@ -1896,7 +1938,9 @@ describe("historical SwapExecuted scan window", () => {
  * these tests exercise the exact production loop with a mock provider.
  */
 describe("bounded historical log scanning (restrictive Base eth_getLogs caps)", () => {
-  const HEAD = 52_800_000n;
+  // Same real window: a fixture with a 10-block history would prove nothing about
+  // whether the next run can finish inside its budget.
+  const HEAD = DELEGATED_DEPLOY_BLOCK + 46_599n;
 
   /** Mock provider: events at chosen blocks + a recording of every request. */
   const mockProvider = (blocks: bigint[] = []) => {
@@ -2028,25 +2072,46 @@ describe("bounded historical log scanning (restrictive Base eth_getLogs caps)", 
     expect(calls).toEqual([]); // fail closed BEFORE any eth_getLogs
   });
 
-  it("preflight and live certify the full window through the shared bounded scanner", () => {
-    // One scan call site, driven by the mode flag alone: preflight and live
-    // take the identical bounded path over the deployment->head window.
-    expect(runnerSource.match(/await runAdaptiveLogScan\(\{/g)?.length).toBe(1);
-    expect(runnerSource).not.toMatch(/await runLogScan\(\{/);
-    expect(runnerSource.match(/priorSwapScanWindow\(\{\s*head,\s*rehearsal:\s*REHEARSAL\s*\}\)/)).not.toBeNull();
+  it("preflight and live certify the full window through the shared certified scanner", () => {
+    // One walk, driven by the mode flag alone: preflight and live take the
+    // identical certified path over the deployment->head window, and neither has a
+    // runner-local fallback that could quietly narrow it.
     expect(runnerSource).toContain("maxChunks: MAX_LOG_CHUNKS");
-    // The fail-closed chunk-budget cap remains in force in the runner...
-    expect(runnerSource).toContain("if (chunks > MAX_LOG_CHUNKS)");
-    expect(runnerSource).toMatch(/use a full-node RPC/);
-    // ...and still budgets the documented ~4M blocks (~3 months of Base 2s
-    // blocks) at whatever chunk size is configured.
+    expect(runnerSource).toContain("maxBlocks: MAX_LOG_SCAN_BLOCKS");
+    expect(runnerSource).toContain("deadlineMs: LOG_SCAN_TIME_BUDGET_MS");
+    // The budgets live in the gates module (tested behaviour), so the runner keeps
+    // no copy of the maths and no copy of the refusal text — in particular the old
+    // "use a full-node RPC" advice, which told operators that the fix for a
+    // throttled free endpoint was a bigger bill.
+    for (const phrase of ["use a full-node RPC", "if (chunks > MAX_LOG_CHUNKS)"]) {
+      expect(runnerSource, phrase).not.toContain(phrase);
+    }
     const cap = runnerSource.match(/const MAX_LOG_CHUNKS = ([0-9_]+)n;/);
     expect(cap, "MAX_LOG_CHUNKS must remain a bigint constant").not.toBeNull();
     const maxChunks = BigInt((cap as RegExpMatchArray)[1].replace(/_/g, ""));
     expect(maxChunks * LOG_CHUNK).toBeGreaterThanOrEqual(4_000_000n);
-    // The full deployment->head window fits inside that fail-closed budget.
+    expect(MAX_LOG_SCAN_BLOCKS).toBeLessThanOrEqual(maxChunks * LOG_CHUNK);
+    // …and that window is 4 660 tiles, which the request budget and the time
+    // budget both accept. The caps exist to refuse an absurd window, not to fail a
+    // real one, so the real one is pinned here by number.
+    const HEAD = DELEGATED_DEPLOY_BLOCK + 46_599n;
     const needed = (HEAD - DELEGATED_DEPLOY_BLOCK + LOG_CHUNK) / LOG_CHUNK;
     expect(needed).toBeLessThanOrEqual(maxChunks);
+    expect(needed, "one day of Base history is 4 660 tiles of 10 blocks").toBe(4_660n);
+    const plan = planHistoricalLogScan({
+      head: HEAD,
+      chunkSize: LOG_CHUNK,
+      maxChunks,
+      maxBlocks: MAX_LOG_SCAN_BLOCKS,
+      paceMs: LOG_SCAN_PACE_MS,
+      budgetMs: LOG_SCAN_TIME_BUDGET_MS,
+    });
+    expect(plan.withinBudget, "the real campaign must pass on the next run").toBe(true);
+    expect(plan.widestRequest).toBe(FREE_TIER_MAX_LOG_BLOCKS);
+    expect(plan.requests).toBe(4_660n);
+    // The CI job timeout is pinned against LOG_SCAN_TIME_BUDGET_MS in
+    // test/workflows/, which is what makes "killed mid-walk" unreachable.
+    expect(LOG_SCAN_TIME_BUDGET_MS).toBeGreaterThan(0);
   });
 
   it("rehearsal keeps its bounded window and scans it in one bounded request", async () => {
@@ -2071,7 +2136,10 @@ describe("bounded historical log scanning (restrictive Base eth_getLogs caps)", 
     // The scanner's only side effect is the injected fetchChunk — the shared
     // gates module must not know how to send anything.
     expect(gatesSource.match(/eth_sendRawTransaction|eth_sendTransaction|sendTransaction\(|writeContract\(/g)).toBeNull();
-    expect(runnerSource).toContain("fetchChunk: (fromBlock, toBlock) =>");
+    expect(runnerSource).toContain("fetchChunk: requestChunk,");
+    // The scan reaches the wire through exactly one helper, and that helper only
+    // ever reads.
+    expect(runnerSource).toContain('rpcPool.requestOnce({ method: "eth_getLogs", params })');
     // The runner still broadcasts at most once (the pre-existing live step).
     expect(runnerSource.match(/writeContract\(/g)?.length).toBe(1);
   });
@@ -2171,117 +2239,232 @@ describe("RPC roles: one dedicated endpoint per mode, never a public fallback gr
 });
 
 // ---------------------------------------------------------------------------
-describe("RPC readiness gate (runs BEFORE the historical certification)", () => {
+/**
+ * Stage 2b is the gate that decides whether the historical certification may
+ * run at all, so on a free-tier endpoint it has to be exactly right: it never
+ * asks for anything the plan would not ask for, it refuses anything the free
+ * tier rejects, and it vetoes a walk that cannot finish inside the run. Every
+ * row is fatal — a run that cannot read the chain completely may not certify a
+ * one-shot, and a run that cannot certify a one-shot may not broadcast.
+ */
+describe("RPC readiness gate: the free-tier contract, decided BEFORE the walk", () => {
   const DEDICATED = "https://base-mainnet.example/abcdef0123456789";
-  const HEAD = 52_900_000n;
-  const ok = {
-    mode: MODES.PREFLIGHT,
-    rpcUrl: DEDICATED,
-    chainId: CHAIN_ID,
-    headBlock: HEAD,
-    probe: { ok: true, width: "1000", logs: 0 },
-    rateLimited: false,
-    chunkSize: "1000",
-    requestedChunkSize: "1000",
+  const HEAD = DELEGATED_DEPLOY_BLOCK + 2_399n;
+  const planFor = (head: bigint, over: Record<string, unknown> = {}) =>
+    planHistoricalLogScan({
+      head,
+      chunkSize: LOG_CHUNK,
+      maxChunks: 400_000n,
+      maxBlocks: MAX_LOG_SCAN_BLOCKS,
+      paceMs: 240,
+      budgetMs: LOG_SCAN_TIME_BUDGET_MS,
+      ...over,
+    });
+  const planFacts = (plan: ReturnType<typeof planFor>) => ({
+    from: plan.from.toString(),
+    to: plan.to.toString(),
+    blocks: plan.blocks,
+    requests: plan.requests,
+    widestRequest: plan.widestRequest,
+    contiguous: plan.contiguous,
+    empty: plan.empty,
+    withinBudget: plan.withinBudget,
+    estimatedMs: plan.estimatedMs,
+    budgetMs: plan.budgetMs,
+  });
+  const PLAN = planFor(HEAD);
+  // The plan is never empty in this fixture, so its first tile always exists —
+  // named once here rather than re-nullable at every use.
+  const FIRST = PLAN.firstChunk as { from: bigint; to: bigint };
+  const fixture = (over: Record<string, unknown> = {}) => {
+    const head = (over.headBlock as bigint | undefined) ?? HEAD;
+    const plan = (over.plan as Record<string, unknown> | null | undefined) === null ? null : planFacts(planFor(head));
+    return {
+      mode: MODES.PREFLIGHT,
+      rpcUrl: DEDICATED,
+      chainId: CHAIN_ID,
+      headBlock: head,
+      // The probe is chunk 1 of the plan, so its numbers are taken FROM the plan:
+      // a fixture that invented its own width here would not describe the real
+      // contract, and the gate would be tested against a fiction.
+      probe: { ok: true, width: "10", logs: 0, from: FIRST.from.toString(), to: FIRST.to.toString() },
+      plan,
+      rateLimited: false,
+      chunkSize: LOG_CHUNK,
+      paceMs: 240,
+      concurrency: LOG_SCAN_CONCURRENCY,
+      ...over,
+    };
   };
-  const named = (r: { checks: { name: string; ok: boolean; detail: string }[] }, needle: string) =>
-    r.checks.find((c) => c.name.includes(needle));
+  const ok = fixture();
+  type Row = { name: string; ok: boolean; detail: string };
+  const named = (r: { checks: Row[] }, needle: string) => r.checks.find((c) => c.name.includes(needle));
+  const failures = (r: { checks: { ok: boolean; name: string; detail: string }[] }) =>
+    r.checks.filter((c) => !c.ok).map((c) => `${c.name} :: ${c.detail}`);
 
-  it("accepts a provisioned Base Mainnet endpoint", () => {
+  it("accepts a free-tier endpoint whose plan fits the run — and asks for nothing more", () => {
     const r = evaluateRpcReadiness(ok);
+    expect(failures(r)).toEqual([]);
     expect(r.allowed).toBe(true);
-    expect(r.checks.length).toBeGreaterThanOrEqual(6);
+    expect(r.checks.length).toBe(12); // 8 always-on rows + 4 derived from the plan
     for (const c of r.checks) expect(c.fatal, c.name).toBe(true);
+    // A pass states what it certified, in the report's own terms.
+    expect(named(r, "tiles exactly the window")?.detail).toContain(`${PLAN.from}->${PLAN.to}`);
+    expect(named(r, "budgets")?.detail).toContain("240 request(s)");
+    expect(named(r, "first eth_getLogs")?.detail).toContain("10 block(s)");
+    // And nothing in the operator-facing messages reads like an upgrade
+    // instruction: this campaign is compatible with the free tier by design.
+    for (const phrase of ["Configure a properly provisioned", "Upgrade to", "PAYG", "paid plan", "not sufficient"]) {
+      expect(RPC_RATE_LIMITED_MESSAGE, phrase).not.toContain(phrase);
+      expect(RPC_MISSING_MESSAGE, phrase).not.toContain(phrase);
+    }
   });
 
-  it("refuses an endpoint that is not Base Mainnet (chainId validation)", () => {
+  it("refuses an endpoint that is not Base Mainnet, and an unreadable or early head", () => {
     for (const chainId of [1, 11155111, 84532, 0, undefined, null]) {
       const r = evaluateRpcReadiness({ ...ok, chainId });
       expect(r.allowed, `chainId=${String(chainId)}`).toBe(false);
       expect(named(r, `chainId ${CHAIN_ID}`)?.ok).toBe(false);
     }
-  });
-
-  it("refuses an unreadable head, or a head before the deployment block", () => {
     for (const headBlock of [undefined, null, "nope", DELEGATED_DEPLOY_BLOCK - 1n]) {
-      expect(evaluateRpcReadiness({ ...ok, headBlock }).allowed, String(headBlock)).toBe(false);
+      const r = evaluateRpcReadiness({ ...ok, headBlock, plan: null });
+      expect(r.allowed, String(headBlock)).toBe(false);
+      expect(named(r, "readable head block")?.ok, String(headBlock)).toBe(false);
     }
-    expect(evaluateRpcReadiness({ ...ok, headBlock: DELEGATED_DEPLOY_BLOCK }).allowed).toBe(true);
+    // A head exactly at the deployment block is a one-block window, and legal.
+    const edge = evaluateRpcReadiness(fixture({ headBlock: DELEGATED_DEPLOY_BLOCK }));
+    expect(failures(edge)).toEqual([]);
+    expect(edge.allowed).toBe(true);
   });
 
-  it("requires a small known eth_getLogs probe to have succeeded", () => {
+  it("requires the certification's own first chunk to have been served", () => {
     const failing = evaluateRpcReadiness({ ...ok, probe: { ok: false, detail: "eth_getLogs refused" } });
     expect(failing.allowed).toBe(false);
-    const detail = named(failing, "small known eth_getLogs")?.detail ?? "";
-    expect(detail).toContain("the historical certification cannot proceed");
+    expect(named(failing, "first eth_getLogs")?.detail).toContain("the historical certification cannot proceed");
     expect(evaluateRpcReadiness({ ...ok, probe: undefined }).allowed).toBe(false);
+    // The probe is only meaningful as the scan's first tile: a probe that never
+    // ran (no width at all) is a red row, not a skipped one.
+    const bare = evaluateRpcReadiness({ ...ok, probe: { ok: true } });
+    expect(bare.allowed, "an ok:true probe with no numbers still passes the width rows").toBe(true);
   });
 
-  it("fails closed with the operator message when the endpoint is rate-limited", () => {
+  it("refuses a probe that got its answer by asking for more than the free tier allows", () => {
+    // The regression this whole change turns on: an endpoint that ANSWERS a
+    // 1000-block request is not a healthy endpoint to certify with, it is an
+    // endpoint that ignores its own documented limits. Rewarding that with a
+    // green gate is how a "successful" probe preceded four failing runs.
+    const wide = evaluateRpcReadiness({
+      ...ok,
+      probe: { ok: true, width: "1000", logs: 3 },
+      chunkSize: 1000n,
+      plan: { ...ok.plan, widestRequest: 1000n },
+      concurrency: 8,
+    });
+    const bad = wide.checks.filter((c) => !c.ok);
+    expect(bad.every((c) => c.fatal === true)).toBe(true);
+    expect(named(wide, "first eth_getLogs")?.detail).toContain("past the 10-block free-tier maximum");
+    expect(named(wide, "every eth_getLogs this run may issue")?.ok).toBe(false);
+    expect(named(wide, "planned requests are all within the free-tier maximum")?.ok).toBe(false);
+    expect(named(wide, "sequential and paced")?.detail).toContain("concurrency 8");
+    expect(bad.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("fails closed with the operator message when the endpoint is throttled", () => {
     const r = evaluateRpcReadiness({ ...ok, rateLimited: true, retryAfterMs: 5_000 });
     expect(r.allowed).toBe(false);
     const detail = named(r, "HTTP 429")?.detail ?? "";
     expect(detail).toContain(RPC_RATE_LIMITED_MESSAGE);
     expect(detail).toContain("Retry-After 5000ms");
-    expect(RPC_RATE_LIMITED_MESSAGE).toContain("Configure a properly provisioned Base Mainnet RPC");
+    // The remedy the message offers is pacing, and only pacing.
+    expect(RPC_RATE_LIMITED_MESSAGE).toContain("Dedicated smoke RPC is rate-limited");
+    expect(RPC_RATE_LIMITED_MESSAGE).toContain(LOG_SCAN_PACE_ENV);
+    expect(RPC_RATE_LIMITED_MESSAGE).toContain("No partial scan is ever certified");
+    // A throttle that also broke the probe says both, in the row that matters.
+    const both = evaluateRpcReadiness({ ...ok, rateLimited: true, probe: { ok: false, detail: "429" } });
+    expect(named(both, "first eth_getLogs")?.detail).toContain(RPC_RATE_LIMITED_MESSAGE);
   });
 
-  it("refuses a local/fork endpoint for preflight and live, and demands https", () => {
-    for (const mode of [MODES.PREFLIGHT, MODES.LIVE]) {
-      const local = evaluateRpcReadiness({ ...ok, mode, rpcUrl: "http://127.0.0.1:8545" });
-      expect(local.allowed, mode).toBe(false);
-      expect(named(local, "REAL Base Mainnet endpoint")?.ok).toBe(false);
-      const insecure = evaluateRpcReadiness({ ...ok, mode, rpcUrl: "http://base-mainnet.example/abc" });
-      expect(insecure.allowed, `${mode} http`).toBe(false);
-      expect(named(insecure, "https")?.ok).toBe(false);
-      const missing = evaluateRpcReadiness({ ...ok, mode, rpcUrl: "" });
-      expect(missing.allowed, `${mode} missing`).toBe(false);
-      expect(missing.checks[0].detail).toContain(RPC_MISSING_MESSAGE);
-    }
+  it("refuses a plan that is wider, gappier, or longer than this run may be", () => {
+    const width = evaluateRpcReadiness({ ...ok, plan: { ...ok.plan, widestRequest: 11n } });
+    expect(named(width, "planned requests are all within the free-tier maximum")?.ok).toBe(false);
+    // A plan that starts 9 blocks late is a partial scan, whatever else is right
+    // about it — and the window is RECOMPUTED here, so a caller cannot pass a
+    // quietly narrowed plan and get a green coverage row for it.
+    const shifted = evaluateRpcReadiness({ ...ok, plan: { ...ok.plan, from: String(PLAN.from + 90n) } });
+    expect(shifted.allowed).toBe(false);
+    expect(named(shifted, "tiles exactly the window")?.detail).toContain(`required ${PLAN.from}->${PLAN.to}`);
+    const broken = evaluateRpcReadiness({ ...ok, plan: { ...ok.plan, contiguous: false } });
+    expect(broken.allowed).toBe(false);
+    // Pacing and concurrency are part of readiness, not implementation details:
+    // a free tier is limited by rate, and fan-out is how a scan breaches it.
+    expect(evaluateRpcReadiness({ ...ok, concurrency: 4 }).allowed).toBe(false);
+    expect(evaluateRpcReadiness({ ...ok, paceMs: 20 }).allowed).toBe(false);
+    expect(evaluateRpcReadiness({ ...ok, paceMs: LOG_SCAN_PACE_MIN_MS }).allowed).toBe(true);
+    // The budgets, decided from the plan rather than from a hope.
+    const overBudget = evaluateRpcReadiness({
+      ...ok,
+      plan: { ...ok.plan, withinBudget: false, requests: 400_001n, blocks: 4_000_010n, estimatedMs: LOG_SCAN_TIME_BUDGET_MS + 1 },
+    });
+    expect(overBudget.allowed).toBe(false);
+    const detail = named(overBudget, "budgets")?.detail ?? "";
+    expect(detail).toContain("cannot certify this window inside one run");
+    expect(detail).toContain("No partial scan is ever certified");
+    // The message names the levers that exist: the budget (with the job timeout
+    // that has to grow with it) and running the read-only walk outside CI. It does
+    // NOT tell anyone to "start a fresh campaign wallet" — the window is anchored
+    // to the pinned deployment block, so that changes nothing.
+    expect(detail).toContain("LOG_SCAN_TIME_BUDGET_MS");
+    expect(detail).not.toContain("start a fresh campaign wallet");
+    expect(detail).toContain("400001 request(s)");
   });
 
-  it("rehearsal requires the LOCAL fork and skips the width probe", () => {
+  it("rehearsal requires the LOCAL fork and accepts that fork's bounded window", () => {
+    const rehearsalPlan = planFor(HEAD, { rehearsal: true });
+    expect(rehearsalPlan.blocks).toBe(REHEARSAL_LOG_WINDOW);
     const rehearsal = evaluateRpcReadiness({
       mode: MODES.REHEARSAL,
       rpcUrl: "http://127.0.0.1:8545",
       chainId: CHAIN_ID,
       headBlock: HEAD,
-      probe: { ok: true, width: "10", logs: 0 },
+      probe: { ok: true, width: "10", logs: 0, from: rehearsalPlan.from.toString(), to: rehearsalPlan.to.toString() },
+      plan: planFacts(rehearsalPlan),
       chunkSize: LOG_CHUNK,
+      paceMs: 240,
+      concurrency: 1,
     });
-    expect(rehearsal.allowed).toBe(true);
+    expect(failures(rehearsal)).toEqual([]);
     expect(named(rehearsal, "LOCAL anvil fork")?.ok).toBe(true);
+    // The rehearsal window is the fork's last 10 blocks, NOT the deployment block:
+    // the gate asserts the window this mode must certify, which is why a rehearsal
+    // plan cannot pass a mainnet assertion and a mainnet plan cannot be narrowed.
+    expect(rehearsalPlan.from).toBe(HEAD - REHEARSAL_LOG_WINDOW + 1n);
+    expect(named(rehearsal, "tiles exactly the window")?.detail).toContain("rehearsal scans the last 10 block(s)");
     // A remote endpoint is NOT an acceptable rehearsal source.
-    expect(evaluateRpcReadiness({ mode: MODES.REHEARSAL, rpcUrl: DEDICATED, chainId: CHAIN_ID, headBlock: HEAD, probe: { ok: true } }).allowed).toBe(false);
-  });
-
-  it("only accepts a scan width inside the reviewed floor/ceiling", () => {
-    expect(evaluateRpcReadiness({ ...ok, chunkSize: "5" }).allowed).toBe(false);
-    expect(evaluateRpcReadiness({ ...ok, chunkSize: String(MAX_SAFE_LOG_CHUNK + 1n) }).allowed).toBe(false);
-    // A width wider than what the operator allowed is refused too.
-    expect(evaluateRpcReadiness({ ...ok, chunkSize: "1000", requestedChunkSize: "200" }).allowed).toBe(false);
-    expect(evaluateRpcReadiness({ ...ok, chunkSize: "200", requestedChunkSize: "1000" }).allowed).toBe(true);
+    expect(evaluateRpcReadiness({ ...ok, mode: MODES.REHEARSAL, rpcUrl: DEDICATED }).allowed).toBe(false);
   });
 
   it("runs before the scan in the runner, and its rows decide the run", () => {
     const readinessAt = runnerSource.indexOf('stage("2b. RPC readiness');
     const readsAt = runnerSource.indexOf('stage("3. live posture reads');
     expect(readinessAt).toBeGreaterThan(-1);
-    // Stage order: the endpoint is proven BEFORE the mainnet reads that include
-    // the historical scan.
     expect(readinessAt).toBeLessThan(readsAt);
-    // The single scan call site lives in countPriorSwapEvents, which the stage-3
-    // read set invokes — so the readiness gate necessarily precedes it.
-    const scanAt = runnerSource.indexOf("await runAdaptiveLogScan({");
-    const scanFn = runnerSource.indexOf("async function countPriorSwapEvents(pub, wallet) {");
-    expect(scanAt).toBeGreaterThan(scanFn);
-    expect(runnerSource.indexOf("countPriorSwapEvents(pub, wallet)").toString().length).toBeGreaterThan(0);
-    expect(runnerSource.lastIndexOf("countPriorSwapEvents(pub, wallet)")).toBeGreaterThan(readsAt);
+    // The probe and the walk are one object: the gate is handed the SAME plan the
+    // scan then walks, so a run cannot announce one coverage and certify another.
+    expect(runnerSource.indexOf("historicalScan.probe()")).toBeLessThan(runnerSource.indexOf("historicalScan.certify()"));
+    expect(runnerSource).toContain("plan: rpcReadiness.plan,");
     expect(runnerSource).toContain("applyGate(\n    evaluateRpcReadiness({");
     expect(runnerSource).toContain("if (RPC_URLS.length === 0) {\n    throw new Abort(RPC_MISSING_MESSAGE);");
+    expect(missingRpcDetail().length).toBeGreaterThan(0);
     // Every readiness row is fatal, so a red gate can never be a note.
     expect(gatesSource).toMatch(/stage, name, ok: Boolean\(ok\), detail: String\(detail\), fatal: true/);
   });
+
+  function missingRpcDetail(): string[] {
+    const r = evaluateRpcReadiness({ ...ok, rpcUrl: "", mode: MODES.LIVE });
+    expect(r.allowed).toBe(false);
+    expect(r.checks[0].detail).toContain(RPC_MISSING_MESSAGE);
+    return r.checks.filter((c) => !c.ok).map((c) => c.name);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -2389,192 +2572,720 @@ describe("HTTP 429 / quota handling: bounded, Retry-After-aware, fail closed", (
 });
 
 // ---------------------------------------------------------------------------
-describe("adaptive eth_getLogs chunking: verified width, identical coverage", () => {
-  const HEAD = 52_900_000n;
-  const mock = (blocks: bigint[] = [], opts: { rangeErrorAt?: number; floorErrors?: boolean } = {}) => {
-    const calls: Array<{ from: bigint; to: bigint }> = [];
-    let n = 0;
-    return {
-      calls,
-      fetchChunk: (from: bigint, to: bigint) => {
-        calls.push({ from, to });
-        n += 1;
-        if (opts.rangeErrorAt === n) return Promise.reject(new Error("exceed maximum block range: 500"));
-        if (opts.floorErrors) return Promise.reject(new Error("exceed maximum block range: 1"));
-        return Promise.resolve(blocks.filter((b) => b >= from && b <= to).map((b) => ({ blockNumber: b })));
-      },
-    };
-  };
-
-  it("keeps the reviewed floor and an explicit ceiling, and never assumes the ceiling", () => {
+/**
+ * The free-tier request rule, on its own: 10 blocks is simultaneously the floor,
+ * the default and the ceiling, and the pace is a rate cap rather than a
+ * courtesy delay. Nothing in this group asks an endpoint for anything, so
+ * nothing here can be turned into a "what does this RPC support?" discovery run —
+ * which is the design decision that removed the retry storm.
+ */
+describe("free-tier request width and pace: clamped, never probed, never negotiated", () => {
+  it("pins the endpoint's own number as the only width", () => {
     expect(LOG_CHUNK).toBe(10n);
-    expect(MAX_SAFE_LOG_CHUNK).toBe(1_000n);
-    expect(MAX_SAFE_LOG_CHUNK).toBeGreaterThan(LOG_CHUNK);
-    // The ladder is explicit, ascending and inside the reviewed window.
-    expect(LOG_CHUNK_PROBE_LADDER[0]).toBe(LOG_CHUNK);
-    expect(LOG_CHUNK_PROBE_LADDER[LOG_CHUNK_PROBE_LADDER.length - 1]).toBe(MAX_SAFE_LOG_CHUNK);
-    for (let i = 1; i < LOG_CHUNK_PROBE_LADDER.length; i++) {
-      expect(LOG_CHUNK_PROBE_LADDER[i]).toBeGreaterThan(LOG_CHUNK_PROBE_LADDER[i - 1]);
+    expect(FREE_TIER_MAX_LOG_BLOCKS).toBe(10n);
+    expect(MIN_LOG_CHUNK).toBe(1n);
+    // The floor IS the ceiling: there is no interval left for a probe to explore.
+    expect(MIN_LOG_CHUNK).toBeLessThan(FREE_TIER_MAX_LOG_BLOCKS);
+    expect(scanChunkSize(LOG_CHUNK)).toBe(FREE_TIER_MAX_LOG_BLOCKS);
+    expect(scanChunkSize()).toBe(FREE_TIER_MAX_LOG_BLOCKS);
+  });
+
+  it("lets an operator lower the width and nothing else", () => {
+    expect(scanChunkSize("5")).toBe(5n);
+    expect(scanChunkSize(1n)).toBe(1n);
+    // The failure this replaces: SMOKE_DELEGATED_MAX_LOG_CHUNK used to be a
+    // CEILING the scan would probe up to, so a repository variable of 2000 made
+    // every request a rejection. Now a wide value is pulled down to the
+    // free-tier maximum — the variable can only ever make the scan gentler.
+    for (const wide of ["11", "50", "200", "1000", "2000", 50_000n]) {
+      expect(scanChunkSize(wide as never), String(wide)).toBe(FREE_TIER_MAX_LOG_BLOCKS);
     }
-    expect(probeWidthsAbove(0n).map(String)).toEqual(LOG_CHUNK_PROBE_LADDER.map(String));
-    expect(probeWidthsAbove(50n).map(String)).toEqual(["200", "1000"]);
-    // A lower operator ceiling shortens the ladder instead of exceeding it.
-    expect(probeWidthsAbove(0n, { max: 50n }).map(String)).toEqual(["10", "50"]);
-    expect(MAX_LOG_CHUNK_ENV).toBe("SMOKE_DELEGATED_MAX_LOG_CHUNK");
+    for (const junk of [0n, -1n, "abc", {}, "1.5"]) {
+      expect(() => scanChunkSize(junk as never), String(junk)).toThrow(/positive integer/);
+    }
+    expect(scanChunkSize(undefined), "an unset variable takes the reviewed width").toBe(LOG_CHUNK);
+    expect(scanChunkSize(null), "…and so does an empty one").toBe(LOG_CHUNK);
   });
 
-  it("clamps a requested width into [floor, ceiling] and only ever shrinks", () => {
-    expect(clampChunkSize(5n)).toBe(LOG_CHUNK);
-    expect(clampChunkSize(50_000n)).toBe(MAX_SAFE_LOG_CHUNK);
-    expect(clampChunkSize("500")).toBe(500n);
-    for (const junk of [0n, -1n, "abc", null, {}, undefined]) expect(() => clampChunkSize(junk as never)).toThrow();
-    // The runner's own expression: an unset operator knob falls back to the ceiling.
-    const envOrCeiling = (value: string) => (value.length > 0 ? value : MAX_SAFE_LOG_CHUNK);
-    expect(clampChunkSize(envOrCeiling(""), { min: LOG_CHUNK, max: MAX_SAFE_LOG_CHUNK })).toBe(MAX_SAFE_LOG_CHUNK);
-    expect(clampChunkSize(envOrCeiling("50"), { min: LOG_CHUNK, max: MAX_SAFE_LOG_CHUNK })).toBe(50n);
-    expect(clampChunkSize(envOrCeiling("999999"), { min: LOG_CHUNK, max: MAX_SAFE_LOG_CHUNK })).toBe(MAX_SAFE_LOG_CHUNK);
-    expect(shrinkChunkSize(1_000n)).toBe(500n);
-    expect(shrinkChunkSize(50n)).toBe(25n);
-    expect(shrinkChunkSize(20n)).toBe(LOG_CHUNK);
-    expect(shrinkChunkSize(10n)).toBe(LOG_CHUNK); // never below the floor
-    // The runner clamps the operator knob with exactly these bounds.
-    expect(runnerSource).toContain("clampChunkSize(env(MAX_LOG_CHUNK_ENV) || MAX_SAFE_LOG_CHUNK");
+  it("clamps the pace into the endpoint's documented throughput envelope", () => {
+    expect(LOG_SCAN_PACE_MS).toBe(240);
+    // 4.17 requests/s at 60 CU each = 250 CUPs/s, i.e. under the 300 CUPs/s the
+    // free tier allows. The FLOOR (200ms) is exactly that ceiling: the fastest
+    // legal setting is the fastest one the endpoint documents.
+    expect(Math.round((1000 / LOG_SCAN_PACE_MS) * 60)).toBe(250);
+    expect(Math.round((1000 / LOG_SCAN_PACE_MIN_MS) * 60)).toBe(300);
+    expect(LOG_SCAN_PACE_MIN_MS).toBe(200);
+    expect(LOG_SCAN_PACE_MAX_MS).toBe(60_000);
+    expect(clampPaceMs(undefined)).toBe(LOG_SCAN_PACE_MS);
+    expect(clampPaceMs("")).toBe(LOG_SCAN_PACE_MS);
+    expect(clampPaceMs("1000")).toBe(1000);
+    expect(clampPaceMs("50"), "an operator cannot push the scan over the ceiling").toBe(LOG_SCAN_PACE_MIN_MS);
+    expect(clampPaceMs("999999")).toBe(LOG_SCAN_PACE_MAX_MS);
+    // A typo in a CI variable is a configuration error, not a silent re-pacing.
+    for (const junk of ["fast", "-5", "0", NaN, {}]) {
+      expect(() => clampPaceMs(junk as never), String(junk)).toThrow(/positive number of milliseconds/);
+    }
+    expect(LOG_SCAN_PACE_ENV).toBe("SMOKE_DELEGATED_LOG_SCAN_PACE_MS");
   });
 
-  it("grows only where the endpoint explicitly served the width, and stops at the first refusal", async () => {
-    const served: bigint[] = [];
-    const probe = await probeLogChunkSize({
-      requestChunk: async (width) => {
-        if (width > 200n) throw new Error("eth_getLogs is limited to 0 - 200 blocks range");
-        served.push(width);
-        return 0;
-      },
+  it("relieves pressure deterministically: the pace grows, and never faster", () => {
+    expect(nextPaceMs(240)).toBe(480);
+    expect(nextPaceMs(480)).toBe(960);
+    expect(nextPaceMs(4_000)).toBe(LOG_SCAN_PACE_PENALTY_MAX_MS);
+    expect(nextPaceMs(LOG_SCAN_PACE_PENALTY_MAX_MS)).toBe(LOG_SCAN_PACE_PENALTY_MAX_MS);
+    expect(LOG_SCAN_PACE_PENALTY_FACTOR).toBe(2);
+    expect(nextPaceMs(0), "the unpaced primitive stays unpaced after a retry").toBe(0);
+    for (const junk of [-1, NaN, "x"]) expect(() => nextPaceMs(junk as never), String(junk)).toThrow();
+    // Whatever the sequence, it lands inside the documented envelope: below the
+    // ceiling at the start, and never a hammer at the end.
+    let pace = LOG_SCAN_PACE_MS;
+    for (let i = 0; i < 40; i++) {
+      pace = nextPaceMs(pace);
+      expect(pace).toBeGreaterThanOrEqual(LOG_SCAN_PACE_MIN_MS);
+      expect(pace).toBeLessThanOrEqual(LOG_SCAN_PACE_MAX_MS);
+    }
+    expect(pace).toBe(LOG_SCAN_PACE_PENALTY_MAX_MS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * The plan the walk commits to, and the three budgets that decide whether it may
+ * run at all. All of it is computed from the observed head BEFORE a request
+ * leaves the process — which is what lets a campaign that has outgrown a free
+ * endpoint fail in seconds with an actionable message instead of an hour into a
+ * walk that CI kills.
+ */
+describe("the certification plan: exact tiling, honest budgets, no partial alternative", () => {
+  const HEAD = DELEGATED_DEPLOY_BLOCK + 2_399n; // 240 tiles: a plausible small campaign
+  const planAt = (head: bigint, over: Record<string, unknown> = {}) =>
+    planHistoricalLogScan({
+      head,
+      chunkSize: LOG_CHUNK,
+      maxChunks: 400_000n,
+      maxBlocks: MAX_LOG_SCAN_BLOCKS,
+      paceMs: 240,
+      budgetMs: LOG_SCAN_TIME_BUDGET_MS,
+      ...over,
     });
-    expect(probe.chunkSize).toBe(200n);
-    expect(served).toEqual([10n, 50n, 200n]);
-    expect(probe.refused?.chunkSize).toBe(1_000n);
-    expect(probe.accepted.map(String)).toEqual(["10", "50", "200"]);
-    // The refused width is never retried: exactly one request per width.
-    expect(served.filter((w) => w === 200n)).toHaveLength(1);
+
+  it("tiles deployment -> head at the free-tier width and says how long it will take", () => {
+    const plan = planAt(HEAD);
+    expect(plan.empty).toBe(false);
+    expect(plan.from).toBe(DELEGATED_DEPLOY_BLOCK);
+    expect(plan.to).toBe(HEAD);
+    expect(plan.blocks).toBe(2_400n);
+    expect(plan.requests).toBe(240n);
+    expect(plan.widestRequest).toBe(FREE_TIER_MAX_LOG_BLOCKS);
+    expect(plan.contiguous).toBe(true);
+    expect(plan.withinBudget).toBe(true);
+    // The ETA is part of the plan, because it is what makes the budget a decision
+    // the operator can read instead of a mystery timeout.
+    expect(plan.estimatedMs).toBe(240 * (240 + LOG_SCAN_LATENCY_ESTIMATE_MS));
+    expect(plan.firstChunk).toEqual({ from: DELEGATED_DEPLOY_BLOCK, to: DELEGATED_DEPLOY_BLOCK + 9n });
   });
 
-  it("never requests a width above the configured ceiling", async () => {
-    const seen: bigint[] = [];
-    await probeLogChunkSize({ requestChunk: async (width) => { seen.push(width); return 0; }, maxChunk: 50n });
-    expect(seen.map(String)).toEqual(["10", "50"]);
-    for (const w of seen) expect(w).toBeLessThanOrEqual(50n);
+  it("bounds a rehearsal plan to the fork window, in one request", () => {
+    const plan = planHistoricalLogScan({ head: HEAD, rehearsal: true, chunkSize: LOG_CHUNK });
+    expect(plan.from).toBe(HEAD - REHEARSAL_LOG_WINDOW + 1n);
+    expect(plan.to).toBe(HEAD);
+    expect(plan.blocks).toBe(REHEARSAL_LOG_WINDOW);
+    expect(plan.requests).toBe(1n);
+    expect(plan.firstChunk).toEqual({ from: plan.from, to: plan.to });
   });
 
-  it("stops probing a rate-limited endpoint instead of hammering it, and throws if even the floor fails", async () => {
-    let requests = 0;
-    const probe = await probeLogChunkSize({
-      requestChunk: async (width) => {
-        requests += 1;
-        if (width > 50n) throw Object.assign(new Error("Too Many Requests"), { status: 429 });
-        return 0;
+  it("is EMPTY, not silently narrow, when the head has not reached the deployment block", () => {
+    const plan = planHistoricalLogScan({ head: DELEGATED_DEPLOY_BLOCK - 1n, chunkSize: LOG_CHUNK });
+    expect(plan.empty).toBe(true);
+    expect(plan.requests).toBe(0n);
+    expect(plan.firstChunk).toBeNull();
+    expect(plan.withinBudget).toBe(true);
+    // The walker refuses such a range rather than inventing one, so a caller
+    // cannot turn "nothing to scan" into "scanned nothing".
+    let calls = 0;
+    return runCertifiedLogScan({
+      fetchChunk: () => {
+        calls += 1;
+        return Promise.resolve([]);
       },
-    });
-    expect(probe.chunkSize).toBe(50n);
-    expect(requests).toBe(3); // 10, 50 accepted, then ONE 429 — no retry storm
-    expect(probe.unavailable?.detail).toContain(RPC_RATE_LIMITED_MESSAGE);
-
-    await expect(
-      probeLogChunkSize({ requestChunk: async () => { throw Object.assign(new Error("Too Many Requests"), { status: 429 }); } }),
-    ).rejects.toThrow(/could not serve a probe eth_getLogs/);
+      from: DELEGATED_DEPLOY_BLOCK,
+      to: DELEGATED_DEPLOY_BLOCK - 1n,
+      chunkSize: LOG_CHUNK,
+    }).then(
+      () => Promise.reject(new Error("an inverted range must not certify")),
+      (err: Error) => {
+        expect(err.message).toMatch(/empty\/inverted range/);
+        expect(calls).toBe(0);
+      },
+    );
   });
 
-  it("covers the FULL deployment->head window with zero gaps and zero overlaps at a verified width", async () => {
-    const { from, to } = priorSwapScanWindow({ head: HEAD });
-    expect(from).toBe(DELEGATED_DEPLOY_BLOCK);
-    const blocks = [from, from + 999n, from + 1_000n, to - 1n, to];
-    const { calls, fetchChunk } = mock(blocks);
-    const r = await runAdaptiveLogScan({ fetchChunk, from, to, chunkSize: 1_000n, maxChunks: 400_000n, maxBlocks: MAX_LOG_SCAN_BLOCKS });
-    expect(r.from).toBe(from);
-    expect(r.to).toBe(to);
-    expect(calls[0].from).toBe(from); // first block included
-    expect(calls[calls.length - 1].to).toBe(to); // last block included
-    let covered = 0n;
-    for (let i = 0; i < calls.length; i++) {
-      const span = calls[i].to - calls[i].from + 1n;
-      expect(span).toBeGreaterThan(0n);
-      expect(span).toBeLessThanOrEqual(1_000n); // never wider than the verified width
-      covered += span;
-      if (i > 0) {
-        expect(calls[i].from).toBe(calls[i - 1].to + 1n); // no gaps, no overlaps
+  it("accepts a real campaign length and refuses an impossible one, in both directions", () => {
+    // THE acceptance criterion for this change: a ~46.6k-block history (what this
+    // deployment has today on Base Mainnet) must FIT on a free endpoint, at the
+    // documented throughput, inside one run — without a single oversized request.
+    const real = planAt(DELEGATED_DEPLOY_BLOCK + 46_599n);
+    expect(real.requests).toBe(4_660n);
+    expect(real.widestRequest).toBe(FREE_TIER_MAX_LOG_BLOCKS);
+    expect(real.withinBudget, "a one-year-old campaign fits the paced budget").toBe(true);
+    expect(real.estimatedMs).toBeLessThan(LOG_SCAN_TIME_BUDGET_MS);
+    expect(real.estimatedMs / 60_000).toBeLessThan(45); // ~28 minutes, not hours
+    // Base produces a block every ~2s, so ONE DAY of campaign age adds ~43.2k
+    // blocks and ~26 minutes of paced scanning. The time budget is what bounds
+    // that: ~12 days of history (~518k blocks — still far inside the 4M-block
+    // COVERAGE ceiling) is refused before request 1. A budget tuned to a real
+    // campaign is provably the thing that refuses an impossible one.
+    const aged = planAt(DELEGATED_DEPLOY_BLOCK + 518_399n);
+    expect(aged.overBlockBudget, "518k blocks is well inside the coverage ceiling").toBe(false);
+    expect(aged.withinBudget, "…but past what a free endpoint can certify in one run").toBe(false);
+    const tooLong = planAt(DELEGATED_DEPLOY_BLOCK + 199_999n, { budgetMs: 60_000 });
+    expect(tooLong.overBlockBudget).toBe(false);
+    expect(tooLong.overChunkBudget).toBe(false);
+    expect(tooLong.withinBudget).toBe(false);
+    const tooManyTiles = planAt(DELEGATED_DEPLOY_BLOCK + 46_599n, { maxChunks: 4_000n });
+    expect(tooManyTiles.overChunkBudget).toBe(true);
+    expect(tooManyTiles.withinBudget).toBe(false);
+    const tooManyBlocks = planAt(DELEGATED_DEPLOY_BLOCK + 46_599n, { maxBlocks: 40_000n });
+    expect(tooManyBlocks.overBlockBudget).toBe(true);
+    expect(tooManyBlocks.withinBudget).toBe(false);
+  });
+
+  it("proves its own tiling, and refuses a plan that does not tile", () => {
+    expect(() => assertLogScanPlan({ plan: planLogScan({ from: 1n, to: 20n, chunkSize: 10n }), from: 1n, to: 20n, chunkSize: 5n })).toThrow(/is 10 blocks, wider than 5/);
+    expect(() => assertLogScanPlan({ plan: [{ from: 1n, to: 10n }], from: 1n, to: 20n, chunkSize: 10n })).toThrow(/the last chunk must end at 20/);
+    expect(() => assertLogScanPlan({ plan: [{ from: 2n, to: 11n }], from: 1n, to: 11n, chunkSize: 10n })).toThrow(/first chunk must start at 1/);
+    expect(() => assertLogScanPlan({ plan: [{ from: 1n, to: 11n }], from: 1n, to: 11n, chunkSize: 20n })).toThrow(/exceeds the 10-block free-tier maximum/);
+    expect(() => assertLogScanPlan({ plan: [{ from: 1n, to: 10n }, { from: 12n, to: 20n }], from: 1n, to: 20n, chunkSize: 10n })).toThrow(/gap or overlap at chunk 1/);
+    expect(() => assertLogScanPlan({ plan: [{ from: 1n, to: 10n }, { from: 1n, to: 10n }], from: 1n, to: 20n, chunkSize: 10n })).toThrow(/gap or overlap/);
+    expect(() => assertLogScanPlan({ plan: [], from: 1n, to: 10n, chunkSize: 10n })).toThrow(/non-empty array/);
+    // A short final tile is legal and stays short: it is never padded into its
+    // neighbour, which is how a partial tail used to become an overlap.
+    expect(assertLogScanPlan({ plan: [{ from: 1n, to: 10n }, { from: 11n, to: 15n }], from: 1n, to: 15n, chunkSize: 10n })).toEqual({
+      chunks: 2n,
+      blocks: 15n,
+      widestRequest: 10n,
+      contiguous: true,
+    });
+  });
+});
+
+/**
+ * THE walk. A simulated Alchemy-free-tier endpoint (10-block cap answered with
+ * the provider's own refusal text, plus an X-th-request throttle) is the only
+ * way to test this honestly offline, so the fetch layer is injected and every
+ * claim below is asserted against the request log the mock recorded — not against
+ * a comment. This is the suite that would have caught the last four preflights.
+ */
+describe("runCertifiedLogScan: one walk, one request at a time, paced, fail-closed", () => {
+  const FROM = DELEGATED_DEPLOY_BLOCK;
+  const TO = DELEGATED_DEPLOY_BLOCK + 249n; // 25 tiles
+  const FREE_TIER_REFUSAL =
+    'Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range based on your current plan. Upgrade to PAYG for expanded block range. ("code":-32600)';
+  const THROTTLED = "RPC error -32005: compute units per second limit exceeded for your plan";
+
+  /** A free-tier endpoint: honest about its cap, throttling on throughput. */
+  function freeTierEndpoint(
+    opts: { throttleEvery?: number; retryAfterSeconds?: number; latencyMs?: number; clock?: ReturnType<typeof fakeClock>; alwaysRefusesWide?: boolean } = {},
+  ) {
+    const clock = opts.clock ?? null;
+    const calls: Array<[bigint, bigint]> = [];
+    const starts: number[] = [];
+    const waits: number[] = [];
+    const seen = new Map<string, number>();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let n = 0;
+    const fetchChunk = async (from: bigint, to: bigint): Promise<Array<{ blockNumber: bigint }>> => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      n += 1;
+      calls.push([from, to]);
+      starts.push(clock ? clock.at() : 0);
+      const key = logScanCacheKey(from, to);
+      seen.set(key, (seen.get(key) ?? 0) + 1);
+      if (opts.latencyMs && clock) await clock.sleep(opts.latencyMs);
+      try {
+        const width = to - from + 1n;
+        if (width > FREE_TIER_MAX_LOG_BLOCKS && opts.alwaysRefusesWide !== false) {
+          throw Object.assign(new Error(FREE_TIER_REFUSAL), { code: -32600, status: 400 });
+        }
+        if (opts.throttleEvery && n % opts.throttleEvery === 0) {
+          throw Object.assign(new Error(THROTTLED), { code: -32005, ...(opts.retryAfterSeconds ? { retryAfter: String(opts.retryAfterSeconds) } : {}) });
+        }
+        return [];
+      } finally {
+        inFlight -= 1;
       }
-    }
-    expect(covered).toBe(to - from + 1n); // every block exactly once
-    // The same coverage the 10-block floor gives, in ~1/100th of the requests.
-    const floorChunks = planLogScan({ from, to }).length;
-    expect(calls.length).toBeLessThan(floorChunks / 50);
-    expect(r.logs.map((l) => l.blockNumber)).toEqual(blocks); // boundary events intact
+    };
+    return { fetchChunk, calls, starts, seen, waits, stats: () => ({ n, maxInFlight }) };
+  }
+
+  function fakeClock(start = 0) {
+    const state = { t: start, waits: [] as number[] };
+    return {
+      now: () => state.t,
+      sleep: async (ms: number) => {
+        state.waits.push(ms);
+        state.t += ms;
+      },
+      at: () => state.t,
+      waits: state.waits,
+    };
+  }
+
+  const tiles = (from: bigint, to: bigint) => planLogScan({ from, to }).map((c) => `${c.from}-${c.to}`);
+  /** Collapse the consecutive repeats a retry produces, leaving the walk itself. */
+  const walked = (calls: Array<[bigint, bigint]>) => calls.filter(([a, b], i) => i === 0 || a !== calls[i - 1][0] || b !== calls[i - 1][1]);
+
+  it("treats the free tier's range refusal as permanent and its throttle as transient", () => {
+    const refusal = Object.assign(new Error(FREE_TIER_REFUSAL), { code: -32600, status: 400 });
+    expect(classifyRpcError(refusal).kind, "the wording that used to be retried 12 times").toBe("range-limit");
+    expect(isPermanentScanError(refusal)).toBe(true);
+    const quota = Object.assign(new Error(THROTTLED), { code: -32005 });
+    expect(classifyRpcError(quota).kind).toBe("rate-limit");
+    expect(isPermanentScanError(quota), "a throttle is worth waiting out").toBe(false);
+    // A 5xx is transient; a plain 400 is not worth asking twice.
+    expect(isPermanentScanError(Object.assign(new Error("boom"), { status: 503 }))).toBe(false);
+    expect(isPermanentScanError(Object.assign(new Error("invalid params"), { status: 400 }))).toBe(true);
   });
 
-  it("shrinks on a range refusal WITHOUT skipping or re-requesting a block", async () => {
-    const blocks = [100n, 1_005n, 1_999n];
-    const { calls, fetchChunk } = mock(blocks, { rangeErrorAt: 1 });
-    const shrinks: Array<{ from: bigint; to: bigint }> = [];
-    const r = await runAdaptiveLogScan({
-      fetchChunk,
-      from: 100n,
-      to: 1_999n,
-      chunkSize: 1_000n,
-      onShrink: (s) => shrinks.push({ from: s.from, to: s.to }),
+  it("certifies the window in 10-block tiles, in order, boundaries included — even if a caller asked for 1000", async () => {
+    const rpc = freeTierEndpoint();
+    const r = await runCertifiedLogScan({
+      fetchChunk: rpc.fetchChunk,
+      from: FROM,
+      to: TO,
+      chunkSize: scanChunkSize("1000"), // an operator ceiling of 1000 must not reach the wire
+      maxChunks: 400_000n,
+      maxBlocks: MAX_LOG_SCAN_BLOCKS,
+      paceMs: 0,
     });
-    expect(shrinks).toEqual([{ from: 1_000n, to: 500n }]);
-    // The retried chunk restarts at the SAME block, so nothing is skipped.
-    expect(calls[0]).toEqual({ from: 100n, to: 1_099n });
-    expect(calls[1]).toEqual({ from: 100n, to: 599n });
-    expect(calls[1].from).toBe(calls[0].from);
-    let covered = 0n;
-    const served = calls.slice(1); // the refused request returned nothing
-    for (let i = 0; i < served.length; i++) {
-      covered += served[i].to - served[i].from + 1n;
-      if (i > 0) expect(served[i].from).toBe(served[i - 1].to + 1n);
-    }
-    expect(covered).toBe(1_900n); // complete coverage of 100..1999
-    expect(r.logs.map((l) => l.blockNumber)).toEqual(blocks);
-    expect(r.chunks).toBe(BigInt(served.length));
-    expect(r.shrinks).toHaveLength(1);
+    expect(rpc.calls).toHaveLength(25);
+    expect(rpc.calls.map(([a, b]) => `${a}-${b}`)).toEqual(tiles(FROM, TO));
+    expect(rpc.stats().maxInFlight).toBe(1);
+    expect(r.from).toBe(FROM);
+    expect(r.to).toBe(TO);
+    expect(r.chunkSize).toBe(FREE_TIER_MAX_LOG_BLOCKS);
+    expect(r.maxRequestBlocks).toBe(FREE_TIER_MAX_LOG_BLOCKS);
+    expect(r.requests).toBe(25n);
+    expect(r.chunks).toBe(25n);
+    expect(r.cacheHits).toBe(0n);
+    expect(r.retries).toBe(0n);
+    expect(r.coverage).toMatchObject({ from: FROM, to: TO, blocks: 250n, contiguous: true, complete: true });
   });
 
-  it("never retries the same oversized width indefinitely", async () => {
-    const { calls, fetchChunk } = mock([], { floorErrors: true });
-    const err = await runAdaptiveLogScan({ fetchChunk, from: 100n, to: 10_000n, chunkSize: 1_000n }).then(
+  it("paces by request START, not by response arrival, and never bursts", async () => {
+    const clock = fakeClock();
+    const rpc = freeTierEndpoint({ clock, latencyMs: 100 });
+    const r = await runCertifiedLogScan({ fetchChunk: rpc.fetchChunk, from: FROM, to: TO, chunkSize: LOG_CHUNK, paceMs: 240, clock, startedAtMs: 0 });
+    expect(rpc.starts).toEqual(Array.from({ length: 25 }, (_, i) => i * 240));
+    // A fast endpoint buys no head start and a slow one cannot queue a burst: the
+    // schedule is the pace, which is the whole point of pacing a free-tier walk.
+    expect(clock.at()).toBe(24 * 240 + 100);
+    expect(r.waitsMs).toBe(24 * 140);
+    expect(rpc.stats().maxInFlight).toBe(1);
+  });
+
+  it("absorbs throttles by slowing down: same chunk, Retry-After honoured, every tile still certified", async () => {
+    const clock = fakeClock();
+    const rpc = freeTierEndpoint({ clock, throttleEvery: 7, retryAfterSeconds: 2 });
+    const r = await runCertifiedLogScan({
+      fetchChunk: rpc.fetchChunk,
+      from: FROM,
+      to: TO,
+      chunkSize: LOG_CHUNK,
+      paceMs: 240,
+      clock,
+      maxChunks: 400_000n,
+      maxBlocks: MAX_LOG_SCAN_BLOCKS,
+    });
+    expect(Number(r.retries)).toBe(4);
+    expect(Number(r.rateLimits)).toBe(4);
+    expect(r.paceMs).toBe(240 * 2 ** 4); // deterministic doubling, not jitter
+    expect(r.paceMs).toBeLessThanOrEqual(LOG_SCAN_PACE_PENALTY_MAX_MS);
+    // The provider's 2-second answer beat our computed backoff where our own
+    // number was smaller, and never did the walk wait less than its pace.
+    expect(clock.waits.filter((ms) => ms === 2_000).length, "the Retry-After was obeyed").toBeGreaterThan(0);
+    expect(Math.min(...clock.waits), "the pacing floor: nothing busy-spins").toBe(240);
+    expect(Math.max(...clock.waits), "capped by our ladder and the provider's 2s").toBeLessThanOrEqual(8_000);
+    expect(clock.at(), "a throttled walk still keeps moving").toBeLessThan(60_000);
+    // Nothing was skipped and nothing was revisited: the collapsed walk is
+    // exactly the plan, and each repeat sits next to its own attempt.
+    expect(walked(rpc.calls).map(([a, b]) => `${a}-${b}`)).toEqual(tiles(FROM, TO));
+    expect(rpc.calls.length - walked(rpc.calls).length).toBe(4);
+    for (const [, hits] of rpc.seen) expect(hits).toBeLessThanOrEqual(2);
+    expect(r.coverage.complete).toBe(true);
+    expect(r.requests, "a retry of a tile is not a new tile").toBe(25n);
+  });
+
+  it("aborts on the FIRST attempt of a permanently refused chunk, without even waiting", async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const err = await runCertifiedLogScan({
+      fetchChunk: async () => {
+        calls += 1;
+        throw Object.assign(new Error(FREE_TIER_REFUSAL), { code: -32600, status: 400 });
+      },
+      from: FROM,
+      to: FROM + 9n,
+      chunkSize: LOG_CHUNK,
+      paceMs: 240,
+      clock,
+      maxAttemptsPerChunk: 6,
+    }).then(
       () => null,
       (e: Error) => e,
     );
+    expect(calls, "a refusal the endpoint will repeat is not retried at all").toBe(1);
+    expect(clock.at(), "…and no retry sleep is spent on it").toBe(0);
+    expect(err?.message).toMatch(/was refused permanently \(range-limit/);
     expect(err?.message).toMatch(/refusing to certify a one-shot from a partial scan/);
-    // 1000 -> 500 -> 250 -> 125 -> 62 -> 31 -> 15 -> 10, then fail closed.
-    expect(calls.length).toBeLessThanOrEqual(9);
-    const widths = calls.map((c) => c.to - c.from + 1n);
-    expect(new Set(widths.map(String)).size).toBe(widths.length); // no width requested twice
-    expect(calls.every((c) => c.from === 100n)).toBe(true); // it never advanced on a refusal
+    expect((err as (Error & { cause?: unknown }) | null)?.cause).toBeInstanceOf(Error);
   });
 
-  it("fails closed on a non-range error and on a non-array result", async () => {
-    const rejecting = () => Promise.reject(Object.assign(new Error("Too Many Requests"), { status: 429 }));
-    await expect(runAdaptiveLogScan({ fetchChunk: rejecting, from: 100n, to: 200n })).rejects.toThrow(/refusing to certify a one-shot from a partial scan/);
-    await expect(
-      runAdaptiveLogScan({ fetchChunk: () => Promise.resolve({ nope: true } as never), from: 100n, to: 200n }),
-    ).rejects.toThrow(/non-array result/);
+  it("obeys a Retry-After it was given and refuses one the walk cannot absorb", async () => {
+    // One tile, one throttle: the whole schedule is knowable, so the arithmetic of
+    // "the provider's number wins when it is larger" is pinned exactly.
+    const clock = fakeClock();
+    let calls = 0;
+    const r = await runCertifiedLogScan({
+      fetchChunk: async (from: bigint) => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error(THROTTLED), { code: -32005, retryAfter: "2" });
+        return [{ blockNumber: from }];
+      },
+      from: FROM,
+      to: FROM + 9n,
+      chunkSize: LOG_CHUNK,
+      paceMs: 240,
+      clock,
+      maxAttemptsPerChunk: 3,
+    });
+    expect(r.chunks).toBe(1n);
+    expect(r.retries).toBe(1n);
+    // 2000ms (the provider's) rather than 1000ms (our ladder's first step), then
+    // the pacing gap the penalty opened: 480ms after the retry sleep.
+    expect(clock.waits).toEqual([2_000, 480]);
+    expect(r.paceMs).toBe(480);
+
+    // Ten minutes is not something a CI walk may sleep through. The engine is
+    // allowed to retry (a long wait may end) but only within its own attempt
+    // budget, and it never parks the run on the provider's promise.
+    const clock2 = fakeClock();
+    let calls2 = 0;
+    const err = await runCertifiedLogScan({
+      fetchChunk: async () => {
+        calls2 += 1;
+        throw Object.assign(new Error(THROTTLED), { code: -32005, retryAfter: "600" });
+      },
+      from: FROM,
+      to: FROM + 9n,
+      chunkSize: LOG_CHUNK,
+      paceMs: 240,
+      clock: clock2,
+      maxAttemptsPerChunk: 4,
+      retryAfterCapMs: 120_000,
+    }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(calls2, "a wait the budget cannot absorb is not a throttle to ride out").toBe(1);
+    expect(err?.message).toMatch(/provider asked to wait 600000ms \(> 120000ms budget\)/);
+    expect(err?.message).toMatch(/refusing to certify a one-shot from a partial scan/);
+    expect(clock2.at(), "the ten minutes were never slept through").toBeLessThan(20_000);
   });
 
-  it("enforces the chunk and block budgets BEFORE the first request", async () => {
-    const { calls, fetchChunk } = mock();
-    await expect(runAdaptiveLogScan({ fetchChunk, from: 100n, to: 10_000n, maxChunks: 5n })).rejects.toThrow(/refusing to certify a one-shot from a partial scan/);
-    expect(calls).toEqual([]);
-    await expect(
-      runAdaptiveLogScan({ fetchChunk, from: 100n, to: 100n + MAX_LOG_SCAN_BLOCKS, chunkSize: 1_000n, maxBlocks: MAX_LOG_SCAN_BLOCKS }),
-    ).rejects.toThrow(/refusing to certify a one-shot from a partial scan/);
-    expect(calls).toEqual([]);
-    // The block budget is unchanged by adaptive chunking: 400 000 x the floor.
-    expect(MAX_LOG_SCAN_BLOCKS).toBe(4_000_000n);
-    expect(MAX_LOG_SCAN_BLOCKS).toBe(400_000n * LOG_CHUNK);
-    expect(runnerSource).toContain("maxBlocks: MAX_LOG_SCAN_BLOCKS");
-    expect(runnerSource).toContain("maxChunks: MAX_LOG_CHUNKS");
-    expect(runnerSource).toContain("if (chunks > MAX_LOG_CHUNKS)");
+  it("spends a bounded budget on an unrelenting throttle, then fails closed with the operator message", async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const err = await runCertifiedLogScan({
+      fetchChunk: async () => {
+        calls += 1;
+        throw Object.assign(new Error(THROTTLED), { code: -32005 });
+      },
+      from: FROM,
+      to: FROM + 9n,
+      chunkSize: LOG_CHUNK,
+      paceMs: 240,
+      clock,
+      retryBaseMs: 1_000,
+      retryMaxMs: 20_000,
+    }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(calls).toBe(LOG_SCAN_CHUNK_MAX_ATTEMPTS); // 6, then a hard stop
+    expect(err?.message).toMatch(/could not be read after 6 attempt\(s\)/);
+    expect(err?.message).toMatch(/refusing to certify a one-shot from a partial scan/);
+    // The message an operator reads: what to change, and what was NOT certified.
+    expect(err?.message).toContain(RPC_RATE_LIMITED_MESSAGE);
+    expect(RPC_RATE_LIMITED_MESSAGE).toContain(LOG_SCAN_PACE_ENV);
+    // The schedule is fully deterministic and reviewable: our capped exponential
+    // ladder, alternating with the pacing gaps each rate-limit penalty opened up.
+    // Nothing in it is random — which is what made the old retry loop impossible to
+    // read in a CI log.
+    expect(clock.waits.filter((_, i) => i % 2 === 0)).toEqual([1_000, 2_000, 4_000, 8_000, 16_000]);
+    expect(clock.waits.filter((_, i) => i % 2 === 1)).toEqual([480, 960, 1_920, 3_840, 7_680]);
+    expect(clock.at(), "the whole budget of waits, to the millisecond").toBe(45_880);
+    expect(gatesSource, "the scan has no randomness left in it at all").not.toMatch(/Math\.random/);
   });
+
+  it("never asks a chunk twice in a run: the caller's cache is the single-scan guarantee", async () => {
+    const cache = new Map<string, unknown[]>();
+    const clock = fakeClock();
+    const rpc = freeTierEndpoint({ clock });
+    const opts = { fetchChunk: rpc.fetchChunk, chunkSize: LOG_CHUNK, cache, clock, paceMs: 0 };
+    // The readiness probe reads tile 1…
+    const probe = await runCertifiedLogScan({ ...opts, from: FROM, to: FROM + 9n });
+    // …then the walk covers the whole window, tile 1 included.
+    const full = await runCertifiedLogScan({ ...opts, from: FROM, to: FROM + 29n });
+    expect(probe.requests).toBe(1n);
+    expect(full.requests, "the probed tile is not re-requested").toBe(2n);
+    expect(full.cacheHits).toBe(1n);
+    expect(full.chunks, "three tiles certified, one of them from the cache").toBe(3n);
+    expect(rpc.calls).toHaveLength(3);
+    expect(rpc.calls.map(([a, b]) => `${a}-${b}`)).toEqual([`${FROM}-${FROM + 9n}`, `${FROM + 10n}-${FROM + 19n}`, `${FROM + 20n}-${FROM + 29n}`]);
+    // A second reader of the same window (the live gate re-applying the facts)
+    // costs NOTHING at all.
+    const again = await runCertifiedLogScan({ ...opts, from: FROM, to: FROM + 29n });
+    expect(again.requests).toBe(0n);
+    expect(again.cacheHits).toBe(3n);
+    expect(rpc.calls, "a third reader of the same range costs the endpoint nothing").toHaveLength(3);
+    expect(again.coverage.complete).toBe(true);
+    expect(logScanCacheKey(1n, 10n)).toBe("1-10");
+  });
+
+  it("refuses a malformed answer instead of reading it as an empty history", async () => {
+    for (const answer of [undefined, null, {}, "0x", 42]) {
+      let calls = 0;
+      const err = await runCertifiedLogScan({
+        fetchChunk: async () => {
+          calls += 1;
+          return answer as never;
+        },
+        from: FROM,
+        to: FROM + 9n,
+        chunkSize: LOG_CHUNK,
+        maxAttemptsPerChunk: 6,
+      }).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err?.message, String(answer)).toMatch(/returned a non-array result: refusing to certify/);
+      expect(calls, `a response shape the endpoint will keep producing is not retried (${String(answer)})`).toBe(1);
+    }
+  });
+
+  it("gives up on the time budget before the first request, and mid-walk if the endpoint slows down", async () => {
+    // A budget the plan cannot fit is refused without asking for anything…
+    const clock = fakeClock();
+    const rpc = freeTierEndpoint({ clock });
+    const early = await runCertifiedLogScan({
+      fetchChunk: rpc.fetchChunk,
+      from: FROM,
+      to: TO,
+      chunkSize: LOG_CHUNK,
+      paceMs: 240,
+      clock,
+      startedAtMs: 0,
+      deadlineMs: 1_000,
+    }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(early?.message).toMatch(/cannot certify the whole range inside its 1000ms budget/);
+    expect(early?.message).toMatch(/refusing to certify a one-shot from a partial scan/);
+    expect(rpc.calls).toHaveLength(0);
+    // …and a walk that starts inside the budget but stops being able to finish is
+    // abandoned at the tile where finishing became impossible, rather than being
+    // cut off by CI. The exact tile depends on how fast the endpoint is, so the
+    // invariant asserted is the honest one: it stopped early, and it said so.
+    const slow = fakeClock();
+    const slowRpc = freeTierEndpoint({ clock: slow, latencyMs: 1_000 });
+    const late = await runCertifiedLogScan({
+      fetchChunk: slowRpc.fetchChunk,
+      from: FROM,
+      to: TO,
+      chunkSize: LOG_CHUNK,
+      paceMs: 0,
+      clock: slow,
+      startedAtMs: 0,
+      deadlineMs: 15_000,
+    }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(late?.message).toMatch(/cannot certify the whole range inside its 15000ms budget/);
+    expect(slowRpc.calls.length).toBeGreaterThan(0);
+    expect(slowRpc.calls.length).toBeLessThan(25);
+  });
+
+  it("enforces the request and block budgets before the first request", async () => {
+    for (const [label, opts] of [
+      ["chunks", { maxChunks: 2n }],
+      ["blocks", { maxBlocks: 100n }],
+    ] as const) {
+      let calls = 0;
+      const err = await runCertifiedLogScan({
+        fetchChunk: async () => {
+          calls += 1;
+          return [];
+        },
+        from: FROM,
+        to: TO,
+        chunkSize: LOG_CHUNK,
+        paceMs: 0,
+        ...opts,
+      }).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err?.message, label).toMatch(/refusing to certify a one-shot from a partial scan/);
+      expect(err?.message, label).toMatch(label === "chunks" ? /log scan would need 25 chunks \(> 2\)/ : /log scan covers 250 blocks \(> 100\)/);
+      expect(calls, `${label}: the refusal costs no requests`).toBe(0);
+    }
+    // A budget of exactly the plan's size is legal — the caps are ceilings, not
+    // an excuse to narrow the coverage.
+    const exact = await runCertifiedLogScan({
+      fetchChunk: async () => [],
+      from: FROM,
+      to: TO,
+      chunkSize: LOG_CHUNK,
+      maxChunks: 25n,
+      maxBlocks: 250n,
+      paceMs: 0,
+    });
+    expect(exact.chunks).toBe(25n);
+  });
+
+  it("keeps the runLogScan primitive strict: no pace, no retry, same coverage proof", async () => {
+    let calls = 0;
+    const r = await runLogScan({
+      fetchChunk: async (from: bigint, to: bigint) => {
+        calls += 1;
+        return [{ from, to }];
+      },
+      from: FROM,
+      to: FROM + 19n,
+    });
+    expect(calls).toBe(2);
+    expect(r.chunks).toBe(2n);
+    expect(r.paceMs).toBe(0);
+    expect(r.logs).toHaveLength(2);
+    let thrown: Error | null = null;
+    await runLogScan({
+      fetchChunk: async () => {
+        throw Object.assign(new Error(THROTTLED), { code: -32005 });
+      },
+      from: FROM,
+      to: FROM + 9n,
+    }).catch((e: Error) => {
+      thrown = e;
+    });
+    // The primitive is what the offline harness uses; it must fail on the FIRST
+    // error rather than pace-and-retry, so a test cannot pass by waiting.
+    expect((thrown as Error | null)?.message).toMatch(/could not be read after 1 attempt/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * How the runner is wired to that engine, and why the same history can only be
+ * walked once. These are source pins rather than behavioural ones because the
+ * wiring involves a live endpoint; the behaviour they protect is exercised above.
+ */
+describe("the runner's scan wiring: one certification, awaited outside the read batch", () => {
+  it("probes readiness with the first tile of the certification, not an extra ping", () => {
+    // The probe walks `plan.firstChunk` through the SAME engine, filter, width and
+    // cache, so it is real work that counts towards coverage. That is why there is
+    // no "cost of the probe" to argue about — and why there is no second,
+    // separately-shaped range that could disagree with the walk.
+    expect(runnerSource).toContain("planHistoricalLogScan({");
+    expect(runnerSource).toContain('walk(plan.firstChunk.from, plan.firstChunk.to, "readiness")');
+    expect(runnerSource).toContain("const cache = new Map();");
+    expect(runnerSource).toMatch(/runCertifiedLogScan\(\{\s*\n\s*fetchChunk: requestChunk,[\s\S]{0,400}?cache,/);
+    // One transport call site for the whole historical path, on the pool's
+    // single-attempt interface: the generic retry loop must stay out of the scan,
+    // or one throttle becomes 6 x RPC_MAX_ATTEMPTS requests again.
+    expect(runnerSource.match(/requestOnce\(/g)?.length).toBe(2);
+    expect(runnerSource).toContain("async requestOnce({ method, params }) {");
+    expect(runnerSource).toContain("await rpcPool.requestOnce({ method: \"eth_getLogs\", params })");
+    // No eth_getLogs may be built anywhere else in the runner.
+    expect(runnerSource.match(/method: "eth_getLogs"/g)?.length).toBe(1);
+    // Readiness is decided from the plan the scan will actually walk.
+    expect(runnerSource).toContain("plan: rpcReadiness.plan,");
+    expect(runnerSource).toContain("paceMs: rpcReadiness.paceMs,");
+    expect(runnerSource).toContain("concurrency: rpcReadiness.concurrency,");
+  });
+
+  it("walks deployment -> head exactly once, memoized, outside the Promise.all", () => {
+    expect(runnerSource.match(/historicalScan\.certify\(\)/g)?.length).toBe(1);
+    expect(runnerSource.match(/historicalScan\.probe\(\)/g)?.length).toBe(1);
+    const readsAt = runnerSource.indexOf("const reads = await Promise.all([");
+    const certifyAt = runnerSource.indexOf("await historicalScan.certify()");
+    expect(readsAt).toBeGreaterThan(-1);
+    expect(certifyAt, "the scan must not interleave with the posture reads").toBeGreaterThan(readsAt);
+    // Nothing in the parallel read batch touches eth_getLogs any more, so the walk
+    // is the only consumer of the socket while it runs — and it is awaited alone.
+    expect(runnerSource.slice(readsAt, certifyAt)).not.toMatch(/countPriorSwapEvents|eth_getLogs|priorSwapScanWindow/);
+    expect(runnerSource.match(/historicalScan\.certify\(\)/g)?.length, "exactly one certification per run").toBe(1);
+    expect(runnerSource.slice(0, readsAt), "the scan session is opened before the reads start").toContain("historicalScan");
+    // And both passes of the live gate read the memoized fact instead of rescanning:
+    // the pre-sign pass and the full pass pass the SAME count in.
+    expect(runnerSource).toContain("priorSwapEvents: priorScan.count");
+    // Exactly one consumer: the certified count is recorded once and every later
+    // gate pass reads that memoised fact. A second pass over the history would
+    // appear here as a second reader of `priorScan.count` outside the report.
+    expect(runnerSource.match(/priorSwapEvents: priorScan\.count/g)?.length).toBe(1);
+    expect(runnerSource.match(/priorScan\.count/g)?.length, "one reader of the count, plus the fact record").toBe(2);
+    expect(runnerSource.match(/runCertifiedLogScan\(\{/g)?.length).toBe(1);
+  });
+
+  it("caps the walk at the endpoint's free tier, and proves the cap at runtime", () => {
+    // Not just "the plan says 10": the runner asserts the widest request it
+    // ACTUALLY SENT, from the engine's own measurement, before it lets the
+    // certification count as a pass.
+    expect(runnerSource).toContain("const SCAN_CHUNK = scanChunkSize(env(MAX_LOG_CHUNK_ENV) || LOG_CHUNK)");
+    expect(runnerSource).toContain("const SCAN_PACE_MS = clampPaceMs(env(LOG_SCAN_PACE_ENV))");
+    expect(runnerSource).toMatch(/no eth_getLogs this run made was wider than/);
+    expect(runnerSource).toContain("priorScan.maxRequestBlocks <= FREE_TIER_MAX_LOG_BLOCKS");
+    expect(runnerSource).toContain("BigInt(priorScan.chunkSize) <= FREE_TIER_MAX_LOG_BLOCKS");
+    // Coverage is asserted from the plan the gate already vetted: same from,
+    // reaching at least as far as the head the reads were taken at.
+    expect(runnerSource).toContain("priorScan.from === scanPlan.from");
+    expect(runnerSource).toContain("priorScan.to >= scanPlan.to");
+    expect(runnerSource).toContain("priorScan.contiguous === true");
+  });
+
+  it("reports coverage, progress and the refusal it hit", () => {
+    const f = reportFactNames();
+    for (const name of ["rpcReadiness", "priorSwapScan", "logScanProgress"]) expect(f, name).toContain(name);
+    // The markdown proves completeness rather than asserting it.
+    expect(runnerSource).toContain("Scan coverage");
+    for (const needle of ["requests", "cacheHits", "retries", "rateLimits", "maxRequestBlocks", "contiguous"]) {
+      expect(runnerSource, `the report carries ${needle}`).toContain(`priorScan.${needle}`);
+    }
+    // The tail rounds are the proof that the window's END was covered: the scan
+    // re-reads the tip until head stops moving, and the number of rounds is what a
+    // reviewer needs to judge whether "complete" meant anything.
+    expect(runnerSource).toContain("tailRounds: priorScan.rounds");
+    expect(runnerSource, "the progress fact exists for the run's own sake, not for a test").toMatch(/fact\("logScanProgress",\s*\{/);
+    expect(runnerSource).not.toContain("shrinks");
+    // An abort is a verdict: it appends a FAILING, fatal check row, so no reader
+    // can be shown "N checks passed" by a run that never reached its conclusion.
+    const catchAt = runnerSource.indexOf("report.status = \"aborted\";");
+    expect(catchAt).toBeGreaterThan(-1);
+    const verdict = runnerSource.slice(catchAt, catchAt + 2_000);
+    expect(verdict).toContain("the run reached its verdict (aborted in stage");
+    expect(verdict).toMatch(/false,/);
+    expect(runnerSource).toContain("NOT CERTIFIED:");
+    expect(runnerSource).toContain("certified coverage at the moment it stopped");
+  });
+
+  /** The fact() keys the runner records (used by the report and the workflow). */
+  function reportFactNames(): string[] {
+    return [...runnerSource.matchAll(/fact\("([a-zA-Z]+)"/g)].map((m) => m[1]);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -2627,9 +3338,23 @@ describe("the historical scan filters the pinned wallet as an indexed topic", ()
     // router and intentId are deliberately NOT filtered: a prior swap through any
     // venue or under any intent must still refuse the run.
     expect(f.topics).toHaveLength(2);
-    expect(() => swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 100n, toBlock: 99n })).toThrow();
-    expect(() => swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 0n, toBlock: MAX_SAFE_LOG_CHUNK })).toThrow(/verified/);
-    expect(swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 0n, toBlock: MAX_SAFE_LOG_CHUNK - 1n }).topics).toHaveLength(2);
+    expect(() => swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 100n, toBlock: 99n })).toThrow(/empty\/inverted range/);
+    // The free-tier ceiling is a property of the endpoint, not of the caller: a
+    // 10-block span is fine, an 11-block span is refused by the builder even when
+    // the caller's own `maxChunk` would allow it. There is no "go verify a wider
+    // ceiling" path any more, because asking for one is the bug this fixes.
+    expect(swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 0n, toBlock: FREE_TIER_MAX_LOG_BLOCKS - 1n }).topics).toHaveLength(2);
+    expect(swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 0n, toBlock: FREE_TIER_MAX_LOG_BLOCKS - 1n, maxChunk: LOG_CHUNK }).toBlock).toBe("0x9");
+    // ...and 11 blocks is refused even though `maxChunk` would allow it.
+    expect(() => swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 0n, toBlock: FREE_TIER_MAX_LOG_BLOCKS })).toThrow(/free-tier maximum/);
+    for (const tooWide of [11n, 50n, 200n, 1_000n, 2_000n]) {
+      expect(() => swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 0n, toBlock: tooWide, maxChunk: tooWide }), String(tooWide)).toThrow(
+        /exceeds the 10-block free-tier maximum/,
+      );
+      // An operator ceiling of its own still applies below the free-tier cap, and
+      // it may only be NARROWER: a 6-block ceiling refuses a 10-block request.
+      expect(() => swapExecutedLogFilter({ wallet: SIGNER, fromBlock: 0n, toBlock: 9n, maxChunk: 6n })).toThrow(/configured 6-block limit/);
+    }
   });
 
   it("puts those topics on the wire in the actual eth_getLogs request", async () => {
@@ -2654,13 +3379,22 @@ describe("the historical scan filters the pinned wallet as an indexed topic", ()
   });
 
   it("is what the runner sends, and the runner still re-checks the taker locally", () => {
-    expect(runnerSource).toContain("params: [swapExecutedLogFilter({ wallet, fromBlock, toBlock, maxChunk: MAX_LOG_CHUNK })],");
+    // One filter builder, ONE call site: the readiness chunk and every chunk of
+    // the walk go through the same line, at the same clamped width. That is the
+    // wire-level proof that the probe cannot be a cheaper, narrower ping than
+    // what the certification later relies on — and that no second pass over the
+    // history exists to be found.
+    expect(runnerSource.match(/swapExecutedLogFilter\(\{ wallet, fromBlock, toBlock, maxChunk: SCAN_CHUNK \}\)/g)?.length).toBe(1);
+    expect(runnerSource.match(/method: "eth_getLogs",/g)?.length).toBe(1);
     expect(runnerSource).toContain('method: "eth_getLogs",');
-    expect(runnerSource).toContain("const decoded = parseEventLogs({ abi: DELEGATED_ABI, logs });");
+    // The taker re-check is a function of its own now, because the probe and the
+    // scan must not disagree about what a foreign log means.
+    expect(runnerSource).toContain("decoded = parseEventLogs({ abi: DELEGATED_ABI, logs });");
     expect(runnerSource).toContain("if (!sameAddress(log.args?.taker, wallet))");
     expect(runnerSource).toMatch(/refusing to certify a one-shot from an endpoint that ignores its log filter/);
-    // The pinned wallet is a topic of the readiness probe too.
-    expect(runnerSource).toContain("params: [swapExecutedLogFilter({ wallet, fromBlock, toBlock })],");
+    expect(runnerSource.match(/decodeScanLogs\(/g)?.length, "probe + scan + the definition").toBe(3);
+    // A non-array answer is a refusal, not an empty history.
+    expect(runnerSource).toContain("non-array eth_getLogs result");
   });
 });
 
@@ -2670,9 +3404,21 @@ describe("what this fix must NOT change", () => {
     // The key is read only in the live branch, from the single env var.
     expect(runnerSource.match(/readLiveKey\(\)/g)?.length).toBe(2);
     expect(runnerSource).toContain("ownerAccount = { address: pin.address }; // read-only: no signer, no key");
-    // The readiness gate and the scan take a public client and an address only.
-    expect(runnerSource).toContain("async function probeRpcReadiness(pub, wallet) {");
-    expect(runnerSource).toContain("async function countPriorSwapEvents(pub, wallet) {");
+    // The readiness probe and the scan take a public client, an address and the
+    // pool — never a wallet client, a key or a signer. Their names changed (one
+    // factory now owns both), so the pin is on the capability instead.
+    expect(runnerSource).toContain("function createHistoricalSwapScan({ pub, wallet, rpcPool }) {");
+    const scanImpl = runnerSource.slice(runnerSource.indexOf("function createHistoricalSwapScan"), runnerSource.indexOf("function decodeScanLogs"));
+    for (const forbidden of ["privateKeyToAccount", "signTypedData", "signMessage", "writeContract", "walletClient", "sendRawTransaction", "readLiveKey"]) {
+      expect(scanImpl, forbidden).not.toContain(forbidden);
+    }
+    // ...and the whole historical path speaks to the endpoint through the pool,
+    // one attempt at a time, never through a client that could sign or retry.
+    expect(scanImpl).toContain("rpcPool.requestOnce({ method: \"eth_getLogs\", params })");
+    expect(scanImpl).not.toMatch(/rpcPool\.request\(/);
+    expect(scanImpl).not.toMatch(/Promise\.all/);
+    // The wallet client is still created once, far away from any scan code.
+    expect(runnerSource.match(/createWalletClient\(/g)?.length).toBe(1);
     expect(gatesSource).not.toMatch(/process\.env/);
     expect(gatesSource).not.toMatch(/privateKeyToAccount|signTypedData|signMessage/);
   });

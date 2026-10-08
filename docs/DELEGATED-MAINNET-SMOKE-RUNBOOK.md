@@ -60,57 +60,101 @@ gets tuned. A different size means a different campaign, reviewed as such.
 | Funding | `≥ 0.50 USDC` (500 000 raw) **and** `≥ 0.0002 ETH` | Sent by the operator to the smoke address. The canary can only ever move its own funds; USDC it already holds is what it spends. |
 | One-time Permit2 approval | `USDC.approve(0x000000000022D473030F116dDEE9F6B43aC78BA3, 500000)` — **exactly the gross**, sent once by the smoke wallet itself before the run | **Required.** Permit2's `SignatureTransfer` moves the tokens with `transferFrom` executed *by the Permit2 contract*, so a wallet that never approved Permit2 cannot redeem any witness permit — the gate refuses, and the simulation would revert `Error("TRANSFER_FROM_FAILED")`. This grants Permit2 **no** unilateral power: it can only move the allowance against a live, single-use, witness-bound signature whose spender is this executor and whose output recipient is the signer. A larger (e.g. unlimited) approval still passes but is reported as a non-fatal note; the exact-gross approval is fully consumed by the one canary trade. This repository never creates it — `preflight` tells you if it is missing. |
 | No approval to the executor | deliberately **zero** `allowance(wallet → executor)` **and** zero standing Permit2 `AllowanceTransfer` approval | The delegated path never relies on an executor approval. A non-zero value in either is a **gate failure**, not a convenience. Do not "help" by approving the executor. |
-| **Dedicated Base Mainnet smoke RPC — REQUIRED** | existing secret `BASE_MAINNET_RPC_URL` → `SMOKE_DELEGATED_RPC_URL` | **The one and only endpoint `preflight` and `live` read through.** There is no public fallback list any more and no rotation into free endpoints: the one-shot certification is a full deployment → head `eth_getLogs` walk, so it needs a properly provisioned node. Both jobs refuse to start when the secret is unset or is not `https://`, and the script fails closed inside stage `2b. RPC readiness` (chain id `8453`, readable head at/after the deployment block, a small known `eth_getLogs` with the real scan filter, no `429`/quota response) with an operator message instead of grinding. `rehearsal` is the opposite: it must read the **local anvil fork** (`http://127.0.0.1:8545`) and refuses a remote endpoint. |
-| Optional width knob (non-secret) | variable `SMOKE_DELEGATED_MAX_LOG_CHUNK` | Ceiling for one `eth_getLogs` request, clamped to `[10, 1000]` — it can only ever make the scan **more** conservative, never wider than the reviewed `MAX_SAFE_LOG_CHUNK`. Whatever the ceiling, the endpoint must actually **serve** a probe request of that width before the scan uses it. |
+| **Base Mainnet smoke RPC — REQUIRED** | existing secret `BASE_MAINNET_RPC_URL` → `SMOKE_DELEGATED_RPC_URL` | **The one and only endpoint `preflight` and `live` read through.** There is no public fallback list and no rotation: the whole run walks its deployment → head `eth_getLogs` certification against this one URL, one request at a time. **A free-tier key is a supported configuration for it** — the walk is sized for the free tier rather than for a node that tolerates big ranges (see §3.1) — but *having no endpoint at all* is not, and neither is a list of public ones to grind through. Both jobs refuse to start when the secret is unset or is not `https://`, and the script fails closed inside stage `2b. RPC readiness` with an operator message instead of grinding. `rehearsal` is the opposite: it must read the **local anvil fork** (`http://127.0.0.1:8545`) and refuses a remote endpoint. |
+| Optional width knob (non-secret) | variable `SMOKE_DELEGATED_MAX_LOG_CHUNK` | The `eth_getLogs` tile width, clamped to `[1, 10]` blocks. It may only make each request **narrower** than the default `LOG_CHUNK = 10`: 10 is the free tier's documented maximum range, so a wider request is a guaranteed refusal and cannot be configured at all (the builder rejects it before the wire). More, smaller requests — never a shorter certification. |
+| Optional pace knob (non-secret) | variable `SMOKE_DELEGATED_LOG_SCAN_PACE_MS` | Milliseconds between request **starts**, clamped to `[200, 60 000]`. The default `240` is ~4.2 requests/s ≈ 250 CU/s against a free tier's 300 CUPs/s, so the floor of 200 ms is the endpoint's own throughput ceiling and there is nothing to gain below it; raising it is how an operator protects a key that is shared with other jobs. |
 | Code-hash pin (optional, recommended) | variable `SMOKE_DELEGATED_EXPECTED_CODE_HASH` | If set, the executor's runtime `keccak256(code)` must equal it. The verified deployed runtime hash (`runtimeCodeHash` in `deployments/base-mainnet/mpgr-executor-delegated.json`): `0xc232d9d36cabcefd5f97029d2b4c1f2d60a1b0cd54d020f12d0b517eb3cf085c` — re-read it yourself before pinning. |
 | Kill switch | `MPGR_AUTONOMOUS_EMERGENCY_DISABLE=true` | When set, every mode refuses to start, before any network call. |
 | Second confirmation | the literal phrase `smoke-delegated-base-mainnet` | Needed twice, independently: as the `workflow_dispatch` `confirm` input (job condition) **and** as `SMOKE_DELEGATED_CONFIRM` inside the script (its own gate). A wrong/absent phrase aborts before the key is used. |
 
-## 3.1 The smoke RPC, and why a public endpoint cannot certify the history
+## 3.1 The smoke RPC: what a free endpoint can certify, and how long it takes
 
-> **The historical delegated smoke certification requires a properly provisioned
-> Base Mainnet RPC. Public/free RPC endpoints may enforce range or request-rate
-> limits and are not sufficient for the full deployment-to-head certification.
-> The workflow fails closed instead of certifying from a partial scan.**
+> **A free-tier Base Mainnet RPC is a supported configuration for this
+> certification. The walk is built to stay inside the free tier's documented
+> limits instead of testing them, and a run that cannot certify every block
+> fails closed with an operator message rather than certifying a partial one.**
 
 The one-shot guard's on-chain leg must read **every block from the deployment
 block (`52252520`) to the observed head** — a partial scan is not a
 certification, so the scan is never shortened, never sampled and never
-downgraded to an informational note. That is a lot of `eth_getLogs`:
+downgraded to an informational note. What that costs is arithmetic, not luck:
+a free tier caps one `eth_getLogs` range at **10 blocks** (it rejects wider
+ranges outright) and caps throughput in **compute units per second** (60 CU
+per `eth_getLogs` against a 300 CUPs/s free bucket ≈ 5 requests/s). So the
+certification is a long walk of small, deliberately paced requests:
 
 * **Roles.** `rehearsal` reads only the local anvil fork. `preflight` and `live`
   read only the configured dedicated endpoint (`SMOKE_DELEGATED_RPC_URL`), over
   `https`, and a loopback/RFC-1918/`.local` endpoint is refused there.
-* **Readiness first (stage `2b`).** Before any historical read the script proves
-  the endpoint serves chain `8453`, reports a head at/after the deployment
-  block, answers a small `eth_getLogs` carrying the real filter (executor +
-  `SwapExecuted` topic0 + the pinned wallet as indexed `taker`), and is not
-  answering `429`. Every row is **fatal**.
-* **Verified width, not an assumed one.** The scan starts at the conservative
-  `LOG_CHUNK = 10`-block floor and walks the explicit ladder
-  `10 → 50 → 200 → 1000`, one probe request per rung, stopping at the first
-  width the endpoint refuses. Only the widest width it **actually served** is
-  used, never above `MAX_SAFE_LOG_CHUNK = 1000` (lowerable per endpoint with
-  `SMOKE_DELEGATED_MAX_LOG_CHUNK`). If a range is rejected mid-scan the width is
-  halved and the **same** blocks are re-requested — coverage never moves.
+* **Fixed width, never probed.** `LOG_CHUNK = 10` blocks per request, clamped
+  into `[1, 10]` by `scanChunkSize`, and `swapExecutedLogFilter` **refuses to
+  build** a wider request at call time. There is no width ladder and no probe
+  for a wider range: the previous design walked `10 → 50 → 200 → 1000` and
+  discovered the free tier's ceiling by being rejected by it, which is both the
+  429/`-32600` traffic this workflow exists to stop and a request the endpoint
+  documents as invalid. Width is also the wrong lever: on a CU-limited plan a
+  10-block request and a 1 000-block request cost the same 60 CU.
+* **One in flight, paced start-to-start.** `LOG_SCAN_CONCURRENCY = 1`: the walk
+  is a `for` loop that awaits each tile before planning the next, so no
+  `Promise.all` can put the range on the wire at once, and at most one scan
+  request exists at any moment. Requests are spaced by
+  `LOG_SCAN_PACE_MS = 240` measured between **starts** (a rate cap, not a
+  post-response sleep), so a slow endpoint cannot queue a burst behind it.
+* **Throttles are absorbed, not converted into an abort.** A `429`/quota
+  response doubles the pace (capped at `LOG_SCAN_PACE_PENALTY_MAX_MS = 8 000`
+  ms) and re-reads the **same** tile; a tile gets `LOG_SCAN_CHUNK_MAX_ATTEMPTS
+  = 6` attempts on a deterministic 1 s → 20 s ladder, honouring the provider's
+  `Retry-After` when it fits inside `LOG_SCAN_RETRY_AFTER_MAX_MS = 120 000` ms
+  and refusing the tile when it does not (a CI job does not sleep for ten
+  minutes). Exhausting that budget fails closed with a message that names the
+  pace knob — *not* an instruction to buy a bigger endpoint.
+* **Permanent refusals are not retried.** `classifyRpcError` labels a free-tier
+  range rejection `range-limit`, and `isPermanentScanError` aborts on the first
+  attempt: re-asking for a range the endpoint will always reject is the failure
+  mode this walk removes. The same applies to a response that is not an array
+  (an empty history must never be inferred from a malformed answer).
 * **Indexed filtering.** Every request filters the executor address, the
   `SwapExecuted` topic **and** the pinned wallet as indexed `taker`, so the
   node's log index does the work. `router` and `intentId` are deliberately *not*
   filtered: a prior swap through any venue or under any intent must still refuse
   the run. Coverage stays the full deployment → head range either way.
-* **Rate limits are provisioning failures.** `429`/quota responses get their own
-  finite budget (`RATE_LIMIT_MAX_ATTEMPTS = 4`), honour `Retry-After` when it
-  fits the budget, back off exponentially (capped at 30 s), and then **fail
-  closed**: *"Dedicated smoke RPC is rate-limited; historical preflight
-  certification cannot proceed. Configure a properly provisioned Base Mainnet RPC
-  and rerun."* There is no fallback endpoint to rotate into and no infinite
-  retry. **Do not simply re-run the workflow until it gets lucky** — that
-  re-burns the same public quota; provision the endpoint instead.
-* **Budgets stay fail-closed.** `MAX_LOG_CHUNKS = 400 000` requests and
-  `MAX_LOG_SCAN_BLOCKS = 4 000 000` blocks (the same 400 000 × 10 coverage as
-  before) are both checked **before** the first request; an unreadable chunk, an
-  oversized range or a non-array result aborts the run. A wider chunk makes the
-  same certification cheaper — it never widens or narrows what is certified.
+* **Readiness is proof, not a ping.** Stage `2b` reads chain id, head, and then
+  the **first tile of the certification itself** with the real filter, caching
+  that answer in the run's chunk cache. Readiness therefore costs exactly the
+  work that had to be done anyway, and the walk cannot re-request it.
+* **No duplicate scans.** One `runCertifiedLogScan` walk per run feeds the
+  pre-sign pass and the full pass of the gate alike (`certify()` memoizes the
+  promise), and every tile that has answered lives in a per-run cache keyed by
+  its exact inclusive range. The historical scan is deliberately *outside* the
+  34-read parallel batch so nothing interleaves with it and destroys its pacing.
+* **Budgets are decided before request 1.** `MAX_LOG_CHUNKS = 400 000` requests,
+  `MAX_LOG_SCAN_BLOCKS = 4 000 000` blocks and a wall-clock budget of
+  `LOG_SCAN_TIME_BUDGET_MS = 300 min` are all checked against the plan *before*
+  the walk starts, and the projection is re-checked as tiles complete. Every
+  `timeout-minutes` in the workflow is pinned by a test to exceed that budget, so
+  a run is never killed mid-walk by CI — it refuses, and a refusal reports.
+  The budget is the binding limit, because the window ages: Base produces a
+  block every ~2 s, so **one day of campaign history adds ~43.2k blocks and
+  ~26 minutes of paced scanning**. Today's window (~46.6k blocks, ~4 660
+  requests) walks in ~28 minutes and costs ~0.9 % of a free tier's monthly CU
+  allowance; 300 minutes covers a deployment roughly eleven days old, and
+  GitHub's 6 h job ceiling (~600k blocks) is as much history as a free endpoint
+  can certify in a single run at the rate its own documentation allows. Past
+  that, the honest answer is the one the refusal message gives: raise the budget
+  with the job timeout, or run the read-only certification outside CI.
+* **The tip is certified too.** After the bulk walk the script re-reads the head
+  and walks whatever the chain produced while it was walking — through the same
+  cache, so a tail round costs one request per ten new blocks and re-reads
+  nothing — up to `LOG_SCAN_TAIL_MAX_ROUNDS = 10` rounds, and it aborts if the
+  head will not stand still rather than certify a window already behind it.
+
+What each of those guarantees is worth is visible in the report: the `Scan
+coverage` row states the certified window, the request/reuse counts, the widest
+request actually sent, the pace in force, the retries and rate-limits absorbed,
+and the tail rounds. A run that aborted says `NOT CERTIFIED`, appends a failing
+fatal row carrying the coverage it had reached when it stopped, and — in the
+`live` job — prints the exact command that voids the one-shot claim for this
+campaign instead of leaving a wallet that may have spent its nonce looking clean.
 
 If the endpoint cannot complete the full deployment → head scan, `preflight`
 **fails**. That is the intended outcome: `live` may not start, and no partial
@@ -165,13 +209,13 @@ node script/smoke-delegated-executor-base-mainnet.mjs
 * Log queries are **fork-bounded**: the historical `SwapExecuted` scan covers only the last
   10 blocks of the fork (`REHEARSAL_LOG_WINDOW`) instead of the deployment block onwards.
   Anvil proxies pre-fork `eth_getLogs` to the upstream, which caps the range a single call
-  may span (as low as 10 blocks on public Base endpoints), so an unbounded scan fails
-  there; and the fork-derived principals cannot have real history. `preflight` and `live`
-  scan the full deployment block → observed head window for the pinned wallet **in bounded
-  chunks of at most 10 blocks** (`LOG_CHUNK` in `scripts/delegated-smoke-gates.mjs`):
-  public RPC providers impose `eth_getLogs` range limits (public Base endpoints reject
-  anything above 50 blocks; some cap at 10), so Mainnet historical log scanning is always
-  performed in bounded chunks. The report's "One-shot scan" line states which window was used.
+  may span (10 blocks on a free Base endpoint), so an unbounded scan fails there; and the
+  fork-derived principals cannot have real history anyway. `preflight` and `live` scan the
+  full deployment block → observed head window for the pinned wallet **in paced 10-block
+  tiles, one in flight** (`LOG_CHUNK`/`LOG_SCAN_PACE_MS` in `scripts/delegated-smoke-gates.mjs`,
+  §3.1) — the width is the free tier's documented maximum, so the walk never asks for a
+  range it has been told it cannot have. The report's `Scan coverage` line states which
+  window was used, and the `priorSwapScan` fact says whether it was the rehearsal-bounded one.
 
 ### 4.2 Preflight — strictly read-only against real mainnet
 
@@ -210,7 +254,7 @@ verifies, never broadcasts a creation, and never calls a setter.
 | Layer | Mechanism | Failure it prevents |
 |---|---|---|
 | Deterministic single-use Permit2 nonce | `permitNonce = uint256(keccak256("mpgr-delegated-nonce:<campaign>:<wallet>"))`; the gate reads `nonceBitmap(wallet, nonce >> 8)` and refuses unless that exact bit is **unset**; after a successful swap it is set on-chain, so a replay reverts | re-running the same canary with the same wallet, from any machine, even with the local state deleted |
-| Historical `SwapExecuted` scan | chunked `eth_getLogs` from the deployment block (`52252520`) to the observed head for `taker == wallet` — the executor address, the `SwapExecuted` topic0 **and the pinned wallet as indexed `taker`** are all in the RPC filter, so the node's index does the filtering. Each request is at most the width the **configured endpoint was probed to serve** (stage `2b`; the ladder is `10 → 50 → 200 → 1000`, starting from the conservative `LOG_CHUNK = 10` floor and never above `MAX_SAFE_LOG_CHUNK = 1000`), and a refused range halves the width and re-requests the **same** blocks; any hit refuses. The scan is bounded at `MAX_LOG_CHUNKS = 400 000` requests **and** `MAX_LOG_SCAN_BLOCKS = 4 000 000` blocks (~3 months of Base blocks — the same coverage budget as the 10-block floor implies), both checked before the first request, and it **fails closed** beyond either, on any unreadable chunk, and on any endpoint that ignores its own log filter — provision `BASE_MAINNET_RPC_URL` properly (see §3.1), or (the intended answer) start a new campaign with a new wallet. It never certifies from a partial scan and never falls back to public endpoints. **`rehearsal` scans only the last 10 blocks of the local fork** (`REHEARSAL_LOG_WINDOW` in `scripts/delegated-smoke-gates.mjs`): a local anvil fork does not hold its pre-fork history, so the deployment-block-anchored scan would push hundreds of chunked calls at the fork's upstream, whose `eth_getLogs` range cap (public Base endpoints: as low as 10 blocks) it cannot satisfy — and the fork-only principals cannot have real history anyway. The report's one-shot line marks the rehearsal bound explicitly; `live`/`preflight` keep the full certification | a broadcast that happened outside this workflow's knowledge |
+| Historical `SwapExecuted` scan | One paced `eth_getLogs` walk from the deployment block (`52252520`) to the observed head for `taker == wallet` — the executor address, the `SwapExecuted` topic0 **and the pinned wallet as indexed `taker`** are all in the RPC filter, so the node's index does the filtering. Every request is at most `LOG_CHUNK = 10` blocks (the free tier's documented maximum, enforced by the filter builder itself: a wider request cannot be constructed), exactly one is in flight, requests are paced start-to-start, a failed tile is re-read **as the same tile** and coverage never advances past it, and a tile that answered is never requested twice in a run. Coverage is *proved*, not assumed: the tiles that actually answered are re-verified to tile `deployment → head` with zero gaps, zero overlaps and the final partial chunk intact, and any endpoint that ignores its own log filter is refused. Bounded at `MAX_LOG_CHUNKS = 400 000` requests, `MAX_LOG_SCAN_BLOCKS = 4 000 000` blocks and `LOG_SCAN_TIME_BUDGET_MS = 300 min` — all three checked **before the first request** — and it **fails closed** beyond any of them, on any unreadable tile, and on any gap: the run then says which blocks it had certified when it stopped and refuses to issue a one-shot claim, rather than asking anyone to provision a bigger node or start a new wallet (see §3.1 for what the free tier can and cannot finish in one run). **`rehearsal` scans only the last 10 blocks of the local fork** (`REHEARSAL_LOG_WINDOW`): a local anvil fork does not hold its pre-fork history, so the deployment-anchored walk would push thousands of calls at the fork's upstream, whose range cap it cannot satisfy — and the fork-only principals cannot have real history anyway. The report's one-shot line marks the rehearsal bound explicitly; `live`/`preflight` keep the full certification | a broadcast that happened outside this workflow's knowledge |
 | Local one-shot ledger | `.mpgr-delegated-smoke/<campaign>-8453-<wallet>.json`, created with `O_EXCL` **before** the broadcast, then updated with the tx hash; a recorded broadcast = permanent refusal for that wallet; an interrupted claim needs the operator to echo the recorded `claimId` via `SMOKE_DELEGATED_LEDGER_ACK`; CI caches the directory keyed by the wallet and never cancels a run mid-broadcast | a double-clicked dispatch, a retried job, two concurrent runs |
 
 **Re-running the canary after a success requires a NEW wallet** (new key, new secret, new
@@ -233,7 +277,7 @@ the campaign's own fee arithmetic).
 | 0. environment | preflight/live without the dedicated configured RPC (`SMOKE_DELEGATED_RPC_URL`), or with more than one endpoint (no public fallback list); | unknown/missing mode; no RPC; rehearsal RPC not local or more than one; preflight RPC is a local fork; key present in a keyless mode; malformed key; malformed wallet pin; `live` outside GitHub Actions; emergency kill switch set |
 | 1. signer identity | derived address ≠ pinned address; any denylisted address (v1 smoke wallet, Phase-5/6 canary, deployer, owner, fee recipient, either executor, Permit2, router, quoter, factory, pool, USDC, WETH, zero address); malformed address |
 | 2. committed configuration | missing/renamed config; `contract` not `MPGRExecutorDelegated`; wrong `chainId`/`owner`/`feeRecipient`/`feeBps`/`maxFeeBps`; non-canonical WETH or Permit2; missing or duplicated Uniswap V3 venue; venue/pool/fee drift; token allowlist or decimals drift; `denied.*` drift; Sepolia address used as mainnet infrastructure; deployment record contradicting the pinned executor/tx/block/paused/proxy posture (absent record = non-fatal note, the pins + live reads carry it) |
-| 2b. RPC readiness | no dedicated smoke RPC configured; preflight/live pointed at a local/private/fork or non-`https` endpoint; RPC serves a chain other than `8453`; unreadable head or a head before the deployment block; the small known `eth_getLogs` probe refused; an HTTP `429`/quota response (fails closed with *"Dedicated smoke RPC is rate-limited; historical preflight certification cannot proceed. Configure a properly provisioned Base Mainnet RPC and rerun."*); a scan width outside the reviewed floor/ceiling or wider than the operator's ceiling |
+| 2b. RPC readiness | every row is fatal: no dedicated smoke RPC configured (the message names the secret and says any endpoint that honestly answers `eth_getLogs` is enough); preflight/live pointed at a local/private/fork or non-`https` endpoint, or `rehearsal` pointed at a remote one; RPC serves a chain other than `8453`; unreadable head; a head before the deployment block (reported as "nothing to scan", never as "no prior swap"); the certification's **first tile** refused or answered with a foreign log; a `429`/quota response anywhere in the run; a configured width outside `[1, 10]`; a pace below the free tier's throughput floor or above the penalty ceiling; concurrency other than 1; a plan that is not an exact tiling of `deployment → head`, whose widest request exceeds 10 blocks, or whose `from` is not the pinned deployment block; and a plan whose projected duration exceeds `LOG_SCAN_TIME_BUDGET_MS` (refused up front, with the levers named) |
 | 3–5. live preconditions | wrong chain; no/short executor bytecode; bytecode without the `swapOnBehalfOfUniswapV3` dispatch; code hash ≠ the operator pin; target is the v1 executor; `paused`; `pendingOwner` set; rotated owner/fee recipient; `feeBps != 25`; `MAX_FEE_BPS != 100`; witness type string / struct string / typehash drift; `witnessHashOf` ≠ the local EIP-712 hash; `unwrapNativeOut`; signer is the fee recipient; router kind ≠ 2; token not allowlisted; dead router/quoter/pool code; `factory.getPool` ≠ pinned pool; token decimals drift; a registered typed swap module; `quoteFee` ≠ the local split; fee that rounds to zero; quote outside the $500–$20 000 implied-ETH band; `minOut` above the quote or not the pinned 100 bps; deadline already past, with < 90 s margin, or beyond the 300 s window; wallet short of USDC or of worst-case gas ETH; `maxFeePerGas` > 1 gwei or tip > 0.05 gwei; estimated L2 cost above the cap; **any** standing ERC-20 allowance to the executor; a **missing or short** one-time ERC-20 approval to the Permit2 contract (`< 500000` raw — the state that makes the Permit2 pull revert `TRANSFER_FROM_FAILED`); any standing Permit2 `AllowanceTransfer` allowance; nonce already spent (caller's flag **and** an independent bitmap recomputation); bitmap read for the wrong owner; residue on the executor (USDC/WETH/ETH); a pre-existing executor→router allowance; any prior `SwapExecuted` for this wallet; an existing ledger; simulation of the signed payload reverting (its revert data is decoded and reported — `Error(string)`, `Panic`, or any executor/Permit2/ERC-20 custom error) or returning less than `minOut` (a reverted simulation produces **no** `amountOut`, so that row fails too — it is never satisfied by the quoter's number); calldata not `0x9d5fea22` or not decoding back to the exact params; signature not recovering to the pinned signer; missing/mismatched confirmation phrase (live) |
 | 6–7. post-trade | reverted receipt; `to` not the delegated executor; broadcaster identity wrong for the mode (`live` = self-broadcast, `rehearsal` = the separate relayer); non-zero `value`; wire calldata ≠ the simulated payload; `recipient` or `witness.owner` redirected; foreign `intentId`; permit for the wrong token or more than the gross; zero or multiple `SwapExecuted`; `taker` ≠ signer; wrong router/pair/gross/fee/swap/`feeBps`/`routerKind`/`flags`; `amountOut` below the signed minimum; the owner→executor pull, the executor→fee-recipient 1 250 transfer, the executor→pool 498 750 leg or the WETH-to-owner sum not matching exactly; WETH to any non-owner; wallet USDC delta ≠ −500 000; wallet WETH delta ≠ the event's `amountOut`; fee-recipient delta ≠ 1 250 at the receipt block; residue or a leftover allowance on the executor; the nonce not spent afterwards; broadcast count ≠ 1 |
 

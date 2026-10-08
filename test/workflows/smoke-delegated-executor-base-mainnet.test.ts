@@ -540,18 +540,75 @@ describe("delegated smoke workflow: dedicated mainnet RPC for the historical cer
     expect(live.slice(liveGuardAt, live.indexOf("Refuse to run without the dedicated smoke key"))).toMatch(/exit 1/);
   });
 
-  it("documents that the endpoint must be provisioned, and never hides a 429", () => {
-    expect(workflow).toContain("properly provisioned Base Mainnet RPC");
-    expect(workflow).toContain("public/free endpoints are not sufficient and are not used as fallbacks");
+  it("documents the free-tier contract, and never reports a throttle or an abort as a pass", () => {
+    // The campaign is compatible with a FREE Alchemy Base endpoint and the
+    // workflow has to say so out loud: an operator reading the header (or a
+    // failed annotation) must not be pushed toward a plan upgrade, because none
+    // is needed — the scan is built around the free tier's own numbers.
+    expect(workflow).toMatch(/FREE Alchemy Base endpoint is a\s*\n\s*#\s*supported configuration/);
+    expect(workflow).toContain("A free-tier key is sufficient");
+    expect(workflow).toContain("capped at 10 blocks, issued one at a time, and paced");
+    for (const phrase of ["properly provisioned Base Mainnet RPC", "public/free endpoints are not sufficient"]) {
+      expect(workflow, phrase).not.toContain(phrase);
+    }
+    // A quota response may never be announced as good news...
     expect(workflow).not.toMatch(/::(notice|warning)[^\n]*(429|rate[- ]limit)/i);
+    // ...and neither may an ABORTED run. The "a live run would be allowed" notice
+    // is inside a branch that requires status == "passed", because an aborted run
+    // has no failed checks at all: it died between the last check and the verdict,
+    // which is exactly how three consecutive preflights printed a pass.
+    const preflight = jobText("preflight");
+    expect(preflight).toContain('elif .status != "passed"');
+    expect(preflight).toContain("did not finish");
+    expect(preflight).toContain("a live run is not allowed");
+    expect(jobText("live")).toContain("did not finish");
+    // The pass is only a pass when it can show what it covered.
+    expect(preflight).toContain("one-shot scan certified");
+    expect(preflight).toContain("facts.priorSwapScan.requests");
   });
 
-  it("keeps the optional width knob non-secret, bounded and optional", () => {
-    const preflight = jobText("preflight");
-    expect(preflight).toContain("SMOKE_DELEGATED_MAX_LOG_CHUNK: ${{ vars.SMOKE_DELEGATED_MAX_LOG_CHUNK }}");
-    // It is a VARIABLE (non-secret: it names no endpoint), never a secret.
-    expect(preflight).not.toContain("secrets.SMOKE_DELEGATED_MAX_LOG_CHUNK");
-    expect(jobText("live")).toContain("SMOKE_DELEGATED_MAX_LOG_CHUNK: ${{ vars.SMOKE_DELEGATED_MAX_LOG_CHUNK }}");
+  it("exposes the scan knobs as lowerable-only variables, never as upgrade advice", () => {
+    for (const job of ["preflight", "live"]) {
+      const text = jobText(job);
+      // The width knob and the pace knob exist to make the walk GENTLER. Both are
+      // non-secret variables (they name no endpoint), never secrets, and the
+      // script clamps both into the free-tier envelope, so a repository variable
+      // cannot widen a request or speed the scan past the throughput ceiling.
+      expect(text, job).toContain("SMOKE_DELEGATED_MAX_LOG_CHUNK: ${{ vars.SMOKE_DELEGATED_MAX_LOG_CHUNK }}");
+      expect(text, job).toContain("SMOKE_DELEGATED_LOG_SCAN_PACE_MS: ${{ vars.SMOKE_DELEGATED_LOG_SCAN_PACE_MS }}");
+      expect(text, job).not.toMatch(/secrets\.SMOKE_DELEGATED_(MAX_LOG_CHUNK|LOG_SCAN_PACE_MS)/);
+    }
+    expect(workflow).toMatch(/may only\s*\n\s*# LOWER the walk/);
+    expect(workflow).toMatch(/may only SLOW the walk down/);
+    for (const phrase of ["Upgrade to", "PAYG", "paid plan", "paid tier"]) {
+      expect(workflow, phrase).not.toContain(phrase);
+    }
+  });
+
+  it("gives the paced scan a job timeout that outlives its own budget", () => {
+    // A CI timeout is the one failure mode that leaves no report: the run is
+    // killed mid-walk, and a walk that cannot be finished must REFUSE with an
+    // operator message instead. So the budget that makes the scan refuse
+    // (LOG_SCAN_TIME_BUDGET_MS, in the gates module) must be strictly smaller
+    // than the job timeout, by enough margin for setup, the ~40 posture reads
+    // and the report upload. The constants are read from the shipped sources, so
+    // this fails the moment either side is retuned without the other.
+    const gates = readFileSync(path.resolve(__dirname, "../../scripts/delegated-smoke-gates.mjs"), "utf8");
+    const literal = gates.match(/export const LOG_SCAN_TIME_BUDGET_MS = ([\d\s*()_]+);/);
+    expect(literal, "the scan budget must stay a plain millisecond product").not.toBeNull();
+    const budgetMs = (literal as RegExpMatchArray)[1]
+      .split("*")
+      .map((part) => BigInt(part.trim().replace(/_/g, "")))
+      .reduce((a, b) => a * b, 1n);
+    expect(budgetMs).toBeGreaterThan(0n);
+    for (const job of ["preflight", "live"]) {
+      const minutes = Number(jobKey(jobBlock(job), "timeout-minutes"));
+      expect(Number.isFinite(minutes) && minutes > 0, job).toBe(true);
+      expect(minutes * 60_000 - Number(budgetMs), `${job} must outlive the scan budget`).toBeGreaterThanOrEqual(15 * 60_000);
+    }
+    // The rehearsal stays fast and bounded: it scans the fork's last blocks and
+    // must not inherit the mainnet walk's timeout.
+    expect(Number(jobKey(jobBlock("rehearse"), "timeout-minutes"))).toBeLessThan(30);
   });
 
   it("still cannot reach live without a green rehearsal AND a green preflight", () => {

@@ -233,13 +233,9 @@ export declare const LEDGER_DIR: string;
 export declare const LOG_CHUNK: bigint;
 export declare const REHEARSAL_LOG_WINDOW: bigint;
 
-/** Hard ceiling for one eth_getLogs request; only a PROBED width is ever used. */
-export declare const MAX_SAFE_LOG_CHUNK: bigint;
-/** The explicit ascending widths the readiness probe offers an endpoint. */
-export declare const LOG_CHUNK_PROBE_LADDER: ReadonlyArray<bigint>;
-/** Non-secret operator override for MAX_SAFE_LOG_CHUNK (clamped, never wider). */
+/** Non-secret operator override for the tile width, clamped into [MIN_LOG_CHUNK, FREE_TIER_MAX_LOG_BLOCKS]. */
 export declare const MAX_LOG_CHUNK_ENV: string;
-/** Block budget one run may certify (400 000 x the 10-block floor). */
+/** Block budget one run may certify (the request ceiling x the tile width). */
 export declare const MAX_LOG_SCAN_BLOCKS: bigint;
 /** Bounded 429/quota policy: attempts, backoff and the Retry-After cap. */
 export declare const RATE_LIMIT_MAX_ATTEMPTS: number;
@@ -274,7 +270,7 @@ export declare function priorSwapScanWindow(input: {
   deployBlock?: bigint;
   rehearsal?: boolean;
   window?: bigint;
-}): { from: bigint; to: bigint };
+}): { from: bigint; to: bigint; required: bigint; rehearsalBounded: bigint | null };
 
 /** One inclusive [from, to] eth_getLogs chunk of a bounded historical scan. */
 export interface LogScanChunk {
@@ -302,10 +298,11 @@ export declare function planLogScan(input: {
 }): LogScanChunk[];
 
 /**
- * Runs a bounded historical scan through the injected `fetchChunk`, one
- * planned chunk at a time. FAILS CLOSED: any unreadable chunk rejects (cause
- * preserved) with no partial result, and an optional `maxChunks` budget
- * refuses oversized scans before the first request.
+ * The strict primitive: one pass over the planned chunks with NO pacing and NO
+ * retry (it exists for the offline harness and for callers that bring their own
+ * policy). `runCertifiedLogScan` below is the paced, retrying, cache-sharing walk
+ * the campaign uses; this is that walk with `paceMs: 0, maxAttemptsPerChunk: 1`,
+ * so the coverage proof is identical and a test cannot pass by waiting.
  */
 export declare function runLogScan<T = unknown>(input: {
   fetchChunk: (from: bigint, to: bigint) => Promise<T[]> | T[];
@@ -313,74 +310,221 @@ export declare function runLogScan<T = unknown>(input: {
   to: bigint | number | string;
   chunkSize?: bigint | number | string;
   maxChunks?: bigint | number | string | null;
-}): Promise<LogScanResult<T>>;
+}): Promise<CertifiedLogScanResult<T>>;
 
 /** Clamps a requested eth_getLogs width into [min, max]; rejects garbage. */
 export declare function clampChunkSize(
   value: bigint | number | string,
   bounds?: { min?: bigint | number; max?: bigint | number },
 ): bigint;
-/** Halves a width, never below `min`. Strictly decreasing. */
-export declare function shrinkChunkSize(size: bigint | number | string, min?: bigint | number): bigint;
-/** The strictly-ascending ladder widths above `current`, inside [min, max]. */
-export declare function probeWidthsAbove(
-  current: bigint | number | string,
-  input?: { ladder?: ReadonlyArray<bigint | number>; min?: bigint | number; max?: bigint | number },
-): bigint[];
 
-/** What the readiness probe discovered about one endpoint's eth_getLogs width. */
-export interface LogChunkProbe {
-  chunkSize: bigint;
-  accepted: bigint[];
-  refused: { chunkSize: bigint; detail: string } | null;
-  unavailable: { chunkSize: bigint; detail: string } | null;
+// ---------------------------------------------------------------------------
+// The free-tier certified eth_getLogs walk: the only way this run reads history
+// ---------------------------------------------------------------------------
+
+/**
+ * The widest `eth_getLogs` range a free-tier Base endpoint may be asked for.
+ * Not negotiable, not probed, not operator-configurable upward: it is a property
+ * of the plan the run is on, and a request wider than this is refused before it
+ * reaches the wire.
+ */
+export declare const FREE_TIER_MAX_LOG_BLOCKS: bigint;
+/** The narrowest tile an operator may configure (finest granularity). */
+export declare const MIN_LOG_CHUNK: bigint;
+/** Default pacing between request STARTS, its env override, and its bounds. */
+export declare const LOG_SCAN_PACE_ENV: string;
+export declare const LOG_SCAN_PACE_MS: number;
+export declare const LOG_SCAN_PACE_MIN_MS: number;
+export declare const LOG_SCAN_PACE_MAX_MS: number;
+/** Requests in flight for the scan: ONE, by construction (a single awaited loop). */
+export declare const LOG_SCAN_CONCURRENCY: number;
+/** A rate-limit multiplies the pace by this, capped at the penalty ceiling. */
+export declare const LOG_SCAN_PACE_PENALTY_FACTOR: number;
+export declare const LOG_SCAN_PACE_PENALTY_MAX_MS: number;
+/** Per-request latency allowance, used only to project a plan's duration. */
+export declare const LOG_SCAN_LATENCY_ESTIMATE_MS: number;
+/** The scan's own wall-clock budget, which every scanning job's timeout exceeds. */
+export declare const LOG_SCAN_TIME_BUDGET_MS: number;
+/** Attempts per tile and the ladder behind them (Retry-After wins when larger). */
+export declare const LOG_SCAN_CHUNK_MAX_ATTEMPTS: number;
+export declare const LOG_SCAN_RETRY_BASE_MS: number;
+export declare const LOG_SCAN_RETRY_MAX_MS: number;
+/** A wait longer than this is not a throttle to ride out: the run fails closed. */
+export declare const LOG_SCAN_RETRY_AFTER_MAX_MS: number;
+/** How many extra head re-reads a walk may make before it calls the tip unstable. */
+export declare const LOG_SCAN_TAIL_MAX_ROUNDS: number;
+
+/** The width in force for this run: unset means the reviewed width, garbage throws. */
+export declare function scanChunkSize(requested?: bigint | number | string | null): bigint;
+/** An operator-configured pace, validated and clamped; garbage throws. */
+export declare function clampPaceMs(
+  value?: bigint | number | string | null,
+  bounds?: { min?: number; max?: number; fallback?: number },
+): number;
+/** The pace after one rate-limit: multiplied, floored, capped. 0 stays 0. */
+export declare function nextPaceMs(
+  paceMs: number,
+  opts?: { factor?: number; minMs?: number; maxMs?: number },
+): number;
+/** True when asking the same endpoint for the same thing again cannot help. */
+export declare function isPermanentScanError(
+  err: unknown,
+  opts?: { classify?: (err: unknown) => { kind: string; status: number | null } },
+): boolean;
+
+/** The per-tile retry decision: same tile, bounded attempts, Retry-After-aware. */
+export interface ScanChunkRetryDecision {
+  retry: boolean;
+  waitMs: number;
+  source: "retry-after" | "exponential";
+  reason: string | null;
+}
+export declare function shouldRetryScanChunk(input?: {
+  attempt: number;
+  maxAttempts?: number;
+  retryAfterMs?: number | null;
+  baseMs?: number;
+  maxMs?: number;
+  retryAfterCapMs?: number;
+  jitterMs?: number;
+}): ScanChunkRetryDecision;
+
+/** The key that makes "a tile is read at most once per run" checkable. */
+export declare function logScanCacheKey(from: bigint, to: bigint): string;
+
+/** What a proven tiling says about itself. */
+export interface LogScanPlanProof {
+  chunks: bigint;
+  blocks: bigint;
+  /** The widest single request the plan makes — proven, not announced. */
+  widestRequest: bigint;
+  contiguous: true;
 }
 
 /**
- * Discovers the widest eth_getLogs width an endpoint actually SERVED, one
- * request per width, ascending, stopping at the first refusal or quota error.
- * Throws when even the conservative floor cannot be served.
+ * Proves a chunk list tiles [from, to] exactly (ascending, boundaries included,
+ * no gap, no overlap, every request at most `chunkSize` AND at most the
+ * free-tier maximum, final partial chunk intact). Throws naming the offending
+ * chunk, so a narrower-than-reported window fails the run instead of passing it.
  */
-export declare function probeLogChunkSize(input: {
-  requestChunk: (width: bigint) => Promise<unknown> | unknown;
-  ladder?: ReadonlyArray<bigint | number>;
-  maxChunk?: bigint | number;
-  isRangeError?: (err: unknown) => boolean;
-  isQuotaError?: (err: unknown) => boolean;
-}): Promise<LogChunkProbe>;
+export declare function assertLogScanPlan(input: {
+  plan: ReadonlyArray<LogScanChunk>;
+  from: bigint | number | string;
+  to: bigint | number | string;
+  chunkSize?: bigint | number | string;
+}): LogScanPlanProof;
 
-/** One recorded width reduction during an adaptive scan. */
-export interface LogScanShrink {
+/** The plan one run will execute, and whether it is executable at all. */
+export interface HistoricalLogScanPlan {
   from: bigint;
   to: bigint;
-  at: bigint;
-}
-
-export interface AdaptiveLogScanResult<T = unknown> extends LogScanResult<T> {
-  /** The width in force when the scan finished (only ever narrower than asked). */
+  head: bigint;
   chunkSize: bigint;
-  requestedChunkSize: bigint;
-  shrinks: LogScanShrink[];
+  paceMs: number;
+  budgetMs: number;
+  empty: boolean;
+  blocks: bigint;
+  requests: bigint;
+  widestRequest: bigint;
+  contiguous: boolean;
+  /** `requests * (paceMs + latencyMs)` — the projection the budget is judged on. */
+  estimatedMs: number;
+  withinBudget: boolean;
+  overChunkBudget: boolean;
+  overBlockBudget: boolean;
+  /** The tile the readiness probe reads before the walk, so proof == work. */
+  firstChunk: { from: bigint; to: bigint } | null;
 }
 
 /**
- * The adaptive superset of runLogScan: the same complete, gap-free, ordered
- * certification, allowed to shrink the width when the endpoint refuses a range.
- * Fails closed on anything else, and enforces the chunk/block budgets (worst
- * case, at the floor width) before the first request.
+ * The deployment -> head certification plan: the same pure function the gate,
+ * the walk and the report all call, so the coverage a run announces is the
+ * coverage it is able to certify — and a window it cannot finish inside its
+ * budget is refused here, before the first request, rather than mid-walk.
  */
-export declare function runAdaptiveLogScan<T = unknown>(input: {
+export declare function planHistoricalLogScan(input: {
+  head: bigint | number | string;
+  rehearsal?: boolean;
+  deployBlock?: bigint | number | string;
+  window?: bigint | number | string;
+  chunkSize?: bigint | number | string;
+  maxChunks?: bigint | number | string | null;
+  maxBlocks?: bigint | number | string | null;
+  paceMs?: number;
+  latencyMs?: number;
+  budgetMs?: number;
+}): HistoricalLogScanPlan;
+
+/** The result of a certified walk, including what it cost the endpoint. */
+export interface CertifiedLogScanResult<T = unknown> extends LogScanResult<T> {
+  chunks: bigint;
+  requests: bigint;
+  cacheHits: bigint;
+  retries: bigint;
+  rateLimits: bigint;
+  waitsMs: number;
+  chunkSize: bigint;
+  /** The pace actually in force at the end (penalties applied). */
+  paceMs: number;
+  maxRequestBlocks: bigint;
+  coverage: {
+    from: bigint;
+    to: bigint;
+    blocks: bigint;
+    contiguous: true;
+    complete: true;
+    requests: string;
+    reused: string;
+  };
+}
+
+/** Events a walk reports as it goes (for progress logging and tests). */
+export interface LogScanEvent {
+  type: "request" | "chunk" | "cache" | "retry" | "refused";
+  index?: number;
+  from: bigint;
+  to: bigint;
+  width?: bigint;
+  logs?: number;
+  cached?: boolean;
+  attempt?: number;
+  kind?: string;
+  waitMs?: number;
+  source?: string;
+  paceMs?: number;
+  reason?: string;
+}
+
+/**
+ * The one and only historical walk this run performs. One tile at a time, paced
+ * request-START to request-START, a retry re-reads the SAME tile, an answer is
+ * cached for the rest of the run, budgets are enforced before request 1 and
+ * re-projected during the walk, and the returned result is re-proved against the
+ * window. Any failure rejects: a partial scan is never certifiable.
+ */
+export declare function runCertifiedLogScan<T = unknown>(input: {
   fetchChunk: (from: bigint, to: bigint) => Promise<T[]> | T[];
   from: bigint | number | string;
   to: bigint | number | string;
   chunkSize?: bigint | number | string;
-  maxChunk?: bigint | number | string;
-  minChunk?: bigint | number | string;
   maxChunks?: bigint | number | string | null;
   maxBlocks?: bigint | number | string | null;
-  isRangeError?: (err: unknown) => boolean;
-  onShrink?: (shrink: LogScanShrink & { detail: string }) => void;
-}): Promise<AdaptiveLogScanResult<T>>;
+  cache?: Map<string, T[]> | null;
+  paceMs?: number;
+  paceMinMs?: number;
+  paceMaxMs?: number;
+  maxAttemptsPerChunk?: number;
+  retryBaseMs?: number;
+  retryMaxMs?: number;
+  retryAfterCapMs?: number;
+  deadlineMs?: number | null;
+  startedAtMs?: number | null;
+  latencyEstimateMs?: number;
+  clock?: { now: () => number; sleep: (ms: number) => Promise<void> } | null;
+  classify?: (err: unknown) => { kind: string; status: number | null; retryAfterMs: number | null; reason: string };
+  isPermanent?: (err: unknown) => boolean;
+  onEvent?: ((event: LogScanEvent) => void) | null;
+}): Promise<CertifiedLogScanResult<T>>;
 
 /** How an RPC failure must be treated. */
 export type RpcErrorKind = "rate-limit" | "range-limit" | "revert" | "transient" | "unknown";
@@ -521,16 +665,23 @@ export declare function evaluateModeGuard(input: {
  * row is fatal: a run that cannot read the chain completely may not certify a
  * one-shot and may not broadcast.
  */
+/**
+ * `probe` is the endpoint's answer for `plan.firstChunk` (the walk's own first
+ * tile); `plan` is the caller's `planHistoricalLogScan` result, which the gate
+ * re-derives and re-proves rather than trusting.
+ */
 export declare function evaluateRpcReadiness(input: {
   mode: unknown;
   rpcUrl: unknown;
   chainId: unknown;
   headBlock: unknown;
-  probe: unknown;
+  probe?: unknown;
+  plan?: unknown;
   rateLimited?: unknown;
   retryAfterMs?: unknown;
   chunkSize?: bigint | number | string;
-  requestedChunkSize?: bigint | number | string;
+  paceMs?: number;
+  concurrency?: number;
   deployBlock?: bigint | number | string;
 }): GateResult;
 export declare function evaluateSignerIdentity(input: { mode: unknown; derivedSigner: unknown; pinnedWallet: unknown; extraForbidden?: unknown[] }): GateResult;

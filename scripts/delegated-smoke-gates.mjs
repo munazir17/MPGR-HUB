@@ -232,84 +232,142 @@ export const LEDGER_VERSION = 1;
 export const LEDGER_DIR = ".mpgr-delegated-smoke";
 
 /**
- * The CONSERVATIVE STARTING chunk for the historical SwapExecuted scan.
+ * The ONLY eth_getLogs width this campaign ever requests: 10 blocks.
  *
- * Public Base RPC providers reject wide `eth_getLogs` requests ("eth_getLogs is
- * limited to 0 - 50 blocks range" on the public Base endpoints; Alchemy's Base
- * free tier caps one request at 10 blocks), so a scan that has proven nothing
- * about its endpoint starts here. 10 is the strictest published cap — the value
- * REHEARSAL_LOG_WINDOW already assumed — so it is also the FLOOR: adaptive
- * chunking (see MAX_SAFE_LOG_CHUNK / probeLogChunkSize / runAdaptiveLogScan)
- * may grow a request only after the endpoint has explicitly served one, and may
- * always fall back to this width.
+ * Alchemy documents a hard 10-block maximum `eth_getLogs` range for Base on its
+ * free tier ("Under the Free tier plan, you can make eth_getLogs requests with
+ * up to a 10 block range"); the public Base endpoints are as restrictive or
+ * worse. A request wider than the cap is not slow, it is REJECTED, so asking an
+ * endpoint for 50/200/1000 blocks "to see what it serves" spends throughput on
+ * calls that are already known to fail — which is exactly how runs #6/#7 turned
+ * into a retry storm. There is therefore no probe, no width ladder, no adaptive
+ * widening and no endpoint-verified ceiling anywhere in this path: `LOG_CHUNK` is
+ * simultaneously the floor, the width and the ceiling, and `planLogScan` is the
+ * only thing that decides what gets requested. `swapExecutedLogFilter` asserts
+ * the same bound on the way out, so an oversized request cannot be built.
  *
- * Why not simply stay at 10: the one-shot certification scans deployment -> head.
- * At 10 blocks per request that is (head - DELEGATED_DEPLOY_BLOCK) / 10 separate
- * eth_getLogs calls — tens of thousands of requests within hours of the
- * deployment, which is exactly what exhausted every public/free Base endpoint
- * (HTTP 429, "1rpc usage limit exceeded", compute-unit/sec caps) and failed
- * smoke run #6's preflight. The fix is NOT a smaller chunk, more retries or more
- * public fallbacks: it is one properly provisioned endpoint (see RPC_ENV and
- * evaluateRpcReadiness) plus a chunk width that endpoint has been PROBED to
- * accept, capped by MAX_SAFE_LOG_CHUNK.
+ * The cost of that honesty, and why it is affordable: the certification walks
+ * (head − deployment) / 10 requests, strictly one at a time, paced at
+ * `LOG_SCAN_PACE_MS`. Alchemy prices one `eth_getLogs` at 60 CU and the free
+ * tier at 300 CUPs/s of throughput, so the pacing keeps the scan at ~83% of the
+ * documented ceiling and the whole certification is ~0.8% of the 30M CU month.
+ * Base produces a block every 2s, so one day of history costs ~29 min of paced
+ * scanning; `planHistoricalLogScan` refuses a run BEFORE its first request when
+ * the plan cannot finish inside `LOG_SCAN_TIME_BUDGET_MS`, so a campaign that
+ * has grown too old fails in seconds with an actionable message instead of
+ * after an hour of grinding, and no run is ever killed mid-scan by CI.
  */
 export const LOG_CHUNK = 10n;
 
-/**
- * The HARD CEILING for one eth_getLogs request in the historical scan.
- *
- * It is a ceiling, never an assumption: nothing in this repository or the
- * workflow may assume an endpoint serves a range this wide. A width is used
- * only after `probeLogChunkSize` has watched THIS endpoint answer a real
- * `eth_getLogs` of exactly that width with the real scan filter, and every
- * request the scan issues stays at or below the widest width it accepted.
- *
- * 1 000 blocks is deliberately well below the widest range the well-known
- * providers document (5 000 – 10 000 on paid tiers) so a "properly provisioned"
- * endpoint is not asked for anything exotic, while still cutting the request
- * count of the deployment -> head certification by two orders of magnitude
- * against the 10-block floor. Operators may lower it per endpoint with
- * `SMOKE_DELEGATED_MAX_LOG_CHUNK` (clamped to [LOG_CHUNK, MAX_SAFE_LOG_CHUNK]);
- * raising it means editing this constant in review, with a test.
- */
-export const MAX_SAFE_LOG_CHUNK = 1_000n;
+/** Alchemy's documented Base free-tier maximum `eth_getLogs` range, in blocks. */
+export const FREE_TIER_MAX_LOG_BLOCKS = 10n;
+
+/** The narrowest an operator may set the width (1 block: the strictest API). */
+export const MIN_LOG_CHUNK = 1n;
 
 /**
- * The explicit, ascending widths the readiness probe offers an endpoint, widest
- * last. Every entry is inside [LOG_CHUNK, MAX_SAFE_LOG_CHUNK]; the probe stops
- * at the first width the endpoint refuses (or at the first quota error) and the
- * scan then uses the widest width that was actually SERVED.
- */
-export const LOG_CHUNK_PROBE_LADDER = Object.freeze([10n, 50n, 200n, 1_000n]);
-
-/**
- * Optional, non-secret operator override for MAX_SAFE_LOG_CHUNK (an environment
- * VARIABLE, never a secret: it names no endpoint and grants nothing). Values
- * are clamped to [LOG_CHUNK, MAX_SAFE_LOG_CHUNK] by `clampChunkSize`, so the
- * knob can only ever make the scan MORE conservative, never wider than the
- * reviewed ceiling.
+ * Non-secret operator override for the request WIDTH. It may only ever make the
+ * scan narrower: `clampChunkSize` refuses to raise a value above
+ * FREE_TIER_MAX_LOG_BLOCKS, so no CI configuration can reintroduce a request the
+ * free tier rejects.
  */
 export const MAX_LOG_CHUNK_ENV = "SMOKE_DELEGATED_MAX_LOG_CHUNK";
 
+/** Non-secret operator override for the scan PACE (ms between request starts). */
+export const LOG_SCAN_PACE_ENV = "SMOKE_DELEGATED_LOG_SCAN_PACE_MS";
+
+/**
+ * Pacing of the historical scan — the only thing that decides when a request
+ * leaves the process. It is a minimum spacing between request STARTS (a rate
+ * cap, not an extra sleep after each response), so the request rate is exactly
+ * `1000 / LOG_SCAN_PACE_MS` per second no matter how fast the endpoint answers,
+ * and a slow endpoint can only ever make the scan slower, never burstier.
+ *
+ * 240ms = 4.17 requests/s = ~250 CUPs/s at Alchemy's 60 CU per eth_getLogs,
+ * i.e. under the free tier's 300 CUPs/s throughput with room for the run's other
+ * ~40 reads. Deterministic on purpose (no jitter, no randomness): CI can be
+ * reasoned about, and the tests assert the exact schedule.
+ */
+export const LOG_SCAN_PACE_MS = 240;
+/**
+ * The fastest pace the scan may ever use. 200ms × 60 CU = 300 CUPs/s, exactly
+ * the documented free-tier throughput ceiling: an operator knob may slow the
+ * scan down freely, and may not push it past the ceiling the endpoint publishes.
+ */
+export const LOG_SCAN_PACE_MIN_MS = 200;
+/** The slowest pace the scan may settle at (after rate-limit penalties). */
+export const LOG_SCAN_PACE_MAX_MS = 60_000;
+/**
+ * Requests in flight for the historical scan. ONE, by construction: the scan is
+ * a single `for` loop that awaits each chunk before planning the next, so no
+ * Promise.all (or any other fan-out) can put the deployment→head range on the
+ * wire at once. Exported so a test can pin it.
+ */
+export const LOG_SCAN_CONCURRENCY = 1;
+/** A rate-limit response multiplies the pace by this (never below the floor). */
+export const LOG_SCAN_PACE_PENALTY_FACTOR = 2;
+/** …up to this cap, so a throttled endpoint is respected rather than abandoned. */
+export const LOG_SCAN_PACE_PENALTY_MAX_MS = 8_000;
+/** Per-request latency allowance added to the pacing when estimating the ETA. */
+export const LOG_SCAN_LATENCY_ESTIMATE_MS = 120;
+/**
+ * The scan's own wall-clock budget. It exists so the run fails CLOSED (a clear
+ * refusal, no partial certification) instead of being killed by the CI job
+ * timeout halfway through: the workflow's `timeout-minutes` for every job that
+ * scans is pinned (by a test) to be strictly larger than this plus reserve.
+ *
+ * What the number means in history, which is the only unit that matters here: at
+ * `LOG_SCAN_PACE_MS` per 10-block tile the walk certifies ~166 blocks/s of chain,
+ * and Base produces a block every ~2s, so ONE DAY of campaign age costs ~26
+ * minutes of scanning. 300 minutes therefore covers a deployment roughly eleven
+ * days old (~520k blocks) and the campaign's first run (~46.6k blocks today, ~28
+ * min) with an order of magnitude of headroom. It is not a generous number by
+ * accident: GitHub's job ceiling is 6h, so 300min + reserve is about as much
+ * history as a free-tier endpoint can certify in a single run at the throughput
+ * its documentation allows — beyond that the honest answer is "certify this
+ * window outside CI", which is exactly what the refusal message says.
+ */
+export const LOG_SCAN_TIME_BUDGET_MS = 300 * 60 * 1000;
+/** Attempts per chunk: one request + five retries of the SAME chunk, then stop. */
+export const LOG_SCAN_CHUNK_MAX_ATTEMPTS = 6;
+export const LOG_SCAN_RETRY_BASE_MS = 1_000;
+export const LOG_SCAN_RETRY_MAX_MS = 20_000;
+/** A provider `Retry-After` longer than this cannot be honoured inside a run. */
+export const LOG_SCAN_RETRY_AFTER_MAX_MS = 120_000;
+/**
+ * How many times the walk may chase a head that moved while it was running.
+ * Each round covers every block above the previous round's end (so it converges:
+ * a round costs ~(new blocks / 10) × pace while the chain adds a block every 2s)
+ * and the round cap keeps it finite; past the cap the run fails closed rather
+ * than certifying a window it knows is already behind.
+ */
+export const LOG_SCAN_TAIL_MAX_ROUNDS = 10;
+
 /**
  * Block budget for the historical certification — the number of blocks one run
- * may certify. Unchanged by adaptive chunking: 400 000 chunks × the 10-block
- * floor is the same 4 000 000 blocks (~3 months of Base blocks) the scan has
- * always been allowed, and both this and MAX_LOG_CHUNKS stay fail-closed. A
- * wider chunk makes the same coverage CHEAPER; it never widens what is
- * certified, and an uncovered range still refuses to certify a one-shot.
+ * may certify: 4 000 000 blocks (~3 months of Base 2s blocks) at the fixed
+ * 10-block width, i.e. 400 000 requests, and both this and the runner's
+ * MAX_LOG_CHUNKS stay fail-closed BEFORE the first request. An uncovered range
+ * refuses to certify a one-shot; nothing here ever trades coverage for speed.
+ *
+ * The TIME budget is the binding one on a free-tier endpoint (LOG_SCAN_TIME_
+ * BUDGET_MS), which is why it is checked separately and just as strictly.
  */
 export const MAX_LOG_SCAN_BLOCKS = 4_000_000n;
 
 /**
- * Bounded rate-limit policy for the scan (HTTP 429 / provider quota).
+ * Bounded rate-limit policy for the ordinary reads of a run (HTTP 429 /
+ * provider quota / 5xx).
  *
- * A rate-limited endpoint is a PROVISIONING failure, not something to grind
- * through: the retry budget is small and finite, `Retry-After` is respected
- * when the provider sends it, backoff is exponential and capped, and when the
- * budget is exhausted the run FAILS CLOSED with RPC_RATE_LIMITED_MESSAGE. There
- * is no public-endpoint fallback to rotate into — see evaluateModeGuard's
- * "exactly ONE dedicated configured RPC endpoint" check.
+ * A rate-limited endpoint is a temporary throttle, not something to grind
+ * through and not a cue to rotate into a public list (there is no fallback list:
+ * see evaluateModeGuard's "exactly ONE dedicated configured RPC endpoint"
+ * check). The budget is small and finite, `Retry-After` is respected when the
+ * provider sends it, backoff is exponential, capped and deterministic (no
+ * jitter — CI must be reproducible), and when it is exhausted the run FAILS
+ * CLOSED with RPC_RATE_LIMITED_MESSAGE. The historical scan enforces the same
+ * policy per chunk with its own, gentler constants (LOG_SCAN_*) so that pacing —
+ * not retrying — is what keeps it inside the endpoint's throughput.
  */
 export const RATE_LIMIT_MAX_ATTEMPTS = 4; // 1 request + 3 retries, then fail closed
 export const RATE_LIMIT_BACKOFF_BASE_MS = 1_000;
@@ -319,10 +377,10 @@ export const RETRY_AFTER_MAX_MS = 30_000;
 
 /** The exact operator-facing message for a rate-limited dedicated smoke RPC. */
 export const RPC_RATE_LIMITED_MESSAGE =
-  "Dedicated smoke RPC is rate-limited; historical preflight certification cannot proceed. Configure a properly provisioned Base Mainnet RPC and rerun.";
+  "Dedicated smoke RPC is rate-limited: the paced eth_getLogs certification exhausted its own retry budget. The scan already stays under the endpoint's documented throughput, so this is a temporary throttle — raise SMOKE_DELEGATED_LOG_SCAN_PACE_MS (slower, gentler) and rerun. No partial scan is ever certified.";
 /** The exact operator-facing message for a missing dedicated smoke RPC. */
 export const RPC_MISSING_MESSAGE =
-  "No dedicated smoke RPC is configured: set the SMOKE_DELEGATED_RPC_URL secret (BASE_MAINNET_RPC_URL) to a properly provisioned Base Mainnet RPC. Public/free endpoints are not sufficient for the deployment-to-head certification.";
+  "No dedicated smoke RPC is configured: set the SMOKE_DELEGATED_RPC_URL secret (BASE_MAINNET_RPC_URL) to a Base Mainnet RPC endpoint. The deployment-to-head certification is paced for a free-tier endpoint (<=10 blocks per eth_getLogs, one request in flight, no fallback list), so any endpoint that honestly answers eth_getLogs is sufficient.";
 
 /**
  * Rehearsal-only bound for the historical SwapExecuted scan.
@@ -455,7 +513,8 @@ function bigintOf(value) {
  */
 export function priorSwapScanWindow({ head, deployBlock = DELEGATED_DEPLOY_BLOCK, rehearsal = false, window = REHEARSAL_LOG_WINDOW }) {
   const start = rehearsal ? head - window + 1n : deployBlock;
-  return { from: start > deployBlock ? start : deployBlock, to: head };
+  const from = start > deployBlock ? start : deployBlock;
+  return { from, to: head, required: true, rehearsalBounded: from !== deployBlock };
 }
 
 /**
@@ -484,11 +543,14 @@ export function planLogScan({ from, to, chunkSize = LOG_CHUNK } = {}) {
 }
 
 /**
- * Runs a bounded historical log scan over planLogScan's chunks, in order.
+ * Runs a bounded historical log scan over planLogScan's chunks, in order, with
+ * NO pacing and NO retry: the strict primitive behind `runCertifiedLogScan`.
  *
  * `fetchChunk(from, to)` is the ONLY side effect (the caller injects the
  * eth_getLogs request); this function never issues a request wider than
- * `chunkSize` blocks, never reorders chunks, and never overlaps them.
+ * `chunkSize` blocks (and never wider than the endpoint-independent
+ * FREE_TIER_MAX_LOG_BLOCKS), never reorders chunks, never overlaps them and
+ * never requests a chunk twice.
  *
  * FAILS CLOSED: any chunk that cannot be read rejects with a wrapped error
  * (the underlying cause is preserved) and NO partial result — a one-shot must
@@ -497,52 +559,26 @@ export function planLogScan({ from, to, chunkSize = LOG_CHUNK } = {}) {
  * MAX_LOG_CHUNKS safety cap.
  */
 export async function runLogScan({ fetchChunk, from, to, chunkSize = LOG_CHUNK, maxChunks = null } = {}) {
-  if (typeof fetchChunk !== "function") throw new Error("runLogScan: fetchChunk must be a function");
-  const plan = planLogScan({ from, to, chunkSize });
-  if (maxChunks !== null) {
-    const budget = bigintOf(maxChunks);
-    if (budget === null || budget <= 0n) throw new Error("runLogScan: maxChunks must be a positive integer");
-    if (BigInt(plan.length) > budget) {
-      throw new Error(
-        `log scan would need ${plan.length} chunks (> ${budget}): refusing to certify a one-shot from a partial scan`,
-      );
-    }
-  }
-  const logs = [];
-  for (const chunk of plan) {
-    let part;
-    try {
-      part = await fetchChunk(chunk.from, chunk.to);
-    } catch (err) {
-      throw new Error(
-        `log-scan chunk ${chunk.from}-${chunk.to} could not be read: refusing to certify a one-shot from a partial scan`,
-        { cause: err },
-      );
-    }
-    if (!Array.isArray(part)) {
-      throw new Error(
-        `log-scan chunk ${chunk.from}-${chunk.to} returned a non-array result: refusing to certify a one-shot from a partial scan`,
-      );
-    }
-    for (const item of part) logs.push(item);
-  }
-  return { logs, from: plan[0].from, to: plan[plan.length - 1].to, chunks: BigInt(plan.length) };
+  return runCertifiedLogScan({ fetchChunk, from, to, chunkSize, maxChunks, paceMs: 0, maxAttemptsPerChunk: 1 });
 }
 
 // ---------------------------------------------------------------------------
-// Adaptive chunking — same complete coverage, far fewer requests
+// The certified log scan: complete coverage, <=10 blocks per request, one
+// request in flight, paced, retrying only what is worth retrying
 // ---------------------------------------------------------------------------
 
 /**
  * Clamps a requested chunk width into [min, max] and rejects garbage.
  *
- * `min` defaults to LOG_CHUNK (the reviewed floor) and `max` to
- * MAX_SAFE_LOG_CHUNK (the reviewed ceiling), so an operator-supplied
- * SMOKE_DELEGATED_MAX_LOG_CHUNK can only ever make the scan MORE conservative:
- * a value above the ceiling is capped at it and a value below the floor is
- * raised to it. Nothing here may widen a request past MAX_SAFE_LOG_CHUNK.
+ * `min` defaults to MIN_LOG_CHUNK (1 block) and `max` to FREE_TIER_MAX_LOG_BLOCKS
+ * (10) — the strictest cap any documented Base endpoint puts on one
+ * `eth_getLogs` range. So an operator-supplied SMOKE_DELEGATED_MAX_LOG_CHUNK can
+ * only ever make the scan MORE conservative: a value above 10 is pulled down to
+ * 10 and a value below 1 is raised to 1. Nothing in this repository may widen a
+ * request past the free-tier maximum, which is the whole point: a wider request
+ * is not faster, it is a rejection plus a retry.
  */
-export function clampChunkSize(value, { min = LOG_CHUNK, max = MAX_SAFE_LOG_CHUNK } = {}) {
+export function clampChunkSize(value, { min = MIN_LOG_CHUNK, max = FREE_TIER_MAX_LOG_BLOCKS } = {}) {
   const lo = bigintOf(min);
   const hi = bigintOf(max);
   if (lo === null || hi === null || lo <= 0n || hi < lo) {
@@ -556,199 +592,408 @@ export function clampChunkSize(value, { min = LOG_CHUNK, max = MAX_SAFE_LOG_CHUN
 }
 
 /**
- * The next width a shrink may fall back to: halved, never below `min`.
- * Deterministic and strictly decreasing, so a scan can only shrink a finite
- * number of times before it either succeeds or fails closed.
+ * The width in force for every request this run makes (never above the free-tier
+ * cap). An unset variable (`undefined`, `null`, `""`) means "use the reviewed
+ * width"; a value that is present but not a positive block count is refused by
+ * `clampChunkSize` rather than silently ignored.
  */
-export function shrinkChunkSize(size, min = LOG_CHUNK) {
-  const floor = bigintOf(min) ?? LOG_CHUNK;
-  const current = bigintOf(size);
-  if (current === null || current <= 0n) throw new Error(`shrinkChunkSize: chunk size must be a positive integer (got ${String(size)})`);
-  if (current <= floor) return floor;
-  const halved = current / 2n;
-  return halved < floor ? floor : halved;
+export function scanChunkSize(requested = LOG_CHUNK) {
+  if (requested === null || requested === undefined || requested === "") return LOG_CHUNK;
+  return clampChunkSize(requested, { min: MIN_LOG_CHUNK, max: FREE_TIER_MAX_LOG_BLOCKS });
 }
 
 /**
- * Validates an ascending probe ladder inside [min, max] and returns the widths
- * strictly above `current`. A malformed ladder throws: the probe must never run
- * on widths nobody reviewed.
- */
-export function probeWidthsAbove(current, { ladder = LOG_CHUNK_PROBE_LADDER, min = LOG_CHUNK, max = MAX_SAFE_LOG_CHUNK } = {}) {
-  if (!Array.isArray(ladder) || ladder.length === 0) throw new Error("probeWidthsAbove: ladder must be a non-empty array");
-  const widths = ladder.map((w) => bigintOf(w));
-  if (widths.some((w) => w === null || w <= 0n)) throw new Error("probeWidthsAbove: every ladder entry must be a positive integer");
-  for (let i = 1; i < widths.length; i++) {
-    if (widths[i] <= widths[i - 1]) throw new Error("probeWidthsAbove: ladder must be strictly ascending");
-  }
-  const lo = clampChunkSize(min, { min, max });
-  const hi = clampChunkSize(max, { min, max });
-  // Rungs outside the reviewed window are dropped, not an error: an operator
-  // who lowers the ceiling simply gets a shorter ladder.
-  const usable = widths.filter((w) => w >= lo && w <= hi);
-  if (usable.length === 0) throw new Error(`probeWidthsAbove: ladder has no width inside [${lo}, ${hi}]`);
-  const from = bigintOf(current) ?? lo;
-  return usable.filter((w) => w > from);
-}
-
-/**
- * Discovers the widest eth_getLogs width THIS endpoint actually serves, by
- * asking it — one request per width, ascending, with the real scan filter.
+ * The pace in force for this run: an operator may slow it down, never past the
+ * ceiling, and never below the endpoint's documented throughput.
  *
- * `requestChunk(width)` must issue a real `eth_getLogs` of exactly `width`
- * blocks against the endpoint under test and resolve with the (possibly empty)
- * log array. Rules, all of them deliberate:
- *   * a width is only ever accepted after the endpoint SERVED it — nothing is
- *     assumed from a provider's marketing page, and no width above `maxChunk`
- *     is ever requested;
- *   * the first refusal (a range/size error) stops the probe: the widest
- *     previously served width is the answer, and the refused width is recorded
- *     so it is never retried;
- *   * a quota/429 or any other error also stops the probe instead of hammering
- *     the endpoint — a rate-limited endpoint is a provisioning problem the
- *     caller must fail closed on, not something to keep poking;
- *   * if the CONSERVATIVE floor width itself cannot be served, this throws: a
- *     scan that cannot read even 10 blocks must not run at all.
+ * An UNSET value (`undefined`, `""`) takes the reviewed default. A value that is
+ * present but not a positive number THROWS rather than being ignored: a typo in
+ * SMOKE_DELEGATED_LOG_SCAN_PACE_MS silently re-pacing a 40-minute scan is exactly
+ * the invisible configuration drift this campaign keeps getting burned by, so a
+ * bad value must fail the run in the first second, not show up as a timeout.
  */
-export async function probeLogChunkSize({
-  requestChunk,
-  ladder = LOG_CHUNK_PROBE_LADDER,
-  maxChunk = MAX_SAFE_LOG_CHUNK,
-  isRangeError = (err) => classifyRpcError(err).kind === "range-limit",
-  isQuotaError = (err) => classifyRpcError(err).kind === "rate-limit",
-} = {}) {
-  if (typeof requestChunk !== "function") throw new Error("probeLogChunkSize: requestChunk must be a function");
-  const widths = probeWidthsAbove(0n, { ladder, max: maxChunk });
-  const accepted = [];
-  let refused = null;
-  let unavailable = null;
-  for (const width of widths) {
-    try {
-      await requestChunk(width);
-      accepted.push(width);
-    } catch (err) {
-      if (isRangeError(err)) refused = { chunkSize: width, detail: safeErrorMessage(err) };
-      else unavailable = { chunkSize: width, detail: isQuotaError(err) ? RPC_RATE_LIMITED_MESSAGE : safeErrorMessage(err) };
-      break; // never retry the same width, never keep probing a refusing endpoint
+export function clampPaceMs(value, { min = LOG_SCAN_PACE_MIN_MS, max = LOG_SCAN_PACE_MAX_MS, fallback = LOG_SCAN_PACE_MS } = {}) {
+  const text = typeof value === "string" ? value.trim() : value;
+  if (text === undefined || text === null || text === "") return Math.min(max, Math.max(min, fallback));
+  const raw = typeof text === "number" ? text : Number(text);
+  if (!Number.isFinite(raw) || raw <= 0) throw new Error(`clampPaceMs: pace must be a positive number of milliseconds (got ${String(value)})`);
+  return Math.min(max, Math.max(min, Math.floor(raw)));
+}
+
+/**
+ * The deterministic pace penalty after a rate-limit response: the spacing grows
+ * by a fixed factor and is clamped into [floor, ceiling]. No randomness, and it
+ * never goes below the endpoint's documented throughput ceiling — so a throttled
+ * endpoint is met with FEWER requests per second, never with a retry storm, and
+ * the request schedule stays reproducible in CI and in tests.
+ */
+export function nextPaceMs(paceMs, { factor = LOG_SCAN_PACE_PENALTY_FACTOR, minMs = LOG_SCAN_PACE_MIN_MS, maxMs = LOG_SCAN_PACE_PENALTY_MAX_MS } = {}) {
+  const current = Number(paceMs);
+  if (!Number.isFinite(current) || current < 0) throw new Error(`nextPaceMs: paceMs must be a non-negative number (got ${String(paceMs)})`);
+  if (current === 0) return 0; // an unpaced scan (runLogScan) stays unpaced
+  return Math.min(maxMs, Math.max(minMs, Math.round(current * factor)));
+}
+
+/** A budget constant must be a positive integer; garbage throws instead of disabling the guard. */
+function positiveBudget(value, label) {
+  const n = bigintOf(value);
+  if (n === null || n <= 0n) throw new Error(`${label} must be a positive integer (got ${String(value)})`);
+  return n;
+}
+
+/**
+ * Errors the scan must NEVER retry. A rejected range is deterministic (asking
+ * again asks again), a contract revert is deterministic, and a 4xx answered with
+ * a body is a request the endpoint will always refuse. Everything else
+ * (429/quota, 5xx, timeouts, transport failures) is transient and gets the
+ * bounded, paced retry of `LOG_SCAN_CHUNK_MAX_ATTEMPTS`.
+ */
+export function isPermanentScanError(err, { classify = classifyRpcError } = {}) {
+  const cls = classify(err);
+  if (cls.kind === "range-limit" || cls.kind === "revert") return true;
+  const status = cls.status;
+  return typeof status === "number" && status >= 400 && status < 500 && !RATE_LIMIT_HTTP_STATUSES.includes(status);
+}
+
+/** The per-chunk retry decision: same chunk, bounded attempts, Retry-After-aware. */
+export function shouldRetryScanChunk(input = {}) {
+  return shouldRetryRateLimit({
+    maxAttempts: LOG_SCAN_CHUNK_MAX_ATTEMPTS,
+    baseMs: LOG_SCAN_RETRY_BASE_MS,
+    maxMs: LOG_SCAN_RETRY_MAX_MS,
+    retryAfterCapMs: LOG_SCAN_RETRY_AFTER_MAX_MS,
+    ...input,
+  });
+}
+
+/** The cache key that makes "a chunk is read at most once per run" checkable. */
+export function logScanCacheKey(from, to) {
+  return `${from}-${to}`;
+}
+
+/**
+ * Proves a chunk list tiles [from, to] exactly: ascending, first block included,
+ * last block included, no gap, no overlap, every request at or below
+ * `chunkSize` and at or below the free-tier maximum, and the final partial chunk
+ * intact. It throws naming the offending chunk, so a bug fails the run instead
+ * of quietly certifying a narrower window than the report claims.
+ */
+export function assertLogScanPlan({ plan, from, to, chunkSize = LOG_CHUNK } = {}) {
+  if (!Array.isArray(plan) || plan.length === 0) throw new Error("assertLogScanPlan: plan must be a non-empty array");
+  const start = bigintOf(from);
+  const end = bigintOf(to);
+  const size = bigintOf(chunkSize);
+  if (start === null || end === null) throw new Error("assertLogScanPlan: from/to must be integers");
+  if (size === null || size <= 0n) throw new Error("assertLogScanPlan: chunkSize must be a positive integer");
+  let covered = 0n;
+  let widest = 0n;
+  for (let i = 0; i < plan.length; i++) {
+    const chunk = plan[i];
+    const lo = bigintOf(chunk?.from);
+    const hi = bigintOf(chunk?.to);
+    if (lo === null || hi === null) throw new Error(`assertLogScanPlan: chunk ${i} is not an inclusive {from,to} pair`);
+    if (hi < lo) throw new Error(`assertLogScanPlan: chunk ${i} is inverted (${lo} > ${hi})`);
+    const span = hi - lo + 1n;
+    if (span > size) throw new Error(`assertLogScanPlan: chunk ${i} (${lo}-${hi}) is ${span} blocks, wider than ${size}`);
+    if (span > FREE_TIER_MAX_LOG_BLOCKS) {
+      throw new Error(`assertLogScanPlan: chunk ${i} (${lo}-${hi}) exceeds the ${FREE_TIER_MAX_LOG_BLOCKS}-block free-tier maximum`);
     }
+    if (i === 0 && lo !== start) throw new Error(`assertLogScanPlan: the first chunk must start at ${start}, found ${lo}`);
+    if (i > 0) {
+      const prev = bigintOf(plan[i - 1].to);
+      if (lo !== prev + 1n) throw new Error(`assertLogScanPlan: gap or overlap at chunk ${i}: previous ends ${prev}, this starts ${lo}`);
+    }
+    if (i === plan.length - 1 && hi !== end) throw new Error(`assertLogScanPlan: the last chunk must end at ${end}, found ${hi}`);
+    covered += span;
+    if (span > widest) widest = span;
   }
-  const floor = clampChunkSize(LOG_CHUNK, { max: maxChunk });
-  if (accepted.length === 0) {
-    // Not even the conservative floor was served: there is nothing to certify with.
-    throw new Error(
-      `${refused ? `the endpoint refuses even a ${floor}-block eth_getLogs range` : "the endpoint could not serve a probe eth_getLogs"}: ${
-        (refused ?? unavailable).detail
-      }`,
-    );
+  if (covered !== end - start + 1n) {
+    throw new Error(`assertLogScanPlan: the plan covers ${covered} blocks, not the ${end - start + 1n} requested`);
   }
-  return { chunkSize: accepted[accepted.length - 1], accepted, refused, unavailable };
+  return { chunks: BigInt(plan.length), blocks: covered, widestRequest: widest, contiguous: true };
 }
 
 /**
- * The adaptive superset of `runLogScan`: the same complete, ordered, gap-free
- * certification, but allowed to fall back to narrower requests when THIS
- * endpoint rejects a range.
+ * The exact plan for the deployment -> head one-shot certification, carrying the
+ * numbers the readiness gate needs to decide whether the scan is RUNNABLE at
+ * all: request count, widest request, projected duration and the budgets.
  *
- * Guarantees (identical to runLogScan, and asserted by the tests):
- *   * ascending deterministic order, zero gaps, zero overlaps, first and last
- *     block included, final partial chunk intact;
- *   * no request wider than the width in force, which starts at `chunkSize`
- *     (already clamped to [minChunk, maxChunk]) and only ever DECREASES;
- *   * a width is refused at most once per scan — an oversized range is never
- *     retried indefinitely;
- *   * FAILS CLOSED on any chunk that cannot be read for any other reason, on a
- *     non-array result, and on a range error that arrives at the floor width;
- *   * the chunk and block budgets are enforced BEFORE the first request, using
- *     the WORST case (the floor width), so shrinking can never push the scan
- *     past its budget unnoticed.
- *
- * It never widens: growth happens only in `probeLogChunkSize`, before the scan.
+ * Deliberately a pure function of the observed head, used by the gate, the scan
+ * and the report alike, so the coverage a run certifies cannot drift from the
+ * coverage it announced.
  */
-export async function runAdaptiveLogScan({
+export function planHistoricalLogScan({
+  head,
+  rehearsal = false,
+  deployBlock = DELEGATED_DEPLOY_BLOCK,
+  window = REHEARSAL_LOG_WINDOW,
+  chunkSize = LOG_CHUNK,
+  maxChunks = null,
+  maxBlocks = MAX_LOG_SCAN_BLOCKS,
+  paceMs = LOG_SCAN_PACE_MS,
+  latencyMs = LOG_SCAN_LATENCY_ESTIMATE_MS,
+  budgetMs = LOG_SCAN_TIME_BUDGET_MS,
+} = {}) {
+  const size = scanChunkSize(chunkSize);
+  const headBlock = bigintOf(head);
+  const deploy = bigintOf(deployBlock);
+  if (headBlock === null || deploy === null) throw new Error("planHistoricalLogScan: head/deployBlock must be integers");
+  const { from, to } = priorSwapScanWindow({ head: headBlock, deployBlock: deploy, rehearsal, window });
+  const pace = Number(paceMs);
+  const perRequestMs = pace + Number(latencyMs);
+  const shape = { from, to, head: headBlock, chunkSize: size, paceMs: pace, budgetMs };
+  if (to < from) {
+    // Nothing to scan: the chain has not reached the deployment block yet. The
+    // caller reports it as such — it is never a silent "no prior swap" for a
+    // range that exists.
+    return { ...shape, empty: true, blocks: 0n, requests: 0n, widestRequest: 0n, contiguous: true, estimatedMs: 0, withinBudget: true, overChunkBudget: false, overBlockBudget: false, firstChunk: null };
+  }
+  const plan = planLogScan({ from, to, chunkSize: size });
+  const proof = assertLogScanPlan({ plan, from, to, chunkSize: size });
+  const blocks = to - from + 1n;
+  const firstChunk = { from: plan[0].from, to: plan[0].to };
+  const overBlockBudget = maxBlocks !== null && blocks > positiveBudget(maxBlocks, "maxBlocks");
+  const overChunkBudget = maxChunks !== null && proof.chunks > positiveBudget(maxChunks, "maxChunks");
+  const estimatedMs = Number(proof.chunks) * perRequestMs;
+  return {
+    ...shape,
+    empty: false,
+    blocks,
+    requests: proof.chunks,
+    widestRequest: proof.widestRequest,
+    contiguous: proof.contiguous,
+    estimatedMs,
+    withinBudget: !overChunkBudget && !overBlockBudget && estimatedMs <= Number(budgetMs),
+    overChunkBudget,
+    overBlockBudget,
+    // The tile the readiness probe reads before the walk starts. Exposing it on
+    // the plan is what lets readiness be PROOF OF THE REAL SCAN (chunk 1, real
+    // filter, real width) instead of a separate ping that wastes a request — and
+    // it is the same object the scan reuses from the chunk cache.
+    firstChunk,
+  };
+}
+
+/**
+ * THE historical log scan: one authoritative walk over an inclusive block range,
+ * one request at a time, in exactly the order `planLogScan` produced.
+ *
+ * Every guarantee the campaign depends on lives here, and each is asserted by a
+ * test rather than promised by a comment:
+ *   * COVERAGE — ascending, zero gaps, zero overlaps, first block included, last
+ *     block included, final partial chunk intact; the ranges that actually
+ *     ANSWERED are re-proved before anything is returned, so a scan that cannot
+ *     show it covered every block fails closed instead of reporting a count.
+ *   * WIDTH — every request is at most `chunkSize`, and `chunkSize` is at most
+ *     FREE_TIER_MAX_LOG_BLOCKS (10). There is no probe, no ladder and no
+ *     adaptive growth, so a known-rejected range can never be requested.
+ *   * CONCURRENCY — strictly sequential: the loop awaits one chunk before it
+ *     moves to the next, so at most LOG_SCAN_CONCURRENCY (1) scan requests are in
+ *     flight. No Promise.all, no fan-out, no large pending promise queue.
+ *   * PACING — at least `paceMs` between request STARTS (a rate cap, not a
+ *     post-response sleep), with a deterministic penalty on a rate-limit
+ *     response, so the scan slows itself down instead of hammering.
+ *   * RETRY — a failed chunk is retried AS THAT SAME CHUNK (coverage never
+ *     advances on a failure and never skips a range), only for transient
+ *     failures, only inside a finite budget, honouring the provider's
+ *     `Retry-After`. A permanent refusal aborts immediately: retrying what the
+ *     endpoint will always refuse is the failure mode this module exists to
+ *     remove. It never retries forever.
+ *   * NO DUPLICATE WORK — a chunk is requested at most once per run: results
+ *     land in `cache`, and any caller that re-enters the same window (the
+ *     readiness probe, a tail round, a second gate pass) is served from it.
+ *   * BUDGET — the chunk/block budgets are enforced BEFORE the first request and
+ *     the projected duration is re-checked as the walk proceeds, so an
+ *     unfinishable scan fails CLOSED with an actionable message instead of being
+ *     killed mid-range by a CI timeout.
+ */
+export async function runCertifiedLogScan({
   fetchChunk,
   from,
   to,
   chunkSize = LOG_CHUNK,
-  maxChunk = MAX_SAFE_LOG_CHUNK,
-  minChunk = LOG_CHUNK,
   maxChunks = null,
   maxBlocks = null,
-  isRangeError = (err) => classifyRpcError(err).kind === "range-limit",
-  onShrink = null,
+  cache = null,
+  paceMs = LOG_SCAN_PACE_MS,
+  paceMinMs = LOG_SCAN_PACE_MIN_MS,
+  paceMaxMs = LOG_SCAN_PACE_PENALTY_MAX_MS,
+  maxAttemptsPerChunk = LOG_SCAN_CHUNK_MAX_ATTEMPTS,
+  retryBaseMs = LOG_SCAN_RETRY_BASE_MS,
+  retryMaxMs = LOG_SCAN_RETRY_MAX_MS,
+  retryAfterCapMs = LOG_SCAN_RETRY_AFTER_MAX_MS,
+  deadlineMs = null,
+  startedAtMs = null,
+  latencyEstimateMs = LOG_SCAN_LATENCY_ESTIMATE_MS,
+  clock = null,
+  classify = classifyRpcError,
+  isPermanent = null,
+  onEvent = null,
 } = {}) {
-  if (typeof fetchChunk !== "function") throw new Error("runAdaptiveLogScan: fetchChunk must be a function");
+  if (typeof fetchChunk !== "function") throw new Error("runCertifiedLogScan: fetchChunk must be a function");
   const start = bigintOf(from);
   const end = bigintOf(to);
-  if (start === null || end === null) throw new Error("runAdaptiveLogScan: from/to must be integers");
-  if (start > end) throw new Error(`runAdaptiveLogScan: empty/inverted range (${start} > ${end})`);
-  const floor = clampChunkSize(minChunk, { min: 1n, max: maxChunk });
-  const ceiling = clampChunkSize(maxChunk, { min: floor, max: MAX_SAFE_LOG_CHUNK });
-  let size = clampChunkSize(chunkSize, { min: floor, max: ceiling });
-
+  if (start === null || end === null) throw new Error("runCertifiedLogScan: from/to must be integers");
+  if (start > end) throw new Error(`runCertifiedLogScan: empty/inverted range (${start} > ${end})`);
+  const size = scanChunkSize(chunkSize);
+  const plan = planLogScan({ from: start, to: end, chunkSize: size });
+  // Proved BEFORE any request: a run that reports coverage A->B must be a run
+  // that requested exactly the tiles of A->B, each at most 10 blocks wide.
+  const proof = assertLogScanPlan({ plan, from: start, to: end, chunkSize: size });
   const span = end - start + 1n;
-  if (maxBlocks !== null) {
-    const budget = bigintOf(maxBlocks);
-    if (budget === null || budget <= 0n) throw new Error("runAdaptiveLogScan: maxBlocks must be a positive integer");
-    if (span > budget) {
-      throw new Error(
-        `log scan covers ${span} blocks (> ${budget}): refusing to certify a one-shot from a partial scan`,
-      );
-    }
+  if (maxBlocks !== null && span > positiveBudget(maxBlocks, "maxBlocks")) {
+    throw new Error(`log scan covers ${span} blocks (> ${maxBlocks}): refusing to certify a one-shot from a partial scan`);
   }
-  if (maxChunks !== null) {
-    const budget = bigintOf(maxChunks);
-    if (budget === null || budget <= 0n) throw new Error("runAdaptiveLogScan: maxChunks must be a positive integer");
-    // Worst case: every request at the floor width.
-    const worstCase = (span + floor - 1n) / floor;
-    if (worstCase > budget) {
-      throw new Error(
-        `log scan would need ${worstCase} chunks (> ${budget}): refusing to certify a one-shot from a partial scan`,
-      );
-    }
+  if (maxChunks !== null && proof.chunks > positiveBudget(maxChunks, "maxChunks")) {
+    throw new Error(`log scan would need ${proof.chunks} chunks (> ${maxChunks}): refusing to certify a one-shot from a partial scan`);
   }
+  const chunkCache = cache instanceof Map ? cache : null;
+  const now = clock?.now ?? (() => Date.now());
+  const sleep = clock?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const emit = (event) => {
+    if (typeof onEvent === "function") onEvent(event);
+  };
+  const startedAt = typeof startedAtMs === "number" ? startedAtMs : now();
+  const budget = typeof deadlineMs === "number" && Number.isFinite(deadlineMs) ? deadlineMs : null;
 
   const logs = [];
-  const shrinks = [];
-  const refusedWidths = new Set();
+  const read = [];
+  const seen = chunkCache ?? new Map();
   let requests = 0n;
-  let cursor = start;
-  while (cursor <= end) {
-    const hi = cursor + size - 1n > end ? end : cursor + size - 1n;
-    let part;
-    try {
-      part = await fetchChunk(cursor, hi);
-    } catch (err) {
-      const canShrink = isRangeError(err) && size > floor && !refusedWidths.has(size);
-      if (!canShrink) {
-        throw new Error(
-          `log-scan chunk ${cursor}-${hi} could not be read: refusing to certify a one-shot from a partial scan`,
-          { cause: err },
-        );
-      }
-      refusedWidths.add(size);
-      const next = shrinkChunkSize(size, floor);
-      shrinks.push({ from: size, to: next, at: cursor });
-      if (typeof onShrink === "function") onShrink({ from: size, to: next, at: cursor, detail: safeErrorMessage(err) });
-      size = next; // retry the SAME block from a narrower width — coverage is never skipped
+  let cacheHits = 0n;
+  let retries = 0n;
+  let rateLimits = 0n;
+  let waitsMs = 0;
+  let pace = Number(paceMs);
+  let nextStartAt = 0;
+
+  /** The pacing gate: a minimum spacing between request STARTS, never a burst. */
+  const paceGate = async () => {
+    if (!(pace > 0)) return;
+    const at = now();
+    const allowedAt = Math.max(at, nextStartAt);
+    if (allowedAt > at) {
+      await sleep(allowedAt - at);
+      waitsMs += allowedAt - at;
+    }
+    nextStartAt = Math.max(allowedAt, now()) + pace;
+  };
+
+  for (let i = 0; i < plan.length; i++) {
+    const lo = plan[i].from;
+    const hi = plan[i].to;
+    const key = logScanCacheKey(lo, hi);
+    if (seen.has(key)) {
+      // Already certified earlier in THIS run (the readiness probe, an earlier
+      // tail round): reuse it and never re-request a successful chunk.
+      const cached = seen.get(key);
+      cacheHits += 1n;
+      emit({ type: "cache", index: i, from: lo, to: hi, width: hi - lo + 1n, logs: cached.length, cached: true });
+      for (const item of cached) logs.push(item);
+      read.push({ from: lo, to: hi, cached: true });
       continue;
     }
-    if (!Array.isArray(part)) {
-      throw new Error(
-        `log-scan chunk ${cursor}-${hi} returned a non-array result: refusing to certify a one-shot from a partial scan`,
-      );
+    if (budget !== null) {
+      const remaining = plan.length - i;
+      const projected = now() - startedAt + remaining * (pace + Number(latencyEstimateMs));
+      if (projected > budget) {
+        throw new Error(
+          `log scan cannot certify the whole range inside its ${budget}ms budget (projected ${projected}ms with ${remaining} of ${plan.length} chunk(s) left): refusing to certify a one-shot from a partial scan`,
+        );
+      }
     }
-    for (const item of part) logs.push(item);
+    let part = null;
+    for (let attempt = 1; part === null; attempt++) {
+      await paceGate();
+      emit({ type: "request", index: i, from: lo, to: hi, width: hi - lo + 1n, attempt, paceMs: pace });
+      let failure = null;
+      let raw;
+      try {
+        raw = await fetchChunk(lo, hi);
+      } catch (err) {
+        failure = err;
+      }
+      if (failure === null) {
+        part = raw;
+        break;
+      }
+      const cls = classify(failure);
+      const permanent = typeof isPermanent === "function" ? isPermanent(failure) : isPermanentScanError(failure, { classify });
+      if (permanent) {
+        // Never retried, never skipped, never papered over: the endpoint
+        // refused something it will always refuse at this width.
+        throw new Error(
+          `log-scan chunk ${lo}-${hi} was refused permanently (${cls.kind}: ${safeErrorMessage(failure)}): refusing to certify a one-shot from a partial scan`,
+          { cause: failure },
+        );
+      }
+      const isQuota = cls.kind === "rate-limit";
+      if (isQuota) {
+        rateLimits += 1n;
+        // Deterministic, bounded pressure relief: fewer requests per second from
+        // here on, never faster than the floor, and never an endpoint switch.
+        pace = Math.max(paceMinMs, nextPaceMs(pace, { minMs: paceMinMs, maxMs: paceMaxMs }));
+      }
+      const decision = shouldRetryScanChunk({
+        attempt,
+        maxAttempts: maxAttemptsPerChunk,
+        retryAfterMs: cls.retryAfterMs,
+        baseMs: retryBaseMs,
+        maxMs: retryMaxMs,
+        retryAfterCapMs,
+      });
+      if (!decision.retry) {
+        const why = isQuota ? RPC_RATE_LIMITED_MESSAGE : "the endpoint could not serve this chunk";
+        throw new Error(
+          `log-scan chunk ${lo}-${hi} could not be read after ${attempt} attempt(s) (${decision.reason}; ${why}): refusing to certify a one-shot from a partial scan`,
+          { cause: failure },
+        );
+      }
+      retries += 1n;
+      emit({ type: "retry", index: i, from: lo, to: hi, attempt, waitMs: decision.waitMs, source: decision.source, kind: cls.kind, paceMs: pace });
+      if (decision.waitMs > 0) {
+        await sleep(decision.waitMs);
+        waitsMs += decision.waitMs;
+        nextStartAt = Math.max(nextStartAt, now() + pace); // resume gently, never in a burst
+      }
+    }
+    if (!Array.isArray(part)) {
+      throw new Error(`log-scan chunk ${lo}-${hi} returned a non-array result: refusing to certify a one-shot from a partial scan`);
+    }
+    seen.set(key, part);
     requests += 1n;
-    cursor = hi + 1n;
+    for (const item of part) logs.push(item);
+    read.push({ from: lo, to: hi, cached: false });
+    // Emitted once per SETTLED tile (not per attempt), so a caller can report
+    // "N of M tiles certified through block X" without double-counting a retry.
+    emit({ type: "chunk", index: i, from: lo, to: hi, width: hi - lo + 1n, logs: part.length, cached: false });
   }
+
+  // The certification: re-prove that the chunks that ANSWERED tile the whole
+  // window exactly. A scan that cannot say so does not return a result.
+  const cert = assertLogScanPlan({ plan: read, from: start, to: end, chunkSize: size });
   return {
     logs,
     from: start,
     to: end,
-    chunks: requests,
+    chunks: BigInt(read.length),
+    requests,
+    cacheHits,
+    retries,
+    rateLimits,
+    waitsMs,
     chunkSize: size,
-    requestedChunkSize: clampChunkSize(chunkSize, { min: floor, max: ceiling }),
-    shrinks,
+    paceMs: pace,
+    maxRequestBlocks: cert.widestRequest,
+    coverage: {
+      from: start,
+      to: end,
+      blocks: span,
+      contiguous: true,
+      complete: true,
+      requests: requests.toString(),
+      reused: cacheHits.toString(),
+    },
   };
 }
 
@@ -797,6 +1042,17 @@ const RANGE_LIMIT_TEXT = [
   /eth_getlogs and target block range should/i,
   /block range too large/i,
   /exceeds the range/i,
+  // Alchemy's free-tier refusal for Base, verbatim in shape:
+  //   "Under the Free tier plan, you can make eth_getLogs requests with up to a
+  //    10 block range. ... Upgrade to PAYG for expanded block range."
+  // That is a PERMANENT refusal of the request, not a throttle: asking again asks
+  // again. Classifying it as range-limit is what stops it from being retried
+  // (it used to fall through as "unknown" and burn the whole retry budget).
+  /up to (?:an? )?\d+[- ]block(?:s)? range/i,
+  /free tier plan/i,
+  /expanded block range/i,
+  /\beth_getlogs\b[^\n]{0,80}\bblock range\b/i,
+  /maximum (?:number of )?blocks? (?:per|in) (?:a )?(?:request|query)/i,
 ];
 
 /** Collects every human-readable fragment of a (possibly nested) error. */
@@ -872,7 +1128,11 @@ export function parseRetryAfter(value, { nowMs = Date.now() } = {}) {
  * differently:
  *   `rate-limit`  HTTP 429 / quota / compute-unit cap — a PROVISIONING failure:
  *                 bounded backoff that honours Retry-After, then FAIL CLOSED.
- *   `range-limit` the endpoint refuses a range this wide — shrink the chunk.
+ *   `range-limit` the endpoint refuses a range this wide. There is nothing to
+ *                 shrink TO — the walk is already at the free-tier maximum, so a
+ *                 refusal of that width means the endpoint will never serve this
+ *                 campaign. It is therefore PERMANENT (`isPermanentScanError`) and
+ *                 aborts on the first attempt instead of burning the retry budget.
  *   `revert`      a deterministic eth_call revert — never retried, never masked.
  *   `transient`   network/5xx/timeout — the transport's ordinary bounded retry.
  * Never throws; unknown failures are `unknown` (retried like `transient`).
@@ -1004,8 +1264,11 @@ export function takerTopicFor(wallet) {
  * Full block coverage (deployment -> head) stays mandatory either way; a
  * narrower filter is never a licence to skip blocks.
  *
- * `maxChunk` is the width the selected endpoint was verified to serve, so the
- * builder itself refuses an oversized request rather than trusting its caller.
+ * `maxChunk` may only ever make the request NARROWER: the span is checked
+ * against BOTH the caller's width and the endpoint-independent
+ * FREE_TIER_MAX_LOG_BLOCKS, so an oversized request cannot be built by any
+ * caller in this repository — the builder refuses it rather than trusting the
+ * caller, and the free tier never sees a range it documents as invalid.
  *
  * It returns the exact JSON-RPC `eth_getLogs` parameter object (hex block
  * numbers), not a viem filter: the topics this scan depends on are a safety
@@ -1017,7 +1280,7 @@ export function swapExecutedLogFilter({
   wallet,
   fromBlock,
   toBlock,
-  maxChunk = MAX_SAFE_LOG_CHUNK,
+  maxChunk = FREE_TIER_MAX_LOG_BLOCKS,
 } = {}) {
   const target = normalizeAddress(executor, "executor");
   if (!target.ok) throw new Error(`swapExecutedLogFilter: ${target.detail}`);
@@ -1025,10 +1288,15 @@ export function swapExecutedLogFilter({
   const to = bigintOf(toBlock);
   if (from === null || to === null) throw new Error("swapExecutedLogFilter: fromBlock/toBlock must be integers");
   if (from > to) throw new Error(`swapExecutedLogFilter: empty/inverted range (${from} > ${to})`);
-  const ceiling = clampChunkSize(maxChunk, { min: LOG_CHUNK, max: MAX_SAFE_LOG_CHUNK });
   const span = to - from + 1n;
+  // The free-tier ceiling is absolute: it is not a caller-supplied option, and
+  // no configuration can raise it. This is the last gate before the wire.
+  if (span > FREE_TIER_MAX_LOG_BLOCKS) {
+    throw new Error(`swapExecutedLogFilter: a ${span}-block eth_getLogs request exceeds the ${FREE_TIER_MAX_LOG_BLOCKS}-block free-tier maximum`);
+  }
+  const ceiling = clampChunkSize(maxChunk, { min: MIN_LOG_CHUNK, max: FREE_TIER_MAX_LOG_BLOCKS });
   if (span > ceiling) {
-    throw new Error(`swapExecutedLogFilter: a ${span}-block request exceeds the endpoint's verified ${ceiling}-block limit`);
+    throw new Error(`swapExecutedLogFilter: a ${span}-block request exceeds the configured ${ceiling}-block limit`);
   }
   return {
     address: target.address,
@@ -1045,17 +1313,30 @@ export function swapExecutedLogFilter({
 /**
  * Readiness of the ONE endpoint that will certify the historical one-shot scan.
  *
- * This gate exists so a missing, foreign, fork-shaped or rate-limited RPC fails
- * in seconds with an operator-actionable message instead of after ~13 minutes
- * of grinding tens of thousands of tiny eth_getLogs calls through public
- * endpoints (smoke run #6). It runs BEFORE the scan, in every mode:
+ * This gate exists so a missing, foreign, fork-shaped or throttled RPC fails in
+ * seconds with an operator-actionable message instead of an hour into a paced
+ * walk. It runs BEFORE the scan, in every mode, and it reads the SAME
+ * `planHistoricalLogScan` object the scan walks, so what a run announces and
+ * what a run certifies cannot drift apart. Its rows are the Free-tier contract,
+ * stated as checks:
  *   * rehearsal — the endpoint must BE the local anvil fork (a fork is the
  *     correct and only allowed source there);
  *   * preflight/live — the endpoint must be the configured dedicated mainnet
  *     RPC over https, must not be loopback/private/fork-shaped, must serve
- *     chain 8453, must have a readable head at or after the deployment block,
- *     must have served a small known eth_getLogs with the real scan filter, and
- *     must not be answering with 429/quota errors.
+ *     chain 8453, and must have a readable head at or after the deployment
+ *     block;
+ *   * the probe is NOT a separate ping and NOT a width ladder: it is chunk 1 of
+ *     the certification itself (an eth_getLogs of at most
+ *     FREE_TIER_MAX_LOG_BLOCKS blocks with the real filter, whose result the
+ *     scan then reuses), so readiness is proven with work that counts;
+ *   * every request the plan would make must be within the free-tier maximum —
+ *     asserted from the plan, not trusted from a config;
+ *   * the plan must tile deployment → head exactly (no gap, no overlap);
+ *   * the plan must fit the scan's request, block and TIME budgets, so a campaign
+ *     whose history has outgrown the endpoint's documented throughput is refused
+ *     up front instead of being killed mid-scan;
+ *   * the walk must be sequential and paced (LOG_SCAN_CONCURRENCY = 1), because
+ *     the free tier's limit is a throughput ceiling, not a monthly one.
  * Every row is fatal: a run that cannot read the chain completely may not
  * certify a one-shot, and may not broadcast.
  */
@@ -1065,12 +1346,14 @@ export function evaluateRpcReadiness({
   chainId,
   headBlock,
   probe,
+  plan = null,
   rateLimited = false,
   retryAfterMs = null,
   chunkSize = LOG_CHUNK,
-  requestedChunkSize = LOG_CHUNK,
+  paceMs = LOG_SCAN_PACE_MS,
+  concurrency = LOG_SCAN_CONCURRENCY,
   deployBlock = DELEGATED_DEPLOY_BLOCK,
-}) {
+} = {}) {
   const checks = [];
   const stage = "2b. RPC readiness";
   const push = (name, ok, detail = "") => checks.push({ stage, name, ok: Boolean(ok), detail: String(detail), fatal: true });
@@ -1110,10 +1393,22 @@ export function evaluateRpcReadiness({
   );
 
   const probeOk = probe?.ok === true;
+  // An endpoint that ANSWERS a 1000-block request is not a licence to use it: the
+  // free-tier contract says such a request must not be made at all, and a plan
+  // built on top of an undocumented behaviour is a plan that fails on the next
+  // deployment. So the probe's own reported width is checked here, not just the
+  // configured chunk size — a run that "passed readiness" by asking too much is
+  // refused rather than rewarded.
+  const probeWidth = bigintOf(probe?.width);
+  const probeWidthOk = probeWidth === null || (probeWidth >= 0n && probeWidth <= FREE_TIER_MAX_LOG_BLOCKS);
   push(
-    "the smoke RPC served a small known eth_getLogs (executor + SwapExecuted topic + indexed taker)",
-    probeOk,
-    probeOk ? `${probe.width ?? chunkSize} blocks: ${probe.logs ?? 0} matching log(s)` : `${probe?.detail ?? "no probe result"} — ${rateLimited ? RPC_RATE_LIMITED_MESSAGE : "the historical certification cannot proceed"}`,
+    `the smoke RPC served the certification's first eth_getLogs (<=${FREE_TIER_MAX_LOG_BLOCKS} blocks, executor + SwapExecuted topic + indexed taker)`,
+    probeOk && probeWidthOk,
+    !probeOk
+      ? `${probe?.detail ?? "no probe result"} — ${rateLimited ? RPC_RATE_LIMITED_MESSAGE : "the historical certification cannot proceed"}`
+      : probeWidthOk
+        ? `${probe.from ?? "?"}-${probe.to ?? "?"}: ${probeWidth ?? chunkSize} block(s), ${probe.logs ?? 0} matching log(s)`
+        : `the probe answered a ${probeWidth}-block eth_getLogs, past the ${FREE_TIER_MAX_LOG_BLOCKS}-block free-tier maximum — a certification must be built on the requests the endpoint documents, not on behaviour it tolerates today`,
   );
 
   push(
@@ -1122,13 +1417,45 @@ export function evaluateRpcReadiness({
     rateLimited === true ? `${RPC_RATE_LIMITED_MESSAGE}${retryAfterMs ? ` (Retry-After ${retryAfterMs}ms)` : ""}` : "no quota response observed",
   );
 
-  if (mainnetMode) {
-    const width = bigintOf(chunkSize);
-    const requested = bigintOf(requestedChunkSize);
+  const width = bigintOf(chunkSize);
+  push(
+    `every eth_getLogs this run may issue is <=${FREE_TIER_MAX_LOG_BLOCKS} blocks (the ${mode ?? "run"}'s configured width)`,
+    width !== null && width >= MIN_LOG_CHUNK && width <= FREE_TIER_MAX_LOG_BLOCKS,
+    `${width ?? "unknown"} block(s) per request — the free-tier maximum is ${FREE_TIER_MAX_LOG_BLOCKS}, so a wider request is a rejection, not a speed-up`,
+  );
+
+  if (plan && head !== null && deploy !== null) {
+    const widest = bigintOf(plan.widestRequest);
     push(
-      `the historical scan uses an eth_getLogs width this endpoint SERVED (${width} blocks, ceiling ${MAX_SAFE_LOG_CHUNK})`,
-      width !== null && width >= LOG_CHUNK && width <= MAX_SAFE_LOG_CHUNK && (requested === null || width <= requested),
-      `${width ?? "unknown"} block(s) per request (requested ${requested ?? "?"})`,
+      `the planned requests are all within the free-tier maximum (widest ${widest ?? "?"} blocks)`,
+      widest !== null && widest <= FREE_TIER_MAX_LOG_BLOCKS,
+      `${plan.requests ?? "?"} request(s) of at most ${widest ?? "?"} blocks over ${plan.blocks ?? "?"} blocks`,
+    );
+    // Recomputed HERE rather than trusted from the caller: this mode's required
+    // window is a property of the gate, and a plan that quietly started later (or
+    // stopped earlier) than it must is precisely the partial scan this campaign
+    // refuses to certify. `preflight`/`live` demand the whole deployment->head
+    // history; `rehearsal` is bounded by design to the fork's last
+    // REHEARSAL_LOG_WINDOW blocks, which is why the window — not a literal — is
+    // the thing being asserted.
+    const required = priorSwapScanWindow({ head, rehearsal: mode === MODES.REHEARSAL, deployBlock: deploy, window: REHEARSAL_LOG_WINDOW });
+    push(
+      "the certification plan tiles exactly the window this mode must certify, with zero gaps and zero overlaps",
+      plan.contiguous === true && bigintOf(plan.from) === required.from && bigintOf(plan.to) === required.to,
+      `plan ${plan.from}->${plan.to}, required ${required.from}->${required.to}${required.rehearsalBounded ? ` (rehearsal scans the last ${REHEARSAL_LOG_WINDOW} block(s) of its fork)` : " (deployment -> head)"}${plan.empty === true ? " [empty: the head has not reached the deployment block]" : ""}`,
+    );
+    const pace = Number(paceMs);
+    push(
+      "the walk is sequential and paced (one request in flight, no fan-out over the range)",
+      Number(concurrency) === LOG_SCAN_CONCURRENCY && Number.isFinite(pace) && pace >= LOG_SCAN_PACE_MIN_MS,
+      `concurrency ${String(concurrency)}, ${Number.isFinite(pace) ? pace : "?"}ms between request starts (~${pace > 0 ? (1000 / pace).toFixed(1) : "unlimited"} eth_getLogs/s)`,
+    );
+    push(
+      "the plan fits the scan's request, block and time budgets",
+      plan.withinBudget === true,
+      plan.withinBudget === true
+        ? `${plan.requests} request(s), projected ${Math.round(Number(plan.estimatedMs) / 1000)}s of the ${Math.round(Number(plan.budgetMs ?? LOG_SCAN_TIME_BUDGET_MS) / 1000)}s budget`
+        : `${plan.requests} request(s) of <=${FREE_TIER_MAX_LOG_BLOCKS} blocks over ${plan.blocks} blocks projects ${Math.round(Number(plan.estimatedMs) / 60000)}min at ${paceMs}ms pacing (budget ${Math.round(Number(plan.budgetMs ?? LOG_SCAN_TIME_BUDGET_MS) / 60000)}min)${plan.overChunkBudget ? " — past the request budget" : ""}${plan.overBlockBudget ? " — past the block budget" : ""}. The scan cannot certify this window inside one run, and it will not start a walk it cannot finish: the window is fixed by the pinned deployment block, so the only real levers are a longer LOG_SCAN_TIME_BUDGET_MS with the job's timeout-minutes raised to match (a GitHub job tops out at 6h ~= 600k blocks of Base history at this pace), or running the read-only certification outside CI. No partial scan is ever certified — see docs/DELEGATED-MAINNET-SMOKE-RUNBOOK.md`,
     );
   }
 

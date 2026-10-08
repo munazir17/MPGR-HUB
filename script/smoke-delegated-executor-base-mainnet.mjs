@@ -100,10 +100,16 @@ import {
   LEDGER_DIR_ENV,
   LEDGER_VERSION,
   LOG_CHUNK,
+  LOG_SCAN_CHUNK_MAX_ATTEMPTS,
+  LOG_SCAN_LATENCY_ESTIMATE_MS,
+  LOG_SCAN_CONCURRENCY,
+  LOG_SCAN_PACE_ENV,
+  LOG_SCAN_TAIL_MAX_ROUNDS,
+  LOG_SCAN_TIME_BUDGET_MS,
+  FREE_TIER_MAX_LOG_BLOCKS,
   MAX_FEE_PER_GAS_CAP,
   MAX_LOG_CHUNK_ENV,
   MAX_LOG_SCAN_BLOCKS,
-  MAX_SAFE_LOG_CHUNK,
   MODES,
   NETWORK_LABEL,
   OWNER,
@@ -134,8 +140,8 @@ import {
   blockingFailures,
   buildSwapParams,
   canaryIdentityFor,
-  clampChunkSize,
   classifyRpcError,
+  clampPaceMs,
   describeContractError,
   evaluateConfigPins,
   evaluateLedgerClaim,
@@ -151,15 +157,16 @@ import {
   nonceBitmapWordMarks,
   normalizeAddress,
   parseRetryAfter,
+  planHistoricalLogScan,
   priorSwapScanWindow,
-  probeLogChunkSize,
   RATE_LIMIT_HTTP_STATUSES,
   redact,
   renderTitle,
   rehearsalPrincipal,
-  runAdaptiveLogScan,
+  runCertifiedLogScan,
   safeErrorMessage,
   sameAddress,
+  scanChunkSize,
   shouldRetryRateLimit,
   summarizeChecks,
   swapExecutedLogFilter,
@@ -300,12 +307,18 @@ const REHEARSAL = MODE === MODES.REHEARSAL;
 //   * rehearsal -> the local anvil fork (http://127.0.0.1:8545);
 //   * preflight/live -> the dedicated configured smoke RPC (RPC_ENV, supplied by
 //     the workflow from the BASE_MAINNET_RPC_URL secret).
-// Rotating through public/free Base endpoints used to look like resilience, but
-// the historical certification issues thousands of eth_getLogs calls, so a
-// fallback list only spread the load until EVERY public endpoint answered 429
-// ("1rpc usage limit exceeded", compute-unit/sec caps) — smoke run #6's
-// preflight died that way after ~13 minutes. A rate-limited endpoint is now a
-// fail-closed provisioning error with an operator message, not a cue to grind.
+// Rotating through public Base endpoints used to look like resilience, but the
+// historical certification is a long walk of small eth_getLogs calls, so a
+// fallback list only spread the load until EVERY endpoint answered 429 ("1rpc
+// usage limit exceeded", compute-unit/sec caps) — smoke run #6's preflight died
+// that way after ~13 minutes. A rate-limited endpoint is a fail-closed
+// provisioning error with an operator message, never a cue to grind.
+//
+// The ONE configured endpoint does not have to be provisioned beyond its free
+// tier any more: the walk is capped at the range that tier accepts (10 blocks),
+// runs one request at a time, and paces itself under its CU/s throughput. The
+// price of that is time, and the time is budgeted explicitly
+// (LOG_SCAN_TIME_BUDGET_MS) instead of being paid in retries.
 const RPC_URL = env(RPC_ENV);
 const RPC_URLS = RPC_URL.length > 0 ? [RPC_URL] : [];
 
@@ -316,39 +329,53 @@ const CONFIRM_PHRASE = env("SMOKE_DELEGATED_CONFIRM");
 const EXPECTED_CODE_HASH = env(CODE_HASH_PIN_ENV) || null;
 const EMERGENCY_DISABLED = env(EMERGENCY_ENV).toLowerCase() === "true";
 /**
- * The historical SwapExecuted scan is bounded on three axes, and none of the
- * three may be relaxed to make a run finish.
+ * The historical SwapExecuted scan is bounded on four axes, and none of the four
+ * may be relaxed to make a run finish. All four are decided by the gates module
+ * (`scripts/delegated-smoke-gates.mjs`) against the FREE-TIER behaviour of the
+ * configured Base Mainnet RPC — nothing here assumes a wider endpoint than the
+ * one this workflow is actually pointed at.
  *
  * Window: `live`/`preflight` scan from the deployment block to the observed head
  * (the full one-shot certification). `rehearsal` scans only the last
  * REHEARSAL_LOG_WINDOW blocks of the local fork — see priorSwapScanWindow.
  *
- * Requests: MAX_LOG_CHUNKS caps how many eth_getLogs calls one run may make, and
- * MAX_LOG_SCAN_BLOCKS caps how many blocks it may certify. Both are enforced
- * BEFORE the first request and both FAIL CLOSED — the same ~4M-block budget
- * (400 000 x the 10-block floor) the scan has always had.
+ * Requests: MAX_LOG_CHUNKS caps how many eth_getLogs calls one run may make,
+ * MAX_LOG_SCAN_BLOCKS caps how many blocks it may certify and
+ * LOG_SCAN_TIME_BUDGET_MS caps how long the walk may take. All three are
+ * enforced BEFORE the first request (the time budget is re-checked as the walk
+ * proceeds) and all three FAIL CLOSED — a run that cannot certify every block
+ * refuses, it does not narrow the window to fit.
  *
- * Span: one request is at most MAX_LOG_CHUNK blocks wide, and that width is not
- * assumed — it is the widest width the configured endpoint actually SERVED
- * during the stage-2b probe (see probeLogChunkSize), starting from the
- * conservative LOG_CHUNK (10) floor and never above MAX_SAFE_LOG_CHUNK. A wider
- * verified width makes the identical deployment->head certification two orders
- * of magnitude cheaper; it never narrows the coverage.
+ * Span: one request is at most `SCAN_CHUNK` blocks, and that width is not
+ * probed, negotiated or discovered — it is clamped to FREE_TIER_MAX_LOG_BLOCKS
+ * (10), the strictest maximum any Base endpoint documents (Alchemy's free tier
+ * rejects anything wider outright, with "you can make eth_getLogs requests with
+ * up to a 10 block range"). There is deliberately no width ladder: a request the
+ * plan already knows is invalid costs 60 CU, a retry and the throughput the scan
+ * needs for real coverage — which is what turned runs #6/#7 into a grind.
+ * `swapExecutedLogFilter` re-asserts the bound on the way to the wire, so no
+ * caller can build an oversized request.
+ *
+ * Concurrency: one request in flight, spaced by at least SCAN_PACE_MS
+ * (~4.2 requests/s ≈ 250 CUPs/s against Alchemy's 60 CU per eth_getLogs and the
+ * free tier's 300 CUPs/s throughput). A rate limit slows the scan down; it never
+ * makes it skip a block, re-read a certified one, or switch endpoints.
  */
 const MAX_LOG_CHUNKS = 400_000n;
 /**
- * The widest eth_getLogs this run may ask for. An operator may LOWER it per
- * endpoint with the non-secret SMOKE_DELEGATED_MAX_LOG_CHUNK variable;
- * clampChunkSize refuses to raise it above the reviewed MAX_SAFE_LOG_CHUNK and
- * refuses to drop below the LOG_CHUNK floor, so the knob can only ever make the
- * scan more conservative. The endpoint still has to serve it before it is used.
+ * The eth_getLogs width in force for the whole run. The non-secret
+ * SMOKE_DELEGATED_MAX_LOG_CHUNK variable may only LOWER it (1..10 blocks):
+ * `scanChunkSize` clamps anything wider down to the free-tier maximum, so no CI
+ * configuration can reintroduce a request the endpoint documents as invalid.
  */
-const MAX_LOG_CHUNK = clampChunkSize(env(MAX_LOG_CHUNK_ENV) || MAX_SAFE_LOG_CHUNK, {
-  min: LOG_CHUNK,
-  max: MAX_SAFE_LOG_CHUNK,
-});
-/** The eth_getLogs width in force for the scan; the stage-2b probe raises it. */
-let SCAN_CHUNK = LOG_CHUNK;
+const SCAN_CHUNK = scanChunkSize(env(MAX_LOG_CHUNK_ENV) || LOG_CHUNK);
+/**
+ * Milliseconds between two scan requests. SMOKE_DELEGATED_LOG_SCAN_PACE_MS may
+ * only stretch it, inside [LOG_SCAN_PACE_MIN_MS, 60s]; that floor is exactly the
+ * endpoint's documented throughput ceiling (5 requests/s × 60 CU = 300 CUPs/s),
+ * so even the fastest legal setting cannot burst the bucket that throttled run #7.
+ */
+const SCAN_PACE_MS = clampPaceMs(env(LOG_SCAN_PACE_ENV));
 
 /** The zero signature used ONLY to build and re-decode calldata in preflight. */
 const UNSIGNED_SENTINEL_SIGNATURE = `0x${"00".repeat(65)}`;
@@ -407,9 +434,12 @@ class Abort extends Error {}
 
 /**
  * The dedicated smoke RPC refused to serve the historical certification because
- * it is over quota. Deliberately an Abort: it is a provisioning failure the
- * operator must fix (a properly provisioned Base Mainnet RPC), never something
- * to retry endlessly, paper over with a public fallback, or downgrade to a note.
+ * it is over quota — after the scan already paced itself under the endpoint's
+ * documented throughput and spent its bounded, Retry-After-aware retries on the
+ * chunk that failed. Deliberately an Abort: this is a quota condition the operator
+ * settles outside this run (a gentler SMOKE_DELEGATED_LOG_SCAN_PACE_MS, or waiting
+ * for the quota window to refill), never something to retry endlessly, paper over
+ * with a public fallback list, or downgrade to a note.
  */
 class RpcRateLimited extends Abort {
   constructor(detail) {
@@ -522,6 +552,18 @@ const RPC_MAX_IN_FLIGHT = 2;
 const RPC_FAILS_BEFORE_ROTATE = 2;
 const RPC_TIMEOUT_MS = 30_000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * The deterministic backoff ladder for the ordinary reads (never for the log
+ * scan, which owns its own pacing). Exponential, capped, and deliberately free
+ * of jitter: a CI job must be reproducible and describable in a test, and the
+ * provider's own `Retry-After` — not a random sleep — is what a throttle needs.
+ */
+function rpcRetryBackoffMs(attempt, { baseMs = 400, maxMs = 8_000, steps = 5 } = {}) {
+  const n = Number(attempt);
+  if (!Number.isFinite(n) || n < 1) throw new Error(`rpcRetryBackoffMs: attempt must be >= 1 (got ${String(attempt)})`);
+  return Math.min(maxMs, baseMs * 2 ** Math.min(n - 1, steps));
+}
 
 function rpcLabel(url) {
   if (url === RPC_URL && RPC_URL.length > 0) return REHEARSAL ? "local anvil fork" : "configured RPC (may be a secret endpoint)";
@@ -641,6 +683,42 @@ class RpcPool {
     }
   }
 
+  /**
+   * ONE attempt, no retry loop, no rotation, no in-flight allowance beyond the
+   * pool's own cap. This is what the historical scan calls per chunk: the scan
+   * owns its retry policy (same chunk, bounded attempts, paced), so a second
+   * retry loop underneath it would multiply the attempts per block by
+   * RPC_MAX_ATTEMPTS and turn one throttle into dozens of requests — the exact
+   * failure this path must not have. A permanent refusal (an oversized range, a
+   * malformed request) reaches the scan's classifier on the first attempt and
+   * aborts there instead of being retried twelve times.
+   */
+  async requestOnce({ method, params }) {
+    await this.acquire();
+    try {
+      const ep = this.endpoints[this.active];
+      const result = await ep.transport.request({ method, params });
+      this.observe(method, result);
+      return result;
+    } finally {
+      this.release();
+    }
+  }
+
+  /**
+   * The `Retry-After` of the most recent quota response seen on the RAW
+   * transport, which is how a 429 carrying a JSON-RPC body (viem does not raise
+   * an HttpRequestError for it) still gets honoured by the caller's policy.
+   */
+  lastQuotaRetryAfterMs() {
+    let best = null;
+    for (const ep of this.endpoints) {
+      const ms = ep.quota.lastRetryAfterMs;
+      if (typeof ms === "number" && (best === null || ms > best)) best = ms;
+    }
+    return best;
+  }
+
   async requestInner({ method, params }) {
     let lastErr;
     for (let attempt = 1; attempt <= RPC_MAX_ATTEMPTS; attempt++) {
@@ -685,7 +763,7 @@ class RpcPool {
         this.fails++;
         if (this.fails >= RPC_FAILS_BEFORE_ROTATE) this.rotate(`${method}: ${errText(err)}`);
         if (attempt < RPC_MAX_ATTEMPTS) {
-          const backoff = Math.min(8_000, 400 * 2 ** Math.min(attempt - 1, 5)) + Math.floor(Math.random() * 300);
+          const backoff = rpcRetryBackoffMs(attempt);
           console.log(`RPC   retry ${attempt}/${RPC_MAX_ATTEMPTS - 1} ${method} on ${ep.label} in ${backoff}ms: ${redact(errText(err), SECRETS).slice(0, 160)}`);
           await sleep(backoff);
         }
@@ -730,174 +808,429 @@ async function probeMappingSlot(pub, token, callData, expected, keyForSlot) {
 }
 
 /**
- * The RPC readiness probe that runs BEFORE the historical certification.
+ * The run's ONE historical SwapExecuted certification — the on-chain half of the
+ * one-shot guard, and the ONLY place in this script that asks the endpoint for
+ * historical logs.
  *
- * It answers, in seconds and with a handful of requests, the question run #6
- * answered in ~13 minutes of grinding tens of thousands of eth_getLogs calls
- * through public endpoints: is THIS endpoint actually able to certify the
- * deployment -> head scan?
+ * Everything mechanical about the walk lives in `runCertifiedLogScan`
+ * (`scripts/delegated-smoke-gates.mjs`): the 10-block ceiling, the contiguous
+ * plan, one request in flight, the pacing, the per-chunk retry policy and the
+ * final coverage proof. That function is unit-tested against a simulated
+ * Free-tier endpoint, so this factory only supplies the three things the runner
+ * alone knows: how to make one `eth_getLogs` on THIS endpoint, what the returned
+ * logs mean for the one-shot guard, and how to be sure the same history is never
+ * walked twice inside one run.
  *
- *   1. the endpoint serves chain 8453;
- *   2. it reports a readable head block;
- *   3. it serves a SMALL known eth_getLogs carrying the real scan filter
- *      (executor address + SwapExecuted topic0 + the pinned wallet as indexed
- *      topic1);
- *   4. for preflight/live it then discovers the widest eth_getLogs width it
- *      actually serves, ascending the explicit LOG_CHUNK_PROBE_LADDER and
- *      stopping at the first refusal or the first quota response — never
- *      assuming MAX_SAFE_LOG_CHUNK.
- *
- * Rehearsal deliberately does NOT probe widths: it reads the local anvil fork,
- * its scan is a single REHEARSAL_LOG_WINDOW request, and poking the fork's
- * upstream for wide ranges would be exactly the behaviour this design removes.
- * Every failure is returned as a fact for evaluateRpcReadiness to turn into a
- * fatal check — this function never decides anything itself.
+ * Three properties, all structural rather than hopeful:
+ *   1. the stage-2b readiness probe is NOT a separate ping and NOT a width
+ *      ladder. It is chunk 1 of the certification itself — same filter, same
+ *      ≤10-block width, same retry policy — and its result goes into this scan's
+ *      chunk cache. Readiness therefore costs exactly the work that had to be
+ *      done anyway, and no request this run makes is one the plan already knows
+ *      the endpoint would reject.
+ *   2. `certify()` memoizes its promise: stage 3, the pre-sign pass and the full
+ *      pass of the gate all await the SAME scan, so the deployment→head range is
+ *      walked once per run however many readers want the answer — and never from
+ *      inside a `Promise.all`, where it would interleave with the other 35 reads
+ *      and destroy its own pacing.
+ *   3. after the bulk walk it re-reads the head and certifies whatever the chain
+ *      produced while it was walking — through the same cache, so a tail round
+ *      costs one request per TEN NEW BLOCKS and re-reads nothing. The certified
+ *      window therefore ends at a head observed AFTER the walk, not at one
+ *      glimpsed before it.
  */
-async function probeRpcReadiness(pub, wallet) {
-  // The topic0 pinned in the gates module must be the topic0 of the ABI this
-  // runner decodes with; a drift would silently narrow the historical scan.
-  const abiTopic = getEventSelector(SWAP_EXECUTED_EVENT);
-  if (abiTopic !== SWAP_EXECUTED_TOPIC) {
-    throw new Abort(`SwapExecuted topic0 drift: the ABI hashes to ${abiTopic} but the scan filter pins ${SWAP_EXECUTED_TOPIC}`);
-  }
-  const facts = {
-    role: MODE,
-    endpoint: rpcLabel(RPC_URL),
-    requestedMaxChunk: MAX_LOG_CHUNK.toString(),
-    reviewedCeiling: MAX_SAFE_LOG_CHUNK.toString(),
-    chainId: null,
-    head: null,
-    probe: null,
-    probedWidths: [],
-    refusedWidth: null,
-    chunkSize: REHEARSAL ? LOG_CHUNK.toString() : null,
-    rateLimited: false,
-    retryAfterMs: null,
+function createHistoricalSwapScan({ pub, wallet, rpcPool }) {
+  /** Every chunk this run has certified, keyed by its exact inclusive range. */
+  const cache = new Map();
+  const quota = { hits: 0, lastRetryAfterMs: null };
+  const state = { head: null, plan: null, startedAt: null, rounds: 0 };
+  /**
+   * Live progress of the walk, recorded as a fact and printed every 250 tiles.
+   * A ~30-minute scan that says nothing is indistinguishable from a hung job —
+   * which is how these failures looked from the outside. With a counter the log
+   * proves the walk is advancing, and an aborted run can state exactly how much
+   * of the window it had certified when it stopped.
+   */
+  const progress = { chunks: 0n, requests: 0n, cacheHits: 0n, retries: 0n, lastCertified: null, paceMs: SCAN_PACE_MS };
+  let certified = null;
+
+  /** Projected time left for the bulk walk at the pace currently in force. */
+  const etaMs = () => {
+    const plan = state.plan;
+    if (plan === null || plan.empty === true) return 0;
+    const remaining = plan.requests > progress.chunks ? plan.requests - progress.chunks : 0n;
+    return Math.max(0, Math.round(Number(remaining) * (progress.paceMs + LOG_SCAN_LATENCY_ESTIMATE_MS)));
   };
-  const note = (err) => {
+
+  const reportProgress = () => {
+    const plan = state.plan;
+    fact("logScanProgress", {
+      chunks: progress.chunks.toString(),
+      plannedChunks: plan === null ? null : plan.requests.toString(),
+      requests: progress.requests.toString(),
+      cacheHits: progress.cacheHits.toString(),
+      retries: progress.retries.toString(),
+      lastCertifiedBlock: progress.lastCertified === null ? null : progress.lastCertified.toString(),
+      window: plan === null ? null : `${plan.from}->${plan.to}`,
+      elapsedMs: state.startedAt === null ? 0 : Date.now() - state.startedAt,
+      etaMs: etaMs(),
+      paceMs: progress.paceMs,
+    });
+  };
+
+  /** Records a throttle response so its `Retry-After` can reach the retry policy. */
+  const noteQuota = (err) => {
     const cls = classifyRpcError(err);
-    if (cls.kind === "rate-limit") {
-      facts.rateLimited = true;
-      if (cls.retryAfterMs !== null) facts.retryAfterMs = cls.retryAfterMs;
-    }
+    if (cls.kind !== "rate-limit") return cls;
+    quota.hits += 1;
+    const ms = cls.retryAfterMs ?? rpcPool.lastQuotaRetryAfterMs();
+    if (typeof ms === "number" && ms > 0) quota.lastRetryAfterMs = ms;
     return cls;
   };
 
-  let head;
-  try {
-    facts.chainId = await pub.getChainId();
-  } catch (err) {
-    note(err);
-    facts.probe = { ok: false, detail: `chainId could not be read: ${safeErrorMessage(err, SECRETS)}` };
-    return facts;
-  }
-  try {
-    head = await pub.getBlockNumber();
-    facts.head = head;
-  } catch (err) {
-    note(err);
-    facts.probe = { ok: false, detail: `head block could not be read: ${safeErrorMessage(err, SECRETS)}` };
-    return facts;
-  }
-
-  /** One real eth_getLogs of exactly `width` blocks, with the production filter. */
-  const requestChunk = async (width) => {
-    const toBlock = head;
-    const fromBlock = head - width + 1n > 0n ? head - width + 1n : 0n;
-    const logs = await pub.request({
-      method: "eth_getLogs",
-      params: [swapExecutedLogFilter({ wallet, fromBlock, toBlock })],
-    });
-    facts.probedWidths.push(width.toString());
-    return logs.length;
+  /**
+   * ONE attempt at ONE chunk of at most `SCAN_CHUNK` blocks. `requestOnce` is
+   * deliberate: the scan owns the retry policy (same chunk, bounded attempts,
+   * paced), so the transport's generic retry loop must stay out of it —
+   * otherwise a single throttle becomes 6 × RPC_MAX_ATTEMPTS requests, which is
+   * exactly how a "handled" 429 still empties a throughput bucket. The width
+   * bound itself is enforced by `swapExecutedLogFilter`, which throws rather than
+   * sending a request the free tier documents as invalid.
+   */
+  const requestChunk = async (fromBlock, toBlock) => {
+    const params = [swapExecutedLogFilter({ wallet, fromBlock, toBlock, maxChunk: SCAN_CHUNK })];
+    try {
+      return await rpcPool.requestOnce({ method: "eth_getLogs", params });
+    } catch (err) {
+      const cls = noteQuota(err);
+      if (cls.kind === "rate-limit" && err && err.retryAfter == null && quota.lastRetryAfterMs !== null) {
+        err.retryAfter = quota.lastRetryAfterMs;
+      }
+      throw err;
+    }
   };
 
-  try {
-    if (REHEARSAL) {
-      const matches = await requestChunk(LOG_CHUNK);
-      facts.probe = { ok: true, width: LOG_CHUNK.toString(), logs: matches };
-      facts.chunkSize = LOG_CHUNK.toString();
+  const walk = (from, to, label) =>
+    runCertifiedLogScan({
+      fetchChunk: requestChunk,
+      from,
+      to,
+      chunkSize: SCAN_CHUNK,
+      maxChunks: MAX_LOG_CHUNKS,
+      maxBlocks: MAX_LOG_SCAN_BLOCKS,
+      cache,
+      paceMs: SCAN_PACE_MS,
+      startedAtMs: state.startedAt,
+      deadlineMs: LOG_SCAN_TIME_BUDGET_MS,
+      onEvent: (event) => {
+        if (event.type === "retry") {
+          progress.retries += 1n;
+          progress.paceMs = event.paceMs;
+          console.log(
+            `RPC   ${label} chunk ${event.from}-${event.to} attempt ${event.attempt} ${event.kind}: retrying the SAME chunk in ${event.waitMs}ms (${event.source}), pacing now ${event.paceMs}ms — no block is skipped and none is re-read`,
+          );
+        } else if (event.type === "request") {
+          progress.requests += 1n;
+          // Every 250 tiles (~1 minute at the default pace): enough for someone
+          // watching CI to see the walk advancing, rare enough to leave a 4.6k
+          // -tile scan's log readable.
+          if (progress.requests % 250n === 0n) {
+            const planned = state.plan === null ? 0 : Number(state.plan.requests);
+            const done = Number(progress.chunks);
+            console.log(
+              `SCAN  ${done}/${planned || "?"} tile(s) certified through block ${progress.lastCertified ?? "?"}` +
+                `${planned ? ` (${Math.round((done / planned) * 100)}%)` : ""}, pacing ${progress.paceMs}ms, ` +
+                `${Math.round((Date.now() - (state.startedAt ?? Date.now())) / 1000)}s elapsed, ~${Math.round(etaMs() / 60000)}min left`,
+            );
+            reportProgress();
+          }
+        } else if (event.type === "chunk" || event.type === "cache") {
+          progress.chunks += 1n;
+          progress.lastCertified = event.to;
+          if (event.type === "cache") progress.cacheHits += 1n;
+        }
+      },
+    });
+
+  const readHead = () => pub.getBlockNumber();
+
+  /**
+   * stage 2b — prove the endpoint can carry the certification, and prove it by
+   * carrying the first chunk of the certification. Every failure is returned as
+   * a fact for `evaluateRpcReadiness` to turn into a fatal check: this function
+   * decides nothing itself and can never downgrade a refusal to a note.
+   */
+  const probe = async () => {
+    // The topic0 pinned in the gates module must be the topic0 of the ABI this
+    // runner decodes with; a drift would silently narrow the historical scan.
+    const abiTopic = getEventSelector(SWAP_EXECUTED_EVENT);
+    if (abiTopic !== SWAP_EXECUTED_TOPIC) {
+      throw new Abort(`SwapExecuted topic0 drift: the ABI hashes to ${abiTopic} but the scan filter pins ${SWAP_EXECUTED_TOPIC}`);
+    }
+    const facts = {
+      role: MODE,
+      endpoint: rpcLabel(RPC_URL),
+      freeTierMaxBlocks: FREE_TIER_MAX_LOG_BLOCKS.toString(),
+      chunkSize: SCAN_CHUNK.toString(),
+      paceMs: SCAN_PACE_MS,
+      concurrency: LOG_SCAN_CONCURRENCY,
+      timeBudgetMs: LOG_SCAN_TIME_BUDGET_MS,
+      chunkMaxAttempts: LOG_SCAN_CHUNK_MAX_ATTEMPTS,
+      chainId: null,
+      head: null,
+      probe: null,
+      plan: null,
+      rateLimited: false,
+      retryAfterMs: null,
+      quota: null,
+    };
+    const note = (err) => {
+      const cls = noteQuota(err);
+      if (cls.kind === "rate-limit") {
+        facts.rateLimited = true;
+        if (cls.retryAfterMs !== null) facts.retryAfterMs = cls.retryAfterMs;
+      }
+      return cls;
+    };
+    try {
+      facts.chainId = await pub.getChainId();
+    } catch (err) {
+      note(err);
+      facts.probe = { ok: false, detail: `chainId could not be read: ${safeErrorMessage(err, SECRETS)}` };
+      facts.quota = rpcPool.quotaFacts();
       return facts;
     }
-    const probe = await probeLogChunkSize({ requestChunk, maxChunk: MAX_LOG_CHUNK });
-    facts.chunkSize = probe.chunkSize.toString();
-    facts.refusedWidth = probe.refused ? probe.refused.chunkSize.toString() : null;
-    facts.probe = { ok: true, width: probe.chunkSize.toString(), logs: 0, accepted: probe.accepted.map(String) };
-    SCAN_CHUNK = probe.chunkSize;
-  } catch (err) {
-    note(err);
-    facts.probe = { ok: false, detail: safeErrorMessage(err, SECRETS) };
-  }
-  return facts;
+    let head;
+    try {
+      head = await readHead();
+    } catch (err) {
+      note(err);
+      facts.probe = { ok: false, detail: `head block could not be read: ${safeErrorMessage(err, SECRETS)}` };
+      facts.quota = rpcPool.quotaFacts();
+      return facts;
+    }
+    facts.head = head;
+    state.head = head;
+    const plan = planHistoricalLogScan({
+      head,
+      rehearsal: REHEARSAL,
+      chunkSize: SCAN_CHUNK,
+      maxChunks: MAX_LOG_CHUNKS,
+      maxBlocks: MAX_LOG_SCAN_BLOCKS,
+      paceMs: SCAN_PACE_MS,
+      budgetMs: LOG_SCAN_TIME_BUDGET_MS,
+    });
+    state.plan = plan;
+    state.startedAt = Date.now();
+    facts.plan = {
+      from: plan.from.toString(),
+      to: plan.to.toString(),
+      blocks: plan.blocks.toString(),
+      requests: plan.requests.toString(),
+      widestRequest: plan.widestRequest.toString(),
+      chunkSize: plan.chunkSize.toString(),
+      contiguous: plan.contiguous === true,
+      empty: plan.empty === true,
+      estimatedSeconds: Math.round(plan.estimatedMs / 1000),
+      budgetSeconds: Math.round(Number(plan.budgetMs) / 1000),
+      withinBudget: plan.withinBudget === true,
+    };
+    if (plan.empty) {
+      // The head has not reached the deployment block: there is nothing to scan,
+      // and the run says so instead of reporting "no prior swap".
+      facts.probe = {
+        ok: true,
+        width: "0",
+        logs: 0,
+        from: plan.from.toString(),
+        to: plan.to.toString(),
+        detail: "the head has not reached the deployment block — no range to certify",
+      };
+      facts.quota = rpcPool.quotaFacts();
+      return facts;
+    }
+    if (!plan.withinBudget) {
+      facts.probe = {
+        ok: false,
+        width: plan.chunkSize.toString(),
+        logs: 0,
+        from: plan.firstChunk?.from.toString() ?? "",
+        to: plan.firstChunk?.to.toString() ?? "",
+        detail:
+          `the certification needs ${plan.requests} eth_getLogs request(s) of at most ${FREE_TIER_MAX_LOG_BLOCKS} blocks over ${plan.blocks} block(s), ` +
+          `projected ${Math.round(plan.estimatedMs / 60000)}min at ${SCAN_PACE_MS}ms pacing — past this run's ${Math.round(Number(plan.budgetMs) / 60000)}min budget. ` +
+          "Refusing to start a walk it cannot finish: no partial scan is ever certified.",
+      };
+      facts.quota = rpcPool.quotaFacts();
+      return facts;
+    }
+    try {
+      const one = await walk(plan.firstChunk.from, plan.firstChunk.to, "readiness");
+      // The probe's logs are as decisive as the scan's: an endpoint that answers a
+      // filtered request with somebody else's log is refused here, not later.
+      const decoded = decodeScanLogs(one.logs, wallet);
+      facts.probe = {
+        ok: decoded.error === null,
+        width: (one.to - one.from + 1n).toString(),
+        logs: decoded.count,
+        from: one.from.toString(),
+        to: one.to.toString(),
+        requests: one.requests.toString(),
+        detail: decoded.error ?? `served ${one.from}-${one.to}, the first tile of the plan`,
+      };
+    } catch (err) {
+      note(err);
+      facts.probe = { ok: false, detail: safeErrorMessage(err, SECRETS) };
+    }
+    facts.quota = rpcPool.quotaFacts();
+    return facts;
+  };
+
+  /**
+   * stage 3 — the authoritative certification. Resolves once per run; every
+   * later reader gets the same object and the chunks already in `cache`.
+   */
+  const certify = () => {
+    if (certified !== null) return certified;
+    certified = (async () => {
+      const plan = state.plan;
+      if (plan === null) throw new Abort("internal: the historical certification ran before stage 2b planned it");
+      if (plan.empty) {
+        return {
+          count: 0,
+          from: plan.from,
+          to: plan.to,
+          empty: true,
+          requests: 0n,
+          chunks: 0n,
+          cacheHits: 0n,
+          retries: 0n,
+          rateLimits: 0n,
+          waitsMs: 0,
+          rounds: 0,
+          chunkSize: SCAN_CHUNK.toString(),
+          paceMs: SCAN_PACE_MS,
+          maxRequestBlocks: 0n,
+          blocks: "0",
+          contiguous: true,
+        };
+      }
+      const runs = [];
+      // The bulk walk: deployment -> the head observed at stage 2b. Chunk 1 is
+      // already in `cache` (that was the readiness probe), so this requests only
+      // the tiles that have not answered yet — nothing more, nothing less.
+      runs.push(await walk(plan.from, plan.to, "scan"));
+      let cursor = plan.to;
+      // Tail rounds: every block the chain produced while the walk was running.
+      for (;;) {
+        const headNow = await readHead();
+        if (headNow <= cursor) break;
+        if (state.rounds >= LOG_SCAN_TAIL_MAX_ROUNDS) {
+          throw new Abort(
+            `${NETWORK_LABEL} kept moving for ${LOG_SCAN_TAIL_MAX_ROUNDS} tail rounds of the certification: refusing to certify a one-shot against a window that is already behind (covered through ${cursor}, head ${headNow})`,
+          );
+        }
+        state.rounds += 1;
+        console.log(
+          `RPC   head moved ${cursor} -> ${headNow} during the walk; certifying ${headNow - cursor} more block(s) (round ${state.rounds}/${LOG_SCAN_TAIL_MAX_ROUNDS}; cached chunks are reused, not re-read)`,
+        );
+        runs.push(await walk(cursor + 1n, headNow, "tail"));
+        cursor = headNow;
+      }
+      for (let i = 1; i < runs.length; i++) {
+        if (runs[i].from !== runs[i - 1].to + 1n) {
+          throw new Abort(`internal: certification round ${i + 1} starts at ${runs[i].from}, not at ${runs[i - 1].to} + 1 — the walk would have a gap`);
+        }
+      }
+      const logs = [];
+      let requests = 0n;
+      let cacheHits = 0n;
+      let retries = 0n;
+      let rateLimits = 0n;
+      let waitsMs = 0;
+      let paceMs = SCAN_PACE_MS;
+      let maxRequestBlocks = 0n;
+      for (const r of runs) {
+        for (const item of r.logs) logs.push(item);
+        requests += r.requests;
+        cacheHits += r.cacheHits;
+        retries += r.retries;
+        rateLimits += r.rateLimits;
+        waitsMs += r.waitsMs;
+        paceMs = r.paceMs;
+        if (r.maxRequestBlocks > maxRequestBlocks) maxRequestBlocks = r.maxRequestBlocks;
+      }
+      // The topic filter is an optimisation, not the verdict.
+      const decoded = decodeScanLogs(logs, wallet);
+      if (decoded.error !== null) throw new Abort(decoded.error);
+      const chunks = runs.reduce((sum, r) => sum + r.chunks, 0n);
+      if (chunks !== requests + cacheHits) {
+        throw new Abort(`internal: ${chunks} chunk(s) certified but ${requests} requested + ${cacheHits} reused do not account for them — refusing to certify a one-shot from a scan it cannot prove`);
+      }
+      return {
+        count: decoded.count,
+        from: plan.from,
+        to: cursor,
+        empty: false,
+        requests,
+        chunks,
+        cacheHits,
+        retries,
+        rateLimits,
+        waitsMs,
+        rounds: state.rounds,
+        chunkSize: SCAN_CHUNK.toString(),
+        paceMs,
+        maxRequestBlocks,
+        blocks: (cursor - plan.from + 1n).toString(),
+        // Proven by runCertifiedLogScan re-proving the chunks that ANSWERED;
+        // carried on the fact so the report and the tests can assert it.
+        contiguous: runs.every((r) => r.coverage.contiguous === true && r.coverage.complete === true),
+      };
+    })();
+    return certified;
+  };
+
+  return { cache, quota, state, probe, certify };
 }
 
 /**
- * The historical SwapExecuted scan — the on-chain half of the one-shot guard.
- * A range it cannot cover COMPLETELY is fatal.
- *
- * Window: priorSwapScanWindow — the deployment-block-anchored full scan in
- * `live`/`preflight`, and the last REHEARSAL_LOG_WINDOW blocks in `rehearsal`
- * (a local anvil fork cannot serve its pre-fork history locally).
- *
- * Filter: swapExecutedLogFilter puts the executor address, the SwapExecuted
- * topic0 AND the pinned wallet as indexed topic1 into the RPC request itself, so
- * the node's log index does the filtering instead of the runner. Coverage is
- * unchanged — every block from the deployment to the head is still requested,
- * and `router`/`intentId` are deliberately NOT filtered so a prior swap through
- * any venue or under any intent still refuses this run.
- *
- * Requests: runAdaptiveLogScan walks that window gap-free in deterministic
- * order, at the width the endpoint was verified to serve (SCAN_CHUNK, from the
- * stage-2b probe), shrinking — never skipping — if the endpoint rejects a range,
- * and failing closed on anything else. Both the chunk budget and the block
- * budget are checked before the first request.
+ * Decodes what the endpoint returned and proves it is this wallet's
+ * SwapExecuted events. The topic filter is an optimisation, not the verdict: an
+ * endpoint that answers a filter pinned to `taker == wallet` with somebody
+ * else's log — or with logs this ABI does not recognise — cannot certify a
+ * one-shot at all. Returns `{ count, error: null }`, or an `error`; both the
+ * readiness probe and the scan treat it as fatal.
  */
-async function countPriorSwapEvents(pub, wallet) {
-  const head = await pub.getBlockNumber();
-  if (head < DELEGATED_DEPLOY_BLOCK) {
-    return { count: 0, from: DELEGATED_DEPLOY_BLOCK, to: head, chunks: 0n, chunkSize: LOG_CHUNK.toString(), shrinks: 0 };
+function decodeScanLogs(logs, wallet) {
+  if (!Array.isArray(logs)) {
+    return { count: 0, error: "the RPC returned a non-array eth_getLogs result: refusing to certify a one-shot from an unrecognised response" };
   }
-  const { from: scanFrom, to: scanTo } = priorSwapScanWindow({ head, rehearsal: REHEARSAL });
-  const chunks = (scanTo - scanFrom + LOG_CHUNK) / LOG_CHUNK;
-  if (chunks > MAX_LOG_CHUNKS) {
-    throw new Abort(`prior-swap scan would need ${chunks} chunks (> ${MAX_LOG_CHUNKS}): refusing to certify a one-shot from a partial scan — use a full-node RPC`);
+  if (logs.length === 0) return { count: 0, error: null };
+  let decoded;
+  try {
+    decoded = parseEventLogs({ abi: DELEGATED_ABI, logs });
+  } catch (err) {
+    return {
+      count: 0,
+      error: `the RPC's logs did not decode as this executor's SwapExecuted (${safeErrorMessage(err, SECRETS)}): refusing to certify a one-shot from an unrecognised response`,
+    };
   }
-  const { logs, chunks: used, chunkSize: finalChunk, shrinks } = await runAdaptiveLogScan({
-    fetchChunk: (fromBlock, toBlock) =>
-      pub.request({
-        method: "eth_getLogs",
-        params: [swapExecutedLogFilter({ wallet, fromBlock, toBlock, maxChunk: MAX_LOG_CHUNK })],
-      }),
-    from: scanFrom,
-    to: scanTo,
-    chunkSize: REHEARSAL ? LOG_CHUNK : SCAN_CHUNK,
-    maxChunk: MAX_LOG_CHUNK,
-    maxChunks: MAX_LOG_CHUNKS,
-    maxBlocks: MAX_LOG_SCAN_BLOCKS,
-    onShrink: ({ from, to: next, at }) =>
-      console.log(`RPC   eth_getLogs width ${from} refused at block ${at}; continuing the SAME range at ${next} (coverage unchanged)`),
-  });
-  // The topic filter is an optimisation, not the verdict: re-check that every
-  // returned log really is SwapExecuted by THIS wallet, so an endpoint that
-  // ignored the topics cannot quietly change the count.
-  const decoded = parseEventLogs({ abi: DELEGATED_ABI, logs });
   for (const log of decoded) {
     if (!sameAddress(log.args?.taker, wallet)) {
-      throw new Abort(
-        `the RPC returned a SwapExecuted log for ${log.args?.taker} under a filter pinned to ${wallet}: refusing to certify a one-shot from an endpoint that ignores its log filter`,
-      );
+      return {
+        count: decoded.length,
+        error: `the RPC returned a SwapExecuted log for ${log.args?.taker} under a filter pinned to ${wallet}: refusing to certify a one-shot from an endpoint that ignores its log filter`,
+      };
     }
   }
-  return {
-    count: decoded.length,
-    from: scanFrom,
-    to: scanTo,
-    chunks: used,
-    chunkSize: finalChunk.toString(),
-    requestedChunkSize: SCAN_CHUNK.toString(),
-    shrinks: shrinks.length,
-    blocks: (scanTo - scanFrom + 1n).toString(),
-  };
+  if (decoded.length !== logs.length) {
+    return {
+      count: decoded.length,
+      error: `${logs.length - decoded.length} of ${logs.length} log(s) are not a SwapExecuted of this ABI: refusing to certify a one-shot from an unrecognised response`,
+    };
+  }
+  return { count: decoded.length, error: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,22 +1384,27 @@ async function main() {
   const confirmations = LIVE ? 2 : 1;
 
   // ------------------------------------------------------------ stage 2b
-  // BEFORE any historical read: prove the ONE configured endpoint can serve the
-  // deployment -> head certification, and discover the widest eth_getLogs width
-  // it actually accepts. A missing, foreign, fork-shaped or rate-limited RPC
-  // stops here in seconds with an operator message instead of after ~13 minutes
-  // of grinding (smoke run #6). Every row is fatal — see evaluateRpcReadiness.
+  // BEFORE any historical read: prove the ONE configured endpoint can carry the
+  // deployment -> head certification — by carrying the first chunk of that
+  // certification, at the width the endpoint documents (<=10 blocks), through the
+  // same paced policy the walk itself uses. There is deliberately no width probe:
+  // a request the free tier rejects outright is not information, it is a wasted
+  // 60 CU and a retry (runs #6/#7). A missing, foreign, fork-shaped or throttled
+  // RPC stops here in seconds with an operator message. Every row is fatal — see
+  // evaluateRpcReadiness — and the plan it checks is the SAME object the scan
+  // walks, so a run cannot announce one coverage and certify another.
   stage("2b. RPC readiness (dedicated endpoint for the historical certification)");
   if (RPC_URLS.length === 0) {
     throw new Abort(RPC_MISSING_MESSAGE);
   }
-  const rpcReadiness = await probeRpcReadiness(pub, wallet);
+  const historicalScan = createHistoricalSwapScan({ pub, wallet, rpcPool });
+  const rpcReadiness = await historicalScan.probe();
   rpcReadiness.quota = rpcPool.quotaFacts();
   // A quota response observed at the transport layer counts even when the error
   // itself was unclassifiable (a 429 carrying a JSON-RPC body, for instance).
-  if (rpcPool.rateLimited()) {
+  if (rpcPool.rateLimited() || historicalScan.quota.hits > 0) {
     rpcReadiness.rateLimited = true;
-    rpcReadiness.retryAfterMs = rpcReadiness.quota?.lastRetryAfterMs ?? rpcReadiness.retryAfterMs;
+    rpcReadiness.retryAfterMs = rpcReadiness.quota?.lastRetryAfterMs ?? historicalScan.quota.lastRetryAfterMs ?? rpcReadiness.retryAfterMs;
   }
   applyGate(
     evaluateRpcReadiness({
@@ -1075,19 +1413,26 @@ async function main() {
       chainId: rpcReadiness.chainId,
       headBlock: rpcReadiness.head,
       probe: rpcReadiness.probe,
+      plan: rpcReadiness.plan,
       rateLimited: rpcReadiness.rateLimited,
       retryAfterMs: rpcReadiness.retryAfterMs,
       chunkSize: rpcReadiness.chunkSize ?? LOG_CHUNK,
-      requestedChunkSize: rpcReadiness.requestedMaxChunk,
+      paceMs: rpcReadiness.paceMs,
+      concurrency: rpcReadiness.concurrency,
     }),
   );
   fact("rpcReadiness", rpcReadiness);
   fact("rpcRole", REHEARSAL ? "local anvil fork (rehearsal only)" : "dedicated configured Base Mainnet RPC (no public fallback)");
   console.log(
-    `RPC   ${rpcReadiness.endpoint}: chainId ${rpcReadiness.chainId}, head ${rpcReadiness.head}, eth_getLogs width ${
-      rpcReadiness.chunkSize ?? LOG_CHUNK
-    } block(s)${rpcReadiness.refusedWidth ? ` (a ${rpcReadiness.refusedWidth}-block range was refused)` : ""}`,
+    `RPC   ${rpcReadiness.endpoint}: chainId ${rpcReadiness.chainId}, head ${rpcReadiness.head}, eth_getLogs ${rpcReadiness.chunkSize ?? SCAN_CHUNK} block(s) ` +
+      `(free-tier max ${FREE_TIER_MAX_LOG_BLOCKS}) paced at ${SCAN_PACE_MS}ms, one at a time`,
   );
+  if (rpcReadiness.plan) {
+    console.log(
+      `SCAN  ${rpcReadiness.plan.requests} request(s) over blocks ${rpcReadiness.plan.from}->${rpcReadiness.plan.to} ` +
+        `(${rpcReadiness.plan.blocks} block(s)), projected ${rpcReadiness.plan.estimatedSeconds}s of a ${rpcReadiness.plan.budgetSeconds}s budget`,
+    );
+  }
 
   // ------------------------------------------------------------ stage 3
   stage("3. live posture reads (read-only)");
@@ -1143,7 +1488,6 @@ async function main() {
     pub.readContract({ address: CANONICAL_PERMIT2, abi: PERMIT2_ABI, functionName: "nonceBitmap", args: [wallet, noncePos.wordIndex] }), // 32
     allowance(USDC, DELEGATED_EXECUTOR, UNISWAP_V3_ROUTER), // 33
     bal(USDC, FEE_RECIPIENT), // 34
-    countPriorSwapEvents(pub, wallet), // 35
   ]);
 
   const [
@@ -1182,8 +1526,29 @@ async function main() {
     permit2NonceBitmapWord,
     executorRouterAllowance,
     feeRecipientUsdc,
-    priorScan,
   ] = reads;
+
+  // The one-shot certification, awaited on its own — NOT as another entry of the
+  // read batch above. It is the run's single walk of the deployment -> head
+  // range: `certify()` memoizes the result (so the pre-sign pass and the full
+  // pass of the gate reuse it rather than re-scanning) and the scan is strictly
+  // one paced request at a time, which only holds while nothing else on the
+  // socket is interleaving with it.
+  const priorScan = await historicalScan.certify();
+  const scanPlan = historicalScan.state.plan;
+  must(
+    "the one-shot certification covers the whole window it planned, with zero gaps",
+    priorScan.contiguous === true &&
+      priorScan.from === scanPlan.from &&
+      priorScan.to >= scanPlan.to &&
+      (REHEARSAL || (priorScan.from === DELEGATED_DEPLOY_BLOCK && priorScan.to >= head)),
+    `blocks ${priorScan.from}->${priorScan.to}: ${priorScan.blocks} block(s) in ${priorScan.chunks} tile(s) — ${priorScan.requests} eth_getLogs request(s) plus ${priorScan.cacheHits} reused chunk(s), ${priorScan.rounds} tail round(s)`,
+  );
+  must(
+    `no eth_getLogs this run made was wider than the endpoint's ${FREE_TIER_MAX_LOG_BLOCKS}-block free-tier maximum`,
+    priorScan.maxRequestBlocks <= FREE_TIER_MAX_LOG_BLOCKS && BigInt(priorScan.chunkSize) <= FREE_TIER_MAX_LOG_BLOCKS,
+    `widest request ${priorScan.maxRequestBlocks} block(s) at a fixed ${priorScan.chunkSize}-block tile, paced at ${priorScan.paceMs}ms`,
+  );
 
   const executorCodeHash = executorCode && executorCode !== "0x" ? keccak256(executorCode) : null;
   const permit2Amount = Array.isArray(permit2Allowance) ? permit2Allowance[0] : permit2Allowance;
@@ -1215,19 +1580,34 @@ async function main() {
     nonceWord: permit2NonceBitmapWord,
     nonceUsed: permit2UsedBefore,
   });
+  fact("logScanProgress", {
+    ...((report.facts && report.facts.logScanProgress) || {}),
+    done: true,
+    certifiedBlocks: priorScan.blocks,
+    tailRounds: priorScan.rounds,
+  });
   fact("priorSwapScan", {
     count: priorScan.count,
     from: priorScan.from.toString(),
     to: priorScan.to.toString(),
+    blocks: priorScan.blocks,
     chunks: priorScan.chunks.toString(),
-    // The eth_getLogs width actually used, and how many blocks were certified:
-    // the request count is an efficiency fact, the block span is the coverage
-    // fact, and the report shows both so a cheap scan can never be mistaken for
-    // a narrow one.
+    requests: priorScan.requests.toString(),
+    cacheHits: priorScan.cacheHits.toString(),
+    retries: priorScan.retries.toString(),
+    rateLimits: priorScan.rateLimits.toString(),
+    waitsMs: priorScan.waitsMs,
+    paceMs: priorScan.paceMs,
+    tailRounds: priorScan.rounds,
+    // The width actually requested and the widest request actually sent — both
+    // are reported, because "never wider than the free tier" is a property of the
+    // requests, not of the plan, and the report has to be able to prove it.
     chunkSize: priorScan.chunkSize,
-    requestedChunkSize: priorScan.requestedChunkSize ?? null,
-    blocks: priorScan.blocks ?? null,
-    shrinks: priorScan.shrinks ?? 0,
+    maxRequestBlocks: priorScan.maxRequestBlocks.toString(),
+    contiguous: priorScan.contiguous === true,
+    // The request count is an efficiency fact; the block span is the coverage
+    // fact. The report shows both so a cheap scan can never be mistaken for a
+    // narrow one, and a narrow one can never be mistaken for a full certification.
     takerFiltered: true, // the pinned wallet is an indexed topic of every request
     // Rehearsal scans only the fork's most recent blocks (REHEARSAL_LOG_WINDOW);
     // live/preflight scan from the deployment block. Recorded so the report can
@@ -1826,7 +2206,7 @@ function renderMarkdown() {
     );
   if (f.priorSwapScan && !f.priorSwapScan.rehearsalBounded)
     lines.push(
-      `| Scan coverage | **every** block ${f.priorSwapScan.from}→${f.priorSwapScan.to} (${f.priorSwapScan.blocks ?? "?"} blocks, zero gaps) in ${f.priorSwapScan.chunks} eth_getLogs request(s) of ≤ ${f.priorSwapScan.chunkSize} blocks, filtered at the RPC by executor + SwapExecuted topic + this wallet as indexed \`taker\`${f.priorSwapScan.shrinks ? ` (width reduced ${f.priorSwapScan.shrinks}×, coverage unchanged)` : ""} |`,
+      `| Scan coverage | **every** block ${f.priorSwapScan.from}→${f.priorSwapScan.to} (${f.priorSwapScan.blocks} blocks, contiguous: ${f.priorSwapScan.contiguous ? "proven, zero gaps" : "NOT PROVEN"}) — ${f.priorSwapScan.requests} eth_getLogs request(s) + ${f.priorSwapScan.cacheHits} cached chunk(s) over ${f.priorSwapScan.chunks} tile(s) of ≤ ${f.priorSwapScan.chunkSize} blocks (widest sent: ${f.priorSwapScan.maxRequestBlocks}, free-tier max ${FREE_TIER_MAX_LOG_BLOCKS}), paced at ${f.priorSwapScan.paceMs}ms with ${f.priorSwapScan.retries} retry(ies) and ${f.priorSwapScan.rateLimits} rate-limit(s) absorbed (${f.priorSwapScan.waitsMs}ms spent waiting on the endpoint), ${f.priorSwapScan.tailRounds} tail round(s); filtered at the RPC by executor + SwapExecuted topic + this wallet as indexed \`taker\` |`,
     );
   if (f.rpcReadiness)
     lines.push(
@@ -1908,6 +2288,25 @@ try {
   // Messages come from our own guards or from viem RPC errors; the key never
   // appears in either (it lives only inside the local viem account object).
   report.abortReason = safeErrorMessage(err, SECRETS);
+  // An abort IS a verdict, and it has to be counted as one. Every check the run
+  // appended before it died was true, so the summary used to print
+  //   "36 checks passed; a live run would be allowed"
+  // for a run that never reached its own conclusion — the report of the last
+  // three failing preflights read that way, and it is the single most damaging
+  // thing a safety gate can do. Record the failure as a real, fatal row: the
+  // count can then never claim a pass, in the console line, in the markdown
+  // report, or in the workflow annotation that reads these same checks.
+  const coverage = report.facts?.priorSwapScan ?? report.facts?.rpcReadiness?.plan ?? null;
+  check(
+    `the run reached its verdict (aborted in stage '${report.stage}')`,
+    false,
+    `${report.abortReason}${
+      coverage
+        ? ` — certified coverage at the moment it stopped: blocks ${coverage.from ?? "?"}->${coverage.to ?? "?"} of the planned ${report.facts?.rpcReadiness?.plan?.from ?? "?"}->${report.facts?.rpcReadiness?.plan?.to ?? "?"} (${coverage.requests ?? "?"} eth_getLogs request(s), ${coverage.chunks ?? "?"} tile(s), widest ${coverage.maxRequestBlocks ?? "?"} blocks)`
+        : ` — no historical coverage was certified at all`
+    }`,
+    { stageName: report.stage },
+  );
   console.error(`\nABORTED at stage '${report.stage}': ${report.abortReason}`);
   if (!(err instanceof Abort) && err?.stack) console.error(redact(String(err.stack).split("\n").slice(0, 8).join("\n"), SECRETS));
   exitCode = 1;
@@ -1923,6 +2322,17 @@ try {
   console.log(
     `\nresult: ${report.status} (${summary.passed}/${summary.total} checks passed${summary.informational > 0 ? `, ${summary.informational} informational rehearsal note(s) not counted` : ""})`,
   );
+  // The one number a reader needs first: an aborted run says "aborted", and it
+  // never inherits the pass count of the checks that happened to be green.
+  if (report.status !== "passed") {
+    console.log(`NOT CERTIFIED: ${report.abortReason ?? `the gate refused this run (${summary.failed.length} blocking failure(s))`}`);
+  }
+  const scan = report.facts?.priorSwapScan;
+  if (scan) {
+    console.log(
+      `SCAN  ${report.status === "passed" ? "certified" : "coverage at abort"}: blocks ${scan.from}->${scan.to} (${scan.blocks} block(s)), ${scan.chunks} tile(s) via ${scan.requests} request(s) + ${scan.cacheHits} reused, widest ${scan.maxRequestBlocks} block(s), ${scan.retries} retry(ies), ${scan.rateLimits} rate-limit(s), pacing ${scan.paceMs}ms, gaps: ${scan.contiguous ? "none" : "UNKNOWN"}`,
+    );
+  }
   console.log(`swap tx:  ${report.txs.swap?.hash ?? "not sent"}`);
   if (report.broadcastCount > 1) console.log(`!! ${report.broadcastCount} broadcasts (at most 1 is allowed)`);
 }
