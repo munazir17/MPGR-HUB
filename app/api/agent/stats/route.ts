@@ -31,6 +31,18 @@ import { VERIFIED_HISTORICAL_AGENT_TRADES } from "@/lib/agent/agent-volume-histo
 //  * The whole scan runs under a deadline (SCAN_BUDGET_MS) that is well inside
 //    maxDuration, and every RPC call is additionally bounded by a race timer.
 //
+// Timeout / cancellation limitation (audited, not worked around):
+//  * The race timer stops THIS route from waiting and stops the scan loop from
+//    issuing further requests. It does NOT abort the underlying viem call:
+//    viem's getLogs/getBlockNumber accept no AbortSignal, and the fallback
+//    transport does not forward one to its transports. Only the transport's own
+//    per-attempt timeout (12 s, lib/trade/trade-public-client.ts) aborts the
+//    underlying fetch, and viem's retry/fallback chain bounds how long a single
+//    orphaned request can keep running. Cancelling end-to-end would require
+//    changing the shared trade read client, which is out of scope here.
+//  * The RPC race bound is longer than one transport attempt so that a hung
+//    primary can fall through to the public fallback before this route gives up.
+//
 // maxDuration = 60 s is valid on every Vercel plan (Hobby allows up to 300 s
 // with Fluid compute, Pro up to 800 s). The scan budget leaves headroom for
 // the cache writes and the response.
@@ -43,9 +55,21 @@ const CACHE_KEY = "mpgr:agent:stats:v2";
 const NEGATIVE_KEY = "mpgr:agent:stats:unavailable:v1";
 const LOCK_KEY = "mpgr:agent:stats:lock:v1";
 const CACHE_TTL_SECONDS = 60;
-const LOCK_TTL_MS = 60_000;
+// Lease lifetime in seconds (SET EX). Must exceed SCAN_BUDGET_MS so a live scan
+// cannot outlive its lease under normal operation.
+const LOCK_TTL_SECONDS = 60;
 const SCAN_BUDGET_MS = 40_000;
-const RPC_CALL_TIMEOUT_MS = 15_000;
+// Per-call race bound. Deliberately LONGER than one transport attempt
+// (12 s, lib/trade/trade-public-client.ts): a hung primary must be allowed to
+// time out and fall through to the public fallback (a further ~12 s), so this
+// bound must not fire first. Total scan time is still capped by SCAN_BUDGET_MS.
+const RPC_CALL_TIMEOUT_MS = 30_000;
+// Compare-and-delete: only the lease holder may release. GET and DEL run
+// atomically inside Redis, so an instance whose lease already expired cannot
+// delete a newer instance's lease. The token is matched in both raw and JSON
+// encodings because the Upstash client may store a string either way.
+const RELEASE_LEASE_SCRIPT =
+  'local v = redis.call("GET", KEYS[1]); if v == ARGV[1] or v == ARGV[2] then return redis.call("DEL", KEYS[1]) end; return 0';
 const INITIAL_LOG_CHUNK = 20_000n;
 const MIN_LOG_CHUNK = 250n;
 
@@ -90,9 +114,11 @@ class StatsTimeoutError extends Error {
 
 // Provider range-size wording (eth_getLogs block-range / result-count caps).
 const RANGE_RE =
-  /block range|range (?:is )?too (?:large|big|wide)|too many blocks|query returned more than|more than \d+ (?:results|logs)|response size|exceeds? .{0,40}range/i;
+  /block range|range (?:is )?too (?:large|big|wide)|too many blocks|query returned more than|more than \d+ (?:results|logs)|log response size|up to \d+ blocks/i;
 // Throttling / quota wording.
 const RATE_RE = /rate.?limit|too many requests|throttl|compute units?|capacity|quota/i;
+// Authorization / plan wording (used only to label the failure; never to retry).
+const AUTH_RE = /unauthori[sz]ed|forbidden|invalid api key|api key/i;
 
 function unavailable(): NextResponse {
   return NextResponse.json<Stats>(
@@ -111,6 +137,7 @@ function available(stats: Stats): NextResponse {
 
 interface ErrorFacts {
   name: string;
+  names: string[];
   httpStatus: number | null;
   rpcCode: number | null;
   text: string;
@@ -119,31 +146,46 @@ interface ErrorFacts {
 /** Walks the cause chain; viem wraps transport errors (HttpRequestError, RpcRequestError). */
 function errorFacts(error: unknown): ErrorFacts {
   let name = "";
+  const names: string[] = [];
   let httpStatus: number | null = null;
   let rpcCode: number | null = null;
   const parts: string[] = [];
   let node: unknown = error;
   for (let depth = 0; depth < 6 && node && typeof node === "object"; depth += 1) {
-    const n = node as { name?: unknown; status?: unknown; code?: unknown; shortMessage?: unknown; message?: unknown; cause?: unknown };
+    const n = node as { name?: unknown; status?: unknown; code?: unknown; shortMessage?: unknown; message?: unknown; details?: unknown; cause?: unknown };
     if (!name && typeof n.name === "string") name = n.name;
+    if (typeof n.name === "string") names.push(n.name);
     if (httpStatus === null && typeof n.status === "number") httpStatus = n.status;
     if (rpcCode === null && typeof n.code === "number") rpcCode = n.code;
     // shortMessage excludes viem's "URL: ..." metadata; still only used for matching.
     if (typeof n.shortMessage === "string") parts.push(n.shortMessage);
     else if (typeof n.message === "string") parts.push(n.message);
+    // viem puts a non-OK response's body (provider wording) into `details`.
+    if (typeof n.details === "string") parts.push(n.details);
     node = n.cause;
   }
-  return { name, httpStatus, rpcCode, text: parts.join(" | ") };
+  return { name, names, httpStatus, rpcCode, text: parts.join(" | ") };
 }
 
 function classifyFailure(error: unknown): FailureKind {
   if (error instanceof StatsTimeoutError) return "timeout";
   const f = errorFacts(error);
-  if (f.name === "TimeoutError" || f.name === "AbortError") return "timeout";
+  // A timeout anywhere in the chain wins, so a wrapped TimeoutError is never
+  // mistaken for a range-size or HTTP failure.
+  if (f.names.some((n) => n === "TimeoutError" || n === "AbortError" || n === "StatsTimeoutError")) {
+    return "timeout";
+  }
   if (f.httpStatus === 401 || f.httpStatus === 403) return "forbidden";
   if (f.httpStatus === 429) return "rate_limited";
-  if (RANGE_RE.test(f.text)) return "range_too_large";
-  if (RATE_RE.test(f.text) || f.rpcCode === -32005) return "rate_limited";
+  // Explicit throttling / auth wording wins over range wording: when in doubt, do not shrink.
+  if (RATE_RE.test(f.text)) return "rate_limited";
+  if (AUTH_RE.test(f.text)) return "forbidden";
+  // Range-size retries are reserved for CONFIRMED range limits: a JSON-RPC error
+  // envelope (no HTTP status) or an HTTP 400 carrying range wording. Any other
+  // HTTP status (5xx, 413, ...) is a generic failure and never shrinks the scan.
+  const rangeEligible = f.httpStatus === null || f.httpStatus === 400;
+  if (rangeEligible && RANGE_RE.test(f.text)) return "range_too_large";
+  if (f.rpcCode === -32005) return "rate_limited";
   if (f.httpStatus === 400 || f.httpStatus === 413 || f.httpStatus === 422) return "bad_request";
   if (f.rpcCode === -32602 || f.rpcCode === -32600) return "bad_request";
   return "unexpected";
@@ -220,7 +262,7 @@ type LeaseState = "owned" | "held" | "no-redis";
 
 async function acquireLease(token: string): Promise<LeaseState> {
   try {
-    const result = await getRedis().set(LOCK_KEY, token, { nx: true, px: LOCK_TTL_MS });
+    const result = await getRedis().set(LOCK_KEY, token, { nx: true, ex: LOCK_TTL_SECONDS });
     return result === "OK" ? "owned" : "held";
   } catch {
     return "no-redis";
@@ -229,10 +271,9 @@ async function acquireLease(token: string): Promise<LeaseState> {
 
 async function releaseLease(token: string): Promise<void> {
   try {
-    const redis = getRedis();
-    if ((await redis.get<string>(LOCK_KEY)) === token) await redis.del(LOCK_KEY);
+    await getRedis().eval(RELEASE_LEASE_SCRIPT, [LOCK_KEY], [token, JSON.stringify(token)]);
   } catch {
-    // The lease expires on its own (LOCK_TTL_MS).
+    // The lease expires on its own (LOCK_TTL_SECONDS).
   }
 }
 
@@ -245,14 +286,11 @@ async function scanRange(
   initialChunkSize: bigint,
   deadline: number,
 ): Promise<LogScanResult> {
-  // Pre-split the full range into initial-size windows (pushed in reverse so
-  // the lowest block range is popped first). The first request is therefore
-  // always bounded by initialChunkSize, never the whole deployment→head span.
-  const pending: Array<{ fromBlock: bigint; toBlock: bigint; chunkSize: bigint }> = [];
-  for (let start = fromBlock; start <= toBlock; start += initialChunkSize) {
-    const end = start + initialChunkSize - 1n < toBlock ? start + initialChunkSize - 1n : toBlock;
-    pending.unshift({ fromBlock: start, toBlock: end, chunkSize: initialChunkSize });
-  }
+  // The first request covers the full range, as before. A confirmed range-size
+  // error halves the window (below); rate limits and other failures never do.
+  const pending: Array<{ fromBlock: bigint; toBlock: bigint; chunkSize: bigint }> = [
+    { fromBlock, toBlock, chunkSize: initialChunkSize },
+  ];
   let totalUsdcAtomic = 0n;
   let tradeCount = 0;
   const txHashes = new Set<string>();
