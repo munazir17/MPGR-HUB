@@ -27,9 +27,11 @@ import { ChevronDown, PenLine, Repeat, ShieldCheck, ShieldOff, X } from "lucide-
 import { clsx } from "clsx";
 import {
   useAgentAutonomy,
+  type AutonomyConfig,
   type AutonomyGoalView,
   type AutonomyTokenOption,
 } from "@/hooks/useAgentAutonomy";
+import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID } from "@/lib/executor/executor-config";
 import { formatTokenAmount } from "@/lib/format";
 import {
   autonomyDraftToForm,
@@ -79,6 +81,38 @@ function humanAmount(tokens: AutonomyTokenOption[], address: string, raw: string
   } catch {
     return formatTokenAmount(raw);
   }
+}
+
+/** Network identity comes from the runtime status payload, never a UI default. */
+function delegatedNetworkLabel(config: AutonomyConfig): string {
+  const chainId = config.delegated?.chainId;
+  if (chainId == null) return "No adapter configured";
+  const network = chainId === BASE_MAINNET_CHAIN_ID
+    ? "Base Mainnet"
+    : chainId === BASE_SEPOLIA_CHAIN_ID
+      ? "Base Sepolia"
+      : `Chain ${chainId}`;
+  return `${network} · Chain ID ${chainId}`;
+}
+
+/**
+ * Keep adapter selection/configuration separate from permission to execute.
+ * In particular, executionAvailable is false on Mainnet while the explicit
+ * production gate is OFF; that is watch-only by design, not a missing adapter.
+ */
+function delegatedExecutionStatus(config: AutonomyConfig): string {
+  const chainId = config.delegated?.chainId;
+  if (chainId == null) return "Not configured · no delegated adapter is selected.";
+  if (!config.delegated?.executor) return "Not configured · no executor is pinned for this network.";
+  if (config.emergencyDisabled) return "Emergency disable active · execution blocked.";
+  if (chainId === BASE_MAINNET_CHAIN_ID && config.productionGate === false) {
+    return "Watch-only · production gate OFF.";
+  }
+  if (chainId === BASE_MAINNET_CHAIN_ID && config.productionGate !== true) {
+    return "Execution unavailable · production gate status not confirmed.";
+  }
+  if (config.executionAvailable) return "Execution checks passed.";
+  return "Execution unavailable · fail-closed checks are incomplete.";
 }
 
 function relative(iso: string): string {
@@ -246,11 +280,19 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                 </div>
               )}
 
-              {/* DELEGATED EXECUTION (Phase 2 — Base Sepolia, explicit sign, revocable) */}
+              {/* DELEGATED EXECUTION (server-selected chain, explicit sign, revocable) */}
               {config?.enabled && (
                 <div className="space-y-2 rounded-xl border border-sky-400/20 bg-sky-500/[0.04] p-3" data-testid="delegated-execution-section">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
-                    Delegated execution · Base Sepolia {config.executionAvailable ? "· broadcaster available" : "· not configured"}
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted" data-testid="delegated-execution-network">
+                    Delegated execution · {delegatedNetworkLabel(config)}
+                  </p>
+                  {config.delegated?.executor && (
+                    <p className="break-all text-[10px] text-muted">
+                      Pinned executor: <code data-testid="delegated-execution-executor">{config.delegated.executor}</code>
+                    </p>
+                  )}
+                  <p className="text-[11px] font-medium text-sky-200" data-testid="delegated-execution-readiness">
+                    {delegatedExecutionStatus(config)}
                   </p>
                   <p className="text-[11px] leading-relaxed text-muted">
                     Sign pre-authorized single-trade slots. Each slot executes exactly once, exactly as signed below — same

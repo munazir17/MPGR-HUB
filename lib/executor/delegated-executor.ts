@@ -1,11 +1,11 @@
 // lib/executor/delegated-executor.ts
 //
-// Phase 2 — delegated execution support for MPGRExecutorDelegated
-// (Base Sepolia 84532 only). ADDITIVE: nothing here touches the v1
+// Delegated execution support for MPGRExecutorDelegated on Base Sepolia
+// (84532) and Base mainnet (8453). ADDITIVE: nothing here touches the v1
 // assisted/manual trading path, the v1 executor registry, or any fee math.
 //
 // This module is the single source of truth for:
-//   * the deployed MPGRExecutorDelegated facts (pinned, spec §verified),
+//   * the Sepolia deployed facts and Mainnet operator-pinned deployment,
 //   * the canonical Permit2 WITNESS digest (EIP-712) the USER signs,
 //   * the deterministic policyHash binding an authorization to a policy,
 //   * the deterministic swap parameters builder used by the MCP delegated
@@ -36,7 +36,7 @@ import {
 import { computeExecutorFee } from "./executor-fee";
 
 /** The delegated executor on Base Sepolia (witness-type-corrected redeploy; see deployments/base-sepolia/mpgr-executor-delegated.json). */
-export const DELEGATED_EXECUTOR_CHAIN_ID = BASE_SEPOLIA_CHAIN_ID; // 84532 — the ONLY chain this phase
+export const DELEGATED_EXECUTOR_CHAIN_ID = BASE_SEPOLIA_CHAIN_ID; // legacy Phase-2 Sepolia constant
 export const DELEGATED_EXECUTOR_ADDRESS: Address = "0xa9568499D7e58854F2590a56B6D32788DbfA58F9";
 export const DELEGATED_EXECUTOR_FEE_BPS = EXECUTOR_DEFAULT_FEE_BPS; // 25 — canonical, never changed here
 export const CANONICAL_PERMIT2: Address = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
@@ -155,13 +155,13 @@ export const DELEGATED_EXECUTOR_REQUIRED_FEE_RECIPIENT: Address = "0x96F7fb5C427
 
 /**
  * The Base mainnet delegated executor address — OPERATOR-PINNED, never
- * guessed. There is deliberately no hardcoded default: `MPGRExecutorDelegated`
- * has not been deployed to Base mainnet by this repository, and inventing an
- * address would be worse than refusing.
- *
- * Set `MPGR_MAINNET_DELEGATED_EXECUTOR` (Vercel env only) to the deployed,
- * source-verified address. Until it is set AND passes the live posture check,
- * mainnet autonomous execution is unavailable and every goal stays watch-only.
+ * guessed. The deployed fact is recorded in
+ * deployments/base-mainnet/mpgr-executor-delegated.json, but there is
+ * deliberately no runtime default: `MPGR_MAINNET_DELEGATED_EXECUTOR` must be
+ * configured in Production and the selected address must pass the live posture
+ * check before autonomous execution can proceed. The known Sepolia pin is
+ * explicitly rejected here so a cross-chain value cannot masquerade as a
+ * Mainnet deployment.
  *
  * This is NOT and must never be the canary key/address
  * (`MPGR_MAINNET_CANARY_PRIVATE_KEY` / 0xBF6c574b…280b) — see
@@ -169,9 +169,13 @@ export const DELEGATED_EXECUTOR_REQUIRED_FEE_RECIPIENT: Address = "0x96F7fb5C427
  */
 export function mainnetDelegatedExecutorAddress(): Address | null {
   const raw = process.env.MPGR_MAINNET_DELEGATED_EXECUTOR?.trim();
-  if (!raw) return null;
-  if (!isAddress(raw)) return null;
-  return getAddress(raw);
+  if (!raw || !isAddress(raw)) return null;
+  const address = getAddress(raw);
+  // The pinned delegated contract on Sepolia is a valid address, but it is
+  // never a valid Mainnet deployment pin. Reject this known cross-chain
+  // substitution before status or route configuration can present it as ready.
+  if (address.toLowerCase() === DELEGATED_EXECUTOR_ADDRESS.toLowerCase()) return null;
+  return address;
 }
 
 /** The pinned delegated executor for a chain, or null when not deployed/configured. */

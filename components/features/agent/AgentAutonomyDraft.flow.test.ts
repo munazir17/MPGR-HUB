@@ -30,6 +30,7 @@ const fixtures = vi.hoisted(() => {
     config: {
       enabled: true,
       emergencyDisabled: false,
+      productionGate: false,
       executionAvailable: false,
       limits: {
         maxGoalsPerWallet: 5,

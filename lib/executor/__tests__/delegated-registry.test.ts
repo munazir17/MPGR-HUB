@@ -18,6 +18,7 @@ import {
   DELEGATED_EXECUTOR_ADDRESS,
   DELEGATED_EXECUTOR_CHAIN_ID,
   DELEGATED_EXECUTOR_FEE_BPS,
+  mainnetDelegatedExecutorDeployment,
 } from "@/lib/executor/delegated-executor";
 import {
   BASE_SEPOLIA_EXECUTOR_DEPLOYMENT,
@@ -28,6 +29,8 @@ import {
 
 const RECORD_PATH = resolve(__dirname, "../../../deployments/base-sepolia/mpgr-executor-delegated.json");
 const record: Record<string, unknown> = JSON.parse(readFileSync(RECORD_PATH, "utf-8"));
+const MAINNET_RECORD_PATH = resolve(__dirname, "../../../deployments/base-mainnet/mpgr-executor-delegated.json");
+const mainnetRecord: Record<string, unknown> = JSON.parse(readFileSync(MAINNET_RECORD_PATH, "utf-8"));
 
 describe("delegated executor route registry (Phase 3)", () => {
   it("targets the pinned delegated executor, never the v1 executor", () => {
@@ -35,6 +38,32 @@ describe("delegated executor route registry (Phase 3)", () => {
     expect(DELEGATED_EXECUTOR_ADDRESS).not.toBe(BASE_SEPOLIA_EXECUTOR_DEPLOYMENT.executor);
     expect(BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT.chainId).toBe(DELEGATED_EXECUTOR_CHAIN_ID);
     expect(DELEGATED_EXECUTOR_CHAIN_ID).toBe(84532);
+  });
+
+  it("keeps the Mainnet delegated deployment pin and record separate from Sepolia", () => {
+    const previousPin = process.env.MPGR_MAINNET_DELEGATED_EXECUTOR;
+    try {
+      process.env.MPGR_MAINNET_DELEGATED_EXECUTOR = String(mainnetRecord.executor);
+      const mainnetDeployment = mainnetDelegatedExecutorDeployment();
+      expect(mainnetRecord.chainId).toBe(8453);
+      expect(mainnetRecord.network).toBe("base");
+      expect(mainnetRecord.executor).toBe("0x39B1C6Ea88A01e70cbF4899BF3cEfB2c43cD32Bb");
+      expect(mainnetDeployment?.chainId).toBe(8453);
+      expect(mainnetDeployment?.executor).toBe(mainnetRecord.executor);
+      expect(mainnetDeployment?.executor).not.toBe(DELEGATED_EXECUTOR_ADDRESS);
+      expect(record.chainId).toBe(84532);
+      expect(record.network).toBe("base-sepolia");
+      expect(record.address).toBe(DELEGATED_EXECUTOR_ADDRESS);
+
+      const mainnetTokens = new Set(mainnetDeployment?.tokens.map((token) => token.address.toLowerCase()));
+      expect(mainnetTokens.has("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913")).toBe(true);
+      expect(mainnetTokens.has("0x4200000000000000000000000000000000000006")).toBe(true);
+      expect(mainnetTokens.has(DELEGATED_BASE_SEPOLIA_TUSD.toLowerCase())).toBe(false);
+      expect(mainnetTokens.has(DELEGATED_BASE_SEPOLIA_TSTOCK.toLowerCase())).toBe(false);
+    } finally {
+      if (previousPin === undefined) delete process.env.MPGR_MAINNET_DELEGATED_EXECUTOR;
+      else process.env.MPGR_MAINNET_DELEGATED_EXECUTOR = previousPin;
+    }
   });
 
   it("keeps the canonical fee/permit2/weth configuration", () => {

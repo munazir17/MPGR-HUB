@@ -10,8 +10,9 @@
 //
 //   B1. Production default (MPGR_AUTONOMOUS_EXECUTION_ADAPTER unset):
 //       the adapter registry resolves to noDelegationAdapter, and
-//       autonomyStatus().executionAvailable is false — exactly the UI's
-//       "Delegated execution · Base Sepolia · not configured".
+//       autonomyStatus().executionAvailable is false. The dashboard now
+//       reports this as no adapter selected; it does not infer a chain from
+//       executionAvailable (which is also false for the Mainnet gate-off state).
 //   B2. Trigger fires -> quote -> condition MET -> policy APPROVED ->
 //       AUTHORIZATION_MISSING -> goal PARKED (WAITING). triggered stays 0,
 //       pendingExecution stays null, TRANSACTION_SUBMITTED is never audited,
@@ -201,7 +202,7 @@ beforeEach(() => {
   clearInstalledAutonomousExecutionAdapter();
 });
 
-describe("B1 — production default posture (matches the UI's 'not configured')", () => {
+describe("B1 — production default posture (no adapter selected)", () => {
   it("the adapter registry resolves to the refusing adapter with env unset", () => {
     const adapter = getAutonomousExecutionAdapter();
     expect(adapter.id).toBe(NO_DELEGATION_ADAPTER_ID);
@@ -209,7 +210,7 @@ describe("B1 — production default posture (matches the UI's 'not configured')"
     expect(adapter.checkAuthorization(WALLET, makePolicy())).toEqual({ authorized: false, reason: "NO_DELEGATION_MECHANISM" });
   });
 
-  it("autonomyStatus().executionAvailable is false — the UI's 'Delegated execution · Base Sepolia · not configured'", async () => {
+  it("autonomyStatus().executionAvailable is false when no delegated adapter is selected", async () => {
     const status = autonomyStatus();
     expect(status.executionAvailable).toBe(false);
     expect(status.enabled).toBe(true);
@@ -728,13 +729,13 @@ describe("B7 — the registry cannot resolve permissively by accident", () => {
     clearInstalledAutonomousExecutionAdapter();
   });
 
-  it("the delegated executor is pinned to Base Sepolia; the mainnet registry has no delegated entry", () => {
+  it("keeps the Sepolia delegated record separate from the Mainnet v1 executor registry", () => {
     expect(DELEGATED_EXECUTION_CHAIN_ID).toBe(84532);
     expect(BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT.chainId).toBe(84532);
     expect(BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT.executor.toLowerCase()).toBe(DELEGATED_EXECUTOR_ADDRESS.toLowerCase());
-    // The mainnet registry is a different contract with a different allowlist:
-    // the delegated executor is not deployed/registered on 8453, and the
-    // mainnet Slipstream route the UI pair trades is unrelated to it.
+    // The v1 Mainnet registry is a different contract with a different
+    // allowlist. The Mainnet delegated deployment is selected independently
+    // from the Production executor pin and must never inherit this Sepolia pin.
     expect(MAINNET_REGISTRY[8453]!.executor.toLowerCase()).not.toBe(DELEGATED_EXECUTOR_ADDRESS.toLowerCase());
     expect(MAINNET_SLIP_ROUTER.toLowerCase()).not.toBe(DELEGATED_EXECUTOR_ADDRESS.toLowerCase());
     expect(

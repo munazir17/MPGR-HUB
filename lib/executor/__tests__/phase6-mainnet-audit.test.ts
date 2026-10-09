@@ -97,7 +97,7 @@ describe("PHASE 6 §A: Mainnet executor deployment/config audit", () => {
 });
 
 describe("PHASE 6 §B: chain separation — Mainnet and Sepolia registries can never cross", () => {
-  it("the registry map is strictly per-chain; the delegated registry is Sepolia-only and production-scoped", () => {
+  it("v1 executor deployments are per-chain and the pinned delegated Sepolia executor stays separate", () => {
     expect(MAINNET_EXECUTOR.toLowerCase()).not.toBe(DELEGATED_EXECUTOR.toLowerCase());
     expect(MAINNET_EXECUTOR.toLowerCase()).not.toBe(SEPOLIA_V1_EXECUTOR.toLowerCase());
     expect(SEPOLIA_V1_EXECUTOR.toLowerCase()).not.toBe(DELEGATED_EXECUTOR.toLowerCase());
@@ -131,8 +131,9 @@ describe("PHASE 6 §B: chain separation — Mainnet and Sepolia registries can n
     if (!built.ok) expect(built.error.code).toBe("TOKEN_NOT_ALLOWED");
   });
 
-  it("a delegated-executor receipt can NEVER verify as a Mainnet success (verify seam)", async () => {
-    // Production deps never carry a delegated registry entry for 8453.
+  it("a Sepolia delegated-executor receipt can NEVER verify as a Mainnet v1 success", async () => {
+    // This exercises the v1 Mainnet quote/verify seam specifically. The
+    // Mainnet delegated adapter has its own chain-bound registry and verifier.
     const { verifyTrade } = await import("@/lib/mcp/mcp-trade-service");
     const { fakeReader, newFakeState, swapExecutedLog, TEST_SECRET } = await import("@/lib/mcp/__tests__/fixtures");
     const state = newFakeState();
@@ -154,7 +155,7 @@ describe("PHASE 6 §B: chain separation — Mainnet and Sepolia registries can n
     });
     const delegatedDeps = {
       registry: MPGR_EXECUTOR_DEPLOYMENTS,
-      delegatedRegistry: { [BASE_SEPOLIA_CHAIN_ID]: BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT }, // 8453 ABSENT — production shape
+      delegatedRegistry: { [BASE_SEPOLIA_CHAIN_ID]: BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT }, // Isolated Sepolia fixture; this test exercises v1 Mainnet verification.
       reader: () => fakeReader(state, BASE_MAINNET_CHAIN_ID, MAINNET_EXECUTOR),
       nowSeconds: () => 1_800_000_000,
       quoteSecret: TEST_SECRET,
