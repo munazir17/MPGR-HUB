@@ -25,8 +25,12 @@ import { isAutonomousAgentEnabled, isAutonomousProductionEnabled } from "./confi
 import { DelegatedExecutionAdapter } from "./delegated-execution-adapter";
 import { RedisDelegatedAuthorizationStore } from "./delegated-redis-store";
 import type { DelegatedAuthorizationStore } from "./delegated-authorization";
-import { installAutonomousExecutionAdapter, getAutonomousExecutionAdapter } from "./execution-adapter";
-import { isDelegatedAdapterId, MAINNET_DELEGATED_ADAPTER_ID } from "./types";
+import {
+  installAutonomousExecutionAdapter,
+  getAutonomousExecutionAdapter,
+  peekInstalledAutonomousExecutionAdapter,
+} from "./execution-adapter";
+import { isDelegatedAdapterId, MAINNET_DELEGATED_ADAPTER_ID, type AutonomousExecutionAdapter } from "./types";
 import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID } from "@/lib/executor/executor-config";
 import { delegatedExecutorAddressFor, walletSigningSupported } from "@/lib/executor/delegated-executor";
 import { McpTradeGateway, type McpGateway } from "./mcp-gateway";
@@ -78,14 +82,73 @@ function buildDelegatedAdapter(deps: {
   });
 }
 
+/**
+ * Idempotent, synchronous installation of the configured delegated adapter.
+ *
+ * This is the ONE installation path, shared by build() (the server bootstrap
+ * behind the tick/goals/policy routes) and autonomyStatus() (the public,
+ * read-only config endpoint). It exists because of the "null configuration"
+ * incident: the config route renders status WITHOUT ever building the
+ * system, and on Vercel every route is its own serverless function with its
+ * own module state — so an adapter installed by the tick function is
+ * invisible to the config function, getAutonomousExecutionAdapter() threw
+ * "configured but not installed", and the status try/catch silently rendered
+ * chainId/executor as null and executionAvailable as false.
+ *
+ * Properties:
+ *  - no-op when no delegated adapter is configured (env unset / "none" /
+ *    unknown id — the registry getter keeps resolving/throwing fail-closed
+ *    on its own);
+ *  - no-op when the configured adapter is ALREADY installed: no duplicate
+ *    registration, no singleton drift. A MISMATCHED installation is left
+ *    untouched so the getter keeps throwing fail-closed;
+ *  - otherwise constructs the adapter for the configured chain (with the
+ *    given deps, or freshly built lazy production deps) and installs it.
+ *
+ * Side-effect-free by construction: it only reads env and constructs lazy
+ * clients (Redis stores, MCP gateway, broadcaster accounts). It never signs,
+ * never builds a transaction, never broadcasts and never awaits — so the
+ * read-only status endpoint cannot be turned into an execution path. It also
+ * does NOT warm the on-chain posture (that stays with build()/the tick route
+ * via bootstrapAutonomyPosture), so rendering status performs no RPC at all
+ * while the production gate is off — the mandated configuration.
+ */
+export function ensureAutonomousExecutionAdapterInstalled(deps?: {
+  store: AutonomyStore;
+  slots: DelegatedAuthorizationStore;
+  gateway: McpGateway;
+}): DelegatedExecutionAdapter | null {
+  const configured = process.env.MPGR_AUTONOMOUS_EXECUTION_ADAPTER?.trim();
+  if (!configured || !isDelegatedAdapterId(configured)) return null;
+  const installed = peekInstalledAutonomousExecutionAdapter();
+  if (installed) {
+    // The registry only ever accepts delegated adapter ids (installAutonomous
+    // ExecutionAdapter throws otherwise), so an installed adapter whose id
+    // matches the configured delegated id IS a DelegatedExecutionAdapter; the
+    // registry's storage type just does not encode that invariant.
+    return installed.id === configured ? (installed as DelegatedExecutionAdapter) : null;
+  }
+  const adapter = buildDelegatedAdapter(
+    deps ?? {
+      store: new RedisAutonomyStore(),
+      slots: new RedisDelegatedAuthorizationStore(),
+      gateway: McpTradeGateway.productionWithDelegation(),
+    },
+  );
+  if (!adapter) return null;
+  installAutonomousExecutionAdapter(adapter);
+  return adapter;
+}
+
 function build(): AutonomySystem {
   const store = new RedisAutonomyStore();
   const slots = new RedisDelegatedAuthorizationStore();
   const gateway = McpTradeGateway.productionWithDelegation();
-  // Server bootstrap: the delegated adapter is installed ONLY here,
-  // server-side, and only for the chain the operator selected.
-  const delegatedAdapter = buildDelegatedAdapter({ store, slots, gateway });
-  if (delegatedAdapter) installAutonomousExecutionAdapter(delegatedAdapter);
+  // Server bootstrap: the delegated adapter is installed ONLY here and via the
+  // idempotent ensureAutonomousExecutionAdapterInstalled() shared with the
+  // read-only status path — server-side, and only for the chain the operator
+  // selected. Repeated initialization never duplicates the registration.
+  const delegatedAdapter = ensureAutonomousExecutionAdapterInstalled({ store, slots, gateway });
   const audit = new BusAuditSink(store, agentEventBus, agentPerformanceMonitor);
   const runtime = new AutonomyRuntime({
     store,
@@ -131,8 +194,39 @@ export function getAutonomySystem(): AutonomySystem {
   return system;
 }
 
+/**
+ * One-per-instance guard so a persistent adapter misconfiguration is logged
+ * loudly once instead of being silently swallowed on every status poll.
+ */
+let statusAdapterFailureLogged = false;
+
 /** Public status for the config endpoint / UI gating (no secrets). */
 export function autonomyStatus() {
+  // Resolve the INSTALLED adapter exactly once. The ensure call is what makes
+  // a cold serverless instance report the adapter the operator configured
+  // instead of a swallowed null (the "null configuration" incident): the
+  // config route never builds the system, and module state is per serverless
+  // function. The ensure is synchronous and performs no I/O beyond
+  // constructing lazy clients — no signing, no approval, no transaction
+  // construction, no broadcast, and no RPC while the production gate is off.
+  let adapter: AutonomousExecutionAdapter | null = null;
+  let adapterFailure: string | null = null;
+  try {
+    ensureAutonomousExecutionAdapterInstalled();
+    adapter = getAutonomousExecutionAdapter();
+  } catch (error) {
+    // Fail-closed: a configured-but-unresolvable adapter (unknown id, or a
+    // mismatch with whatever IS installed) renders as an explicit unavailable
+    // state — never as a healthy one — and is logged so it is not silent.
+    adapterFailure = error instanceof Error ? error.message : String(error);
+  }
+  if (adapterFailure && !statusAdapterFailureLogged) {
+    statusAdapterFailureLogged = true;
+    coreLogger.warn("autonomy status: delegated execution adapter is not resolvable; reporting unavailable (fail-closed)", {
+      reason: adapterFailure,
+    });
+  }
+  const chainId = adapter && typeof adapter.chainId === "number" ? adapter.chainId : null;
   return {
     enabled: isAutonomousAgentEnabled(),
     emergencyDisabled: process.env.MPGR_AUTONOMOUS_EMERGENCY_DISABLE?.trim().toLowerCase() === "true",
@@ -143,9 +237,16 @@ export function autonomyStatus() {
      * configuration, and the UI can say so honestly.
      */
     productionGate: isAutonomousProductionEnabled(),
+    /**
+     * Truthful availability: true only when the INSTALLED adapter's full
+     * static posture (feature flag, emergency stop, production gate,
+     * pinned executor, broadcaster, proven on-chain posture) passes. Never
+     * inferred from the mere existence of an environment variable.
+     */
     executionAvailable: (() => {
+      if (!adapter) return false;
       try {
-        return getAutonomousExecutionAdapter().canDelegate;
+        return adapter.canDelegate;
       } catch {
         return false;
       }
@@ -156,26 +257,15 @@ export function autonomyStatus() {
      * which contract their signature will name as spender. These are deployed
      * public contract addresses, not secrets; the operator key never appears.
      *
-     * `executor: null` means no delegated executor is pinned for that chain, so
-     * the UI must not offer to sign slots for it (the server refuses too).
+     * `chainId`/`executor` are read from the INSTALLED adapter (after the
+     * idempotent ensure above), so they reflect the actual runtime wiring —
+     * never a hardcoded expectation. `executor: null` means no delegated
+     * executor is pinned for that chain, so the UI must not offer to sign
+     * slots for it (the server refuses too).
      */
     delegated: {
-      chainId: (() => {
-        try {
-          const adapter = getAutonomousExecutionAdapter();
-          return typeof adapter.chainId === "number" ? adapter.chainId : null;
-        } catch {
-          return null;
-        }
-      })(),
-      executor: (() => {
-        try {
-          const adapter = getAutonomousExecutionAdapter();
-          return typeof adapter.chainId === "number" ? delegatedExecutorAddressFor(adapter.chainId) : null;
-        } catch {
-          return null;
-        }
-      })(),
+      chainId,
+      executor: chainId !== null ? delegatedExecutorAddressFor(chainId) : null,
       walletSigningSupported: walletSigningSupported(),
     },
     limits: publicAutonomyLimits(),

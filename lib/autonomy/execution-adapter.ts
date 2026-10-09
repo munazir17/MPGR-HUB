@@ -101,6 +101,15 @@ export function clearInstalledAutonomousExecutionAdapter(): void {
   installedDelegatedAdapter = null;
 }
 
+/**
+ * Read the installed adapter WITHOUT resolving or throwing — the idempotency
+ * probe for ensureAutonomousExecutionAdapterInstalled() (lib/autonomy/index.ts).
+ * Returns null when nothing is installed; never throws, never signs.
+ */
+export function peekInstalledAutonomousExecutionAdapter(): AutonomousExecutionAdapter | null {
+  return installedDelegatedAdapter;
+}
+
 export function getAutonomousExecutionAdapter(): AutonomousExecutionAdapter {
   const configured = process.env.MPGR_AUTONOMOUS_EXECUTION_ADAPTER?.trim();
   if (!configured || configured === NO_DELEGATION_ADAPTER_ID) return noDelegationAdapter;
