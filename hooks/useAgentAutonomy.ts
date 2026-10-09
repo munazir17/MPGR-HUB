@@ -7,8 +7,8 @@
 // cancels, submits an explicit authorization, and runs a bounded heartbeat
 // tick. It NEVER receives key material and shows no raw MCP / RPC payloads.
 //
-// Phase 2 (delegated execution, Base Sepolia): the hook also lists bounded
-// Permit2 authorization SLOTS, revokes them, and — only when the user
+// Delegated execution (Base Sepolia and Base mainnet): the hook also lists
+// bounded Permit2 authorization SLOTS, revokes them, and — only when the user
 // presses the explicit sign button — asks the CONNECTED USER WALLET to sign
 // pre-authorized single-trade slots. The only signature involved is the
 // user's own, over exactly the bounded details shown in the UI.
@@ -37,6 +37,8 @@ import {
 export interface AutonomyConfig {
   enabled: boolean;
   emergencyDisabled: boolean;
+  /** Explicit Base-mainnet execution gate; false keeps Mainnet watch-only. */
+  productionGate: boolean;
   executionAvailable: boolean;
   /**
    * Per-chain delegated capability reported by the server. `executor` is the

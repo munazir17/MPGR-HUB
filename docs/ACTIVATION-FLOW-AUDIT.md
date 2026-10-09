@@ -36,7 +36,15 @@ green. Full suite: **243 files / 2513 tests passed, 0 failed** (baseline 2484 �
 | `Goal ACTIVE` | A goal row exists in Redis and its policy is live. **No execution capability is implied by this status.** | `app/api/agent/autonomy/goals/route.ts` (`status: policyLive ? "ACTIVE" : "DRAFT"`) |
 | `0 triggered · 0 verified` | No evaluation has ever reached a broadcast. Correct and expected. | `goal.stats` |
 | `No transaction hash` | Nothing was submitted. `pendingExecution` is `null`. | `publicGoal()` |
-| `Delegated Execution · Base Sepolia: NOT CONFIGURED` | `autonomyStatus().executionAvailable === false`, i.e. the resolved adapter's `canDelegate` is false. **This is a truthful fail-closed signal, not a UI bug.** | `AgentAutonomyPanel.tsx:253`, `lib/autonomy/index.ts` |
+| `Delegated Execution · Base Sepolia: NOT CONFIGURED` (original audit UI) | At that time, the resolved adapter had `canDelegate === false`; the panel also hardcoded Base Sepolia and treated that execution-readiness boolean as configuration. | `AgentAutonomyPanel.tsx`, `lib/autonomy/index.ts` |
+
+**Current status rendering:** the dashboard now derives the network and executor pin from
+`GET /api/agent/autonomy/config` (`delegated.chainId` and `delegated.executor`) and reports
+execution readiness separately. A configured Mainnet adapter with
+`AUTONOMOUS_PRODUCTION_ENABLED=false` is shown as Base Mainnet (8453), with its pinned
+executor and an explicit watch-only / production-gate-off state; a missing or mismatched
+adapter remains unavailable. The status endpoint installs the selected adapter on cold
+instances without warming RPC posture or enabling execution.
 
 One nuance worth knowing: `ACTIVE` is the *pre-first-evaluation* state. There is **no
 Vercel cron scheduled for the tick endpoint** (`vercel.json` retains only the two `mpgr-run`

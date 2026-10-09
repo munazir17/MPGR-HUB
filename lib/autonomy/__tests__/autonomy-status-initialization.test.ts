@@ -287,10 +287,12 @@ describe("missing adapter fails closed", () => {
 // ---------------------------------------------------------------------------
 
 describe("invalid adapter ID fails closed", () => {
-  it("an unknown id never resolves permissively and renders unavailable", async () => {
+  it("an unknown id never resolves permissively, renders unavailable, and is not echoed into logs", async () => {
     configureMainnetAdapter();
-    process.env.MPGR_AUTONOMOUS_EXECUTION_ADAPTER = "delegated-permit2-mainnet-typo";
+    const invalidConfigMarker = "test-config-value-that-must-not-be-logged";
+    process.env.MPGR_AUTONOMOUS_EXECUTION_ADAPTER = invalidConfigMarker;
     const { autonomy, registry } = await freshModules();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     expect(() => registry.getAutonomousExecutionAdapter()).toThrow(/Unknown autonomous execution adapter/);
     // Nothing was installed for the bogus id.
@@ -298,6 +300,8 @@ describe("invalid adapter ID fails closed", () => {
 
     const status = autonomy.autonomyStatus() as StatusPayload; // must not throw
     expect(status.executionAvailable).toBe(false);
+    expect(JSON.stringify(warning.mock.calls)).toContain("ADAPTER_NOT_RESOLVABLE");
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(invalidConfigMarker);
     expect(status.delegated.chainId).toBeNull();
     expect(status.delegated.executor).toBeNull();
     expect(status.enabled).toBe(true);
@@ -308,6 +312,30 @@ describe("invalid adapter ID fails closed", () => {
 // ---------------------------------------------------------------------------
 // 5. Configured adapter ID vs installed adapter ID mismatch fails closed
 // ---------------------------------------------------------------------------
+
+describe("missing or invalid Mainnet executor configuration fails closed", () => {
+  const pins: Array<[string, string | undefined]> = [
+    ["unset", undefined],
+    ["malformed", "not-a-valid-address"],
+    ["known Sepolia", DELEGATED_EXECUTOR_ADDRESS],
+  ];
+
+  it.each(pins)("a %s Mainnet executor pin is never reported as configured", async (_case, pin) => {
+    configureMainnetAdapter();
+    if (pin === undefined) delete process.env.MPGR_MAINNET_DELEGATED_EXECUTOR;
+    else process.env.MPGR_MAINNET_DELEGATED_EXECUTOR = pin;
+    const { autonomy, registry } = await freshModules();
+
+    const status = autonomy.autonomyStatus() as StatusPayload;
+    const adapter = registry.getAutonomousExecutionAdapter() as DelegatedExecutionAdapter;
+    expect(adapter.id).toBe(MAINNET_ADAPTER_ID);
+    expect(status.delegated.chainId).toBe(8453);
+    expect(status.delegated.executor).toBeNull();
+    expect(adapter.executor).toBeNull();
+    expect(status.productionGate).toBe(false);
+    expect(status.executionAvailable).toBe(false);
+  });
+});
 
 describe("configured/installed adapter mismatch fails closed", () => {
   it("mainnet configured while a Sepolia adapter is installed: unavailable, no overwrite", async () => {

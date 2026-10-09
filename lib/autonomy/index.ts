@@ -210,20 +210,21 @@ export function autonomyStatus() {
   // constructing lazy clients — no signing, no approval, no transaction
   // construction, no broadcast, and no RPC while the production gate is off.
   let adapter: AutonomousExecutionAdapter | null = null;
-  let adapterFailure: string | null = null;
+  let adapterResolutionFailed = false;
   try {
     ensureAutonomousExecutionAdapterInstalled();
     adapter = getAutonomousExecutionAdapter();
-  } catch (error) {
+  } catch {
     // Fail-closed: a configured-but-unresolvable adapter (unknown id, or a
     // mismatch with whatever IS installed) renders as an explicit unavailable
-    // state — never as a healthy one — and is logged so it is not silent.
-    adapterFailure = error instanceof Error ? error.message : String(error);
+    // state. Do not log the raw error: it can contain arbitrary environment
+    // input, and status diagnostics must never echo environment values.
+    adapterResolutionFailed = true;
   }
-  if (adapterFailure && !statusAdapterFailureLogged) {
+  if (adapterResolutionFailed && !statusAdapterFailureLogged) {
     statusAdapterFailureLogged = true;
     coreLogger.warn("autonomy status: delegated execution adapter is not resolvable; reporting unavailable (fail-closed)", {
-      reason: adapterFailure,
+      code: "ADAPTER_NOT_RESOLVABLE",
     });
   }
   const chainId = adapter && typeof adapter.chainId === "number" ? adapter.chainId : null;
