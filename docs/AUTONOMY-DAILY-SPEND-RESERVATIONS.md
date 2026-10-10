@@ -304,10 +304,14 @@ with `daygen` > 0, leave the poison in place: the old code cannot see
   audit). This is the ONLY automatic-adjacent release path and it is state-
   enforced (refused once ATTEMPTING).
 * **Stuck ATTEMPTING (A)** — crash after the marker: the transaction MAY have
-  been broadcast. **Never release.** Verify on-chain (same machinery as the
-  goal verification pass) or reconcile manually, then
-  `markSpendAmbiguous(...)` (A→X, spend stays counted) or let the normal
-  commit path close it once verification reports.
+  been broadcast. **Never release.** Not at any timeout: the 24 h
+  `executionGuard` governs only the execution **idempotency claim**
+  (`claimExecution`) — its expiry never releases, downgrades, or otherwise
+  alters a spend reservation. Verify on-chain (same machinery as the goal
+  verification pass) or reconcile manually, then `markSpendAmbiguous(...)`
+  (A→X, spend stays counted) or let the normal commit path close it once
+  verification reports. Conservative accounting is the invariant: an uncertain
+  outcome stays counted until a receipt-aware transition resolves it.
 * **AMBIGUOUS (X)** — terminal consumed state. No recovery changes totals for
   that day; reconcile the goal/transaction separately.
 * **Missing hash behind a fence (`LEDGER_UNAVAILABLE`)** — run
