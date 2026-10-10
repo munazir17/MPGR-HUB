@@ -129,6 +129,86 @@ export const UNCERTAIN_BROADCAST_CODES: readonly AutonomyFailureCode[] = [
   "TIMEOUT",
 ];
 
+/**
+ * FAILURE CLASSIFICATION — reservation release gate.
+ *
+ * A daily-spend reservation may be RELEASED (spend freed) for one of these
+ * codes ONLY. The invariant every producer must uphold: a clean result with
+ * one of these codes is produced strictly BEFORE any broadcast attempt
+ * ("Nothing was broadcast" is part of the adapter/tool contract for each
+ * path that returns them). Any code NOT in this list — and any THROWN error,
+ * which is by definition unknown — keeps its reservation counted (commit or
+ * AMBIGUOUS), never released automatically.
+ *
+ * Deliberately excluded:
+ *   RPC_ERROR, TIMEOUT      — the broadcast may have been sent
+ *   TX_REVERTED             — post-broadcast (spent gas; stays committed)
+ *   VERIFICATION_FAILED     — post-broadcast
+ *   QUOTE_FAILED/NO_LIQUIDITY — occur before a reservation exists
+ *   DUPLICATE_PREVENTED     — runtime-internal; never reaches a release
+ */
+export const PRE_BROADCAST_REFUSAL_CODES = [
+  "POLICY_REJECTED",
+  "AUTHORIZATION_MISSING",
+  "APPROVAL_REQUIRED",
+  "USER_REJECTED",
+  "TOKEN_NOT_ALLOWED",
+  "QUOTE_STALE",
+  "INVALID_CONDITION",
+  "MCP_DISABLED",
+  "EXECUTOR_PAUSED",
+  "EXECUTION_UNAVAILABLE",
+] as const satisfies readonly AutonomyFailureCode[];
+
+export function isPreBroadcastRefusalCode(code: AutonomyFailureCode): boolean {
+  return (PRE_BROADCAST_REFUSAL_CODES as readonly AutonomyFailureCode[]).includes(code);
+}
+
+/**
+ * Switch refusals and infrastructure outages — NOT trade failures. They must
+ * not increment `stats.consecutiveFailures` and must never permanently fail an
+ * active goal: the goal keeps observing until the operator/infra recovers.
+ * (A deliberate EXECUTOR_PAUSED / MCP_DISABLED / RPC outage is not the user's
+ * trade failing; counting it toward MAX_CONSECUTIVE_FAILURES would kill goals
+ * for infrastructure reasons.)
+ */
+export const INFRASTRUCTURE_OUTAGE_CODES: readonly AutonomyFailureCode[] = [
+  "MCP_DISABLED",
+  "EXECUTOR_PAUSED",
+  "RPC_ERROR",
+];
+
+export function isInfrastructureOutageCode(code: AutonomyFailureCode): boolean {
+  return INFRASTRUCTURE_OUTAGE_CODES.includes(code);
+}
+
+// ---------------------------------------------------------------------------
+// Daily spend reservations (see docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reservation lifecycle for one execution id against one policy-day ledger.
+ *
+ *   RESERVED   spend counted, pre-attempt. Safe to RELEASE (reason
+ *              UNATTEMPTED — proves the adapter was never invoked).
+ *   ATTEMPTING attempt marker persisted; the adapter MAY have broadcast.
+ *              Never released automatically. Only COMMIT or AMBIGUOUS.
+ *   COMMITTED  terminal consumed (successful / reverted execution).
+ *   AMBIGUOUS  terminal consumed (unknown outcome: throw, RPC_ERROR,
+ *              timeout, crash after the attempt marker). Spend STAYS counted.
+ *   RELEASED   terminal freed — only for a verified pre-broadcast refusal
+ *              (or an unattempted crash-recovery release).
+ *
+ * States RESERVED / ATTEMPTING / COMMITTED / AMBIGUOUS all count toward the
+ * daily caps; RELEASED does not.
+ */
+export type SpendReservationState = "RESERVED" | "ATTEMPTING" | "COMMITTED" | "AMBIGUOUS" | "RELEASED";
+
+/** Release reasons the store accepts. Each is verified at the call site. */
+export type SpendReservationRelease =
+  | { reason: "PRE_BROADCAST_REFUSAL"; code: AutonomyFailureCode }
+  | { reason: "UNATTEMPTED" };
+
 // ---------------------------------------------------------------------------
 // Policy model (spec §5) — deterministic guardrails, validated server-side.
 // ---------------------------------------------------------------------------

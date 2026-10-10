@@ -209,3 +209,40 @@ jobs:
           solc-version: "0.8.24"
           fail-on: high
           slither-args: --filter-paths "openzeppelin|forge-std"
+
+  real-redis:
+    # Real-Redis suite for the autonomy daily-spend reservations and the
+    # legacy CSV -> hash migration fence: executes the CANONICAL day-ledger
+    # Lua (lib/autonomy/day-ledger-scripts.ts) against an actual Redis server
+    # of the pinned version below — including true cross-connection
+    # concurrency and the frozen old-writer fixture — instead of only the
+    # in-repo Lua double. The suite is env-gated (REDIS_URL) and skipped in
+    # jobs that do not provide a server.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      NEXT_TELEMETRY_DISABLED: "1"
+      UPSTASH_REDIS_REST_URL: https://example.invalid
+      UPSTASH_REDIS_REST_TOKEN: ci-placeholder
+      REDIS_URL: redis://127.0.0.1:6379
+    services:
+      redis:
+        # CI-pinned Redis server version (Upstash-compatible Redis 7.x).
+        image: redis:7.4.2
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Real-Redis day-ledger suite (canonical Lua)
+        run: npx vitest run lib/autonomy/__tests__/daily-spend.redis.test.ts

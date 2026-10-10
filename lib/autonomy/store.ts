@@ -16,14 +16,18 @@
 //   RedisAutonomyStore    — production (redis-store.ts, fail-closed).
 
 import { canTransitionGoal } from "./types";
+import { legacyLedgerPoison } from "./day-ledger-scripts";
 import { InvalidGoalTransitionError, requireTransition } from "./goal-machine";
 import { makeId, utcDayKey } from "./idempotency";
-import type {
-  AgentGoal,
-  AutonomyAuditEvent,
-  AutonomyPolicy,
-  GoalActionRecord,
-  GoalStatus,
+import {
+  isPreBroadcastRefusalCode,
+  type AgentGoal,
+  type AutonomyAuditEvent,
+  type AutonomyPolicy,
+  type GoalActionRecord,
+  type GoalStatus,
+  type SpendReservationRelease,
+  type SpendReservationState,
 } from "./types";
 
 export interface GoalTransitionPatch {
@@ -39,6 +43,29 @@ export interface GoalTransitionPatch {
   maxTrades?: number | null;
   updatedAt: string;
 }
+
+/**
+ * View of one policy-day ledger. `status` is never a silent zero: when the
+ * legacy CSV is malformed or the fenced ledger is missing/corrupt the totals
+ * are UNKNOWN and callers must refuse to act (fail closed).
+ */
+export type DayLedgerSnapshot =
+  | { status: "OK"; spendRaw: string; actions: number }
+  | { status: "MALFORMED_LEGACY" | "LEDGER_UNAVAILABLE"; spendRaw: null; actions: null };
+
+export type ReserveDailySpendResult =
+  | {
+      ok: true;
+      /** Existing state when false — an idempotent retry, never double-counted. */
+      created: boolean;
+      state: SpendReservationState;
+      snapshot: { spendRaw: string; actions: number };
+    }
+  | {
+      ok: false;
+      reason: "OVER_BUDGET" | "OVER_ACTIONS" | "MALFORMED_LEGACY" | "LEDGER_UNAVAILABLE" | "BAD_AMOUNT";
+      snapshot: { spendRaw: string; actions: number } | null;
+    };
 
 export interface AutonomyStore {
   // -- policies ------------------------------------------------------------
@@ -71,17 +98,68 @@ export interface AutonomyStore {
   // -- due scan (scheduler) --------------------------------------------------
   listKnownWallets(limit: number): Promise<string[]>;
 
-  // -- daily counters (UTC day keys) -----------------------------------------
-  // Single source of truth: one atomic ledger append per action records BOTH
-  // the spend amount and the action count, so they can never drift apart.
-  getDailySpendRaw(policyId: string, dayKey: string): Promise<string>;
+  // -- daily spend reservations (UTC day keys) -------------------------------
+  // Single source of truth: one RESERVATION per execution id records the
+  // spend amount AND the action count atomically, so they can never drift
+  // apart — and the daily caps (maxDailyRaw / maxActionsPerDay) are enforced
+  // in the SAME atomic operation that takes the reservation. Concurrent goals
+  // sharing a policy therefore cannot jointly exceed either cap.
+  //
+  // Lifecycle: reserve -> markSpendAttempt (BEFORE the execution adapter is
+  // invoked) -> commit | release | markSpendAmbiguous. See types.ts and
+  // docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md for the exact release rules.
+  //
+  // Reads run the legacy CSV -> hash migration fence first (idempotent,
+  // fail-closed on malformed legacy data) so the totals always include
+  // pre-migration entries.
+
+  /** Fenced day totals — spend counted against the cap, and action count. */
+  getDayLedger(policyId: string, dayKey: string): Promise<DayLedgerSnapshot>;
+
   /**
-   * Atomically appends one action to the UTC-day ledger. Returns the updated
-   * ledger entries (sum with BigInt for exact spend), or null when the
-   * policy's daily action cap is reached (caller must refuse the action).
+   * Atomically reserve `amountRaw` (exact decimal-string units) for one
+   * execution id against the policy-day caps. Idempotent per execution id:
+   * retries/duplicates never double-count. Fail-closed on malformed legacy
+   * data or an unknown ledger state (never a silent zero reset).
    */
-  tryRecordDailyAction(policyId: string, dayKey: string, amountRaw: string, maxActions: number): Promise<string[] | null>;
-  getDailyActions(policyId: string, dayKey: string): Promise<number>;
+  reserveDailySpend(input: {
+    policyId: string;
+    dayKey: string;
+    execId: string;
+    amountRaw: string;
+    maxDailyRaw: string;
+    maxActions: number;
+  }): Promise<ReserveDailySpendResult>;
+
+  /**
+   * The ATTEMPT MARKER: RESERVED -> ATTEMPTING. MUST be persisted before the
+   * execution adapter is invoked. Once this returns the reservation must
+   * never be released automatically — the adapter may have broadcast.
+   */
+  markSpendAttempt(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null>;
+
+  /** Terminal consumed (successful or reverted execution). Idempotent. */
+  commitDailySpend(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null>;
+
+  /**
+   * The ONLY way spend is freed. `PRE_BROADCAST_REFUSAL` releases only for an
+   * explicit verified pre-broadcast code (validated here too — defense in
+   * depth); `UNATTEMPTED` releases only a RESERVED (never-attempted) entry.
+   * Returns the resulting state, or null when the release is refused/unknown.
+   */
+  releaseDailySpend(
+    policyId: string,
+    dayKey: string,
+    execId: string,
+    release: SpendReservationRelease,
+  ): Promise<SpendReservationState | null>;
+
+  /**
+   * Operator/recovery primitive for a stuck ATTEMPTING reservation with an
+   * unknown broadcast outcome: ATTEMPTING -> AMBIGUOUS. Spend STAYS counted.
+   * Never releases anything.
+   */
+  markSpendAmbiguous(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null>;
 
   // -- idempotency -----------------------------------------------------------
   /** SET-NX claim. True => this caller owns the key for the lease duration. */
@@ -119,7 +197,25 @@ function randomEntropy(): string {
 export class InMemoryAutonomyStore implements AutonomyStore {
   readonly policies = new Map<string, AutonomyPolicy>();
   readonly goals = new Map<string, AgentGoal>();
-  readonly ledgers = new Map<string, string[]>();
+  /**
+   * Legacy CSV day ledgers, RAW string per policy-day (mirrors the Redis key
+   * `mpgrhub:autonomy:day:{policyId}:{day}` exactly — including the fence
+   * poison after migration). Tests use this to simulate frozen pre-fix
+   * writers against the same key the production migration fences.
+   */
+  readonly legacyDayLedgers = new Map<string, string>();
+  /** Authoritative day hashes (mirrors `mpgrhub:autonomy:dayv2:...`). */
+  readonly dayHashes = new Map<string, InMemoryDayHash>();
+  /** Fence markers (mirrors `mpgrhub:autonomy:dayfence:...`). */
+  readonly dayFences = new Set<string>();
+  /** Migration archives (mirrors `mpgrhub:autonomy:dayarchive:...`). */
+  readonly dayArchives = new Map<string, string>();
+  /**
+   * Write-witness counters (mirrors `mpgrhub:autonomy:daygen:...`): "0" at
+   * import, incremented by every mutation. The proof `restoreDayLedger`
+   * needs — see the Lua `RESTORE_DAY_LEDGER_SCRIPT` rationale.
+   */
+  readonly dayGens = new Map<string, string>();
   readonly execKeys = new Map<string, number>(); // key -> expiresAtMs
   readonly leases = new Map<string, { token: string; expiresAtMs: number }>();
   readonly audit = new Map<string, AutonomyAuditEvent[]>();
@@ -196,29 +292,225 @@ export class InMemoryAutonomyStore implements AutonomyStore {
     return [...new Set([...this.goals.values()].map((g) => g.wallet.toLowerCase()))].slice(0, limit);
   }
 
-  private spendKey(policyId: string, dayKey: string): string {
+  private dayKey(policyId: string, dayKey: string): string {
     return `${policyId}:${dayKey}`;
   }
 
-  private ledger(policyId: string, dayKey: string): string[] {
-    return this.ledgers.get(this.spendKey(policyId, dayKey)) ?? [];
+  /**
+   * In-memory mirror of the Lua `ensure_day_ledger()` — identical semantics:
+   * validate ALL legacy data first, write only after validation, fence+poison
+   * atomically, and never reset an existing total to zero.
+   */
+  private ensureDayLedger(policyId: string, dayKey: string): DayLedgerSnapshot {
+    const key = this.dayKey(policyId, dayKey);
+    const poison = legacyLedgerPoison();
+    const legacy = this.legacyDayLedgers.get(key);
+    const poisoned = legacy !== undefined && legacy === poison;
+    const fenced = this.dayFences.has(key) || poisoned;
+
+    if (fenced) {
+      const hash = this.dayHashes.get(key);
+      if (hash && hash.migrated) {
+        return { status: "OK", spendRaw: hash.total, actions: hash.count };
+      }
+      // Fenced but the hash is missing/corrupt: totals UNKNOWN — never zero.
+      return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
+    }
+
+    // Not fenced. A migrated hash is authoritative — NEVER re-import over it
+    // (an archive-only re-import would drop post-migration reservations and
+    // undercount spend). Unpoisoned legacy CSV next to a migrated hash = foreign
+    // entries that were never imported — fail closed. A migrated hash without a
+    // fence is corrupt state — fail closed; keep all data.
+    const existing = this.dayHashes.get(key);
+    if (existing) {
+      if (!existing.migrated) {
+        return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
+      }
+      if (legacy !== undefined && legacy !== poison) {
+        return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
+      }
+      return { status: "OK", spendRaw: existing.total, actions: existing.count };
+    }
+
+    // Hash missing but a write-witness exists: this policy-day was migrated
+    // before and the hash was lost. Re-importing the legacy CSV alone would
+    // silently undercount any post-migration writes — fail closed; recovery is
+    // restoreDayLedger (only valid while the witness is "0").
+    if (this.dayGens.has(key)) {
+      return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
+    }
+
+    // True first access: import the legacy CSV (if any). Validate first —
+    // writes come only after every field has been accepted.
+    let sum = 0n;
+    let count = 0;
+    if (legacy !== undefined) {
+      const parsed = parseLegacyCsvStrict(legacy);
+      if (parsed === null) return { status: "MALFORMED_LEGACY", spendRaw: null, actions: null };
+      sum = parsed.sum;
+      count = parsed.count;
+    }
+
+    // All validation done — write (the whole method is synchronous, so this
+    // is atomic w.r.t. other store calls, like the Redis script).
+    const total = sum.toString();
+    this.dayHashes.set(key, {
+      total,
+      count,
+      migrated: true,
+      legacy: total,
+      legacyCount: count,
+      reservations: new Map(),
+    });
+    this.dayFences.add(key);
+    if (legacy !== undefined) this.dayArchives.set(key, legacy);
+    this.legacyDayLedgers.set(key, poison);
+    this.dayGens.set(key, "0");
+    return { status: "OK", spendRaw: total, actions: count };
   }
 
-  async getDailySpendRaw(policyId: string, dayKey: string): Promise<string> {
-    return this.ledger(policyId, dayKey).reduce<bigint>((sum, v) => sum + BigInt(v), 0n).toString();
+  /** Mirror of the Lua `INCR daygen` write-witness bump. */
+  private bumpDayGen(policyId: string, dayKey: string): void {
+    const key = this.dayKey(policyId, dayKey);
+    const cur = this.dayGens.get(key);
+    this.dayGens.set(key, String((cur === undefined ? 0 : Number(cur)) + 1));
   }
 
-  async tryRecordDailyAction(policyId: string, dayKey: string, amountRaw: string, maxActions: number): Promise<string[] | null> {
-    const key = this.spendKey(policyId, dayKey);
-    const list = this.ledgers.get(key) ?? [];
-    if (list.length + 1 > maxActions) return null;
-    list.push(amountRaw);
-    this.ledgers.set(key, list);
-    return [...list];
+  async getDayLedger(policyId: string, dayKey: string): Promise<DayLedgerSnapshot> {
+    return this.ensureDayLedger(policyId, dayKey);
   }
 
-  async getDailyActions(policyId: string, dayKey: string): Promise<number> {
-    return this.ledger(policyId, dayKey).length;
+  async reserveDailySpend(input: {
+    policyId: string;
+    dayKey: string;
+    execId: string;
+    amountRaw: string;
+    maxDailyRaw: string;
+    maxActions: number;
+  }): Promise<ReserveDailySpendResult> {
+    const { policyId, dayKey, execId, amountRaw, maxDailyRaw, maxActions } = input;
+    if (!/^\d+$/.test(amountRaw) || !/^\d+$/.test(maxDailyRaw) || !Number.isInteger(maxActions)) {
+      return { ok: false, reason: "BAD_AMOUNT", snapshot: null };
+    }
+    const led = this.ensureDayLedger(policyId, dayKey);
+    if (led.status !== "OK") {
+      return { ok: false, reason: led.status === "MALFORMED_LEGACY" ? "MALFORMED_LEGACY" : "LEDGER_UNAVAILABLE", snapshot: null };
+    }
+    const hash = this.dayHashes.get(this.dayKey(policyId, dayKey))!;
+    const existing = hash.reservations.get(execId);
+    if (existing) {
+      // Idempotent: a duplicate execution id is never counted twice.
+      return { ok: true, created: false, state: existing.state, snapshot: { spendRaw: hash.total, actions: hash.count } };
+    }
+    const amount = BigInt(amountRaw);
+    const newTotal = BigInt(hash.total) + amount;
+    if (newTotal > BigInt(maxDailyRaw)) {
+      return { ok: false, reason: "OVER_BUDGET", snapshot: { spendRaw: hash.total, actions: hash.count } };
+    }
+    if (hash.count + 1 > maxActions) {
+      return { ok: false, reason: "OVER_ACTIONS", snapshot: { spendRaw: hash.total, actions: hash.count } };
+    }
+    hash.reservations.set(execId, { state: "RESERVED", amount: amountRaw });
+    hash.total = newTotal.toString();
+    hash.count += 1;
+    this.bumpDayGen(policyId, dayKey);
+    return { ok: true, created: true, state: "RESERVED", snapshot: { spendRaw: hash.total, actions: hash.count } };
+  }
+
+  async markSpendAttempt(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
+    const res = this.dayHashes.get(this.dayKey(policyId, dayKey))?.reservations.get(execId);
+    if (!res) return null;
+    if (res.state === "RESERVED") {
+      res.state = "ATTEMPTING";
+      this.bumpDayGen(policyId, dayKey);
+    }
+    return res.state;
+  }
+
+  async commitDailySpend(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
+    const res = this.dayHashes.get(this.dayKey(policyId, dayKey))?.reservations.get(execId);
+    if (!res) return null;
+    if (res.state === "RESERVED" || res.state === "ATTEMPTING") {
+      res.state = "COMMITTED";
+      this.bumpDayGen(policyId, dayKey);
+    }
+    if (res.state === "COMMITTED" || res.state === "AMBIGUOUS") return res.state;
+    return null; // RELEASED cannot be committed
+  }
+
+  async releaseDailySpend(
+    policyId: string,
+    dayKey: string,
+    execId: string,
+    release: SpendReservationRelease,
+  ): Promise<SpendReservationState | null> {
+    // Defense in depth: the store also refuses unverified codes.
+    if (release.reason === "PRE_BROADCAST_REFUSAL" && !isPreBroadcastRefusalCode(release.code)) return null;
+    const key = this.dayKey(policyId, dayKey);
+    const hash = this.dayHashes.get(key);
+    const res = hash?.reservations.get(execId);
+    if (!hash || !res) return null;
+    const allowed =
+      (release.reason === "PRE_BROADCAST_REFUSAL" && (res.state === "RESERVED" || res.state === "ATTEMPTING")) ||
+      (release.reason === "UNATTEMPTED" && res.state === "RESERVED");
+    if (!allowed) return null;
+    const newTotal = BigInt(hash.total) - BigInt(res.amount);
+    if (newTotal < 0n || hash.count - 1 < 0) return null;
+    res.state = "RELEASED";
+    hash.total = newTotal.toString();
+    hash.count -= 1;
+    this.bumpDayGen(policyId, dayKey);
+    return "RELEASED";
+  }
+
+  async markSpendAmbiguous(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
+    const res = this.dayHashes.get(this.dayKey(policyId, dayKey))?.reservations.get(execId);
+    if (!res) return null;
+    if (res.state === "ATTEMPTING") {
+      res.state = "AMBIGUOUS";
+      this.bumpDayGen(policyId, dayKey);
+      return "AMBIGUOUS";
+    }
+    return null;
+  }
+
+  /**
+   * Operator recovery mirror of RedisAutonomyStore.restoreDayLedger (tests +
+   * parity only — the runtime never calls it): rebuild a migrated-but-lost day
+   * hash from its migration archive. The archive only ever contains the legacy
+   * CSV as imported — so restore is allowed ONLY when the write-witness proves
+   * nothing was written after the import (gen == "0") and the archive is
+   * therefore the full authoritative ledger. If post-migration reservations
+   * existed (gen > 0), or completeness cannot be proven (no witness), this
+   * fails closed: an incomplete total would UNDERCOUNT spend. Never invents
+   * zero totals; never touches an existing hash.
+   */
+  async restoreDayLedger(policyId: string, dayKey: string): Promise<DayLedgerSnapshot> {
+    const key = this.dayKey(policyId, dayKey);
+    const poison = legacyLedgerPoison();
+    const legacy = this.legacyDayLedgers.get(key);
+    const poisoned = legacy !== undefined && legacy === poison;
+    const fenced = this.dayFences.has(key) || poisoned;
+    if (!fenced) return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
+    if (this.dayHashes.has(key)) return this.ensureDayLedger(policyId, dayKey);
+    const gen = this.dayGens.get(key);
+    if (gen === undefined || gen !== "0") return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
+    const archived = this.dayArchives.get(key);
+    if (archived === undefined) return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
+    const parsed = parseLegacyCsvStrict(archived);
+    if (parsed === null) return { status: "MALFORMED_LEGACY", spendRaw: null, actions: null };
+    this.dayHashes.set(key, {
+      total: parsed.sum.toString(),
+      count: parsed.count,
+      migrated: true,
+      legacy: parsed.sum.toString(),
+      legacyCount: parsed.count,
+      reservations: new Map(),
+    });
+    this.dayFences.add(key);
+    this.dayGens.set(key, "0");
+    return { status: "OK", spendRaw: parsed.sum.toString(), actions: parsed.count };
   }
 
   async claimExecution(idempotencyKey: string, ttlSeconds: number): Promise<boolean> {
@@ -280,6 +572,37 @@ export class InMemoryAutonomyStore implements AutonomyStore {
 
 function stripUndefined<T extends object>(value: T): Partial<AgentGoal> {
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<AgentGoal>;
+}
+
+// ---------------------------------------------------------------------------
+// Day-ledger in-memory internals (faithful mirror of the Lua in
+// day-ledger-scripts.ts — same validation, same fail-closed rules).
+// ---------------------------------------------------------------------------
+
+interface InMemoryDayHash {
+  total: string;
+  count: number;
+  migrated: true;
+  legacy: string;
+  legacyCount: number;
+  reservations: Map<string, { state: SpendReservationState; amount: string }>;
+}
+
+/**
+ * Strict legacy-CSV parse: EVERY field must be a digit string. Mirrors the
+ * Lua `parse_csv_strict` exactly (empty fields and non-digit junk fail the
+ * whole ledger closed — the old reader silently dropped them instead).
+ */
+function parseLegacyCsvStrict(csv: string): { sum: bigint; count: number } | null {
+  if (csv === "") return { sum: 0n, count: 0 };
+  let sum = 0n;
+  let count = 0;
+  for (const field of csv.split(",")) {
+    if (!/^\d+$/.test(field)) return null;
+    sum += BigInt(field);
+    count += 1;
+  }
+  return { sum, count };
 }
 
 /**

@@ -32,7 +32,8 @@ import { AUTONOMY_LIMITS } from "./config";
 import { AUTONOMY_CHAIN_ID, DELEGATED_EXECUTION_CHAIN_ID, isDelegatedAdapterId, type DelegatedSwapRequest } from "./types";
 import { evaluateCondition, evaluatePolicyAgainstAction } from "./policy-engine";
 import { utcDayKey } from "./idempotency";
-import { isTerminalGoalStatus, type AgentGoal, type AutonomyFailureCode, type GoalActionRecord, type GoalStatus } from "./types";
+import { isTerminalGoalStatus, type AgentGoal, type AutonomyFailureCode, type GoalActionRecord, type GoalStatus, type SpendReservationRelease, type SpendReservationState } from "./types";
+import { isInfrastructureOutageCode, isPreBroadcastRefusalCode } from "./types";
 import type { AutonomyAuditSink } from "./audit";
 import { auditEvent } from "./audit";
 import type { McpGateway } from "./mcp-gateway";
@@ -384,15 +385,29 @@ export class AutonomyRuntime {
     await this.audit(goal.wallet, "CONDITION_MET", now, goal.id, goal.policyId, { price: condition.price, threshold: goal.condition.threshold });
 
     // POLICY CHECK — deterministic gate (spec §5). Runs BEFORE any
-    // prepare/authorization work; the daily ledger is claimed atomically
-    // right before broadcast so the caps cannot be raced between goals.
+    // prepare/authorization work; the daily spend reservation is taken
+    // atomically right before broadcast so the caps cannot be raced between
+    // goals. The ledger read below is only the fast-path pre-check — the
+    // reservation script re-checks both caps atomically and is authoritative.
     const dayKey = utcDayKey(now);
-    const spend = policy
-      ? {
-          dailySpendRaw: await this.deps.store.getDailySpendRaw(policy.id, dayKey),
-          actionsToday: await this.deps.store.getDailyActions(policy.id, dayKey),
-        }
-      : { dailySpendRaw: "0", actionsToday: 0 };
+    let spend: { dailySpendRaw: string; actionsToday: number } = { dailySpendRaw: "0", actionsToday: 0 };
+    if (policy) {
+      const ledger = await this.deps.store.getDayLedger(policy.id, dayKey);
+      if (ledger.status !== "OK") {
+        // Malformed legacy CSV or a fenced ledger whose total is unknown:
+        // NEVER fall back to zero — fail closed and let a human reconcile.
+        return this.parkWithFailure(
+          goal,
+          "EXECUTION_UNAVAILABLE",
+          ledger.status === "MALFORMED_LEGACY"
+            ? "Daily spend ledger contains malformed legacy data — nothing was broadcast. Manual reconciliation required (see docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md)."
+            : "Daily spend ledger is fenced but its totals are unknown — nothing was broadcast. Manual reconciliation required (see docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md).",
+          now,
+          { conditionChecked: true },
+        );
+      }
+      spend = { dailySpendRaw: ledger.spendRaw, actionsToday: ledger.actions };
+    }
     const decision = evaluatePolicyAgainstAction(
       policy,
       goal,
@@ -430,7 +445,8 @@ export class AutonomyRuntime {
       );
     }
 
-    // ACT — idempotency claim, ledger claim, CAS to EXECUTING, prepare, execute.
+    // ACT — idempotency claim, spend reservation, CAS to EXECUTING, prepare,
+    // attempt marker, execute.
     const slotKey = `${goal.id}:${goal.nextEvaluationAt}`;
     const idempotencyKey = `exec-${slotKey}`;
     const claimed = await this.deps.store.claimExecution(idempotencyKey, AUTONOMY_LIMITS.executionGuardSeconds);
@@ -441,15 +457,49 @@ export class AutonomyRuntime {
       return { kind: "DUPLICATE_PREVENTED", message: "This evaluation slot already produced an execution — duplicate prevented." };
     }
 
-    // Atomic daily cap claim (append-capped ledger). Null => cap reached.
-    const ledger = await this.deps.store.tryRecordDailyAction(decision.policy.id, dayKey, goal.trade.sellAmountRaw, decision.policy.maxActionsPerDay);
-    if (ledger === null) {
-      return this.park(goal, "POLICY_REJECTED", "Daily action limit for this policy has been reached.", now, "OVER_ACTION_RATE");
+    // ATOMIC daily spend reservation: both caps (maxDailyRaw and
+    // maxActionsPerDay) are enforced inside one Redis script against the
+    // policy-day totals — concurrent goals sharing this policy can never
+    // jointly exceed them (the old read-then-append ledger only capped the
+    // action COUNT and raced the spend SUM across goals). Idempotent per
+    // execution id: retries and duplicate execution ids never double-count.
+    const reservation = await this.deps.store.reserveDailySpend({
+      policyId: decision.policy.id,
+      dayKey,
+      execId: idempotencyKey,
+      amountRaw: goal.trade.sellAmountRaw,
+      maxDailyRaw: decision.policy.maxDailyRaw,
+      maxActions: decision.policy.maxActionsPerDay,
+    });
+    if (!reservation.ok) {
+      if (reservation.reason === "OVER_BUDGET") {
+        return this.park(goal, "POLICY_REJECTED", "This trade would exceed the daily spend limit authorized by the policy.", now, "OVER_DAILY_LIMIT");
+      }
+      if (reservation.reason === "OVER_ACTIONS") {
+        return this.park(goal, "POLICY_REJECTED", "Daily action limit for this policy has been reached.", now, "OVER_ACTION_RATE");
+      }
+      // MALFORMED_LEGACY / LEDGER_UNAVAILABLE / BAD_AMOUNT — fail closed.
+      return this.parkWithFailure(
+        goal,
+        "EXECUTION_UNAVAILABLE",
+        "Daily spend reservation refused (ledger unavailable or malformed) — nothing was broadcast. Manual reconciliation required (see docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md).",
+        now,
+        { conditionChecked: true },
+      );
+    }
+    if (reservation.state !== "RESERVED") {
+      // The same execution id already reached (or passed) an attempt — this
+      // is a duplicate retry. NEVER invoke the adapter again; the reservation
+      // keeps whatever state the winner left it in (never double-counted).
+      await this.audit(goal.wallet, "DUPLICATE_PREVENTED", now, goal.id, goal.policyId, { idempotencyKey, reservationState: reservation.state });
+      await this.park(goal, "DUPLICATE_PREVENTED", "This execution id already produced an attempt — duplicate prevented.", now, undefined, "FAILED");
+      return { kind: "DUPLICATE_PREVENTED", message: "This execution id already produced an attempt — duplicate prevented." };
     }
 
     // Quote freshness at broadcast time (spec §13 — never execute stale data).
     const nowSeconds = Math.floor(now.getTime() / 1000);
     if (!Number.isFinite(quote.quoteExpiresAt) || quote.quoteExpiresAt <= nowSeconds) {
+      await this.releaseReservation(decision.policy.id, dayKey, idempotencyKey, { reason: "PRE_BROADCAST_REFUSAL", code: "QUOTE_STALE" }, now);
       return this.parkWithFailure(goal, "QUOTE_STALE", "Quote expired before execution could start — nothing was broadcast.", now, { conditionChecked: true });
     }
 
@@ -462,6 +512,10 @@ export class AutonomyRuntime {
     });
     if (!executing) {
       // State changed under us; drop the claims — the winner owns the slot.
+      // The reservation is provably unattempted (the adapter was never
+      // invoked and the attempt marker was never set) — the one verified
+      // UNATTEMPTED release path.
+      await this.releaseReservation(decision.policy.id, dayKey, idempotencyKey, { reason: "UNATTEMPTED" }, now);
       await this.deps.store.releaseExecution(idempotencyKey);
       return { kind: "SKIPPED", reason: "STATE_CHANGED", message: "Goal state changed during evaluation." };
     }
@@ -481,11 +535,41 @@ export class AutonomyRuntime {
     } else {
       const prepared = await this.deps.gateway.prepare({ quoteId: quote.quoteId, authorization: "APPROVAL" });
       if (!prepared.ok) {
+        // Prepare is strictly pre-broadcast (unsigned calldata only). A
+        // whitelisted verified-pre-broadcast refusal frees the reservation;
+        // anything unknown keeps it counted (conservative — never released
+        // automatically). Either way the adapter was never invoked.
+        await this.releaseForFailure(decision.policy.id, dayKey, idempotencyKey, prepared.failure.code, now);
         return this.failAfterClaim(executing, idempotencyKey, prepared.failure.code, prepared.failure.message, now);
       }
       preparedSteps = prepared.data.steps;
       preparedTransactionRequest = prepared.data.transactionRequest;
       await this.audit(goal.wallet, "TRADE_PREPARED", now, goal.id, goal.policyId, { quoteId: quote.quoteId, steps: prepared.data.steps.length });
+    }
+
+    // ATTEMPT MARKER — persisted BEFORE the execution adapter is invoked.
+    // Once this is visible a crash may have broadcast: the reservation is
+    // never released automatically after this point.
+    let attemptState: SpendReservationState | null = null;
+    try {
+      attemptState = await this.deps.store.markSpendAttempt(decision.policy.id, dayKey, idempotencyKey);
+    } catch (error) {
+      void error;
+    }
+    if (attemptState !== "ATTEMPTING") {
+      // Missing/Redis failure/lost response (or a state that is no longer
+      // safely attemptable): DO NOT invoke the adapter (fail closed). The
+      // reservation is left as-is (it counts against the day — conservative)
+      // and is recoverable later via the verified UNATTEMPTED path once a
+      // human confirms nothing was sent.
+      this.deps.logger.error("Spend attempt marker could not be persisted — adapter NOT invoked", { goalId: goal.id });
+      return this.failAfterClaim(
+        executing,
+        idempotencyKey,
+        "RPC_ERROR",
+        "Spend attempt marker could not be persisted — the execution adapter was NOT invoked. The reservation stays reserved (recoverable as UNATTEMPTED).",
+        now,
+      );
     }
 
     // EXECUTE — only the adapter can reach a signature (spec §6). It is
@@ -509,15 +593,29 @@ export class AutonomyRuntime {
         transactionRequest: preparedTransactionRequest,
       });
     } catch (error) {
+      // UNKNOWN error: the broadcast MAY have happened. The reservation is
+      // marked AMBIGUOUS (spend stays counted) and never released.
       this.deps.logger.error("Autonomous execution adapter threw", { goalId: goal.id });
-      return this.failAfterClaim(executing, idempotencyKey, "EXECUTION_UNAVAILABLE", "Execution adapter failed unexpectedly. Nothing was confirmed.", now);
+      await this.markReservationAmbiguous(decision.policy.id, dayKey, idempotencyKey, now);
+      return this.failAfterClaim(executing, idempotencyKey, "EXECUTION_UNAVAILABLE", "Execution adapter failed unexpectedly — the broadcast outcome is UNKNOWN. The spend reservation is kept (AMBIGUOUS), never released.", now);
     }
 
     if (!result.ok) {
+      // Clean adapter refusal: only an explicit verified pre-broadcast code
+      // frees the reservation. RPC_ERROR / TIMEOUT / anything unknown keeps
+      // it AMBIGUOUS — the transaction may have been broadcast.
+      if (isPreBroadcastRefusalCode(result.code)) {
+        await this.releaseForFailure(decision.policy.id, dayKey, idempotencyKey, result.code, now);
+      } else {
+        await this.markReservationAmbiguous(decision.policy.id, dayKey, idempotencyKey, now);
+      }
       return this.failAfterClaim(executing, idempotencyKey, result.code, result.message, now);
     }
 
-    // TRANSACTION SUBMITTED — enter the verification state.
+    // TRANSACTION SUBMITTED — the spend is consumed (conservative: it stays
+    // counted even if the receipt later shows a revert). Enter the
+    // verification state.
+    await this.commitReservation(decision.policy.id, dayKey, idempotencyKey, now);
     const submittedAt = now.toISOString();
     await this.deps.store.transitionGoal(goal.id, goal.wallet, ["EXECUTING"], executing.updatedAt, {
       status: "EXECUTING",
@@ -557,6 +655,70 @@ export class AutonomyRuntime {
   // Helpers
   // -------------------------------------------------------------------------
 
+  /**
+   * Release a spend reservation for a VERIFIED reason only. Failures here are
+   * logged and swallowed: a missed release keeps the spend counted (safe).
+   */
+  private async releaseReservation(
+    policyId: string,
+    dayKey: string,
+    execId: string,
+    release: SpendReservationRelease,
+    now: Date,
+  ): Promise<void> {
+    try {
+      await this.deps.store.releaseDailySpend(policyId, dayKey, execId, release);
+    } catch (error) {
+      void error;
+      this.deps.logger.error("Spend reservation release failed — spend stays counted (conservative)", { execId });
+    }
+    void now;
+  }
+
+  /**
+   * Release for a clean failure code ONLY when it is an explicit verified
+   * pre-broadcast refusal; otherwise leave the reservation exactly as it is
+   * (counted) — unknown errors are never released automatically.
+   */
+  private async releaseForFailure(
+    policyId: string,
+    dayKey: string,
+    execId: string,
+    code: AutonomyFailureCode,
+    now: Date,
+  ): Promise<void> {
+    if (isPreBroadcastRefusalCode(code)) {
+      await this.releaseReservation(policyId, dayKey, execId, { reason: "PRE_BROADCAST_REFUSAL", code }, now);
+    }
+  }
+
+  /**
+   * Unknown/ambiguous outcome (thrown error, RPC_ERROR, timeout): the
+   * reservation is marked AMBIGUOUS — spend STAYS counted, never released.
+   */
+  private async markReservationAmbiguous(policyId: string, dayKey: string, execId: string, now: Date): Promise<void> {
+    try {
+      await this.deps.store.markSpendAmbiguous(policyId, dayKey, execId);
+    } catch (error) {
+      void error;
+      this.deps.logger.error("Spend reservation could not be marked AMBIGUOUS — it stays counted in its prior state", { execId });
+    }
+    void now;
+  }
+
+  /** Consume the reservation (successful or reverted execution). */
+  private async commitReservation(policyId: string, dayKey: string, execId: string, now: Date): Promise<void> {
+    try {
+      await this.deps.store.commitDailySpend(policyId, dayKey, execId);
+    } catch (error) {
+      void error;
+      // A lost commit response leaves the reservation ATTEMPTING — it still
+      // counts against the day (conservative); recovery marks it AMBIGUOUS.
+      this.deps.logger.error("Spend reservation commit failed — spend stays counted (conservative)", { execId });
+    }
+    void now;
+  }
+
   private backoff(failures: number, now: Date): string {
     const seconds = Math.min(
       AUTONOMY_LIMITS.backoffBaseSeconds * 2 ** Math.max(0, failures - 1),
@@ -594,8 +756,12 @@ export class AutonomyRuntime {
     _ctx: { conditionChecked: boolean },
   ): Promise<EvaluationResult> {
     const updatedAt = now.toISOString();
-    const failures = goal.stats.consecutiveFailures + 1;
-    const shouldFail = failures >= AUTONOMY_LIMITS.maxConsecutiveFailures;
+    // Switch refusals and infrastructure outages are NOT trade failures:
+    // they never increment the trade-failure counter and never permanently
+    // fail an active goal (the goal keeps observing until recovery).
+    const infra = isInfrastructureOutageCode(code);
+    const failures = infra ? goal.stats.consecutiveFailures : goal.stats.consecutiveFailures + 1;
+    const shouldFail = !infra && failures >= AUTONOMY_LIMITS.maxConsecutiveFailures;
     const nextEval = this.backoff(failures, now);
     await this.deps.store.transitionGoal(goal.id, goal.wallet, ["ACTIVE", "WAITING"], goal.updatedAt, {
       status: shouldFail ? "FAILED" : "WAITING",
@@ -621,10 +787,13 @@ export class AutonomyRuntime {
     now: Date,
   ): Promise<EvaluationResult> {
     const updatedAt = now.toISOString();
-    // The daily-ledger entry stays (conservative: a failed attempt consumes
-    // one action slot — over-counting is safe, under-counting is not).
-    const failures = executingGoal.stats.consecutiveFailures + 1;
-    const shouldFail = failures >= AUTONOMY_LIMITS.maxConsecutiveFailures || isTerminalFailureCode(code);
+    // The spend reservation is handled by the caller (released only for
+    // verified pre-broadcast refusals, committed/AMBIGUOUS otherwise) —
+    // over-counting is safe, under-counting is not. Switch/infrastructure
+    // codes never increment the trade-failure counter and never fail the goal.
+    const infra = isInfrastructureOutageCode(code);
+    const failures = infra ? executingGoal.stats.consecutiveFailures : executingGoal.stats.consecutiveFailures + 1;
+    const shouldFail = !infra && (failures >= AUTONOMY_LIMITS.maxConsecutiveFailures || isTerminalFailureCode(code));
     const cas = await this.deps.store.transitionGoal(executingGoal.id, executingGoal.wallet, ["EXECUTING"], executingGoal.updatedAt, {
       status: shouldFail ? "FAILED" : "WAITING",
       lastEvaluationAt: updatedAt,

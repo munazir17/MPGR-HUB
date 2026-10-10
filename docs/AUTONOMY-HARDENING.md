@@ -55,6 +55,14 @@ no live chain, no broadcaster calls, no Mainnet):
 | 2 Replay/nonce/slot safety | `hardening-authorization` replay/dup-nonce; `hardening-concurrency` races; `hardening-invariants` INV-1; actionId collision (`hardening-gaps` §2/§4) |
 | 3 Idempotency | `claimExecution` single-winner + TTL (`hardening-scheduler-idempotency`, `hardening-gaps` §3); duplicate goal creation disclosed (route mints fresh ids — F-8) |
 | 4 Concurrency | same-goal concurrent eval (lease), two-worker slot races, duplicate ticks, pause/cancel vs execute, **concurrent daily-limit consumption proven race-free** (atomic `tryRecordDailyAction` pre-broadcast claim: 2 evaluated → 1 broadcast, `hardening-gaps` §4) |
+
+> **Superseded (2026-10-10):** the `tryRecordDailyAction` claim closed the
+> action-COUNT race but not the spend-SUM race — `maxDaily` was still checked
+> in TypeScript before the append (TOCTOU across goals sharing a policy). The
+> atomic spend RESERVATION replaced it; see
+> `docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md`. The §4 concurrency evidence
+> below remains valid for the action-count cap; the spend cap is now enforced
+> in the same atomic script.
 | 5 Quote safety | `hardening-quotes-verify` §6 (stale/expired/tamper/fee/RPC); signed-minOut immutability (INV-2); quote-freshness at broadcast (`QUOTE_STALE`) |
 | 6 TX/RPC failure matrix | `hardening-gaps` §6 — 10 classification paths over `verifyExecution`: UNCERTAIN/TIMEOUT on budget exhaustion, RPC_ERROR→PENDING, TX_REVERTED→FAILED, VERIFICATION_FAILED with named checks, defense-in-depth minOut check; uncertain never re-broadcast (`hardening-scheduler-idempotency` restart + `runtime.test`) |
 | 7 Verification integrity | `hardening-quotes-verify` §8 (26) — wrong sender/taker/executor/token/amount/fee/feeRecipient/router/actionId/nonce, out<minOut, missing/forged event, tx.to≠executor |

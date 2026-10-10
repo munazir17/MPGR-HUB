@@ -128,8 +128,8 @@ describe("autonomous runtime — full authorized execution (test-only delegation
       expect(after.pendingExecution).toBeNull();
       // daily ledger recorded exactly the one trade
       const day = new Date(harness.now()).toISOString().slice(0, 10);
-      expect(await harness.store.getDailyActions(after.policyId, day)).toBe(1);
-      expect(await harness.store.getDailySpendRaw(after.policyId, day)).toBe(usdc("20"));
+      const ledger = await harness.store.getDayLedger(after.policyId, day);
+      expect(ledger).toEqual({ status: "OK", spendRaw: usdc("20"), actions: 1 });
     }));
 
   it("repeating goal keeps trading within policy and completes at maxTrades", async () =>
@@ -154,7 +154,7 @@ describe("autonomous runtime — full authorized execution (test-only delegation
 
       const after = (await harness.store.getGoal(goal.id))!;
       expect(after.status).toBe("COMPLETED");
-      expect(await harness.store.getDailyActions(after.policyId, day)).toBe(2);
+      expect((await harness.store.getDayLedger(after.policyId, day)).actions).toBe(2);
     }));
 
   it("execution slot idempotency: a pre-claimed slot key blocks a second execution attempt", async () =>
@@ -199,7 +199,7 @@ describe("autonomous runtime — full authorized execution (test-only delegation
       expect(harness.adapter.options.requests).toHaveLength(1);
     }));
 
-  it("execution adapter failure after authorization -> goal parked/failed, slot consumed, no tx", async () =>
+  it("verified pre-broadcast refusal -> goal parked, slot consumed, reservation RELEASED (no phantom spend)", async () =>
     enabled(async () => {
       const h = makeHarness({ authorized: true, requests: [], failWith: { code: "EXECUTION_UNAVAILABLE", message: "session wallet unavailable" } });
       fundWallet(h.state, usdc("100"));
@@ -210,17 +210,43 @@ describe("autonomous runtime — full authorized execution (test-only delegation
       expect(after.status).toBe("WAITING"); // bounded retry, not terminal on first failure
       expect(after.pendingExecution).toBeNull();
       expect(h.auditEvents).toContain("EXECUTION_FAILED");
-      // the failed attempt consumed one daily action slot (conservative by design)
+      // A clean adapter refusal with an explicit verified pre-BROADCAST code
+      // frees the reservation (nothing was broadcast): the day totals are
+      // untouched. Unknown/ambiguous failures keep their spend (next test).
       const day = new Date(h.now()).toISOString().slice(0, 10);
-      expect(await h.store.getDailyActions(after.policyId, day)).toBe(1);
+      expect(await h.store.getDayLedger(after.policyId, day)).toEqual({ status: "OK", spendRaw: "0", actions: 0 });
+    }));
+
+  it("unknown execution failure (RPC_ERROR) -> spend reservation stays counted (conservative, never released)", async () =>
+    enabled(async () => {
+      const h = makeHarness({ authorized: true, requests: [], failWith: { code: "RPC_ERROR", message: "broadcast outcome unknown" } });
+      fundWallet(h.state, usdc("100"));
+      const { goal } = await createActiveGoal(h, { maxTrades: 3 }, { maxDailyRaw: usdc("10000"), maxActionsPerDay: 50 });
+      const result = await h.runtime.evaluateGoal(goal.id);
+      expect(result.kind).toBe("EXECUTION_FAILED");
+      // The reservation is marked AMBIGUOUS and its spend STAYS counted —
+      // the transaction may have been broadcast; never released automatically.
+      const day = new Date(h.now()).toISOString().slice(0, 10);
+      const ledger = await h.store.getDayLedger(goal.policyId, day);
+      expect(ledger).toEqual({ status: "OK", spendRaw: usdc("20"), actions: 1 });
     }));
 
   it("policy breach mid-flight: daily cap reached between goals is enforced before execute", async () =>
     enabled(async () => {
-      const { policy, goal } = await createActiveGoal(harness, { maxTrades: 5 });
+      const { policy, goal } = await createActiveGoal(harness, { maxTrades: 5 }, { maxDailyRaw: usdc("1000") });
       const day = new Date(harness.now()).toISOString().slice(0, 10);
       // Fill the daily ledger to the policy's cap (maxActionsPerDay = 5)
-      for (let i = 0; i < 5; i++) await harness.store.tryRecordDailyAction(policy.id, day, usdc("20"), 5);
+      for (let i = 0; i < 5; i++) {
+        const r = await harness.store.reserveDailySpend({
+          policyId: policy.id,
+          dayKey: day,
+          execId: `fill-${i}`,
+          amountRaw: usdc("20"),
+          maxDailyRaw: policy.maxDailyRaw,
+          maxActions: 5,
+        });
+        expect(r.ok).toBe(true);
+      }
       const result = await harness.runtime.evaluateGoal(goal.id);
       expect(result.kind).toBe("PARKED");
       if (result.kind === "PARKED") expect(result.failureCode).toBe("POLICY_REJECTED");

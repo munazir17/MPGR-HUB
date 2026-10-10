@@ -18,7 +18,8 @@ const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
 type Value =
   | { kind: "string"; value: string }
   | { kind: "set"; value: Set<string> }
-  | { kind: "zset"; value: Map<string, number> };
+  | { kind: "zset"; value: Map<string, number> }
+  | { kind: "hash"; value: Map<string, string> };
 
 interface Entry {
   value: Value;
@@ -135,6 +136,57 @@ export class LuaRedis {
         if (!entry) return -2;
         if (entry.expiresAt === null) return -1;
         return Math.ceil((entry.expiresAt - this.now) / 1000);
+      }
+      case "HSET": {
+        const [key, ...pairs] = rest;
+        if (pairs.length === 0 || pairs.length % 2 !== 0) throw new Error("ERR wrong number of arguments for HSET");
+        let entry = this.live(key);
+        if (!entry) {
+          entry = { value: { kind: "hash", value: new Map() }, expiresAt: null };
+          this.store.set(key, entry);
+        }
+        if (entry.value.kind !== "hash") throw new Error("WRONGTYPE " + key);
+        let added = 0;
+        for (let i = 0; i < pairs.length; i += 2) {
+          if (!entry.value.value.has(pairs[i])) added += 1;
+          entry.value.value.set(pairs[i], pairs[i + 1]);
+        }
+        return added;
+      }
+      case "HGET": {
+        const entry = this.live(rest[0]);
+        if (!entry) return null;
+        if (entry.value.kind !== "hash") throw new Error("WRONGTYPE " + rest[0]);
+        const v = entry.value.value.get(rest[1]);
+        return v === undefined ? null : v;
+      }
+      case "HGETALL": {
+        const entry = this.live(rest[0]);
+        if (!entry) return [];
+        if (entry.value.kind !== "hash") throw new Error("WRONGTYPE " + rest[0]);
+        const out: string[] = [];
+        for (const [k, v] of entry.value.value) out.push(k, v);
+        return out;
+      }
+      case "HEXISTS": {
+        const entry = this.live(rest[0]);
+        if (!entry) return 0;
+        if (entry.value.kind !== "hash") throw new Error("WRONGTYPE " + rest[0]);
+        return entry.value.value.has(rest[1]) ? 1 : 0;
+      }
+      case "HDEL": {
+        const entry = this.live(rest[0]);
+        if (!entry) return 0;
+        if (entry.value.kind !== "hash") throw new Error("WRONGTYPE " + rest[0]);
+        let n = 0;
+        for (const f of rest.slice(1)) if (entry.value.value.delete(f)) n += 1;
+        return n;
+      }
+      case "HLEN": {
+        const entry = this.live(rest[0]);
+        if (!entry) return 0;
+        if (entry.value.kind !== "hash") throw new Error("WRONGTYPE " + rest[0]);
+        return entry.value.value.size;
       }
       case "SADD": {
         const [key, ...members] = rest;
