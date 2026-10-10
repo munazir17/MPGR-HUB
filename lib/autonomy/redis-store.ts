@@ -289,7 +289,13 @@ export class RedisAutonomyStore implements AutonomyStore {
       DAY_LEDGER_KEYS.hash(policyId, dayKey),
       DAY_LEDGER_KEYS.fence(policyId, dayKey),
       DAY_LEDGER_KEYS.archive(policyId, dayKey),
+      DAY_LEDGER_KEYS.gen(policyId, dayKey),
     ];
+  }
+
+  /** Keys for the hash+gen lifecycle scripts (attempt/commit/ambiguous). */
+  private ledgerHashKeys(policyId: string, dayKey: string): string[] {
+    return [DAY_LEDGER_KEYS.hash(policyId, dayKey), DAY_LEDGER_KEYS.gen(policyId, dayKey)];
   }
 
   private ledgerArgs(): Array<string | number> {
@@ -348,7 +354,7 @@ export class RedisAutonomyStore implements AutonomyStore {
   async markSpendAttempt(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
     const result = await this.redis().eval(
       MARK_SPEND_ATTEMPT_SCRIPT,
-      [DAY_LEDGER_KEYS.hash(policyId, dayKey)],
+      this.ledgerHashKeys(policyId, dayKey),
       [execId, DAY_LEDGER_TTL_SECONDS],
     );
     const reply = Array.isArray(result) ? (result as Array<string | number>).map(String) : null;
@@ -359,7 +365,7 @@ export class RedisAutonomyStore implements AutonomyStore {
   async commitDailySpend(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
     const result = await this.redis().eval(
       COMMIT_DAY_SPEND_SCRIPT,
-      [DAY_LEDGER_KEYS.hash(policyId, dayKey)],
+      this.ledgerHashKeys(policyId, dayKey),
       [execId, DAY_LEDGER_TTL_SECONDS],
     );
     const reply = Array.isArray(result) ? (result as Array<string | number>).map(String) : null;
@@ -390,7 +396,7 @@ export class RedisAutonomyStore implements AutonomyStore {
   async markSpendAmbiguous(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
     const result = await this.redis().eval(
       MARK_SPEND_AMBIGUOUS_SCRIPT,
-      [DAY_LEDGER_KEYS.hash(policyId, dayKey)],
+      this.ledgerHashKeys(policyId, dayKey),
       [execId, DAY_LEDGER_TTL_SECONDS],
     );
     const reply = Array.isArray(result) ? (result as Array<string | number>).map(String) : null;
@@ -400,8 +406,14 @@ export class RedisAutonomyStore implements AutonomyStore {
 
   /**
    * OPERATOR recovery (see docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md):
-   * rebuild a fenced day hash from its migration archive. Never invents zero
-   * totals; never touches an existing hash. Not called by the runtime.
+   * rebuild a migrated-but-lost day hash from its migration archive — but ONLY
+   * when the `daygen` write-witness proves nothing was written after the
+   * import (gen == "0"), i.e. the archive IS the full authoritative ledger.
+   * If post-migration reservations existed (gen > 0) the archive cannot
+   * contain them and any restore would UNDERCOUNT spend: the script returns
+   * LOST_HISTORY and this method reports LEDGER_UNAVAILABLE (fail closed;
+   * manual reconciliation required). Never invents zero totals; never touches
+   * an existing hash. Not called by the runtime.
    */
   async restoreDayLedger(policyId: string, dayKey: string): Promise<DayLedgerSnapshot> {
     const result = await this.redis().eval(

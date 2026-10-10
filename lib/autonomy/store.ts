@@ -210,6 +210,12 @@ export class InMemoryAutonomyStore implements AutonomyStore {
   readonly dayFences = new Set<string>();
   /** Migration archives (mirrors `mpgrhub:autonomy:dayarchive:...`). */
   readonly dayArchives = new Map<string, string>();
+  /**
+   * Write-witness counters (mirrors `mpgrhub:autonomy:daygen:...`): "0" at
+   * import, incremented by every mutation. The proof `restoreDayLedger`
+   * needs — see the Lua `RESTORE_DAY_LEDGER_SCRIPT` rationale.
+   */
+  readonly dayGens = new Map<string, string>();
   readonly execKeys = new Map<string, number>(); // key -> expiresAtMs
   readonly leases = new Map<string, { token: string; expiresAtMs: number }>();
   readonly audit = new Map<string, AutonomyAuditEvent[]>();
@@ -311,6 +317,32 @@ export class InMemoryAutonomyStore implements AutonomyStore {
       return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
     }
 
+    // Not fenced. A migrated hash is authoritative — NEVER re-import over it
+    // (an archive-only re-import would drop post-migration reservations and
+    // undercount spend). Unpoisoned legacy CSV next to a migrated hash = foreign
+    // entries that were never imported — fail closed. A migrated hash without a
+    // fence is corrupt state — fail closed; keep all data.
+    const existing = this.dayHashes.get(key);
+    if (existing) {
+      if (!existing.migrated) {
+        return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
+      }
+      if (legacy !== undefined && legacy !== poison) {
+        return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
+      }
+      return { status: "OK", spendRaw: existing.total, actions: existing.count };
+    }
+
+    // Hash missing but a write-witness exists: this policy-day was migrated
+    // before and the hash was lost. Re-importing the legacy CSV alone would
+    // silently undercount any post-migration writes — fail closed; recovery is
+    // restoreDayLedger (only valid while the witness is "0").
+    if (this.dayGens.has(key)) {
+      return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
+    }
+
+    // True first access: import the legacy CSV (if any). Validate first —
+    // writes come only after every field has been accepted.
     let sum = 0n;
     let count = 0;
     if (legacy !== undefined) {
@@ -318,10 +350,6 @@ export class InMemoryAutonomyStore implements AutonomyStore {
       if (parsed === null) return { status: "MALFORMED_LEGACY", spendRaw: null, actions: null };
       sum = parsed.sum;
       count = parsed.count;
-    }
-    const existing = this.dayHashes.get(key);
-    if (existing && !existing.migrated) {
-      return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
     }
 
     // All validation done — write (the whole method is synchronous, so this
@@ -338,7 +366,15 @@ export class InMemoryAutonomyStore implements AutonomyStore {
     this.dayFences.add(key);
     if (legacy !== undefined) this.dayArchives.set(key, legacy);
     this.legacyDayLedgers.set(key, poison);
+    this.dayGens.set(key, "0");
     return { status: "OK", spendRaw: total, actions: count };
+  }
+
+  /** Mirror of the Lua `INCR daygen` write-witness bump. */
+  private bumpDayGen(policyId: string, dayKey: string): void {
+    const key = this.dayKey(policyId, dayKey);
+    const cur = this.dayGens.get(key);
+    this.dayGens.set(key, String((cur === undefined ? 0 : Number(cur)) + 1));
   }
 
   async getDayLedger(policyId: string, dayKey: string): Promise<DayLedgerSnapshot> {
@@ -378,20 +414,27 @@ export class InMemoryAutonomyStore implements AutonomyStore {
     hash.reservations.set(execId, { state: "RESERVED", amount: amountRaw });
     hash.total = newTotal.toString();
     hash.count += 1;
+    this.bumpDayGen(policyId, dayKey);
     return { ok: true, created: true, state: "RESERVED", snapshot: { spendRaw: hash.total, actions: hash.count } };
   }
 
   async markSpendAttempt(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
     const res = this.dayHashes.get(this.dayKey(policyId, dayKey))?.reservations.get(execId);
     if (!res) return null;
-    if (res.state === "RESERVED") res.state = "ATTEMPTING";
+    if (res.state === "RESERVED") {
+      res.state = "ATTEMPTING";
+      this.bumpDayGen(policyId, dayKey);
+    }
     return res.state;
   }
 
   async commitDailySpend(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
     const res = this.dayHashes.get(this.dayKey(policyId, dayKey))?.reservations.get(execId);
     if (!res) return null;
-    if (res.state === "RESERVED" || res.state === "ATTEMPTING") res.state = "COMMITTED";
+    if (res.state === "RESERVED" || res.state === "ATTEMPTING") {
+      res.state = "COMMITTED";
+      this.bumpDayGen(policyId, dayKey);
+    }
     if (res.state === "COMMITTED" || res.state === "AMBIGUOUS") return res.state;
     return null; // RELEASED cannot be committed
   }
@@ -417,6 +460,7 @@ export class InMemoryAutonomyStore implements AutonomyStore {
     res.state = "RELEASED";
     hash.total = newTotal.toString();
     hash.count -= 1;
+    this.bumpDayGen(policyId, dayKey);
     return "RELEASED";
   }
 
@@ -425,6 +469,7 @@ export class InMemoryAutonomyStore implements AutonomyStore {
     if (!res) return null;
     if (res.state === "ATTEMPTING") {
       res.state = "AMBIGUOUS";
+      this.bumpDayGen(policyId, dayKey);
       return "AMBIGUOUS";
     }
     return null;
@@ -432,8 +477,14 @@ export class InMemoryAutonomyStore implements AutonomyStore {
 
   /**
    * Operator recovery mirror of RedisAutonomyStore.restoreDayLedger (tests +
-   * parity only — the runtime never calls it): rebuild a fenced day hash from
-   * its migration archive; never invents zero totals.
+   * parity only — the runtime never calls it): rebuild a migrated-but-lost day
+   * hash from its migration archive. The archive only ever contains the legacy
+   * CSV as imported — so restore is allowed ONLY when the write-witness proves
+   * nothing was written after the import (gen == "0") and the archive is
+   * therefore the full authoritative ledger. If post-migration reservations
+   * existed (gen > 0), or completeness cannot be proven (no witness), this
+   * fails closed: an incomplete total would UNDERCOUNT spend. Never invents
+   * zero totals; never touches an existing hash.
    */
   async restoreDayLedger(policyId: string, dayKey: string): Promise<DayLedgerSnapshot> {
     const key = this.dayKey(policyId, dayKey);
@@ -443,6 +494,8 @@ export class InMemoryAutonomyStore implements AutonomyStore {
     const fenced = this.dayFences.has(key) || poisoned;
     if (!fenced) return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
     if (this.dayHashes.has(key)) return this.ensureDayLedger(policyId, dayKey);
+    const gen = this.dayGens.get(key);
+    if (gen === undefined || gen !== "0") return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
     const archived = this.dayArchives.get(key);
     if (archived === undefined) return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
     const parsed = parseLegacyCsvStrict(archived);
@@ -456,6 +509,7 @@ export class InMemoryAutonomyStore implements AutonomyStore {
       reservations: new Map(),
     });
     this.dayFences.add(key);
+    this.dayGens.set(key, "0");
     return { status: "OK", spendRaw: parsed.sum.toString(), actions: parsed.count };
   }
 

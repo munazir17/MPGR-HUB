@@ -63,6 +63,7 @@ function ledgerKeys(policyId: string, dayKey: string): string[] {
     DAY_LEDGER_KEYS.hash(policyId, dayKey),
     DAY_LEDGER_KEYS.fence(policyId, dayKey),
     DAY_LEDGER_KEYS.archive(policyId, dayKey),
+    DAY_LEDGER_KEYS.gen(policyId, dayKey),
   ];
 }
 
@@ -142,6 +143,37 @@ describe.skipIf(!LIVE)("REAL REDIS — daily spend reservations + migration fenc
     await live.io!.del(DAY_LEDGER_KEYS.hash(policyId, dayKey)); // ops anomaly
     expect(await store.getDayLedger(policyId, dayKey)).toEqual({ status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null });
     expect(await store.restoreDayLedger(policyId, dayKey)).toEqual({ status: "OK", spendRaw: "12", actions: 2 });
+  });
+
+  it("restore FAILS CLOSED after post-migration reservations (committed / reserved / ambiguous)", async () => {
+    // Regression: restoreDayLedger must never reconstruct a day from the
+    // migration archive alone once any post-migration write happened — the
+    // archive cannot hold reservations and an archive-only total would
+    // UNDERCOUNT daily spend. The daygen write-witness refuses it (fail
+    // closed). Three sub-scenarios on real Redis: COMMITTED, RESERVED, AMBIGUOUS.
+    const cases = [
+      { n: "lost_c", settle: async (p: string, d: string) => { expect(await store.commitDailySpend(p, d, "e1")).toBe("COMMITTED"); } },
+      { n: "lost_r", settle: async (_p: string, _d: string) => { /* stays RESERVED */ } },
+      {
+        n: "lost_x",
+        settle: async (p: string, d: string) => {
+          expect(await store.markSpendAttempt(p, d, "e1")).toBe("ATTEMPTING");
+          expect(await store.markSpendAmbiguous(p, d, "e1")).toBe("AMBIGUOUS");
+        },
+      },
+    ];
+    for (const c of cases) {
+      const { policyId, dayKey } = id(c.n);
+      const oldClient = upstashShim(live.io!) as unknown as EvalClient;
+      await frozenLegacyAppend(oldClient, DAY_LEDGER_KEYS.legacy(policyId, dayKey), "5", 10);
+      expect(await store.getDayLedger(policyId, dayKey)).toEqual({ status: "OK", spendRaw: "5", actions: 1 });
+      expect((await store.reserveDailySpend({ policyId, dayKey, execId: "e1", amountRaw: "3", maxDailyRaw: "100", maxActions: 5 })).ok).toBe(true);
+      await c.settle(policyId, dayKey);
+      await live.io!.del(DAY_LEDGER_KEYS.hash(policyId, dayKey)); // ops anomaly
+      // Archive ("5") cannot contain e1's 3 — restoring it would undercount 8.
+      expect(await store.restoreDayLedger(policyId, dayKey)).toEqual({ status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null });
+      expect(await store.getDayLedger(policyId, dayKey)).toEqual({ status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null });
+    }
   });
 
   it("duplicate execution ids are idempotent (no double-charge) and exact for huge amounts", async () => {

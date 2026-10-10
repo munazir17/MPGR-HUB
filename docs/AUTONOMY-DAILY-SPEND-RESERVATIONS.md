@@ -53,7 +53,8 @@ daily ledger without the atomic caps.
 | `mpgrhub:autonomy:day:{policyId}:{day}` | **legacy CSV** (pre-fix). After migration it holds the fence **poison** (§3) |
 | `mpgrhub:autonomy:dayv2:{policyId}:{day}` | **authoritative hash**: `total`, `count`, `migrated`, `legacy`, `legacyCount`, and one `res:{execId}` field per reservation |
 | `mpgrhub:autonomy:dayfence:{policyId}:{day}` | fence marker ("1") — separate key so "fenced but hash lost" is distinguishable from "never migrated" |
-| `mpgrhub:autonomy:dayarchive:{policyId}:{day}` | exact copy of the legacy CSV at migration time (operator recovery source) |
+| `mpgrhub:autonomy:dayarchive:{policyId}:{day}` | exact copy of the legacy CSV at migration time (operator recovery source). **Limitation:** it can never contain post-migration reservations |
+| `mpgrhub:autonomy:daygen:{policyId}:{day}` | **write-witness**: `"0"` at import, `INCR`'d by every mutation (new reservation, attempt, commit, ambiguous, release). Survives hash loss; the arbiter of whether `restoreDayLedger` may rebuild a lost hash (§6) |
 
 `total`/`count` include every reservation in state RESERVED, ATTEMPTING,
 COMMITTED or AMBIGUOUS. RELEASED entries are subtracted again. The day hash is
@@ -139,8 +140,14 @@ observing until recovery. All other failure codes behave exactly as before.
 
 ## 3. The CSV→hash migration fence (R4)
 
-`ensure_day_ledger()` (in every reserve/read/restore script, one canonical
-source) performs the migration **in one atomic Lua operation**:
+**Migration trigger: LAZY — this is the only mechanism that exists.**
+`ensure_day_ledger()` is called by every day-ledger script (`getDayLedger`,
+`reserveDailySpend`, and the lifecycle/release/restore scripts) and performs
+the migration **exactly once per policy-day, on the first day-ledger access,
+in one atomic Lua operation**. There is NO explicit migration API, method, or
+operator job — do not plan the rollout around running one. (`restoreDayLedger`
+(§6) is the only explicit operator entry point, and it is recovery, not
+migration.)
 
 1. If the fence exists (or the legacy key already holds the poison): return the
    hash totals; if the hash is missing/corrupt → `LEDGER_UNAVAILABLE`
@@ -152,7 +159,11 @@ source) performs the migration **in one atomic Lua operation**:
    with **zero writes** (no partial migration, no poison, no reset).
 3. Only then write, atomically: the hash (`total`/`count` = imported sum, plus
    a `legacy`/`legacyCount` forensics copy), the archive (raw CSV), the fence
-   key, and the **poison** into the legacy key.
+   key, the **poison** into the legacy key, and the **write-witness**
+   `daygen = "0"`. The witness makes import exactly-once: once it exists, a
+   lost hash can never be silently re-imported from the (incomplete) archive,
+   and `restoreDayLedger` can tell "nothing wrote after the import" (`"0"`)
+   from "post-migration reservations existed" (`> 0`).
 
 ### 3.1 How old writers are fenced out
 
@@ -184,7 +195,11 @@ is one atomic script whose cap check includes every pre-fence CSV entry.
 | old writer after fencing | refused at every legal cap | same |
 | stale legacy write after fencing | ignored (fence authoritative) | same |
 | concurrent old/new writers | import-or-refuse; cap holds; no lost write | same + real-redis suite |
-| missing hash behind an existing fence | `LEDGER_UNAVAILABLE` (**not** zero); `restoreDayLedger` rebuilds from archive | same |
+| missing hash behind an existing fence, nothing wrote after import (`daygen` = "0") | `LEDGER_UNAVAILABLE` (**not** zero); `restoreDayLedger` rebuilds the full authoritative ledger from the archive | same |
+| hash lost after a **committed** reservation | `restoreDayLedger` **fails closed** (`LEDGER_UNAVAILABLE`) — archive-only totals would undercount | same + real-redis suite |
+| hash lost after a **reserved** (in-flight) reservation | `restoreDayLedger` **fails closed** | same |
+| hash lost after an **ambiguous** reservation | `restoreDayLedger` **fails closed** (uncertain spend must stay counted) | same |
+| hash+fence loss with witness present | never re-imported, never zeroed — `LEDGER_UNAVAILABLE` | same |
 | legacy key missing but hash exists | hash totals preserved (never reset) | same |
 | exact large integers (beyond 2^53 and 2^63) | exact string arithmetic | both suites |
 
@@ -203,9 +218,10 @@ is one atomic script whose cap check includes every pre-fence CSV entry.
   drain in the production Upstash instance. The cross-version accounting is
   safe by construction (§3.2), but during the rollout window **two old
   instances** can still race each other with the pre-fix TOCTOU (the very bug
-  being fixed). The drain procedure in §5 eliminates that window. Until an
-  operator executes §5 against production, the migration must NOT be claimed
-  safe in production.
+  being fixed). The drain procedure in §5 closes that window by disabling old
+  writers BEFORE cutover; the atomic import-or-refuse serialization (§3.2)
+  covers any straggler that slips past the drain. Until an operator executes
+  §5 against production, the migration must NOT be claimed safe in production.
 * **NOT VERIFIED:** production environment variables / KV (untouched by this
   work; `AUTONOMOUS_PRODUCTION_ENABLED` remains OFF and was not modified).
 
@@ -213,42 +229,69 @@ is one atomic script whose cap check includes every pre-fence CSV entry.
 
 ## 5. Deployment / rolling-deploy sequence (operator runbook)
 
-The new code fences lazily and atomically at the first ledger access per
-policy-day, so no separate migration job is required. The drain exists to
-close the legacy↔legacy race during the rollout and to make cutover
-verifiable:
+**How the migration is actually triggered (the implementation that exists):**
+lazily and atomically on the first day-ledger access per policy-day
+(`ensure_day_ledger()` — §3). There is no migration job, script, or API to run.
+The fence/poison is the hard **data-layer** stop for old writers and does not
+depend on which instances are running (frozen old writer refused after the
+fence — **VERIFIED** by tests).
 
-1. **Drain old writers.** Set `MPGR_AUTONOMOUS_EMERGENCY_DISABLE=true` in the
-   deployment environment (this flag exists in BOTH old and new code and gates
-   every evaluation). Wait ≥ 2 minutes (`evaluationLeaseSeconds` is 120 s) so
-   in-flight evaluations finish and every instance is quiescent. From this
-   moment no instance (old or new) admits any autonomous action.
-2. **Deploy the new code** (normal platform rollout). Old instances cannot
-   write; new code fences on first ledger access.
-3. **Midnight note.** The fence is per policy-UTC-day. If the drain/deploy
-   window could cross 00:00 UTC with old instances still alive, keep the
-   emergency disable ON until the deploy has fully replaced them — the drain,
-   not the fence, is what stops a straggling old instance from writing into
-   the next day's (not-yet-fenced) CSV. New-code first access then imports any
-   such pre-fence write (§3.2 — it is never lost).
-4. **Verify** (read-only): tick/evaluate a canary policy on Base Sepolia, or
-   inspect `mpgrhub:autonomy:dayv2:*` hashes exist and `day:*` keys hold the
-   poison for active policy-days. Confirm `AUTONOMOUS_PRODUCTION_ENABLED` is
-   unchanged and the production gate state is as intended (this work does not
-   touch it).
-5. **Re-enable** (`MPGR_AUTONOMOUS_EMERGENCY_DISABLE=false`).
+**Platform reality — read before planning any Vercel rollout:** changing an
+environment variable on Vercel does **NOT** change instances that are already
+running. An env change reaches code only via a **new deployment** (new
+instances get the new env; old instances finish in-flight requests and exit).
+Steps below that depend on instance env or instance replacement are marked
+**[platform — NOT VERIFIED here]**; steps marked **[VERIFIED]** are enforced
+by code and tests in this repository and hold regardless of the platform.
 
-**Rollback:** deploy the previous release and set
-`MPGR_AUTONOMOUS_EMERGENCY_DISABLE=true` first (so no writer races during the
-roll-back). The old code reads the legacy CSV key — which now contains the
-poison — and fails **closed** (spend pre-check huge/OVER_ACTION_RATE; the old
-append is refused), so a rollback cannot overspend; it simply parks goals
-until the operator restores a readable ledger. If goals must run on the old
-code after rollback, an operator can `DEL` the poisoned `day:*` key and restore
-its archived CSV content from `dayarchive:*` (read-only amounts, digit
-strings). Reservations recorded in `dayv2:*` are not readable by old code; the
-conservative direction is to leave the poison in place (old code stays parked,
-nothing overspends).
+Sequence — old writers are disabled **before** cutover:
+
+1. **Freeze the fleet.** Set `MPGR_AUTONOMOUS_EMERGENCY_DISABLE=true` as a
+   production env var **and redeploy the CURRENT release**, so every serving
+   instance actually carries the flag. **[platform — NOT VERIFIED]** The flag
+   exists in BOTH old and new code and gates every evaluation in-process
+   **[VERIFIED: hardening-concurrency tests]** — but it cannot affect an
+   instance that never received it; setting the variable alone is not enough.
+2. **Drain in-flight work.** After that redeploy completes, wait at least
+   `evaluationLeaseSeconds` (120 s) — the lease bound **[VERIFIED]** — plus
+   the verification window (up to 900 s) for an execution already past its
+   pre-check; worst case an execution is in-flight up to `executionGuard`
+   (24 h). Keep the disable ON for the whole window if any autonomous
+   activity is unaccounted. **[production timing — NOT VERIFIED here]** No new
+   evaluation starts on any instance once the flag is live; the drain exists
+   to close the old-vs-old pre-fix TOCTOU during any remaining rollout window.
+3. **Cutover: deploy the new release.** With old writers drained, the lazy
+   migration fences each policy-day on first access
+   **[VERIFIED: atomic import-or-refuse (§3.2); fence refuses frozen old
+   writers]**. If a straggling old instance slipped past step 2 and wrote into
+   a not-yet-fenced day, that write is imported-or-refused atomically — never
+   lost, never double-counted **[VERIFIED: §3.2]**.
+4. **Verify (read-only):** inspect `mpgrhub:autonomy:dayv2:*` hashes
+   (`total`/`count`/`migrated`) and `mpgrhub:autonomy:day:{policyId}:{day}` =
+   poison for active policy-days; confirm `AUTONOMOUS_PRODUCTION_ENABLED` is
+   unchanged. **[production inspection — operator-side, NOT VERIFIED here]**
+5. **Re-enable.** Clear `MPGR_AUTONOMOUS_EMERGENCY_DISABLE` (or set `false`)
+   **and redeploy** — as in step 1, an env change alone reaches nothing that
+   is already running. **[platform — NOT VERIFIED]** The first evaluation after
+   the re-enable deploy is the canary.
+
+**Midnight note.** The fence is per policy-UTC-day. Keep the emergency disable
+ON across 00:00 UTC if old instances could still be alive — the drain, not the
+fence, is what stops a straggling old instance from writing into the next
+day's (not-yet-fenced) CSV. Any such write is imported-or-refused on that
+day's first new-code access (§3.2) — never lost.
+
+**Rollback.** Set `MPGR_AUTONOMOUS_EMERGENCY_DISABLE=true` **and redeploy**
+first **[platform — NOT VERIFIED]**, then deploy the previous release. The old
+code reads the legacy CSV key — which now holds the poison — and fails
+**closed** (spend pre-check huge/OVER_ACTION_RATE; the old append is refused),
+so a rollback cannot overspend **[VERIFIED: frozen-writer tests]**. If goals
+must run on the old code after rollback, an operator may `DEL` the poisoned
+`day:*` key and restore its archived CSV **only for policy-days without
+post-migration reservations** (check `daygen`: `"0"` = only the import ever
+wrote, or the key is absent because the day was never migrated). For any day
+with `daygen` > 0, leave the poison in place: the old code cannot see
+`dayv2:*` reservations and would spend against an incomplete total.
 
 ---
 
@@ -268,11 +311,20 @@ nothing overspends).
 * **AMBIGUOUS (X)** — terminal consumed state. No recovery changes totals for
   that day; reconcile the goal/transaction separately.
 * **Missing hash behind a fence (`LEDGER_UNAVAILABLE`)** — run
-  `RedisAutonomyStore.restoreDayLedger(policyId, dayKey)` (rebuilds from
-  `dayarchive:*`, validates first, refuses without an archive). Never creates
-  zero totals.
+  `RedisAutonomyStore.restoreDayLedger(policyId, dayKey)`. It rebuilds from
+  `dayarchive:*` **only when the `daygen` write-witness is `"0"`** — i.e.
+  nothing was written after the import and the archive IS the full
+  authoritative ledger (validated first; refuses without an archive; never
+  creates zero totals). If the witness is `> 0` (committed, reserved,
+  ambiguous, released or attempted entries existed), those entries lived only
+  in the lost hash: the archive cannot contain them and any restore would
+  **undercount** daily spend, so restore **fails closed** (`LEDGER_UNAVAILABLE`)
+  — reconcile manually from action records / audit / on-chain state and write
+  the hash back by hand. A **missing** witness also fails closed (completeness
+  cannot be proven).
 * **Malformed legacy CSV (`MALFORMED_LEGACY`)** — repair the `day:*` value by
-  hand (digit strings, comma-separated) and re-run; nothing was migrated or
+  hand (digit strings, comma-separated); the **next ledger access** retries the
+  import automatically (the migration is lazy — §3). Nothing was migrated or
   reset automatically.
 
 ---
@@ -287,7 +339,9 @@ nothing overspends).
 | Redis outage & lost reservation response | `reservation-lifecycle.runtime.test.ts` |
 | legacy CSV present/absent/malformed/empty/fenced | `legacy-ledger-migration.test.ts` |
 | old writer after fencing; concurrent/stale writers | `legacy-ledger-migration.test.ts`, `daily-spend.redis.test.ts` |
-| missing hash behind fence | `legacy-ledger-migration.test.ts`, `daily-spend.redis.test.ts` |
+| missing hash behind fence (restore when witness = "0") | `legacy-ledger-migration.test.ts`, `daily-spend.redis.test.ts` |
+| hash loss after committed / reserved / ambiguous reservations (restore fails closed) | `legacy-ledger-migration.test.ts`, `daily-spend.redis.test.ts` |
+| hash+fence loss with witness (no re-import, no zero) | `legacy-ledger-migration.test.ts` |
 | exact large integer amounts | both store suites + real-redis |
 | switch refusal behavior | `reservation-lifecycle.runtime.test.ts` |
 | one-broadcast safety (existing) | `runtime.test.ts`, `hardening-concurrency.test.ts`, `hardening-gaps.test.ts` |

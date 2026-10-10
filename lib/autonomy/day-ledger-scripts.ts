@@ -54,7 +54,17 @@ import "server-only";
 //
 //   archive mpgrhub:autonomy:dayarchive:{policyId}:{day}
 //       An exact copy of the legacy CSV as it looked at the moment of
-//       migration (before poisoning). Operator recovery source only.
+//       migration (before poisoning). Operator recovery source only — it
+//       does NOT contain any post-migration reservation.
+//
+//   gen     mpgrhub:autonomy:daygen:{policyId}:{day} = write-witness counter
+//       "0" at import (migration); INCR'd by every mutation of the hash
+//       (new reservation, attempt, commit, ambiguous, release). It survives
+//       the loss of the hash itself and is the proof restoreDayLedger needs:
+//       gen == "0" means the archive IS the full authoritative ledger;
+//       gen > 0 means post-migration reservations existed that only the lost
+//       hash held, so any archive-only restore would UNDERCOUNT spend and is
+//       refused (fail closed).
 //
 // ---------------------------------------------------------------------------
 // CSV -> HASH MIGRATION FENCE (the hard part)
@@ -87,10 +97,15 @@ export const DAY_LEDGER_KEYS = {
   hash: (policyId: string, day: string) => `mpgrhub:autonomy:dayv2:${policyId}:${day}`,
   fence: (policyId: string, day: string) => `mpgrhub:autonomy:dayfence:${policyId}:${day}`,
   archive: (policyId: string, day: string) => `mpgrhub:autonomy:dayarchive:${policyId}:${day}`,
+  gen: (policyId: string, day: string) => `mpgrhub:autonomy:daygen:${policyId}:${day}`,
 } as const;
 
-/** Key order every day-ledger script expects in KEYS[]. */
-export const DAY_LEDGER_SCRIPT_KEYS = ["legacy", "hash", "fence", "archive"] as const;
+/**
+ * Key order the 5-key day-ledger scripts expect in KEYS[]. The single-key
+ * lifecycle scripts (attempt/commit/ambiguous) take [hash, gen]; release
+ * takes all five.
+ */
+export const DAY_LEDGER_SCRIPT_KEYS = ["legacy", "hash", "fence", "archive", "gen"] as const;
 
 /** TTL for the hash/fence/poison (refreshed on every write): day + 1 day grace. */
 export const DAY_LEDGER_TTL_SECONDS = 2 * 86_400;
@@ -203,6 +218,7 @@ const LUA_ENSURE_DAY_LEDGER = `
 local function ensure_day_ledger()
   local poison = ARGV[1]
   local ttl = ARGV[2]
+  local genKey = KEYS[5]
   local legacy = redis.call("GET", KEYS[1])
   -- NOTE: redis.call returns FALSE (not nil) for missing keys/fields.
   local poisoned = (legacy and legacy == poison)
@@ -221,8 +237,37 @@ local function ensure_day_ledger()
     return {"UNAVAILABLE"}
   end
 
-  -- Not fenced: import the legacy CSV (if any). Validate first — writes come
-  -- only after every field has been accepted.
+  -- Not fenced. A migrated hash already exists: it is authoritative. NEVER
+  -- re-import over it (an archive-only re-import would drop post-migration
+  -- reservations and UNDERCOUNT spend). An unpoisoned legacy CSV alongside a
+  -- migrated hash means foreign entries that were never imported — fail
+  -- closed. A migrated hash WITHOUT a fence is corrupt state (every write
+  -- path creates both atomically) — fail closed; keep all data.
+  if redis.call("EXISTS", KEYS[2]) == 1 then
+    if not redis.call("HGET", KEYS[2], "migrated") then
+      return {"UNAVAILABLE"}
+    end
+    if legacy and legacy ~= poison then
+      return {"UNAVAILABLE"}
+    end
+    local total = redis.call("HGET", KEYS[2], "total")
+    local count = redis.call("HGET", KEYS[2], "count")
+    if total and count and is_digits(total) and is_digits(count) then
+      return {"OK", total, count}
+    end
+    return {"UNAVAILABLE"}
+  end
+
+  -- Hash missing. If a write-witness exists, this policy-day was migrated
+  -- before (import is exactly-once) and the hash was lost — re-importing the
+  -- legacy CSV alone would silently undercount any post-migration writes.
+  -- Fail closed; the recovery path is restoreDayLedger (gen must be "0").
+  if redis.call("EXISTS", genKey) == 1 then
+    return {"UNAVAILABLE"}
+  end
+
+  -- True first access: import the legacy CSV (if any). Validate first —
+  -- writes come only after every field has been accepted.
   local sum, count = "0", 0
   if legacy then
     local psum, pcount = parse_csv_strict(legacy)
@@ -230,12 +275,6 @@ local function ensure_day_ledger()
       return {"MALFORMED"}
     end
     sum, count = psum, pcount
-  end
-
-  -- Defensive: a hash that exists WITHOUT a fence is corrupt state (every
-  -- write path creates both atomically). Fail closed; keep all data.
-  if redis.call("EXISTS", KEYS[2]) == 1 and not redis.call("HGET", KEYS[2], "migrated") then
-    return {"UNAVAILABLE"}
   end
 
   -- All validation done — now write. This whole script is atomic, so old
@@ -254,6 +293,7 @@ local function ensure_day_ledger()
   end
   redis.call("SET", KEYS[3], "1", "EX", ttl)
   redis.call("SET", KEYS[1], poison, "EX", ttl)
+  redis.call("SET", genKey, "0", "EX", ttl)
   return {"OK", sum, countStr}
 end
 `;
@@ -321,6 +361,8 @@ if count + 1 > maxActions then
 end
 redis.call("HSET", KEYS[2], field, "R:" .. amount, "total", newTotal, "count", string.format("%d", count + 1))
 redis.call("EXPIRE", KEYS[2], ARGV[2])
+redis.call("INCR", KEYS[5])
+redis.call("EXPIRE", KEYS[5], ARGV[2])
 return {"OK", "1", "R", newTotal, string.format("%d", count + 1)}
 `;
 
@@ -329,7 +371,7 @@ return {"OK", "1", "R", newTotal, string.format("%d", count + 1)}
  * adapter is invoked: state R -> A. Idempotent. Once A is visible, a crash
  * may have broadcast — the reservation must never be released automatically.
  *
- * KEYS = hash. ARGV = execId, ttl
+ * KEYS = hash, gen. ARGV = execId, ttl
  * Returns {"OK", state} | {"MISSING"} | {"CORRUPT"}
  */
 export const MARK_SPEND_ATTEMPT_SCRIPT = `
@@ -341,6 +383,8 @@ if not state then return {"CORRUPT"} end
 if state == "R" then
   redis.call("HSET", KEYS[1], field, "A:" .. amt)
   redis.call("EXPIRE", KEYS[1], ARGV[2])
+  redis.call("INCR", KEYS[2])
+  redis.call("EXPIRE", KEYS[2], ARGV[2])
   return {"OK", "A"}
 end
 return {"OK", state}
@@ -351,7 +395,7 @@ return {"OK", state}
  * execution; anything whose spend must stay counted). R|A -> C.
  * Idempotent; X stays X; F cannot be committed (returns REFUSED).
  *
- * KEYS = hash. ARGV = execId, ttl
+ * KEYS = hash, gen. ARGV = execId, ttl
  * Returns {"OK", state} | {"REFUSED", state} | {"MISSING"}
  */
 export const COMMIT_DAY_SPEND_SCRIPT = `
@@ -363,6 +407,8 @@ if not state then return {"MISSING"} end
 if state == "R" or state == "A" then
   redis.call("HSET", KEYS[1], field, "C:" .. amt)
   redis.call("EXPIRE", KEYS[1], ARGV[2])
+  redis.call("INCR", KEYS[2])
+  redis.call("EXPIRE", KEYS[2], ARGV[2])
   return {"OK", "C"}
 end
 if state == "C" or state == "X" then return {"OK", state} end
@@ -376,7 +422,7 @@ return {"REFUSED", state}
  * the ONLY state an operator may move a stuck-A reservation to; it never
  * releases anything.
  *
- * KEYS = hash. ARGV = execId, ttl
+ * KEYS = hash, gen. ARGV = execId, ttl
  * Returns {"OK", state} | {"REFUSED", state} | {"MISSING"}
  */
 export const MARK_SPEND_AMBIGUOUS_SCRIPT = `
@@ -388,6 +434,8 @@ if not state then return {"MISSING"} end
 if state == "A" then
   redis.call("HSET", KEYS[1], field, "X:" .. amt)
   redis.call("EXPIRE", KEYS[1], ARGV[2])
+  redis.call("INCR", KEYS[2])
+  redis.call("EXPIRE", KEYS[2], ARGV[2])
   return {"OK", "X"}
 end
 return {"REFUSED", state}
@@ -401,7 +449,7 @@ return {"REFUSED", state}
  *       invoked; crash-recovery path)
  * Anything else is refused. total/count are decremented exactly once.
  *
- * KEYS = legacy, hash, fence, archive (hash is KEYS[2]).
+ * KEYS = legacy, hash, fence, archive, gen (hash is KEYS[2]).
  * ARGV = poison, ttl, archiveTtl, execId, reason ("P"|"U")
  * Returns {"OK", state} | {"REFUSED", state} | {"MISSING"}
  */
@@ -427,17 +475,36 @@ local newCount = tonumber(count) - 1
 if newCount < 0 then return {"MISSING"} end
 redis.call("HSET", KEYS[2], field, "F:" .. amt, "total", newTotal, "count", string.format("%d", newCount))
 redis.call("EXPIRE", KEYS[2], ARGV[2])
+redis.call("INCR", KEYS[5])
+redis.call("EXPIRE", KEYS[5], ARGV[2])
 return {"OK", "F"}
 `;
 
 /**
- * restoreDayLedger — OPERATOR recovery for "fenced but the hash is missing"
- * (see docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md). Rebuilds the hash from the
- * archived legacy CSV (validated first). Never invents zero totals: without
- * an archive it refuses. Never touches an existing hash.
+ * restoreDayLedger — OPERATOR recovery for "migrated but the hash is
+ * missing" (see docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md).
  *
- * KEYS = legacy, hash, fence, archive. ARGV = poison, ttl, archiveTtl
- * Returns {"OK", total, count} | {"ALREADY"} | {"UNAVAILABLE"} | {"MALFORMED"}
+ * The archive holds ONLY the legacy CSV as it looked at migration time — it
+ * can never contain post-migration reservations. Restoring it blindly would
+ * UNDERCOUNT daily spend and re-open the over-budget hole this ledger closes.
+ * The write-witness (`daygen`) is therefore the arbiter:
+ *
+ *   gen == "0"  exactly the import ever wrote the hash, so the archived CSV
+ *               IS the full authoritative ledger and re-importing it
+ *               reconstructs the day exactly. Restore proceeds.
+ *   gen > 0     post-migration reservations existed that only the lost hash
+ *               held. The full authoritative ledger CANNOT be reconstructed.
+ *               Return {"LOST_HISTORY"} — fail closed, never an incomplete
+ *               total. Manual reconciliation is required.
+ *   gen missing the witness itself is gone: completeness cannot be proven.
+ *               Fail closed ({"UNAVAILABLE"}).
+ *
+ * Never invents zero totals: without an archive it refuses. Never touches an
+ * existing hash ({"ALREADY"}).
+ *
+ * KEYS = legacy, hash, fence, archive, gen. ARGV = poison, ttl, archiveTtl
+ * Returns {"OK", total, count} | {"ALREADY"} | {"LOST_HISTORY"}
+ *       | {"UNAVAILABLE"} | {"MALFORMED"}
  */
 export const RESTORE_DAY_LEDGER_SCRIPT = `
 ${LUA_DECIMAL}
@@ -448,6 +515,9 @@ local poisoned = (legacy and legacy == poison)
 local fenced = (redis.call("EXISTS", KEYS[3]) == 1) or poisoned
 if not fenced then return {"UNAVAILABLE"} end
 if redis.call("EXISTS", KEYS[2]) == 1 then return {"ALREADY"} end
+local gen = redis.call("GET", KEYS[5])
+if not gen then return {"UNAVAILABLE"} end
+if gen ~= "0" then return {"LOST_HISTORY"} end
 local archived = redis.call("GET", KEYS[4])
 if not archived then return {"UNAVAILABLE"} end
 local sum, count = parse_csv_strict(archived)
@@ -461,5 +531,6 @@ redis.call("HSET", KEYS[2],
   "legacyCount", countStr)
 redis.call("EXPIRE", KEYS[2], ttl)
 redis.call("SET", KEYS[3], "1", "EX", ttl)
+redis.call("SET", KEYS[5], "0", "EX", ttl)
 return {"OK", sum, countStr}
 `;

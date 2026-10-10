@@ -42,6 +42,7 @@ interface StoreFixture {
   setRawLegacy: (value: string) => Promise<unknown>;
   deleteLegacy: () => Promise<unknown>;
   deleteHash: () => Promise<unknown>;
+  deleteFence: () => Promise<unknown>;
   restoreDayLedger: () => Promise<DayLedgerSnapshot>;
 }
 
@@ -58,6 +59,7 @@ function redisFixture(): StoreFixture {
     setRawLegacy: (v) => client.set(DAY_LEDGER_KEYS.legacy(POLICY, DAY), v) as Promise<unknown>,
     deleteLegacy: () => client.del(DAY_LEDGER_KEYS.legacy(POLICY, DAY)) as Promise<unknown>,
     deleteHash: () => client.del(DAY_LEDGER_KEYS.hash(POLICY, DAY)) as Promise<unknown>,
+    deleteFence: () => client.del(DAY_LEDGER_KEYS.fence(POLICY, DAY)) as Promise<unknown>,
     restoreDayLedger: () => store.restoreDayLedger(POLICY, DAY),
   };
 }
@@ -74,6 +76,7 @@ function memoryFixture(): StoreFixture {
     setRawLegacy: (v) => { store.legacyDayLedgers.set(key, v); return Promise.resolve(true); },
     deleteLegacy: () => { store.legacyDayLedgers.delete(key); return Promise.resolve(true); },
     deleteHash: () => { store.dayHashes.delete(key); return Promise.resolve(true); },
+    deleteFence: () => { store.dayFences.delete(key); return Promise.resolve(true); },
     restoreDayLedger: () => store.restoreDayLedger(POLICY, DAY),
   };
 }
@@ -181,6 +184,68 @@ function migrationContract(make: () => StoreFixture) {
       // Operator recovery: rebuild from the migration archive.
       expect(await fx.restoreDayLedger()).toEqual({ status: "OK", spendRaw: "12", actions: 2 });
       expect((await reserve(fx, "e1", "1")).ok).toBe(true);
+    });
+
+    it("hash loss after a COMMITTED post-migration reservation: restore FAILS CLOSED (archive cannot undercount)", async () => {
+      await fx.oldWrite("5", 10);
+      await fx.oldWrite("7", 10);
+      expect(await fx.store.getDayLedger(POLICY, DAY)).toEqual({ status: "OK", spendRaw: "12", actions: 2 });
+      const r = await reserve(fx, "e1", "3");
+      expect(r.ok).toBe(true);
+      await fx.store.commitDailySpend(POLICY, DAY, "e1");
+      await fx.deleteHash();
+      // The archive holds only the pre-migration CSV ("12") — restoring it
+      // would erase e1's 3 and UNDERCOUNT the day (12 < 15). The write-witness
+      // proves post-import writes existed: fail closed, never an incomplete total.
+      expect(await fx.restoreDayLedger()).toEqual({ status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null });
+      // The ledger stays fail-closed for readers and writers — no resurrection
+      // of the archive-only total, no silent zero.
+      expect(await fx.store.getDayLedger(POLICY, DAY)).toEqual({ status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null });
+      const retry = await reserve(fx, "e2", "1");
+      expect(retry.ok).toBe(false);
+      expect(!retry.ok && retry.reason).toBe("LEDGER_UNAVAILABLE");
+    });
+
+    it("hash loss after a RESERVED (unattempted) post-migration reservation: restore FAILS CLOSED", async () => {
+      await fx.oldWrite("5", 10);
+      await fx.oldWrite("7", 10);
+      expect(await fx.store.getDayLedger(POLICY, DAY)).toEqual({ status: "OK", spendRaw: "12", actions: 2 });
+      const r = await reserve(fx, "e1", "3");
+      expect(r.ok).toBe(true); // RESERVED — counted, may yet be spent
+      await fx.deleteHash();
+      // The reserved amount must stay counted somewhere. An archive-only
+      // restore (12) would undercount the in-flight commitment (15).
+      expect(await fx.restoreDayLedger()).toEqual({ status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null });
+      expect(await fx.store.getDayLedger(POLICY, DAY)).toEqual({ status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null });
+    });
+
+    it("hash loss after an AMBIGUOUS post-migration reservation: restore FAILS CLOSED (uncertain spend stays counted)", async () => {
+      await fx.oldWrite("5", 10);
+      await fx.oldWrite("7", 10);
+      expect(await fx.store.getDayLedger(POLICY, DAY)).toEqual({ status: "OK", spendRaw: "12", actions: 2 });
+      const r = await reserve(fx, "e1", "3");
+      expect(r.ok).toBe(true);
+      expect(await fx.store.markSpendAttempt(POLICY, DAY, "e1")).toBe("ATTEMPTING");
+      expect(await fx.store.markSpendAmbiguous(POLICY, DAY, "e1")).toBe("AMBIGUOUS");
+      await fx.deleteHash();
+      // AMBIGUOUS spend may have hit the chain — it must never fall out of the
+      // day total. Archive-only restore (12) would undercount the uncertain 15.
+      expect(await fx.restoreDayLedger()).toEqual({ status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null });
+      expect(await fx.store.getDayLedger(POLICY, DAY)).toEqual({ status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null });
+    });
+
+    it("hash+fence loss with a write-witness present: never re-imported, never zeroed (fail closed)", async () => {
+      await fx.oldWrite("5", 10);
+      await fx.oldWrite("7", 10);
+      expect(await fx.store.getDayLedger(POLICY, DAY)).toEqual({ status: "OK", spendRaw: "12", actions: 2 });
+      expect((await reserve(fx, "e1", "3")).ok).toBe(true); // total 15, witness > 0
+      await fx.deleteHash();
+      await fx.deleteFence();
+      await fx.deleteLegacy(); // worst case: hash AND fence AND poison all gone
+      // First access must NOT treat this as a fresh day: the witness proves a
+      // migration happened, so neither an archive-only re-import (12) nor a
+      // zero reset (0) is acceptable — the total is UNKNOWN and stays closed.
+      expect(await fx.store.getDayLedger(POLICY, DAY)).toEqual({ status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null });
     });
 
     it("stale legacy write after fencing is ignored — totals unchanged", async () => {
