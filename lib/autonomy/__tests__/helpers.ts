@@ -4,6 +4,7 @@
 // only the chain reader and the (hypothetical) delegation adapter are fake.
 import { decodeFunctionData, type Hex } from "viem";
 
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
 import { AutonomyRuntime } from "@/lib/autonomy/runtime";
 import { AutonomyScheduler } from "@/lib/autonomy/scheduler";
@@ -115,6 +116,7 @@ export interface TestHarness {
 }
 
 export function makeHarness(adapterOverrides: DelegatingOptions = { requests: [] }): TestHarness {
+  allowAutonomousEmergencySwitchForTests();
   const state = newFakeState();
   state.feeBps = 25;
   const clock = { ms: 1_800_000_000_000 };

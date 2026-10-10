@@ -9,6 +9,7 @@ import { decodeFunctionData, getAddress, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { DelegatedExecutionAdapter } from "@/lib/autonomy/delegated-execution-adapter";
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { InMemoryDelegatedAuthorizationStore } from "@/lib/autonomy/delegated-authorization";
 import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
 import { AutonomyScheduler } from "@/lib/autonomy/scheduler";
@@ -41,6 +42,7 @@ beforeEach(() => {
   savedEmergencyFlag = process.env.MPGR_AUTONOMOUS_EMERGENCY_DISABLE;
   process.env.MPGR_AUTONOMOUS_AGENT_ENABLED = "true";
   delete process.env.MPGR_AUTONOMOUS_EMERGENCY_DISABLE;
+  allowAutonomousEmergencySwitchForTests();
 });
 afterEach(() => {
   if (savedAgentFlag === undefined) delete process.env.MPGR_AUTONOMOUS_AGENT_ENABLED;

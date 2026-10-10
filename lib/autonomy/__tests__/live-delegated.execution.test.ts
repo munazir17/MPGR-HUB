@@ -44,6 +44,7 @@ import { createDelegatedBroadcaster } from "@/lib/delegated/delegated-broadcaste
 import { DelegatedExecutionAdapter } from "@/lib/autonomy/delegated-execution-adapter";
 import { InMemoryDelegatedAuthorizationStore } from "@/lib/autonomy/delegated-authorization";
 import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { AutonomyRuntime } from "@/lib/autonomy/runtime";
 import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
 import { BusAuditSink } from "@/lib/autonomy/audit";
@@ -169,6 +170,7 @@ describe.skipIf(!LIVE)("LIVE delegated execution — Base Sepolia 84532 (armed r
     });
     policies.set("live_buy", makePolicy("live_buy", DELEGATED_BASE_SEPOLIA_TUSD, DELEGATED_BASE_SEPOLIA_TSTOCK, sellAmountRaw));
 
+    allowAutonomousEmergencySwitchForTests();
     const adapter = new DelegatedExecutionAdapter({
       slots,
       gateway,

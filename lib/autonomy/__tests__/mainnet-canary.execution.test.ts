@@ -36,6 +36,7 @@ import { writeFileSync } from "node:fs";
 
 import { AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { AutonomyRuntime } from "@/lib/autonomy/runtime";
 import { AutonomyScheduler } from "@/lib/autonomy/scheduler";
 import { BusAuditSink } from "@/lib/autonomy/audit";
@@ -162,6 +163,7 @@ describe.skipIf(!ARMED)("MAINNET CANARY — one real 1-USDC BUY through the Main
         return { ok: true, txHash: hash };
       },
     } as never;
+    allowAutonomousEmergencySwitchForTests();
     const runtime = new AutonomyRuntime({
       store,
       gateway: new McpTradeGateway(deps),

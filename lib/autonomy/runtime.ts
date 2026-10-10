@@ -312,7 +312,11 @@ export class AutonomyRuntime {
     }
 
     const policy = await this.deps.store.getPolicy(goal.policyId);
-    const emergency = isAutonomousExecutionEmergencyDisabled();
+    const switchAtTick = await readAutonomousEmergencySwitch();
+    if (!switchAtTick.allowed) {
+      logEmergencySwitchDecision(this.deps.logger, switchAtTick, { goalId: goal.id, phase: "tick" });
+    }
+    const emergency = !switchAtTick.allowed;
 
     // OBSERVE — fresh quote for the exact goal trade. Taker is the goal's
     // own wallet; slippage clamped to the policy cap when a policy exists.
@@ -490,6 +494,19 @@ export class AutonomyRuntime {
 
     // EXECUTE — only the adapter can reach a signature (spec §6). It is
     // called with UNSIGNED data and after every deterministic check passed.
+    // Re-read the KV emergency switch immediately before the adapter can
+    // proceed so a disable between tick-start and broadcast is honoured.
+    const switchAtBoundary = await readAutonomousEmergencySwitch();
+    if (!switchAtBoundary.allowed) {
+      logEmergencySwitchDecision(this.deps.logger, switchAtBoundary, { goalId: goal.id, phase: "execution-boundary" });
+      return this.controlPlaneRefuseAfterClaim(
+        executing,
+        idempotencyKey,
+        "EXECUTION_UNAVAILABLE",
+        `Autonomous execution refused by emergency switch (${switchAtBoundary.reason}). Nothing was broadcast.`,
+        now,
+      );
+    }
     let result;
     try {
       result = await this.deps.adapter.executeSwap({
@@ -610,6 +627,39 @@ export class AutonomyRuntime {
       await this.audit(goal.wallet, "GOAL_FAILED", now, goal.id, goal.policyId, { reason: "MAX_CONSECUTIVE_FAILURES", code });
     }
     return { kind: "PARKED", failureCode: code, message, nextEvaluationAt: shouldFail ? updatedAt : nextEval };
+  }
+
+  /**
+   * Control-plane refusal AFTER an idempotency/daily-spend claim but BEFORE
+   * broadcast. Not a trade failure: consecutiveFailures are unchanged, the
+   * goal is not permanently FAILED, and the daily-spend reservation is left
+   * in place (over-count is safe; reversing after a possible attempt is not).
+   * The execution idempotency key is released because nothing was broadcast.
+   */
+  private async controlPlaneRefuseAfterClaim(
+    executingGoal: AgentGoal,
+    idempotencyKey: string,
+    code: AutonomyFailureCode,
+    message: string,
+    now: Date,
+  ): Promise<EvaluationResult> {
+    const updatedAt = now.toISOString();
+    await this.deps.store.releaseExecution(idempotencyKey);
+    await this.deps.store.transitionGoal(executingGoal.id, executingGoal.wallet, ["EXECUTING"], executingGoal.updatedAt, {
+      status: "WAITING",
+      lastEvaluationAt: updatedAt,
+      updatedAt,
+      nextEvaluationAt: new Date(now.getTime() + executingGoal.cooldownSeconds * 1000).toISOString(),
+      lastAction: `control-plane refusal: ${code}`,
+      lastResult: { at: updatedAt, outcome: "AUTHORIZATION_MISSING", code, message },
+      stats: { ...executingGoal.stats, evaluations: executingGoal.stats.evaluations + 1 },
+    });
+    await this.audit(executingGoal.wallet, "AUTHORIZATION_CHECKED", now, executingGoal.id, executingGoal.policyId, {
+      authorized: false,
+      reason: "EMERGENCY_SWITCH",
+      controlPlane: true,
+    });
+    return { kind: "PARKED", failureCode: code, message, nextEvaluationAt: new Date(now.getTime() + executingGoal.cooldownSeconds * 1000).toISOString() };
   }
 
   /** Failure AFTER the idempotency claim — the slot is consumed. */
@@ -735,7 +785,8 @@ function isTerminalFailureCode(code: AutonomyFailureCode): boolean {
 }
 
 // --- flag indirection (keeps the runtime import-light for tests) -----------
-import { isAutonomousAgentEnabled, isAutonomousExecutionEmergencyDisabled } from "./config";
+import { isAutonomousAgentEnabled } from "./config";
+import { logEmergencySwitchDecision, readAutonomousEmergencySwitch } from "./emergency-switch";
 function isAutonomousRuntimeEnabled(): boolean {
   return isAutonomousAgentEnabled();
 }

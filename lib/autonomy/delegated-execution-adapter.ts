@@ -58,6 +58,7 @@ import {
 } from "@/lib/delegated/delegated-broadcaster";
 
 import { isAutonomousAgentEnabled, isAutonomousExecutionEmergencyDisabled, isAutonomousProductionEnabled } from "./config";
+import { logEmergencySwitchDecision, readAutonomousEmergencySwitch } from "./emergency-switch";
 import { DELEGATED_ADAPTER_ID, selectDelegatedSlot, type DelegatedAuthorizationStore } from "./delegated-authorization";
 import type { McpGateway } from "./mcp-gateway";
 import {
@@ -317,6 +318,18 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
   }
 
   async executeSwap(request: DelegatedSwapRequest): Promise<DelegatedSwapResult> {
+    // Authoritative KV emergency switch at the execution boundary (uncached).
+    // Fail-closed: missing/malformed/unavailable KV refuses before any slot
+    // is consumed or any broadcast is attempted.
+    const emergency = await readAutonomousEmergencySwitch();
+    if (!emergency.allowed) {
+      logEmergencySwitchDecision({ warn: () => {}, debug: () => {} }, emergency, { adapter: this.id });
+      return {
+        ok: false,
+        code: "EXECUTION_UNAVAILABLE",
+        message: `Delegated execution unavailable (${emergency.reason}).`,
+      };
+    }
     // Operational gates first (no I/O), then the LIVE on-chain check —
     // which also refreshes the cache checkStatic() reports from.
     const posture = this.checkOperational();

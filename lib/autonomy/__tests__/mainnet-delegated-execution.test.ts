@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, getAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
 import { InMemoryDelegatedAuthorizationStore } from "@/lib/autonomy/delegated-authorization";
 import { AutonomyRuntime } from "@/lib/autonomy/runtime";
@@ -72,6 +73,7 @@ const SELL_AMOUNT = usdc("20");
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
+  allowAutonomousEmergencySwitchForTests();
   for (const k of ["MPGR_MAINNET_DELEGATED_EXECUTOR", "MPGR_MAINNET_BROADCASTER_PRIVATE_KEY", "MPGR_AUTONOMOUS_EMERGENCY_DISABLE", "MPGR_AUTONOMOUS_AGENT_ENABLED", "AUTONOMOUS_PRODUCTION_ENABLED"]) {
     savedEnv[k] = process.env[k];
   }

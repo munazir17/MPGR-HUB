@@ -248,4 +248,11 @@ its own explicit approval + adversarial pass (see §7 prerequisites, unchanged).
   read in the TEST's evidence code (its in-test verification had already passed) —
   production-path balance reads use receipt facts, not mid-test balance deltas.
   Full arithmetic: −3×10,025 (three BUYs incl. fees) + 9,965 (SELL proceeds) =
-  −20,110 tUSD — exactly the on-chain delta. 
+  −20,110 tUSD — exactly the on-chain delta.
+
+## KV emergency switch
+
+See `docs/AUTONOMY-EMERGENCY-SWITCH.md`. The env flag
+`MPGR_AUTONOMOUS_EMERGENCY_DISABLE` remains a further restrictor only; the
+authoritative execution control is the fail-closed KV record
+`mpgrhub:autonomy:switch`. 

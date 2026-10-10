@@ -35,6 +35,7 @@ import { BusAuditSink } from "@/lib/autonomy/audit";
 import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
 import { DelegatedExecutionAdapter } from "@/lib/autonomy/delegated-execution-adapter";
 import { AUTONOMOUS_PRODUCTION_GATE_ENV, isAutonomousProductionEnabled } from "@/lib/autonomy/config";
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { autonomyStatus } from "@/lib/autonomy";
 import { InMemoryEventBus } from "@/lib/architecture/core/event-bus";
 import { InMemoryPerformanceMonitor } from "@/lib/architecture/core/performance-monitor";
@@ -92,6 +93,7 @@ beforeEach(() => {
   for (const k of MANAGED_ENV) savedEnv[k] = process.env[k];
   configureEverythingButTheGate();
   delete process.env[AUTONOMOUS_PRODUCTION_GATE_ENV];
+  allowAutonomousEmergencySwitchForTests();
 });
 
 afterEach(() => {
