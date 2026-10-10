@@ -4,13 +4,11 @@ This document records every Slither suppression added to the delegated executor,
 
 ## 1. `reentrancy-balance` on `swapOnBehalfOfTypedModule`
 
-**Location:** `contracts/executor/MPGRExecutorDelegated.sol`, one line directly above `function swapOnBehalfOfTypedModule(...)`.
+**Location:** CI configuration, not Solidity source. `.github/workflows/ci.yml` (job `slither`) excludes `reentrancy-balance` from the first Slither pass with `--exclude reentrancy-balance`. The second pass, `--detect reentrancy-balance`, runs `scripts/ci/check-slither-reentrancy-balance.py`, which fails unless every finding is on `contracts/executor/MPGRExecutorDelegated.sol::swapOnBehalfOfTypedModule`.
 
-```solidity
-// slither-disable-next-line reentrancy-balance
-```
+The Solidity source carries no suppression comment. `contracts/executor/MPGRExecutorDelegated.sol` is byte-identical to commit `b32426e`. Built with solc 0.8.24, evm cancun, optimizer 200, IPFS metadata, and the six immutables patched, it reproduces the deployed runtime codehash `0xc232d9d3…085c` (verified locally with Foundry 1.7.1 and solc-js; not yet reproduced with the CI toolchain).
 
-**Scope:** this one detector, on this one function declaration. No other detector is suppressed, and no contract logic changed.
+**Scope:** this one detector. The exclusion is global to the CI pass, so the second pass is what limits it to the reviewed function. A new `reentrancy-balance` finding anywhere else fails CI. No other detector is excluded, `--fail-high` still applies to the first pass, and no contract logic changed.
 
 **This suppression is not a security fix.** It records a reviewed exception to a static-analysis finding. The underlying risk is described below and is **not enforced by the contract**.
 

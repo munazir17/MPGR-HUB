@@ -404,7 +404,6 @@ contract MPGRExecutorDelegated is Ownable2Step, Pausable, ReentrancyGuard {
     ///         and output must return here so this core can measure it and send
     ///         it to the signed owner. No target or arbitrary calldata is
     ///         supplied by the caller.
-    // slither-disable-next-line reentrancy-balance
     function swapOnBehalfOfTypedModule(SwapParams calldata p, Permit2Authorization calldata auth)
         external
         payable
