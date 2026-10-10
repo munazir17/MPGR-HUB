@@ -105,9 +105,11 @@ describe("runtime emergency switch at the execution boundary", () => {
     }));
 });
 
-describe("emergency switch reader isolation", () => {
-  it("default test setup allows execution (setupFiles)", async () => {
+describe("emergency switch default in tests", () => {
+  it("missing injection fails closed (no live KV, no global enable mock)", async () => {
+    resetEmergencySwitchForTests();
     const d = await readAutonomousEmergencySwitch();
-    expect(d.allowed).toBe(true);
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toBe("EMERGENCY_SWITCH_UNAVAILABLE");
   });
 });

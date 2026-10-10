@@ -4,6 +4,7 @@ import { decodeFunctionData, getAddress, keccak256, type Address, type Hex } fro
 import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, CANONICAL_PERMIT2, CANONICAL_WETH, RouterKind, type ExecutorDeployment } from "@/lib/executor/executor-config";
 import type { ChainReader } from "@/lib/executor/executor-chain";
 import { EXECUTOR, FEE_RECIPIENT, OWNER, TEST_SECRET } from "@/lib/mcp/__tests__/fixtures";
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { delegateSwap, getQuote } from "@/lib/mcp/mcp-trade-service";
 import { DELEGATED_EXECUTOR_ABI } from "@/lib/executor/delegated-executor";
 import type { McpDeps } from "@/lib/mcp/mcp-trade-service";
@@ -102,6 +103,7 @@ function makeDeps(overrides: { code?: Hex; codeHash?: Hex } = {}): {
 
 describe("delegated typed-module quoting", () => {
   beforeEach(() => {
+    allowAutonomousEmergencySwitchForTests();
     vi.stubEnv("MPGR_MAINNET_DELEGATED_EXECUTOR", EXECUTOR);
     // The delegateSwap broadcast below targets Base mainnet (8453), which is
     // additionally gated by the explicit production flag

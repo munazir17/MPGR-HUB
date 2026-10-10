@@ -73,6 +73,19 @@ export function resetEmergencySwitchForTests(): void {
   injectedReader = null;
 }
 
+/**
+ * Explicit test opt-in: an ENABLED v1 decision. Suites that exercise a
+ * successful autonomous broadcast must call this; it is never applied
+ * globally (missing KV stays denied).
+ */
+export function allowAutonomousEmergencySwitchForTests(): void {
+  injectedReader = async () => ({
+    allowed: true,
+    reason: "ENABLED",
+    correlationId: "test-explicit-enabled",
+  });
+}
+
 export function parseAutonomyEmergencySwitchRecord(raw: unknown): {
   ok: true;
   record: AutonomyEmergencySwitchRecord;
@@ -138,6 +151,9 @@ export function parseAutonomyEmergencySwitchRecord(raw: unknown): {
 
 function resolveKv(): EmergencySwitchKv | null {
   if (injectedKv !== undefined) return injectedKv;
+  // Unit tests never open a live Upstash connection. Missing injection is
+  // unavailable KV => fail closed. Production (non-vitest) uses getRedis().
+  if (process.env.VITEST === "true") return null;
   try {
     return getRedis();
   } catch {

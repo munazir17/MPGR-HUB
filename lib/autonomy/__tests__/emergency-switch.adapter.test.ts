@@ -4,8 +4,10 @@ import type { Address } from "viem";
 import { DelegatedExecutionAdapter } from "@/lib/autonomy/delegated-execution-adapter";
 import {
   resetEmergencySwitchForTests,
+  setEmergencySwitchKvForTests,
   setEmergencySwitchReaderForTests,
 } from "@/lib/autonomy/emergency-switch";
+import { delegateSwap } from "@/lib/mcp/mcp-trade-service";
 import type { McpGateway } from "@/lib/autonomy/mcp-gateway";
 import { InMemoryDelegatedAuthorizationStore } from "@/lib/autonomy/delegated-authorization";
 
@@ -110,5 +112,33 @@ describe("DelegatedExecutionAdapter executeSwap KV switch", () => {
     });
     expect(result.ok).toBe(false);
     vi.unstubAllEnvs();
+  });
+
+  it("MCP delegateSwap refuses missing/malformed KV and never broadcasts", async () => {
+    let broadcasts = 0;
+    const deps = {
+      delegatedBroadcaster: async () => {
+        broadcasts += 1;
+        return "0x" + "ab".repeat(32);
+      },
+    };
+
+    setEmergencySwitchKvForTests({ get: async () => null });
+    const missing = await delegateSwap(deps as never, { chainId: 84532 });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error.code).toBe("EXECUTION_UNAVAILABLE");
+
+    setEmergencySwitchKvForTests({ get: async () => "not-json" });
+    const malformed = await delegateSwap(deps as never, { chainId: 84532 });
+    expect(malformed.ok).toBe(false);
+
+    setEmergencySwitchReaderForTests(async () => ({
+      allowed: false,
+      reason: "EMERGENCY_SWITCH_DISABLED",
+      correlationId: "flip",
+    }));
+    const disabled = await delegateSwap(deps as never, { chainId: 84532 });
+    expect(disabled.ok).toBe(false);
+    expect(broadcasts).toBe(0);
   });
 });

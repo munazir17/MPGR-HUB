@@ -34,6 +34,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Address, Hex } from "viem";
 
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
 import { AutonomyRuntime } from "@/lib/autonomy/runtime";
 import { BusAuditSink } from "@/lib/autonomy/audit";
@@ -200,6 +201,7 @@ beforeEach(() => {
   vi.stubEnv("MPGR_AUTONOMOUS_EMERGENCY_DISABLE", "false");
   vi.stubEnv("MPGR_AUTONOMOUS_EXECUTION_ADAPTER", "");
   clearInstalledAutonomousExecutionAdapter();
+  allowAutonomousEmergencySwitchForTests();
 });
 
 describe("B1 — production default posture (no adapter selected)", () => {
