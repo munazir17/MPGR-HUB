@@ -7,6 +7,8 @@ import "@rainbow-me/rainbowkit/styles.css";
 import { config } from "@/lib/wagmi";
 import { useState } from "react";
 import { WalletAuthProvider } from "@/hooks/useWalletAuth";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { Toaster } from "@/components/ui/toast";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
@@ -25,7 +27,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
           {/* Single shared wallet-auth instance for the whole app — see
               hooks/useWalletAuth.tsx for why this must be one Provider
               rather than a plain hook called from multiple components. */}
-          <WalletAuthProvider>{children}</WalletAuthProvider>
+          <TooltipProvider>
+            <WalletAuthProvider>
+              {children}
+              <Toaster />
+            </WalletAuthProvider>
+          </TooltipProvider>
         </RainbowKitProvider>
       </QueryClientProvider>
     </WagmiProvider>
