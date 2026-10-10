@@ -11,10 +11,16 @@ import "server-only";
 //     wallet) kept in a per-record "meta" string — no JSON parsing inside
 //     Lua, so the scripts are simple, auditable, and testable against the
 //     repo's LuaRedis double.
-//   * Daily spend ledger: an append-capped CSV of base-unit digit strings.
-//     Summation happens in TypeScript with BigInt — exact for 18-decimals
-//     amounts where a Lua/Redis integer counter would lose precision.
-//     The ledger is ALSO the actions-today counter (one source of truth).
+//   * Daily spend ledger: a HASH of exact decimal-string totals plus one
+//     reservation field per execution id (RESERVED -> ATTEMPTING ->
+//     COMMITTED | AMBIGUOUS | RELEASED). The caps (maxDailyRaw and
+//     maxActionsPerDay) are enforced INSIDE the atomic Lua that takes the
+//     reservation, so concurrent goals sharing a policy cannot jointly
+//     exceed them. Amounts are summed as decimal strings — exact for
+//     18-decimals amounts where a Lua/JS number would lose precision. The
+//     legacy pre-fix CSV ledger is imported and fenced atomically on first
+//     access (see day-ledger-scripts.ts and
+//     docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md).
 //   * Audit trails and action records are read-modify-write under the
 //     per-goal lease (single writer by construction).
 //   * Fail-closed: Redis unavailability THROWS; callers (runtime/routes)
@@ -24,18 +30,33 @@ import "server-only";
 // type model has no field capable of holding key material.
 
 import { getRedis } from "@/lib/api/redis";
+import {
+  COMMIT_DAY_SPEND_SCRIPT,
+  DAY_LEDGER_ARCHIVE_TTL_SECONDS,
+  DAY_LEDGER_KEYS,
+  DAY_LEDGER_TTL_SECONDS,
+  ENSURE_DAY_LEDGER_SCRIPT,
+  MARK_SPEND_AMBIGUOUS_SCRIPT,
+  MARK_SPEND_ATTEMPT_SCRIPT,
+  RELEASE_DAY_SPEND_SCRIPT,
+  RESERVE_DAY_SPEND_SCRIPT,
+  RESTORE_DAY_LEDGER_SCRIPT,
+  legacyLedgerPoison,
+} from "./day-ledger-scripts";
 import { newGoalId, newPolicyId } from "./store";
-import { InMemoryAutonomyStore, type AutonomyStore, type GoalTransitionPatch } from "./store";
+import { InMemoryAutonomyStore, type AutonomyStore, type DayLedgerSnapshot, type GoalTransitionPatch, type ReserveDailySpendResult } from "./store";
+import { isPreBroadcastRefusalCode } from "./types";
 import type {
   AgentGoal,
   AutonomyAuditEvent,
   AutonomyPolicy,
   GoalActionRecord,
   GoalStatus,
+  SpendReservationRelease,
+  SpendReservationState,
 } from "./types";
 
 const PREFIX = "mpgrhub:autonomy";
-const DAY_LEDGER_TTL_SECONDS = 2 * 86_400;
 
 const KEY = {
   wallets: `${PREFIX}:wallets`,
@@ -45,7 +66,7 @@ const KEY = {
   goalMeta: (id: string) => `${PREFIX}:goal-meta:${id}`,
   policy: (id: string) => `${PREFIX}:policy:${id}`,
   policyMeta: (id: string) => `${PREFIX}:policy-meta:${id}`,
-  dayLedger: (policyId: string, day: string) => `${PREFIX}:day:${policyId}:${day}`,
+  dayLedger: (policyId: string, day: string) => DAY_LEDGER_KEYS.legacy(policyId, day),
   exec: (key: string) => `${PREFIX}:exec:${key}`,
   lease: (goalId: string) => `${PREFIX}:lease:${goalId}`,
   audit: (goalId: string) => `${PREFIX}:audit:${goalId}`,
@@ -115,26 +136,19 @@ if token == ARGV[1] then redis.call("DEL", KEYS[1]) return 1 end
 return 0
 `;
 
-/**
- * Appends a digit-string amount to the policy's UTC-day ledger, capped at
- * ARGV[2] entries (the policy's maxActionsPerDay). Returns the new ledger
- * string, or nil when the cap is reached (=> action refused).
- */
-const DAY_LEDGER_APPEND_SCRIPT = `
-local cur = redis.call("GET", KEYS[1]) or ""
-local n = 0
-for _ in string.gmatch(cur, "[^,]+") do n = n + 1 end
-if n + 1 > tonumber(ARGV[1]) then return nil end
-local next = cur == "" and ARGV[2] or cur .. "," .. ARGV[2]
-redis.call("SET", KEYS[1], next)
-redis.call("EXPIRE", KEYS[1], ARGV[3])
-return next
-`;
-
 const ZADD_MEMBER_SCRIPT = `redis.call("ZINCRBY", KEYS[1], 0, ARGV[1]) return 1`;
 const ZRANGE_ALL = `return redis.call("ZRANGE", KEYS[1], 0, -1)`;
 
 type Raw = string | Record<string, unknown> | null;
+
+/** Reservation state letters (compact in Lua) -> typed state names. */
+const SPEND_STATE_BY_LETTER: Record<string, SpendReservationState> = {
+  R: "RESERVED",
+  A: "ATTEMPTING",
+  C: "COMMITTED",
+  X: "AMBIGUOUS",
+  F: "RELEASED",
+};
 
 function parseRecord<T>(raw: Raw): T | null {
   if (raw === null || raw === undefined) return null;
@@ -263,50 +277,145 @@ export class RedisAutonomyStore implements AutonomyStore {
     return (await this.zmembers(KEY.wallets)).slice(0, limit);
   }
 
-  // -- daily ledger (UTC) --------------------------------------------------
+  // -- daily spend reservations (UTC) ---------------------------------------
+  //
+  // All ledger Lua lives in day-ledger-scripts.ts (the CANONICAL source — the
+  // tests execute these same strings). Amounts are exact decimal strings; the
+  // scripts never convert them to Lua/JS numbers.
 
-  private async dayLedger(policyId: string, dayKey: string): Promise<string[]> {
-    // The Upstash client auto-deserializes JSON — a single-entry ledger "5"
-    // comes back as the NUMBER 5, not the string. Handle both.
-    const raw = await this.redis().get<string | number>(KEY.dayLedger(policyId, dayKey));
-    if (raw === null || raw === undefined) return [];
-    const text = typeof raw === "string" ? raw : String(raw);
-    return text.split(",").filter((v) => /^\d+$/.test(v));
+  private ledgerKeys(policyId: string, dayKey: string): string[] {
+    return [
+      DAY_LEDGER_KEYS.legacy(policyId, dayKey),
+      DAY_LEDGER_KEYS.hash(policyId, dayKey),
+      DAY_LEDGER_KEYS.fence(policyId, dayKey),
+      DAY_LEDGER_KEYS.archive(policyId, dayKey),
+    ];
   }
 
-  async getDailySpendRaw(policyId: string, dayKey: string): Promise<string> {
-    return (await this.dayLedger(policyId, dayKey))
-      .reduce<bigint>((sum, v) => sum + BigInt(v), 0n)
-      .toString();
+  private ledgerArgs(): Array<string | number> {
+    return [legacyLedgerPoison(), DAY_LEDGER_TTL_SECONDS, DAY_LEDGER_ARCHIVE_TTL_SECONDS];
   }
 
-  async addDailySpendRaw(policyId: string, dayKey: string, amountRaw: string): Promise<string> {
-    throw new Error("Use tryRecordDailyAction — the ledger enforces the action cap atomically.");
+  async getDayLedger(policyId: string, dayKey: string): Promise<DayLedgerSnapshot> {
+    const result = await this.redis().eval(
+      ENSURE_DAY_LEDGER_SCRIPT,
+      this.ledgerKeys(policyId, dayKey),
+      this.ledgerArgs(),
+    );
+    const reply = Array.isArray(result) ? (result as Array<string | number>).map(String) : null;
+    if (reply?.[0] === "OK") {
+      return { status: "OK", spendRaw: reply[1], actions: Number(reply[2]) };
+    }
+    if (reply?.[0] === "MALFORMED") return { status: "MALFORMED_LEGACY", spendRaw: null, actions: null };
+    return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
   }
 
-  async getDailyActions(policyId: string, dayKey: string): Promise<number> {
-    return (await this.dayLedger(policyId, dayKey)).length;
+  async reserveDailySpend(input: {
+    policyId: string;
+    dayKey: string;
+    execId: string;
+    amountRaw: string;
+    maxDailyRaw: string;
+    maxActions: number;
+  }): Promise<ReserveDailySpendResult> {
+    const { policyId, dayKey, execId, amountRaw, maxDailyRaw, maxActions } = input;
+    const result = await this.redis().eval(
+      RESERVE_DAY_SPEND_SCRIPT,
+      this.ledgerKeys(policyId, dayKey),
+      [...this.ledgerArgs(), execId, amountRaw, maxDailyRaw, maxActions],
+    );
+    const reply = Array.isArray(result) ? (result as Array<string | number>).map(String) : null;
+    if (!reply) return { ok: false, reason: "LEDGER_UNAVAILABLE", snapshot: null };
+    switch (reply[0]) {
+      case "OK": {
+        const snapshot = { spendRaw: reply[3], actions: Number(reply[4]) };
+        const created = reply[1] === "1";
+        return { ok: true, created, state: SPEND_STATE_BY_LETTER[reply[2]] ?? "RESERVED", snapshot };
+      }
+      case "OVER_BUDGET":
+        return { ok: false, reason: "OVER_BUDGET", snapshot: { spendRaw: reply[1], actions: Number(reply[2]) } };
+      case "OVER_ACTIONS":
+        return { ok: false, reason: "OVER_ACTIONS", snapshot: { spendRaw: reply[1], actions: Number(reply[2]) } };
+      case "MALFORMED":
+        return { ok: false, reason: "MALFORMED_LEGACY", snapshot: null };
+      case "BAD_AMOUNT":
+        return { ok: false, reason: "BAD_AMOUNT", snapshot: null };
+      default:
+        return { ok: false, reason: "LEDGER_UNAVAILABLE", snapshot: null };
+    }
   }
 
-  async addDailyAction(policyId: string, dayKey: string): Promise<number> {
-    throw new Error("Use tryRecordDailyAction — the ledger enforces the action cap atomically.");
+  async markSpendAttempt(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
+    const result = await this.redis().eval(
+      MARK_SPEND_ATTEMPT_SCRIPT,
+      [DAY_LEDGER_KEYS.hash(policyId, dayKey)],
+      [execId, DAY_LEDGER_TTL_SECONDS],
+    );
+    const reply = Array.isArray(result) ? (result as Array<string | number>).map(String) : null;
+    if (reply?.[0] === "OK") return SPEND_STATE_BY_LETTER[reply[1]] ?? null;
+    return null;
+  }
+
+  async commitDailySpend(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
+    const result = await this.redis().eval(
+      COMMIT_DAY_SPEND_SCRIPT,
+      [DAY_LEDGER_KEYS.hash(policyId, dayKey)],
+      [execId, DAY_LEDGER_TTL_SECONDS],
+    );
+    const reply = Array.isArray(result) ? (result as Array<string | number>).map(String) : null;
+    if (reply?.[0] === "OK") return SPEND_STATE_BY_LETTER[reply[1]] ?? null;
+    return null;
+  }
+
+  async releaseDailySpend(
+    policyId: string,
+    dayKey: string,
+    execId: string,
+    release: SpendReservationRelease,
+  ): Promise<SpendReservationState | null> {
+    // Defense in depth: the store refuses to release for unverified codes
+    // even if a caller bypasses the runtime's classification.
+    if (release.reason === "PRE_BROADCAST_REFUSAL" && !isPreBroadcastRefusalCode(release.code)) return null;
+    const reasonFlag = release.reason === "PRE_BROADCAST_REFUSAL" ? "P" : "U";
+    const result = await this.redis().eval(
+      RELEASE_DAY_SPEND_SCRIPT,
+      this.ledgerKeys(policyId, dayKey),
+      [...this.ledgerArgs(), execId, reasonFlag],
+    );
+    const reply = Array.isArray(result) ? (result as Array<string | number>).map(String) : null;
+    if (reply?.[0] === "OK") return "RELEASED";
+    return null;
+  }
+
+  async markSpendAmbiguous(policyId: string, dayKey: string, execId: string): Promise<SpendReservationState | null> {
+    const result = await this.redis().eval(
+      MARK_SPEND_AMBIGUOUS_SCRIPT,
+      [DAY_LEDGER_KEYS.hash(policyId, dayKey)],
+      [execId, DAY_LEDGER_TTL_SECONDS],
+    );
+    const reply = Array.isArray(result) ? (result as Array<string | number>).map(String) : null;
+    if (reply?.[0] === "OK") return "AMBIGUOUS";
+    return null;
   }
 
   /**
-   * Atomically appends one action to the day ledger. Returns the updated
-   * ledger (sum it with BigInt) or null when the policy's daily action cap
-   * is reached. This is the ONLY way counters move — spend and action-count
-   * can never drift apart.
+   * OPERATOR recovery (see docs/AUTONOMY-DAILY-SPEND-RESERVATIONS.md):
+   * rebuild a fenced day hash from its migration archive. Never invents zero
+   * totals; never touches an existing hash. Not called by the runtime.
    */
-  async tryRecordDailyAction(policyId: string, dayKey: string, amountRaw: string, maxActions: number): Promise<string[] | null> {
+  async restoreDayLedger(policyId: string, dayKey: string): Promise<DayLedgerSnapshot> {
     const result = await this.redis().eval(
-      DAY_LEDGER_APPEND_SCRIPT,
-      [KEY.dayLedger(policyId, dayKey)],
-      [maxActions, amountRaw, DAY_LEDGER_TTL_SECONDS],
+      RESTORE_DAY_LEDGER_SCRIPT,
+      this.ledgerKeys(policyId, dayKey),
+      this.ledgerArgs(),
     );
-    if (result === null || result === undefined || result === false) return null;
-    const text = typeof result === "string" ? result : String(result);
-    return text.split(",").filter((v) => /^\d+$/.test(v));
+    const reply = Array.isArray(result) ? (result as Array<string | number>).map(String) : null;
+    if (reply?.[0] === "OK") return { status: "OK", spendRaw: reply[1], actions: Number(reply[2]) };
+    if (reply?.[0] === "ALREADY") {
+      const view = await this.getDayLedger(policyId, dayKey);
+      return view;
+    }
+    return { status: "LEDGER_UNAVAILABLE", spendRaw: null, actions: null };
   }
 
   // -- idempotency -----------------------------------------------------------
