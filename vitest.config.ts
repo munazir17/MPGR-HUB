@@ -26,5 +26,6 @@ export default defineConfig({
     environment: "node",
     include: ["**/*.test.ts"],
     exclude: ["node_modules", ".next"],
+    setupFiles: ["lib/autonomy/__tests__/emergency-switch.setup.ts"],
   },
 });

@@ -999,6 +999,7 @@ import {
 import { delegatedBroadcasterAddressFor } from "@/lib/delegated/delegated-broadcaster";
 import { validateDelegatedTransaction } from "@/lib/delegated/broadcast-gate";
 import { isAutonomousProductionEnabled } from "@/lib/autonomy/config";
+import { logEmergencySwitchDecision, readAutonomousEmergencySwitch } from "@/lib/autonomy/emergency-switch";
 
 /**
  * mpgr_delegate_swap — the delegated execution capability. The CALLER (the
@@ -1037,6 +1038,14 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
     return fail(
       "PRODUCTION_GATE_DISABLED",
       "Autonomous production execution on Base mainnet is gated by AUTONOMOUS_PRODUCTION_ENABLED (fail-closed). Nothing was signed or broadcast.",
+    );
+  }
+  const emergency = await readAutonomousEmergencySwitch();
+  if (!emergency.allowed) {
+    logEmergencySwitchDecision({ warn: () => {} }, emergency, { chainId, chokepoint: "mcp_delegateSwap" });
+    return fail(
+      "EXECUTION_UNAVAILABLE",
+      `Autonomous execution refused by emergency switch (${emergency.reason}). Nothing was signed or broadcast.`,
     );
   }
   const broadcast = deps.delegatedBroadcaster;
