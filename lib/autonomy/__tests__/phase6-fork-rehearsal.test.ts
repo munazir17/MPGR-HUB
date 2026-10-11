@@ -42,6 +42,7 @@ import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from 
 
 import { AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { AutonomyRuntime } from "@/lib/autonomy/runtime";
 import { AutonomyScheduler } from "@/lib/autonomy/scheduler";
 import { BusAuditSink } from "@/lib/autonomy/audit";
@@ -280,6 +281,7 @@ describe.skipIf(!FORK)("PHASE 6 fork rehearsal — Base Mainnet fork (local anvi
 
   function buildRuntime(store: InMemoryAutonomyStore, adapter: AutonomousExecutionAdapter, bus: EventBus) {
     store.clock = () => clock.ms; // deterministic goal/policy ids
+    allowAutonomousEmergencySwitchForTests();
     const perf: PerformanceMonitor = new InMemoryPerformanceMonitor();
     const runtime = new AutonomyRuntime({
       store,

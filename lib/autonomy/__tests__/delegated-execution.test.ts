@@ -5,6 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Address, Hex } from "viem";
 
+import { allowAutonomousEmergencySwitchForTests } from "../emergency-switch";
 import { clearInstalledAutonomousExecutionAdapter, installAutonomousExecutionAdapter } from "../execution-adapter";
 import { DelegatedExecutionAdapter } from "../delegated-execution-adapter";
 import {
@@ -38,6 +39,7 @@ beforeEach(() => {
   process.env = { ...env };
   clearInstalledAutonomousExecutionAdapter();
   process.env.MPGR_AUTONOMOUS_AGENT_ENABLED = "true";
+  allowAutonomousEmergencySwitchForTests();
 });
 
 function policy(over: Partial<AutonomyPolicy> = {}): AutonomyPolicy {

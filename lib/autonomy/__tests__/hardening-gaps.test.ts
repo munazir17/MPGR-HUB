@@ -327,8 +327,8 @@ describe("hardening §4: concurrent daily-limit consumption", () => {
       const summary = await harness.scheduler.tick({ now: harness.now() });
       const broadcasts = harness.adapter.options.requests.length;
       // Both goals are EVALUATED concurrently, but the daily cap HOLDS: the
-      // runtime claims the daily-ledger action ATOMICALLY (tryRecordDailyAction,
-      // append-capped) right before broadcast, so only ONE goal may broadcast.
+      // runtime takes the daily spend reservation ATOMICALLY (reserveDailySpend,
+      // cap-checked) right before broadcast, so only ONE goal may broadcast.
       expect(summary.evaluated).toBe(2);
       expect(broadcasts).toBe(1);
       const dayGoals = await harness.store.listGoals(WALLET);

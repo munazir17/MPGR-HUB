@@ -9,9 +9,10 @@
 //     and every existing assisted behaviour is byte-for-byte unchanged.
 //
 //   MPGR_AUTONOMOUS_EMERGENCY_DISABLE (default: false)
-//     Kill switch evaluated INSIDE the evaluation loop immediately before
-//     any action. True => no autonomous transaction may execute. Manual
-//     (assisted, user-signed) trading is unaffected.
+//     Additional env restrictor. True => no autonomous transaction may
+//     execute. It CANNOT enable execution when the KV switch
+//     (mpgrhub:autonomy:switch) is missing, disabled, or unreadable.
+//     Manual (assisted, user-signed) trading is unaffected.
 //
 //   AUTONOMOUS_PRODUCTION_ENABLED (default: false)
 //     EXPLICIT PRODUCTION GATE for autonomous execution on BASE MAINNET
@@ -54,7 +55,10 @@ export function isAutonomousProductionEnabled(): boolean {
   return envFlag(AUTONOMOUS_PRODUCTION_GATE_ENV);
 }
 
-/** Emergency global disable — checked at every tick and before every action. */
+/**
+ * Env-only emergency restrictor. Prefer `readAutonomousEmergencySwitch()`
+ * at the execution boundary — that path is fail-closed on KV.
+ */
 export function isAutonomousExecutionEmergencyDisabled(): boolean {
   return envFlag("MPGR_AUTONOMOUS_EMERGENCY_DISABLE");
 }
