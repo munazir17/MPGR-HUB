@@ -78,6 +78,23 @@ function rateLimited(res: import("node:http").ServerResponse): void {
   res.end("rate limited");
 }
 
+/** A capped plan's eth_getLogs refusal: HTTP 400 + a JSON-RPC error envelope. */
+function cappedPlanRefusal(res: import("node:http").ServerResponse, body: { id: number }): void {
+  res.statusCode = 400;
+  res.setHeader("Content-Type", "application/json");
+  res.end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: body.id,
+      error: {
+        code: -32600,
+        message:
+          "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range based on your current plan. Upgrade to PAYG for expanded block range.",
+      },
+    }),
+  );
+}
+
 const DEAD_PORT_1 = "http://127.0.0.1:1"; // nothing listens → instant ECONNREFUSED
 const DEAD_PORT_2 = "http://127.0.0.1:2";
 
@@ -166,6 +183,38 @@ describe("Base RPC fallback transport", () => {
       expect(reported).not.toContain("pass");
       expect(reported).not.toContain("SECRETKEY");
     } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("records the JSON-RPC method and numeric error code of a failed response, and nothing else", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const capped = await startRpcServer((body, res) => cappedPlanRefusal(res, body));
+    try {
+      // The key lives in the URL PATH (providers commonly do this) — it must
+      // never reach a log line.
+      const client = createBaseRpcClient([`${capped.url}/v2/SECRETKEY-DO-NOT-LOG`]);
+
+      await expect(client.getLogs({ address: TOKEN, fromBlock: 0n, toBlock: 1n })).rejects.toThrow();
+
+      // viem does not retry on a 4xx (and -32600 is not a retryable code).
+      expect(capped.requestCount()).toBe(1);
+
+      const health = describeBaseRpcHealth();
+      expect(health).toContain("→400");
+      expect(health).toContain("eth_getLogs");
+      expect(health).toContain("code=-32600");
+      expect(health).not.toContain("SECRETKEY-DO-NOT-LOG");
+
+      const reported = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(reported).toContain("[base-rpc] transport failure");
+      expect(reported).toContain("eth_getLogs"); // method: a protocol constant
+      expect(reported).toContain("code=-32600"); // numeric code only
+      expect(reported).not.toContain("SECRETKEY-DO-NOT-LOG");
+      expect(reported).not.toContain("/v2/"); // no path segments
+      expect(reported).not.toContain("PAYG"); // and never provider wording
+    } finally {
+      await capped.close();
       errorSpy.mockRestore();
     }
   });
