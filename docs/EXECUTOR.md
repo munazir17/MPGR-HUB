@@ -304,7 +304,7 @@ The one-time enablement is switched off: `mainnetDeployEnabled: false` in the pi
 | `MPGR_AGENT_FEE_RECIPIENT` | for the 0x fallback | no (address) | 0x native integrator-fee wallet. Set to the canonical fee wallet `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4`. Executor quotes use the on-chain `feeRecipient()` and do not need this. |
 | `ZERO_EX_API_KEY` (or `ZEROX_API_KEY`) | for the 0x fallback | **yes** | 0x Swap API auth for the non-executor mainnet pairs. |
 | `AUTH_SESSION_SECRET` | yes (already required) | **yes** | HMAC key for the signed `quoteId` (≥ 32 chars) and auth sessions. |
-| `BASE_RPC_URL` | optional | no | Mainnet RPC for chain reads. Defaults to `https://mainnet.base.org`. |
+| `BASE_RPC_URL` | optional | no | Mainnet RPC for chain reads. When set, the executor chain uses exactly this one transport (no silent fallback). When unset, the executor falls back to `https://mainnet.base.org` plus one extra public endpoint. The shared trade/quote read client (`lib/trade/trade-public-client.ts`, used by `/api/agent/stats` too) always falls back to public endpoints after the configured URL. |
 | `BASE_SEPOLIA_RPC_URL` | optional | no | Sepolia RPC (keeps Sepolia working). Defaults to `https://sepolia.base.org`. |
 | `MPGR_MCP_ALLOWED_ORIGINS` | optional | no | Extra browser origins for the MCP endpoint (comma separated). |
 | `KV_REST_API_URL` / `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_*`) | optional | token is a secret | Shared rate limiting / storage; without it the in-memory per-instance limiter is used. |

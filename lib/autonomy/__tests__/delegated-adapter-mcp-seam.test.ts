@@ -12,6 +12,7 @@ import { decodeFunctionData, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { DelegatedExecutionAdapter } from "@/lib/autonomy/delegated-execution-adapter";
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { InMemoryDelegatedAuthorizationStore } from "@/lib/autonomy/delegated-authorization";
 import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
 import type { AutonomyPolicy, DelegatedSwapRequest } from "@/lib/autonomy/types";
@@ -109,6 +110,7 @@ describe("adapter -> MCP delegateSwap seam (REAL gateway, stubbed broadcaster)",
     savedEmergency = process.env.MPGR_AUTONOMOUS_EMERGENCY_DISABLE;
     process.env.MPGR_AUTONOMOUS_AGENT_ENABLED = "true";
     delete process.env.MPGR_AUTONOMOUS_EMERGENCY_DISABLE;
+    allowAutonomousEmergencySwitchForTests();
   });
   afterEach(() => {
     if (savedFlag === undefined) delete process.env.MPGR_AUTONOMOUS_AGENT_ENABLED;

@@ -14,6 +14,7 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { getAddress, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { delegateSwap, finalizeTrade, getQuote, prepareTrade, type McpDeps, type ToolOutcome } from "@/lib/mcp/mcp-trade-service";
 import {
   BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT,
@@ -66,6 +67,7 @@ const ACTION_ID = delegatedActionId("boundary-goal");
 
 let state: FakeChainState;
 beforeEach(() => {
+  allowAutonomousEmergencySwitchForTests();
   state = newFakeState();
   setBalance(state, DELEGATED_BASE_SEPOLIA_TUSD, TAKER.address, 1_000_000_000n);
 });

@@ -9,6 +9,7 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { getAddress, type Address, type Hex, type Log } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { delegateSwap, getQuote, verifyTrade, type McpDeps } from "@/lib/mcp/mcp-trade-service";
 import {
   BASE_SEPOLIA_DELEGATED_EXECUTOR_DEPLOYMENT,
@@ -125,7 +126,7 @@ function delegatedReceipt(over: {
 }
 
 beforeEach(() => {
-  // fresh state per test
+  allowAutonomousEmergencySwitchForTests();
 });
 
 describe("hardening: quote / market conditions (§6)", () => {

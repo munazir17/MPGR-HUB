@@ -67,15 +67,45 @@ async function exerciseStoreContract(name: string, make: () => AutonomyStore) {
       expect(await store.transitionGoal(goal.id, WALLET, ["ACTIVE"], "u2", { updatedAt: "u3" })).toBeNull();
     });
 
-    it("daily ledger: atomic capped append, exact bigint sums, spend+count never drift", async () => {
+    it("daily reservations: atomic caps, exact bigint sums, spend+count never drift", async () => {
       const bigAmount = "1000000000000000000000"; // 1e21 — beyond float64-safe integer range
-      expect(await store.tryRecordDailyAction("p1", "2026-09-28", bigAmount, 2)).toEqual([bigAmount]);
-      expect(await store.tryRecordDailyAction("p1", "2026-09-28", "7", 2)).toEqual([bigAmount, "7"]);
-      // cap reached -> null (action refused)
-      expect(await store.tryRecordDailyAction("p1", "2026-09-28", "7", 2)).toBeNull();
-      expect(await store.getDailySpendRaw("p1", "2026-09-28")).toBe((1000000000000000000000n + 7n).toString());
-      expect(await store.getDailyActions("p1", "2026-09-28")).toBe(2);
-      expect(await store.getDailySpendRaw("p1", "2026-09-29")).toBe("0");
+      const reserve = (execId: string, amount: string, maxActions = 2, maxDaily = "10000000000000000000000") =>
+        store.reserveDailySpend({ policyId: "p1", dayKey: "2026-09-28", execId, amountRaw: amount, maxDailyRaw: maxDaily, maxActions });
+      const first = await reserve("e1", bigAmount);
+      expect(first.ok && first.created && first.state).toBe("RESERVED");
+      expect(await store.markSpendAttempt("p1", "2026-09-28", "e1")).toBe("ATTEMPTING");
+      expect(await store.commitDailySpend("p1", "2026-09-28", "e1")).toBe("COMMITTED");
+      const second = await reserve("e2", "7");
+      expect(second.ok && second.created).toBe(true);
+      // action cap reached -> refused (action refused)
+      const third = await reserve("e3", "7");
+      expect(third.ok).toBe(false);
+      expect(!third.ok && third.reason).toBe("OVER_ACTIONS");
+      // duplicate execution id -> idempotent, never double-counted
+      const dup = await reserve("e1", bigAmount);
+      expect(dup.ok && dup.created === false && dup.state).toBe("COMMITTED");
+      const day = await store.getDayLedger("p1", "2026-09-28");
+      expect(day).toEqual({ status: "OK", spendRaw: (1000000000000000000000n + 7n).toString(), actions: 2 });
+      // next day starts clean
+      expect(await store.getDayLedger("p1", "2026-09-29")).toEqual({ status: "OK", spendRaw: "0", actions: 0 });
+    });
+
+    it("daily spend cap holds exactly at the boundary (release frees both spend and count)", async () => {
+      const reserve = (execId: string, amount: string, maxActions = 5) =>
+        store.reserveDailySpend({ policyId: "p2", dayKey: "2026-09-28", execId, amountRaw: amount, maxDailyRaw: "100", maxActions });
+      expect((await reserve("a", "60")).ok).toBe(true);
+      expect((await reserve("b", "40")).ok).toBe(true);
+      const over = await reserve("c", "1");
+      expect(over.ok).toBe(false);
+      expect(!over.ok && over.reason).toBe("OVER_BUDGET");
+      // a verified pre-broadcast refusal frees the reservation…
+      const r = await store.reserveDailySpend({ policyId: "p2", dayKey: "2026-09-28", execId: "b", amountRaw: "40", maxDailyRaw: "100", maxActions: 5 });
+      expect(r.ok).toBe(true); // idempotent hit
+      expect(
+        await store.releaseDailySpend("p2", "2026-09-28", "b", { reason: "PRE_BROADCAST_REFUSAL", code: "QUOTE_STALE" }),
+      ).toBe("RELEASED");
+      expect(await store.getDayLedger("p2", "2026-09-28")).toEqual({ status: "OK", spendRaw: "60", actions: 1 });
+      expect((await reserve("c", "40")).ok).toBe(true);
     });
 
     it("idempotency: execution claim is exclusive; leases are token-checked", async () => {
@@ -144,11 +174,15 @@ describe("RedisAutonomyStore — CAS scripts execute for real (LuaRedis)", () =>
     expect((await store.listGoals(WALLET)).map((g) => g.id)).toContain(goal.id);
   });
 
-  it("daily ledger script refuses entries past the cap and expires keys", async () => {
+  it("daily reservation script refuses past the cap and expires keys", async () => {
     const store = freshRedisStore();
-    expect(await store.tryRecordDailyAction("p", "d", "5", 1)).toEqual(["5"]);
-    expect(await store.tryRecordDailyAction("p", "d", "6", 1)).toBeNull();
-    expect(await store.getDailyActions("p", "d")).toBe(1);
+    const reserve = (execId: string, amount: string) =>
+      store.reserveDailySpend({ policyId: "p", dayKey: "d", execId, amountRaw: amount, maxDailyRaw: "1000", maxActions: 1 });
+    expect((await reserve("e1", "5")).ok).toBe(true);
+    const second = await reserve("e2", "6");
+    expect(second.ok).toBe(false);
+    expect(!second.ok && second.reason).toBe("OVER_ACTIONS");
+    expect(await store.getDayLedger("p", "d")).toEqual({ status: "OK", spendRaw: "5", actions: 1 });
   });
 });
 

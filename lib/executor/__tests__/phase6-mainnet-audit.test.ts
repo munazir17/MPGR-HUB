@@ -319,6 +319,8 @@ describe("PHASE 6 §C: the F-9 prepare seam audited ON THE MAINNET PATH", () => 
   it("the v1 (Mainnet) runtime path MUST call gateway.prepare — the delegated skip cannot leak to Mainnet", async () => {
     vi.stubEnv("MPGR_AUTONOMOUS_AGENT_ENABLED", "true");
     try {
+      const { allowAutonomousEmergencySwitchForTests } = await import("@/lib/autonomy/emergency-switch");
+      allowAutonomousEmergencySwitchForTests();
       const { InMemoryAutonomyStore } = await import("@/lib/autonomy/store");
       const { AutonomyRuntime } = await import("@/lib/autonomy/runtime");
       const { BusAuditSink } = await import("@/lib/autonomy/audit");
@@ -534,6 +536,8 @@ describe("PHASE 6 §F: concurrent execution is single-broadcast; same-slot repla
   it("two concurrent evaluations of one goal -> exactly ONE quote, ONE broadcast (lease win), loser SKIPPED", async () => {
     vi.stubEnv("MPGR_AUTONOMOUS_AGENT_ENABLED", "true");
     try {
+      const { allowAutonomousEmergencySwitchForTests } = await import("@/lib/autonomy/emergency-switch");
+      allowAutonomousEmergencySwitchForTests();
       const { InMemoryAutonomyStore } = await import("@/lib/autonomy/store");
       const { AutonomyRuntime } = await import("@/lib/autonomy/runtime");
       const { BusAuditSink } = await import("@/lib/autonomy/audit");

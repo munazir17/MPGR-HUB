@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, getAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
+import { allowAutonomousEmergencySwitchForTests } from "@/lib/autonomy/emergency-switch";
 import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
 import { InMemoryDelegatedAuthorizationStore } from "@/lib/autonomy/delegated-authorization";
 import { AutonomyRuntime } from "@/lib/autonomy/runtime";
@@ -72,6 +73,7 @@ const SELL_AMOUNT = usdc("20");
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
+  allowAutonomousEmergencySwitchForTests();
   for (const k of ["MPGR_MAINNET_DELEGATED_EXECUTOR", "MPGR_MAINNET_BROADCASTER_PRIVATE_KEY", "MPGR_AUTONOMOUS_EMERGENCY_DISABLE", "MPGR_AUTONOMOUS_AGENT_ENABLED", "AUTONOMOUS_PRODUCTION_ENABLED"]) {
     savedEnv[k] = process.env[k];
   }
@@ -667,7 +669,9 @@ describe("mainnet delegated execution — refusals broadcast nothing", () => {
 
   it("DAILY CAP EXCEEDED -> POLICY_REJECTED, no tx", async () => {
     const h = makeMainnetHarness();
-    const { goal, policy } = await createMainnetGoal(h, { maxTrades: null });
+    // maxDailyRaw is raised so the ACTION-count cap binds (the spend cap has
+    // its own boundary tests) — exactly the old test's intent.
+    const { goal, policy } = await createMainnetGoal(h, { maxTrades: null, policyOver: { maxDailyRaw: usdc("1000") } });
     await signMainnetSlot(h, goal.id, policy, { slotIndex: 0 });
     await signMainnetSlot(h, goal.id, policy, { slotIndex: 1 });
     await signMainnetSlot(h, goal.id, policy, { slotIndex: 2 });
@@ -676,14 +680,30 @@ describe("mainnet delegated execution — refusals broadcast nothing", () => {
     await signMainnetSlot(h, goal.id, policy, { slotIndex: 5 });
     await h.adapter.bootstrapPosture(policy);
     // Pre-load the policy's day ledger to its own maxActionsPerDay, exactly as
-    // the runtime claims it (policyId + UTC day key + amount + cap). The next
-    // claim must return null => POLICY_REJECTED.
+    // the runtime reserves it (policyId + UTC day key + amount + cap). The next
+    // reservation must be refused => POLICY_REJECTED.
     const dayKey = utcDayKey(h.now());
     for (let i = 0; i < policy.maxActionsPerDay; i += 1) {
-      const ledger = await h.store.tryRecordDailyAction(policy.id, dayKey, SELL_AMOUNT, policy.maxActionsPerDay);
-      expect(ledger, `pre-load ${i} should still be under the cap`).not.toBeNull();
+      const reserved = await h.store.reserveDailySpend({
+        policyId: policy.id,
+        dayKey,
+        execId: `preload-${i}`,
+        amountRaw: SELL_AMOUNT,
+        maxDailyRaw: policy.maxDailyRaw,
+        maxActions: policy.maxActionsPerDay,
+      });
+      expect(reserved.ok, `pre-load ${i} should still be under the cap`).toBe(true);
     }
-    expect(await h.store.tryRecordDailyAction(policy.id, dayKey, SELL_AMOUNT, policy.maxActionsPerDay)).toBeNull();
+    const overflow = await h.store.reserveDailySpend({
+      policyId: policy.id,
+      dayKey,
+      execId: "preload-overflow",
+      amountRaw: SELL_AMOUNT,
+      maxDailyRaw: policy.maxDailyRaw,
+      maxActions: policy.maxActionsPerDay,
+    });
+    expect(overflow.ok).toBe(false);
+    expect(!overflow.ok && overflow.reason).toBe("OVER_ACTIONS");
     await h.scheduler.tick({ now: h.now() });
     expect(h.broadcasts).toHaveLength(0);
     const after = (await h.store.getGoal(goal.id))!;
