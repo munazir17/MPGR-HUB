@@ -24,6 +24,12 @@ import { VERIFIED_HISTORICAL_AGENT_TRADES } from "@/lib/agent/agent-volume-histo
 //    authorization/plan errors (401/403), other bad requests (400 without a
 //    range message), timeouts and unexpected errors are NOT retried with smaller
 //    ranges — shrinking under throttling only multiplies load.
+//  * A provider-DOCUMENTED numeric range cap below MIN_LOG_CHUNK (e.g. a plan
+//    that allows "up to a 10 block range") is NON-SHRINKABLE: every branch of
+//    the halving ladder bottoms out above such a cap, so the first refusal ends
+//    the scan as `provider_range_cap` instead of walking thousands of doomed
+//    requests. It is diagnosed from the documented wording only — never by
+//    probing a provider for its ceiling with wider requests.
 //  * Failures are negatively cached for a short, kind-specific TTL, so a
 //    throttled or misconfigured provider is not re-scanned by every visitor.
 //  * Concurrent cold-cache requests share one scan: an in-process single-flight
@@ -94,6 +100,7 @@ type FailureKind =
   | "forbidden"
   | "bad_request"
   | "range_too_large"
+  | "provider_range_cap"
   | "timeout"
   | "unexpected";
 
@@ -103,6 +110,9 @@ const NEGATIVE_TTL_SECONDS: Record<FailureKind, number> = {
   forbidden: 300,
   bad_request: 300,
   range_too_large: 300,
+  // A provider cap can only change by an operator-side plan/endpoint change,
+  // so re-probing it more often than this buys nothing.
+  provider_range_cap: 300,
   timeout: 60,
   unexpected: 60,
 };
@@ -115,6 +125,31 @@ class StatsTimeoutError extends Error {
 // Provider range-size wording (eth_getLogs block-range / result-count caps).
 const RANGE_RE =
   /block range|range (?:is )?too (?:large|big|wide)|too many blocks|query returned more than|more than \d+ (?:results|logs)|log response size|up to \d+ blocks/i;
+// Documented NUMERIC range caps. Each pattern captures the cap in blocks and
+// nothing else — only a number is ever taken from provider text, so neither
+// classification nor diagnostics ever carry provider wording. The shapes
+// mirror refusals this repo already documents, e.g. Alchemy's Base free tier:
+// "you can make eth_getLogs requests with up to a 10 block range".
+const PROVIDER_RANGE_CAP_RES: readonly RegExp[] = [
+  /up to (?:a )?(\d{1,9}) blocks?\b/i,
+  /limited to (\d{1,9}) blocks?\b/i,
+  /at most (\d{1,9}) blocks?\b/i,
+  /maximum block range (?:of|is) (\d{1,9})/i,
+  /block range (?:of|is) (\d{1,9}) blocks?\b/i,
+];
+
+/** Smallest documented block-range cap in the text, or null. Numbers only. */
+function providerRangeCap(text: string): number | null {
+  let smallest: number | null = null;
+  for (const pattern of PROVIDER_RANGE_CAP_RES) {
+    const match = pattern.exec(text);
+    if (!match) continue;
+    const cap = Number(match[1]);
+    if (!Number.isInteger(cap) || cap <= 0) continue;
+    if (smallest === null || cap < smallest) smallest = cap;
+  }
+  return smallest;
+}
 // Throttling / quota wording.
 const RATE_RE = /rate.?limit|too many requests|throttl|compute units?|capacity|quota/i;
 // Authorization / plan wording (used only to label the failure; never to retry).
@@ -140,8 +175,17 @@ interface ErrorFacts {
   names: string[];
   httpStatus: number | null;
   rpcCode: number | null;
+  /** JSON-RPC method name (shape-validated), or null. Never params. */
+  method: string | null;
   text: string;
 }
+
+/** JSON-RPC method names are protocol constants; nothing else is ever logged. */
+const RPC_METHOD_RE = /^[a-zA-Z][a-zA-Z0-9_]{0,39}$/;
+// viem's RpcRequestError does not expose the request object as a property; the
+// only place it survives is the "Request body: {...}" meta message. This
+// pattern takes the METHOD TOKEN ONLY — params are never captured or logged.
+const RPC_BODY_METHOD_RE = /"method"\s*:\s*"([a-zA-Z][a-zA-Z0-9_]{0,39})"/;
 
 /** Walks the cause chain; viem wraps transport errors (HttpRequestError, RpcRequestError). */
 function errorFacts(error: unknown): ErrorFacts {
@@ -149,14 +193,34 @@ function errorFacts(error: unknown): ErrorFacts {
   const names: string[] = [];
   let httpStatus: number | null = null;
   let rpcCode: number | null = null;
+  let method: string | null = null;
   const parts: string[] = [];
   let node: unknown = error;
   for (let depth = 0; depth < 6 && node && typeof node === "object"; depth += 1) {
-    const n = node as { name?: unknown; status?: unknown; code?: unknown; shortMessage?: unknown; message?: unknown; details?: unknown; cause?: unknown };
+    const n = node as { name?: unknown; status?: unknown; code?: unknown; body?: unknown; metaMessages?: unknown; shortMessage?: unknown; message?: unknown; details?: unknown; cause?: unknown };
     if (!name && typeof n.name === "string") name = n.name;
     if (typeof n.name === "string") names.push(n.name);
     if (httpStatus === null && typeof n.status === "number") httpStatus = n.status;
     if (rpcCode === null && typeof n.code === "number") rpcCode = n.code;
+    // Only the JSON-RPC METHOD NAME is ever read out of the request: either
+    // from `body` (HttpRequestError exposes it) or from viem's "Request body:
+    // {...}" meta message (the only place RpcRequestError keeps it). Params,
+    // headers, and payloads are never captured, so no payload can be logged.
+    if (method === null) {
+      if (n.body && typeof n.body === "object") {
+        const candidate = (n.body as { method?: unknown }).method;
+        if (typeof candidate === "string" && RPC_METHOD_RE.test(candidate)) method = candidate;
+      } else if (Array.isArray(n.metaMessages)) {
+        for (const entry of n.metaMessages) {
+          if (typeof entry !== "string") continue;
+          const found = RPC_BODY_METHOD_RE.exec(entry);
+          if (found && RPC_METHOD_RE.test(found[1])) {
+            method = found[1];
+            break;
+          }
+        }
+      }
+    }
     // shortMessage excludes viem's "URL: ..." metadata; still only used for matching.
     if (typeof n.shortMessage === "string") parts.push(n.shortMessage);
     else if (typeof n.message === "string") parts.push(n.message);
@@ -164,7 +228,17 @@ function errorFacts(error: unknown): ErrorFacts {
     if (typeof n.details === "string") parts.push(n.details);
     node = n.cause;
   }
-  return { name, names, httpStatus, rpcCode, text: parts.join(" | ") };
+  const text = parts.join(" | ");
+  // viem's HTTP path turns a 4xx JSON-RPC envelope into an RpcRequestError
+  // whose code lives on the mapped error, but a raw HttpRequestError keeps the
+  // provider's envelope only in `details`. Recover the NUMERIC code from that
+  // text when the object exposes none — never the message.
+  if (rpcCode === null) {
+    const embedded = /"code"\s*:\s*(-?\d{1,6})/.exec(text);
+    const parsed = embedded ? Number(embedded[1]) : null;
+    if (parsed !== null && Number.isInteger(parsed)) rpcCode = parsed;
+  }
+  return { name, names, httpStatus, rpcCode, method, text };
 }
 
 function classifyFailure(error: unknown): FailureKind {
@@ -180,6 +254,15 @@ function classifyFailure(error: unknown): FailureKind {
   // Explicit throttling / auth wording wins over range wording: when in doubt, do not shrink.
   if (RATE_RE.test(f.text)) return "rate_limited";
   if (AUTH_RE.test(f.text)) return "forbidden";
+  // NON-SHRINKABLE provider cap: a documented numeric range cap BELOW this
+  // scan's floor can never be satisfied by halving (every branch bottoms out
+  // above it), so one refusal is terminal. Only the refusal envelopes count —
+  // a JSON-RPC error (no HTTP status) or the documented HTTP 400 — never a
+  // 5xx, which is a transient failure and must not be re-labelled as a cap.
+  if (f.httpStatus === null || f.httpStatus === 400) {
+    const cap = providerRangeCap(f.text);
+    if (cap !== null && cap < Number(MIN_LOG_CHUNK)) return "provider_range_cap";
+  }
   // Range-size retries are reserved for CONFIRMED range limits: a JSON-RPC error
   // envelope (no HTTP status) or an HTTP 400 carrying range wording. Any other
   // HTTP status (5xx, 413, ...) is a generic failure and never shrinks the scan.
@@ -191,7 +274,11 @@ function classifyFailure(error: unknown): FailureKind {
   return "unexpected";
 }
 
-/** Log line content: kind, numeric HTTP status / RPC code, and a bounded error class name. */
+/**
+ * Log line content: kind, numeric HTTP status / RPC code, the JSON-RPC method
+ * and a bounded error class name. Deliberately no messages, URLs, or params —
+ * every field is a number, an enum, or a shape-validated identifier.
+ */
 function logFailure(kind: FailureKind, error: unknown, startedAt: number): void {
   const f = errorFacts(error);
   const errorName = /^[A-Za-z]{1,40}$/.test(f.name) ? f.name : "unknown";
@@ -199,6 +286,7 @@ function logFailure(kind: FailureKind, error: unknown, startedAt: number): void 
     kind,
     httpStatus: f.httpStatus,
     rpcCode: f.rpcCode,
+    method: f.method,
     errorName,
     elapsedMs: Date.now() - startedAt,
   });
@@ -321,7 +409,11 @@ async function scanRange(
         if (log.transactionHash) txHashes.add(log.transactionHash.toLowerCase());
       }
     } catch (error) {
-      // ONLY a confirmed range-size limitation may shrink the window.
+      // ONLY a confirmed, CONVERGENT range-size limitation may shrink the
+      // window. `provider_range_cap` (a documented cap below the floor) and
+      // every other kind rethrow here immediately: the halving ladder can
+      // never satisfy such a cap, and walking it is the request storm this
+      // guard exists to stop.
       if (classifyFailure(error) !== "range_too_large") throw error;
 
       const span = range.toBlock - range.fromBlock + 1n;
@@ -376,6 +468,13 @@ async function computeStats(deadline: number): Promise<Stats> {
   };
 }
 
+// In-process companion to the negative cache, set ONLY by a confirmed
+// non-shrinkable provider cap. The Redis write is best-effort (it fails open),
+// so without this a capped key with KV unavailable would re-run the doomed
+// scan once per visitor; with it, one instance re-scans at most once per TTL.
+// A positive cache is consulted BEFORE this, so fresh data is never hidden.
+let providerCapRefusalUntil = 0;
+
 /**
  * One refresh attempt. Returns null when unavailable. Never throws.
  * `lease` is "held" when another instance is already scanning: this instance
@@ -395,6 +494,9 @@ async function refresh(): Promise<Stats | null> {
     return stats;
   } catch (error) {
     const kind = classifyFailure(error);
+    if (kind === "provider_range_cap") {
+      providerCapRefusalUntil = Date.now() + NEGATIVE_TTL_SECONDS.provider_range_cap * 1_000;
+    }
     logFailure(kind, error, startedAt);
     await writeNegative(kind);
     return null;
@@ -412,6 +514,8 @@ export async function GET() {
   if (cached) return available(cached);
 
   if (await readNegative()) return unavailable();
+
+  if (Date.now() < providerCapRefusalUntil) return unavailable();
 
   if (!inflight) {
     inflight = refresh().finally(() => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpRequestError, RpcRequestError, TimeoutError } from "viem";
+import { HttpRequestError, InvalidRequestRpcError, RpcRequestError, TimeoutError } from "viem";
 
 import { LuaRedis } from "@/lib/__tests__/helpers/lua-redis";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, BASE_MAINNET_USDC } from "@/lib/executor/executor-config";
@@ -38,6 +38,25 @@ function rpcError(code: number, message: string) {
 /** A wrapper error the way callers around viem sometimes re-throw. */
 function wrapped(message: string, cause: unknown) {
   return Object.assign(new Error(message), { cause });
+}
+
+/**
+ * The documented refusal of a capped plan, in the exact shape viem 2.56
+ * produces: a provider HTTP 400 whose body is a JSON-RPC error envelope is
+ * returned as data, thrown as an RpcRequestError and then mapped by
+ * buildRequest into InvalidRequestRpcError (code -32600) — so the error
+ * carries NO HTTP status and the wording lives in the cause chain.
+ */
+const CAPPED_PLAN_WORDING =
+  "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range based on your current plan. Upgrade to PAYG for expanded block range.";
+
+function cappedPlanError(message = CAPPED_PLAN_WORDING) {
+  const request = new RpcRequestError({
+    url: SECRET_URL,
+    body: { method: "eth_getLogs" },
+    error: { code: -32600, message },
+  });
+  return new InvalidRequestRpcError(request);
 }
 
 function usdcSwapLog(hash: string, grossUsdcAtomic: bigint) {
@@ -314,6 +333,95 @@ describe("GET /api/agent/stats", () => {
     expect(await (await GET()).json()).toMatchObject({ available: false });
     expect(h.client.getLogs).toHaveBeenCalledTimes(1);
     expect(warnText(warn)).toContain("forbidden");
+  });
+
+  // ---------------------------------------------------------------- non-shrinkable provider cap
+
+  it("provider cap below the floor: ONE request, no halving storm, unavailable + negative-cached", async () => {
+    // ~700k blocks of head room: with a 250-block floor the halving ladder
+    // bottoms out ~25x above a 10-block cap, so the old code walked a DFS of
+    // thousands of requests that all had to be rejected. The refusal below is
+    // the production shape (HTTP 400 -> JSON-RPC envelope -> viem's mapped
+    // InvalidRequestRpcError, which carries no HTTP status).
+    h.client.getBlockNumber.mockResolvedValue(DEPLOY + 699_999n);
+    h.client.getLogs.mockRejectedValue(cappedPlanError());
+
+    const res = await GET();
+
+    // Contract unchanged: HTTP 200, no-store, the same unavailable body.
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.json()).toEqual({ available: false, totalValueTradedUsd: null, tradeCount: null });
+
+    // The regression: exactly ONE provider request — the ladder never starts,
+    // and no further chunk is attempted after the cap is known.
+    expect(h.client.getLogs).toHaveBeenCalledTimes(1);
+
+    // Negative-cached as the new non-shrinkable kind: the next request does no
+    // RPC work at all.
+    expect(await redis.client().get(NEGATIVE_KEY)).toBe("provider_range_cap");
+    redis.advance(299 * SEC);
+    expect(await (await GET()).json()).toMatchObject({ available: false });
+    expect(h.client.getLogs).toHaveBeenCalledTimes(1);
+
+    // Sanitized diagnostics: kind + numeric code + METHOD, and never the
+    // provider's wording, URL, or key.
+    const text = warnText(warn);
+    expect(text).toContain("provider_range_cap");
+    expect(text).toContain("-32600");
+    expect(text).toContain("eth_getLogs");
+    expect(text).not.toContain("Upgrade to PAYG");
+    expect(text).not.toContain("Free tier plan");
+    expect(text).not.toContain("SUPERSECRETKEY");
+    expect(text).not.toContain("rpc-provider.example");
+  });
+
+  it("provider cap refusal suppresses further scans in-process even when the negative-cache write fails", async () => {
+    // KV unavailable: every Redis write throws (so nothing is negative-cached)
+    // and lease acquisition degrades to "no-redis".
+    const redisCall = vi.spyOn(redis, "call").mockImplementation(() => {
+      throw new Error("redis unavailable");
+    });
+    try {
+      h.client.getLogs.mockRejectedValue(cappedPlanError());
+
+      expect(await (await GET()).json()).toMatchObject({ available: false });
+      expect(h.client.getLogs).toHaveBeenCalledTimes(1);
+      expect(await redis.client().get(NEGATIVE_KEY)).toBeNull(); // nothing cached
+
+      // Without the in-process guard this second request would re-run the
+      // doomed scan; with it, the instance stays quiet for the TTL.
+      expect(await (await GET()).json()).toMatchObject({ available: false });
+      expect(h.client.getLogs).toHaveBeenCalledTimes(1);
+    } finally {
+      redisCall.mockRestore();
+    }
+  });
+
+  it("a documented cap at or above the floor stays shrinkable (no over-classification)", async () => {
+    h.client.getBlockNumber.mockResolvedValue(DEPLOY + 9_999n);
+    const accepted: bigint[] = [];
+    h.client.getLogs.mockImplementation(async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
+      const span = toBlock - fromBlock + 1n;
+      if (span > 1_000n) throw httpError(400, "query exceeded max block range: requests are limited to 1000 blocks on this plan");
+      accepted.push(span);
+      return [];
+    });
+
+    const body = await (await GET()).json();
+    expect(body.available).toBe(true); // converged, so the scan is still useful
+    expect(accepted.every((span) => span <= 1_000n)).toBe(true);
+    expect(accepted.reduce((a, b) => a + b, 0n)).toBe(10_000n);
+  });
+
+  it("cap wording on a 5xx is a transient failure, never a non-shrinkable cap", async () => {
+    h.client.getLogs.mockRejectedValue(httpError(503, "requests are limited to 10 blocks"));
+
+    expect(await (await GET()).json()).toMatchObject({ available: false });
+    expect(h.client.getLogs).toHaveBeenCalledTimes(1);
+    const text = warnText(warn);
+    expect(text).toContain("unexpected");
+    expect(text).not.toContain("provider_range_cap");
   });
 
   // ---------------------------------------------------------------- timeouts
