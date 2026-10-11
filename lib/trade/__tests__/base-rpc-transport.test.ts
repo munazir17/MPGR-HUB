@@ -275,6 +275,24 @@ describe("sanitized RPC error diagnostics (strictly bounded body reads)", () => 
     });
   }
 
+  /**
+   * Resolves as soon as `promise` settles, or reports `settled: false` at the
+   * deadline. Used to assert PROMPTNESS: a promise that never settles (the
+   * tee-cancel hang this suite guards against) must fail the test instead of
+   * hanging the run until the vitest timeout.
+   */
+  async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<{ settled: boolean; value?: T }> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<{ settled: boolean; value?: T }>((resolve) => {
+      timer = setTimeout(() => resolve({ settled: false }), ms);
+    });
+    try {
+      return await Promise.race([promise.then((value) => ({ settled: true, value })), deadline]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   it("missing Content-Length: the body is read through the bounded path and the code is returned", async () => {
     const res = jsonResponse(streamOf(envelope(-32600)));
     expect(res.headers.get("Content-Length")).toBeNull(); // precondition
@@ -344,6 +362,61 @@ describe("sanitized RPC error diagnostics (strictly bounded body reads)", () => 
     const res = new Response(envelope(-32600), { status: 400, headers: { "Content-Type": "text/plain" } });
     await expect(readRpcErrorCode(res)).resolves.toBeNull();
     expect(await res.text()).toBe(envelope(-32600)); // untouched
+  });
+
+  it("oversized body from a genuinely OPEN stream: settles promptly with null without waiting on the tee", async () => {
+    // Regression: response.clone() TEES the body, and a teed branch's
+    // cancel() promise only settles once BOTH branches cancel — viem's branch
+    // never does. The pre-fix code awaited reader.cancel() on the over-limit
+    // path, so this input left readRpcErrorCode() pending forever and turned
+    // a provider error into a 12 s transport timeout downstream.
+    //
+    // The source here stays OPEN on purpose: it delivers far more than the
+    // limit and never calls controller.close(), exactly like a provider
+    // socket that still has bytes to send. That is the shape the existing
+    // closed-stream fixtures could not reach.
+    const payload = encoder.encode(
+      '{"jsonrpc":"2.0","error":{"code":-32600,"message":"' + "x".repeat(100_000) + '"}}',
+    );
+    let delivered = 0;
+    const openSource = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (delivered >= payload.byteLength) return; // stays OPEN — never closed
+        const chunkSize = 1_000;
+        const chunk = payload.subarray(delivered, Math.min(delivered + chunkSize, payload.byteLength));
+        delivered += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+    });
+    const res = new Response(openSource, { status: 400, headers: { "Content-Type": "application/json" } });
+    expect(res.headers.get("Content-Length")).toBeNull(); // precondition: unbounded header
+
+    const outcome = await settleWithin(readRpcErrorCode(res), 2_000);
+
+    // The finding: this MUST settle quickly. Pre-fix it never settled at all.
+    expect(outcome.settled).toBe(true);
+    expect(outcome.value).toBeNull(); // over the limit -> no code, never a throw
+    // The 8 KiB ceiling on what WE buffer is unchanged: reading stopped after
+    // ~9-11 chunks instead of draining 100 kB. A few chunks of read-ahead are
+    // pulled by the stream/tee machinery before we stop (out of our control,
+    // and independent of the ceiling — the retained buffer never exceeds MAX).
+    expect(delivered).toBeLessThanOrEqual(MAX + 4_000);
+    expect(delivered).toBeLessThan(payload.byteLength / 4); // nowhere near draining
+  });
+
+  it("the same open-stream shape still leaves the original response usable by the RPC client", async () => {
+    // Bound + reachability together: our inspection stops at the limit, and
+    // the bytes viem needs are still there on the original branch. The source
+    // is closed here only so the assertion can read the full body.
+    const body = JSON.stringify({ jsonrpc: "2.0", error: { code: -32005, message: "y".repeat(50_000) } });
+    const res = new Response(streamOf(body), { status: 400, headers: { "Content-Type": "application/json" } });
+
+    const outcome = await settleWithin(readRpcErrorCode(res), 2_000);
+    expect(outcome.settled).toBe(true);
+    expect(outcome.value).toBeNull(); // 50 kB > 8 KiB
+
+    // viem's read is intact: the full original body is still available.
+    expect(await res.text()).toBe(body);
   });
 
   it("the original response stays readable by the RPC client after inspection", async () => {

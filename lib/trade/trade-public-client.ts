@@ -21,9 +21,10 @@
 //    failed. Each entry also carries the JSON-RPC METHOD NAME (a protocol
 //    constant read from the request body; params are never read) and, for
 //    a FAILED HTTP response, the numeric JSON-RPC error code (read from a
-//    clone of the body under a HARD byte ceiling — the read stops and
-//    cancels at 8 KiB, so a missing or lying Content-Length cannot make it
-//    unbounded; provider wording is never logged). This is diagnostics
+//    clone of the body under a HARD byte ceiling — the read stops at 8 KiB
+//    and the clone's branch cancel is fire-and-forget, so a missing or
+//    lying Content-Length cannot make it unbounded and the tee can never
+//    block the return; provider wording is never logged). This is diagnostics
 //    only: it changes no retry, ordering, or fail-closed behavior. Known
 //    limit: a JSON-RPC error body delivered with HTTP 200 still records as
 //    `200` — the success path never reads bodies, so it stays free of
@@ -101,21 +102,35 @@ function declaredBodySize(header: string | null): number | null {
   return Number.isSafeInteger(size) ? size : null;
 }
 
-/** Cancels a reader without ever letting a cleanup failure escape. */
-async function cancelQuietly(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+/**
+ * Asks a reader to cancel WITHOUT waiting for the result.
+ *
+ * FIRE-AND-FORGET IS REQUIRED, not tidiness. `response.clone()` tees the body,
+ * and per the WHATWG streams tee semantics a branch's `cancel()` promise only
+ * settles once BOTH branches have cancelled — and the other branch belongs to
+ * viem, which never cancels it. `await reader.cancel()` here therefore leaves
+ * the promise pending forever, which would stop readBoundedBody() from ever
+ * returning and turn a provider error into a transport timeout. The byte
+ * ceiling does not depend on the cancel: reading simply stops.
+ */
+function cancelQuietly(reader: ReadableStreamDefaultReader<Uint8Array>): void {
   try {
-    await reader.cancel();
+    void reader.cancel().catch(() => {
+      // The branch may already be errored or closed; there is nothing to undo.
+    });
   } catch {
-    // The stream may already be errored or closed; there is nothing to undo.
+    // reader.cancel() threw synchronously (already released/invalidated).
   }
 }
 
 /**
  * Reads at most `maxBytes` from a CLONE of `response` and decodes them as
- * UTF-8. Beyond the limit the read STOPS AND CANCELS and the function returns
- * null — so a missing, invalid, or lying `Content-Length` can never turn this
- * into an unbounded read. The ORIGINAL response is never consumed or mutated:
- * the clone has its own stream, and cancelling it leaves viem's read intact.
+ * UTF-8. Beyond the limit the read STOPS immediately — no further chunk is
+ * pulled, and the clone's branch is asked to cancel on a fire-and-forget basis
+ * (see cancelQuietly) — so a missing, invalid, or lying `Content-Length` can
+ * never turn this into an unbounded read, and the outer call is never made to
+ * wait on the tee. The ORIGINAL response is never consumed or mutated: the
+ * clone has its own stream, and stopping our branch leaves viem's read intact.
  */
 async function readBoundedBody(response: Response, maxBytes: number): Promise<string | null> {
   const clone = response.clone();
@@ -133,7 +148,7 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
       total += value.byteLength;
       // Checked BEFORE the bytes are kept: the buffer never exceeds maxBytes.
       if (total > maxBytes) {
-        await cancelQuietly(reader);
+        cancelQuietly(reader);
         return null;
       }
       text += decoder.decode(value, { stream: true });
@@ -141,7 +156,7 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
     text += decoder.decode();
     return text;
   } catch {
-    await cancelQuietly(reader);
+    cancelQuietly(reader);
     return null;
   }
 }
@@ -152,8 +167,9 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
  *
  * STRICTLY SIZE-BOUNDED (review finding): a declared size over the limit is
  * never read at all, and everything else goes through readBoundedBody(),
- * which stops and cancels at PROBE_MAX_ERROR_BODY_BYTES. A missing or invalid
- * `Content-Length` is NOT trusted and is never read unbounded.
+ * whose read stops at PROBE_MAX_ERROR_BODY_BYTES (its branch cancel is
+ * fire-and-forget, so the tee can never block the return). A missing or
+ * invalid `Content-Length` is NOT trusted and is never read unbounded.
  *
  * JSON content type is required. Any problem — oversized body, malformed
  * JSON, read failure, unexpected shape, non-integer or absent code — yields
