@@ -106,7 +106,7 @@ jobs:
           grep -a "::notice::PHASE5" phase5-preflight.log | sed 's/^/PREFLIGHT: /'
       - name: Upload dry-run plan
         if: steps.mode.outputs.preflight == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: phase5-plan
           path: phase5-plan.json
@@ -146,7 +146,7 @@ jobs:
           exit "$status"
       - name: Upload evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: phase5-results
           path: |
@@ -179,7 +179,7 @@ jobs:
           node scripts/phase5-reconcile.mjs live-delegated-results.json
       - name: Upload reconciliation
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: phase5-reconciliation
           path: phase5-reconciliation.json
