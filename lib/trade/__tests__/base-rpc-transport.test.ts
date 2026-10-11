@@ -22,6 +22,7 @@ import { createServer, type Server } from "node:http";
 import {
   createBaseRpcClient,
   describeBaseRpcHealth,
+  readRpcErrorCode,
   resetBaseRpcProbeForTests,
   rpcUrls,
 } from "../trade-public-client";
@@ -217,6 +218,141 @@ describe("Base RPC fallback transport", () => {
       await capped.close();
       errorSpy.mockRestore();
     }
+  });
+
+  it("chunked 400 (no Content-Length): the bounded read still records the code, and viem reads the original", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // No Content-Length is set, so Node uses transfer-encoding: chunked —
+    // exactly the shape the old `response.clone().json()` path read unbounded.
+    const capped = await startRpcServer((body, res) => {
+      res.statusCode = 400;
+      res.setHeader("Content-Type", "application/json");
+      res.removeHeader("Content-Length");
+      res.write(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32600, message: "capped" } }));
+      res.end();
+    });
+    try {
+      const client = createBaseRpcClient([capped.url]);
+
+      // viem still parses the ORIGINAL response body: the mapped JSON-RPC
+      // error code proves the body was neither consumed nor mutated.
+      await expect(client.getLogs({ address: TOKEN, fromBlock: 0n, toBlock: 1n })).rejects.toMatchObject({
+        code: -32600,
+      });
+
+      expect(describeBaseRpcHealth()).toContain("code=-32600");
+    } finally {
+      await capped.close();
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+// Review finding: readRpcErrorCode() used response.clone().json(), which reads
+// the whole body when Content-Length is missing or unreliable. These tests pin
+// the strictly bounded replacement: at most PROBE_MAX_ERROR_BODY_BYTES (8 KiB)
+// is ever buffered, the read is cancelled beyond that, the original response
+// stays readable, and only an integer can come out.
+describe("sanitized RPC error diagnostics (strictly bounded body reads)", () => {
+  const MAX = 8_192; // PROBE_MAX_ERROR_BODY_BYTES
+  const encoder = new TextEncoder();
+  const PROVIDER_WORDING =
+    "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range. Upgrade to PAYG.";
+
+  const envelope = (code: unknown, message = PROVIDER_WORDING) =>
+    JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code, message } });
+
+  function jsonResponse(body: string | ReadableStream<Uint8Array>, headers: Record<string, string> = {}) {
+    return new Response(body, { status: 400, headers: { "Content-Type": "application/json", ...headers } });
+  }
+
+  function streamOf(text: string): ReadableStream<Uint8Array> {
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(text));
+        controller.close();
+      },
+    });
+  }
+
+  it("missing Content-Length: the body is read through the bounded path and the code is returned", async () => {
+    const res = jsonResponse(streamOf(envelope(-32600)));
+    expect(res.headers.get("Content-Length")).toBeNull(); // precondition
+
+    const code = await readRpcErrorCode(res);
+    expect(code).toBe(-32600);
+    expect(typeof code).toBe("number"); // no wording, URL, or params can ride along
+  });
+
+  it("invalid Content-Length is not trusted, and the read is still capped at the limit", async () => {
+    // Non-numeric: the old Number() guard evaluated to NaN and read freely.
+    const bogus = jsonResponse(envelope(-32600), { "Content-Length": "not-a-number" });
+    await expect(readRpcErrorCode(bogus)).resolves.toBe(-32600);
+
+    // Absurdly long / out-of-range: unusable, so again the bounded path decides.
+    const hugeHeader = jsonResponse(envelope(-32600), { "Content-Length": "99999999999999999999" });
+    await expect(readRpcErrorCode(hugeHeader)).resolves.toBe(-32600);
+
+    // Invalid header AND an oversized body: the bound still wins.
+    const oversized = jsonResponse(streamOf("x".repeat(MAX * 3)), { "Content-Length": "abc" });
+    await expect(readRpcErrorCode(oversized)).resolves.toBeNull();
+  });
+
+  it("declared size above the limit: the body is never read at all", async () => {
+    const res = jsonResponse(envelope(-32600), { "Content-Length": String(MAX + 1) });
+
+    await expect(readRpcErrorCode(res)).resolves.toBeNull();
+    // Never touched: the original still yields its full content.
+    expect(await res.text()).toBe(envelope(-32600));
+  });
+
+  it("oversized body with NO Content-Length: stops at the limit, cancels, and returns null", async () => {
+    const body = "x".repeat(MAX * 3);
+    const res = jsonResponse(streamOf(body));
+    expect(res.headers.get("Content-Length")).toBeNull(); // precondition
+
+    await expect(readRpcErrorCode(res)).resolves.toBeNull();
+    // Cancelling the clone's branch left the original fully readable — the
+    // property viem depends on.
+    expect(await res.text()).toBe(body);
+  });
+
+  it("malformed JSON and body-read failures return null (never throw)", async () => {
+    await expect(readRpcErrorCode(jsonResponse('{"jsonrpc":"2.0","error":{"code":'))).resolves.toBeNull();
+    await expect(readRpcErrorCode(jsonResponse(""))).resolves.toBeNull();
+
+    const failing = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"error":{"code":-32600}}'));
+        controller.error(new Error("stream failed"));
+      },
+    });
+    await expect(readRpcErrorCode(jsonResponse(failing))).resolves.toBeNull();
+  });
+
+  it("unexpected shapes and non-integer codes return null", async () => {
+    await expect(readRpcErrorCode(jsonResponse(JSON.stringify({ result: "0x1" })))).resolves.toBeNull();
+    await expect(readRpcErrorCode(jsonResponse(JSON.stringify([])))).resolves.toBeNull();
+    await expect(readRpcErrorCode(jsonResponse(JSON.stringify({ error: { code: "-32600" } })))).resolves.toBeNull();
+    await expect(readRpcErrorCode(jsonResponse(JSON.stringify({ error: { code: 1.5 } })))).resolves.toBeNull();
+    await expect(readRpcErrorCode(jsonResponse(JSON.stringify({ error: null })))).resolves.toBeNull();
+    // The documented top-level-code shape still works.
+    await expect(readRpcErrorCode(jsonResponse(JSON.stringify({ code: -32000 })))).resolves.toBe(-32000);
+  });
+
+  it("non-JSON content type is never read, whatever the body contains", async () => {
+    const res = new Response(envelope(-32600), { status: 400, headers: { "Content-Type": "text/plain" } });
+    await expect(readRpcErrorCode(res)).resolves.toBeNull();
+    expect(await res.text()).toBe(envelope(-32600)); // untouched
+  });
+
+  it("the original response stays readable by the RPC client after inspection", async () => {
+    const res = jsonResponse(envelope(-32600));
+    expect(await readRpcErrorCode(res)).toBe(-32600);
+    // The full envelope is still there for viem to parse.
+    const parsed = (await res.json()) as { error: { code: number; message: string } };
+    expect(parsed.error.code).toBe(-32600);
+    expect(parsed.error.message).toBe(PROVIDER_WORDING);
   });
 });
 

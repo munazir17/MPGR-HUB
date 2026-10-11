@@ -21,11 +21,13 @@
 //    failed. Each entry also carries the JSON-RPC METHOD NAME (a protocol
 //    constant read from the request body; params are never read) and, for
 //    a FAILED HTTP response, the numeric JSON-RPC error code (read from a
-//    clone of the body; provider wording is never logged). This is
-//    diagnostics only: it changes no retry, ordering, or fail-closed
-//    behavior. Known limit: a JSON-RPC error body delivered with HTTP 200
-//    still records as `200` — the success path never reads bodies, so it
-//    stays free of per-call overhead.
+//    clone of the body under a HARD byte ceiling — the read stops and
+//    cancels at 8 KiB, so a missing or lying Content-Length cannot make it
+//    unbounded; provider wording is never logged). This is diagnostics
+//    only: it changes no retry, ordering, or fail-closed behavior. Known
+//    limit: a JSON-RPC error body delivered with HTTP 200 still records as
+//    `200` — the success path never reads bodies, so it stays free of
+//    per-call overhead.
 
 import { createPublicClient, fallback, http } from "viem";
 import { base } from "wagmi/chains";
@@ -89,19 +91,89 @@ function safeMethod(body: unknown): string | null {
   }
 }
 
+/** `Content-Length` as a non-negative integer, or null when missing/unusable. */
+function declaredBodySize(header: string | null): number | null {
+  if (header === null) return null;
+  const value = header.trim();
+  // Rejects empty, signed, fractional, exponential, and absurdly long values.
+  if (!/^\d{1,12}$/.test(value)) return null;
+  const size = Number(value);
+  return Number.isSafeInteger(size) ? size : null;
+}
+
+/** Cancels a reader without ever letting a cleanup failure escape. */
+async function cancelQuietly(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  try {
+    await reader.cancel();
+  } catch {
+    // The stream may already be errored or closed; there is nothing to undo.
+  }
+}
+
+/**
+ * Reads at most `maxBytes` from a CLONE of `response` and decodes them as
+ * UTF-8. Beyond the limit the read STOPS AND CANCELS and the function returns
+ * null — so a missing, invalid, or lying `Content-Length` can never turn this
+ * into an unbounded read. The ORIGINAL response is never consumed or mutated:
+ * the clone has its own stream, and cancelling it leaves viem's read intact.
+ */
+async function readBoundedBody(response: Response, maxBytes: number): Promise<string | null> {
+  const clone = response.clone();
+  const body = clone.body;
+  if (!body) return null;
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      // Checked BEFORE the bytes are kept: the buffer never exceeds maxBytes.
+      if (total > maxBytes) {
+        await cancelQuietly(reader);
+        return null;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return text;
+  } catch {
+    await cancelQuietly(reader);
+    return null;
+  }
+}
+
 /**
  * Best-effort numeric JSON-RPC error code for a FAILED response, read from a
  * CLONE of the body so viem's own read of the original response is untouched.
- * Bounded (JSON content type, small body) and never throws: any problem
- * yields null and the diagnostic simply omits the code. Only the integer is
- * returned — provider wording, params, and URLs are never read out.
+ *
+ * STRICTLY SIZE-BOUNDED (review finding): a declared size over the limit is
+ * never read at all, and everything else goes through readBoundedBody(),
+ * which stops and cancels at PROBE_MAX_ERROR_BODY_BYTES. A missing or invalid
+ * `Content-Length` is NOT trusted and is never read unbounded.
+ *
+ * JSON content type is required. Any problem — oversized body, malformed
+ * JSON, read failure, unexpected shape, non-integer or absent code — yields
+ * null, and the diagnostic simply omits the code. Only an integer is ever
+ * returned, so provider wording, request params, and API-key-bearing URLs
+ * cannot leave this function.
+ *
+ * Exported for tests only; production callers reach it via probingFetchFn().
  */
-async function readRpcErrorCode(response: Response): Promise<number | null> {
+export async function readRpcErrorCode(response: Response): Promise<number | null> {
   try {
     if (!(response.headers.get("Content-Type") ?? "").includes("json")) return null;
-    const declared = Number(response.headers.get("Content-Length"));
-    if (Number.isFinite(declared) && declared > PROBE_MAX_ERROR_BODY_BYTES) return null;
-    const data = (await response.clone().json()) as { error?: unknown; code?: unknown } | null;
+    // Cheap rejection first: a declared size over the limit is never read,
+    // not even partially. An absent/unusable header is not a green light —
+    // readBoundedBody() is what actually enforces the ceiling.
+    const declared = declaredBodySize(response.headers.get("Content-Length"));
+    if (declared !== null && declared > PROBE_MAX_ERROR_BODY_BYTES) return null;
+    const text = await readBoundedBody(response, PROBE_MAX_ERROR_BODY_BYTES);
+    if (text === null) return null;
+    const data = JSON.parse(text) as { error?: unknown; code?: unknown } | null;
     const envelope = data?.error;
     const raw = envelope && typeof envelope === "object" ? (envelope as { code?: unknown }).code : data?.code;
     return typeof raw === "number" && Number.isInteger(raw) ? raw : null;
