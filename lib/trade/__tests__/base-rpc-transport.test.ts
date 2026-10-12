@@ -20,8 +20,10 @@ import { createServer, type Server } from "node:http";
 //      null decimals when all transports fail (quotes then refuse).
 
 import {
+  classifyBaseRpcFailure,
   createBaseRpcClient,
   describeBaseRpcHealth,
+  getTradePublicClient,
   readRpcErrorCode,
   resetBaseRpcProbeForTests,
   rpcUrls,
@@ -565,5 +567,113 @@ describe("executor chain reader (server RPC selection)", () => {
       await limited.close();
       await healthy.close();
     }
+  });
+});
+
+describe("RPC failure classification and deterministic non-retryable handling", () => {
+  it("classifies HTTP 400/-32600/-32602/range-cap, HTTP 401/403, HTTP 429, 5xx, timeout, and network errors distinctly", () => {
+    expect(
+      classifyBaseRpcFailure({
+        status: 400,
+        code: -32600,
+        message: "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range.",
+      }),
+    ).toBe("invalid_request");
+    expect(classifyBaseRpcFailure({ code: -32602, message: "invalid params" })).toBe("invalid_request");
+    expect(classifyBaseRpcFailure({ status: 413, message: "response size exceeded" })).toBe("invalid_request");
+    expect(
+      classifyBaseRpcFailure({
+        code: -32005,
+        message: "eth_getLogs block range is too large, max block range is 2000",
+      }),
+    ).toBe("invalid_request");
+    expect(classifyBaseRpcFailure({ status: 403, message: "Forbidden" })).toBe("forbidden");
+    expect(classifyBaseRpcFailure({ status: 401, message: "Unauthorized" })).toBe("forbidden");
+    expect(classifyBaseRpcFailure({ status: 429, code: -32016, message: "Too Many Requests" })).toBe("rate_limited");
+    expect(classifyBaseRpcFailure({ status: 503, message: "Service Unavailable" })).toBe("server_error");
+    expect(classifyBaseRpcFailure({ name: "TimeoutError", message: "The request took too long" })).toBe("timeout");
+    expect(classifyBaseRpcFailure({ name: "HttpRequestError", message: "fetch failed: ECONNREFUSED" })).toBe(
+      "network_error",
+    );
+  });
+
+  it("does NOT mask a primary provider's Free-tier 10-block eth_getLogs refusal behind fallback providers", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const primaryCapped = await startRpcServer((body, res) => cappedPlanRefusal(res, body));
+    const secondaryRange = await startRpcServer((body, res) => {
+      res.statusCode = 400;
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: { code: -32005, message: "block range is too large" },
+        }),
+      );
+    });
+    try {
+      const client = createBaseRpcClient([primaryCapped.url, secondaryRange.url]);
+      await expect(
+        client.getLogs({ address: TOKEN, fromBlock: 0n, toBlock: 500_000n }),
+      ).rejects.toThrow(/10 block range/i);
+
+      // Stops immediately on the primary's deterministic -32600 refusal:
+      // 1 request to primary, 0 to secondary, 0 retries.
+      expect(primaryCapped.requestCount()).toBe(1);
+      expect(secondaryRange.requestCount()).toBe(0);
+    } finally {
+      await primaryCapped.close();
+      await secondaryRange.close();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("falls over once on HTTP 403 to a healthy fallback, and does NOT retry when all providers return 403", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const forbidden = await startRpcServer((_body, res) => {
+      res.statusCode = 403;
+      res.end("forbidden");
+    });
+    const healthy = await startRpcServer((body, res) => healthyJsonRpc(res, body));
+    try {
+      const withFallback = createBaseRpcClient([forbidden.url, healthy.url]);
+      const decimals = await withFallback.readContract({
+        address: TOKEN,
+        abi: erc20Abi,
+        functionName: "decimals",
+      });
+      expect(decimals).toBe(6);
+      expect(forbidden.requestCount()).toBe(1);
+      expect(healthy.requestCount()).toBe(1);
+
+      const forbiddenOnly = await startRpcServer((_body, res) => {
+        res.statusCode = 403;
+        res.end("forbidden");
+      });
+      try {
+        const singleClient = createBaseRpcClient([forbiddenOnly.url]);
+        await expect(
+          singleClient.readContract({ address: TOKEN, abi: erc20Abi, functionName: "decimals" }),
+        ).rejects.toThrow();
+        expect(forbiddenOnly.requestCount()).toBe(1);
+      } finally {
+        await forbiddenOnly.close();
+      }
+    } finally {
+      await forbidden.close();
+      await healthy.close();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("caches getTradePublicClient() per resolved URL list and refreshes when env changes", () => {
+    vi.stubEnv("BASE_RPC_URL", "https://rpc-a.example.internal");
+    const first = getTradePublicClient();
+    const second = getTradePublicClient();
+    expect(second).toBe(first);
+
+    vi.stubEnv("BASE_RPC_URL", "https://rpc-b.example.internal");
+    const third = getTradePublicClient();
+    expect(third).not.toBe(first);
   });
 });

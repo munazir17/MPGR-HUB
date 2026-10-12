@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useAccount, useChainId, useSwitchChain, useWatchContractEvent } from "wagmi";
+import { useAccount, useChainId, useSwitchChain } from "wagmi";
 import { base } from "wagmi/chains";
-import { formatUnits, parseUnits } from "viem";
+import { formatUnits, parseEventLogs, parseUnits } from "viem";
 import type { Address, Hash } from "viem";
 import { tokenLockClient, clearCachedWalletLock, setCachedWalletLock } from "@/lib/token-lock/token-lock-client";
 import { TOKEN_LOCK_ABI } from "@/lib/token-lock/token-lock-abi";
@@ -26,6 +26,40 @@ interface LockEvent {
 }
 
 const DECIMALS = MPGR_TOKEN_LOCK_CONFIG.decimals;
+const POSITIONS_CACHE_TTL_MS = 15_000;
+const positionsCache = new Map<string, { positions: TokenLockPosition[]; timestamp: number }>();
+const inFlightPositions = new Map<string, Promise<TokenLockPosition[]>>();
+
+function fetchWalletLockPositions(walletAddress: Address, forceRefresh = false): Promise<TokenLockPosition[]> {
+  const key = walletAddress.toLowerCase();
+  const cached = positionsCache.get(key);
+  if (!forceRefresh && cached && Date.now() - cached.timestamp < POSITIONS_CACHE_TTL_MS) {
+    return Promise.resolve(cached.positions);
+  }
+  let inFlight = inFlightPositions.get(key);
+  if (!inFlight) {
+    inFlight = (async () => {
+      const ids = await tokenLockClient.getUserLockIds(walletAddress);
+      const locks = await Promise.all(ids.map((id) => tokenLockClient.getLock(id)));
+      const positions = ids.map((id, i) => {
+        const l = locks[i];
+        return {
+          id,
+          amount: l.amount,
+          unlockTime: l.unlockTime,
+          withdrawn: l.withdrawn,
+          owner: l.user,
+        };
+      });
+      positionsCache.set(key, { positions, timestamp: Date.now() });
+      return positions;
+    })().finally(() => {
+      inFlightPositions.delete(key);
+    });
+    inFlightPositions.set(key, inFlight);
+  }
+  return inFlight;
+}
 
 function toView(position: TokenLockPosition, now: number): TokenLockPositionView {
   const unlockMs = Number(position.unlockTime) * 1000;
@@ -82,23 +116,12 @@ export function useTokenLock() {
 
   const isWrongNetwork = isConnected && chainId !== base.id;
 
-  const loadPositions = useCallback(async (walletAddress: Address) => {
+  const loadPositions = useCallback(async (walletAddress: Address, forceRefresh = false) => {
     try {
-      const ids = await tokenLockClient.getUserLockIds(walletAddress);
-      const locks = await Promise.all(ids.map((id) => tokenLockClient.getLock(id)));
+      const rawPositions = await fetchWalletLockPositions(walletAddress, forceRefresh);
       const now = Date.now();
-      const views = ids
-        .map((id, i) => {
-          const l = locks[i];
-          const position: TokenLockPosition = {
-            id,
-            amount: l.amount,
-            unlockTime: l.unlockTime,
-            withdrawn: l.withdrawn,
-            owner: l.user,
-          };
-          return toView(position, now);
-        })
+      const views = rawPositions
+        .map((position) => toView(position, now))
         .sort((a, b) => (a.id > b.id ? -1 : a.id < b.id ? 1 : 0));
       setPositions(views);
       setReadError(null);
@@ -113,7 +136,7 @@ export function useTokenLock() {
     if (!address) return;
     setIsRefreshing(true);
     try {
-      await Promise.all([loadPositions(address), refreshWalletBalance()]);
+      await Promise.all([loadPositions(address, true), refreshWalletBalance()]);
     } finally {
       setIsRefreshing(false);
     }
@@ -123,7 +146,10 @@ export function useTokenLock() {
     if (!isConnected || !address) {
       setPositions([]);
       setHasLoaded(false);
-      if (address) clearCachedWalletLock(address);
+      if (address) {
+        positionsCache.delete(address.toLowerCase());
+        clearCachedWalletLock(address);
+      }
       return;
     }
     setHasLoaded(false);
@@ -140,71 +166,44 @@ export function useTokenLock() {
     setLiveActivity((prev) => [entry, ...prev].slice(0, 20));
   }, []);
 
-  useWatchContractEvent({
-    address: MPGR_TOKEN_LOCK_CONFIG.address,
-    abi: TOKEN_LOCK_ABI,
-    eventName: "LockCreated",
-    chainId: MPGR_TOKEN_LOCK_CONFIG.chainId,
-    enabled: isConnected && !!address,
-    onLogs(logs) {
-      for (const log of logs) {
-        const { user, amount } = log.args as { user?: Address; amount?: bigint };
-        if (!user || address?.toLowerCase() !== user.toLowerCase() || amount === undefined) continue;
-        pushActivity({
-          id: `${log.transactionHash}-${log.logIndex}`,
-          kind: "LockCreated",
-          amount,
-          txHash: log.transactionHash!,
-          observedAt: new Date().toISOString(),
+  const recordReceiptActivity = useCallback(
+    (receipt: Awaited<ReturnType<typeof tokenLockClient.waitForReceipt>>) => {
+      if (!address) return;
+      try {
+        const decoded = parseEventLogs({
+          abi: TOKEN_LOCK_ABI,
+          logs: receipt.logs,
         });
-        refresh();
+        const observedAt = new Date().toISOString();
+        for (const log of decoded) {
+          if (log.eventName === "LockCreated" || log.eventName === "LockWithdrawn") {
+            const { user, amount } = log.args as { user?: Address; amount?: bigint };
+            if (!user || user.toLowerCase() !== address.toLowerCase() || amount === undefined) continue;
+            pushActivity({
+              id: `${log.transactionHash}-${log.logIndex}`,
+              kind: log.eventName,
+              amount,
+              txHash: log.transactionHash!,
+              observedAt,
+            });
+          } else if (log.eventName === "EarlyUnlocked") {
+            const { user, amountReturned } = log.args as { user?: Address; amountReturned?: bigint };
+            if (!user || user.toLowerCase() !== address.toLowerCase() || amountReturned === undefined) continue;
+            pushActivity({
+              id: `${log.transactionHash}-${log.logIndex}`,
+              kind: "EarlyUnlocked",
+              amount: amountReturned,
+              txHash: log.transactionHash!,
+              observedAt,
+            });
+          }
+        }
+      } catch {
+        // Best-effort live activity extraction from the confirmed receipt.
       }
     },
-  });
-
-  useWatchContractEvent({
-    address: MPGR_TOKEN_LOCK_CONFIG.address,
-    abi: TOKEN_LOCK_ABI,
-    eventName: "LockWithdrawn",
-    chainId: MPGR_TOKEN_LOCK_CONFIG.chainId,
-    enabled: isConnected && !!address,
-    onLogs(logs) {
-      for (const log of logs) {
-        const { user, amount } = log.args as { user?: Address; amount?: bigint };
-        if (!user || address?.toLowerCase() !== user.toLowerCase() || amount === undefined) continue;
-        pushActivity({
-          id: `${log.transactionHash}-${log.logIndex}`,
-          kind: "LockWithdrawn",
-          amount,
-          txHash: log.transactionHash!,
-          observedAt: new Date().toISOString(),
-        });
-        refresh();
-      }
-    },
-  });
-
-  useWatchContractEvent({
-    address: MPGR_TOKEN_LOCK_CONFIG.address,
-    abi: TOKEN_LOCK_ABI,
-    eventName: "EarlyUnlocked",
-    chainId: MPGR_TOKEN_LOCK_CONFIG.chainId,
-    enabled: isConnected && !!address,
-    onLogs(logs) {
-      for (const log of logs) {
-        const { user, amountReturned } = log.args as { user?: Address; amountReturned?: bigint };
-        if (!user || address?.toLowerCase() !== user.toLowerCase() || amountReturned === undefined) continue;
-        pushActivity({
-          id: `${log.transactionHash}-${log.logIndex}`,
-          kind: "EarlyUnlocked",
-          amount: amountReturned,
-          txHash: log.transactionHash!,
-          observedAt: new Date().toISOString(),
-        });
-        refresh();
-      }
-    },
-  });
+    [address, pushActivity]
+  );
 
   const runAction = useCallback(
     async (
@@ -222,6 +221,7 @@ export function useTokenLock() {
         if (receipt.status !== "success") {
           throw new Error("Transaction reverted on-chain.");
         }
+        recordReceiptActivity(receipt);
         setState(() => ({ phase: "success", hash, error: null }));
         await refresh();
         onSuccess?.(hash);
@@ -233,7 +233,7 @@ export function useTokenLock() {
         return false;
       }
     },
-    [address, refresh]
+    [address, recordReceiptActivity, refresh]
   );
 
   const ensureBaseNetwork = useCallback(async (): Promise<boolean> => {

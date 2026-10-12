@@ -1,13 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAccount, useChainId, useSwitchChain, useWatchContractEvent } from "wagmi";
+import { useAccount, useChainId, useSwitchChain } from "wagmi";
 import { base } from "wagmi/chains";
 import { formatUnits } from "viem";
 import type { Hash } from "viem";
 import { rewardVaultClient } from "@/lib/reward-vault/reward-vault-client";
 import { rewardVaultService } from "@/lib/reward-vault/reward-vault-service";
-import { REWARD_VAULT_ABI } from "@/lib/reward-vault/reward-vault-abi";
 import { MPGR_REWARD_VAULT_CONFIG } from "@/lib/reward-vault/reward-vault-config";
 import { VaultRewardStatus, idleVaultActionState, type VaultActionState, type VaultReward } from "@/lib/reward-vault/reward-vault-types";
 
@@ -120,23 +119,6 @@ export function useRewardClaim() {
     }, MPGR_REWARD_VAULT_CONFIG.liveReadPollingIntervalMs);
     return () => clearInterval(id);
   }, [address, isConnected, loadRewards]);
-
-  // Live-refresh the moment this wallet's RewardClaimed event lands, so
-  // the UI reflects a claim made from another tab/device too.
-  useWatchContractEvent({
-    address: MPGR_REWARD_VAULT_CONFIG.address,
-    abi: REWARD_VAULT_ABI,
-    eventName: "RewardClaimed",
-    chainId: MPGR_REWARD_VAULT_CONFIG.chainId,
-    enabled: isConnected && !!address,
-    onLogs(logs) {
-      for (const log of logs) {
-        const { user } = log.args as { user?: `0x${string}` };
-        if (!user || address?.toLowerCase() !== user.toLowerCase()) continue;
-        refresh();
-      }
-    },
-  });
 
   const ensureBaseNetwork = useCallback(async (): Promise<boolean> => {
     if (!isWrongNetwork) return true;

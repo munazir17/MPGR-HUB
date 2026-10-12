@@ -55,6 +55,19 @@ function mainnetRpcUrls(): string[] {
   return [...new Set(urls)];
 }
 
+function sanitizeErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw
+    .replace(/https?:\/\/[^\s"'<>)]+/gi, (match) => {
+      try {
+        return new URL(match).origin;
+      } catch {
+        return "<redacted-url>";
+      }
+    })
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1<redacted>");
+}
+
 let cachedMainnetClient: ReturnType<typeof createPublicClient> | null = null;
 
 /** Server-safe viem Mainnet client, used ONLY as a Basename fallback — never for balances or Base txs. */
@@ -64,7 +77,8 @@ export function getMainnetEnsClient() {
   cachedMainnetClient = createPublicClient({
     chain: mainnet,
     transport: fallback(
-      urls.map((url) => http(url, { timeout: 12_000 })),
+      urls.map((url) => http(url, { timeout: 12_000, retryCount: 0 })),
+      { retryCount: 1 },
     ),
   });
   return cachedMainnetClient;
@@ -108,7 +122,7 @@ async function resolveOnBaseL2(normalized: string): Promise<Address | null> {
   } catch (err) {
     console.error("[transfer-basename] Base L2 resolver failed", {
       name: normalized,
-      message: err instanceof Error ? err.message : String(err),
+      message: sanitizeErrorMessage(err),
     });
     return null;
   }
@@ -125,7 +139,7 @@ async function resolveOnMainnetEns(normalized: string): Promise<Address | null> 
   } catch (err) {
     console.error("[transfer-basename] Mainnet ENS/CCIP-Read failed", {
       name: normalized,
-      message: err instanceof Error ? err.message : String(err),
+      message: sanitizeErrorMessage(err),
     });
     return null;
   }

@@ -45,6 +45,79 @@ function sleep(ms: number): Promise<void> {
 // under a burst of simultaneous failures instead of retrying in lockstep.
 const MIN_BACKOFF_FLOOR_MS = 50;
 
+const NON_RETRYABLE_RPC_CODES = new Set([
+  -32700, // Parse error
+  -32600, // Invalid Request (including Alchemy Free-tier eth_getLogs 10-block cap)
+  -32601, // Method not found
+  -32602, // Invalid params
+  -32004, // Method not supported
+  -32003, // Transaction rejected
+  3,      // ExecutionRevertedError
+  4001,   // UserRejectedRequestError
+  4100,   // UnauthorizedProviderError
+  4200,   // UnsupportedProviderMethodError
+  4900,
+  4901,
+  4902,
+]);
+
+const NON_RETRYABLE_HTTP_STATUS = new Set([400, 401, 403, 413, 422]);
+
+const NON_RETRYABLE_MESSAGE_RE =
+  /\b(\d+)\s*[- ]?block range\b|up to a \d+ block|exceed(?:s|ed)? max(?:imum)?.*range|block range (?:is )?too (?:large|wide)|max(?:imum)? (?:block )?range|query returned more than|more than \d+ results|response size exceeded|log response size|filter not found|execution reverted/i;
+
+const NON_RETRYABLE_NAME_RE =
+  /ContractFunctionRevertedError|ExecutionRevertedError|InvalidRequestRpcError|InvalidParamsRpcError|ParseRpcError|MethodNotFoundRpcError|MethodNotSupportedRpcError|UserRejectedRequestError|UnauthorizedProviderError/i;
+
+/**
+ * Redacts full URLs (which may embed provider API keys in path or query
+ * segments) to origin-only and strips Authorization/Bearer tokens.
+ */
+export function sanitizeRpcErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw
+    .replace(/https?:\/\/[^\s"'<>)]+/gi, (match) => {
+      try {
+        return new URL(match).origin;
+      } catch {
+        return "<redacted-url>";
+      }
+    })
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1<redacted>");
+}
+
+/**
+ * Returns true when an RPC error is deterministic (invalid JSON-RPC params
+ * or request, provider plan block-range cap, HTTP 400/401/403/413/422, or
+ * contract execution revert) and retrying the identical request will only
+ * amplify failed RPC traffic.
+ */
+export function isNonRetryableRpcError(err: unknown): boolean {
+  let cursor: unknown = err;
+  for (let depth = 0; depth < 6 && cursor && typeof cursor === "object"; depth += 1) {
+    const rec = cursor as {
+      status?: unknown;
+      statusCode?: unknown;
+      code?: unknown;
+      name?: unknown;
+      message?: unknown;
+      shortMessage?: unknown;
+      details?: unknown;
+      cause?: unknown;
+    };
+    if (typeof rec.status === "number" && NON_RETRYABLE_HTTP_STATUS.has(rec.status)) return true;
+    if (typeof rec.statusCode === "number" && NON_RETRYABLE_HTTP_STATUS.has(rec.statusCode)) return true;
+    if (typeof rec.code === "number" && NON_RETRYABLE_RPC_CODES.has(rec.code)) return true;
+    if (typeof rec.name === "string" && NON_RETRYABLE_NAME_RE.test(rec.name)) return true;
+    for (const msg of [rec.shortMessage, rec.message, rec.details]) {
+      if (typeof msg === "string" && NON_RETRYABLE_MESSAGE_RE.test(msg)) return true;
+    }
+    cursor = rec.cause;
+  }
+  if (typeof err === "string" && NON_RETRYABLE_MESSAGE_RE.test(err)) return true;
+  return false;
+}
+
 // Full-jitter backoff: delay = random(floor, min(maxDelay, base * 2^attempt)).
 // Spreads retries out over time so a burst of simultaneous failures (an
 // RPC hiccup hitting every in-flight call at once) doesn't cause every
@@ -79,11 +152,15 @@ export async function withRetry<T>(
       lastErr = err;
       diagnostics.totalFailures += 1;
       const isLastAttempt = attempt === options.maxAttempts - 1;
-      const message = err instanceof Error ? err.message : String(err);
+      const nonRetryable = isNonRetryableRpcError(err);
+      const message = sanitizeRpcErrorMessage(err);
       diagnostics.lastError = message;
 
-      if (isLastAttempt) {
-        logger.error(`${label} failed after ${attempt + 1} attempt(s)`, { error: message });
+      if (isLastAttempt || nonRetryable) {
+        logger.error(`${label} failed after ${attempt + 1} attempt(s)`, {
+          error: message,
+          ...(nonRetryable ? { nonRetryable: true } : {}),
+        });
         break;
       }
 

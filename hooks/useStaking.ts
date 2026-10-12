@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useAccount, useChainId, useSwitchChain, useWatchContractEvent } from "wagmi";
+import { useAccount, useChainId, useSwitchChain } from "wagmi";
 import { base } from "wagmi/chains";
-import { formatUnits } from "viem";
+import { formatUnits, parseEventLogs } from "viem";
 import type { Hash } from "viem";
 import { stakingClient } from "@/lib/staking/staking-client";
 import { stakingService } from "@/lib/staking/staking-service";
@@ -129,53 +129,44 @@ export function useStaking() {
     setLiveActivity((prev) => [entry, ...prev].slice(0, 20));
   }, []);
 
-  useWatchContractEvent({
-    address: MPGR_STAKING_CONFIG.address,
-    abi: STAKING_ABI,
-    eventName: "Staked",
-    chainId: MPGR_STAKING_CONFIG.chainId,
-    enabled: isConnected && !!address,
-    onLogs(logs) {
-      for (const log of logs) {
-        const { user, amount } = log.args as { user?: `0x${string}`; amount?: bigint };
-        if (!user || address?.toLowerCase() !== user.toLowerCase() || amount === undefined) continue;
-        pushActivity({ id: `${log.transactionHash}-${log.logIndex}`, kind: "Staked", amount, txHash: log.transactionHash!, observedAt: new Date().toISOString() });
-        refresh();
+  const recordReceiptActivity = useCallback(
+    (receipt: Awaited<ReturnType<typeof stakingClient.waitForReceipt>>) => {
+      if (!address) return;
+      try {
+        const decoded = parseEventLogs({
+          abi: STAKING_ABI,
+          logs: receipt.logs,
+        });
+        const observedAt = new Date().toISOString();
+        for (const log of decoded) {
+          if (log.eventName === "Staked" || log.eventName === "Unstaked") {
+            const { user, amount } = log.args as { user?: `0x${string}`; amount?: bigint };
+            if (!user || user.toLowerCase() !== address.toLowerCase() || amount === undefined) continue;
+            pushActivity({
+              id: `${log.transactionHash}-${log.logIndex}`,
+              kind: log.eventName,
+              amount,
+              txHash: log.transactionHash!,
+              observedAt,
+            });
+          } else if (log.eventName === "RewardPaid") {
+            const { user, reward } = log.args as { user?: `0x${string}`; reward?: bigint };
+            if (!user || user.toLowerCase() !== address.toLowerCase() || reward === undefined) continue;
+            pushActivity({
+              id: `${log.transactionHash}-${log.logIndex}`,
+              kind: "RewardPaid",
+              amount: reward,
+              txHash: log.transactionHash!,
+              observedAt,
+            });
+          }
+        }
+      } catch {
+        // Best-effort live activity extraction from the confirmed receipt.
       }
     },
-  });
-
-  useWatchContractEvent({
-    address: MPGR_STAKING_CONFIG.address,
-    abi: STAKING_ABI,
-    eventName: "Unstaked",
-    chainId: MPGR_STAKING_CONFIG.chainId,
-    enabled: isConnected && !!address,
-    onLogs(logs) {
-      for (const log of logs) {
-        const { user, amount } = log.args as { user?: `0x${string}`; amount?: bigint };
-        if (!user || address?.toLowerCase() !== user.toLowerCase() || amount === undefined) continue;
-        pushActivity({ id: `${log.transactionHash}-${log.logIndex}`, kind: "Unstaked", amount, txHash: log.transactionHash!, observedAt: new Date().toISOString() });
-        refresh();
-      }
-    },
-  });
-
-  useWatchContractEvent({
-    address: MPGR_STAKING_CONFIG.address,
-    abi: STAKING_ABI,
-    eventName: "RewardPaid",
-    chainId: MPGR_STAKING_CONFIG.chainId,
-    enabled: isConnected && !!address,
-    onLogs(logs) {
-      for (const log of logs) {
-        const { user, reward } = log.args as { user?: `0x${string}`; reward?: bigint };
-        if (!user || address?.toLowerCase() !== user.toLowerCase() || reward === undefined) continue;
-        pushActivity({ id: `${log.transactionHash}-${log.logIndex}`, kind: "RewardPaid", amount: reward, txHash: log.transactionHash!, observedAt: new Date().toISOString() });
-        refresh();
-      }
-    },
-  });
+    [address, pushActivity]
+  );
 
   const runAction = useCallback(
     async (
@@ -193,6 +184,7 @@ export function useStaking() {
         if (receipt.status !== "success") {
           throw new Error("Transaction reverted on-chain.");
         }
+        recordReceiptActivity(receipt);
         setState(() => ({ phase: "success", hash, error: null }));
         await refresh();
         onSuccess?.(hash);
@@ -202,7 +194,7 @@ export function useStaking() {
         logger.error("useStaking.runAction failed", { error: message });
       }
     },
-    [address, refresh]
+    [address, recordReceiptActivity, refresh]
   );
 
   const ensureBaseNetwork = useCallback(async (): Promise<boolean> => {

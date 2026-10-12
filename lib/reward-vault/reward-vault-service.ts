@@ -17,6 +17,7 @@ import type { VaultReward, VaultWalletCacheEntry } from "./reward-vault-types";
 // hardcoded anywhere in this module.
 
 const walletCache = new Map<string, VaultWalletCacheEntry>();
+const inFlightWallet = new Map<string, Promise<VaultReward[]>>();
 
 function walletCacheKey(address: Address): string {
   return `reward-vault:wallet:${address.toLowerCase()}`;
@@ -36,16 +37,26 @@ export const rewardVaultService = {
       return cached.rewards;
     }
 
-    const rewardIds = await rewardVaultClient.getUserRewardIds(address);
-    const rewards = await Promise.all(rewardIds.map((id) => rewardVaultClient.getReward(id)));
+    let inFlight = inFlightWallet.get(cacheKey);
+    if (!inFlight) {
+      inFlight = (async () => {
+        const rewardIds = await rewardVaultClient.getUserRewardIds(address);
+        const rewards = await Promise.all(rewardIds.map((id) => rewardVaultClient.getReward(id)));
 
-    walletCache.set(cacheKey, {
-      rewards,
-      timestamp: Date.now(),
-      ttl: MPGR_REWARD_VAULT_CONFIG.readCacheTtl,
-    });
+        walletCache.set(cacheKey, {
+          rewards,
+          timestamp: Date.now(),
+          ttl: MPGR_REWARD_VAULT_CONFIG.readCacheTtl,
+        });
 
-    return rewards;
+        return rewards;
+      })().finally(() => {
+        inFlightWallet.delete(cacheKey);
+      });
+      inFlightWallet.set(cacheKey, inFlight);
+    }
+
+    return inFlight;
   },
 
   getCachedWalletRewards(address: Address): VaultReward[] | null {
