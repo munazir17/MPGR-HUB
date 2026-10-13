@@ -63,6 +63,35 @@ export function isAutonomousExecutionEmergencyDisabled(): boolean {
   return envFlag("MPGR_AUTONOMOUS_EMERGENCY_DISABLE");
 }
 
+/**
+ * TICK TIME BUDGET (Base mainnet broadcast fix).
+ *
+ * `app/api/agent/autonomy/tick/route.ts` runs with `maxDuration` =
+ * AUTONOMY_TICK_MAX_DURATION_SECONDS. Once a goal writes EXECUTING, the platform
+ * can kill the invocation at any moment. A kill there leaves the goal EXECUTING
+ * with no transaction recorded, which the stuck-execution reap then closes —
+ * that is the crash path, not a normal result of a slow RPC.
+ *
+ * So all post-EXECUTING work (attempt marker, prepare, KV switch re-read,
+ * adapter/broadcast) must END by tickStart + AUTONOMY_EXECUTION_BUDGET_SECONDS,
+ * which leaves AUTONOMY_TICK_PERSIST_RESERVE_SECONDS for writing the real
+ * outcome. The budget is anchored at the TICK start (not the EXECUTING write),
+ * so no goal in any scheduler batch can outlive the tick.
+ *
+ * tick route maxDuration is a literal in the route file (Next.js segment config);
+ * lib/autonomy/__tests__/post-executing-budget.test.ts pins the two together.
+ */
+export const AUTONOMY_TICK_MAX_DURATION_SECONDS = 120;
+/** Seconds kept free at the end of a tick to persist a failure after the budget ends. */
+export const AUTONOMY_TICK_PERSIST_RESERVE_SECONDS = 10;
+/** Hard end of post-EXECUTING work, in seconds after the tick started. */
+export const AUTONOMY_EXECUTION_BUDGET_SECONDS = AUTONOMY_TICK_MAX_DURATION_SECONDS - AUTONOMY_TICK_PERSIST_RESERVE_SECONDS;
+/**
+ * A goal whose budget has less than this left is refused BEFORE it writes
+ * EXECUTING or claims anything — nothing is broadcast and no state changes.
+ */
+export const AUTONOMY_MIN_EXECUTION_BUDGET_SECONDS = 30;
+
 export const AUTONOMY_LIMITS = {
   /** Max active (non-terminal) goals per wallet. */
   maxGoalsPerWallet: 10,

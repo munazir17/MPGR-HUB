@@ -59,7 +59,8 @@ import {
 
 import { isAutonomousAgentEnabled, isAutonomousExecutionEmergencyDisabled, isAutonomousProductionEnabled } from "./config";
 import { logEmergencySwitchDecision, readAutonomousEmergencySwitch } from "./emergency-switch";
-import { DELEGATED_ADAPTER_ID, selectDelegatedSlot, type DelegatedAuthorizationStore } from "./delegated-authorization";
+import type { Logger } from "@/lib/architecture/core/types";
+import { DELEGATED_ADAPTER_ID, selectDelegatedSlot, type DelegatedAuthorizationSlot, type DelegatedAuthorizationStore } from "./delegated-authorization";
 import type { McpGateway } from "./mcp-gateway";
 import {
   delegatedAdapterIdForChain,
@@ -88,6 +89,22 @@ export interface DelegatedAdapterDeps {
   now?: () => Date;
   /** The chain this adapter serves. Defaults to Base Sepolia (84532). */
   chainId?: number;
+  /** Optional: reports the rare case of a hash whose slot record could not be written. */
+  logger?: Pick<Logger, "error">;
+}
+
+/**
+ * Slot ids being broadcast by THIS process right now. A runtime guard only: it
+ * is never persisted and it is never a consumption (see executeSwap).
+ */
+const broadcastsInFlight = new Set<string>();
+
+const TX_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
+
+/** Bounded, URL-free text for an unexpected error that is persisted on the goal. */
+function safeErrorText(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(/https?:\/\/\S+/g, "[rpc]").slice(0, 240);
 }
 
 /** A resolved execution venue for a pair on this adapter's chain. */
@@ -349,7 +366,8 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
     // verified against the ACTUAL pair before anything is consumed or sent.
     const deep = await this.verifyOnChain(policy);
     if (!deep.authorized) {
-      return { ok: false, code: "EXECUTION_UNAVAILABLE", message: `Delegated execution unavailable (${deep.reason}).` };
+      const cause = deep.reason === "RPC_ERROR" ? " — on-chain posture read failed or timed out" : "";
+      return { ok: false, code: "EXECUTION_UNAVAILABLE", message: `Delegated execution unavailable (${deep.reason})${cause}. Nothing was broadcast.` };
     }
 
     // Full slot re-validation INCLUDING the live-quote minOut floor.
@@ -379,20 +397,63 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
       return { ok: false, code: "AUTHORIZATION_MISSING", message: "Authorization expired before broadcast. Nothing was sent." };
     }
 
-    // Route must exist BEFORE the slot is consumed (nothing broadcast yet).
+    // Route must exist BEFORE any broadcast (nothing broadcast yet).
     const route = this.resolveRoute(request.sellToken, request.buyToken);
     if (!route) {
       return { ok: false, code: "TOKEN_NOT_ALLOWED", message: `No registered route for this pair on the ${this.chainLabel} delegated executor path.` };
     }
 
-    // Consume BEFORE broadcast (conservative: any attempt burns the slot —
-    // an uncertain broadcast MUST NOT allow a second spend of the nonce).
-    const at = (this.deps.now?.() ?? new Date()).toISOString();
-    const reserved = await this.deps.slots.markConsumed(slot.id, request.wallet, "pending", at);
-    if (!reserved) {
-      return { ok: false, code: "AUTHORIZATION_MISSING", message: "Authorization slot was consumed by a concurrent action. Nothing was broadcast." };
+    // Re-read the slot right before broadcasting. The snapshot above may predate
+    // a consumption by an earlier attempt that has since finished.
+    const fresh = await this.deps.slots.getSlot(slot.id, request.wallet);
+    if (!fresh || fresh.consumedAt || fresh.revokedAt) {
+      return {
+        ok: false,
+        code: "AUTHORIZATION_MISSING",
+        message: "This authorization slot was consumed or revoked before broadcast. Nothing was sent.",
+      };
     }
 
+    // Broadcast under an in-process guard. The slot is NOT consumed here: it is
+    // consumed only once a transaction hash has come back (see broadcastSlot).
+    // The guard is not persisted and is not a consumption — it only stops THIS
+    // server from running two broadcasts for one slot at the same time. The check
+    // and the add below have no await between them, so two calls in this process
+    // cannot both pass. Across servers the goal lease and execution claim exclude
+    // the same goal, and a slot is bound to exactly one goal (ACTION_MISMATCH above).
+    const at = (this.deps.now?.() ?? new Date()).toISOString();
+    if (broadcastsInFlight.has(slot.id)) {
+      return {
+        ok: false,
+        code: "AUTHORIZATION_MISSING",
+        message: "This authorization slot is already being broadcast. Nothing was sent by this attempt.",
+      };
+    }
+    broadcastsInFlight.add(slot.id);
+    try {
+      return await this.broadcastSlot(request, slot, route, at);
+    } finally {
+      broadcastsInFlight.delete(slot.id);
+    }
+  }
+
+  /**
+   * Send the user's pre-authorized swap through the operator broadcaster.
+   *
+   * SLOT CONSUMPTION RULE:
+   *   * no transaction hash returned (refusal, estimate revert, RPC timeout,
+   *     switch, gate) => the slot is NOT consumed and stays usable; the failure
+   *     is returned with its real message;
+   *   * a valid hash returned => the slot is consumed, bound to that hash. The
+   *     result is still a success even if the receipt is later unknown.
+   */
+  private async broadcastSlot(
+    request: DelegatedSwapRequest,
+    slot: DelegatedAuthorizationSlot,
+    route: ResolvedRoute,
+    at: string,
+  ): Promise<DelegatedSwapResult> {
+    let txHash: string;
     try {
       const swap = await this.deps.gateway.delegateSwap({
         chainId: this.chainId,
@@ -427,14 +488,51 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
         },
       });
       if (!swap.ok) {
+        // The MCP service reports every failure before or during the send with
+        // no hash: the slot is untouched and stays usable.
         return { ok: false, code: swap.failure.code, message: swap.failure.message };
       }
-      await this.deps.slots.markConsumed(slot.id, request.wallet, swap.data.txHash, at);
-      return { ok: true, txHash: swap.data.txHash };
+      if (!TX_HASH_PATTERN.test(swap.data.txHash)) {
+        return {
+          ok: false,
+          code: "RPC_ERROR",
+          message: "Delegated broadcast returned no valid transaction hash. The authorization slot was not consumed.",
+        };
+      }
+      txHash = swap.data.txHash;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "broadcast failed";
-      return { ok: false, code: "RPC_ERROR", message: `Delegated broadcast failed (${message}). The authorization slot stays consumed.` };
+      return {
+        ok: false,
+        code: "RPC_ERROR",
+        message: `Delegated broadcast failed unexpectedly (${safeErrorText(error)}). No transaction hash was returned, so the authorization slot was not consumed.`,
+      };
     }
+
+    // A hash came back: the transaction exists, so the slot is spent. This is
+    // the only consumption write, and it is kept out of the try above so a store
+    // failure can never turn a real hash into an RPC_ERROR.
+    await this.consumeSlotForHash(slot.id, request.wallet, txHash, at);
+    return { ok: true, txHash };
+  }
+
+  /**
+   * Record the consumption with the broadcast hash. Retried once. A store
+   * failure here does not undo the broadcast — the caller still returns the
+   * hash so the runtime records it. The Permit2 nonce is spent on-chain
+   * regardless, so a later attempt on this slot reverts rather than double-spends.
+   */
+  private async consumeSlotForHash(slotId: string, wallet: string, txHash: string, at: string): Promise<void> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        if (await this.deps.slots.markConsumed(slotId, wallet, txHash, at)) return;
+      } catch {
+        // retried once below, then reported
+      }
+    }
+    this.deps.logger?.error("Broadcast returned a hash but the authorization slot could not be marked consumed — reconcile this slot", {
+      slotId,
+      txHash,
+    });
   }
 
   /**

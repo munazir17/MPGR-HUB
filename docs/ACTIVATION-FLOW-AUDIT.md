@@ -278,7 +278,8 @@ EXECUTION ADAPTER   (unreachable today)
      84532 -> policy -> selectDelegatedSlot (unrevoked, unconsumed, owner binding,
      exact token/amount binding, live-quote minOut >= SIGNED floor, actionId ==
      delegatedActionId(goalId), policyHash == policyHashFor(policy), deadline) ->
-     route exists -> markConsumed BEFORE broadcast -> gateway.delegateSwap ->
+     route exists -> gateway.delegateSwap -> markConsumed ONLY after a tx hash
+     returns (no hash => slot stays usable; see docs/AUTONOMY.md §12) ->
      MPGRExecutorDelegated.swapOnBehalfOfUniswapV3 -> operator broadcaster.
 
 TRANSACTION

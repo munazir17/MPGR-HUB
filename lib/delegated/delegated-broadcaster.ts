@@ -38,6 +38,7 @@ import {
   BASE_SEPOLIA_CHAIN_ID,
 } from "@/lib/executor/executor-config";
 import { isDelegatedChainId } from "@/lib/executor/delegated-executor";
+import { DELEGATED_MAINNET_RPC_BOUNDS, type DelegatedRpcBounds } from "@/lib/delegated/rpc-bounds";
 
 /** Env var names. Exported so a source-boundary test can pin them. */
 export const SEPOLIA_BROADCASTER_PRIVATE_KEY_ENV = "MPGR_BROADCASTER_PRIVATE_KEY";
@@ -150,13 +151,26 @@ export function createDelegatedBroadcaster(): { broadcast: DelegatedBroadcastFn;
   };
 }
 
-/** Base MAINNET broadcaster — refuses the canary key and any non-8453 chain. */
-export function createMainnetDelegatedBroadcaster(): { broadcast: DelegatedBroadcastFn; address: Address | null } {
+/**
+ * Base MAINNET broadcaster — refuses the canary key and any non-8453 chain.
+ *
+ * Every RPC the client makes (estimateGas, nonce, fees, sendRawTransaction —
+ * all issued inside sendTransaction) is bounded by `bounds`. A dead RPC throws
+ * (a TimeoutError) instead of hanging, so the gateway reports RPC_ERROR and no
+ * transaction hash is returned.
+ */
+export function createMainnetDelegatedBroadcaster(
+  bounds: DelegatedRpcBounds = DELEGATED_MAINNET_RPC_BOUNDS,
+): { broadcast: DelegatedBroadcastFn; address: Address | null } {
   const key = mainnetBroadcasterKey();
   if (!key) return { broadcast: () => unavailable(MAINNET_UNAVAILABLE), address: null };
   const account = privateKeyToAccount(key);
   if (isCanaryAccount(account.address)) return { broadcast: () => unavailable(MAINNET_UNAVAILABLE), address: null };
-  const client = createWalletClient({ account, chain: base as Chain, transport: http(baseMainnetRpcUrl()) });
+  const client = createWalletClient({
+    account,
+    chain: base as Chain,
+    transport: http(baseMainnetRpcUrl(), { timeout: bounds.timeoutMs, retryCount: bounds.retryCount }),
+  });
   return {
     address: account.address,
     broadcast: async (tx) => {
@@ -181,9 +195,9 @@ export function delegatedChainView() {
   return createChainView(baseSepolia, baseSepoliaRpcUrl());
 }
 
-/** Read-only chain view for Base mainnet (posture bootstrap + verification). */
-export function mainnetDelegatedChainView() {
-  return createChainView(base, baseMainnetRpcUrl());
+/** Read-only chain view for Base mainnet (posture bootstrap + verification). Bounded. */
+export function mainnetDelegatedChainView(bounds: DelegatedRpcBounds = DELEGATED_MAINNET_RPC_BOUNDS) {
+  return createChainView(base, baseMainnetRpcUrl(), bounds);
 }
 
 /** Read-only chain view for a delegated chain, or null when unsupported. */
@@ -193,8 +207,11 @@ export function delegatedChainViewFor(chainId: number) {
   return null;
 }
 
-function createChainView(chain: Chain, rpcUrl: string) {
-  const client = createPublicClient({ chain, transport: http(rpcUrl) });
+function createChainView(chain: Chain, rpcUrl: string, bounds?: DelegatedRpcBounds) {
+  const client = createPublicClient({
+    chain,
+    transport: bounds ? http(rpcUrl, { timeout: bounds.timeoutMs, retryCount: bounds.retryCount }) : http(rpcUrl),
+  });
   return {
     getBytecode: (address: Address) => client.getBytecode({ address }),
     readContract: <T>(args: { address: Address; abi: readonly unknown[]; functionName: string; args?: readonly unknown[] }) =>

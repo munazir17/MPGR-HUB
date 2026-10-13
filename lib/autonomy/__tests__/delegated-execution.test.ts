@@ -240,21 +240,28 @@ describe("consumption + idempotency", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("POLICY_REJECTED");
   });
-  it("MCP failure surfaces as failure, slot stays consumed", async () => {
+  it("MCP failure with no transaction hash surfaces the failure and leaves the slot usable", async () => {
     const { adapter, slots } = makeDeps();
     await slots.saveSlots([slot()]);
     (adapter as unknown as { deps: { gateway: McpGateway } }).deps.gateway.delegateSwap = vi.fn(async () => ({ ok: false as const, failure: { code: "RPC_ERROR" as const, message: "boom" } }));
     const result = await adapter.executeSwap(request());
     expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.message).toBe("boom");
     const list = await slots.listSlots(wallet, "pol-1");
-    expect(list[0].consumedAt).toBeTruthy();
+    expect(list[0].consumedAt ?? null).toBeNull(); // no hash => not consumed
   });
-  it("executor revert (MCP RPC_ERROR) keeps slot consumed — no rebroadcast", async () => {
+  it("fast estimate revert (no hash) is returned with its real message and leaves the slot usable", async () => {
     const { adapter, slots } = makeDeps();
     await slots.saveSlots([slot()]);
-    (adapter as unknown as { deps: { gateway: McpGateway } }).deps.gateway.delegateSwap = vi.fn(async () => ({ ok: false as const, failure: { code: "RPC_ERROR" as const, message: "reverted" } }));
-    await adapter.executeSwap(request());
-    expect((await slots.listSlots(wallet, "pol-1"))[0].consumedAt).toBeTruthy(); // consumed, no tx hash
+    (adapter as unknown as { deps: { gateway: McpGateway } }).deps.gateway.delegateSwap = vi.fn(async () => ({
+      ok: false as const,
+      failure: { code: "EXECUTION_UNAVAILABLE" as const, message: "Delegated broadcast refused by the node (Execution reverted with reason: InvalidNonce). Nothing was broadcast, and the authorization slot was not consumed." },
+    }));
+    const result = await adapter.executeSwap(request());
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.code).toBe("EXECUTION_UNAVAILABLE");
+    expect(result.ok ? "" : result.message).toMatch(/reverted/i);
+    expect((await slots.listSlots(wallet, "pol-1"))[0].consumedAt ?? null).toBeNull();
   });
 });
 

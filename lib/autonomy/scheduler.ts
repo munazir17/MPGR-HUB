@@ -45,7 +45,7 @@ export class AutonomyScheduler {
    * One bounded scheduling pass. `wallet` scopes the pass to a single
    * wallet (client heartbeat); omit it for the cron pass (all wallets).
    */
-  async tick(options: { wallet?: string; now: Date }): Promise<TickSummary> {
+  async tick(options: { wallet?: string; now: Date; tickStartedAt?: Date }): Promise<TickSummary> {
     return this.performanceMonitor.time("autonomy.tick", async () => {
       const summary: TickSummary = {
         ranAt: options.now.toISOString(),
@@ -62,7 +62,10 @@ export class AutonomyScheduler {
 
       for (let i = 0; i < goalIds.length; i += AUTONOMY_LIMITS.maxConcurrentEvaluations) {
         const batch = goalIds.slice(i, i + AUTONOMY_LIMITS.maxConcurrentEvaluations);
-        const outcomes = await Promise.all(batch.map((id) => this.runtime.evaluateGoal(id)));
+        // Every goal in this tick shares ONE time budget, anchored at the tick
+        // start (not at each goal), so a later batch cannot outlive maxDuration.
+        const tickStartedAt = options.tickStartedAt ?? options.now;
+        const outcomes = await Promise.all(batch.map((id) => this.runtime.evaluateGoal(id, { tickStartedAt })));
         outcomes.forEach((outcome, idx) => {
           if (outcome.kind === "SKIPPED" && outcome.reason === "LEASE_BUSY") summary.skippedBusy += 1;
           if (outcome.kind === "SKIPPED" && outcome.reason === "DISABLED") summary.disabled = true;

@@ -207,20 +207,43 @@ describe("hardening: slot consumption races (§4)", () => {
     expect(results.filter(Boolean).length).toBe(1);
   });
 
-  it("broadcast failure AFTER consume keeps the slot consumed (no unsafe rebroadcast)", async () => {
+  it("broadcast failure with NO hash leaves the slot usable; once a hash returns the slot is consumed and never re-broadcast", async () => {
     const h = makeAdapterHarness();
     await signAndSave(h, "race-goal-4");
+    const slotId = `slot-${h.policy.id}-race-goal-4-0`;
     h.failBroadcast.fail = true;
     const r1 = await h.adapter.executeSwap(requestFor("race-goal-4", h.policy));
     expect(r1.ok).toBe(false);
     expect(r1.ok ? "" : r1.code).toBe("RPC_ERROR");
     expect(h.broadcasts.length).toBe(0);
-    const slot = await h.slots.getSlot(`slot-${h.policy.id}-race-goal-4-0`, USER);
-    expect(slot?.consumedAt, "uncertain broadcast MUST leave the slot consumed").toBeTruthy();
+    const afterFailure = await h.slots.getSlot(slotId, USER);
+    expect(afterFailure?.consumedAt ?? null, "no hash returned => slot NOT consumed").toBeNull();
+
     h.failBroadcast.fail = false;
     const r2 = await h.adapter.executeSwap(requestFor("race-goal-4", h.policy));
-    expect(r2.ok, "no automatic rebroadcast of the uncertain slot").toBe(false);
-    expect(h.broadcasts.length).toBe(0);
+    expect(r2.ok).toBe(true);
+    expect(h.broadcasts.length).toBe(1);
+    const consumed = await h.slots.getSlot(slotId, USER);
+    expect(consumed?.consumedAt).toBeTruthy();
+    expect(consumed?.consumedByTxHash, "the slot records the broadcast hash, not a placeholder").toBe("0x" + "ab".repeat(32));
+
+    const r3 = await h.adapter.executeSwap(requestFor("race-goal-4", h.policy));
+    expect(r3.ok, "a consumed slot is never re-broadcast").toBe(false);
+    expect(h.broadcasts.length).toBe(1);
+  });
+
+  it("a stale slot snapshot cannot re-broadcast a slot consumed by an earlier attempt", async () => {
+    const h = makeAdapterHarness();
+    await signAndSave(h, "race-goal-5");
+    const slotId = `slot-${h.policy.id}-race-goal-5-0`;
+    const first = await h.adapter.executeSwap(requestFor("race-goal-5", h.policy));
+    expect(first.ok).toBe(true);
+    // Simulate a call that read its snapshot BEFORE the consumption above.
+    const staleSnapshot = { ...(await h.slots.getSlot(slotId, USER))!, consumedAt: null, consumedByTxHash: null };
+    h.slots.listSlots = async () => [staleSnapshot];
+    const second = await h.adapter.executeSwap(requestFor("race-goal-5", h.policy));
+    expect(second.ok).toBe(false);
+    expect(h.broadcasts.length, "exactly one broadcast despite the stale snapshot").toBe(1);
   });
 });
 

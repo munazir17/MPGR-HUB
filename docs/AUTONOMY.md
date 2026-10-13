@@ -136,6 +136,35 @@ exact `SwapExecuted` log, `amountOut≥minOut`); a verified prior execution
 finalizes the goal instead of duplicating the swap. Retries: exponential
 60 s → 3600 s cap, 5 consecutive failures ⇒ FAILED.
 
+**Tick time budget and the broadcast outcome (Base mainnet fix).**
+- The tick route runs with `maxDuration = 120` s. All post-EXECUTING work
+  (prepare, attempt marker, emergency-switch re-read, broadcast) must end by
+  `AUTONOMY_EXECUTION_BUDGET_SECONDS` = 110 s after the tick started, which
+  leaves a 10 s reserve to persist the outcome. A goal with less than
+  `AUTONOMY_MIN_EXECUTION_BUDGET_SECONDS` = 30 s left is refused before it writes
+  EXECUTING, so nothing is claimed or broadcast (`lib/autonomy/config.ts`).
+- Every Base mainnet delegated RPC is bounded (`lib/delegated/rpc-bounds.ts`):
+  posture reads, the chain reader, and the broadcaster's estimate and send. Each
+  attempt times out after 8 s with one retry. A dead RPC surfaces as `RPC_ERROR`,
+  not a hang.
+- **Slot consumption happens only once a transaction hash is returned.** No hash
+  (refusal, gate, switch, RPC timeout, or a node-reported revert) leaves the slot
+  usable. A node-reported revert is `EXECUTION_UNAVAILABLE`, a pre-broadcast
+  refusal that counts toward the 5-failure limit. An RPC timeout is `RPC_ERROR`,
+  which is retryable and not a trade-failure strike. A returned hash consumes the
+  slot, bound to that hash, even if the receipt is later unknown.
+- If the budget ends while a broadcast is still in flight, the goal records
+  `RPC_ERROR` ("RPC timeout: …"), and the spend reservation stays counted
+  (AMBIGUOUS). A hash that arrives later is still recorded on the slot and logged.
+- The stuck-execution reap (`STUCK_EXECUTION_REAP_SECONDS`) is still the backstop
+  for a process that is killed outright. It is no longer the normal result of a
+  slow RPC.
+- Residual risk: after a no-hash failure, a timed-out send may still have reached
+  the node, and the same slot can be retried. Permit2 burns the permit nonce
+  on-chain, so the retry reverts (costs gas) rather than spending twice.
+- Env/API: no new environment variables. The tick route's `maxDuration` changes
+  from 60 to 120 s.
+
 ### 13. Receipt verification before success claims
 A trade is only reported/executed-as-success after `mpgr_verify_trade`
 confirms the on-chain receipt (executor address, taker, exact event,

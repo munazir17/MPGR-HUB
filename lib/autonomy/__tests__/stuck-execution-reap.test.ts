@@ -44,15 +44,6 @@ function reservationState(h: TestHarness, policyId: string, execId: string): str
   return h.store.dayHashes.get(`${policyId}:${dayOf(h)}`)?.reservations.get(execId)?.state;
 }
 
-async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error("timed out waiting for condition");
-}
-
 /**
  * Recreate the exact state a crashed tick leaves behind: EXECUTING, no
  * pendingExecution, the "submitting transaction" result string — plus the
@@ -196,27 +187,37 @@ describe("stuck-execution reap (crashed tick left the goal EXECUTING)", () => {
       const h = harness;
       const { goal, policy } = await createActiveGoal(h, { maxTrades: 3 });
 
-      // The tick "dies" inside the adapter: the promise never settles, so the
-      // goal stays EXECUTING with nothing recorded (same as a serverless kill).
-      h.adapter.executeSwap = () => new Promise<never>(() => {});
-      void h.runtime.evaluateGoal(goal.id);
-      await waitFor(async () => (await h.store.getGoal(goal.id))?.status === "EXECUTING");
+      // The tick "dies" inside the adapter: the promise never settles AND the
+      // runtime's post-EXECUTING budget timer never fires (fake timers stand in
+      // for a serverless kill that stops the process). The goal stays EXECUTING
+      // with nothing recorded.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        h.adapter.executeSwap = () => new Promise<never>(() => {});
+        void h.runtime.evaluateGoal(goal.id);
+        for (let i = 0; i < 200 && (await h.store.getGoal(goal.id))?.status !== "EXECUTING"; i += 1) {
+          await vi.advanceTimersByTimeAsync(5);
+        }
+        expect((await h.store.getGoal(goal.id))?.status).toBe("EXECUTING");
 
-      const stuck = (await h.store.getGoal(goal.id))!;
-      expect(stuck.pendingExecution).toBeNull();
-      // The attempt marker is written before the adapter, so this crash keeps
-      // the spend counted — the reap must not free it.
-      const execId = executionKeyForSlot(goal.id, stuck.nextEvaluationAt);
-      expect(reservationState(h, policy.id, execId)).toBe("ATTEMPTING");
+        const stuck = (await h.store.getGoal(goal.id))!;
+        expect(stuck.pendingExecution).toBeNull();
+        // The attempt marker is written before the adapter, so this crash keeps
+        // the spend counted — the reap must not free it.
+        const execId = executionKeyForSlot(goal.id, stuck.nextEvaluationAt);
+        expect(reservationState(h, policy.id, execId)).toBe("ATTEMPTING");
 
-      pastReapWindow(h);
-      const summary = await h.scheduler.tick({ now: h.now() });
+        pastReapWindow(h);
+        const summary = await h.scheduler.tick({ now: h.now() });
 
-      expect(summary.results[0]).toEqual({ goalId: goal.id, kind: "STUCK_EXECUTION_REAPED" });
-      const after = (await h.store.getGoal(goal.id))!;
-      expect(after.status).toBe("FAILED");
-      expect(after.pendingExecution).toBeNull();
-      expect(await h.store.getDayLedger(policy.id, dayOf(h))).toEqual({ status: "OK", spendRaw: usdc("20"), actions: 1 });
+        expect(summary.results[0]).toEqual({ goalId: goal.id, kind: "STUCK_EXECUTION_REAPED" });
+        const after = (await h.store.getGoal(goal.id))!;
+        expect(after.status).toBe("FAILED");
+        expect(after.pendingExecution).toBeNull();
+        expect(await h.store.getDayLedger(policy.id, dayOf(h))).toEqual({ status: "OK", spendRaw: usdc("20"), actions: 1 });
+      } finally {
+        vi.useRealTimers();
+      }
     }));
 
   it("does not touch a goal that is EXECUTING with a recorded transaction", async () =>
