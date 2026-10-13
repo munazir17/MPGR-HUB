@@ -106,6 +106,7 @@ the reservation is then **never released automatically**.
 | Lost Redis response at markSpendAttempt | fail closed — adapter NOT invoked; stays RESERVED (recoverable as UNATTEMPTED) | the marker may or may not have landed; if it landed the UNATTEMPTED release is refused |
 | Process crash after the attempt marker | stays ATTEMPTING → operator marks AMBIGUOUS | never auto-released |
 | Uncertain transaction outcome | **AMBIGUOUS** | spend stays counted |
+| Crashed tick reaped out of EXECUTING (no `pendingExecution`, stale ≥ 120 s) | **RELEASED** (UNATTEMPTED) when still RESERVED — **unchanged** when the attempt marker was set | goal → FAILED; the store's state check is the whole safety argument: RESERVED proves the adapter was never invoked, ATTEMPTING means an unrecorded broadcast remains possible |
 
 `PRE_BROADCAST_REFUSAL_CODES` (types.ts) is the ONLY set of codes that may free
 spend: `POLICY_REJECTED`, `AUTHORIZATION_MISSING`, `APPROVAL_REQUIRED`,
@@ -302,7 +303,11 @@ with `daygen` > 0, leave the poison in place: the old code cannot see
   Recover with `releaseDailySpend(..., { reason: "UNATTEMPTED" })` after
   confirming no adapter invocation for that execution id (action records /
   audit). This is the ONLY automatic-adjacent release path and it is state-
-  enforced (refused once ATTEMPTING).
+  enforced (refused once ATTEMPTING). **The runtime now performs this release
+  itself** for a goal reaped out of a crashed EXECUTING state (see
+  docs/AUTONOMY.md §2): same `UNATTEMPTED` reason, same state enforcement, so
+  the reservation is freed only while it is still RESERVED; an ATTEMPTING
+  entry is left counted and the goal is still closed out as FAILED.
 * **Stuck ATTEMPTING (A)** — crash after the marker: the transaction MAY have
   been broadcast. **Never release.** Not at any timeout: the 24 h
   `executionGuard` governs only the execution **idempotency claim**

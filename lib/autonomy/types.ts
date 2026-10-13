@@ -378,6 +378,44 @@ export function canTransitionGoal(from: GoalStatus, to: GoalStatus): boolean {
   return GOAL_TRANSITIONS[from].includes(to);
 }
 
+/**
+ * How long an EXECUTING goal may sit without a recorded transaction before a
+ * tick reaps it (see `isStuckExecuting`).
+ *
+ * The runtime writes EXECUTING *before* it invokes the execution adapter, so a
+ * tick that dies in that window (serverless kill, timeout, lost Redis write)
+ * leaves a goal that NOTHING can move again: due selection only picks
+ * EXECUTING goals that HAVE a `pendingExecution`, and EXECUTING cannot reach
+ * PAUSED/CANCELLED. The UI then reports EXECUTING forever with no tx hash and
+ * cancel/revoke cannot clear it.
+ *
+ * 120s also equals `AUTONOMY_LIMITS.evaluationLeaseSeconds`, which is
+ * deliberate: the reap additionally requires the per-goal evaluation lease to
+ * be free, so a tick that is still alive inside its lease is never reaped
+ * underneath.
+ */
+export const STUCK_EXECUTION_REAP_SECONDS = 120;
+
+/**
+ * True for the crashed-tick state above: EXECUTING, no pending execution, and
+ * no evaluation progress for at least `STUCK_EXECUTION_REAP_SECONDS`.
+ *
+ * `lastEvaluationAt` is written by the same CAS that writes EXECUTING; the
+ * `updatedAt` fallback only matters for a record written by an older build.
+ * An unparseable timestamp is NEVER treated as stale — a fresh goal must not
+ * be reaped because of a malformed date.
+ */
+export function isStuckExecuting(
+  goal: Pick<AgentGoal, "status" | "pendingExecution" | "lastEvaluationAt" | "updatedAt">,
+  now: Date,
+): boolean {
+  if (goal.status !== "EXECUTING") return false;
+  if (goal.pendingExecution != null) return false; // broadcast recorded — the verification pass owns it
+  const reference = Date.parse(goal.lastEvaluationAt ?? goal.updatedAt);
+  if (!Number.isFinite(reference)) return false;
+  return now.getTime() - reference >= STUCK_EXECUTION_REAP_SECONDS * 1000;
+}
+
 // ---------------------------------------------------------------------------
 // Action / execution records (spec §15/§17).
 // ---------------------------------------------------------------------------

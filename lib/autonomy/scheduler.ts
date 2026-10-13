@@ -17,6 +17,7 @@
 //     already enforces — the scheduler adds no policy of its own.
 
 import { AUTONOMY_LIMITS } from "./config";
+import { isStuckExecuting, type AgentGoal } from "./types";
 import type { Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
 import type { AutonomyRuntime } from "./runtime";
 import type { AutonomyStore } from "./store";
@@ -79,12 +80,33 @@ export class AutonomyScheduler {
   }
 
   /**
+   * One goal's due test.
+   *
+   * Normal goals (ACTIVE/WAITING, plus EXECUTING with a pending execution)
+   * are gated by `nextEvaluationAt` — an immediate re-tick can never hammer
+   * the RPC for the same receipt (verificationRetrySeconds).
+   *
+   * A STUCK execution (EXECUTING, no pending execution, stale — see
+   * `isStuckExecuting`) is due on its staleness alone: it has no
+   * nextEvaluationAt of its own and was previously never selectable, which is
+   * exactly what left it reporting EXECUTING forever after a crashed tick.
+   */
+  private isDue(goal: AgentGoal, now: Date): boolean {
+    if (isStuckExecuting(goal, now)) return true;
+    const evaluatable =
+      goal.status === "ACTIVE" ||
+      goal.status === "WAITING" ||
+      (goal.status === "EXECUTING" && goal.pendingExecution != null);
+    if (!evaluatable) return false;
+    return new Date(goal.nextEvaluationAt).getTime() <= now.getTime();
+  }
+
+  /**
    * Due-goal selection. Goals are read through the store's wallet index;
    * caps keep every tick bounded (no uncontrolled polling — a goal can be
    * evaluated at most once per cooldownSeconds, which has a 60s floor).
    */
   private async dueGoalIds(now: Date, wallet?: string): Promise<string[]> {
-    const nowMs = now.getTime();
     const due: string[] = [];
     const wallets = wallet ? [wallet.toLowerCase()] : await this.store.listKnownWallets(MAX_WALLETS_SCANNED);
 
@@ -92,11 +114,7 @@ export class AutonomyScheduler {
       if (due.length >= AUTONOMY_LIMITS.maxEvaluationsPerTick) break;
       const goals = await this.store.listGoals(w);
       const evaluatable = goals
-        .filter((g) => g.status === "ACTIVE" || g.status === "WAITING" || (g.pendingExecution !== null && g.status === "EXECUTING"))
-        // Verification passes on a pending execution are also gated by
-        // nextEvaluationAt (verificationRetrySeconds) — an immediate
-        // re-tick can never hammer the RPC for the same receipt.
-        .filter((g) => new Date(g.nextEvaluationAt).getTime() <= nowMs)
+        .filter((g) => this.isDue(g, now))
         .sort((a, b) => a.nextEvaluationAt.localeCompare(b.nextEvaluationAt))
         .slice(0, AUTONOMY_LIMITS.maxEvaluationsPerWalletPerTick);
       for (const g of evaluatable) {

@@ -31,8 +31,18 @@ import { delegatedActionId, delegatedExecutorAddressFor, isDelegatedChainId } fr
 import { AUTONOMY_LIMITS } from "./config";
 import { AUTONOMY_CHAIN_ID, DELEGATED_EXECUTION_CHAIN_ID, isDelegatedAdapterId, type DelegatedSwapRequest } from "./types";
 import { evaluateCondition, evaluatePolicyAgainstAction } from "./policy-engine";
-import { utcDayKey } from "./idempotency";
-import { isTerminalGoalStatus, type AgentGoal, type AutonomyFailureCode, type GoalActionRecord, type GoalStatus, type SpendReservationRelease, type SpendReservationState } from "./types";
+import { executionKeyForSlot, utcDayKey } from "./idempotency";
+import {
+  isStuckExecuting,
+  isTerminalGoalStatus,
+  STUCK_EXECUTION_REAP_SECONDS,
+  type AgentGoal,
+  type AutonomyFailureCode,
+  type GoalActionRecord,
+  type GoalStatus,
+  type SpendReservationRelease,
+  type SpendReservationState,
+} from "./types";
 import { isInfrastructureOutageCode, isPreBroadcastRefusalCode } from "./types";
 import type { AutonomyAuditSink } from "./audit";
 import { auditEvent } from "./audit";
@@ -88,7 +98,22 @@ export type EvaluationResult =
   | { kind: "EXECUTION_SUBMITTED"; txHash: string; message: string }
   | { kind: "EXECUTION_FAILED"; failureCode: AutonomyFailureCode; message: string }
   | { kind: "UNCERTAIN"; txHash: string; message: string }
+  | { kind: "STUCK_EXECUTION_REAPED"; message: string }
   | { kind: "GOAL_CLOSED"; status: GoalStatus; message: string };
+
+/**
+ * Message written when a goal is reaped out of a crashed EXECUTING state. It
+ * states the one thing the runtime can prove: no transaction hash was ever
+ * recorded for that attempt, so nothing was broadcast on the runtime's own
+ * path and no retry was made. (A crash AFTER the attempt marker — an
+ * unrecorded broadcast is then possible — is not claimable either way, which
+ * is exactly why the spend reservation stays counted in that case.)
+ */
+const STUCK_EXECUTION_MESSAGE =
+  "Execution attempt ended with no transaction recorded — nothing was broadcast and no automatic retry was made.";
+
+/** Failure code reported for a reaped, never-submitted execution attempt. */
+const STUCK_EXECUTION_CODE: AutonomyFailureCode = "EXECUTION_UNAVAILABLE";
 
 const NON_EVALUABLE: readonly GoalStatus[] = ["DRAFT", "PAUSED", "COMPLETED", "FAILED", "EXPIRED", "CANCELLED", "EXECUTING"];
 
@@ -110,6 +135,18 @@ export class AutonomyRuntime {
       // receipt is safe regardless of flags, and honest state matters most.
       if (goal.pendingExecution) {
         return this.verifyPending(goal);
+      }
+
+      // CRASH RECOVERY — an EXECUTING goal with no pending execution and no
+      // progress for STUCK_EXECUTION_REAP_SECONDS is a tick that died between
+      // the EXECUTING write and the tx-hash write. Nothing else can select it
+      // (due selection requires a pendingExecution) and the user cannot clear
+      // it (EXECUTING cannot reach PAUSED/CANCELLED), so it would report
+      // EXECUTING forever. This runs BEFORE the feature-flag gate on purpose:
+      // the reap never quotes, signs or broadcasts — it only closes a state
+      // that can no longer make progress.
+      if (isStuckExecuting(goal, now)) {
+        return this.reapStuckExecution(goal, now);
       }
 
       if (!isAutonomousRuntimeEnabled()) {
@@ -300,6 +337,91 @@ export class AutonomyRuntime {
   }
 
   // -------------------------------------------------------------------------
+  // Stuck-execution reap (crash recovery)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Close out an EXECUTING goal that never recorded a transaction.
+   *
+   * The ACT path writes EXECUTING before it invokes the execution adapter; if
+   * that tick dies before `pendingExecution.txHash` is persisted, the goal is
+   * unreachable (see `isStuckExecuting`). This pass:
+   *
+   *   1. takes the per-goal evaluation lease, so a tick that is still alive
+   *      is never reaped underneath (returns SKIPPED/LEASE_BUSY instead);
+   *   2. CAS EXECUTING -> FAILED, re-checked under the lease;
+   *   3. releases the daily-spend reservation with reason UNATTEMPTED — the
+   *      store refuses that release for anything other than RESERVED, so an
+   *      ATTEMPTING (attempt marker already set) reservation keeps the spend
+   *      counted, which is the only safe answer when an unrecorded broadcast
+   *      remains possible;
+   *   4. audits + records the attempt as FAILED with NO tx hash.
+   *
+   * It never invents a tx hash, never re-quotes and never retries the swap —
+   * a retry would need a fresh evaluation on a fresh slot, and after this
+   * pass the goal is terminal anyway.
+   */
+  private async reapStuckExecution(goal: AgentGoal, now: Date): Promise<EvaluationResult> {
+    const leaseToken = `reap-${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`;
+    const leased = await this.deps.store.tryAcquireGoalLease(goal.id, leaseToken, AUTONOMY_LIMITS.evaluationLeaseSeconds);
+    if (!leased) {
+      return { kind: "SKIPPED", reason: "LEASE_BUSY", message: "Another evaluation holds this goal's lease." };
+    }
+    try {
+      // Re-read under the lease: a concurrent pass may have moved the goal.
+      const current = await this.deps.store.getGoal(goal.id);
+      if (!current) return { kind: "SKIPPED", reason: "NOT_FOUND", message: "Goal not found." };
+      if (!isStuckExecuting(current, now)) {
+        return { kind: "SKIPPED", reason: "STATE_CHANGED", message: "Goal state changed during evaluation." };
+      }
+
+      const updatedAt = now.toISOString();
+      const reaped = await this.deps.store.transitionGoal(goal.id, goal.wallet, ["EXECUTING"], current.updatedAt, {
+        status: "FAILED",
+        pendingExecution: null,
+        lastEvaluationAt: updatedAt,
+        updatedAt,
+        nextEvaluationAt: updatedAt,
+        lastAction: `stuck execution reaped after ${STUCK_EXECUTION_REAP_SECONDS}s without a transaction`,
+        lastResult: { at: updatedAt, outcome: "FAILED", code: STUCK_EXECUTION_CODE, message: STUCK_EXECUTION_MESSAGE },
+        stats: { ...current.stats, consecutiveFailures: current.stats.consecutiveFailures + 1 },
+      });
+      if (!reaped) {
+        return { kind: "SKIPPED", reason: "STATE_CHANGED", message: "Goal state changed during evaluation." };
+      }
+
+      // The reservation was taken on the UTC day of the interrupted tick and
+      // is keyed by the SAME execution id the ACT path derived from this
+      // goal's slot. UNATTEMPTED is state-enforced: RESERVED only.
+      const attemptedAt = new Date(current.lastEvaluationAt ?? current.updatedAt);
+      const dayKey = utcDayKey(Number.isFinite(attemptedAt.getTime()) ? attemptedAt : now);
+      const executionId = executionKeyForSlot(current.id, current.nextEvaluationAt);
+      const released = await this.releaseReservation(current.policyId, dayKey, executionId, { reason: "UNATTEMPTED" }, now);
+
+      await this.audit(current.wallet, "EXECUTION_FAILED", now, current.id, current.policyId, {
+        code: STUCK_EXECUTION_CODE,
+        stuck: true,
+        reapAfterSeconds: STUCK_EXECUTION_REAP_SECONDS,
+        // false => the attempt marker was already set: a broadcast remains
+        // possible and the spend deliberately stays counted.
+        reservationReleased: released !== null,
+      });
+      await this.audit(current.wallet, "GOAL_FAILED", now, current.id, current.policyId, { reason: "STUCK_EXECUTION", code: STUCK_EXECUTION_CODE });
+      await this.recordAction(current, executionId, null, {
+        status: "FAILED",
+        outcome: "FAILED",
+        verified: false,
+        failureCode: STUCK_EXECUTION_CODE,
+        message: STUCK_EXECUTION_MESSAGE,
+      }, now);
+
+      return { kind: "STUCK_EXECUTION_REAPED", message: STUCK_EXECUTION_MESSAGE };
+    } finally {
+      await this.deps.store.releaseGoalLease(goal.id, leaseToken);
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Standard evaluation pass
   // -------------------------------------------------------------------------
 
@@ -451,8 +573,8 @@ export class AutonomyRuntime {
 
     // ACT — idempotency claim, spend reservation, CAS to EXECUTING, prepare,
     // attempt marker, execute.
-    const slotKey = `${goal.id}:${goal.nextEvaluationAt}`;
-    const idempotencyKey = `exec-${slotKey}`;
+    // Same derivation the stuck-execution reap uses — see executionKeyForSlot.
+    const idempotencyKey = executionKeyForSlot(goal.id, goal.nextEvaluationAt);
     const claimed = await this.deps.store.claimExecution(idempotencyKey, AUTONOMY_LIMITS.executionGuardSeconds);
     if (!claimed) {
       await this.audit(goal.wallet, "DUPLICATE_PREVENTED", now, goal.id, goal.policyId, { idempotencyKey });
@@ -676,6 +798,9 @@ export class AutonomyRuntime {
   /**
    * Release a spend reservation for a VERIFIED reason only. Failures here are
    * logged and swallowed: a missed release keeps the spend counted (safe).
+   * Returns the resulting state, or null when the store refused the release
+   * (including "not in a releasable state" — e.g. UNATTEMPTED once the
+   * attempt marker is set) or the call failed.
    */
   private async releaseReservation(
     policyId: string,
@@ -683,14 +808,15 @@ export class AutonomyRuntime {
     execId: string,
     release: SpendReservationRelease,
     now: Date,
-  ): Promise<void> {
+  ): Promise<SpendReservationState | null> {
+    void now;
     try {
-      await this.deps.store.releaseDailySpend(policyId, dayKey, execId, release);
+      return await this.deps.store.releaseDailySpend(policyId, dayKey, execId, release);
     } catch (error) {
       void error;
       this.deps.logger.error("Spend reservation release failed — spend stays counted (conservative)", { execId });
+      return null;
     }
-    void now;
   }
 
   /**
