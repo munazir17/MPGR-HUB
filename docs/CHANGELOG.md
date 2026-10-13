@@ -8,6 +8,39 @@ The project follows a milestone-based development roadmap.
 
 # Unreleased
 
+## Autonomous agent — goals no longer stay stuck in EXECUTING after a crashed tick
+
+### Fixed
+
+- A goal whose tick died between the `EXECUTING` write and the write that
+  records `pendingExecution.txHash` was unreachable forever: scheduler due
+  selection only picked `EXECUTING` goals that HAVE a `pendingExecution`, and
+  `EXECUTING` cannot reach `PAUSED`/`CANCELLED`, so the UI reported EXECUTING
+  with no transaction and cancel/revoke could not clear it. A tick now reaps
+  that state — `EXECUTING` + no `pendingExecution` + no progress for
+  `STUCK_EXECUTION_REAP_SECONDS` (120 s) ⇒ the goal moves to `FAILED`, the
+  result states that nothing was broadcast, and no transaction hash is ever
+  invented or the swap retried in that pass.
+- The reap releases the interrupted attempt's daily-spend reservation with
+  reason `UNATTEMPTED`, which the store only honours while the reservation is
+  still `RESERVED`. If the attempt marker was already set, the spend stays
+  counted (an unrecorded broadcast remains possible) while the goal is still
+  closed out.
+
+### Changed
+
+- `lib/autonomy/types.ts`: added `STUCK_EXECUTION_REAP_SECONDS` and
+  `isStuckExecuting()` (the shared predicate the scheduler and runtime use).
+- `lib/autonomy/scheduler.ts`: due selection now also selects a stuck
+  execution (gated by its staleness window, not by `nextEvaluationAt`).
+- `lib/autonomy/runtime.ts`: added the reap pass (`reapStuckExecution`, new
+  `STUCK_EXECUTION_REAPED` evaluation result). It takes the per-goal
+  evaluation lease first, so a tick that is still alive is never reaped
+  underneath, and it runs before the feature-flag gate because closing the
+  state never broadcasts anything.
+- `lib/autonomy/idempotency.ts`: `executionKeyForSlot()` — one derivation of
+  the ACT execution id, shared by the ACT path and the reap.
+
 ## MPGR Agent fee — collected inside the MPGR Executor swap (no separate fee transaction)
 
 ### Fixed

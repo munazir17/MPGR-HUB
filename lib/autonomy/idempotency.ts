@@ -28,6 +28,18 @@ export function executionIdempotencyKey(goalId: string, slotKey: string): string
   return `${goalId}:${slotKey}`;
 }
 
+/**
+ * The execution id the ACT path claims for one evaluation slot.
+ *
+ * Both the ACT path and the stuck-execution reap derive it from the same two
+ * goal fields, so the reap targets exactly the reservation the interrupted
+ * tick took — never a guess. (`nextEvaluationAt` is the slot: the CAS that
+ * writes EXECUTING deliberately leaves it untouched.)
+ */
+export function executionKeyForSlot(goalId: string, nextEvaluationAt: string): string {
+  return `exec-${evaluationSlotKey(goalId, nextEvaluationAt)}`;
+}
+
 export function makeId(prefix: string, now: Date, entropy: string): string {
   const rand = entropy || Math.random().toString(36).slice(2, 10);
   return `${prefix}_${now.getTime().toString(36)}_${rand}`;

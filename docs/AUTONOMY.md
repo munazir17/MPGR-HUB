@@ -32,6 +32,21 @@ re-check, CAS → EXECUTING, prepare/execute via MCP, then verification with
 bounded retries (10 × 30 s backoff). Pending verification runs even when
 the flag is later switched off.
 
+**Stuck-execution reap.** The ACT path writes EXECUTING *before* it invokes
+the execution adapter, so a tick that dies in that window (serverless kill,
+timeout, lost store write) leaves a goal that nothing could previously move:
+due selection only picked EXECUTING goals that HAVE a `pendingExecution`, and
+EXECUTING cannot reach PAUSED/CANCELLED — so the UI reported EXECUTING
+forever with no transaction and cancel/revoke could not clear it. A tick now
+reaps that state: EXECUTING + no `pendingExecution` + no progress for
+`STUCK_EXECUTION_REAP_SECONDS` (120 s, `types.ts`) ⇒ the goal moves to
+FAILED, its daily-spend reservation is released with reason `UNATTEMPTED`
+**only** while it is still RESERVED (the attempt marker was never set), the
+result text states that nothing was broadcast, and no transaction hash is
+ever invented or retried. The reap takes the per-goal evaluation lease first,
+so a tick that is still alive is never reaped underneath, and it runs even
+when the flag is off — closing the state never needs to broadcast.
+
 ### 3. MODE A preserved (zero breaking changes)
 MODE A (assisted) code paths are untouched: same tools, same routes, same
 signing flow in `lib/trade/trade-execution.ts`. With
