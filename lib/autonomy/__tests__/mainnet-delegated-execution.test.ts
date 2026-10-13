@@ -32,7 +32,7 @@ import { McpTradeGateway } from "@/lib/autonomy/mcp-gateway";
 import { DelegatedExecutionAdapter } from "@/lib/autonomy/delegated-execution-adapter";
 import { InMemoryEventBus } from "@/lib/architecture/core/event-bus";
 import { InMemoryPerformanceMonitor } from "@/lib/architecture/core/performance-monitor";
-import { AUTONOMY_LIMITS } from "@/lib/autonomy/config";
+import { AUTONOMY_EXECUTION_BUDGET_SECONDS, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { utcDayKey } from "@/lib/autonomy/idempotency";
 import {
   CANONICAL_PERMIT2,
@@ -107,6 +107,16 @@ interface HarnessOptions {
   broadcastFails?: boolean;
   /** Do not mine a receipt (simulates "submitted but never confirmable"). */
   neverConfirm?: boolean;
+  /** The broadcast never settles (a dead RPC that never answers). */
+  broadcastHangs?: boolean;
+  /** The broadcast fails with a viem TimeoutError (the bounded RPC gave up). */
+  broadcastTimesOut?: boolean;
+  /** The broadcast fails the way a reverted gas estimate does (shortMessage). */
+  broadcastReverts?: string;
+  /** The broadcast settles only when this resolves to a hash (a late answer). */
+  broadcastHold?: Promise<Hex>;
+  /** Called the moment a broadcast starts. */
+  onBroadcastStart?: () => void;
 }
 
 function makeMainnetHarness(options: HarnessOptions = {}) {
@@ -130,8 +140,15 @@ function makeMainnetHarness(options: HarnessOptions = {}) {
     delegatedRegistry: { 8453: deployment },
     reader: (chainId) => fakeReader(state, chainId, chainId === 8453 ? deployment.executor : EXECUTOR),
     delegatedBroadcaster: async (tx) => {
+      options.onBroadcastStart?.();
       if (options.broadcastFails) throw new Error("RPC connection reset during broadcast");
       broadcasts.push(tx);
+      if (options.broadcastHangs) return new Promise<never>(() => {});
+      if (options.broadcastTimesOut) throw Object.assign(new Error("The request took too long to respond."), { name: "TimeoutError" });
+      if (options.broadcastReverts) {
+        throw Object.assign(new Error(options.broadcastReverts), { shortMessage: options.broadcastReverts });
+      }
+      if (options.broadcastHold) return options.broadcastHold;
       const txHash = ("0x" + (++txCounter).toString(16).padStart(2, "0").padEnd(64, "0")) as Hex;
       if (!options.neverConfirm) {
         receiptsMined.push(txHash);
@@ -805,7 +822,7 @@ describe("mainnet delegated execution — refusals broadcast nothing", () => {
     expect(slot!.consumedAt).not.toBeNull();
   });
 
-  it("BROADCAST FAILURE: a throwing broadcaster yields no tx hash and keeps the slot consumed", async () => {
+  it("BROADCAST FAILURE: a throwing broadcaster yields no tx hash, so the slot stays usable and the failure is persisted", async () => {
     const h = makeMainnetHarness({ broadcastFails: true });
     const { goal, policy } = await createMainnetGoal(h);
     await signMainnetSlot(h, goal.id, policy);
@@ -814,8 +831,11 @@ describe("mainnet delegated execution — refusals broadcast nothing", () => {
     const after = (await h.store.getGoal(goal.id))!;
     expect(after.stats.verified ?? 0).toBe(0);
     expect(after.status).not.toBe("COMPLETED");
+    expect(after.pendingExecution).toBeNull();
+    expect(after.lastResult?.code).toBe("RPC_ERROR");
+    expect(after.lastResult?.message).toMatch(/RPC connection reset during broadcast/);
     const [slot] = await h.slots.listSlots(WALLET.toLowerCase(), policy.id);
-    expect(slot!.consumedAt).not.toBeNull();
+    expect(slot!.consumedAt ?? null).toBeNull();
   });
 
   it("a mainnet policy is never executed by the SEPOLIA adapter (and vice versa)", async () => {
@@ -853,3 +873,185 @@ describe("mainnet delegated execution — refusals broadcast nothing", () => {
     expect(h.adapter.id).toBe("delegated-permit2-mainnet");
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST-EXECUTING BUDGET — a slow or failing RPC is recorded with its REAL
+// reason in the same tick. The stuck-execution reap (PR #108) is a crash
+// backstop, never the normal outcome of a slow RPC.
+// ---------------------------------------------------------------------------
+
+describe("post-EXECUTING budget — a slow or failing RPC is recorded in the same tick", () => {
+  it("a broadcast that never resolves becomes a persisted RPC timeout at the budget end, and the slot is NOT consumed", async () => {
+    let onStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      onStart = resolve;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const h = makeMainnetHarness({ broadcastHangs: true, onBroadcastStart: () => onStart() });
+      const { goal, policy } = await createMainnetGoal(h);
+      await signMainnetSlot(h, goal.id, policy);
+      await h.adapter.bootstrapPosture(policy);
+
+      const tick = h.scheduler.tick({ now: h.now() });
+      await started; // the broadcast is in flight and never answers
+      await vi.advanceTimersByTimeAsync(AUTONOMY_EXECUTION_BUDGET_SECONDS * 1000);
+      await tick;
+
+      const after = (await h.store.getGoal(goal.id))!;
+      expect(after.status).toBe("WAITING"); // RPC_ERROR is retryable, not a trade-failure strike
+      expect(after.pendingExecution).toBeNull();
+      expect(after.lastResult?.code).toBe("RPC_ERROR");
+      expect(after.lastResult?.message).toMatch(/RPC timeout/);
+      expect(after.lastResult?.message).not.toMatch(/no transaction recorded/i); // never the reap's message
+      const [slot] = await h.slots.listSlots(WALLET.toLowerCase(), policy.id);
+      expect(slot!.consumedAt ?? null, "no hash was returned => slot NOT consumed").toBeNull();
+      // The spend stays counted: the broadcast may have reached the node.
+      expect(await h.store.getDayLedger(policy.id, utcDayKey(h.now()))).toEqual({ status: "OK", spendRaw: SELL_AMOUNT, actions: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a fast estimate revert is persisted with its real message, counts as a refusal, releases the spend, and does not consume the slot", async () => {
+    const h = makeMainnetHarness({ broadcastReverts: "Execution reverted with reason: InvalidNonce." });
+    const { goal, policy } = await createMainnetGoal(h);
+    await signMainnetSlot(h, goal.id, policy);
+    await h.adapter.bootstrapPosture(policy);
+
+    await h.scheduler.tick({ now: h.now() });
+
+    const after = (await h.store.getGoal(goal.id))!;
+    expect(after.status).toBe("WAITING");
+    expect(after.pendingExecution).toBeNull();
+    // A node-reported revert is a deterministic refusal (a trade failure), not an
+    // infrastructure outage: it counts toward the failure limit.
+    expect(after.lastResult?.code).toBe("EXECUTION_UNAVAILABLE");
+    expect(after.stats.consecutiveFailures).toBe(1);
+    expect(after.lastResult?.message).toMatch(/Execution reverted with reason: InvalidNonce/);
+    expect(after.lastResult?.message).toMatch(/Nothing was broadcast/);
+    expect(h.broadcasts).toHaveLength(1); // the attempt reached the broadcaster and was refused by the node
+    // Nothing was broadcast, so the reservation is released (pre-broadcast refusal).
+    expect(await h.store.getDayLedger(policy.id, utcDayKey(h.now()))).toEqual({ status: "OK", spendRaw: "0", actions: 0 });
+    const [slot] = await h.slots.listSlots(WALLET.toLowerCase(), policy.id);
+    expect(slot!.consumedAt ?? null).toBeNull();
+  });
+
+  it("a deterministic revert FAILS the goal after the failure limit instead of retrying forever", async () => {
+    const h = makeMainnetHarness({ broadcastReverts: "Execution reverted with reason: InvalidSignature." });
+    const { goal, policy } = await createMainnetGoal(h);
+    // A long-lived slot, so the slot's own deadline never ends the goal first.
+    await signMainnetSlot(h, goal.id, policy, { deadline: Math.floor(h.now().getTime() / 1000) + 86_400 });
+    await h.adapter.bootstrapPosture(policy);
+
+    for (let i = 0; i < AUTONOMY_LIMITS.maxConsecutiveFailures + 2; i += 1) {
+      h.advanceClock(3_700_000); // past the longest backoff
+      await h.scheduler.tick({ now: h.now() });
+      if ((await h.store.getGoal(goal.id))?.status === "FAILED") break;
+    }
+
+    const after = (await h.store.getGoal(goal.id))!;
+    expect(after.status).toBe("FAILED");
+    expect(after.stats.consecutiveFailures).toBe(AUTONOMY_LIMITS.maxConsecutiveFailures);
+    expect(h.broadcasts).toHaveLength(AUTONOMY_LIMITS.maxConsecutiveFailures);
+    const [slot] = await h.slots.listSlots(WALLET.toLowerCase(), policy.id);
+    expect(slot!.consumedAt ?? null).toBeNull();
+  });
+
+  it("a timed-out broadcast RPC is named as an RPC timeout, not viem's generic sentence", async () => {
+    const h = makeMainnetHarness({ broadcastTimesOut: true });
+    const { goal, policy } = await createMainnetGoal(h);
+    await signMainnetSlot(h, goal.id, policy);
+    await h.adapter.bootstrapPosture(policy);
+
+    await h.scheduler.tick({ now: h.now() });
+
+    const after = (await h.store.getGoal(goal.id))!;
+    expect(after.lastResult?.code).toBe("RPC_ERROR");
+    expect(after.lastResult?.message).toMatch(/RPC request timed out/);
+    const [slot] = await h.slots.listSlots(WALLET.toLowerCase(), policy.id);
+    expect(slot!.consumedAt ?? null).toBeNull();
+  });
+
+  it("a returned transaction hash consumes the slot bound to that hash and stores pendingExecution in the same tick", async () => {
+    const h = makeMainnetHarness();
+    const { goal, policy } = await createMainnetGoal(h);
+    await signMainnetSlot(h, goal.id, policy);
+    await h.adapter.bootstrapPosture(policy);
+
+    await h.scheduler.tick({ now: h.now() });
+
+    const txHash = h.receiptsMined[0]!;
+    expect(txHash).toBeTruthy();
+    const after = (await h.store.getGoal(goal.id))!;
+    expect(after.status).toBe("EXECUTING");
+    expect(after.pendingExecution?.txHash).toBe(txHash);
+    const [slot] = await h.slots.listSlots(WALLET.toLowerCase(), policy.id);
+    expect(slot!.consumedAt).toBeTruthy();
+    expect(slot!.consumedByTxHash).toBe(txHash);
+  });
+
+  it("a hash that returns AFTER the budget ended is recorded on the slot and the slot is never re-broadcast", async () => {
+    let onStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      onStart = resolve;
+    });
+    let releaseHash!: (hash: Hex) => void;
+    const lateHash = new Promise<Hex>((resolve) => {
+      releaseHash = resolve;
+    });
+    const LATE_HASH = ("0x" + "c3".repeat(32)) as Hex;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const h = makeMainnetHarness({ broadcastHold: lateHash, onBroadcastStart: () => onStart() });
+      const { goal, policy } = await createMainnetGoal(h);
+      await signMainnetSlot(h, goal.id, policy);
+      await h.adapter.bootstrapPosture(policy);
+
+      const tick = h.scheduler.tick({ now: h.now() });
+      await started;
+      await vi.advanceTimersByTimeAsync(AUTONOMY_EXECUTION_BUDGET_SECONDS * 1000);
+      await tick;
+      expect((await h.store.getGoal(goal.id))!.lastResult?.message).toMatch(/RPC timeout/);
+
+      // The node answers now. The adapter still records the hash on the slot.
+      releaseHash(LATE_HASH);
+      await new Promise((resolve) => setImmediate(resolve));
+      const [slot] = await h.slots.listSlots(WALLET.toLowerCase(), policy.id);
+      expect(slot!.consumedByTxHash).toBe(LATE_HASH);
+
+      // A later tick finds no usable slot: nothing is re-broadcast.
+      h.advanceClock(3_600_000);
+      await h.scheduler.tick({ now: h.now() });
+      expect(h.broadcasts).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a goal whose tick budget is already spent is refused BEFORE it writes EXECUTING: nothing is claimed or broadcast", async () => {
+    const h = makeMainnetHarness();
+    const { goal, policy } = await createMainnetGoal(h);
+    await signMainnetSlot(h, goal.id, policy);
+    await h.adapter.bootstrapPosture(policy);
+
+    // The tick started long enough ago that less than the minimum budget is left.
+    const tickStartedAt = new Date(h.now().getTime() - (AUTONOMY_EXECUTION_BUDGET_SECONDS - 10) * 1000);
+    await h.scheduler.tick({ now: h.now(), tickStartedAt });
+
+    const after = (await h.store.getGoal(goal.id))!;
+    expect(after.status).not.toBe("EXECUTING");
+    expect(after.lastResult?.code).toBe("RPC_ERROR");
+    expect(after.lastResult?.message).toMatch(/time budget/);
+    expect(h.broadcasts).toHaveLength(0);
+    expect(auditEventsOf(h)).not.toContain("TRADE_PREPARED");
+    expect(await h.store.getDayLedger(policy.id, utcDayKey(h.now()))).toEqual({ status: "OK", spendRaw: "0", actions: 0 });
+    const [slot] = await h.slots.listSlots(WALLET.toLowerCase(), policy.id);
+    expect(slot!.consumedAt ?? null).toBeNull();
+  });
+});
+
+function auditEventsOf(h: MainnetHarness): string[] {
+  return h.auditEvents;
+}
+

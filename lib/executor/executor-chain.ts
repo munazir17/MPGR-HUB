@@ -10,6 +10,8 @@ import { randomBytes } from "node:crypto";
 import { createPublicClient, fallback, http, type Address, type Hex } from "viem";
 import { base, baseSepolia } from "viem/chains";
 
+import { DELEGATED_MAINNET_RPC_BOUNDS } from "@/lib/delegated/rpc-bounds";
+
 import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, type ExecutorChainId } from "./executor-config";
 import type { ReceiptLike } from "./executor-verify";
 import { MPGR_EXECUTOR_ABI } from "./mpgr-executor-abi";
@@ -162,22 +164,30 @@ export function createChainReader(chainId: ExecutorChainId): ChainReader {
   //  - Nothing configured → keep the documented public default first and
   //    add ONE extra public endpoint behind it, so preview/dev deployments
   //    without a server RPC survive mainnet.base.org rate limiting.
-  //  - Bounded 10 s timeouts; viem's client-level retry (3 retries,
-  //    150→600 ms backoff) is finite; Sepolia unchanged.
+  //  - MAINNET: bounded per attempt AND capped on retries (DELEGATED_MAINNET_RPC_BOUNDS:
+  //    8 s, one retry). viem's default (10 s, 3 retries, timeouts retried) let one dead
+  //    RPC cost ~40 s per call and pushed a tick past maxDuration.
+  //  - Sepolia: unchanged (10 s timeout, viem default retries).
   const configured = Boolean(process.env.BASE_RPC_URL?.trim());
   const timeout = 10_000;
+  const mainnetBounds = {
+    timeout: DELEGATED_MAINNET_RPC_BOUNDS.timeoutMs,
+    retryCount: DELEGATED_MAINNET_RPC_BOUNDS.retryCount,
+  };
   const client =
     chainId === BASE_MAINNET_CHAIN_ID && !configured
       ? createPublicClient({
           chain: base,
           transport: fallback([
-            http(executorRpcUrl(chainId), { timeout }),
-            http(BASE_MAINNET_PUBLIC_FALLBACK_RPC, { timeout }),
+            http(executorRpcUrl(chainId), mainnetBounds),
+            http(BASE_MAINNET_PUBLIC_FALLBACK_RPC, mainnetBounds),
           ]),
         })
       : createPublicClient({
           chain: chainId === BASE_MAINNET_CHAIN_ID ? base : baseSepolia,
-          transport: http(executorRpcUrl(chainId), { timeout }),
+          transport: chainId === BASE_MAINNET_CHAIN_ID
+            ? http(executorRpcUrl(chainId), mainnetBounds)
+            : http(executorRpcUrl(chainId), { timeout }),
         });
   return {
     chainId,

@@ -1196,12 +1196,30 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
     // broadcast WITHOUT weakening the safety semantics. URLs (possible RPC
     // endpoints) are stripped; the message is length-capped. No key material
     // can appear here (viem never places the signing key in error messages).
-    const raw = typeof (error as { shortMessage?: unknown })?.shortMessage === "string"
-      ? (error as { shortMessage: string }).shortMessage
-      : error instanceof Error
-        ? error.message
-        : String(error);
+    // A viem TimeoutError means the bounded RPC gave up (DELEGATED_MAINNET_RPC_BOUNDS):
+    // name it as such instead of echoing viem's generic sentence.
+    const errorName = (error as { name?: unknown })?.name;
+    const raw = errorName === "TimeoutError"
+      ? "RPC request timed out"
+      : typeof (error as { shortMessage?: unknown })?.shortMessage === "string"
+        ? (error as { shortMessage: string }).shortMessage
+        : error instanceof Error
+          ? error.message
+          : String(error);
     const sanitized = raw.replace(/https?:\/\/\S+/g, "[rpc]").slice(0, 240);
-    return fail("RPC_ERROR", `Delegated broadcast failed (${sanitized}). The authorization slot stays consumed (uncertain-broadcast safety).`);
+    // A node-reported revert (the gas estimate, or a submit rejected as reverting)
+    // means the transaction was NOT accepted. It is a deterministic refusal, not an
+    // infrastructure outage, so it is EXECUTION_UNAVAILABLE: a pre-broadcast refusal
+    // that counts toward the goal's failure limit instead of retrying forever.
+    if (errorName === "EstimateGasExecutionError" || /revert/i.test(raw)) {
+      return fail(
+        "EXECUTION_UNAVAILABLE",
+        `Delegated broadcast refused by the node (${sanitized}). Nothing was broadcast, and the authorization slot was not consumed.`,
+      );
+    }
+    // Any other failure with no hash: the slot is NOT consumed and stays usable. A
+    // timed-out send's outcome is unknown; the on-chain Permit2 nonce is the guard
+    // against a second execution of the same permit.
+    return fail("RPC_ERROR", `Delegated broadcast failed (${sanitized}). No transaction hash was returned, so the authorization slot was not consumed.`);
   }
 }

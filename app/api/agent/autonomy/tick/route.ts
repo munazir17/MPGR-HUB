@@ -33,7 +33,11 @@ import { system } from "@/lib/autonomy/api-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// 120 s (not 60): the platform budget must cover the bootstrap and the goal
+// evaluations. It is NOT relied on alone — post-EXECUTING work is capped at
+// AUTONOMY_EXECUTION_BUDGET_SECONDS (= 110 s, 10 s reserved to persist the real
+// outcome), anchored at tickStartedAt below. See lib/autonomy/config.ts.
+export const maxDuration = 120;
 
 const RATE_LIMIT = 6;
 const RATE_WINDOW_MS = 60_000;
@@ -50,6 +54,9 @@ function isCronAuthorized(request: Request): boolean {
 }
 
 async function runTick(request: Request, opts: { cronOnly: boolean }): Promise<Response> {
+  // The time budget is anchored HERE, at invocation start, so auth and the
+  // bootstrap RPCs below count against it.
+  const tickStartedAt = new Date();
   const requestId = requestIdFromRequest(request);
   const json = (body: unknown, init?: ResponseInit) => withRequestId(NextResponse.json(body, init), requestId);
 
@@ -89,11 +96,11 @@ async function runTick(request: Request, opts: { cronOnly: boolean }): Promise<R
     // MC-3 FIX: prove the delegated adapter's on-chain posture BEFORE
     // evaluating, so a cold instance's first tick is a real evaluation rather
     // than a park with ONCHAIN_CHECK_PENDING. Awaited (single-flight,
-    // TTL-cached, a handful of read-only RPC calls inside the 60 s budget);
+    // TTL-cached, a few read-only RPC calls, each bounded by DELEGATED_MAINNET_RPC_BOUNDS;
     // never throws and never enables execution by itself — a failed bootstrap
     // leaves the adapter refused exactly as before.
     await bootstrapAutonomyPosture();
-    const summary = await system().scheduler.tick({ wallet, now: new Date() });
+    const summary = await system().scheduler.tick({ wallet, now: new Date(), tickStartedAt });
     // Bounded summary: goal ids are internal, expose only counts/kinds.
     return json(
       {

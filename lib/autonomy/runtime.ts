@@ -28,7 +28,7 @@ import type { Address } from "viem";
 import type { Logger, PerformanceMonitor } from "@/lib/architecture/core/types";
 import { delegatedActionId, delegatedExecutorAddressFor, isDelegatedChainId } from "@/lib/executor/delegated-executor";
 
-import { AUTONOMY_LIMITS } from "./config";
+import { AUTONOMY_EXECUTION_BUDGET_SECONDS, AUTONOMY_LIMITS, AUTONOMY_MIN_EXECUTION_BUDGET_SECONDS } from "./config";
 import { AUTONOMY_CHAIN_ID, DELEGATED_EXECUTION_CHAIN_ID, isDelegatedAdapterId, type DelegatedSwapRequest } from "./types";
 import { evaluateCondition, evaluatePolicyAgainstAction } from "./policy-engine";
 import { executionKeyForSlot, utcDayKey } from "./idempotency";
@@ -38,6 +38,7 @@ import {
   STUCK_EXECUTION_REAP_SECONDS,
   type AgentGoal,
   type AutonomyFailureCode,
+  type AutonomyPolicy,
   type GoalActionRecord,
   type GoalStatus,
   type SpendReservationRelease,
@@ -46,10 +47,10 @@ import {
 import { isInfrastructureOutageCode, isPreBroadcastRefusalCode } from "./types";
 import type { AutonomyAuditSink } from "./audit";
 import { auditEvent } from "./audit";
-import type { McpGateway } from "./mcp-gateway";
+import type { McpGateway, QuotedSwap } from "./mcp-gateway";
 import type { AutonomyStore } from "./store";
 import { verifyExecution } from "./verify";
-import type { AutonomousExecutionAdapter } from "./types";
+import type { AutonomousExecutionAdapter, DelegatedSwapResult } from "./types";
 import { delegatedBroadcasterAddressFor } from "@/lib/delegated/delegated-broadcaster";
 
 /**
@@ -86,7 +87,68 @@ export interface AutonomyRuntimeDeps {
 export interface EvaluateOptions {
   /** Lease token (supplied by the scheduler; direct callers get a fresh one). */
   leaseToken?: string;
+  /**
+   * When the tick invocation started. The post-EXECUTING budget ends
+   * AUTONOMY_EXECUTION_BUDGET_SECONDS after this instant. Defaults to the start of
+   * this evaluation (direct callers).
+   */
+  tickStartedAt?: Date;
 }
+
+/** Result of the post-EXECUTING steps that run under the budget. They return a step and write no goal state. */
+type BroadcastStep =
+  | { kind: "PREPARE_REFUSED"; code: AutonomyFailureCode; message: string }
+  | { kind: "ATTEMPT_NOT_RECORDED" }
+  | { kind: "SWITCH_REFUSED"; message: string }
+  | { kind: "BUDGET_ENDED" }
+  | { kind: "ADAPTER_THREW" }
+  | { kind: "ADAPTER_RESULT"; result: DelegatedSwapResult };
+
+type UnbroadcastStep = Exclude<BroadcastStep, { kind: "ADAPTER_RESULT" }>;
+
+interface BroadcastProgress {
+  /** Set synchronously just before the adapter is invoked. */
+  adapterInvoked: boolean;
+  /** Set by the caller when it stops waiting; the work must then never start the adapter. */
+  abandoned: boolean;
+}
+
+interface BroadcastContext {
+  goal: AgentGoal;
+  policy: AutonomyPolicy;
+  dayKey: string;
+  idempotencyKey: string;
+  quote: QuotedSwap;
+  slippageBps: number;
+  budgetEndsAtMs: number;
+  progress: BroadcastProgress;
+  now: Date;
+}
+
+/** `timedOut` once the budget's end is reached; never rejects because of lateness. */
+type BudgetOutcome<T> = { timedOut: false; value: T } | { timedOut: true };
+
+function untilDeadline<T>(work: Promise<T>, remainingMs: number): Promise<BudgetOutcome<T>> {
+  return new Promise<BudgetOutcome<T>>((resolve, reject) => {
+    const timer = setTimeout(() => resolve({ timedOut: true }), Math.max(0, remainingMs));
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve({ timedOut: false, value });
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Operator-facing text for a budget that ended before the broadcast returned a hash. */
+const BUDGET_ENDED_ADAPTER_INVOKED =
+  "RPC timeout: the execution budget ended before the broadcast returned a transaction hash. The broadcast outcome is UNKNOWN — the spend reservation is kept (AMBIGUOUS), never released. The authorization slot is consumed only if a hash was returned; check it before any retry.";
+const BUDGET_ENDED_BEFORE_BROADCAST =
+  "RPC timeout: the execution budget ended before the broadcast was sent (a prepare or RPC step did not return in time). Nothing was broadcast by this attempt. The spend reservation stays counted and the authorization slot was not consumed.";
 
 export type EvaluationResult =
   | { kind: "SKIPPED"; reason: "NOT_FOUND" | "DISABLED" | "LEASE_BUSY" | "STATE_CHANGED"; message: string }
@@ -162,7 +224,7 @@ export class AutonomyRuntime {
         return { kind: "SKIPPED", reason: "LEASE_BUSY", message: "Another evaluation holds this goal's lease." };
       }
       try {
-        return await this.evaluateUnderLease(goal, leaseToken, now);
+        return await this.evaluateUnderLease(goal, leaseToken, now, options.tickStartedAt ?? now);
       } finally {
         await this.deps.store.releaseGoalLease(goal.id, leaseToken);
       }
@@ -425,7 +487,7 @@ export class AutonomyRuntime {
   // Standard evaluation pass
   // -------------------------------------------------------------------------
 
-  private async evaluateUnderLease(goal: AgentGoal, _leaseToken: string, now: Date): Promise<EvaluationResult> {
+  private async evaluateUnderLease(goal: AgentGoal, _leaseToken: string, now: Date, budgetAnchor: Date): Promise<EvaluationResult> {
     const updatedAt = now.toISOString();
 
     // Expiry is deterministic housekeeping — works even while paused-ish states.
@@ -571,9 +633,10 @@ export class AutonomyRuntime {
       );
     }
 
-    // ACT — idempotency claim, spend reservation, CAS to EXECUTING, prepare,
-    // attempt marker, execute.
+    // ACT — idempotency claim, spend reservation, budget gate, CAS to EXECUTING,
+    // then prepare, attempt marker, execute — all under the post-EXECUTING budget.
     // Same derivation the stuck-execution reap uses — see executionKeyForSlot.
+    const budgetEndsAtMs = budgetAnchor.getTime() + AUTONOMY_EXECUTION_BUDGET_SECONDS * 1000;
     const idempotencyKey = executionKeyForSlot(goal.id, goal.nextEvaluationAt);
     const claimed = await this.deps.store.claimExecution(idempotencyKey, AUTONOMY_LIMITS.executionGuardSeconds);
     if (!claimed) {
@@ -629,6 +692,23 @@ export class AutonomyRuntime {
       return this.parkWithFailure(goal, "QUOTE_STALE", "Quote expired before execution could start — nothing was broadcast.", now, { conditionChecked: true });
     }
 
+    // TIME BUDGET GATE — before the EXECUTING write. With too little of the
+    // tick's budget left, nothing can be broadcast safely: nothing was sent, so
+    // the reservation is released as UNATTEMPTED (the verified path), the claim
+    // is dropped, and the goal is retried on a later tick. RPC_ERROR is an
+    // infrastructure code, so this is not a trade-failure strike.
+    if (budgetEndsAtMs - this.deps.now().getTime() < AUTONOMY_MIN_EXECUTION_BUDGET_SECONDS * 1000) {
+      await this.releaseReservation(decision.policy.id, dayKey, idempotencyKey, { reason: "UNATTEMPTED" }, now);
+      await this.deps.store.releaseExecution(idempotencyKey);
+      return this.parkWithFailure(
+        goal,
+        "RPC_ERROR",
+        "This tick's time budget was nearly used up before execution could start — nothing was broadcast. The goal is retried on a later tick.",
+        now,
+        { conditionChecked: true },
+      );
+    }
+
     const executing = await this.deps.store.transitionGoal(goal.id, goal.wallet, ["ACTIVE", "WAITING"], goal.updatedAt, {
       status: "EXECUTING",
       lastEvaluationAt: updatedAt,
@@ -646,99 +726,47 @@ export class AutonomyRuntime {
       return { kind: "SKIPPED", reason: "STATE_CHANGED", message: "Goal state changed during evaluation." };
     }
 
-    // TRADE PREPARED — through MCP, unsigned only (spec §12). On the
-    // DELEGATED path (Phase 2/5, Base Sepolia) the v1 intent build does NOT
-    // apply: its token registry is the v1 executor's, so building a v1
-    // intent would wrongly reject delegated-allowlisted tokens (PHASE 5
-    // finding F-9). There, preparation IS the adapter's own signed slot
-    // re-validation (witness actionId/policyHash/minOut vs the live quote),
-    // and the adapter constructs the broadcast calldata itself.
-    const delegatedPath = isDelegatedAdapterId(this.deps.adapter.id);
-    let preparedSteps: DelegatedSwapRequest["steps"] = [];
-    let preparedTransactionRequest: DelegatedSwapRequest["transactionRequest"] = null;
-    if (delegatedPath) {
-      await this.audit(goal.wallet, "TRADE_PREPARED", now, goal.id, goal.policyId, { quoteId: quote.quoteId, steps: 0, delegated: true });
-    } else {
-      const prepared = await this.deps.gateway.prepare({ quoteId: quote.quoteId, authorization: "APPROVAL" });
-      if (!prepared.ok) {
-        // Prepare is strictly pre-broadcast (unsigned calldata only). A
-        // whitelisted verified-pre-broadcast refusal frees the reservation;
-        // anything unknown keeps it counted (conservative — never released
-        // automatically). Either way the adapter was never invoked.
-        await this.releaseForFailure(decision.policy.id, dayKey, idempotencyKey, prepared.failure.code, now);
-        return this.failAfterClaim(executing, idempotencyKey, prepared.failure.code, prepared.failure.message, now);
-      }
-      preparedSteps = prepared.data.steps;
-      preparedTransactionRequest = prepared.data.transactionRequest;
-      await this.audit(goal.wallet, "TRADE_PREPARED", now, goal.id, goal.policyId, { quoteId: quote.quoteId, steps: prepared.data.steps.length });
-    }
-
-    // ATTEMPT MARKER — persisted BEFORE the execution adapter is invoked.
-    // Once this is visible a crash may have broadcast: the reservation is
-    // never released automatically after this point.
-    let attemptState: SpendReservationState | null = null;
-    try {
-      attemptState = await this.deps.store.markSpendAttempt(decision.policy.id, dayKey, idempotencyKey);
-    } catch (error) {
-      void error;
-    }
-    if (attemptState !== "ATTEMPTING") {
-      // Missing/Redis failure/lost response (or a state that is no longer
-      // safely attemptable): DO NOT invoke the adapter (fail closed). The
-      // reservation is left as-is (it counts against the day — conservative)
-      // and is recoverable later via the verified UNATTEMPTED path once a
-      // human confirms nothing was sent.
-      this.deps.logger.error("Spend attempt marker could not be persisted — adapter NOT invoked", { goalId: goal.id });
-      return this.failAfterClaim(
-        executing,
-        idempotencyKey,
-        "RPC_ERROR",
-        "Spend attempt marker could not be persisted — the execution adapter was NOT invoked. The reservation stays reserved (recoverable as UNATTEMPTED).",
-        now,
+    // POST-EXECUTING WORK, UNDER THE TICK BUDGET. From here to the adapter's
+    // result — prepare, attempt marker, emergency-switch re-read, broadcast —
+    // runs under one deadline (AUTONOMY_EXECUTION_BUDGET_SECONDS after the tick
+    // started). The work RETURNS a step and writes no goal state. Every failure
+    // is persisted below with its real reason, so a slow RPC never ends in the
+    // stuck-execution reap.
+    const progress: BroadcastProgress = { adapterInvoked: false, abandoned: false };
+    const work = this.runBroadcastSteps({
+      goal,
+      policy: decision.policy,
+      dayKey,
+      idempotencyKey,
+      quote,
+      slippageBps,
+      budgetEndsAtMs,
+      progress,
+      now,
+    });
+    const outcome = await untilDeadline(work, budgetEndsAtMs - this.deps.now().getTime());
+    if (outcome.timedOut) {
+      // Stop the abandoned work from ever starting the adapter, then record what
+      // actually happened: a broadcast may already be in flight.
+      progress.abandoned = true;
+      void work.then(
+        (late) => this.noteLateBroadcast(goal, late),
+        () => undefined,
       );
+      return this.failBudgetEnded(executing, idempotencyKey, decision.policy.id, dayKey, progress.adapterInvoked);
     }
-
-    // Re-read the KV emergency switch immediately before the adapter can
-    // proceed so a disable between tick-start and broadcast is honoured.
-    const switchAtBoundary = await readAutonomousEmergencySwitch();
-    if (!switchAtBoundary.allowed) {
-      logEmergencySwitchDecision(this.deps.logger, switchAtBoundary, { goalId: goal.id, phase: "execution-boundary" });
-      return this.controlPlaneRefuseAfterClaim(
+    const step = outcome.value;
+    if (step.kind !== "ADAPTER_RESULT") {
+      return this.closeUnbroadcastStep(step, {
+        goal,
         executing,
-        idempotencyKey,
-        "EXECUTION_UNAVAILABLE",
-        `Autonomous execution refused by emergency switch (${switchAtBoundary.reason}). Nothing was broadcast.`,
-        now,
-      );
-    }
-
-    // EXECUTE — only the adapter can reach a signature (spec §6). It is
-    // called with UNSIGNED data and after every deterministic check passed.
-    let result;
-    try {
-      result = await this.deps.adapter.executeSwap({
-        goalId: goal.id,
         policyId: decision.policy.id,
-        wallet: goal.wallet,
-        chainId: executionChainId(this.deps.adapter),
-        quoteId: quote.quoteId,
-        sellToken: goal.trade.sellToken,
-        buyToken: goal.trade.buyToken,
-        sellAmountRaw: goal.trade.sellAmountRaw,
-        expectedBuyAmountRaw: quote.expectedBuyAmountRaw,
-        minBuyAmountRaw: quote.minBuyAmountRaw,
-        slippageBps,
+        dayKey,
         idempotencyKey,
-        steps: preparedSteps,
-        transactionRequest: preparedTransactionRequest,
+        now,
       });
-    } catch (error) {
-      // UNKNOWN error: the broadcast MAY have happened. The reservation is
-      // marked AMBIGUOUS (spend stays counted) and never released.
-      this.deps.logger.error("Autonomous execution adapter threw", { goalId: goal.id });
-      await this.markReservationAmbiguous(decision.policy.id, dayKey, idempotencyKey, now);
-      return this.failAfterClaim(executing, idempotencyKey, "EXECUTION_UNAVAILABLE", "Execution adapter failed unexpectedly — the broadcast outcome is UNKNOWN. The spend reservation is kept (AMBIGUOUS), never released.", now);
     }
+    const result = step.result;
 
     if (!result.ok) {
       // Clean adapter refusal: only an explicit verified pre-broadcast code
@@ -792,6 +820,180 @@ export class AutonomyRuntime {
   }
 
   // -------------------------------------------------------------------------
+  // Post-EXECUTING budget (see AUTONOMY_EXECUTION_BUDGET_SECONDS)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Prepare → attempt marker → emergency-switch re-read → adapter. Returns a
+   * step and writes no goal state, so when the budget ends the caller can
+   * record the outcome without racing this work.
+   */
+  private async runBroadcastSteps(ctx: BroadcastContext): Promise<BroadcastStep> {
+    const { goal, policy, dayKey, idempotencyKey, quote, slippageBps, budgetEndsAtMs, progress, now } = ctx;
+
+    // TRADE PREPARED — through MCP, unsigned only (spec §12). On the
+    // DELEGATED path (Phase 2/5, Base Sepolia) the v1 intent build does NOT
+    // apply: its token registry is the v1 executor's, so building a v1
+    // intent would wrongly reject delegated-allowlisted tokens (PHASE 5
+    // finding F-9). There, preparation IS the adapter's own signed slot
+    // re-validation (witness actionId/policyHash/minOut vs the live quote),
+    // and the adapter constructs the broadcast calldata itself.
+    const delegatedPath = isDelegatedAdapterId(this.deps.adapter.id);
+    let preparedSteps: DelegatedSwapRequest["steps"] = [];
+    let preparedTransactionRequest: DelegatedSwapRequest["transactionRequest"] = null;
+    if (delegatedPath) {
+      await this.audit(goal.wallet, "TRADE_PREPARED", now, goal.id, goal.policyId, { quoteId: quote.quoteId, steps: 0, delegated: true });
+    } else {
+      const prepared = await this.deps.gateway.prepare({ quoteId: quote.quoteId, authorization: "APPROVAL" });
+      if (!prepared.ok) {
+        // Prepare is strictly pre-broadcast (unsigned calldata only). The adapter
+        // is never invoked on this path.
+        return { kind: "PREPARE_REFUSED", code: prepared.failure.code, message: prepared.failure.message };
+      }
+      preparedSteps = prepared.data.steps;
+      preparedTransactionRequest = prepared.data.transactionRequest;
+      await this.audit(goal.wallet, "TRADE_PREPARED", now, goal.id, goal.policyId, { quoteId: quote.quoteId, steps: prepared.data.steps.length });
+    }
+
+    // ATTEMPT MARKER — persisted BEFORE the execution adapter is invoked.
+    // Once this is visible a crash may have broadcast: the reservation is
+    // never released automatically after this point.
+    let attemptState: SpendReservationState | null = null;
+    try {
+      attemptState = await this.deps.store.markSpendAttempt(policy.id, dayKey, idempotencyKey);
+    } catch (error) {
+      void error;
+    }
+    if (attemptState !== "ATTEMPTING") {
+      // Missing/Redis failure/lost response (or a state that is no longer
+      // safely attemptable): DO NOT invoke the adapter (fail closed).
+      return { kind: "ATTEMPT_NOT_RECORDED" };
+    }
+
+    // Re-read the KV emergency switch immediately before the adapter can
+    // proceed so a disable between tick-start and broadcast is honoured.
+    const switchAtBoundary = await readAutonomousEmergencySwitch();
+    if (!switchAtBoundary.allowed) {
+      logEmergencySwitchDecision(this.deps.logger, switchAtBoundary, { goalId: goal.id, phase: "execution-boundary" });
+      return {
+        kind: "SWITCH_REFUSED",
+        message: `Autonomous execution refused by emergency switch (${switchAtBoundary.reason}). Nothing was broadcast.`,
+      };
+    }
+
+    // Never start the adapter after the budget ended or after the caller gave
+    // up. Checked synchronously right before the call.
+    if (progress.abandoned || this.deps.now().getTime() >= budgetEndsAtMs) {
+      return { kind: "BUDGET_ENDED" };
+    }
+
+    // EXECUTE — only the adapter can reach a signature (spec §6). It is
+    // called with UNSIGNED data and after every deterministic check passed.
+    progress.adapterInvoked = true;
+    let result: DelegatedSwapResult;
+    try {
+      result = await this.deps.adapter.executeSwap({
+        goalId: goal.id,
+        policyId: policy.id,
+        wallet: goal.wallet,
+        chainId: executionChainId(this.deps.adapter),
+        quoteId: quote.quoteId,
+        sellToken: goal.trade.sellToken,
+        buyToken: goal.trade.buyToken,
+        sellAmountRaw: goal.trade.sellAmountRaw,
+        expectedBuyAmountRaw: quote.expectedBuyAmountRaw,
+        minBuyAmountRaw: quote.minBuyAmountRaw,
+        slippageBps,
+        idempotencyKey,
+        steps: preparedSteps,
+        transactionRequest: preparedTransactionRequest,
+      });
+    } catch (error) {
+      // UNKNOWN error: the broadcast MAY have happened. The caller marks the
+      // reservation AMBIGUOUS (spend stays counted) and never releases it.
+      void error;
+      return { kind: "ADAPTER_THREW" };
+    }
+    return { kind: "ADAPTER_RESULT", result };
+  }
+
+  /** Persists the real outcome for a step that did not reach a broadcast result. */
+  private async closeUnbroadcastStep(
+    step: UnbroadcastStep,
+    c: { goal: AgentGoal; executing: AgentGoal; policyId: string; dayKey: string; idempotencyKey: string; now: Date },
+  ): Promise<EvaluationResult> {
+    switch (step.kind) {
+      case "PREPARE_REFUSED":
+        // A whitelisted verified-pre-broadcast refusal frees the reservation;
+        // anything unknown keeps it counted (never released automatically).
+        await this.releaseForFailure(c.policyId, c.dayKey, c.idempotencyKey, step.code, c.now);
+        return this.failAfterClaim(c.executing, c.idempotencyKey, step.code, step.message, c.now);
+      case "ATTEMPT_NOT_RECORDED":
+        // The reservation is left as-is (it counts against the day — conservative)
+        // and is recoverable later via the verified UNATTEMPTED path once a
+        // human confirms nothing was sent.
+        this.deps.logger.error("Spend attempt marker could not be persisted — adapter NOT invoked", { goalId: c.goal.id });
+        return this.failAfterClaim(
+          c.executing,
+          c.idempotencyKey,
+          "RPC_ERROR",
+          "Spend attempt marker could not be persisted — the execution adapter was NOT invoked. The reservation stays reserved (recoverable as UNATTEMPTED).",
+          c.now,
+        );
+      case "SWITCH_REFUSED":
+        return this.controlPlaneRefuseAfterClaim(c.executing, c.idempotencyKey, "EXECUTION_UNAVAILABLE", step.message, c.now);
+      case "ADAPTER_THREW":
+        this.deps.logger.error("Autonomous execution adapter threw", { goalId: c.goal.id });
+        await this.markReservationAmbiguous(c.policyId, c.dayKey, c.idempotencyKey, c.now);
+        return this.failAfterClaim(
+          c.executing,
+          c.idempotencyKey,
+          "EXECUTION_UNAVAILABLE",
+          "Execution adapter failed unexpectedly — the broadcast outcome is UNKNOWN. The spend reservation is kept (AMBIGUOUS), never released.",
+          c.now,
+        );
+      case "BUDGET_ENDED":
+        return this.failBudgetEnded(c.executing, c.idempotencyKey, c.policyId, c.dayKey, false);
+    }
+  }
+
+  /**
+   * The budget ended before a broadcast result. Nothing is released: the spend
+   * stays counted. The adapter may still be in flight, so the outcome is
+   * UNKNOWN unless it was never invoked.
+   */
+  private async failBudgetEnded(
+    executing: AgentGoal,
+    idempotencyKey: string,
+    policyId: string,
+    dayKey: string,
+    adapterInvoked: boolean,
+  ): Promise<EvaluationResult> {
+    const at = this.deps.now();
+    await this.markReservationAmbiguous(policyId, dayKey, idempotencyKey, at);
+    return this.failAfterClaim(
+      executing,
+      idempotencyKey,
+      "RPC_ERROR",
+      adapterInvoked ? BUDGET_ENDED_ADAPTER_INVOKED : BUDGET_ENDED_BEFORE_BROADCAST,
+      at,
+    );
+  }
+
+  /**
+   * A broadcast that returned a hash AFTER the budget ended. The adapter has
+   * already recorded the hash on the authorization slot, but this goal has
+   * moved on, so surface it to operators instead of dropping it silently.
+   */
+  private noteLateBroadcast(goal: AgentGoal, step: BroadcastStep): void {
+    if (step.kind === "ADAPTER_RESULT" && step.result.ok) {
+      this.deps.logger.error("Broadcast returned a transaction hash after the execution budget ended — the hash is recorded on the authorization slot", {
+        goalId: goal.id,
+        txHash: step.result.txHash,
+      });
+    }
+  }
+
   // Helpers
   // -------------------------------------------------------------------------
 
