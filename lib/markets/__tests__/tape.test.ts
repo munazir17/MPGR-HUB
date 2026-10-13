@@ -313,3 +313,32 @@ describe("groupPairsByToken", () => {
     expect(grouped.size).toBe(1);
   });
 });
+
+describe("buildTapeSnapshot batched onchain reads", () => {
+  it("uses readOnchainBatch when provided instead of 48 individual readFeedRound/readPaused calls", async () => {
+    const now = 1_790_000_000_000;
+    const readFeedRound = vi.fn(async () => ({ answer: "100000000", updatedAt: Math.floor(now / 1000) }));
+    const readPaused = vi.fn(async () => false);
+    const readOnchainBatch = vi.fn(async (pairs: readonly { chainlinkFeed?: string }[]) => ({
+      feedRounds: pairs.map((p) =>
+        p.chainlinkFeed ? { answer: "33936000000", updatedAt: Math.floor(now / 1000) - 30 } : null,
+      ),
+      pausedFlags: pairs.map((_, idx) => (idx === 0 ? true : false)),
+    }));
+
+    const snapshot = await buildTapeSnapshot({
+      nowMs: () => now,
+      getBlockNumber: async () => 30_000_001,
+      readFeedRound,
+      readPaused,
+      readOnchainBatch,
+      fetchDexPairs: async () => [],
+    });
+
+    expect(readOnchainBatch).toHaveBeenCalledTimes(1);
+    expect(readFeedRound).not.toHaveBeenCalled();
+    expect(readPaused).not.toHaveBeenCalled();
+    expect(snapshot.stocks[0]!.paused).toBe(true);
+    expect(snapshot.stocks.find((s) => s.symbol === "AAPLc")!.usdFeed).toBeCloseTo(339.36, 6);
+  });
+});

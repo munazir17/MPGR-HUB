@@ -20,6 +20,7 @@ import type { TokenTransferEvent, TransactionHistoryCacheEntry } from "./token-t
 // polling this service directly.
 
 const historyCache = new Map<string, TransactionHistoryCacheEntry>();
+const inFlightScans = new Map<string, Promise<TokenTransferEvent[]>>();
 
 function getCacheKey(walletAddress: Address): string {
   return `history:${walletAddress.toLowerCase()}`;
@@ -43,6 +44,90 @@ function mergeAndSort(existing: TokenTransferEvent[], incoming: TokenTransferEve
   );
 }
 
+async function scanAndCache(walletAddress: Address, cacheKey: string): Promise<TokenTransferEvent[]> {
+  const cached = historyCache.get(cacheKey);
+  try {
+    const latestBlock = await transferEventReader.getLatestBlockNumber();
+    const lookback = BigInt(MPGR_TOKEN_CONFIG.transferLogLookbackBlocks);
+    const defaultFromBlock = latestBlock > lookback ? latestBlock - lookback : 0n;
+
+    // Incremental scan: if this wallet has been scanned before, only
+    // fetch the blocks since then. Otherwise scan the full lookback
+    // window from scratch.
+    const fromBlock = cached ? cached.lastBlockScanned + 1n : defaultFromBlock;
+
+    if (cached && fromBlock > latestBlock) {
+      // Nothing new to scan — the cache is only stale by TTL, not by
+      // block height. Refresh the timestamp so callers stop
+      // force-refreshing on every call.
+      historyCache.set(cacheKey, { ...cached, timestamp: Date.now() });
+      return cached.entries;
+    }
+
+    const scanResult =
+      typeof transferEventReader.fetchTransfersWithStatus === "function"
+        ? await transferEventReader.fetchTransfersWithStatus(walletAddress, fromBlock, latestBlock)
+        : {
+            events: await transferEventReader.fetchTransfers(walletAddress, fromBlock, latestBlock),
+            complete: true,
+          };
+    const newEvents = scanResult.events;
+    const merged = mergeAndSort(cached?.entries ?? [], newEvents);
+
+    // Only advance lastBlockScanned when the scan completed without
+    // chunk failures; otherwise preserve the prior boundary so a
+    // range-capped or transiently failing RPC does not permanently skip
+    // blocks.
+    if (scanResult.complete) {
+      historyCache.set(cacheKey, {
+        entries: merged,
+        timestamp: Date.now(),
+        ttl: MPGR_TOKEN_CONFIG.transactionHistoryCacheTtl,
+        lastBlockScanned: latestBlock,
+      });
+    } else if (cached) {
+      historyCache.set(cacheKey, {
+        ...cached,
+        entries: merged,
+        timestamp: Date.now(),
+      });
+    }
+
+    if (newEvents.length > 0) {
+      logger.debug("transactionHistoryService.getHistory found new transfers", {
+        walletAddress,
+        newCount: newEvents.length,
+      });
+
+      for (const event of newEvents) {
+        agentEventBus.emit("transfer_detected", {
+          address: walletAddress,
+          direction: event.direction,
+          counterpartyAddress: event.direction === "in" ? event.from : event.to,
+          amount: event.amount,
+          txHash: event.txHash,
+          blockNumber: event.blockNumber,
+        });
+      }
+
+      agentEventBus.emit("transaction_history_updated", {
+        address: walletAddress,
+        totalCount: merged.length,
+        newCount: newEvents.length,
+        latestTimestamp: merged[0]?.timestamp ?? null,
+      });
+    }
+
+    return merged;
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    logger.error("transactionHistoryService.getHistory failed", { walletAddress, error: errorMsg });
+    // Graceful degradation: return whatever's cached (even if stale)
+    // rather than surfacing an empty timeline on a transient RPC blip.
+    return cached ? cached.entries : [];
+  }
+}
+
 export const transactionHistoryService = {
   // Returns the wallet's transfer history, newest-first, refreshing from
   // chain only for the block range it hasn't scanned yet. Pass
@@ -63,67 +148,15 @@ export const transactionHistoryService = {
     }
 
     return agentPerformanceMonitor.time("transactionHistoryService.getHistory", async () => {
-      try {
-        const latestBlock = await transferEventReader.getLatestBlockNumber();
-        const lookback = BigInt(MPGR_TOKEN_CONFIG.transferLogLookbackBlocks);
-        const defaultFromBlock = latestBlock > lookback ? latestBlock - lookback : 0n;
-
-        // Incremental scan: if this wallet has been scanned before, only
-        // fetch the blocks since then. Otherwise scan the full lookback
-        // window from scratch.
-        const fromBlock = cached ? cached.lastBlockScanned + 1n : defaultFromBlock;
-
-        if (cached && fromBlock > latestBlock) {
-          // Nothing new to scan — the cache is only stale by TTL, not by
-          // block height. Refresh the timestamp so callers stop
-          // force-refreshing on every call.
-          historyCache.set(cacheKey, { ...cached, timestamp: Date.now() });
-          return cached.entries.slice(0, limit);
-        }
-
-        const newEvents = await transferEventReader.fetchTransfers(walletAddress, fromBlock, latestBlock);
-        const merged = mergeAndSort(cached?.entries ?? [], newEvents);
-
-        historyCache.set(cacheKey, {
-          entries: merged,
-          timestamp: Date.now(),
-          ttl: MPGR_TOKEN_CONFIG.transactionHistoryCacheTtl,
-          lastBlockScanned: latestBlock,
+      let inFlight = inFlightScans.get(cacheKey);
+      if (!inFlight) {
+        inFlight = scanAndCache(walletAddress, cacheKey).finally(() => {
+          inFlightScans.delete(cacheKey);
         });
-
-        if (newEvents.length > 0) {
-          logger.debug("transactionHistoryService.getHistory found new transfers", {
-            walletAddress,
-            newCount: newEvents.length,
-          });
-
-          for (const event of newEvents) {
-            agentEventBus.emit("transfer_detected", {
-              address: walletAddress,
-              direction: event.direction,
-              counterpartyAddress: event.direction === "in" ? event.from : event.to,
-              amount: event.amount,
-              txHash: event.txHash,
-              blockNumber: event.blockNumber,
-            });
-          }
-
-          agentEventBus.emit("transaction_history_updated", {
-            address: walletAddress,
-            totalCount: merged.length,
-            newCount: newEvents.length,
-            latestTimestamp: merged[0]?.timestamp ?? null,
-          });
-        }
-
-        return merged.slice(0, limit);
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        logger.error("transactionHistoryService.getHistory failed", { walletAddress, error: errorMsg });
-        // Graceful degradation: return whatever's cached (even if stale)
-        // rather than surfacing an empty timeline on a transient RPC blip.
-        return cached ? cached.entries.slice(0, limit) : [];
+        inFlightScans.set(cacheKey, inFlight);
       }
+      const entries = await inFlight;
+      return entries.slice(0, limit);
     });
   },
 

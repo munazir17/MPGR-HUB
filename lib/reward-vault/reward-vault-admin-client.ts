@@ -56,14 +56,17 @@ function getSignerAccount() {
 }
 
 function getPublicClient() {
-  return createPublicClient({ chain: MPGR_REWARD_VAULT_CONFIG.chain, transport: http(getRpcUrl()) });
+  return createPublicClient({
+    chain: MPGR_REWARD_VAULT_CONFIG.chain,
+    transport: http(getRpcUrl(), { timeout: 12_000, retryCount: 1 }),
+  });
 }
 
 function getWalletClient() {
   return createWalletClient({
     account: getSignerAccount(),
     chain: MPGR_REWARD_VAULT_CONFIG.chain,
-    transport: http(getRpcUrl()),
+    transport: http(getRpcUrl(), { timeout: 12_000, retryCount: 0 }),
   });
 }
 
@@ -120,20 +123,43 @@ export const rewardVaultAdminClient = {
   },
 
   async findRewardAllocationTxHash(rewardId: bigint): Promise<Hash | null> {
-    const logs = await getPublicClient().getLogs({
-      address: MPGR_REWARD_VAULT_CONFIG.address,
-      event: { type: "event", name: "RewardAllocated", inputs: [
+    const client = getPublicClient();
+    const latest = await client.getBlockNumber();
+    const rewardAllocatedEvent = {
+      type: "event",
+      name: "RewardAllocated",
+      inputs: [
         { name: "rewardId", type: "uint256", indexed: true },
         { name: "seasonId", type: "uint256", indexed: true },
         { name: "user", type: "address", indexed: true },
         { name: "amount", type: "uint256", indexed: false },
         { name: "rewardType", type: "uint8", indexed: false },
-      ] },
-      args: { rewardId },
-      fromBlock: "earliest",
-      toBlock: "latest",
-    });
-    return logs.length ? logs[0].transactionHash : null;
+      ],
+    } as const;
+
+    const queryWindow = async (lookbackBlocks: bigint) => {
+      const fromBlock = latest > lookbackBlocks ? latest - lookbackBlocks : 0n;
+      const logs = await client.getLogs({
+        address: MPGR_REWARD_VAULT_CONFIG.address,
+        event: rewardAllocatedEvent,
+        args: { rewardId },
+        fromBlock,
+        toBlock: latest,
+      });
+      return logs.length ? logs[0].transactionHash : null;
+    };
+
+    try {
+      return await queryWindow(1_999n);
+    } catch {
+      // Fall back to a 10-block window for Alchemy Free-tier endpoints that
+      // refuse wider eth_getLogs ranges with HTTP 400 / -32600.
+      try {
+        return await queryWindow(9n);
+      } catch {
+        return null;
+      }
+    }
   },
 
   async getSeason(seasonId: bigint): Promise<VaultSeasonAdminView> {

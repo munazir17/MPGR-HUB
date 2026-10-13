@@ -6,7 +6,7 @@ import type { Address, Log } from "viem";
 import { config } from "@/lib/wagmi";
 import { MPGR_TOKEN_CONFIG } from "./token-config";
 import { transferEventAbiItem } from "./transfer-events-abi";
-import { withRetry } from "./rpc-retry";
+import { isNonRetryableRpcError, sanitizeRpcErrorMessage, withRetry } from "./rpc-retry";
 import { logger } from "@/lib/architecture/core/logger";
 import type { TokenTransferEvent, TransferDirection } from "./token-types";
 
@@ -58,20 +58,33 @@ async function getBlockTimestampMs(blockNumber: bigint): Promise<number> {
   return timestampMs;
 }
 
+interface DirectionScanResult {
+  logs: DecodedTransferLog[];
+  complete: boolean;
+}
+
+export interface TransferScanResult {
+  events: TokenTransferEvent[];
+  complete: boolean;
+}
+
 // Scans a single direction ("in" = wallet is `to`, "out" = wallet is
 // `from`) across [fromBlock, toBlock], chunked so no single getLogs call
-// spans more than transferLogChunkSize blocks. A failed chunk is logged
-// and skipped rather than aborting the whole scan, so a transient RPC
-// blip on one chunk doesn't wipe out an otherwise-successful scan.
+// spans more than transferLogChunkSize blocks. If a chunk fails with a
+// deterministic / range-cap RPC error, stops immediately so a capped
+// provider is not hammered across hundreds of chunks, and marks the scan
+// incomplete so the caller does not advance lastBlockScanned past
+// unscanned blocks.
 async function scanDirection(
   walletAddress: Address,
   direction: TransferDirection,
   fromBlock: bigint,
   toBlock: bigint
-): Promise<DecodedTransferLog[]> {
+): Promise<DirectionScanResult> {
   const client = getViemClient();
   const chunkSize = BigInt(MPGR_TOKEN_CONFIG.transferLogChunkSize);
   const results: DecodedTransferLog[] = [];
+  let complete = true;
 
   let chunkStart = fromBlock;
   while (chunkStart <= toBlock) {
@@ -92,18 +105,24 @@ async function scanDirection(
       );
       results.push(...(logs as DecodedTransferLog[]));
     } catch (err) {
-      logger.error("transferEventReader.scanDirection chunk failed, skipping chunk", {
+      complete = false;
+      const nonRetryable = isNonRetryableRpcError(err);
+      logger.error("transferEventReader.scanDirection chunk failed", {
         direction,
         chunkStart: chunkStart.toString(),
         chunkEnd: chunkEnd.toString(),
-        error: err instanceof Error ? err.message : String(err),
+        nonRetryable,
+        error: sanitizeRpcErrorMessage(err),
       });
+      if (nonRetryable) {
+        break;
+      }
     }
 
     chunkStart = chunkEnd + 1n;
   }
 
-  return results;
+  return { logs: results, complete };
 }
 
 function toTransferEvent(
@@ -139,17 +158,12 @@ export const transferEventReader = {
     return withRetry("transferEventReader.getLatestBlockNumber", () => getBlockNumber(client, {}));
   },
 
-  // Fetches every incoming + outgoing MPGR transfer for `walletAddress`
-  // between fromBlock and toBlock (inclusive), deduped and sorted
-  // oldest-first. Never throws — a scan that fails entirely (e.g. RPC
-  // totally unreachable) returns an empty array so callers can fall back
-  // to whatever they already have cached.
-  async fetchTransfers(
+  async fetchTransfersWithStatus(
     walletAddress: Address,
     fromBlock: bigint,
     toBlock: bigint
-  ): Promise<TokenTransferEvent[]> {
-    if (fromBlock > toBlock) return [];
+  ): Promise<TransferScanResult> {
+    if (fromBlock > toBlock) return { events: [], complete: true };
 
     try {
       const [incoming, outgoing] = await Promise.all([
@@ -157,7 +171,7 @@ export const transferEventReader = {
         scanDirection(walletAddress, "out", fromBlock, toBlock),
       ]);
 
-      const decoded = [...incoming, ...outgoing].filter((log) => log.blockNumber !== null);
+      const decoded = [...incoming.logs, ...outgoing.logs].filter((log) => log.blockNumber !== null);
 
       // Resolve block timestamps for every unique block touched by this
       // scan, deduped, so repeated transfers within the same block only
@@ -188,16 +202,33 @@ export const transferEventReader = {
       }
       deduped.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
 
-      return deduped;
+      return {
+        events: deduped,
+        complete: incoming.complete && outgoing.complete,
+      };
     } catch (err) {
       logger.error("transferEventReader.fetchTransfers failed", {
         walletAddress,
         fromBlock: fromBlock.toString(),
         toBlock: toBlock.toString(),
-        error: err instanceof Error ? err.message : String(err),
+        error: sanitizeRpcErrorMessage(err),
       });
-      return [];
+      return { events: [], complete: false };
     }
+  },
+
+  // Fetches every incoming + outgoing MPGR transfer for `walletAddress`
+  // between fromBlock and toBlock (inclusive), deduped and sorted
+  // oldest-first. Never throws — a scan that fails entirely (e.g. RPC
+  // totally unreachable) returns an empty array so callers can fall back
+  // to whatever they already have cached.
+  async fetchTransfers(
+    walletAddress: Address,
+    fromBlock: bigint,
+    toBlock: bigint
+  ): Promise<TokenTransferEvent[]> {
+    const result = await this.fetchTransfersWithStatus(walletAddress, fromBlock, toBlock);
+    return result.events;
   },
 
   // Subscribes to live Transfer events touching `walletAddress` (either

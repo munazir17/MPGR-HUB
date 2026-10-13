@@ -71,6 +71,47 @@ async function readBalanceAndDecimals(
   };
 }
 
+async function readBalanceAndDecimalsBatch(
+  wallet: string,
+  tokens: readonly { address: string }[],
+): Promise<{ balanceRaw: bigint | null; decimals: number | null }[]> {
+  const client = getTradePublicClient();
+  const contracts = tokens.flatMap((token) => [
+    {
+      address: token.address as `0x${string}`,
+      abi: erc20Abi,
+      functionName: "balanceOf" as const,
+      args: [wallet as `0x${string}`] as const,
+    },
+    {
+      address: token.address as `0x${string}`,
+      abi: erc20Abi,
+      functionName: "decimals" as const,
+    },
+  ]);
+
+  try {
+    const results = await client.multicall({
+      contracts,
+      allowFailure: true,
+    });
+    return tokens.map((_token, idx) => {
+      const balEntry = results[idx * 2];
+      const decEntry = results[idx * 2 + 1];
+      const balance = balEntry?.status === "success" ? balEntry.result : null;
+      const decimals = decEntry?.status === "success" ? decEntry.result : null;
+      return {
+        balanceRaw: typeof balance === "bigint" ? balance : null,
+        decimals: typeof decimals === "number" ? decimals : null,
+      };
+    });
+  } catch {
+    return Promise.all(
+      tokens.map((token) => readBalanceAndDecimals(wallet, token.address)),
+    );
+  }
+}
+
 export async function GET(request: Request) {
   const requestId = requestIdFromRequest(request);
   const json = (body: unknown, init?: ResponseInit) =>
@@ -109,23 +150,22 @@ export async function GET(request: Request) {
   ];
 
   try {
-    const reads = await Promise.all(
-      tokens.map(async (token) => {
-        const { balanceRaw, decimals } = await readBalanceAndDecimals(session.wallet, token.address);
-        const human =
-          balanceRaw !== null && decimals !== null ? formatUnits(balanceRaw, decimals) : null;
-        const entry: StockHoldingEntry = {
-          symbol: token.symbol,
-          name: token.name,
-          address: token.address,
-          balanceRaw: balanceRaw !== null ? balanceRaw.toString() : "0",
-          decimals,
-          human,
-          nonzero: balanceRaw !== null && balanceRaw > 0n,
-        };
-        return entry;
-      }),
-    );
+    const batchResults = await readBalanceAndDecimalsBatch(session.wallet, tokens);
+    const reads = tokens.map((token, index) => {
+      const { balanceRaw, decimals } = batchResults[index] ?? { balanceRaw: null, decimals: null };
+      const human =
+        balanceRaw !== null && decimals !== null ? formatUnits(balanceRaw, decimals) : null;
+      const entry: StockHoldingEntry = {
+        symbol: token.symbol,
+        name: token.name,
+        address: token.address,
+        balanceRaw: balanceRaw !== null ? balanceRaw.toString() : "0",
+        decimals,
+        human,
+        nonzero: balanceRaw !== null && balanceRaw > 0n,
+      };
+      return entry;
+    });
 
     return json(
       {

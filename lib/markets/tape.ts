@@ -101,6 +101,9 @@ export interface TapeSourceDeps {
   getBlockNumber(): Promise<number | null>;
   readFeedRound(feed: string): Promise<ChainlinkRoundLike | null>;
   readPaused(token: string): Promise<boolean | null>;
+  readOnchainBatch?(
+    pairs: readonly BasePairEntry[],
+  ): Promise<{ feedRounds: (ChainlinkRoundLike | null)[]; pausedFlags: (boolean | null)[] }>;
   fetchDexPairs(addresses: readonly string[]): Promise<DexScreenerPairLike[]>;
 }
 
@@ -218,6 +221,35 @@ export function tapeSourceLabel(pair: DexScreenerPairLike | null): string {
 // ---------------------------------------------------------------------------
 
 function defaultDeps(): TapeSourceDeps {
+  const readFeedRound = async (feed: string): Promise<ChainlinkRoundLike | null> => {
+    try {
+      const round = await getTradePublicClient().readContract({
+        address: feed as `0x${string}`,
+        abi: CHAINLINK_AGGREGATOR_V3_ABI,
+        functionName: "latestRoundData",
+      });
+      const answer = round[1];
+      const updatedAt = round[3];
+      if (answer === undefined || updatedAt === undefined) return null;
+      return { answer: (answer as bigint).toString(), updatedAt: Number(updatedAt) };
+    } catch {
+      return null;
+    }
+  };
+
+  const readPaused = async (token: string): Promise<boolean | null> => {
+    try {
+      const paused = await getTradePublicClient().readContract({
+        address: token as `0x${string}`,
+        abi: B20_TOKEN_ABI,
+        functionName: "paused",
+      });
+      return Boolean(paused);
+    } catch {
+      return null;
+    }
+  };
+
   return {
     nowMs: () => Date.now(),
 
@@ -230,32 +262,74 @@ function defaultDeps(): TapeSourceDeps {
       }
     },
 
-    async readFeedRound(feed) {
-      try {
-        const round = await getTradePublicClient().readContract({
-          address: feed as `0x${string}`,
-          abi: CHAINLINK_AGGREGATOR_V3_ABI,
-          functionName: "latestRoundData",
-        });
-        const answer = round[1];
-        const updatedAt = round[3];
-        if (answer === undefined || updatedAt === undefined) return null;
-        return { answer: (answer as bigint).toString(), updatedAt: Number(updatedAt) };
-      } catch {
-        return null;
-      }
-    },
+    readFeedRound,
+    readPaused,
 
-    async readPaused(token) {
-      try {
-        const paused = await getTradePublicClient().readContract({
-          address: token as `0x${string}`,
+    async readOnchainBatch(pairs) {
+      const client = getTradePublicClient();
+      const feedIndices: number[] = [];
+      const contracts: {
+        address: `0x${string}`;
+        abi: typeof CHAINLINK_AGGREGATOR_V3_ABI | typeof B20_TOKEN_ABI;
+        functionName: "latestRoundData" | "paused";
+      }[] = [];
+
+      pairs.forEach((pair, index) => {
+        if (pair.chainlinkFeed) {
+          feedIndices.push(index);
+          contracts.push({
+            address: pair.chainlinkFeed as `0x${string}`,
+            abi: CHAINLINK_AGGREGATOR_V3_ABI,
+            functionName: "latestRoundData",
+          });
+        }
+      });
+
+      const pausedOffset = contracts.length;
+      pairs.forEach((pair) => {
+        contracts.push({
+          address: pair.address as `0x${string}`,
           abi: B20_TOKEN_ABI,
           functionName: "paused",
         });
-        return Boolean(paused);
+      });
+
+      try {
+        const results = await client.multicall({
+          contracts,
+          allowFailure: true,
+        });
+
+        const feedRounds: (ChainlinkRoundLike | null)[] = Array.from({ length: pairs.length }, () => null);
+        feedIndices.forEach((pairIndex, callIdx) => {
+          const entry = results[callIdx];
+          if (!entry || entry.status !== "success" || !Array.isArray(entry.result)) return;
+          const answer = entry.result[1];
+          const updatedAt = entry.result[3];
+          if (answer === undefined || updatedAt === undefined) return;
+          feedRounds[pairIndex] = {
+            answer: (answer as bigint).toString(),
+            updatedAt: Number(updatedAt),
+          };
+        });
+
+        const pausedFlags: (boolean | null)[] = pairs.map((_pair, index) => {
+          const entry = results[pausedOffset + index];
+          if (!entry || entry.status !== "success") return null;
+          return Boolean(entry.result);
+        });
+
+        return { feedRounds, pausedFlags };
       } catch {
-        return null;
+        const [feedRounds, pausedFlags] = await Promise.all([
+          Promise.all(
+            pairs.map((pair) =>
+              pair.chainlinkFeed ? readFeedRound(pair.chainlinkFeed) : Promise.resolve(null),
+            ),
+          ),
+          Promise.all(pairs.map((pair) => readPaused(pair.address))),
+        ]);
+        return { feedRounds, pausedFlags };
       }
     },
 
@@ -293,15 +367,21 @@ export async function buildTapeSnapshot(deps: TapeSourceDeps = defaultDeps()): P
   const allEntries: readonly BasePairEntry[] = [...TAPE_WRAPPED_PAIRS, ...TAPE_STOCK_PAIRS];
   const usdcAddress = TAPE_WRAPPED_PAIRS.find((pair) => pair.kind === "stable")?.address ?? "";
 
-  const [blockNumber, dexPairs, feedRounds, pausedFlags] = await Promise.all([
+  const onchainPromise = deps.readOnchainBatch
+    ? deps.readOnchainBatch(TAPE_STOCK_PAIRS)
+    : Promise.all([
+        Promise.all(
+          TAPE_STOCK_PAIRS.map((pair) =>
+            pair.chainlinkFeed ? deps.readFeedRound(pair.chainlinkFeed) : Promise.resolve(null),
+          ),
+        ),
+        Promise.all(TAPE_STOCK_PAIRS.map((pair) => deps.readPaused(pair.address))),
+      ]).then(([feedRounds, pausedFlags]) => ({ feedRounds, pausedFlags }));
+
+  const [blockNumber, dexPairs, { feedRounds, pausedFlags }] = await Promise.all([
     deps.getBlockNumber(),
     deps.fetchDexPairs(allEntries.map((pair) => pair.address)),
-    Promise.all(
-      TAPE_STOCK_PAIRS.map((pair) =>
-        pair.chainlinkFeed ? deps.readFeedRound(pair.chainlinkFeed) : Promise.resolve(null),
-      ),
-    ),
-    Promise.all(TAPE_STOCK_PAIRS.map((pair) => deps.readPaused(pair.address))),
+    onchainPromise,
   ]);
 
   const grouped = groupPairsByToken(dexPairs);

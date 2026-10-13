@@ -20,6 +20,8 @@ import type { StakingGlobalCacheEntry, StakingGlobalState, StakingWalletCacheEnt
 const GLOBAL_CACHE_KEY = "staking:global";
 const globalCache = new Map<string, StakingGlobalCacheEntry>();
 const walletCache = new Map<string, StakingWalletCacheEntry>();
+let inFlightGlobal: Promise<StakingGlobalState> | null = null;
+const inFlightWallet = new Map<string, Promise<StakingWalletState>>();
 
 function walletCacheKey(address: Address): string {
   return `staking:wallet:${address.toLowerCase()}`;
@@ -37,37 +39,47 @@ export const stakingService = {
       return cached.state;
     }
 
-    const [totalStaked, rewardPoolBalance, currentAPRBps, rewardState, isPaused, minimumStake] = await Promise.all([
-      stakingClient.getTotalStaked(),
-      stakingClient.getRewardPoolBalance(),
-      stakingClient.getCurrentAPRBps(),
-      stakingClient.getRewardState(),
-      stakingClient.isPaused(),
-      stakingClient.getMinimumStake(),
-    ]);
+    if (inFlightGlobal) {
+      return inFlightGlobal;
+    }
 
-    const state: StakingGlobalState = {
-      totalStaked,
-      rewardPoolBalance,
-      currentAPRBps,
-      rewardRate: rewardState.rewardRate,
-      periodFinish: rewardState.periodFinish,
-      isPaused,
-      minimumStake,
-      // Phase 3E Part 4 — already returned by getRewardState() above;
-      // previously discarded, now carried through for the live reward
-      // counter's client-side rewardPerToken() computation.
-      rewardPerTokenStored: rewardState.rewardPerTokenStored,
-      lastUpdateTime: rewardState.lastUpdateTime,
-    };
+    inFlightGlobal = (async () => {
+      const [totalStaked, rewardPoolBalance, currentAPRBps, rewardState, isPaused, minimumStake] = await Promise.all([
+        stakingClient.getTotalStaked(),
+        stakingClient.getRewardPoolBalance(),
+        stakingClient.getCurrentAPRBps(),
+        stakingClient.getRewardState(),
+        stakingClient.isPaused(),
+        stakingClient.getMinimumStake(),
+      ]);
 
-    globalCache.set(GLOBAL_CACHE_KEY, {
-      state,
-      timestamp: Date.now(),
-      ttl: MPGR_STAKING_CONFIG.stakingReadCacheTtl,
+      const state: StakingGlobalState = {
+        totalStaked,
+        rewardPoolBalance,
+        currentAPRBps,
+        rewardRate: rewardState.rewardRate,
+        periodFinish: rewardState.periodFinish,
+        isPaused,
+        minimumStake,
+        // Phase 3E Part 4 — already returned by getRewardState() above;
+        // previously discarded, now carried through for the live reward
+        // counter's client-side rewardPerToken() computation.
+        rewardPerTokenStored: rewardState.rewardPerTokenStored,
+        lastUpdateTime: rewardState.lastUpdateTime,
+      };
+
+      globalCache.set(GLOBAL_CACHE_KEY, {
+        state,
+        timestamp: Date.now(),
+        ttl: MPGR_STAKING_CONFIG.stakingReadCacheTtl,
+      });
+
+      return state;
+    })().finally(() => {
+      inFlightGlobal = null;
     });
 
-    return state;
+    return inFlightGlobal;
   },
 
   // Per-wallet state — the connected user's own staked balance, accrued
@@ -79,33 +91,43 @@ export const stakingService = {
       return cached.state;
     }
 
-    const [stakedBalance, earnedRewards, allowance, userRewardPerTokenPaid, accruedRewards] = await Promise.all([
-      stakingClient.getStakedBalance(address),
-      stakingClient.getEarnedRewards(address),
-      stakingClient.getAllowance(address),
-      // Phase 3E Part 4 — raw per-account checkpoint reads for the live
-      // reward counter's client-side earned() computation. earnedRewards
-      // above is untouched and remains the authoritative value for claim
-      // eligibility and claim/exit payout amounts.
-      stakingClient.getUserRewardPerTokenPaid(address),
-      stakingClient.getAccruedRewards(address),
-    ]);
+    let inFlight = inFlightWallet.get(cacheKey);
+    if (!inFlight) {
+      inFlight = (async () => {
+        const [stakedBalance, earnedRewards, allowance, userRewardPerTokenPaid, accruedRewards] = await Promise.all([
+          stakingClient.getStakedBalance(address),
+          stakingClient.getEarnedRewards(address),
+          stakingClient.getAllowance(address),
+          // Phase 3E Part 4 — raw per-account checkpoint reads for the live
+          // reward counter's client-side earned() computation. earnedRewards
+          // above is untouched and remains the authoritative value for claim
+          // eligibility and claim/exit payout amounts.
+          stakingClient.getUserRewardPerTokenPaid(address),
+          stakingClient.getAccruedRewards(address),
+        ]);
 
-    const state: StakingWalletState = {
-      stakedBalance,
-      earnedRewards,
-      allowance,
-      userRewardPerTokenPaid,
-      accruedRewards,
-    };
+        const state: StakingWalletState = {
+          stakedBalance,
+          earnedRewards,
+          allowance,
+          userRewardPerTokenPaid,
+          accruedRewards,
+        };
 
-    walletCache.set(cacheKey, {
-      state,
-      timestamp: Date.now(),
-      ttl: MPGR_STAKING_CONFIG.stakingReadCacheTtl,
-    });
+        walletCache.set(cacheKey, {
+          state,
+          timestamp: Date.now(),
+          ttl: MPGR_STAKING_CONFIG.stakingReadCacheTtl,
+        });
 
-    return state;
+        return state;
+      })().finally(() => {
+        inFlightWallet.delete(cacheKey);
+      });
+      inFlightWallet.set(cacheKey, inFlight);
+    }
+
+    return inFlight;
   },
 
   // Synchronous cache-only reads — return null/stale-free data without

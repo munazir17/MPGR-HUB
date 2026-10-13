@@ -34,6 +34,140 @@ import { createPublicClient, fallback, http } from "viem";
 import { base } from "wagmi/chains";
 
 const DEFAULT_TIMEOUT_MS = 12_000;
+const DEFAULT_RETRY_COUNT = 2;
+const DEFAULT_RETRY_DELAY_MS = 150;
+
+export type BaseRpcFailureKind =
+  | "invalid_request"
+  | "forbidden"
+  | "rate_limited"
+  | "server_error"
+  | "timeout"
+  | "network_error"
+  | "unknown";
+
+const DETERMINISTIC_INVALID_RPC_CODES = new Set([
+  -32700, // Parse error
+  -32600, // Invalid Request (includes Alchemy Free-tier eth_getLogs 10-block cap)
+  -32601, // Method not found
+  -32602, // Invalid params
+  -32004, // Method not supported
+]);
+
+const USER_OR_AUTH_REJECT_RPC_CODES = new Set([
+  -32003, // Transaction rejected
+  4001,   // UserRejectedRequestError
+  4100,   // UnauthorizedProviderError
+  4200,   // UnsupportedProviderMethodError
+  4900,   // Disconnected
+  4901,   // ChainDisconnected
+  4902,   // SwitchChainError
+]);
+
+const RATE_LIMIT_RPC_CODES = new Set([
+  -32005, // LimitExceededRpcError (unless message indicates block/log range cap)
+  -32016, // Rate limit exceeded
+]);
+
+const DETERMINISTIC_RANGE_OR_SIZE_RE =
+  /\b(\d+)\s*[- ]?block range\b|up to a \d+ block|exceed(?:s|ed)? max(?:imum)?.*range|block range (?:is )?too (?:large|wide)|max(?:imum)? (?:block )?range|query returned more than|more than \d+ results|response size exceeded|log response size/i;
+
+function extractStatusAndCode(error: unknown): {
+  status: number | null;
+  code: number | null;
+  name: string;
+  message: string;
+} {
+  let status: number | null = null;
+  let code: number | null = null;
+  const names: string[] = [];
+  const messages: string[] = [];
+
+  let cursor: unknown = error;
+  for (let depth = 0; depth < 6 && cursor && typeof cursor === "object"; depth += 1) {
+    const rec = cursor as {
+      status?: unknown;
+      statusCode?: unknown;
+      code?: unknown;
+      name?: unknown;
+      message?: unknown;
+      shortMessage?: unknown;
+      details?: unknown;
+      cause?: unknown;
+    };
+    if (status === null) {
+      if (typeof rec.status === "number" && Number.isInteger(rec.status)) status = rec.status;
+      else if (typeof rec.statusCode === "number" && Number.isInteger(rec.statusCode)) status = rec.statusCode;
+    }
+    if (code === null && typeof rec.code === "number" && Number.isInteger(rec.code)) {
+      code = rec.code;
+    }
+    if (typeof rec.name === "string" && rec.name) names.push(rec.name);
+    if (typeof rec.shortMessage === "string" && rec.shortMessage) messages.push(rec.shortMessage);
+    if (typeof rec.message === "string" && rec.message) messages.push(rec.message);
+    if (typeof rec.details === "string" && rec.details) messages.push(rec.details);
+    cursor = rec.cause;
+  }
+
+  return {
+    status,
+    code,
+    name: names.join(" "),
+    message: messages.join(" | "),
+  };
+}
+
+/**
+ * Classifies an RPC / transport error so fallback and retry policies can
+ * distinguish deterministic invalid requests (HTTP 400, -32600, -32602,
+ * block-range caps) and auth/quota refusals (HTTP 401/403) from transient
+ * rate-limit (429), 5xx, timeout, and network failures.
+ */
+export function classifyBaseRpcFailure(error: unknown): BaseRpcFailureKind {
+  const { status, code, name, message } = extractStatusAndCode(error);
+
+  if (DETERMINISTIC_RANGE_OR_SIZE_RE.test(message)) {
+    return "invalid_request";
+  }
+  if (code !== null && (DETERMINISTIC_INVALID_RPC_CODES.has(code) || USER_OR_AUTH_REJECT_RPC_CODES.has(code))) {
+    return "invalid_request";
+  }
+  if (status === 400 || status === 413 || status === 422) {
+    return "invalid_request";
+  }
+  if (status === 401 || status === 403) {
+    return "forbidden";
+  }
+  if (status === 429 || (code !== null && RATE_LIMIT_RPC_CODES.has(code)) || /\b429\b|rate limit|too many requests/i.test(message)) {
+    return "rate_limited";
+  }
+  if (status === 408 || /timeout|timed out|abort/i.test(name) || /timed out|request took too long/i.test(message)) {
+    return "timeout";
+  }
+  if (status !== null && status >= 500 && status <= 599) {
+    return "server_error";
+  }
+  if (
+    status === 0 ||
+    /fetch failed|network|econnrefused|enotfound|ehostunreach|etimedout|socket/i.test(message) ||
+    /HttpRequestError/i.test(name)
+  ) {
+    return "network_error";
+  }
+  if (code === -32603 || code === -32000 || code === -32002) {
+    return "server_error";
+  }
+  return "unknown";
+}
+
+function shouldStopRpcFallback(error: unknown): boolean {
+  return classifyBaseRpcFailure(error) === "invalid_request";
+}
+
+function shouldRetryRpcFailure(error: unknown): boolean {
+  const kind = classifyBaseRpcFailure(error);
+  return kind === "rate_limited" || kind === "server_error" || kind === "timeout" || kind === "network_error";
+}
 
 export function rpcUrls(): string[] {
   const urls = [
@@ -257,14 +391,65 @@ async function probingFetchFn(url: string | URL | globalThis.Request, init?: Req
  */
 export function createBaseRpcClient(
   urls: string[] = rpcUrls(),
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; retryCount?: number; retryDelayMs?: number } = {},
 ) {
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const retryCount = opts.retryCount ?? DEFAULT_RETRY_COUNT;
+  const retryDelay = opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+  const innerFallback = fallback(
+    urls.map((url) => http(url, { timeout, retryCount: 0, fetchFn: probingFetchFn })),
+    { retryCount: 0, shouldThrow: shouldStopRpcFallback },
+  );
+  const inFlightRequests = new Map<string, Promise<unknown>>();
+  const transport: ReturnType<typeof fallback> = (params) => {
+    const resolved = innerFallback({ ...params, retryCount: 0 });
+    return {
+      ...resolved,
+      async request(args, requestOpts) {
+        let dedupeKey: string | null = null;
+        try {
+          dedupeKey = JSON.stringify({ m: args.method, p: args.params ?? null });
+        } catch {
+          dedupeKey = null;
+        }
+        if (dedupeKey) {
+          const existing = inFlightRequests.get(dedupeKey);
+          if (existing) return existing as never;
+        }
+
+        const run = (async () => {
+          let lastError: unknown;
+          for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+            try {
+              return await resolved.request(args, requestOpts);
+            } catch (err) {
+              lastError = err;
+              if (!shouldRetryRpcFailure(err) || attempt === retryCount) {
+                throw err;
+              }
+              if (retryDelay > 0) {
+                await new Promise((r) => setTimeout(r, retryDelay * 2 ** attempt));
+              }
+            }
+          }
+          throw lastError;
+        })().finally(() => {
+          if (dedupeKey) inFlightRequests.delete(dedupeKey);
+        });
+
+        if (dedupeKey) inFlightRequests.set(dedupeKey, run);
+        return (await run) as never;
+      },
+    };
+  };
   return createPublicClient({
     chain: base,
-    transport: fallback(urls.map((url) => http(url, { timeout, fetchFn: probingFetchFn }))),
+    transport,
   });
 }
+
+let cachedDefaultClient: ReturnType<typeof createBaseRpcClient> | null = null;
+let cachedDefaultClientKey: string | null = null;
 
 /** Human-readable, sanitized snapshot of recent transport outcomes. */
 export function describeBaseRpcHealth(): string {
@@ -276,8 +461,16 @@ export function describeBaseRpcHealth(): string {
 export function resetBaseRpcProbeForTests(): void {
   probeLog.length = 0;
   lastReportedAt = 0;
+  cachedDefaultClient = null;
+  cachedDefaultClientKey = null;
 }
 
 export function getTradePublicClient() {
-  return createBaseRpcClient();
+  const urls = rpcUrls();
+  const key = urls.join("|");
+  if (!cachedDefaultClient || cachedDefaultClientKey !== key) {
+    cachedDefaultClient = createBaseRpcClient(urls);
+    cachedDefaultClientKey = key;
+  }
+  return cachedDefaultClient;
 }

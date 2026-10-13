@@ -13,6 +13,7 @@ import type { Address } from "viem";
 // and metric recording (via logger, not here).
 
 const balanceCache = new Map<string, BalanceCacheEntry>();
+const inFlightBalances = new Map<string, Promise<bigint>>();
 
 function getCacheKey(walletAddress: Address): string {
   return `balance:${walletAddress.toLowerCase()}`;
@@ -34,20 +35,30 @@ export const balanceService = {
         return cached.balance.raw;
       }
 
-      const rawBalance = await tokenClient.getBalanceRaw(walletAddress);
-      const balance: TokenBalance = {
-        raw: rawBalance,
-        formatted: tokenClient.formatBalance(rawBalance, MPGR_TOKEN_CONFIG.decimals),
-        decimal: MPGR_TOKEN_CONFIG.decimals,
-      };
+      let inFlight = inFlightBalances.get(cacheKey);
+      if (!inFlight) {
+        inFlight = (async () => {
+          const rawBalance = await tokenClient.getBalanceRaw(walletAddress);
+          const balance: TokenBalance = {
+            raw: rawBalance,
+            formatted: tokenClient.formatBalance(rawBalance, MPGR_TOKEN_CONFIG.decimals),
+            decimal: MPGR_TOKEN_CONFIG.decimals,
+          };
 
-      balanceCache.set(cacheKey, {
-        balance,
-        timestamp: Date.now(),
-        ttl: MPGR_TOKEN_CONFIG.balanceCacheTtl,
-      });
+          balanceCache.set(cacheKey, {
+            balance,
+            timestamp: Date.now(),
+            ttl: MPGR_TOKEN_CONFIG.balanceCacheTtl,
+          });
 
-      return rawBalance;
+          return rawBalance;
+        })().finally(() => {
+          inFlightBalances.delete(cacheKey);
+        });
+        inFlightBalances.set(cacheKey, inFlight);
+      }
+
+      return await inFlight;
     } catch (err) {
       console.error("balanceService.getRawBalance failed", { walletAddress, error: err });
       return 0n;
