@@ -1,6 +1,7 @@
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import { autonomyDraftToForm } from "./autonomy-authorize-form";
 
@@ -382,6 +383,29 @@ describe("chat autonomous draft vs manual goal flow", () => {
     expect(reviewHtml).toContain('data-testid="agent-autonomy-draft-unavailable"');
     expect(reviewHtml).toContain("not available for autonomous trading");
     expect(reviewHtml).not.toContain('data-testid="agent-autonomy-draft-authorize"');
+  });
+});
+
+
+describe("exact conditional-buy reproduction review", () => {
+  it("renders the parsed amount and anchored trigger without authorizing anything", () => {
+    const prompt = "Buy AAPLc whenever price falls 1% worth 1 USDC";
+    const match = detectAutonomousTradeRequest(prompt);
+    expect(match).not.toBeNull();
+    const draft = buildGoalDraft(match!, prompt, { referencePrice: "347" });
+    const authorize = vi.fn();
+    const html = renderToStaticMarkup(createElement(AgentAutonomyDraftReview, {
+      autonomy: { ...fixtures.autonomy, draft, activateDraft: authorize } as never,
+    }));
+    expect(html).toContain('data-testid="agent-autonomy-draft-review"');
+    expect(html).toContain("Buy AAPLc when the price falls below 343.53 USDC");
+    expect(html).toContain("1 USDC");
+    expect(html).toContain("AAPLc is 347");
+    expect(html).toContain('value="1"');
+    expect(html).toContain('value="343.53"');
+    const form = autonomyDraftToForm(draft, [fixtures.USDC, fixtures.AAPLc]);
+    expect(form).toMatchObject({ sell: fixtures.USDC.address, buy: fixtures.AAPLc.address, sellAmount: "1", threshold: "343.53", kind: "price_below" });
+    expect(authorize).not.toHaveBeenCalled();
   });
 });
 

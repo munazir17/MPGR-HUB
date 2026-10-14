@@ -16,6 +16,7 @@ export const TRADE_SENTENCE_SYSTEM_PROMPT = [
   'Exact shape: {"side":"buy"|"sell","symbol":string,"amount":number|string|null,"spendAsset":string,"trigger":{"kind":"price_below","price":number}|{"kind":"percent_drop","percent":number}}.',
   "For buy, spendAsset is USDC. For sell, spendAsset is the named symbol (the asset being sold) and USDC is received. Prices are always USDC per named symbol.",
   "Amount is the spend amount per trade, not the trigger price. Use null if no amount was specified. Never invent an amount or a price.",
+  "A worth clause such as worth 1 USDC specifies the spend amount (1 USDC), never an absolute trigger price.",
   "A drop by a percent is percent_drop, not an absolute price. Do not calculate a reference price.",
   "Never supply token addresses, a router, minimum output, a broadcaster, tool calls, or execution instructions.",
   `Supported symbols: ${autonomyAllowedTargetSymbols().join(", ")}. Preserve an unknown symbol so code can refuse it.`,

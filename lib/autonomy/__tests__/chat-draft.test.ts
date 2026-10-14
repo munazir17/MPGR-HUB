@@ -60,6 +60,34 @@ describe("autonomous trade request detection", () => {
     expect(m!.triggerPrice).toBe("");
   });
 
+  it.each([
+    "Buy AAPLc whenever price falls 1% worth 1 USDC",
+    "Buy AAPLc when price falls 1% worth 1 USDC",
+    "Buy AAPLc whenever price falls 1% worth $1",
+    "Buy AAPLc whenever price falls 1% worth 0.5 USDC",
+  ])("separates a worth amount from the percent trigger: %s", (prompt) => {
+    const match = detectAutonomousTradeRequest(prompt);
+    expect(match).toMatchObject({
+      side: "buy", targetAsset: "AAPLc", spendAsset: "USDC",
+      triggerKind: "price_below", triggerPrice: "", percentDrop: 1,
+      amountPerTrade: prompt.includes("0.5") ? "0.5" : "1",
+    });
+  });
+
+  it.each([
+    "Buy AAPLc whenever price falls 1%",
+    "Buy AAPLc when price falls 1%",
+    "Buy AAPLc when it falls 1%",
+  ])("supports recurring wording and the price prefix independently: %s", (prompt) => {
+    expect(detectAutonomousTradeRequest(prompt)).toMatchObject({ percentDrop: 1, amountPerTrade: null });
+  });
+
+  it("uses worth as an amount with an absolute trigger, but never makes a spot order conditional", () => {
+    expect(detectAutonomousTradeRequest("Buy AAPLc whenever price falls below 250 worth 1 USDC"))
+      .toMatchObject({ triggerPrice: "250", percentDrop: null, amountPerTrade: "1" });
+    expect(detectAutonomousTradeRequest("Buy AAPLc worth 1 USDC")).toBeNull();
+  });
+
   it("absolute dollar points still win and behave byte-for-byte as before", () => {
     expect(detectAutonomousTradeRequest("Buy AAPLc whenever it falls below $200, max $20 per trade")).toMatchObject({
       triggerPrice: "200",

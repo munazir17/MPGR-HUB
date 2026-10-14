@@ -69,7 +69,9 @@ const TRIGGER_ABOVE = /\b(?:when|whenever|if|once|each time|every time)\b[^.?!]{
 const TRIGGER_ABOVE_ALT = /\b(?:rises?|climbs?)\s+(?:above|over|past)\b/i;
 const RECURRING = /\b(?:whenever|each time|every time|repeatedly|recurring|keep buying|keep selling|automatically|daily)\b/i;
 const PRICE_POINT = /\$\s*(\d+(?:\.\d+)?)|\b(\d+(?:\.\d+)?)\s*(?:usd|usdc)\b/i;
-const AMOUNT = /\bmax(?:imum)?\b[^.?!]{0,20}?\$?\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:usdc|usd|dollars?)\s*(?:per|each)\s*trade|\$?\s*(\d+(?:\.\d+)?)\s*(?:per|each)\s*trade|\b(?:buy|sell|spend|invest)\s+\$?\s*(\d+(?:\.\d+)?)(?=\b)/i;
+// Worth clauses are spend amounts, not absolute price points. Keeping their
+// spans here prevents "falls 1% worth 1 USDC" from treating 1 USDC as a trigger.
+const AMOUNT = /\bmax(?:imum)?\b[^.?!]{0,20}?\$?\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:usdc|usd|dollars?)\s*(?:per|each)\s*trade|\$?\s*(\d+(?:\.\d+)?)\s*(?:per|each)\s*trade|\b(?:buy|sell|spend|invest)\s+\$?\s*(\d+(?:\.\d+)?)(?=\b)|\bworth\s+(?:\$\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:usdc|usd|dollars?)\b)/i;
 /**
  * Relative percent triggers: "drops 1%", "falls 1%", "down 1 percent",
  * "dips 1.5 %". Deliberately narrow — a move VERB (or "down") immediately
@@ -135,7 +137,7 @@ export function detectAutonomousTradeRequest(prompt: string): AutonomyRequestMat
 
   const side = /\b(?:sell|selling)\b/i.test(text) ? "sell" : "buy";
   const spend = extractSpendAsset(text) ?? (side === "sell" ? target : "USDC");
-  const amountPerTrade = amount ? (amount[1] ?? amount[2] ?? amount[3] ?? amount[4] ?? null) : null;
+  const amountPerTrade = amount ? (amount[1] ?? amount[2] ?? amount[3] ?? amount[4] ?? amount[5] ?? amount[6] ?? null) : null;
 
   return {
     side,

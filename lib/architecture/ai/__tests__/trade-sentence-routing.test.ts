@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toolError, toolSuccess } from "@/lib/architecture/tools/agent-tool-result";
+import { appendAssistantReply, appendUserMessage } from "@/lib/agent-engine";
+import { getMemoryProvider, setMemoryProvider } from "@/lib/architecture/memory/memory-provider-registry";
+import type { MemoryProvider } from "@/lib/architecture/memory/memory-provider";
 import type { AIProviderRequest } from "../ai-provider";
 
 vi.mock("@/lib/api/authenticated-fetch", () => ({ fetchWithSession: vi.fn() }));
@@ -48,6 +51,84 @@ describe("conditional trade preflight (before any model tool loop/spot prepare)"
     expect(Object.keys(body).sort()).toEqual(["systemPrompt", "userPrompt"]);
     expect(body.systemPrompt).toContain("JSON only");
     // The ONLY request is completion: never policy/goal/authorization/tick.
+  });
+
+  it.each(["valid JSON", "malformed JSON", "unauthenticated", "provider unavailable"])(
+    "exact preview reproduction produces a review-only draft with %s", async (mode) => {
+      const prompt = "Buy AAPLc whenever price falls 1% worth 1 USDC";
+      if (mode === "valid JSON") model(json({ amount: "1" }));
+      else if (mode === "malformed JSON") model("{}");
+      else extract.mockResolvedValue(new Response(JSON.stringify({ error: "unavailable" }), { status: mode === "unauthenticated" ? 401 : 503 }));
+      const response = await getAIProvider().generateReply(request(prompt));
+      expect(response.autonomyGoalDraft).toMatchObject({
+        side: "buy", targetAsset: "AAPLc", spendAsset: "USDC", amountPerTrade: "1",
+        percentDrop: 1, triggerKind: "price_below", referencePrice: "347", triggerPrice: "343.53", supported: true,
+        sourcePrompt: prompt,
+      });
+      expect(response.tradeProposal).toBeUndefined();
+      expect(response.reply).toContain("343.53");
+      expect(response.reply).toContain("1 USDC per trade");
+      expect(readPrice).toHaveBeenCalledExactlyOnceWith("get_pair", { symbol: "AAPLc" }, expect.anything());
+      expect(runToolCallingLoop).not.toHaveBeenCalled();
+      expect(extract).toHaveBeenCalledTimes(1);
+      expect(String(extract.mock.calls[0][0])).toMatch(/\/complete/);
+    },
+  );
+
+  it.each([
+    ["Buy FOOc whenever price falls 1% worth 1 USDC", /not available for autonomous trading/],
+    ["Buy AAPLc whenever price falls 1% worth 10001 USDC", /policy cap/],
+    ["Buy AAPLc whenever price falls 1% worth 0 USDC", /positive/],
+  ])("worth parsing still validates the symbol and amount: %s", async (prompt, error) => {
+    model("{}");
+    const response = await getAIProvider().generateReply(request(prompt));
+    expect(response.reply).toMatch(error);
+    expect(response.autonomyGoalDraft).toBeUndefined();
+    expect(response.tradeProposal).toBeUndefined();
+    expect(readPrice).not.toHaveBeenCalled();
+    expect(runToolCallingLoop).not.toHaveBeenCalled();
+    expect(extract).toHaveBeenCalledTimes(1);
+  });
+
+  it("never invents a reference price for the exact sentence when the live read fails", async () => {
+    model("{}");
+    readPrice.mockResolvedValue(toolError("get_pair", { code: "DATA_UNAVAILABLE", message: "unavailable" }));
+    const response = await getAIProvider().generateReply(request("Buy AAPLc whenever price falls 1% worth 1 USDC"));
+    expect(response.autonomyGoalDraft).toBeUndefined();
+    expect(response.reply).toMatch(/could not get a live/);
+    expect(runToolCallingLoop).not.toHaveBeenCalled();
+  });
+
+  it("threads the exact sentence unchanged through conversation persistence into the UI message", async () => {
+    const prompt = "Buy AAPLc whenever price falls 1% worth 1 USDC";
+    const address = "0x00000000000000000000000000000000000000aa";
+    const previousMemory = getMemoryProvider();
+    const store = new Map<string, unknown>();
+    const memory: MemoryProvider = {
+      get: async <T extends object>(key: string, fallback: T) => (store.get(key) as T | undefined) ?? fallback,
+      set: async (key, value) => { store.set(key, value); },
+      remove: async (key) => { store.delete(key); },
+      has: async (key) => store.has(key),
+      beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {},
+    };
+    setMemoryProvider(memory);
+    model("{}"); // Force the same local-fallback branch as the reported error.
+    try {
+      await appendUserMessage(address, prompt);
+      const state = await appendAssistantReply(address, prompt, request(prompt).agentContext);
+      expect(state.messages).toHaveLength(2);
+      expect(state.messages[0].content).toBe(prompt);
+      expect(state.messages[1].autonomyGoalDraft).toMatchObject({
+        sourcePrompt: prompt, amountPerTrade: "1", percentDrop: 1, referencePrice: "347", triggerPrice: "343.53",
+      });
+      expect(state.messages[1].tradeProposal).toBeUndefined();
+      expect(readPrice).toHaveBeenCalledExactlyOnceWith("get_pair", { symbol: "AAPLc" }, expect.anything());
+      expect(extract).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(extract.mock.calls[0][1]!.body as string).userPrompt).toBe(prompt);
+      expect(runToolCallingLoop).not.toHaveBeenCalled();
+    } finally {
+      setMemoryProvider(previousMemory);
+    }
   });
 
   it.each(["1 USDC", "$1"])("attaches next-turn %s to this conversation's draft without another model call", async (amount) => {
