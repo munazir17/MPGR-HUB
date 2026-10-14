@@ -68,8 +68,8 @@ const systemUnderTest: AutonomySystem = {
   } as unknown as AutonomySystem["scheduler"],
 };
 
-const SELL = "0xcccccccccccccccccccccccccccccccccccccc03" as Address;
-const BUY = "0xdddddddddddddddddddddddddddddddddddddd04" as Address;
+const SELL = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Address;
+const BUY = "0xb200000000000000000000C2e324d24d7eEcd1fb" as Address;
 const POLICY_ID = "pol_sec_test_1";
 const GOAL_ID = "goal_sec_test_1";
 

@@ -1,3 +1,4 @@
+import { isLiveAutonomyPair } from "@/lib/autonomy/chat-draft";
 // app/api/agent/autonomy/goals/route.ts
 //
 // Autonomous goals (spec §8/§18). Session-scoped: a wallet sees and
@@ -86,6 +87,8 @@ export async function POST(request: Request) {
     if (!policy || policy.wallet.toLowerCase() !== auth.wallet.toLowerCase()) {
       return json({ error: "Policy not found.", code: "POLICY_NOT_FOUND" }, { status: 404, headers: { "Cache-Control": "no-store" } });
     }
+
+    if (policy.chainId === 8453 && !isLiveAutonomyPair(policy.sellToken, policy.buyToken)) return json({ error: "This pair is not live for autonomous goals.", code: "UNSUPPORTED_ASSET" }, { status: 400 });
 
     // Trade spec derives from the POLICY (pair), not from the request —
     // a goal can never trade a pair its authorization does not cover.

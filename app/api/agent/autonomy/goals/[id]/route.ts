@@ -1,3 +1,4 @@
+import { isLiveAutonomyPair } from "@/lib/autonomy/chat-draft";
 // app/api/agent/autonomy/goals/[id]/route.ts
 //
 // Per-goal user control (spec §18): inspect, pause, resume, edit limits,
@@ -100,7 +101,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       }
       const goal = loaded.goal;
       const policy = await store.getPolicy(goal.policyId);
-      if (!policy || readiness.delegated.chainId !== policy.chainId || (policy.chainId === 8453 && readiness.productionGate !== true) || policy.wallet.toLowerCase() !== loaded.auth.wallet.toLowerCase() ||
+      if (!policy || (policy.chainId === 8453 && !isLiveAutonomyPair(policy.sellToken, policy.buyToken)) || readiness.delegated.chainId !== policy.chainId || (policy.chainId === 8453 && readiness.productionGate !== true) || policy.wallet.toLowerCase() !== loaded.auth.wallet.toLowerCase() ||
           !(new Date(goal.expiresAt).getTime() > now.getTime())) {
         return json({ error: "Goal or policy has expired or is unavailable.", code: "AUTHORIZATION_REQUIRED" }, { status: 409 });
       }

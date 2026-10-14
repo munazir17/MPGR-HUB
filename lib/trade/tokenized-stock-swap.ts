@@ -13,6 +13,7 @@ import "server-only";
 // issuer mint/redeem is Authorized Participant only.
 // CDP Trade API / 0x reject B20 — they are not used on this path.
 
+import { isNotYetLiveB20 } from "@/lib/markets/base-pairs";
 import { buildExecutorSwapProposal } from "./trade-executor-quote";
 import { BASE_USDC } from "./trade-config";
 import {
@@ -110,6 +111,8 @@ export async function prepareTokenizedStockSwap(input: {
       },
     };
   }
+
+  if (isNotYetLiveB20(catalog.ticker)) return { ok: false, error: { code: "UNSUPPORTED_ASSET", message: `${catalog.ticker} is announced-not-live. No quote can be prepared.` } };
 
   const amountUnit = input.amountUnit === "token" ? "token" : "usd";
   const usd = parsePositiveDecimal(input.amountHuman);

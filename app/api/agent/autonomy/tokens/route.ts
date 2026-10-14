@@ -24,7 +24,7 @@ import { NextResponse } from "next/server";
 // Minimal projection: address, symbol, decimals. Never raw MCP/RPC output.
 
 import { isAutonomousAgentEnabled } from "@/lib/autonomy/config";
-import { parsePolicyChainId, policyChainLabel, policyRegistryFor, delegatedExecutionConfigured } from "@/lib/autonomy/api-helpers";
+import { resolveExecutorToken, parsePolicyChainId, policyChainLabel, policyRegistryFor, delegatedExecutionConfigured } from "@/lib/autonomy/api-helpers";
 import { delegatedExecutorAddressFor, isDelegatedChainId } from "@/lib/executor/delegated-executor";
 import { findExecutorRoute } from "@/lib/executor/executor-config";
 
@@ -57,7 +57,7 @@ export async function GET(request?: Request) {
     );
   }
 
-  const tokens = deployment.tokens.map((token) => ({
+  const tokens = deployment.tokens.filter((t) => resolveExecutorToken(t.address, chainId).ok).map((token) => ({
     address: token.address,
     symbol: token.symbol,
     decimals: token.decimals,

@@ -88,3 +88,16 @@ describe("single-pair reference recovery (read-only)", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+it("repairs WETH using the same existing Base DEX reference path, without treating ETH as WETH", async () => {
+  const pair = findBasePair("WETH")!;
+  expect(pair.address).toBe("0x4200000000000000000000000000000000000006");
+  expect(findBasePair("ETH")).toBeNull();
+  const before: TapePairDetail = { ...detail(), stockEntry: null,
+    pair: { ...detail().pair, symbol: pair.symbol, address: pair.address, kind: "wrapped", chainlinkFeed: null },
+    wrappedEntry: { symbol: pair.symbol, address: pair.address, name: pair.name, usd: null, source: "unavailable", stale: true, updatedAt: null, change24h: null } };
+  const result = await refreshPairReference(before, request(200, { pairs: [pool({ baseToken: { address: pair.address }, priceUsd: "2500" })] }));
+  expect(selectReferencePrice({ ...result, asOf: result.referenceAsOf, stock: null, wrapped: result.wrappedEntry }, "WETH"))
+    .toMatchObject({ ok: true, referencePrice: "2500", source: "dexscreener" });
+  expect(result.wrappedEntry?.usd).toBe(2500);
+});

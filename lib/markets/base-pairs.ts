@@ -31,7 +31,7 @@ import {
   B20_ORACLE_REGISTRY,
   COINBASE_B20_TOKENIZED_STOCKS,
 } from "@/lib/trade/tokenized-stocks";
-import { BASE_USDC } from "@/lib/trade/trade-config";
+import { BASE_USDC, BASE_WETH } from "@/lib/trade/trade-config";
 
 export type BasePairKind = "wrapped" | "stable" | "b20-stock";
 
@@ -164,6 +164,13 @@ const WRAPPED_AND_STABLE_ENTRIES: readonly BasePairEntry[] = [
     onTape: true,
     segment: "wrapped",
     notes: "Native USDC on Base — the quote asset for every B20 stock pool.",
+  },
+  {
+    // Canonical Base wrapped native asset, already in the executor registry.
+    // Reference pricing uses the existing DEX source; ETH remains distinct.
+    symbol: "WETH", name: "Wrapped Ether", kind: "wrapped", address: BASE_WETH,
+    decimals: 18, chainId: CHAIN_ID, live: true, onTape: true, segment: "wrapped",
+    notes: "Canonical wrapped ETH on Base. Not native ETH; quotes and permissions are separate.",
   },
   // Official Coinbase-published Base addresses (coinbase.com/campaigns/
   // wrapped-assets). Included because the addresses are official, not

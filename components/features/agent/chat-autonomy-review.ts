@@ -6,14 +6,16 @@ import { revalidateTradeProposal } from "@/lib/trade/trade-confirmation";
 import { TRADE_QUOTE_MAX_AGE_MS } from "@/lib/trade/trade-config";
 import { isSupportedTradeProvider, type TradeProposal } from "@/lib/trade/trade-types";
 import { formatUnits, isAddress } from "viem";
-import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as registry, findExecutorRoute } from "@/lib/executor/executor-config";
+import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as registry } from "@/lib/executor/executor-config";
 import { AUTONOMY_LIMITS, AUTONOMY_SLIPPAGE_BOUNDS } from "@/lib/autonomy/config";
 import { normalizeCondition, parseBaseUnits } from "@/lib/autonomy/policy-engine";
 import type { AutonomyConfig, AutonomyTokenOption } from "@/hooks/useAgentAutonomy";
+import { isLiveAutonomyPair } from "@/lib/autonomy/chat-draft";
+import { findBasePairByAddress } from "@/lib/markets/base-pairs";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import { autonomyDraftToForm, type AutonomyAuthorizeFormState } from "./autonomy-authorize-form";
 
-export const CHAT_REVIEW_TOKENS: AutonomyTokenOption[] = registry.tokens.map(({ address, symbol, decimals }) => ({ address, symbol, decimals }));
+export const CHAT_REVIEW_TOKENS: AutonomyTokenOption[] = registry.tokens.filter((t) => findBasePairByAddress(t.address)?.live === true).map(({ address, symbol, decimals }) => ({ address, symbol, decimals }));
 
 export function chatDraftToForm(draft: AutonomyGoalDraft): AutonomyAuthorizeFormState {
   const form = autonomyDraftToForm(draft, CHAT_REVIEW_TOKENS);
@@ -30,7 +32,7 @@ export function validateChatReviewForm(form: AutonomyAuthorizeFormState, limits:
   const sell = CHAT_REVIEW_TOKENS.find((t) => t.address.toLowerCase() === form.sell.toLowerCase());
   const buy = CHAT_REVIEW_TOKENS.find((t) => t.address.toLowerCase() === form.buy.toLowerCase());
   if (!sell || !buy) return "Select both supported Base tokens.";
-  if (!findExecutorRoute(registry, sell.address as `0x${string}`, buy.address as `0x${string}`)) return "Select a pair with a registered Base route.";
+  if (!isLiveAutonomyPair(sell.address, buy.address)) return "Select a pair with a registered Base route.";
   if (!limits) return "Autonomy settings are still loading. Retry loading settings.";
   if (![limits.minCooldownSeconds, limits.maxPolicyTtlDays, limits.maxSlippageBps].every((n) => Number.isSafeInteger(n) && n > 0)) {
     return "Autonomy limits are unavailable. Retry loading settings.";

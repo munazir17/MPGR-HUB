@@ -9,6 +9,7 @@ import "server-only";
 // non-secret authorization reference binding a policy to the session
 // that created it.
 
+import { findBasePairByAddress } from "@/lib/markets/base-pairs";
 import { createHash } from "node:crypto";
 import type { Address } from "viem";
 
@@ -99,6 +100,9 @@ export function resolveExecutorToken(
       ok: false,
       message: `token is not on the MPGR Executor allowlist for ${policyChainLabel(chainId)} — autonomous policies are restricted to executor-routable pairs.`,
     };
+  }
+  if (chainId === BASE_MAINNET_CHAIN_ID && findBasePairByAddress(token.address)?.live !== true) {
+    return { ok: false, message: `${token.symbol} is not live for autonomous trading.` };
   }
   return { ok: true, address: token.address, decimals: token.decimals, symbol: token.symbol };
 }

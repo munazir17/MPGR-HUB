@@ -29,6 +29,7 @@
 // that says it is NOT available for autonomous trading — no tokens, routes,
 // or contract allowlist entries are added here.
 
+import { findBasePairByAddress } from "@/lib/markets/base-pairs";
 import { AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, findExecutorRoute } from "@/lib/executor/executor-config";
 
@@ -222,6 +223,9 @@ function isStablecoinLike(symbol: string): boolean {
 
 /** The traded asset: ticker after buy/sell, or a known -c B20 ticker in the text. */
 function extractTargetAsset(text: string): string | null {
+  // Dollar-budget-first requests preserve the exact asset, including native ETH.
+  const budgetFirst = /\b(?:buy|sell|accumulate|purchase)\s+\$\s*\d+(?:\.\d+)?\s+(?:of\s+)?([a-z]{2,10}c?)\b/i.exec(text);
+  if (budgetFirst) return normalizeTicker(budgetFirst[1]);
   const buySell = /\b(?:buy|sell|accumulate|purchase)\s+([a-z]{2,10}c?)\b/i.exec(text);
   if (buySell) {
     const raw = buySell[1];
@@ -255,6 +259,7 @@ function normalizeTicker(raw: string): string {
     META: "METAc", METAC: "METAc",
     MSFT: "MSFTc", MSFTC: "MSFTc",
     COIN: "COINc", COINC: "COINc",
+    ETH: "ETH", WETH: "WETH",
   };
   const hit = canonical[upper];
   if (hit) return hit;
@@ -284,6 +289,7 @@ export function autonomyAllowedTargetSymbols(): string[] {
   const usdc = BASE_MAINNET_EXECUTOR_DEPLOYMENT.tokens.find((t) => t.symbol.toUpperCase() === "USDC");
   return BASE_MAINNET_EXECUTOR_DEPLOYMENT.tokens
     .filter((t) => usdc && t.address.toLowerCase() !== usdc.address.toLowerCase())
+    .filter((t) => findBasePairByAddress(t.address)?.live === true)
     .filter((t) => findExecutorRoute(BASE_MAINNET_EXECUTOR_DEPLOYMENT, usdc!.address, t.address) !== null)
     .map((t) => t.symbol);
 }
@@ -291,6 +297,7 @@ export function autonomyAllowedTargetSymbols(): string[] {
 /** The symbol must already be allowlisted AND have a registered USDC route. */
 export function checkAutonomyTarget(symbol: string): AutonomyTargetCheck {
   const needle = symbol.trim().toUpperCase();
+  if (needle === "ETH") return { ok: false, reason: "Native ETH is not supported for conditional delegated goals. ETH is not WETH. WETH is a separately supported wrapped asset; request WETH explicitly if that is what you want. Nothing was substituted or authorized." };
   const token = BASE_MAINNET_EXECUTOR_DEPLOYMENT.tokens.find((t) => t.symbol.toUpperCase() === needle);
   if (!token) {
     return {
@@ -305,7 +312,16 @@ export function checkAutonomyTarget(symbol: string): AutonomyTargetCheck {
   if (!findExecutorRoute(BASE_MAINNET_EXECUTOR_DEPLOYMENT, usdc.address, token.address)) {
     return { ok: false, reason: `${token.symbol} has no registered USDC route on the delegated executor, so it cannot be traded autonomously.` };
   }
+  if (findBasePairByAddress(token.address)?.live !== true) return { ok: false, reason: `${token.symbol} is announced-not-live, so pricing does not make it available for autonomous trading. No quote, goal or permission was created.` };
   return { ok: true, symbol: token.symbol, address: token.address, decimals: token.decimals };
+}
+
+/** Live declared routing capability, not evidence of liquidity or settlement. */
+export function isLiveAutonomyPair(sell: string, buy: string): boolean {
+  const registry = BASE_MAINNET_EXECUTOR_DEPLOYMENT;
+  const a = registry.tokens.find((t) => t.address.toLowerCase() === sell.toLowerCase());
+  const b = registry.tokens.find((t) => t.address.toLowerCase() === buy.toLowerCase());
+  return !!a && !!b && findBasePairByAddress(a.address)?.live === true && findBasePairByAddress(b.address)?.live === true && !!findExecutorRoute(registry, a.address, b.address);
 }
 
 // ---------------------------------------------------------------------------

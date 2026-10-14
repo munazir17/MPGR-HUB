@@ -191,3 +191,26 @@ describe("delegated allowlist gate (no new tokens or routes)", () => {
     expect(draft.unsupportedReason).toMatch(/not available for autonomous trading/);
   });
 });
+
+describe("advertised capabilities are live, not just registered", () => {
+  it.each(["COINc", "CRCLc", "INTCc"])("refuses not-live %s before pricing", (symbol) => {
+    expect(autonomyAllowedTargetSymbols()).not.toContain(symbol);
+    expect(checkAutonomyTarget(symbol)).toMatchObject({ ok: false, reason: expect.stringContaining("announced-not-live") });
+    const prompt = `Buy ${symbol} if it drops 2% worth 5 USDC`;
+    expect(buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt).supported).toBe(false);
+  });
+  it("keeps a dollar-first ETH request native and explains WETH as an explicit alternative", () => {
+    const prompt = "Buy $5 ETH if it drops 2%";
+    const match = detectAutonomousTradeRequest(prompt)!;
+    expect(match).toMatchObject({ targetAsset: "ETH", amountPerTrade: "5", spendAsset: "USDC", percentDrop: 2 });
+    const draft = buildGoalDraft(match, prompt);
+    expect(draft).toMatchObject({ targetAsset: "ETH", supported: false });
+    expect(draft.unsupportedReason).toContain("ETH is not WETH");
+    expect(draft.unsupportedReason).toContain("request WETH explicitly");
+  });
+  it("an explicitly requested WETH budget remains WETH", () => {
+    const prompt = "Buy $5 WETH if it drops 2%";
+    const draft = buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt, { referencePrice: "2500" });
+    expect(draft).toMatchObject({ targetAsset: "WETH", amountPerTrade: "5", triggerPrice: "2450", supported: true });
+  });
+});
