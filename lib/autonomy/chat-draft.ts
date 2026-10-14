@@ -84,6 +84,19 @@ const PERCENT_ABOVE = /\b(?:rises?|climbs?|gains?|jumps?|up)\s+(?:by\s+)?(\d{1,2
 /** Percent triggers outside 0 < pct <= 50 are treated as misparses. */
 const MAX_PLAUSIBLE_PERCENT = 50;
 
+/** A single conditional goal cannot encode alternatives or opposing triggers. */
+export function conditionalTradeInputError(prompt: string): string | null {
+  if (!/\b(?:buy|sell|purchase|accumulate)\b/i.test(prompt) ||
+      !/\b(?:when|whenever|if|once|falls?|drops?|dips?|below|under)\b/i.test(prompt)) return null;
+  if (/\b(?:or|either)\b/i.test(prompt) ||
+      ((TRIGGER_BELOW.test(prompt) || TRIGGER_BELOW_ALT.test(prompt)) && (TRIGGER_ABOVE.test(prompt) || TRIGGER_ABOVE_ALT.test(prompt))) ||
+      (PERCENT_BELOW.test(prompt) && PERCENT_ABOVE.test(prompt))) {
+    return "Specify one token pair, amount and trigger, without alternatives. Nothing was created or executed.";
+  }
+  if (/\bworth\s+\$?\s*-\d/i.test(prompt)) return "The spend amount must be positive. Nothing was created or executed.";
+  return null;
+}
+
 export interface AutonomyRequestMatch {
   side?: "buy" | "sell";
   triggerKind: "price_below" | "price_above";
@@ -107,7 +120,7 @@ export interface AutonomyRequestMatch {
  * never matches.
  */
 export function detectAutonomousTradeRequest(prompt: string): AutonomyRequestMatch | null {
-  if (!prompt || prompt.length > 400) return null;
+  if (!prompt || prompt.length > 400 || conditionalTradeInputError(prompt)) return null;
   const text = prompt.trim();
   if (text.length < 12) return null;
 

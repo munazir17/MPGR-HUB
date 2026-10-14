@@ -81,6 +81,16 @@ describe("actual conditional reference lookup path", () => {
     expect(response.autonomyGoalDraft).toBeUndefined();
     expect(network).toHaveBeenCalledTimes(1);
   });
+  it.each([
+    "Buy AAPLc when it falls below 250 or above 300 worth 1 USDC",
+    "Buy AAPLc whenever price falls 1% worth 1 USDC or 2 USDC",
+    "Buy AAPLc whenever price falls 1% worth -1 USDC",
+  ])("deterministic fallback refuses ambiguous/invalid source input without a price or execution call: %s", async (prompt) => {
+    const response = await new DeterministicAIProvider().generateReply(request(prompt));
+    expect(response.autonomyGoalDraft).toBeUndefined();
+    expect(response.tradeProposal).toBeUndefined();
+    expect(network).not.toHaveBeenCalled();
+  });
   it("never looks up an unsupported symbol", async () => {
     const response = await new DeterministicAIProvider().generateReply(request(prompt.replace("AAPLc", "FOOc")));
     expect(response.autonomyGoalDraft?.supported).toBe(false);

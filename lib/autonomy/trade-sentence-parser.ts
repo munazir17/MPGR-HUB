@@ -2,6 +2,7 @@ import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 import { resolveConfiguredProviderKind } from "@/lib/architecture/ai/ai-provider-config";
 import {
   autonomyAllowedTargetSymbols,
+  conditionalTradeInputError,
   checkAutonomyTarget,
   detectAutonomousTradeRequest,
   validateAutonomyMatch,
@@ -91,9 +92,21 @@ async function complete(systemPrompt: string, userPrompt: string): Promise<strin
 }
 
 export async function parseTradeSentence(prompt: string, completion: Completion = complete): Promise<TradeSentenceParseResult> {
+  const inputError = conditionalTradeInputError(prompt);
+  if (inputError) return { error: inputError };
+  const literal = detectAutonomousTradeRequest(prompt);
   let match: AutonomyRequestMatch | null = null;
   try { match = validateTradeSentenceJSON(await completion(TRADE_SENTENCE_SYSTEM_PROMPT, prompt)); } catch { /* local fallback */ }
-  match ??= detectAutonomousTradeRequest(prompt);
+  // Schema-valid JSON can still misread a worth amount as a price. When the
+  // literal syntax is understood, its explicit constraints cannot be changed
+  // by extraction. Novel syntax still uses the validated model normally.
+  if (literal && match &&
+      ((checkAutonomyTarget(match.targetAsset).symbol ?? match.targetAsset).toUpperCase() !== (checkAutonomyTarget(literal.targetAsset).symbol ?? literal.targetAsset).toUpperCase() ||
+       match.side !== literal.side || match.triggerKind !== literal.triggerKind ||
+       match.triggerPrice !== literal.triggerPrice || match.percentDrop !== literal.percentDrop ||
+       (literal.amountPerTrade !== null && match.amountPerTrade !== literal.amountPerTrade) ||
+       match.spendAsset.toUpperCase() !== literal.spendAsset.toUpperCase())) match = literal;
+  match ??= literal;
   if (!match) return { error: "I couldn't parse that conditional trade. Give a symbol and a price below or percent drop. Nothing was created or executed." };
   const target = checkAutonomyTarget(match.targetAsset);
   if (!target.ok) return { error: target.reason! };

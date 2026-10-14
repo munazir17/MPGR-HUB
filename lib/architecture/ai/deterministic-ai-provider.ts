@@ -20,6 +20,7 @@ import {
   buildGoalDraft,
   detectAmountOnlyFollowUp,
   detectAutonomousTradeRequest,
+  conditionalTradeInputError,
 } from "@/lib/autonomy/chat-draft";
 import {
   extractBaseSwapIntent,
@@ -69,6 +70,8 @@ export class DeterministicAIProvider implements AIProvider {
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
     if (hasNegativeTradeAmount(request.prompt)) return helpResponse("The swap amount must be positive. Nothing was signed or submitted.");
+    const conditionalInputError = conditionalTradeInputError(request.prompt);
+    if (conditionalInputError) return helpResponse(conditionalInputError);
     // Strict wallet-balance questions ("What is my MSTRc balance?", "How much
     // MPGR do I have?", "What's in my wallet?", "How much is my wallet
     // worth?") are answered from live reads — and ONLY what was asked. This

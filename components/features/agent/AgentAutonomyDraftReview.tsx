@@ -21,16 +21,18 @@
 // which the server re-validates end to end.
 
 import { useEffect, useId, useState } from "react";
+import { useAccount } from "wagmi";
 import { AnimatePresence, motion } from "framer-motion";
 import { Repeat, ShieldCheck, ShieldOff, X } from "lucide-react";
 import { useAgentAutonomy } from "@/hooks/useAgentAutonomy";
 import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import {
-  autonomyDraftToForm,
   autonomyFormToDraftInput,
   type AutonomyAuthorizeFormState,
 } from "./autonomy-authorize-form";
+import { CHAT_REVIEW_TOKENS, chatDraftToForm, chatQuoteKey, chatReviewAuthorizationError, validateChatReviewForm, type ChatReviewQuote } from "./chat-autonomy-review";
+import { parseBaseUnits } from "@/lib/autonomy/policy-engine";
 
 interface AgentAutonomyDraftReviewProps {
   autonomy: ReturnType<typeof useAgentAutonomy>;
@@ -40,7 +42,7 @@ export function AgentAutonomyDraftReview({ autonomy }: AgentAutonomyDraftReviewP
   const { draft, clearDraft } = autonomy;
   return (
     <AnimatePresence>
-      {draft && <DraftReviewDialog key={draft.sourcePrompt} draft={draft} autonomy={autonomy} onClose={clearDraft} />}
+      {draft && <DraftReviewDialog key={JSON.stringify(draft)} draft={draft} autonomy={autonomy} onClose={clearDraft} />}
     </AnimatePresence>
   );
 }
@@ -53,16 +55,21 @@ interface DraftReviewDialogProps {
 
 function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps) {
   const titleId = useId();
-  const { tokens, busy, error, dismissError, activateDraft, config, authenticated, authenticating, signIn } = autonomy;
+  const { chainId: walletChainId, isConnected } = useAccount();
+  const { tokens: runtimeTokens, busy, error, dismissError, activateDraft, config, authenticated, authenticating, signIn } = autonomy;
+  const tokens = CHAT_REVIEW_TOKENS;
   const [form, setForm] = useState<AutonomyAuthorizeFormState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [activated, setActivated] = useState(false);
   const [activatedMode, setActivatedMode] = useState<"standing" | "signed" | null>(null);
   // Minimum output per trade, prefilled from the LIVE quote — never zero.
-  const [quote, setQuote] = useState<{ key: string; minOut: string } | null>(null);
-  const formState = form ?? autonomyDraftToForm(draft, tokens);
+  const [quote, setQuote] = useState<ChatReviewQuote | null>(null);
+  const [quoteRetry, setQuoteRetry] = useState(0);
+  const formState = form ?? chatDraftToForm(draft);
   const setField = (patch: Partial<AutonomyAuthorizeFormState>) => setForm({ ...formState, ...patch });
-  const canAuthorize = Boolean(config?.enabled && !config.emergencyDisabled) && draft.supported !== false;
+  const formError = validateChatReviewForm(formState, config?.limits);
+  const authorizationError = chatReviewAuthorizationError({ form: formState, config, tokens: runtimeTokens, quote, authenticated, walletChainId: isConnected ? walletChainId : undefined });
+  const canAuthorize = !authorizationError && draft.supported !== false;
   const verb = draft.side === "sell" ? "Sell" : "Buy";
   const direction = draft.triggerKind === "price_below" ? "falls below" : "rises above";
   const triggerLabel = draft.triggerKind === "price_below" ? "below" : "above";
@@ -73,17 +80,17 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
 
   // A quote belongs to exactly these inputs. Editing the amount/pair/slippage
   // immediately invalidates the floor, even if the replacement request fails.
-  const quoteKey = JSON.stringify([formState.sell, formState.buy, formState.sellAmount, formState.slippageBps]);
+  const quoteKey = chatQuoteKey(formState);
   const quotedMinOut = quote?.key === quoteKey ? quote.minOut : "";
 
-  // LIVE QUOTE prefill for the one-signature slot floor. Silent on failure:
-  // the activate step refuses to sign with an empty minimum output, so a
-  // failed prefill degrades to a clear message instead of a zero floor.
+  // Quote reads require a session: wait for explicit sign-in, never sign in
+  // from this effect. A failed/invalid prefill leaves authorization disabled
+  // with a retry message, never a zero floor.
   // NOTE: every new goal signs its OWN slot — a slot from another goal can
   // never fund this one (witness actionId binding) — so the quote is always
   // needed before activating.
   useEffect(() => {
-    if (draft.supported === false) return;
+    if (draft.supported === false || !authenticated || formError || !config?.enabled || config.emergencyDisabled) return;
     if (!sellTokenInfo || !buyTokenInfo) return;
     let cancelled = false;
     const load = async () => {
@@ -98,34 +105,27 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
             slippageBps: formState.slippageBps,
           }),
         });
-        if (!res.ok) return;
+        if (!res.ok) throw new Error("Quote unavailable");
         const payload = (await res.json().catch(() => null)) as { proposal?: { minToAmount?: string } } | null;
         const minOut = payload?.proposal?.minToAmount;
-        if (!cancelled && typeof minOut === "string" && Number.parseFloat(minOut) > 0) {
-          setQuote({ key: quoteKey, minOut });
-        }
+        if (typeof minOut !== "string" || !parseBaseUnits(minOut, buyTokenInfo.decimals)) throw new Error("Invalid quote floor");
+        if (!cancelled) setQuote({ key: quoteKey, minOut });
       } catch {
-        /* prefill stays empty; the explicit message covers activation */
+        if (!cancelled) setQuote({ key: quoteKey, minOut: "", error: "Could not load a valid live quote. Retry the quote; no goal was created." });
       }
     };
     void load();
     return () => {
       cancelled = true;
     };
-  }, [draft.supported, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps, quoteKey]);
+  }, [draft.supported, authenticated, formError, config?.enabled, config?.emergencyDisabled, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps, quoteKey, quoteRetry]);
 
   const handleAuthorize = async () => {
-    if (!formState.sell || !formState.buy) {
-      setNotice("Pick both tokens first.");
+    // Guard the handler as well as the button. No auth/policy/goal/signing
+    // action is allowed for an incomplete or stale-input review.
+    if (!canAuthorize || busy) {
+      setNotice(authorizationError ?? "This draft cannot be authorized.");
       return;
-    }
-    // If the wallet is connected but has no server-side SIWE session,
-    // initiate the existing wallet-auth flow first. After successful
-    // authentication, automatically continue the authorization the user
-    // explicitly requested — signing in alone never auto-authorizes.
-    if (!authenticated) {
-      const signedIn = await signIn();
-      if (!signedIn) return;
     }
     const result = await activateDraft({
       sellToken: formState.sell,
@@ -143,6 +143,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
       // the hook and re-validated server-side when the slot is registered).
       minAmountOutHuman: quotedMinOut,
     });
+    if (!result.ok) setNotice(result.message);
     if (result.ok) {
       setActivated(true);
       setActivatedMode(result.mode);
@@ -384,14 +385,24 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
                 </p>
                 {!canAuthorize && (
                   <p className="mb-3 text-[11px] text-muted">
-                    {config?.emergencyDisabled ? "Autonomous goals are disabled by the operator." : "Autonomous goals are unavailable right now."}
+                    {authorizationError}
                   </p>
                 )}
                 {!authenticated && (
-                  <p className="mb-3 text-[11px] text-amber-200" data-testid="agent-autonomy-draft-auth-notice">
-                    Sign in with your wallet to authorize this goal.
-                  </p>
+                  <div className="mb-3 text-[11px] text-amber-200" data-testid="agent-autonomy-draft-auth-notice">
+                    <p>Sign in to load the live quote. Sign-in alone does not authorize a goal.</p>
+                    <button type="button" data-testid="agent-autonomy-draft-sign-in" disabled={busy || authenticating || !isConnected}
+                      onClick={() => { void signIn().then((signedIn) => { if (signedIn) return autonomy.refresh(); }); }}
+                      className="mt-2 min-h-[44px] rounded-lg border border-white/10 px-3 disabled:opacity-50">
+                      {authenticating ? "Signing in…" : "Sign in with wallet"}
+                    </button>
+                  </div>
                 )}
+                <div className="mb-3 flex gap-2 text-[11px]">
+                  <button type="button" disabled={busy} onClick={() => { void autonomy.refresh(); }} className="min-h-[44px] rounded-lg border border-white/10 px-3">Retry loading settings</button>
+                  {authenticated && !formError && <button type="button" disabled={busy} onClick={() => { setQuote(null); setQuoteRetry((n) => n + 1); }} className="min-h-[44px] rounded-lg border border-white/10 px-3">Refresh live quote</button>}
+                </div>
+                {config?.productionGate === false && <p className="mb-3 text-[11px] text-muted">Base Mainnet autonomous execution is disabled. Authorization does not enable it.</p>}
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -404,9 +415,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
                       ? "Signing in…"
                       : busy
                         ? "Working…"
-                        : !authenticated
-                          ? "Sign in & authorize"
-                          : "Authorize & sign once"}
+                        : "Authorize & sign once"}
                   </button>
                   <button
                     type="button"

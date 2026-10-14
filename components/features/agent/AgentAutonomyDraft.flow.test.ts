@@ -25,8 +25,8 @@ const fixtures = vi.hoisted(() => {
     // must reuse the structured draft rather than reconstructing from text.
     sourcePrompt: "please set that up for me",
   };
-  const USDC = { address: "0x1111111111111111111111111111111111111111", symbol: "USDC", decimals: 6 };
-  const AAPLc = { address: "0x2222222222222222222222222222222222222222", symbol: "AAPLc", decimals: 8 };
+  const USDC = { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", symbol: "USDC", decimals: 6 };
+  const AAPLc = { address: "0xb200000000000000000000C2e324d24d7eEcd1fb", symbol: "AAPLc", decimals: 8 };
   const autonomy = {
     config: {
       enabled: true,
@@ -423,5 +423,27 @@ describe("sell draft direction and runtime ratio mapping", () => {
   it("rounds a non-terminating inverse conservatively (never before the USD threshold)", () => {
     const form = autonomyDraftToForm({ ...fixtures.DRAFT, side: "sell", spendAsset: "AAPLc", triggerPrice: "3" }, [fixtures.USDC, fixtures.AAPLc]);
     expect(form.threshold).toBe("0.333333333333333334");
+  });
+});
+
+describe("Chat review missing-catalog regression", () => {
+  it("renders Base USDC/AAPLc options and selections even when the runtime token request is empty", () => {
+    const html = renderToStaticMarkup(createElement(AgentAutonomyDraftReview, {
+      autonomy: { ...fixtures.autonomy, draft: DRAFT, tokens: [] } as never,
+    }));
+    expect(html).toMatch(/<option[^>]*selected=""[^>]*>USDC<\/option>/);
+    expect(html).toMatch(/<option[^>]*selected=""[^>]*>AAPLc<\/option>/);
+    expect(html).toMatch(/data-testid="agent-autonomy-draft-authorize"[^>]*\sdisabled=""/);
+  });
+  it("remounts review state when a different structured draft reuses the same prompt", () => {
+    const first = AgentAutonomyDraftReview({ autonomy: { ...fixtures.autonomy, draft: DRAFT } as never }) as ReactElement<{ children: ReactElement }>;
+    const changed = AgentAutonomyDraftReview({ autonomy: { ...fixtures.autonomy, draft: { ...DRAFT, triggerPrice: "0.20" } } as never }) as ReactElement<{ children: ReactElement }>;
+    expect(changed.props.children.key).not.toBe(first.props.children.key);
+  });
+  it("does not enable authorization before a validated live quote exists", () => {
+    const html = renderToStaticMarkup(createElement(AgentAutonomyDraftReview, {
+      autonomy: { ...fixtures.autonomy, draft: DRAFT } as never,
+    }));
+    expect(html).toMatch(/data-testid="agent-autonomy-draft-authorize"[^>]*\sdisabled=""/);
   });
 });

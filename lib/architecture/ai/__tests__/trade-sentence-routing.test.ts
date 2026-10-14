@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toolError, toolSuccess } from "@/lib/architecture/tools/agent-tool-result";
-import { appendAssistantReply, appendUserMessage } from "@/lib/agent-engine";
+import { appendAssistantReply, appendUserMessage, getAgentState } from "@/lib/agent-engine";
 import { getMemoryProvider, setMemoryProvider } from "@/lib/architecture/memory/memory-provider-registry";
 import type { MemoryProvider } from "@/lib/architecture/memory/memory-provider";
 import type { AIProviderRequest } from "../ai-provider";
@@ -94,6 +94,32 @@ describe("conditional trade preflight (before any model tool loop/spot prepare)"
     expect(extract).toHaveBeenCalledTimes(1);
   });
 
+  it("does not trust schema-valid model output that turns worth into a price or changes the explicit spend", async () => {
+    model(json({ amount: "9", trigger: { kind: "price_below", price: 1 } }));
+    const response = await getAIProvider().generateReply(request("Buy AAPLc whenever price falls 1% worth 1 USDC"));
+    expect(response.autonomyGoalDraft).toMatchObject({ amountPerTrade: "1", percentDrop: 1, referencePrice: "347", triggerPrice: "343.53" });
+    expect(response.tradeProposal).toBeUndefined();
+    expect(extract).toHaveBeenCalledTimes(1); // Extraction remains AI-powered.
+  });
+
+  it("does not let the model replace an explicitly unsupported ticker with an allowed one", async () => {
+    model(json({ amount: "1", symbol: "AAPLc" }));
+    const response = await getAIProvider().generateReply(request("Buy FOOc whenever price falls 1% worth 1 USDC"));
+    expect(response.autonomyGoalDraft).toBeUndefined();
+    expect(response.tradeProposal).toBeUndefined();
+    expect(response.reply).toMatch(/FOOc is not available/);
+    expect(readPrice).not.toHaveBeenCalled();
+  });
+
+  it("asks for clarification on alternative amounts instead of selecting one", async () => {
+    model(json({ amount: "1" }));
+    const response = await getAIProvider().generateReply(request("Buy AAPLc whenever price falls 1% worth 1 USDC or 2 USDC"));
+    expect(response.autonomyGoalDraft).toBeUndefined();
+    expect(response.tradeProposal).toBeUndefined();
+    expect(response.reply).toMatch(/one.*amount.*trigger/);
+    expect(readPrice).not.toHaveBeenCalled();
+  });
+
   it("never invents a reference price for the exact sentence when the live read fails", async () => {
     model("{}");
     readPrice.mockResolvedValue(toolError("get_pair", { code: "DATA_UNAVAILABLE", message: "unavailable" }));
@@ -110,7 +136,7 @@ describe("conditional trade preflight (before any model tool loop/spot prepare)"
     const store = new Map<string, unknown>();
     const memory: MemoryProvider = {
       get: async <T extends object>(key: string, fallback: T) => (store.get(key) as T | undefined) ?? fallback,
-      set: async (key, value) => { store.set(key, value); },
+      set: async (key, value) => { store.set(key, JSON.parse(JSON.stringify(value))); },
       remove: async (key) => { store.delete(key); },
       has: async (key) => store.has(key),
       beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {},
@@ -126,6 +152,9 @@ describe("conditional trade preflight (before any model tool loop/spot prepare)"
         sourcePrompt: prompt, amountPerTrade: "1", percentDrop: 1, referencePrice: "347", triggerPrice: "343.53",
       });
       expect(state.messages[1].tradeProposal).toBeUndefined();
+      const restored = await getAgentState(address);
+      expect(restored.messages[1].autonomyGoalDraft).toEqual(state.messages[1].autonomyGoalDraft);
+      expect(restored.messages[1].autonomyGoalDraft).not.toBe(state.messages[1].autonomyGoalDraft); // Actual JSON serialization, not an object reference.
       expect(readPrice).toHaveBeenCalledExactlyOnceWith("get_pair", { symbol: "AAPLc" }, expect.anything());
       expect(extract).toHaveBeenCalledTimes(1);
       expect(JSON.parse(extract.mock.calls[0][1]!.body as string).userPrompt).toBe(prompt);
