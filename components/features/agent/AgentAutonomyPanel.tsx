@@ -136,7 +136,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
   const [delegatedMinOut, setDelegatedMinOut] = useState("");
   const [delegatedHours, setDelegatedHours] = useState(24);
 
-  const activeCount = useMemo(() => goals.filter((g) => !["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"].includes(g.status)).length, [goals]);
+  const activeCount = useMemo(() => goals.filter((g) => ["ACTIVE", "WAITING", "EXECUTING"].includes(g.status)).length, [goals]);
 
   // Manual entry point only — never pre-filled from a chat draft.
   const formState = form ?? autonomyDraftToForm(null, tokens);
@@ -159,7 +159,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
     const result = await authorizeGoal(autonomyFormToDraftInput(formState));
     if (result.ok) {
       setForm(null);
-      setNotice("Goal activated. It stays inside the limits you set.");
+      setNotice("Draft saved — awaiting goal-bound authorization. It is not active yet.");
     }
   };
 
@@ -551,7 +551,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                       disabled={busy}
                       className="min-h-[36px] flex-1 rounded-lg bg-gradient-blue px-3 text-xs font-semibold text-white disabled:opacity-50"
                     >
-                      {busy && authenticating ? "Signing in…" : busy ? "Working…" : !authenticated ? "Sign in & authorize" : "Authorize & activate goal"}
+                      {busy && authenticating ? "Signing in…" : busy ? "Working…" : !authenticated ? "Sign in & save draft" : "Save draft (inactive)"}
                     </button>
                     {formDirty && (
                       <button
@@ -602,7 +602,7 @@ function GoalRow({ goal, symbolFor, humanFor, busy, onPause, onResume, onCancel,
   const direction = goal.condition.kind === "price_below" ? "below" : "above";
   const canPause = goal.status === "ACTIVE" || goal.status === "WAITING";
   const canResume = goal.status === "PAUSED";
-  const canCancel = ["ACTIVE", "WAITING", "PAUSED"].includes(goal.status);
+  const canCancel = ["ACTIVE", "WAITING", "PAUSED", "DRAFT"].includes(goal.status);
 
   const saveLimits = async (patch: GoalLimitsPatch) => {
     setSaving(true);

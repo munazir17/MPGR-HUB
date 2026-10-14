@@ -4,6 +4,10 @@
 // cancel — plus the full audit trail for the goal. Every mutation is a CAS
 // through the goal state machine; invalid transitions are refused with 409.
 
+import { autonomyStatus } from "@/lib/autonomy";
+import { readAutonomousEmergencySwitch } from "@/lib/autonomy/emergency-switch";
+import { findLiveSlotBoundToGoal, serverSlotToLike } from "@/lib/autonomy/draft-activation";
+import { validateNewSlotAgainstPolicy } from "@/lib/autonomy/delegated-authorization";
 import { NextResponse } from "next/server";
 
 import { verifyTrustedOrigin, readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
@@ -87,14 +91,40 @@ export async function PATCH(request: Request, context: RouteContext) {
   const auditType = { PAUSE: "GOAL_PAUSED", RESUME: "GOAL_RESUMED", CANCEL: "GOAL_CANCELLED" } as const;
 
   try {
-    if (action === "pause" || action === "resume" || action === "cancel") {
-      const to: GoalStatus = action === "pause" ? "PAUSED" : action === "resume" ? "ACTIVE" : "CANCELLED";
+    if (action === "activate" || action === "resume") {
+      // A session/policy grant is NOT token permission. Only persisted,
+      // live slots for this exact goal may make a draft runnable.
+      const readiness = autonomyStatus();
+      if (!readiness.executionAvailable || readiness.emergencyDisabled || !(await readAutonomousEmergencySwitch()).allowed) {
+        return json({ error: "Execution readiness is not confirmed; goal remains inactive.", code: "EXECUTION_NOT_READY" }, { status: 503 });
+      }
+      const goal = loaded.goal;
+      const policy = await store.getPolicy(goal.policyId);
+      if (!policy || readiness.delegated.chainId !== policy.chainId || (policy.chainId === 8453 && readiness.productionGate !== true) || policy.wallet.toLowerCase() !== loaded.auth.wallet.toLowerCase() ||
+          !(new Date(goal.expiresAt).getTime() > now.getTime())) {
+        return json({ error: "Goal or policy has expired or is unavailable.", code: "AUTHORIZATION_REQUIRED" }, { status: 409 });
+      }
+      const saved = await system().slots.listSlots(loaded.auth.wallet.toLowerCase(), policy.id);
+      const valid = saved.filter((slot) => slot.goalId === id && !validateNewSlotAgainstPolicy(slot, policy));
+      const coverage = findLiveSlotBoundToGoal([{ ...policy, revokedAt: policy.revokedAt ?? null }], valid.map(serverSlotToLike), { id, ...goal.trade }, now);
+      if (!coverage) return json({ error: "A live authorization bound to this goal is required.", code: "AUTHORIZATION_REQUIRED" }, { status: 409 });
+      // Retrying a confirmed activation does not create another goal.
+      if (action === "activate" && goal.status === "ACTIVE") return json({ goal: publicGoal(goal) }, { headers: { "Cache-Control": "no-store" } });
+      const updated = await store.transitionGoal(id, loaded.auth.wallet.toLowerCase(), action === "activate" ? ["DRAFT"] : ["PAUSED"], goal.updatedAt,
+        { status: "ACTIVE", updatedAt: nowIso, nextEvaluationAt: nowIso, lastAction: action });
+      if (!updated) return json({ error: "Goal state changed; reload before retrying.", code: "INVALID_TRANSITION" }, { status: 409 });
+      await store.appendAudit({ at: nowIso, type: "GOAL_RESUMED", goalId: id, wallet: loaded.auth.wallet, data: { action } }, AUTONOMY_LIMITS.maxAuditEventsPerGoal);
+      return json({ goal: publicGoal(updated) }, { headers: { "Cache-Control": "no-store" } });
+    }
+
+    if (action === "pause" || action === "cancel") {
+      const to: GoalStatus = action === "pause" ? "PAUSED" : "CANCELLED";
       const from: readonly GoalStatus[] =
-        action === "pause" ? ["ACTIVE", "WAITING"] : action === "resume" ? ["PAUSED"] : ["ACTIVE", "WAITING", "PAUSED", "DRAFT"];
+        action === "pause" ? ["ACTIVE", "WAITING"] : ["ACTIVE", "WAITING", "PAUSED", "DRAFT"];
       const updated = await store.transitionGoal(id, loaded.auth.wallet.toLowerCase(), from, loaded.goal.updatedAt, {
         status: to,
         updatedAt: nowIso,
-        nextEvaluationAt: action === "resume" ? nowIso : loaded.goal.nextEvaluationAt,
+        nextEvaluationAt: loaded.goal.nextEvaluationAt,
         lastAction: action,
       });
       if (!updated) return json({ error: "Goal state does not allow this action.", code: "INVALID_TRANSITION" }, { status: 409, headers: { "Cache-Control": "no-store" } });

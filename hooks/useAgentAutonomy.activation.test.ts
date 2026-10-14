@@ -155,6 +155,8 @@ interface Fixture {
   goalPostCount: number;
   slotPostCount: number;
   quoteMinToAmount: string;
+  activationStatus?: number;
+  registrationStatus?: number;
 }
 
 let fixture: Fixture;
@@ -219,6 +221,9 @@ function installFetch() {
       if (url.includes("/api/agent/autonomy/config")) return jsonResponse(CONFIG);
       if (url.includes("/api/agent/autonomy/tokens")) return jsonResponse({ tokens: [USDC, AAPLc] });
       if (url.includes("/api/agent/autonomy/goals") && method === "GET") return jsonResponse({ goals: [] });
+      if (url.includes("/api/agent/autonomy/goals/") && method === "PATCH") {
+        return jsonResponse(fixture.activationStatus ? { error: "Activation not confirmed" } : { goal: { id: url.split("/").at(-1), status: "ACTIVE" } }, { status: fixture.activationStatus ?? 200 });
+      }
       if (url.includes("/api/agent/autonomy/goals") && method === "POST") {
         fixture.goalPostCount += 1;
         const body = JSON.parse(init?.body ?? "{}") as Record<string, unknown>;
@@ -226,7 +231,7 @@ function installFetch() {
           goal: {
             id: `goal_${fixture.goalPostCount}`,
             policyId: body.policyId,
-            status: "ACTIVE",
+            status: "DRAFT",
             condition: body.condition,
             trade: { sellToken: USDC.address, buyToken: AAPLc.address, sellAmountRaw: "50000000", slippageBps: 100 },
             description: "test goal",
@@ -243,7 +248,10 @@ function installFetch() {
       }
       if (url.includes("/api/agent/autonomy/authorization") && method === "POST") {
         fixture.slotPostCount += 1;
-        return jsonResponse({ slots: [] }, { status: 201 });
+        if (fixture.registrationStatus) return jsonResponse({ error: "Registration unavailable" }, { status: fixture.registrationStatus });
+        const posted = JSON.parse(init?.body ?? "{}");
+        fixture.slots = [coveringSlot({ policyId: posted.policyId, goalId: posted.goalId })];
+        return jsonResponse({ slots: fixture.slots }, { status: 201 });
       }
       if (url.includes("/api/trade/quote")) {
         return jsonResponse({ proposal: { minToAmount: fixture.quoteMinToAmount } });
@@ -322,7 +330,7 @@ describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
     // THAT id (same actionId derivation) is genuinely this goal's own
     // authorization — activating skips the signature.
     fixture.policies = [coveringPolicy()];
-    fixture.slots = [coveringSlot({ goalId: "goal_1", id: "slot_goal1_0" })];
+    fixture.slots = [coveringSlot({ policyId: "policy_new_1", goalId: "goal_1", id: "slot_goal1_0" })];
 
     const result = await callActivate();
 
@@ -334,7 +342,7 @@ describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
 
   it("a slot bound to this goal's id but with a MISMATCHED actionId still signs once", async () => {
     fixture.policies = [coveringPolicy()];
-    fixture.slots = [coveringSlot({ goalId: "goal_1", id: "slot_goal1_0", actionId: mocks.actionIdFor("goal_other") })];
+    fixture.slots = [coveringSlot({ policyId: "policy_new_1", goalId: "goal_1", id: "slot_goal1_0", actionId: mocks.actionIdFor("goal_other") })];
 
     const result = await callActivate();
 
@@ -460,4 +468,40 @@ it("loads public settings independently of a stalled session-scoped goals GET", 
   expect(api.settingsRead).toMatchObject({ state: "loaded", httpStatus: 200 });
   expect(network).toHaveBeenCalledTimes(2);
   expect(wallet.signCalls).toHaveLength(0);
+});
+
+describe("same-goal activation retries", () => {
+  it("signature rejection leaves a draft and retry reuses its goal and policy", async () => {
+    const api = await bootHook();
+    const activate = api.activateDraft as (input: typeof ACTIVATION_INPUT) => Promise<{ ok: boolean }>;
+    wallet.signError = "User rejected signature";
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(false);
+    expect(fixture.goalPostCount).toBe(1);
+    expect(fixture.slotPostCount).toBe(0);
+    wallet.signError = null;
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(true);
+    expect(fixture.goalPostCount).toBe(1);
+    expect(fixture.policyPostCount).toBe(1);
+  });
+  it("registration failure never confirms active; retry does not duplicate a goal", async () => {
+    const api = await bootHook();
+    const activate = api.activateDraft as (input: typeof ACTIVATION_INPUT) => Promise<{ ok: boolean }>;
+    fixture.registrationStatus = 503;
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(false);
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(false);
+    fixture.registrationStatus = undefined;
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(true);
+    expect(fixture.goalPostCount).toBe(1);
+  });
+  it("failed activation after persistence retries the saved permission without another signature", async () => {
+    const api = await bootHook();
+    const activate = api.activateDraft as (input: typeof ACTIVATION_INPUT) => Promise<{ ok: boolean }>;
+    fixture.activationStatus = 503;
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(false);
+    fixture.activationStatus = undefined;
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(true);
+    expect(fixture.goalPostCount).toBe(1);
+    expect(fixture.policyPostCount).toBe(1);
+    expect(wallet.signCalls).toHaveLength(1);
+  });
 });

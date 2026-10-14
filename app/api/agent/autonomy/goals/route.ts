@@ -7,7 +7,7 @@
 // POST  create a goal bound to an EXISTING authorized policy. The goal's
 //       trade pair comes from the POLICY (never from the request), the
 //       condition is normalized deterministically, and the goal starts
-//       ACTIVE only while the policy is live — otherwise DRAFT.
+//       DRAFT until goal-bound signed authorization is persisted and activation confirmed.
 
 import { NextResponse } from "next/server";
 import { getAddress } from "viem";
@@ -111,7 +111,6 @@ export async function POST(request: Request) {
       ? new Date(Math.min(requestedExpiry.getTime(), policyExpiry.getTime()))
       : defaultExpiry;
 
-    const policyLive = policy.enabled && !policy.revokedAt && policyExpiry.getTime() > now.getTime();
     const sellDecimals = tokenDecimals(policy.sellToken, policy.chainId);
     const buyDecimals = tokenDecimals(policy.buyToken, policy.chainId);
     const goal: AgentGoal = {
@@ -123,7 +122,7 @@ export async function POST(request: Request) {
         typeof body.description === "string" && body.description.trim().length > 0 && body.description.length <= 200
           ? body.description.trim()
           : `${condition.value.kind === "price_below" ? "Buy" : "Sell"} when price ${condition.value.kind === "price_below" ? "<=" : ">="} ${condition.value.threshold}`,
-      status: policyLive ? "ACTIVE" : "DRAFT",
+      status: "DRAFT",
       condition: condition.value,
       trade: {
         sellToken: policy.sellToken,

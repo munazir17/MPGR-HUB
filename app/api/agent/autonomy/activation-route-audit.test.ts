@@ -2,29 +2,10 @@
 //
 // ACTIVATION-FLOW AUDIT (route level).
 //
-// Question under audit: "Authorize & activate goal" flipped a goal to ACTIVE
-// with NO on-chain approval popup. Is that intentional and safe?
-//
-// This suite drives the REAL production route handlers (policy POST -> goals
-// POST, exactly the two calls hooks/useAgentAutonomy.ts#authorizeGoal makes)
-// against the REAL RedisAutonomyStore, and proves:
-//
-//   A1. Activation is TWO off-chain writes and nothing else: one policy row,
-//       one goal row, two audit events. No transaction hash, no signature
-//       bytes, no approval, no broadcast — the goal is ACTIVE with
-//       triggered/verified == 0 and pendingTxHash == null.
-//   A2. The SIWE session is the ONLY credential consumed. The policy records
-//       a non-secret session digest (`authorizationRef`) as provenance; it is
-//       not, and cannot be mistaken for, an ERC-20/Permit2 token approval.
-//   A3. `authorized: true` is an explicit opt-in — omitting it is a 400.
-//   A4. THE MISSING CAPABILITY: the policy route can only ever mint a Base
-//       MAINNET (8453) policy over MAINNET tokens, while the delegated
-//       execution control plane is Base Sepolia (84532) only. So even a
-//       genuinely user-signed Permit2 witness slot is refused for a
-//       UI-activated goal (POLICY_CHAIN_MISMATCH) — delegated capability
-//       cannot be attached to it, and `GET /authorization` stays empty.
-//
-// Nothing here sends a transaction or touches a network.
+// Regression: policy + goal writes reserve a non-runnable DRAFT, not ACTIVE.
+// A SIWE grant is not a Permit2 slot. All tests are offline; there is no
+// broadcaster or live wallet involved. Activation after persisted goal-bound
+// permission is covered by authorization/route.test.ts.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";
@@ -176,8 +157,8 @@ describe("A1 — activation is two off-chain writes and nothing else", () => {
     expect(goalRes?.status).toBe(201);
 
     const goal = (goalBody as { goal: Record<string, unknown> }).goal;
-    // The UI's exact reported state: ACTIVE, 0 triggered, 0 verified, no tx.
-    expect(goal.status).toBe("ACTIVE");
+    // The reserved goal's truthful state: DRAFT, 0 triggered, 0 verified, no tx.
+    expect(goal.status).toBe("DRAFT");
     expect(goal.stats).toEqual({ evaluations: 0, triggered: 0, verified: 0, consecutiveFailures: 0 });
     expect(goal.pendingTxHash).toBeNull();
     expect(goal.lastAction).toBeNull();
@@ -209,7 +190,7 @@ describe("A1 — activation is two off-chain writes and nothing else", () => {
       goals: Array<{ status: string; pendingTxHash: string | null; stats: Record<string, number>; recentActions: unknown[] }>;
     };
     expect(listed.goals).toHaveLength(1);
-    expect(listed.goals[0].status).toBe("ACTIVE");
+    expect(listed.goals[0].status).toBe("DRAFT");
     expect(listed.goals[0].pendingTxHash).toBeNull();
     expect(listed.goals[0].stats.triggered).toBe(0);
     expect(listed.goals[0].stats.verified).toBe(0);
