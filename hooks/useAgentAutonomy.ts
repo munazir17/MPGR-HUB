@@ -132,7 +132,7 @@ export interface AutonomyTokenOption {
 const HEARTBEAT_MS = 60_000;
 const TERMINAL = new Set(["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"]);
 
-/** Goal counts for the agent's autonomous-status reply — total and non-terminal. */
+/** Goal counts for status replies: drafts and paused goals are not active. */
 export function summarizeAutonomyGoals(goals: AutonomyGoalView[]): { total: number; active: number } {
   return { total: goals.length, active: goals.filter((g) => ["ACTIVE", "WAITING", "EXECUTING"].includes(g.status)).length };
 }
@@ -498,7 +498,7 @@ export function useAgentAutonomy() {
       if (deadline <= Math.floor(Date.now() / 1000)) return { ok: false, message: "This policy has already expired." };
       const usedIndexes = new Set(usedSlotIndexes);
       const free = [0, 1, 2, 3, 4].filter((i) => !usedIndexes.has(i)).slice(0, count);
-      if (free.length === 0) return { ok: false, message: "No free authorization slots left for this policy — revoke one first." };
+      if (free.length === 0) return { ok: false, message: "All five nonce indexes for this goal have been used. They cannot be recycled; revocation does not create a new nonce." };
 
       setBusy(true);
       setError(null);
@@ -577,13 +577,17 @@ export function useAgentAutonomy() {
   );
 
   const confirmGoalActivation = useCallback(async (goalId: string): Promise<{ ok: boolean; message?: string }> => {
-    const res = await fetchWithSession(`/api/agent/autonomy/goals/${goalId}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "activate" }),
-    });
-    const body = await res.json().catch(() => null) as { goal?: AutonomyGoalView; error?: string } | null;
-    if (!res.ok || body?.goal?.status !== "ACTIVE") return { ok: false, message: body?.error ?? "Activation was not confirmed. Retry this same goal; do not create a new one." };
-    await refresh();
-    return { ok: true };
+    try {
+      const res = await fetchWithSession(`/api/agent/autonomy/goals/${goalId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "activate" }),
+      });
+      const body = await res.json().catch(() => null) as { goal?: AutonomyGoalView; error?: string } | null;
+      if (!res.ok || body?.goal?.status !== "ACTIVE") return { ok: false, message: body?.error ?? "Activation was not confirmed. Retry this same goal; do not create a new one." };
+      await refresh();
+      return { ok: true };
+    } catch {
+      return { ok: false, message: "Activation could not be confirmed. Reload the saved goal before retrying; do not create a duplicate." };
+    }
   }, [refresh]);
 
   /**
@@ -599,7 +603,13 @@ export function useAgentAutonomy() {
       const policy = policies.find((p) => p.id === input.policyId);
       const goal = goals.find((g) => g.id === input.goalId);
       if (!policy || !goal) return { ok: false, message: "Pick the goal to authorize." };
-      const usedIndexes = slots.filter((s) => s.policyId === input.policyId && !s.revokedAt && !s.consumedAt).map((s) => s.slotIndex);
+      // Consumed/revoked indexes still spent their deterministic nonce. Never
+      // present one as a fresh authorization or ask for that signature again.
+      const ownSlots = slots.filter((s) => s.policyId === input.policyId && s.goalId === input.goalId);
+      if (goal.status === "DRAFT" && findLiveSlotBoundToGoal([policy], ownSlots, { id: goal.id, ...goal.trade }, new Date())) {
+        return confirmGoalActivation(goal.id);
+      }
+      const usedIndexes = ownSlots.map((s) => s.slotIndex);
       const result = await signSlotsForPolicyGoal(policy, goal, input, usedIndexes);
       return result.ok && goal.status === "DRAFT" ? confirmGoalActivation(goal.id) : result;
     },
@@ -685,7 +695,9 @@ export function useAgentAutonomy() {
       }
       if (activationInFlight.current) return { ok: false, message: "This goal is already awaiting authorization." };
       activationInFlight.current = true;
-      const boundedInput = { ...input, minAmountOutHuman: undefined };
+      const boundedInput = [input.sellToken.toLowerCase(), input.buyToken.toLowerCase(), input.condition.kind, input.condition.threshold,
+        input.sellAmount, input.maxDaily, input.maxSlippageBps, input.maxActionsPerDay, input.ttlDays, input.cooldownSeconds,
+        input.maxTrades, input.description, input.slotExpiresInHours ?? 24];
       const reservationKey = JSON.stringify([address.toLowerCase(), chainId, boundedInput]);
       setBusy(true);
       setError(null);
@@ -764,7 +776,7 @@ export function useAgentAutonomy() {
             minAmountOutHuman: cleanedMinOut,
             expiresInHours: Math.max(1, Math.min(168, Math.floor(input.slotExpiresInHours ?? 24))),
           },
-          currentSlots.filter((s) => !s.revokedAt && !s.consumedAt).map((s) => s.slotIndex),
+          currentSlots.filter((s) => s.goalId === goal.goal.id).map((s) => s.slotIndex),
         );
         if (!signed.ok) {
           // The goal exists and stays watch-only; the user can sign later

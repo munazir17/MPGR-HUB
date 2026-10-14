@@ -3,7 +3,7 @@
 // components/features/agent/AgentAutonomyPanel.tsx
 //
 // Autonomous Agent Runtime — MINIMAL UI (spec §19). A collapsible drawer
-// rendered below the chat stage body. It contains exactly what the spec
+// rendered outside the chat stage through the shared trading launcher. It contains exactly what the spec
 // asks for and nothing more:
 //
 //   1. MODE DISPLAY   — whether the runtime is available, and that it is
@@ -32,6 +32,7 @@ import {
   type AutonomyTokenOption,
 } from "@/hooks/useAgentAutonomy";
 import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID } from "@/lib/executor/executor-config";
+import { findLiveSlotBoundToGoal } from "@/lib/autonomy/draft-activation";
 import { formatTokenAmount } from "@/lib/format";
 import {
   autonomyDraftToForm,
@@ -365,7 +366,9 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
                     // A stale selection simply falls back to the first eligible goal.
                     if (eligibleGoals.length === 0 || config.emergencyDisabled) return null;
                     const goal = eligibleGoals.find((g) => g.id === delegatedGoalId) ?? eligibleGoals[0];
-                    const activeCount = slots.filter((s) => s.goalId === goal.id && s.status === "active").length;
+                    const usedCount = slots.filter((s) => s.goalId === goal.id).length;
+                    const savedPermission = goal.status === "DRAFT" && !!findLiveSlotBoundToGoal(
+                      policies.filter((p) => p.id === goal.policyId), slots.filter((s) => s.policyId === goal.policyId), { id: goal.id, ...goal.trade }, new Date());
                     return (
                       <div className="grid grid-cols-2 gap-2 text-xs">
                         <label className="col-span-2 space-y-1">
@@ -383,13 +386,13 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
                           </select>
                         </label>
                         <label className="min-w-0 space-y-1">
-                          <span className="text-muted">Slots ({5 - activeCount} free)</span>
+                          <span className="text-muted">Slots ({Math.max(0, 5 - usedCount)} unused indexes)</span>
                           <select
                             value={delegatedCount}
                             onChange={(e) => setDelegatedCount(Number(e.target.value))}
                             className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                           >
-                            {[1, 2, 3, 4, 5].filter((n) => n <= 5 - activeCount).map((n) => (
+                            {[1, 2, 3, 4, 5].filter((n) => n <= 5 - usedCount).map((n) => (
                               <option key={n} value={n}>
                                 {n}
                               </option>
@@ -424,7 +427,7 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
                         <button
                           type="button"
                           data-testid="delegated-sign-button"
-                          disabled={busy || !slotsSigningSupported}
+                          disabled={busy || (!savedPermission && (!slotsSigningSupported || usedCount >= 5))}
                           onClick={async () => {
                             const result = await signDelegatedSlots({
                               policyId: goal.policyId,
@@ -435,16 +438,17 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
                             });
                             if (result.ok) {
                               setDelegatedMinOut("");
-                              setNotice("Delegated slots signed and registered. Each executes at most once, exactly as signed.");
+                              setNotice(savedPermission ? "Activation confirmed with this goal’s saved permission. No new signature was requested." : "Delegated slots signed and registered. Each executes at most once, exactly as signed.");
                             }
                           }}
                           className="col-span-2 flex min-h-[36px] items-center justify-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 text-[11px] font-semibold text-sky-200 transition-colors hover:bg-sky-500/20 disabled:opacity-50"
                         >
                           <PenLine className="h-3 w-3" aria-hidden="true" />
-                          {slotsSigningSupported
+                          {savedPermission ? "Activate with saved permission (no new signature)" : slotsSigningSupported
                             ? `Sign ${delegatedCount} slot${delegatedCount > 1 ? "s" : ""} with wallet`
                             : "Wallet signing unavailable for this executor build"}
                         </button>
+                        {usedCount >= 5 && <p className="col-span-2 text-[10px] text-muted">All five goal-bound nonce indexes have been used. Revocation cannot recycle them.</p>}
                         {!slotsSigningSupported && (
                           <p className="col-span-2 text-[10px] leading-relaxed text-muted">
                             The deployed executor&apos;s witness type string is not signable by standard wallets — signing opens

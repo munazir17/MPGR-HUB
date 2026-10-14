@@ -220,7 +220,7 @@ function installFetch() {
       const method = init?.method ?? "GET";
       if (url.includes("/api/agent/autonomy/config")) return jsonResponse(CONFIG);
       if (url.includes("/api/agent/autonomy/tokens")) return jsonResponse({ tokens: [USDC, AAPLc] });
-      if (url.includes("/api/agent/autonomy/goals") && method === "GET") return jsonResponse({ goals: [] });
+      if (url.includes("/api/agent/autonomy/goals") && method === "GET") return jsonResponse({ goals: fixture.goalResponses });
       if (url.includes("/api/agent/autonomy/goals/") && method === "PATCH") {
         return jsonResponse(fixture.activationStatus ? { error: "Activation not confirmed" } : { goal: { id: url.split("/").at(-1), status: "ACTIVE" } }, { status: fixture.activationStatus ?? 200 });
       }
@@ -504,4 +504,38 @@ describe("same-goal activation retries", () => {
     expect(fixture.policyPostCount).toBe(1);
     expect(wallet.signCalls).toHaveLength(1);
   });
+});
+
+it("a consumed goal slot never reuses its deterministic nonce/index on retry", async () => {
+  fixture.slots = [coveringSlot({ policyId: "policy_new_1", goalId: "goal_1", slotIndex: 0, consumedAt: new Date().toISOString() })];
+  expect((await callActivate()).ok).toBe(true);
+  const posted = (fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) => String(c[0]).includes("/authorization") && c[1]?.method === "POST");
+  expect(JSON.parse(posted![1].body).slots[0].slotIndex).toBe(1);
+});
+it("same-goal retry ignores changed object property order and refreshed quote floor", async () => {
+  const api = await bootHook();
+  const activate = api.activateDraft as (input: typeof ACTIVATION_INPUT) => Promise<{ ok: boolean }>;
+  wallet.signError = "User rejected signature";
+  expect((await activate(ACTIVATION_INPUT)).ok).toBe(false);
+  wallet.signError = null;
+  const reversed = Object.fromEntries(Object.entries(ACTIVATION_INPUT).reverse()) as typeof ACTIVATION_INPUT;
+  expect((await activate({ ...reversed, minAmountOutHuman: "0.28" })).ok).toBe(true);
+  expect(fixture.goalPostCount).toBe(1); expect(fixture.policyPostCount).toBe(1);
+});
+
+it("manual pending-goal recovery uses its valid saved permission without re-entry or another signature", async () => {
+  fixture.policies = [coveringPolicy()]; fixture.slots = [coveringSlot({ goalId: "goal_1" })];
+  fixture.goalResponses = [{ id: "goal_1", policyId: "policy_cover", status: "DRAFT", trade: { sellToken: USDC.address, buyToken: AAPLc.address, sellAmountRaw: "50000000" } }];
+  const api = await bootHook();
+  const sign = api.signDelegatedSlots as (input: { policyId: string; goalId: string; count: number; minAmountOutHuman: string; expiresInHours: number }) => Promise<{ ok: boolean }>;
+  expect((await sign({ policyId: "policy_cover", goalId: "goal_1", count: 1, minAmountOutHuman: "", expiresInHours: 24 })).ok).toBe(true);
+  expect(wallet.signCalls).toHaveLength(0); expect(fixture.slotPostCount).toBe(0);
+  expect(fixture.goalPostCount).toBe(0); expect(fixture.policyPostCount).toBe(0);
+});
+
+it("exhausted single-use nonce indexes fail closed, not an instruction to recycle revoked permission", async () => {
+  fixture.slots = Array.from({ length: 5 }, (_, i) => coveringSlot({ id: `slot_${i}`, policyId: "policy_new_1", goalId: "goal_1", slotIndex: i, consumedAt: new Date().toISOString() }));
+  const result = await callActivate();
+  expect(result.ok).toBe(false); expect(result.message).toContain("cannot be recycled");
+  expect(wallet.signCalls).toHaveLength(0); expect(fixture.slotPostCount).toBe(0);
 });

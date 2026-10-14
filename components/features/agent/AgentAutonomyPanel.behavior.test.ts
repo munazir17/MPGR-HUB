@@ -61,6 +61,7 @@ vi.mock("@/hooks/useAgentAutonomy", () => ({}));
 import type { ReactElement, ReactNode } from "react";
 import { AgentAutonomyPanel } from "./AgentAutonomyPanel";
 import type { AutonomyConfig } from "@/hooks/useAgentAutonomy";
+import { delegatedActionId } from "@/lib/executor/delegated-executor";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 
 const DRAFT: AutonomyGoalDraft = {
@@ -73,7 +74,7 @@ const DRAFT: AutonomyGoalDraft = {
   sourcePrompt: "Buy AAPLc whenever it falls below $0.10, max 1 USDC per trade",
 };
 
-function renderPanel(draft: AutonomyGoalDraft | null, config: AutonomyConfig | null = null) {
+function renderPanel(draft: AutonomyGoalDraft | null, config: AutonomyConfig | null = null, extra: Record<string, unknown> = {}) {
   hooks.beginRender();
   return AgentAutonomyPanel({
     autonomy: {
@@ -98,6 +99,7 @@ function renderPanel(draft: AutonomyGoalDraft | null, config: AutonomyConfig | n
       authenticated: false,
       authenticating: false,
       signIn: async () => true,
+      ...extra,
     } as never,
   });
 }
@@ -281,4 +283,18 @@ it("preserves a manually edited goal form across closing and reopening", () => {
   tree = renderPanel(null, config); expect(header(tree).props["aria-expanded"]).toBe(false);
   header(tree).props.onClick(); tree = renderPanel(null, config);
   expect(collect(tree).some((el) => el.type === "input" && el.props.value === "2.5")).toBe(true);
+});
+
+it("offers pending-goal recovery without another signature even when all five nonce indexes exist", () => {
+  const sell = "0x1111111111111111111111111111111111111111";
+  const buy = "0x2222222222222222222222222222222222222222";
+  const extra = { goals: [{ id: "goal_saved", policyId: "policy_saved", status: "DRAFT", trade: { sellToken: sell, buyToken: buy, sellAmountRaw: "1000000" } }],
+    policies: [{ id: "policy_saved", chainId: 8453, enabled: true, revokedAt: null, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), maxPerTradeRaw: "1000000" }],
+    slots: Array.from({ length: 5 }, (_, i) => ({ id: `slot_${i}`, policyId: "policy_saved", goalId: "goal_saved", slotIndex: i, status: i ? "consumed" : "active",
+      sellToken: sell, buyToken: buy, amountRaw: "1000000", minAmountOutRaw: "1", actionId: delegatedActionId("goal_saved"), deadline: Math.floor(Date.now() / 1000) + 3600, consumedAt: i ? new Date().toISOString() : null, revokedAt: null })) };
+  const config = runtimeConfig(); let tree = renderPanel(null, config, extra);
+  header(tree).props.onClick(); tree = renderPanel(null, config, extra);
+  const button = findByTestId(tree, "delegated-sign-button")!;
+  expect(renderedText(button)).toContain("Activate with saved permission");
+  expect((button.props as Record<string, unknown>).disabled).toBe(false);
 });
