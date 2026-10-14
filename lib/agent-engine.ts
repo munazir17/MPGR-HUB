@@ -108,6 +108,21 @@ async function saveAgentState(state: AgentState): Promise<AgentState> {
   return state;
 }
 
+
+/**
+ * The autonomy goal draft carried by the conversation's LAST assistant
+ * message, if any. This is what makes "the same conversation's next message
+ * is only an amount" deterministic: the draft counts as OPEN only when it is
+ * the immediately-previous assistant turn's payload.
+ */
+function openAutonomyDraftOfLastAssistant(messages: AgentMessage[]): AutonomyGoalDraft | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role === "assistant") return message.autonomyGoalDraft ?? null;
+  }
+  return null;
+}
+
 interface AssistantExtras {
   intent?: AgentIntent;
   actions?: AgentAction[];
@@ -195,6 +210,10 @@ export async function appendAssistantReply(
     state.messages,
   );
 
+  // The open autonomous goal draft — the one carried by the conversation's
+  // LAST assistant message (see openAutonomyDraftOfLastAssistant below).
+  const openAutonomyDraft = openAutonomyDraftOfLastAssistant(state.messages);
+
   const {
     intent,
     reply,
@@ -212,6 +231,12 @@ export async function appendAssistantReply(
     previousIntent: promptContext.previousIntent,
     memoryContext: promptContext.memory,
     address,
+    // Deterministic follow-up context (amount-only replies attaching to an
+    // open autonomous goal draft): the ACTUAL last assistant turn — the
+    // ranked relevantHistory is not guaranteed to keep it. Read-only state;
+    // attaching an amount still produces a REVIEW-ONLY draft and nothing is
+    // activated by chat text.
+    ...(openAutonomyDraft ? { lastAssistantMessage: { autonomyGoalDraft: openAutonomyDraft } } : {}),
   });
 
   const updated: AgentState = {

@@ -25,6 +25,7 @@ import { useAccount, useSignTypedData } from "wagmi";
 import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 import { useWalletAuth } from "@/hooks/useWalletAuth";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
+import { findLiveSlotBoundToGoal } from "@/lib/autonomy/draft-activation";
 import {
   delegatedActionId,
   delegatedChainLabel,
@@ -116,6 +117,8 @@ export interface DelegatedSlotView {
   consumedByTxHash: string | null;
   revokedAt: string | null;
   createdAt: string;
+  /** Witness actionId — delegatedActionId(goalId) for the goal it was signed for. */
+  actionId: string;
 }
 
 export interface AutonomyTokenOption {
@@ -157,6 +160,39 @@ export interface DelegatedSlotsInput {
   /** Slot expiry in hours (capped by the policy expiry server-side). */
   expiresInHours: number;
 }
+
+/**
+ * Activation input for a REVIEW-ONLY chat draft. Everything the two server
+ * POSTs (policy + goal) and — when no standing delegation covers the draft —
+ * the ONE delegated-slot signature need.
+ */
+export interface DraftActivationInput {
+  sellToken: string;
+  buyToken: string;
+  condition: { kind: "price_below" | "price_above"; threshold: string };
+  /** Human spend amount per trade. */
+  sellAmount: string;
+  /** Human daily cap (spend). */
+  maxDaily: string;
+  maxSlippageBps: number;
+  maxActionsPerDay: number;
+  ttlDays: number;
+  cooldownSeconds: number;
+  maxTrades?: number;
+  description?: string;
+  /**
+   * Human minimum output per trade, PREFILLED FROM THE LIVE QUOTE — never
+   * zero. Required for the one-signature path (the signed slot floor);
+   * ignored when a standing delegation covers the draft.
+   */
+  minAmountOutHuman: string;
+  /** Slot expiry in hours for the signed slot (default 24). */
+  slotExpiresInHours?: number;
+}
+
+export type DraftActivationResult =
+  | { ok: true; mode: "standing" | "signed" }
+  | { ok: false; message: string; mode?: "standing" | "signed" };
 
 export function useAgentAutonomy() {
   const { address, chainId: connectedChainId } = useAccount();
@@ -383,14 +419,6 @@ export function useAgentAutonomy() {
     [refresh, ensureSession],
   );
 
-  /**
-   * Explicit delegated-slot signing: builds the canonical Permit2 witness
-   * typed data for EXACTLY the bounded details the UI shows, asks the
-   * connected USER wallet to sign, and registers the slots server-side
-   * (which re-validates everything and recovers the signature). The server
-   * never sees a private key and the runtime can only ever broadcast what
-   * these slots literally say.
-   */
   // Hoisted to plain locals so the memo dependency list below stays
   // compiler-friendly. `delegatedExecutor` is the PINNED contract the user's
   // signature names as Permit2 spender, so it is a genuine dependency: a stale
@@ -398,16 +426,29 @@ export function useAgentAutonomy() {
   const delegatedChainId = config?.delegated?.chainId ?? null;
   const delegatedExecutor = config?.delegated?.executor ?? null;
 
-  const signDelegatedSlots = useCallback(
-    async (input: DelegatedSlotsInput): Promise<{ ok: boolean; message?: string }> => {
+  /**
+   * Slot-construction + signing CORE, shared by the panel's explicit sign
+   * button and the chat-draft one-signature activation. Takes the policy and
+   * goal OBJECTS directly (not state lookups) so a freshly created policy +
+   * goal — whose ids are not in hook state yet — can be signed in the same
+   * activation turn. Asks the CONNECTED USER WALLET for exactly the bounded
+   * details shown in the UI and registers the slots server-side (which
+   * re-validates everything and recovers the signature). The server never
+   * sees a private key and the runtime can only ever broadcast what these
+   * slots literally say.
+   */
+  const signSlotsForPolicyGoal = useCallback(
+    async (
+      policy: AutonomyPolicyView,
+      goal: Pick<AutonomyGoalView, "id" | "trade">,
+      input: DelegatedSlotsInput,
+      usedSlotIndexes: readonly number[],
+    ): Promise<{ ok: boolean; message?: string }> => {
       const wallet = address;
       if (!wallet) return { ok: false, message: "Connect your wallet first." };
       if (!(await ensureSession())) {
         return { ok: false, message: "Sign in with your wallet to sign delegated slots." };
       }
-      const policy = policies.find((p) => p.id === input.policyId);
-      const goal = goals.find((g) => g.id === input.goalId);
-      if (!policy || !goal) return { ok: false, message: "Pick the goal to authorize." };
 
       // CHAIN BINDING (MC-1 remediation). The signature is produced over the
       // POLICY'S OWN chain, with the executor the SERVER pinned for that chain
@@ -445,7 +486,7 @@ export function useAgentAutonomy() {
       const deadlineCap = Math.floor(new Date(policy.expiresAt).getTime() / 1000);
       const deadline = Math.min(Math.floor(Date.now() / 1000) + Math.floor(input.expiresInHours * 3600), deadlineCap);
       if (deadline <= Math.floor(Date.now() / 1000)) return { ok: false, message: "This policy has already expired." };
-      const usedIndexes = new Set(slots.filter((s) => s.policyId === input.policyId && !s.revokedAt && !s.consumedAt).map((s) => s.slotIndex));
+      const usedIndexes = new Set(usedSlotIndexes);
       const free = [0, 1, 2, 3, 4].filter((i) => !usedIndexes.has(i)).slice(0, count);
       if (free.length === 0) return { ok: false, message: "No free authorization slots left for this policy — revoke one first." };
 
@@ -522,8 +563,189 @@ export function useAgentAutonomy() {
         setBusy(false);
       }
     },
-    [address, delegatedChainId, delegatedExecutor, connectedChainId, ensureSession, goals, policies, refresh, signTypedDataAsync, slots, tokens],
+    [address, delegatedChainId, delegatedExecutor, connectedChainId, ensureSession, refresh, signTypedDataAsync, tokens],
   );
+
+  /**
+   * Explicit delegated-slot signing: builds the canonical Permit2 witness
+   * typed data for EXACTLY the bounded details the UI shows, asks the
+   * connected USER wallet to sign, and registers the slots server-side
+   * (which re-validates everything and recovers the signature). The server
+   * never sees a private key and the runtime can only ever broadcast what
+   * these slots literally say.
+   */
+  const signDelegatedSlots = useCallback(
+    async (input: DelegatedSlotsInput): Promise<{ ok: boolean; message?: string }> => {
+      const policy = policies.find((p) => p.id === input.policyId);
+      const goal = goals.find((g) => g.id === input.goalId);
+      if (!policy || !goal) return { ok: false, message: "Pick the goal to authorize." };
+      const usedIndexes = slots.filter((s) => s.policyId === input.policyId && !s.revokedAt && !s.consumedAt).map((s) => s.slotIndex);
+      return signSlotsForPolicyGoal(policy, goal, input, usedIndexes);
+    },
+    [policies, goals, slots, signSlotsForPolicyGoal],
+  );
+
+  /** Shared goal-creation POST used by both activation paths. */
+  const createGoalOnPolicy = useCallback(
+    async (
+      policyId: string,
+      input: DraftActivationInput,
+    ): Promise<{ ok: true; goal: AutonomyGoalView } | { ok: false; message: string }> => {
+      const goalRes = await fetchWithSession("/api/agent/autonomy/goals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          policyId,
+          condition: input.condition,
+          sellAmount: input.sellAmount,
+          cooldownSeconds: input.cooldownSeconds,
+          maxTrades: input.maxTrades,
+          description: input.description,
+        }),
+      });
+      const payload = (await goalRes.json().catch(() => null)) as { goal?: AutonomyGoalView; error?: string; details?: string[] } | null;
+      if (!goalRes.ok || !payload?.goal) {
+        return { ok: false, message: payload?.details?.join(" ") ?? payload?.error ?? "The goal could not be created." };
+      }
+      return { ok: true, goal: payload.goal };
+    },
+    [],
+  );
+
+  /**
+   * Chat-draft ACTIVATION (the corrected production flow):
+   *
+   * The Permit2 witness `actionId` is bound to the goal a slot was signed
+   * FOR — the executor reverts any broadcast whose intentId differs from the
+   * signed actionId, so another goal's slot can never fund this goal's
+   * trades. A brand-new draft goal therefore has no slot bound to it, and
+   * activation ALWAYS takes the ONE-SIGNATURE path: policy + goal are
+   * created, then the wallet is asked for EXACTLY ONE delegated-slot
+   * signature over the draft amount with the min output prefilled from the
+   * live quote (never zero). One popup, then the goal is ACTIVE and
+   * executable.
+   *
+   * The ONLY no-signature path is a live, unconsumed slot already bound to
+   * THIS goal id (goal-bound standing delegation — checked after the goal
+   * exists; it cannot exist for a fresh goal, and a slot from ANY other goal
+   * never qualifies). Nothing is broadcast here and no private key is
+   * involved: the runtime's cron executes only when the trigger condition is
+   * true, inside the slot.
+   */
+  const activateDraft = useCallback(
+    async (input: DraftActivationInput): Promise<DraftActivationResult> => {
+      if (!address) return { ok: false, message: "Connect your wallet first." };
+      if (!(await ensureSession())) {
+        return { ok: false, message: "Sign in with your wallet to activate this goal." };
+      }
+      const sellTokenInfo = tokens.find((t) => t.address.toLowerCase() === input.sellToken.toLowerCase());
+      const buyTokenInfo = tokens.find((t) => t.address.toLowerCase() === input.buyToken.toLowerCase());
+      if (!sellTokenInfo || !buyTokenInfo) {
+        return { ok: false, message: "Token details are still loading — try again." };
+      }
+      const toBaseUnits = (human: string): string | null => {
+        const cleaned = human.trim();
+        if (!/^\d*(\.\d*)?$/.test(cleaned) || cleaned === "" || cleaned === ".") return null;
+        const [whole = "0", frac = ""] = cleaned.split(".");
+        const fracPadded = frac.padEnd(sellTokenInfo.decimals, "0").slice(0, sellTokenInfo.decimals);
+        try {
+          const value = BigInt(whole + fracPadded);
+          return value > 0n ? value.toString() : null;
+        } catch {
+          return null;
+        }
+      };
+      const sellAmountRaw = toBaseUnits(input.sellAmount);
+      const maxDailyRaw = toBaseUnits(input.maxDaily);
+      if (!sellAmountRaw || !maxDailyRaw) {
+        return { ok: false, message: "Enter a positive per-trade amount and daily cap." };
+      }
+      const chainId = delegatedChainId;
+      if (!chainId) {
+        return { ok: false, message: "Delegated autonomy is not available on this network right now." };
+      }
+
+      // ONE-SIGNATURE PATH — always, for a new draft goal. A slot signed for
+      // a DIFFERENT goal can never authorize this goal's broadcast (witness
+      // actionId binding), so no cross-goal coverage is consulted here.
+      const cleanedMinOut = input.minAmountOutHuman.trim();
+      if (!cleanedMinOut || !/^\d*(\.\d*)?$/.test(cleanedMinOut) || Number.parseFloat(cleanedMinOut || "0") <= 0) {
+        return { ok: false, message: "A live quote is needed to set the minimum output before signing. Refresh and try again." };
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        const policyRes = await fetchWithSession("/api/agent/autonomy/policy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sellToken: input.sellToken,
+            buyToken: input.buyToken,
+            maxPerTrade: input.sellAmount,
+            maxDaily: input.maxDaily,
+            maxSlippageBps: input.maxSlippageBps,
+            maxActionsPerDay: input.maxActionsPerDay,
+            ttlDays: input.ttlDays,
+            chainId,
+            authorized: true,
+          }),
+        });
+        const policyPayload = (await policyRes.json().catch(() => null)) as { policy?: AutonomyPolicyView; error?: string; details?: string[] } | null;
+        if (!policyRes.ok || !policyPayload?.policy) {
+          const detail = policyPayload?.details?.join(" ") ?? policyPayload?.error ?? "Authorization could not be created.";
+          setError(detail);
+          return { ok: false, message: detail };
+        }
+        const goal = await createGoalOnPolicy(policyPayload.policy.id, input);
+        if (!goal.ok) {
+          setError(goal.message);
+          return { ok: false, message: goal.message };
+        }
+
+        // GOAL-BOUND STANDING CHECK — the only no-signature path: a live,
+        // unconsumed slot ALREADY BOUND TO THIS goal id (same pair, exact
+        // amount). A fresh goal has none, so the signature below always runs
+        // for a new draft; another goal's slot NEVER qualifies, no matter
+        // how well it matches pair and amount.
+        const standing = findLiveSlotBoundToGoal(
+          [...policies, policyPayload.policy],
+          slots,
+          { id: goal.goal.id, sellToken: input.sellToken, buyToken: input.buyToken, sellAmountRaw },
+          new Date(),
+        );
+        if (standing) {
+          await refresh();
+          return { ok: true, mode: "standing" };
+        }
+
+        // EXACTLY ONE wallet popup: one slot bound to THIS goal, amount from
+        // the draft, min output from the live quote, actionId derived from
+        // the goal just created.
+        const signed = await signSlotsForPolicyGoal(
+          policyPayload.policy,
+          goal.goal,
+          {
+            policyId: policyPayload.policy.id,
+            goalId: goal.goal.id,
+            count: 1,
+            minAmountOutHuman: cleanedMinOut,
+            expiresInHours: Math.max(1, Math.min(168, Math.floor(input.slotExpiresInHours ?? 24))),
+          },
+          [], // a brand-new goal has no used slot indexes yet
+        );
+        if (!signed.ok) {
+          // The goal exists and stays watch-only; the user can sign later
+          // from the panel. The reason is surfaced verbatim.
+          return { ok: false, message: signed.message ?? "The slot signature did not complete.", mode: "signed" };
+        }
+        return { ok: true, mode: "signed" };
+      } finally {
+        setBusy(false);
+      }
+    },
+    [address, delegatedChainId, createGoalOnPolicy, ensureSession, policies, refresh, signSlotsForPolicyGoal, slots, tokens],
+  );
+
 
   // Bounded heartbeat — see the header comment for the exact conditions.
   useEffect(() => {
@@ -557,6 +779,7 @@ export function useAgentAutonomy() {
     revokePolicy,
     revokeSlot,
     signDelegatedSlots,
+    activateDraft,
     slots,
     slotsSigningSupported,
     authorizeGoal,
