@@ -364,6 +364,7 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
     if (!policy) return { ok: false, code: "POLICY_REJECTED", message: "Policy not found for this action." };
     // The live check is policy-aware on mainnet so the token allowlist is
     // verified against the ACTUAL pair before anything is consumed or sent.
+    request.onStage?.("verifyOnChain");
     const deep = await this.verifyOnChain(policy);
     if (!deep.authorized) {
       const cause = deep.reason === "RPC_ERROR" ? " — on-chain posture read failed or timed out" : "";
@@ -455,6 +456,10 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
   ): Promise<DelegatedSwapResult> {
     let txHash: string;
     try {
+      // Entering the broadcast: its first node step is gas estimation. The
+      // broadcaster reports "send" itself once estimation returns and it
+      // submits (see lib/delegated/delegated-broadcaster.ts).
+      request.onStage?.("estimate");
       const swap = await this.deps.gateway.delegateSwap({
         chainId: this.chainId,
         executor: this.executor ?? undefined,
@@ -486,7 +491,7 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
           witness: slot.witness,
           signature: slot.signature,
         },
-      });
+      }, request.onStage);
       if (!swap.ok) {
         // The MCP service reports every failure before or during the send with
         // no hash: the slot is untouched and stays usable.

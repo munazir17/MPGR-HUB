@@ -33,10 +33,12 @@ import { system } from "@/lib/autonomy/api-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// 120 s (not 60): the platform budget must cover the bootstrap and the goal
-// evaluations. It is NOT relied on alone — post-EXECUTING work is capped at
-// AUTONOMY_EXECUTION_BUDGET_SECONDS (= 110 s, 10 s reserved to persist the real
-// outcome), anchored at tickStartedAt below. See lib/autonomy/config.ts.
+// The requested platform budget. It is NOT relied on: production showed the
+// platform killing a tick at ~60 s despite maxDuration = 120, so raising this
+// number is not a fix and it is deliberately left unchanged. Post-EXECUTING
+// work is instead capped at AUTONOMY_EXECUTION_BUDGET_SECONDS (= 45 s after
+// tick start), leaving 15 s before the observed 60 s kill for the Redis write
+// that persists the real outcome. See lib/autonomy/config.ts.
 export const maxDuration = 120;
 
 const RATE_LIMIT = 6;

@@ -63,7 +63,8 @@ export class AutonomyScheduler {
       for (let i = 0; i < goalIds.length; i += AUTONOMY_LIMITS.maxConcurrentEvaluations) {
         const batch = goalIds.slice(i, i + AUTONOMY_LIMITS.maxConcurrentEvaluations);
         // Every goal in this tick shares ONE time budget, anchored at the tick
-        // start (not at each goal), so a later batch cannot outlive maxDuration.
+        // start (not at each goal), so a later batch cannot outlive the tick's
+        // 45 s execution budget (which ends before the platform kill).
         const tickStartedAt = options.tickStartedAt ?? options.now;
         const outcomes = await Promise.all(batch.map((id) => this.runtime.evaluateGoal(id, { tickStartedAt })));
         outcomes.forEach((outcome, idx) => {

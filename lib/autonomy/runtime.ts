@@ -50,7 +50,7 @@ import { auditEvent } from "./audit";
 import type { McpGateway, QuotedSwap } from "./mcp-gateway";
 import type { AutonomyStore } from "./store";
 import { verifyExecution } from "./verify";
-import type { AutonomousExecutionAdapter, DelegatedSwapResult } from "./types";
+import type { AutonomousExecutionAdapter, DelegatedExecutionStage, DelegatedSwapResult } from "./types";
 import { delegatedBroadcasterAddressFor } from "@/lib/delegated/delegated-broadcaster";
 
 /**
@@ -111,6 +111,12 @@ interface BroadcastProgress {
   adapterInvoked: boolean;
   /** Set by the caller when it stops waiting; the work must then never start the adapter. */
   abandoned: boolean;
+  /**
+   * Latest in-flight stage reported by the adapter/broadcaster
+   * (verifyOnChain | estimate | send). Read when the budget ends so the
+   * persisted error names the stage that was actually hanging.
+   */
+  stage: DelegatedExecutionStage | null;
 }
 
 interface BroadcastContext {
@@ -144,11 +150,18 @@ function untilDeadline<T>(work: Promise<T>, remainingMs: number): Promise<Budget
   });
 }
 
-/** Operator-facing text for a budget that ended before the broadcast returned a hash. */
-const BUDGET_ENDED_ADAPTER_INVOKED =
-  "RPC timeout: the execution budget ended before the broadcast returned a transaction hash. The broadcast outcome is UNKNOWN — the spend reservation is kept (AMBIGUOUS), never released. The authorization slot is consumed only if a hash was returned; check it before any retry.";
-const BUDGET_ENDED_BEFORE_BROADCAST =
-  "RPC timeout: the execution budget ended before the broadcast was sent (a prepare or RPC step did not return in time). Nothing was broadcast by this attempt. The spend reservation stays counted and the authorization slot was not consumed.";
+/**
+ * Operator-facing text for a budget that ended before the broadcast returned
+ * a hash. The in-flight stage (verifyOnChain | estimate | send, when known)
+ * is named so the operator can see WHICH RPC step hung; an adapter that was
+ * invoked but reported no stage is in its first stage, verifyOnChain.
+ */
+function budgetEndedAdapterInvoked(stage: DelegatedExecutionStage | null): string {
+  return `RPC timeout: the execution budget ended before the broadcast returned a transaction hash (in-flight stage: ${stage ?? "verifyOnChain"}). The broadcast outcome is UNKNOWN — the spend reservation is kept (AMBIGUOUS), never released. The authorization slot is consumed only if a hash was returned; check it before any retry.`;
+}
+function budgetEndedBeforeBroadcast(stage: DelegatedExecutionStage | null): string {
+  return `RPC timeout: the execution budget ended before the broadcast was sent (in-flight stage: ${stage ?? "prepare"}). Nothing was broadcast by this attempt. The spend reservation stays counted and the authorization slot was not consumed.`;
+}
 
 export type EvaluationResult =
   | { kind: "SKIPPED"; reason: "NOT_FOUND" | "DISABLED" | "LEASE_BUSY" | "STATE_CHANGED"; message: string }
@@ -732,7 +745,7 @@ export class AutonomyRuntime {
     // started). The work RETURNS a step and writes no goal state. Every failure
     // is persisted below with its real reason, so a slow RPC never ends in the
     // stuck-execution reap.
-    const progress: BroadcastProgress = { adapterInvoked: false, abandoned: false };
+    const progress: BroadcastProgress = { adapterInvoked: false, abandoned: false, stage: null };
     const work = this.runBroadcastSteps({
       goal,
       policy: decision.policy,
@@ -753,7 +766,7 @@ export class AutonomyRuntime {
         (late) => this.noteLateBroadcast(goal, late),
         () => undefined,
       );
-      return this.failBudgetEnded(executing, idempotencyKey, decision.policy.id, dayKey, progress.adapterInvoked);
+      return this.failBudgetEnded(executing, idempotencyKey, decision.policy.id, dayKey, progress.adapterInvoked, progress.stage);
     }
     const step = outcome.value;
     if (step.kind !== "ADAPTER_RESULT") {
@@ -907,6 +920,12 @@ export class AutonomyRuntime {
         idempotencyKey,
         steps: preparedSteps,
         transactionRequest: preparedTransactionRequest,
+        // Stage reports are synchronous and best-effort. Once the caller has
+        // stopped waiting (abandoned), a late report must not rewrite the
+        // stage that was in flight when the budget ended.
+        onStage: (stage) => {
+          if (!progress.abandoned) progress.stage = stage;
+        },
       });
     } catch (error) {
       // UNKNOWN error: the broadcast MAY have happened. The caller marks the
@@ -953,7 +972,7 @@ export class AutonomyRuntime {
           c.now,
         );
       case "BUDGET_ENDED":
-        return this.failBudgetEnded(c.executing, c.idempotencyKey, c.policyId, c.dayKey, false);
+        return this.failBudgetEnded(c.executing, c.idempotencyKey, c.policyId, c.dayKey, false, null);
     }
   }
 
@@ -968,6 +987,7 @@ export class AutonomyRuntime {
     policyId: string,
     dayKey: string,
     adapterInvoked: boolean,
+    stage: DelegatedExecutionStage | null,
   ): Promise<EvaluationResult> {
     const at = this.deps.now();
     await this.markReservationAmbiguous(policyId, dayKey, idempotencyKey, at);
@@ -975,7 +995,7 @@ export class AutonomyRuntime {
       executing,
       idempotencyKey,
       "RPC_ERROR",
-      adapterInvoked ? BUDGET_ENDED_ADAPTER_INVOKED : BUDGET_ENDED_BEFORE_BROADCAST,
+      adapterInvoked ? budgetEndedAdapterInvoked(stage) : budgetEndedBeforeBroadcast(stage),
       at,
     );
   }

@@ -559,6 +559,20 @@ export interface AuthorizationVerdict {
  * USER controls (e.g. a session-key smart-account module with its own
  * on-chain limits). This type structurally CANNOT carry a private key.
  */
+/**
+ * The in-flight stage of a delegated execution, reported synchronously by the
+ * adapter (and, for the broadcast sub-steps, by the broadcaster) so that when
+ * the tick's execution budget ends, the runtime can persist WHICH stage was
+ * hanging in `lastResult` instead of a generic timeout:
+ *   verifyOnChain — live on-chain posture re-verification inside the adapter;
+ *   estimate      — gas estimation for the broadcast transaction;
+ *   send          — submitting the signed transaction to the node.
+ * Reporting is best-effort observability only: it never gates execution, and
+ * a stage report is never a transaction hash — a slot is consumed only after
+ * a hash returns (see DelegatedExecutionAdapter.broadcastSlot).
+ */
+export type DelegatedExecutionStage = "verifyOnChain" | "estimate" | "send";
+
 export interface DelegatedSwapRequest {
   goalId: string;
   policyId: string;
@@ -576,6 +590,12 @@ export interface DelegatedSwapRequest {
   steps: Array<Record<string, unknown>>;
   /** The unsigned swap transaction request, when present. */
   transactionRequest: Record<string, unknown> | null;
+  /**
+   * Optional synchronous stage reporter (see DelegatedExecutionStage). The
+   * runtime uses it to name the in-flight stage when the budget ends.
+   * Implementations must not throw from it and must not await it.
+   */
+  onStage?: (stage: DelegatedExecutionStage) => void;
 }
 
 export type DelegatedSwapResult =

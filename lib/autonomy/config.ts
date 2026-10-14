@@ -78,14 +78,29 @@ export function isAutonomousExecutionEmergencyDisabled(): boolean {
  * outcome. The budget is anchored at the TICK start (not the EXECUTING write),
  * so no goal in any scheduler batch can outlive the tick.
  *
+ * PRODUCTION EVIDENCE (after PR #109): a 1 USDC AAPLc goal still ended in the
+ * stuck-execution reap even though maxDuration was 120 — the platform killed
+ * the tick at ~60 s, before the 110 s budget could persist its real error.
+ * Raising maxDuration is therefore NOT the fix: it is a request the platform
+ * may cap, not a guarantee. The budget is instead anchored against the
+ * OBSERVED hard kill (AUTONOMY_PLATFORM_KILL_SECONDS): post-EXECUTING work
+ * ends 45 s after tick start, leaving a full 15 s inside the 60 s kill for
+ * the Redis write that persists the real outcome (stage + RPC timeout).
+ *
  * tick route maxDuration is a literal in the route file (Next.js segment config);
  * lib/autonomy/__tests__/post-executing-budget.test.ts pins the two together.
  */
 export const AUTONOMY_TICK_MAX_DURATION_SECONDS = 120;
-/** Seconds kept free at the end of a tick to persist a failure after the budget ends. */
-export const AUTONOMY_TICK_PERSIST_RESERVE_SECONDS = 10;
+/**
+ * The platform kill actually observed in production, in seconds after tick
+ * start. Deliberately NOT derived from maxDuration: the platform may cap or
+ * ignore the requested duration, and the budget must survive the real kill.
+ */
+export const AUTONOMY_PLATFORM_KILL_SECONDS = 60;
 /** Hard end of post-EXECUTING work, in seconds after the tick started. */
-export const AUTONOMY_EXECUTION_BUDGET_SECONDS = AUTONOMY_TICK_MAX_DURATION_SECONDS - AUTONOMY_TICK_PERSIST_RESERVE_SECONDS;
+export const AUTONOMY_EXECUTION_BUDGET_SECONDS = 45;
+/** Seconds between the budget end and the platform kill, kept free to persist the real outcome. */
+export const AUTONOMY_TICK_PERSIST_RESERVE_SECONDS = AUTONOMY_PLATFORM_KILL_SECONDS - AUTONOMY_EXECUTION_BUDGET_SECONDS;
 /**
  * A goal whose budget has less than this left is refused BEFORE it writes
  * EXECUTING or claims anything — nothing is broadcast and no state changes.
