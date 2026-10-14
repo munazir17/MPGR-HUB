@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount, useSignTypedData } from "wagmi";
 import { fetchWithSession } from "@/lib/api/authenticated-fetch";
+import { readAutonomySettings, type AutonomySettingsDiagnostic } from "@/lib/api/autonomy-settings";
 import { useWalletAuth } from "@/hooks/useWalletAuth";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import { findLiveSlotBoundToGoal } from "@/lib/autonomy/draft-activation";
@@ -199,6 +200,7 @@ export function useAgentAutonomy() {
   const { signTypedDataAsync } = useSignTypedData();
   const { authenticated: walletAuthenticated, authenticating: walletAuthenticating, authenticate: walletAuthenticate } = useWalletAuth();
   const [config, setConfig] = useState<AutonomyConfig | null>(null);
+  const [settingsRead, setSettingsRead] = useState<AutonomySettingsDiagnostic>({ state: "loading" });
   const [goals, setGoals] = useState<AutonomyGoalView[]>([]);
   const [policies, setPolicies] = useState<AutonomyPolicyView[]>([]);
   const [slots, setSlots] = useState<DelegatedSlotView[]>([]);
@@ -234,11 +236,9 @@ export function useAgentAutonomy() {
     // a previous wallet is discarded.
     const walletChanged = loadedWalletRef.current !== walletKey;
     loadedWalletRef.current = walletKey;
-    const [configRes, goalsRes] = await Promise.all([
-      fetchWithSession("/api/agent/autonomy/config", { method: "GET" }).then((r) => r.json()).catch(() => null),
-      fetchWithSession("/api/agent/autonomy/goals", { method: "GET" }).then((r) => r.json()).catch(() => null),
-    ]);
-    if (loadedWalletRef.current !== walletKey) return; // a newer wallet took over
+    await Promise.resolve();
+    if (loadedWalletRef.current !== walletKey) return;
+    setSettingsRead({ state: "loading" });
     if (walletChanged) {
       setConfig(null);
       setGoals([]);
@@ -249,7 +249,18 @@ export function useAgentAutonomy() {
       hasPendingRef.current = false;
       setError(null);
     }
-    if (configRes && typeof configRes.enabled === "boolean") setConfig(configRes as AutonomyConfig);
+    const [configRes, goalsRes] = await Promise.all([
+      readAutonomySettings().then((settings) => {
+        if (loadedWalletRef.current !== walletKey) return null;
+        // Settings are public: do not hide their result behind session-scoped
+        // goals latency/failure. Clear stale config on SAME-wallet read failures.
+        setConfig(settings.config);
+        setSettingsRead(settings.diagnostic);
+        return settings.config;
+      }),
+      fetchWithSession("/api/agent/autonomy/goals", { method: "GET" }).then((r) => r.json()).catch(() => null),
+    ]);
+    if (loadedWalletRef.current !== walletKey) return; // a newer wallet took over
     if (configRes?.enabled && !tokensFetchedRef.current) {
       const tokensRes = await fetchWithSession("/api/agent/autonomy/tokens", { method: "GET" }).then((r) => r.json()).catch(() => null);
       if (tokensRes && Array.isArray(tokensRes.tokens)) {
@@ -766,6 +777,7 @@ export function useAgentAutonomy() {
 
   return {
     config,
+    settingsRead: walletKey ? settingsRead : { state: "wallet_required" as const },
     goals,
     policies,
     tokens,

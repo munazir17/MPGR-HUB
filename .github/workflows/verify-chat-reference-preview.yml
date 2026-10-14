@@ -1,5 +1,5 @@
-# PR #113 acceptance evidence only. No wallet/session/signing/goal/quote/tick
-# requests. Reuses the existing Preview automation secret without printing it.
+# PR #113 GET-only evidence. No cookies, sign-in, signing, goal writes,
+# authorization writes, quote or tick requests. Reuses the existing Preview automation secret without printing it.
 name: Chat reference Preview (read-only)
 on:
   pull_request:
@@ -63,10 +63,13 @@ jobs:
         if: steps.access.outputs.available == 'true'
         env:
           CHAT_PREVIEW_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          CHAT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           # Ephemeral test artifact: not application code or a production path.
           cat > lib/autonomy/__tests__/preview-readonly.task.test.ts <<'TEST'
           import { expect, it } from "vitest";
+          import { writeFileSync } from "node:fs";
+          import { isAutonomySettings } from "@/lib/api/autonomy-settings";
           import { selectReferencePrice } from "../reference-price";
           import { buildGoalDraft, detectAutonomousTradeRequest } from "../chat-draft";
           import { chatDraftToForm } from "@/components/features/agent/chat-autonomy-review";
@@ -74,13 +77,37 @@ jobs:
             const origin = process.env.CHAT_PREVIEW_URL!;
             expect(origin).toMatch(/^https:\/\/mpgr-hub-ezxs-[a-z0-9]+-munazir-razas-projects\.vercel\.app$/);
             const read = async (path: string) => {
-              // Exhaustive request allowlist. No POST, wallet APIs or execution.
-              expect(["/api/market/pair?symbol=AAPLc", "/api/agent/autonomy/config", "/api/agent/autonomy/tokens?chainId=8453"]).toContain(path);
+              // Exhaustive GET allowlist. No auth cookies, sign-in or writes.
+              expect(["/api/market/pair?symbol=AAPLc", "/api/agent/autonomy/config", "/api/agent/autonomy/tokens?chainId=8453", "/api/agent/autonomy/goals", "/api/agent/autonomy/policy", "/api/agent/autonomy/authorization"]).toContain(path);
               const response = await fetch(origin + path, { method: "GET", redirect: "manual", cache: "no-store",
                 headers: { "x-vercel-protection-bypass": process.env.CHAT_PREVIEW_BYPASS! }, signal: AbortSignal.timeout(60000) });
               const data = await response.json().catch(() => null);
-              return { status: response.status, data };
+              return { status: response.status, data, headers: response.headers };
             };
+            const [settings, tokens, goals, policy, authorization] = await Promise.all([
+              read("/api/agent/autonomy/config"), read("/api/agent/autonomy/tokens?chainId=8453"),
+              read("/api/agent/autonomy/goals"), read("/api/agent/autonomy/policy"), read("/api/agent/autonomy/authorization"),
+            ]);
+            const gate = (value: string | null) => ["enabled", "disabled", "missing", "invalid"].includes(value ?? "") ? value : "unknown";
+            const boolean = (value: unknown) => typeof value === "boolean" ? value : null;
+            const code = (value: unknown) => typeof value === "string" && ["AUTH_REQUIRED", "AUTONOMY_DISABLED", "EXECUTOR_NOT_CONFIGURED", "INVALID_CHAIN", "RATE_LIMITED"].includes(value) ? value : null;
+            const evidence = {
+              commit: process.env.CHAT_HEAD_SHA, observedAt: new Date().toISOString(),
+              settings: { HTTP: settings.status, valid: isAutonomySettings(settings.data),
+                noStore: settings.headers.get("cache-control")?.includes("no-store") === true,
+                enabled: boolean(settings.data?.enabled), emergencyDisabled: boolean(settings.data?.emergencyDisabled),
+                productionGate: boolean(settings.data?.productionGate), executionAvailable: boolean(settings.data?.executionAvailable),
+                runtimeFlag: gate(settings.headers.get("x-mpgr-autonomy-runtime-gate")), productionFlag: gate(settings.headers.get("x-mpgr-autonomy-production-gate")),
+                delegatedBase: settings.data?.delegated?.chainId === 8453, walletSigningSupported: boolean(settings.data?.delegated?.walletSigningSupported) },
+              tokens: { HTTP: tokens.status, code: code(tokens.data?.code), count: Array.isArray(tokens.data?.tokens) ? tokens.data.tokens.length : null },
+              goals: { HTTP: goals.status, code: code(goals.data?.code) }, policy: { HTTP: policy.status, code: code(policy.data?.code) },
+              authorization: { HTTP: authorization.status, code: code(authorization.data?.code) },
+            };
+            // Fixed fields/enums only. No env values, bodies, cookies or wallets.
+            writeFileSync("preview-settings-evidence.json", JSON.stringify(evidence));
+            expect(settings.status).toBe(200);
+            expect(isAutonomySettings(settings.data)).toBe(true);
+            expect(settings.data.productionGate).toBe(false); // mandated fail-closed Preview
             const pair = await read("/api/market/pair?symbol=AAPLc");
             console.log("Preview pair HTTP status", pair.status);
             expect(pair.status).toBe(200);
@@ -105,14 +132,17 @@ jobs:
             expect(draft).toMatchObject({ targetAsset: "AAPLc", spendAsset: "USDC", amountPerTrade: "1", percentDrop: 1 });
             expect(form).toMatchObject({ sellAmount: "1", threshold: draft.triggerPrice, kind: "price_below" });
             console.log("In-memory draft only", JSON.stringify({ amount: draft.amountPerTrade, percent: draft.percentDrop, reference: draft.referencePrice, trigger: draft.triggerPrice }));
-            const settings = await read("/api/agent/autonomy/config");
-            const tokens = await read("/api/agent/autonomy/tokens?chainId=8453");
-            console.log("Public capability evidence", JSON.stringify({ settingsHTTP: settings.status, tokensHTTP: tokens.status,
-              enabled: settings.data?.enabled === true, emergencyDisabled: settings.data?.emergencyDisabled === true,
-              productionGate: settings.data?.productionGate === true, executionAvailable: settings.data?.executionAvailable === true,
-              delegatedBase: settings.data?.delegated?.chainId === 8453,
-              tokenCount: Array.isArray(tokens.data?.tokens) ? tokens.data.tokens.length : 0 }));
             // Actual mobile/session/quote/authorization checks remain separate.
           });
           TEST
           npx vitest run lib/autonomy/__tests__/preview-readonly.task.test.ts --testTimeout=190000
+      - name: Publish safe settings diagnostics as a check annotation
+        if: always() && steps.access.outputs.available == 'true'
+        run: |
+          if [ -f preview-settings-evidence.json ]; then
+            echo "::notice title=Read-only Preview autonomy settings::$(cat preview-settings-evidence.json)"
+            echo '## Read-only Preview autonomy settings' >> "$GITHUB_STEP_SUMMARY"
+            cat preview-settings-evidence.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::BLOCKED: no settings evidence obtained; inspect prior step status."
+          fi

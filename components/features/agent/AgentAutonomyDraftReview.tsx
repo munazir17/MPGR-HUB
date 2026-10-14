@@ -56,8 +56,9 @@ interface DraftReviewDialogProps {
 function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps) {
   const titleId = useId();
   const { chainId: walletChainId, isConnected } = useAccount();
-  const { tokens: runtimeTokens, busy, error, dismissError, activateDraft, config, authenticated, authenticating, signIn } = autonomy;
+  const { tokens: runtimeTokens, busy, error, dismissError, activateDraft, config, settingsRead, authenticated, authenticating, signIn } = autonomy;
   const tokens = CHAT_REVIEW_TOKENS;
+  const settingsState = settingsRead?.state;
   const [form, setForm] = useState<AutonomyAuthorizeFormState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [activated, setActivated] = useState(false);
@@ -68,7 +69,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
   const formState = form ?? chatDraftToForm(draft);
   const setField = (patch: Partial<AutonomyAuthorizeFormState>) => setForm({ ...formState, ...patch });
   const formError = validateChatReviewForm(formState, config?.limits);
-  const authorizationError = chatReviewAuthorizationError({ form: formState, config, tokens: runtimeTokens, quote, authenticated, walletChainId: isConnected ? walletChainId : undefined });
+  const authorizationError = chatReviewAuthorizationError({ form: formState, config, settingsRead, tokens: runtimeTokens, quote, authenticated, walletChainId: isConnected ? walletChainId : undefined });
   const canAuthorize = !authorizationError && draft.supported !== false;
   const verb = draft.side === "sell" ? "Sell" : "Buy";
   const direction = draft.triggerKind === "price_below" ? "falls below" : "rises above";
@@ -90,7 +91,8 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
   // never fund this one (witness actionId binding) — so the quote is always
   // needed before activating.
   useEffect(() => {
-    if (draft.supported === false || !authenticated || formError || !config?.enabled || config.emergencyDisabled) return;
+    if (draft.supported === false || !authenticated || formError || !config?.enabled || config.emergencyDisabled ||
+        config.productionGate !== true || config.executionAvailable !== true || (settingsState && settingsState !== "loaded")) return;
     if (!sellTokenInfo || !buyTokenInfo) return;
     let cancelled = false;
     const load = async () => {
@@ -118,7 +120,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
     return () => {
       cancelled = true;
     };
-  }, [draft.supported, authenticated, formError, config?.enabled, config?.emergencyDisabled, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps, quoteKey, quoteRetry]);
+  }, [draft.supported, authenticated, formError, config?.enabled, config?.emergencyDisabled, config?.productionGate, config?.executionAvailable, settingsState, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps, quoteKey, quoteRetry]);
 
   const handleAuthorize = async () => {
     // Guard the handler as well as the button. No auth/policy/goal/signing
@@ -402,7 +404,11 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
                   <button type="button" disabled={busy} onClick={() => { void autonomy.refresh(); }} className="min-h-[44px] rounded-lg border border-white/10 px-3">Retry loading settings</button>
                   {authenticated && !formError && <button type="button" disabled={busy} onClick={() => { setQuote(null); setQuoteRetry((n) => n + 1); }} className="min-h-[44px] rounded-lg border border-white/10 px-3">Refresh live quote</button>}
                 </div>
-                {config?.productionGate === false && <p className="mb-3 text-[11px] text-muted">Base Mainnet autonomous execution is disabled. Authorization does not enable it.</p>}
+                {settingsRead && <p data-testid="autonomy-settings-diagnostics" className="mb-3 text-[11px] text-muted">
+                  Settings GET /api/agent/autonomy/config: {settingsRead.state}{settingsRead.httpStatus !== undefined ? ` · HTTP ${settingsRead.httpStatus}` : ""}
+                  {settingsRead.runtimeGate ? ` · runtime flag ${settingsRead.runtimeGate}` : ""}{settingsRead.productionGate ? ` · production flag ${settingsRead.productionGate}` : ""}
+                </p>}
+                {config?.productionGate === false && <p className="mb-3 text-[11px] text-muted">Base Mainnet autonomous execution is disabled by the production safety gate. Live authorization remains blocked; retrying or signing in cannot enable execution.</p>}
                 <div className="flex gap-2">
                   <button
                     type="button"

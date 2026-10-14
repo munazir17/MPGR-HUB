@@ -1,3 +1,4 @@
+import { autonomySettingsReadError, type AutonomySettingsDiagnostic } from "@/lib/api/autonomy-settings";
 // Chat-only review metadata/validation. Never used by the Manual form.
 // The registry is the same Base allowlist used by the existing tokens API;
 // showing review options does not enable the runtime or authorize anything.
@@ -54,14 +55,20 @@ export interface ChatReviewQuote { key: string; minOut: string; error?: string }
 export function chatReviewAuthorizationError(args: {
   form: AutonomyAuthorizeFormState;
   config: AutonomyConfig | null;
+  settingsRead?: AutonomySettingsDiagnostic;
   tokens: AutonomyTokenOption[];
   quote: ChatReviewQuote | null;
   authenticated: boolean;
   walletChainId: number | undefined;
 }): string | null {
   const { form, config, tokens, quote, authenticated, walletChainId } = args;
-  if (!config?.enabled) return "Autonomous goals are unavailable. Retry loading settings; no goal was created.";
+  const readError = autonomySettingsReadError(args.settingsRead);
+  if (readError) return readError;
+  if (!config) return "Autonomy settings have not loaded. Retry loading settings; no goal was created.";
+  if (!config.enabled) return `Autonomous runtime is not enabled on this deployment${args.settingsRead?.runtimeGate && args.settingsRead.runtimeGate !== "unknown" ? ` (runtime flag: ${args.settingsRead.runtimeGate})` : ""}. An operator must review Preview configuration; retrying or signing in cannot enable a disabled flag. No goal was created.`;
   if (config.emergencyDisabled) return "Autonomous goals are disabled by the operator.";
+  if (config.productionGate !== true) return "The production safety gate is not enabled. Base Mainnet live authorization remains blocked; retrying or signing in cannot enable execution.";
+  if (config.executionAvailable !== true) return "Autonomous execution is not ready on this deployment. An operator must review runtime/adapter readiness; the draft remains inactive.";
   const invalid = validateChatReviewForm(form, config.limits);
   if (invalid) return invalid;
   if (walletChainId !== registry.chainId) return "Connect your wallet on Base Mainnet to authorize this draft.";

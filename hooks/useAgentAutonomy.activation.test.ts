@@ -21,11 +21,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const hooks = vi.hoisted(() => {
   const states: unknown[] = [];
   let cursor = 0;
+  const refs: Array<{ current: unknown }> = [];
+  let refCursor = 0;
   let effects: Array<() => void> = [];
 
   return {
     beginRender() {
       cursor = 0;
+      refCursor = 0;
       effects = [];
     },
     flushEffects() {
@@ -35,7 +38,9 @@ const hooks = vi.hoisted(() => {
     },
     reset() {
       states.length = 0;
+      refs.length = 0;
       cursor = 0;
+      refCursor = 0;
       effects = [];
     },
     useState(initial: unknown) {
@@ -55,7 +60,9 @@ const hooks = vi.hoisted(() => {
       return compute();
     },
     useRef(initial: unknown) {
-      return { current: initial };
+      const index = refCursor++;
+      if (!refs[index]) refs[index] = { current: initial };
+      return refs[index];
     },
   };
 });
@@ -414,4 +421,43 @@ describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
     expect(result).toMatchObject({ ok: true, mode: "signed" });
     expect(wallet.signCalls).toHaveLength(1);
   });
+});
+
+
+describe("useAgentAutonomy settings reads never retain stale success", () => {
+  it.each([503, 401])("clears valid settings after HTTP %s on the same wallet, without signing or writing", async (status) => {
+    const api = await bootHook();
+    expect(api.config).toEqual(CONFIG);
+    expect(api.settingsRead).toMatchObject({ state: "loaded", httpStatus: 200 });
+    const calls = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe("GET");
+      if (String(input).endsWith("/config")) return jsonResponse(CONFIG, { status });
+      return jsonResponse({ code: "AUTH_REQUIRED" }, { status: 401 });
+    });
+    vi.stubGlobal("fetch", calls);
+    await (api.refresh as () => Promise<void>)();
+    const { useAgentAutonomy } = await import("@/hooks/useAgentAutonomy");
+    hooks.beginRender();
+    const next = useAgentAutonomy();
+    expect(next.config).toBeNull();
+    expect(next.settingsRead).toMatchObject({ state: "http_error", httpStatus: status });
+    expect(calls).toHaveBeenCalledTimes(2); // config + goals only, no automatic auth
+    expect(wallet.signCalls).toHaveLength(0);
+    expect(fixture.policyPostCount + fixture.goalPostCount + fixture.slotPostCount).toBe(0);
+  });
+});
+
+
+it("loads public settings independently of a stalled session-scoped goals GET", async () => {
+  const network = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    expect(init?.method).toBe("GET");
+    if (String(input).endsWith("/config")) return jsonResponse({ ...CONFIG, enabled: false });
+    return new Promise(() => {}); // session read never completes
+  });
+  vi.stubGlobal("fetch", network);
+  const api = await bootHook();
+  expect(api.config).toEqual({ ...CONFIG, enabled: false });
+  expect(api.settingsRead).toMatchObject({ state: "loaded", httpStatus: 200 });
+  expect(network).toHaveBeenCalledTimes(2);
+  expect(wallet.signCalls).toHaveLength(0);
 });

@@ -8,10 +8,16 @@
 import { NextResponse } from "next/server";
 
 import { autonomyStatus } from "@/lib/autonomy";
+import { publicGateState } from "@/lib/api/autonomy-settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(autonomyStatus(), { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json(autonomyStatus(), { headers: {
+    "Cache-Control": "no-store",
+    // Classifications only; body schema and all execution gates unchanged.
+    "X-MPGR-Autonomy-Runtime-Gate": publicGateState(process.env.MPGR_AUTONOMOUS_AGENT_ENABLED),
+    "X-MPGR-Autonomy-Production-Gate": publicGateState(process.env.AUTONOMOUS_PRODUCTION_ENABLED),
+  } });
 }

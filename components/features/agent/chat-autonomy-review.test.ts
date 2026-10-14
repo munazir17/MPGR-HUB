@@ -5,7 +5,7 @@ import { CHAT_REVIEW_TOKENS, chatDraftToForm, chatQuoteKey, chatReviewAuthorizat
 import { autonomyFormToDraftInput } from "./autonomy-authorize-form";
 
 const config: AutonomyConfig = {
-  enabled: true, emergencyDisabled: false, productionGate: false, executionAvailable: false,
+  enabled: true, emergencyDisabled: false, productionGate: true, executionAvailable: true,
   delegated: { chainId: 8453, executor: "0x1111111111111111111111111111111111111111", walletSigningSupported: true },
   limits: { maxGoalsPerWallet: 5, minCooldownSeconds: 60, maxPolicyTtlDays: 30, maxPerTradeHuman: "100", maxDailyHuman: "500", maxSlippageBps: 100 },
 };
@@ -24,9 +24,9 @@ describe("Chat-only Base review preflight", () => {
   });
   it("is ready only with complete inputs, the correct network/catalog, a session, and a matching positive quote", () => {
     expect(chatReviewAuthorizationError(ready())).toBeNull();
-    // Readiness does not change the mainnet production gate or enable execution.
-    expect(config.productionGate).toBe(false);
-    expect(config.executionAvailable).toBe(false);
+    // A ready fixture must explicitly confirm both gates; preflight cannot enable them.
+    expect(config.productionGate).toBe(true);
+    expect(config.executionAvailable).toBe(true);
   });
   it.each([
     { sell: "" }, { buy: "" }, { buy: form.sell }, { sellAmount: "" }, { sellAmount: "-1" }, { sellAmount: "NaN" },
@@ -70,5 +70,24 @@ describe("Chat-only Base review preflight", () => {
     for (const patch of [{ sellAmount: "2" }, { slippageBps: 90 }, { buy: CHAT_REVIEW_TOKENS.find((t) => t.symbol === "WETH")!.address }]) {
       expect(chatReviewAuthorizationError({ ...ready(), form: { ...form, ...patch } })).toMatch(/live quote/);
     }
+  });
+});
+
+
+describe("Chat authorization requires confirmed live gates independently of settings loading", () => {
+  it.each([false, undefined])("refuses production gate %s despite a valid form/session/quote", (productionGate) => {
+    expect(chatReviewAuthorizationError({ ...ready(), config: { ...config, productionGate } as AutonomyConfig })).toMatch(/production safety gate/);
+  });
+  it.each([false, undefined])("refuses execution availability %s", (executionAvailable) => {
+    expect(chatReviewAuthorizationError({ ...ready(), config: { ...config, executionAvailable } as AutonomyConfig })).toMatch(/runtime\/adapter readiness/);
+  });
+  it("does not suggest retry/sign-in as a fix for a disabled runtime flag", () => {
+    const message = chatReviewAuthorizationError({ ...ready(), config: { ...config, enabled: false }, settingsRead: { state: "loaded", httpStatus: 200, runtimeGate: "missing" } });
+    expect(message).toMatch(/runtime flag: missing/);
+    expect(message).toMatch(/operator must review Preview configuration/);
+    expect(message).not.toMatch(/Retry loading settings/);
+  });
+  it.each(["loading", "http_error", "invalid_json", "invalid_response", "network_error", "timeout"] as const)("never authorizes stale valid settings while the read is %s", (state) => {
+    expect(chatReviewAuthorizationError({ ...ready(), settingsRead: { state, httpStatus: state === "http_error" ? 503 : 200 } })).not.toBeNull();
   });
 });

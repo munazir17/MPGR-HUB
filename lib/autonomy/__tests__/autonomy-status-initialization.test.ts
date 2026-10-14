@@ -217,6 +217,8 @@ describe("GET /api/agent/autonomy/config (real route handler, cold instance)", (
     const res = await GET();
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("x-mpgr-autonomy-runtime-gate")).toBe("enabled");
+    expect(res.headers.get("x-mpgr-autonomy-production-gate")).toBe("missing");
     const body = (await res.json()) as StatusPayload;
 
     // Exact operator pin, verbatim (checksummed by the runtime).

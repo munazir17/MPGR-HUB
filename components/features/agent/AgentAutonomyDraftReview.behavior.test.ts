@@ -27,19 +27,20 @@ vi.mock("react", async (load) => {
 });
 vi.mock("wagmi", () => ({ useAccount: () => harness.wallet }));
 vi.mock("framer-motion", async () => ({ AnimatePresence: (await import("react")).Fragment, motion: { div: "div" } }));
+import type { AutonomySettingsDiagnostic } from "@/lib/api/autonomy-settings";
 import { AgentAutonomyDraftReview } from "./AgentAutonomyDraftReview";
 import { CHAT_REVIEW_TOKENS } from "./chat-autonomy-review";
 import { buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
 
 const prompt = "Buy AAPLc whenever price falls 1% worth 1 USDC";
 const config = {
-  enabled: true, emergencyDisabled: false, productionGate: false, executionAvailable: false,
+  enabled: true, emergencyDisabled: false, productionGate: true, executionAvailable: true,
   delegated: { chainId: 8453, executor: "0x1111111111111111111111111111111111111111", walletSigningSupported: true },
   limits: { maxGoalsPerWallet: 5, minCooldownSeconds: 60, maxPolicyTtlDays: 30, maxPerTradeHuman: "100", maxDailyHuman: "500", maxSlippageBps: 100 },
 };
 const autonomy = {
   draft: buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt, { referencePrice: "347" }),
-  tokens: CHAT_REVIEW_TOKENS, config, authenticated: true, authenticating: false, busy: false, error: null,
+  tokens: CHAT_REVIEW_TOKENS, config, settingsRead: { state: "loaded", httpStatus: 200 } as AutonomySettingsDiagnostic, authenticated: true, authenticating: false, busy: false, error: null,
   clearDraft: vi.fn(), dismissError: vi.fn(), refresh: vi.fn(async () => {}), signIn: vi.fn(async () => true),
   activateDraft: vi.fn(async () => { throw new Error("Verification must never authorize a goal"); }),
 };
@@ -70,7 +71,7 @@ async function effects() {
 beforeEach(() => {
   harness.states = []; harness.deps = []; harness.cleanup = []; harness.pending = [];
   harness.wallet = { isConnected: true, chainId: 8453 };
-  autonomy.tokens = CHAT_REVIEW_TOKENS; autonomy.config = config; autonomy.authenticated = true;
+  autonomy.tokens = CHAT_REVIEW_TOKENS; autonomy.config = config; autonomy.settingsRead = { state: "loaded", httpStatus: 200 }; autonomy.authenticated = true;
   vi.clearAllMocks();
   network.mockImplementation(async (url, init) => {
     expect(url).toBe("/api/trade/quote");
@@ -178,6 +179,48 @@ describe("Chat draft review effect and validation behavior", () => {
     expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
     autonomy.config = { ...config, enabled: false };
     expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("Chat settings and production/readiness failures", () => {
+  it.each(["productionGate", "executionAvailable"] as const)("blocks button AND direct handler when %s is false; performs no quote, activation or sign-in", async (gate) => {
+    render(); await effects(); // a valid old quote exists before readiness changes
+    autonomy.config = { ...config, [gate]: false };
+    network.mockClear();
+    const tree = render(); await effects();
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
+    expect(network).not.toHaveBeenCalled();
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+    expect(autonomy.signIn).not.toHaveBeenCalled();
+    expect(find(tree, "autonomy-draft-amount").props.value).toBe("1");
+    expect(find(tree, "autonomy-draft-price").props.value).toBe("343.53");
+  });
+  it("shows HTTP/schema diagnostics instead of calling a stale config ready", async () => {
+    render(); await effects();
+    autonomy.settingsRead = { state: "http_error", httpStatus: 503 };
+    network.mockClear();
+    const tree = render(); await effects();
+    expect(renderToStaticMarkup(tree)).toContain("HTTP 503");
+    expect(renderToStaticMarkup(tree)).toContain("Settings GET failed");
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+    expect(autonomy.signIn).not.toHaveBeenCalled();
+    expect(network).not.toHaveBeenCalled();
+  });
+  it("separates a loaded but disabled runtime flag from the production gate", async () => {
+    autonomy.config = { ...config, enabled: false, productionGate: false, executionAvailable: false };
+    autonomy.settingsRead = { state: "loaded", httpStatus: 200, runtimeGate: "missing", productionGate: "disabled" };
+    const tree = render(); await effects();
+    const html = renderToStaticMarkup(tree);
+    expect(html).toContain("runtime flag: missing");
+    expect(html).toContain("production safety gate");
+    expect(html).toContain("loaded · HTTP 200");
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    expect(network).not.toHaveBeenCalled();
     expect(autonomy.activateDraft).not.toHaveBeenCalled();
   });
 });
