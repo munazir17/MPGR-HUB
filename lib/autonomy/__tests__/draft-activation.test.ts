@@ -1,27 +1,32 @@
 import { describe, expect, it } from "vitest";
 
-// STANDING-DELEGATION COVERAGE predicates (lib/autonomy/draft-activation.ts).
-// Fail-closed by design: every predicate must hold for a delegation to count
-// as "covering" a chat draft — the runtime re-validates everything again.
+// GOAL-BOUND STANDING-DELEGATION predicates (lib/autonomy/draft-activation.ts).
+//
+// A Permit2 witness slot binds an actionId derived from the goal it was
+// signed FOR; the executor reverts any broadcast whose intentId differs from
+// the signed actionId. So a slot can only ever fund ITS OWN goal — coverage
+// is goal-bound or it does not exist. These tests lock that: another goal's
+// slot NEVER covers, no matter how well it matches pair and amount.
 
 import {
-  findCoveringDelegation,
-  policyCoversDraft,
+  findLiveSlotBoundToGoal,
   serverSlotToLike,
-  slotCoversDraft,
   type DelegationPolicyLike,
   type DelegationSlotLike,
 } from "@/lib/autonomy/draft-activation";
+import { delegatedActionId } from "@/lib/executor/delegated-executor";
 
 const NOW = new Date("2026-10-14T12:00:00Z");
 
-const NEED = {
-  chainId: 8453,
+// The REAL derivation (pure keccak, client-safe) — the check must match the
+// same binding the executor enforces on-chain.
+const actionIdOf = (goalId: string) => delegatedActionId(goalId);
+
+const GOAL = {
+  id: "goal_this",
   sellToken: "0x1111111111111111111111111111111111111111",
   buyToken: "0x2222222222222222222222222222222222222222",
   sellAmountRaw: "50000000", // 50 USDC
-  maxDailyRaw: "100000000", // 100 USDC
-  now: NOW,
 };
 
 const POLICY: DelegationPolicyLike = {
@@ -30,91 +35,95 @@ const POLICY: DelegationPolicyLike = {
   enabled: true,
   revokedAt: null,
   expiresAt: "2026-11-01T00:00:00Z",
-  sellToken: "0x1111111111111111111111111111111111111111",
-  buyToken: "0x2222222222222222222222222222222222222222",
+  sellToken: GOAL.sellToken,
+  buyToken: GOAL.buyToken,
   maxPerTradeRaw: "50000000",
   maxDailyRaw: "100000000",
 };
 
-const SLOT: DelegationSlotLike = {
-  id: "slot_1",
+/** A live slot bound to goal_this — the ONLY shape that covers. */
+const OWN_LIVE_SLOT: DelegationSlotLike = {
+  id: "slot_own_0",
   policyId: "policy_1",
-  goalId: "goal_1",
+  goalId: GOAL.id,
   slotIndex: 0,
-  sellToken: "0x1111111111111111111111111111111111111111",
-  amountRaw: "50000000",
-  buyToken: "0x2222222222222222222222222222222222222222",
+  sellToken: GOAL.sellToken,
+  amountRaw: GOAL.sellAmountRaw,
+  buyToken: GOAL.buyToken,
   minAmountOutRaw: "140000000",
+  actionId: actionIdOf(GOAL.id),
   deadline: Math.floor(NOW.getTime() / 1000) + 3600,
   consumedAt: null,
   revokedAt: null,
 };
 
-describe("policyCoversDraft", () => {
-  it("a live, unexpired, same-pair policy with big-enough caps covers", () => {
-    expect(policyCoversDraft(POLICY, NEED)).toBe(true);
+/** Same pair, same EXACT amount, live — but signed for a DIFFERENT goal. */
+const OTHER_GOAL_SLOT: DelegationSlotLike = {
+  ...OWN_LIVE_SLOT,
+  id: "slot_other_0",
+  goalId: "goal_other",
+  actionId: actionIdOf("goal_other"),
+};
+
+describe("findLiveSlotBoundToGoal (goal-bound standing delegation)", () => {
+  it("a live slot BOUND TO THIS goal covers", () => {
+    expect(findLiveSlotBoundToGoal([POLICY], [OWN_LIVE_SLOT], GOAL, NOW)).toMatchObject({
+      policyId: "policy_1",
+      slotId: "slot_own_0",
+    });
   });
 
-  it("fails closed on disabled/revoked/expired/cross-chain/cross-pair/smaller caps", () => {
-    expect(policyCoversDraft({ ...POLICY, enabled: false }, NEED)).toBe(false);
-    expect(policyCoversDraft({ ...POLICY, revokedAt: NOW.toISOString() }, NEED)).toBe(false);
-    expect(policyCoversDraft({ ...POLICY, expiresAt: "2026-10-01T00:00:00Z" }, NEED)).toBe(false);
-    expect(policyCoversDraft({ ...POLICY, chainId: 84532 }, NEED)).toBe(false);
-    expect(policyCoversDraft({ ...POLICY, buyToken: "0x3333333333333333333333333333333333333333" }, NEED)).toBe(false);
-    expect(policyCoversDraft({ ...POLICY, maxPerTradeRaw: "49999999" }, NEED)).toBe(false);
-    expect(policyCoversDraft({ ...POLICY, maxDailyRaw: "99999999" }, NEED)).toBe(false);
-    expect(policyCoversDraft({ ...POLICY, maxPerTradeRaw: "not-a-number" }, NEED)).toBe(false);
-  });
-});
-
-describe("slotCoversDraft", () => {
-  it("an unexpired, unconsumed slot with the EXACT amount and a positive floor covers", () => {
-    expect(slotCoversDraft(SLOT, "policy_1", NEED)).toBe(true);
+  it("a covering slot from a DIFFERENT goal does NOT cover — even with identical pair and amount", () => {
+    expect(findLiveSlotBoundToGoal([POLICY], [OTHER_GOAL_SLOT], GOAL, NOW)).toBeNull();
   });
 
-  it("consumed/revoked/expired slots never cover", () => {
-    expect(slotCoversDraft({ ...SLOT, consumedAt: NOW.toISOString() }, "policy_1", NEED)).toBe(false);
-    expect(slotCoversDraft({ ...SLOT, revokedAt: NOW.toISOString() }, "policy_1", NEED)).toBe(false);
-    expect(slotCoversDraft({ ...SLOT, deadline: Math.floor(NOW.getTime() / 1000) }, "policy_1", NEED)).toBe(false);
+  it("a slot whose witness actionId does not derive from THIS goal id does NOT cover (tampered binding)", () => {
+    expect(
+      findLiveSlotBoundToGoal(
+        [POLICY],
+        [{ ...OWN_LIVE_SLOT, actionId: actionIdOf("goal_other") }],
+        GOAL,
+        NOW,
+      ),
+    ).toBeNull();
   });
 
-  it("AMOUNT coverage is EXACT equality (what the runtime can actually redeem)", () => {
-    expect(slotCoversDraft({ ...SLOT, amountRaw: "50000001" }, "policy_1", NEED)).toBe(false);
-    expect(slotCoversDraft({ ...SLOT, amountRaw: "1000000" }, "policy_1", NEED)).toBe(false);
+  it("consumed, revoked, expired, wrong-pair, wrong-amount, or dead-policy slots never cover", () => {
+    expect(findLiveSlotBoundToGoal([POLICY], [{ ...OWN_LIVE_SLOT, consumedAt: NOW.toISOString() }], GOAL, NOW)).toBeNull();
+    expect(findLiveSlotBoundToGoal([POLICY], [{ ...OWN_LIVE_SLOT, revokedAt: NOW.toISOString() }], GOAL, NOW)).toBeNull();
+    expect(findLiveSlotBoundToGoal([POLICY], [{ ...OWN_LIVE_SLOT, deadline: Math.floor(NOW.getTime() / 1000) }], GOAL, NOW)).toBeNull();
+    expect(findLiveSlotBoundToGoal([POLICY], [{ ...OWN_LIVE_SLOT, buyToken: "0x4444444444444444444444444444444444444444" }], GOAL, NOW)).toBeNull();
+    // EXACT amount equality: a bigger slot is not a covering slot either.
+    expect(findLiveSlotBoundToGoal([POLICY], [{ ...OWN_LIVE_SLOT, amountRaw: "50000001" }], GOAL, NOW)).toBeNull();
+    expect(findLiveSlotBoundToGoal([POLICY], [{ ...OWN_LIVE_SLOT, minAmountOutRaw: "0" }], GOAL, NOW)).toBeNull();
+    expect(findLiveSlotBoundToGoal([{ ...POLICY, enabled: false }], [OWN_LIVE_SLOT], GOAL, NOW)).toBeNull();
+    expect(findLiveSlotBoundToGoal([{ ...POLICY, revokedAt: NOW.toISOString() }], [OWN_LIVE_SLOT], GOAL, NOW)).toBeNull();
+    expect(findLiveSlotBoundToGoal([{ ...POLICY, expiresAt: "2026-10-01T00:00:00Z" }], [OWN_LIVE_SLOT], GOAL, NOW)).toBeNull();
+    expect(findLiveSlotBoundToGoal([{ ...POLICY, maxPerTradeRaw: "49999999" }], [OWN_LIVE_SLOT], GOAL, NOW)).toBeNull();
   });
 
-  it("pair mismatch, other policy, or a zero floor never cover", () => {
-    expect(slotCoversDraft({ ...SLOT, buyToken: "0x4444444444444444444444444444444444444444" }, "policy_1", NEED)).toBe(false);
-    expect(slotCoversDraft({ ...SLOT, policyId: "policy_other" }, "policy_1", NEED)).toBe(false);
-    expect(slotCoversDraft({ ...SLOT, minAmountOutRaw: "0" }, "policy_1", NEED)).toBe(false);
-  });
-});
-
-describe("findCoveringDelegation", () => {
-  it("finds the covering (policy, slot) pair", () => {
-    expect(findCoveringDelegation([POLICY], [SLOT], NEED)).toMatchObject({ policyId: "policy_1", slotId: "slot_1" });
+  it("no slots at all → null (the caller must request the one new signature)", () => {
+    expect(findLiveSlotBoundToGoal([POLICY], [], GOAL, NOW)).toBeNull();
   });
 
-  it("returns null when the policy exists but no slot covers — one signature is required", () => {
-    expect(findCoveringDelegation([POLICY], [], NEED)).toBeNull();
-    expect(findCoveringDelegation([POLICY], [{ ...SLOT, consumedAt: NOW.toISOString() }], NEED)).toBeNull();
-  });
-
-  it("returns null when slots exist but no live policy covers the caps", () => {
-    expect(findCoveringDelegation([], [SLOT], NEED)).toBeNull();
-    expect(findCoveringDelegation([{ ...POLICY, maxDailyRaw: "1" }], [SLOT], NEED)).toBeNull();
-  });
-
-  it("serverSlotToLike flattens the server record and takes the tighter deadline", () => {
+  it("serverSlotToLike flattens the server record including the witness actionId", () => {
     const like = serverSlotToLike({
       id: "slot_1",
       policyId: "policy_1",
       goalId: "goal_1",
       slotIndex: 2,
       permit: { token: "0xaa", amount: "5", deadline: 200 },
-      witness: { buyToken: "0xbb", minAmountOut: "7", deadline: 100 },
+      witness: { buyToken: "0xbb", minAmountOut: "7", deadline: 100, actionId: "0xfeed" },
       consumedAt: null,
     });
-    expect(like).toMatchObject({ sellToken: "0xaa", amountRaw: "5", buyToken: "0xbb", minAmountOutRaw: "7", deadline: 100, slotIndex: 2 });
+    expect(like).toMatchObject({
+      sellToken: "0xaa",
+      amountRaw: "5",
+      buyToken: "0xbb",
+      minAmountOutRaw: "7",
+      actionId: "0xfeed",
+      deadline: 100,
+      slotIndex: 2,
+    });
   });
 });

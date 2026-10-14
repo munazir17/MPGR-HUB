@@ -103,10 +103,18 @@ vi.mock("@/hooks/useWalletAuth", () => ({
   }),
 }));
 
+// vi.hoisted so both this mock module and the fixtures share one actionId
+// derivation that is DISTINCT per goal id (the real delegatedActionId is a
+// goal-bound keccak — two goals never share an actionId).
+const mocks = vi.hoisted(() => ({
+  actionIdFor: (id: string): `0x${string}` =>
+    ("0x" + "ab".repeat(24) + id.split("").reverse().map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("").padEnd(16, "0").slice(0, 16)) as `0x${string}`,
+}));
+
 vi.mock("@/lib/executor/delegated-executor", () => ({
   DELEGATED_EXECUTOR_ADDRESS: "0x" + "ee".repeat(20),
   DELEGATED_EXECUTOR_CHAIN_ID: 84532,
-  delegatedActionId: (id: string) => ("0x" + "ab".repeat(30) + id.slice(0, 4)) as `0x${string}`,
+  delegatedActionId: (id: string) => mocks.actionIdFor(id),
   delegatedPermitNonce: (_goalId: string, slotIndex: number) => String(1000 + slotIndex),
   delegatedPermitTypedData: () => ({ domain: {}, types: {}, primaryType: "", message: {} }),
   delegatedPolicyHash: () => ("0x" + "cd".repeat(32)) as `0x${string}`,
@@ -166,7 +174,7 @@ function coveringPolicy() {
 }
 
 function coveringSlot(overrides: Record<string, unknown> = {}) {
-  return {
+  const base = {
     id: "slot_cover_0",
     policyId: "policy_cover",
     goalId: "goal_prev",
@@ -184,7 +192,14 @@ function coveringSlot(overrides: Record<string, unknown> = {}) {
     consumedByTxHash: null,
     revokedAt: null,
     createdAt: new Date().toISOString(),
-    ...overrides,
+  };
+  // An explicit actionId override wins; otherwise the witness actionId is
+  // derived from the goal this slot was signed FOR.
+  const { actionId: actionIdOverride, ...rest } = overrides;
+  const base2 = { ...base, ...rest };
+  return {
+    ...base2,
+    actionId: (actionIdOverride as string | undefined) ?? mocks.actionIdFor(String(base2.goalId)),
   };
 }
 
@@ -277,19 +292,48 @@ beforeEach(() => {
 });
 
 describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
-  it("with a COVERING slot: creates the goal and requests NO wallet signature", async () => {
+  it("a covering slot from a DIFFERENT goal does NOT activate a new goal without a signature", async () => {
+    // The pre-existing slot matches pair, EXACT amount, and is live — but it
+    // was signed for ANOTHER goal (its witness actionId is bound to that
+    // goal, and the executor reverts any broadcast with a different
+    // intentId). The new draft goal MUST get its own signature.
     fixture.policies = [coveringPolicy()];
-    fixture.slots = [coveringSlot()];
+    fixture.slots = [coveringSlot()]; // goalId: "goal_prev" ≠ the new goal
+
+    const result = await callActivate();
+
+    // The one NEW signature path ran: goal created AND wallet asked once.
+    expect(result).toMatchObject({ ok: true, mode: "signed" });
+    expect(fixture.policyPostCount).toBe(1);
+    expect(fixture.goalPostCount).toBe(1);
+    expect(wallet.signCalls).toHaveLength(1); // EXACTLY ONE signature
+    expect(fixture.slotPostCount).toBe(1);
+  });
+
+  it("a live slot already bound to THIS goal is the only no-signature standing path", async () => {
+    // The goal POST returns id "goal_1"; a pre-existing live slot bound to
+    // THAT id (same actionId derivation) is genuinely this goal's own
+    // authorization — activating skips the signature.
+    fixture.policies = [coveringPolicy()];
+    fixture.slots = [coveringSlot({ goalId: "goal_1", id: "slot_goal1_0" })];
 
     const result = await callActivate();
 
     expect(result).toMatchObject({ ok: true, mode: "standing" });
-    // The goal was created on the COVERING policy...
     expect(fixture.goalPostCount).toBe(1);
-    // ...and the wallet was NEVER asked to sign (no popup, no slot POST).
-    expect(wallet.signCalls).toHaveLength(0);
-    expect(fixture.policyPostCount).toBe(0);
+    expect(wallet.signCalls).toHaveLength(0); // no popup — its OWN live slot
     expect(fixture.slotPostCount).toBe(0);
+  });
+
+  it("a slot bound to this goal's id but with a MISMATCHED actionId still signs once", async () => {
+    fixture.policies = [coveringPolicy()];
+    fixture.slots = [coveringSlot({ goalId: "goal_1", id: "slot_goal1_0", actionId: mocks.actionIdFor("goal_other") })];
+
+    const result = await callActivate();
+
+    expect(result).toMatchObject({ ok: true, mode: "signed" });
+    expect(wallet.signCalls).toHaveLength(1);
+    expect(fixture.slotPostCount).toBe(1);
   });
 
   it("a covering slot does NOT cover a different amount — the client signs once instead", async () => {
@@ -347,7 +391,7 @@ describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
     expect(fixture.policyPostCount).toBe(0);
   });
 
-  it("a consumed covering slot is NOT standing delegation", async () => {
+  it("a consumed slot bound to this goal does NOT skip the signature", async () => {
     fixture.policies = [coveringPolicy()];
     fixture.slots = [coveringSlot({ consumedAt: new Date().toISOString(), status: "consumed" })];
 
@@ -357,7 +401,7 @@ describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
     expect(wallet.signCalls).toHaveLength(1);
   });
 
-  it("an expired covering slot is NOT standing delegation", async () => {
+  it("an expired slot bound to this goal does NOT skip the signature", async () => {
     fixture.policies = [coveringPolicy()];
     fixture.slots = [coveringSlot({ deadline: Math.floor(Date.now() / 1000) - 10 })];
 

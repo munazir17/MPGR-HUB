@@ -25,7 +25,7 @@ import { useAccount, useSignTypedData } from "wagmi";
 import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 import { useWalletAuth } from "@/hooks/useWalletAuth";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
-import { findCoveringDelegation } from "@/lib/autonomy/draft-activation";
+import { findLiveSlotBoundToGoal } from "@/lib/autonomy/draft-activation";
 import {
   delegatedActionId,
   delegatedChainLabel,
@@ -117,6 +117,8 @@ export interface DelegatedSlotView {
   consumedByTxHash: string | null;
   revokedAt: string | null;
   createdAt: string;
+  /** Witness actionId — delegatedActionId(goalId) for the goal it was signed for. */
+  actionId: string;
 }
 
 export interface AutonomyTokenOption {
@@ -611,21 +613,24 @@ export function useAgentAutonomy() {
   );
 
   /**
-   * Chat-draft ACTIVATION (the fixed production flow):
+   * Chat-draft ACTIVATION (the corrected production flow):
    *
-   * 1. STANDING DELEGATION — when this wallet already holds a live policy
-   *    plus an unexpired, unconsumed slot covering the draft's pair, exact
-   *    amount and daily cap, the goal is created on that policy with NO new
-   *    wallet popup and comes back ACTIVE (mode: "standing").
+   * The Permit2 witness `actionId` is bound to the goal a slot was signed
+   * FOR — the executor reverts any broadcast whose intentId differs from the
+   * signed actionId, so another goal's slot can never fund this goal's
+   * trades. A brand-new draft goal therefore has no slot bound to it, and
+   * activation ALWAYS takes the ONE-SIGNATURE path: policy + goal are
+   * created, then the wallet is asked for EXACTLY ONE delegated-slot
+   * signature over the draft amount with the min output prefilled from the
+   * live quote (never zero). One popup, then the goal is ACTIVE and
+   * executable.
    *
-   * 2. ONE SIGNATURE — otherwise the policy + goal are created and the
-   *    wallet is asked for EXACTLY ONE delegated-slot signature over the
-   *    draft amount with the min output prefilled from the live quote
-   *    (never zero). One popup, then the goal is ACTIVE and executable
-   *    (mode: "signed").
-   *
-   * Nothing is broadcast here and no private key is involved: the runtime's
-   * cron executes only when the trigger condition is true, inside the slot.
+   * The ONLY no-signature path is a live, unconsumed slot already bound to
+   * THIS goal id (goal-bound standing delegation — checked after the goal
+   * exists; it cannot exist for a fresh goal, and a slot from ANY other goal
+   * never qualifies). Nothing is broadcast here and no private key is
+   * involved: the runtime's cron executes only when the trigger condition is
+   * true, inside the slot.
    */
   const activateDraft = useCallback(
     async (input: DraftActivationInput): Promise<DraftActivationResult> => {
@@ -660,27 +665,9 @@ export function useAgentAutonomy() {
         return { ok: false, message: "Delegated autonomy is not available on this network right now." };
       }
 
-      // 1) Standing delegation covers the draft → activate with NO popup.
-      const covering = findCoveringDelegation(policies, slots, {
-        chainId,
-        sellToken: input.sellToken,
-        buyToken: input.buyToken,
-        sellAmountRaw,
-        maxDailyRaw,
-        now: new Date(),
-      });
-      if (covering) {
-        const created = await createGoalOnPolicy(covering.policyId, input);
-        if (!created.ok) {
-          setError(created.message);
-          return { ok: false, message: created.message, mode: "standing" };
-        }
-        await refresh();
-        return { ok: true, mode: "standing" };
-      }
-
-      // 2) No covering delegation → ONE wallet signature on one slot.
-      //    The signed floor must come from the live quote — never zero.
+      // ONE-SIGNATURE PATH — always, for a new draft goal. A slot signed for
+      // a DIFFERENT goal can never authorize this goal's broadcast (witness
+      // actionId binding), so no cross-goal coverage is consulted here.
       const cleanedMinOut = input.minAmountOutHuman.trim();
       if (!cleanedMinOut || !/^\d*(\.\d*)?$/.test(cleanedMinOut) || Number.parseFloat(cleanedMinOut || "0") <= 0) {
         return { ok: false, message: "A live quote is needed to set the minimum output before signing. Refresh and try again." };
@@ -714,8 +701,26 @@ export function useAgentAutonomy() {
           setError(goal.message);
           return { ok: false, message: goal.message };
         }
-        // EXACTLY ONE wallet popup: one slot, amount from the draft, min
-        // output from the live quote, action bound to the goal just created.
+
+        // GOAL-BOUND STANDING CHECK — the only no-signature path: a live,
+        // unconsumed slot ALREADY BOUND TO THIS goal id (same pair, exact
+        // amount). A fresh goal has none, so the signature below always runs
+        // for a new draft; another goal's slot NEVER qualifies, no matter
+        // how well it matches pair and amount.
+        const standing = findLiveSlotBoundToGoal(
+          [...policies, policyPayload.policy],
+          slots,
+          { id: goal.goal.id, sellToken: input.sellToken, buyToken: input.buyToken, sellAmountRaw },
+          new Date(),
+        );
+        if (standing) {
+          await refresh();
+          return { ok: true, mode: "standing" };
+        }
+
+        // EXACTLY ONE wallet popup: one slot bound to THIS goal, amount from
+        // the draft, min output from the live quote, actionId derived from
+        // the goal just created.
         const signed = await signSlotsForPolicyGoal(
           policyPayload.policy,
           goal.goal,

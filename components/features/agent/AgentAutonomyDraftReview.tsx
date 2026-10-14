@@ -6,16 +6,14 @@
 // draft. Opened from the in-chat draft card — NEVER from the manual
 // Autonomous Goals panel, and never the other way around.
 //
-// ACTIVATION MODEL (production fix):
-//   * STANDING DELEGATION — when this wallet already holds a live policy +
-//     unexpired, unconsumed slot covering the draft's pair, exact amount and
-//     daily cap, activation creates the goal with NO wallet popup.
-//   * ONE SIGNATURE — otherwise the Authorize button creates the policy +
-//     goal and opens the wallet for EXACTLY ONE delegated-slot signature
-//     (draft amount, minimum output prefilled from the LIVE QUOTE — never
-//     zero). One popup, then the goal is ACTIVE.
-//   * Nothing is broadcast at prompt time: the runtime's cron executes only
-//     when the condition is true, inside the signed slot.
+// ACTIVATION MODEL (corrected production flow): a Permit2 slot's witness
+// actionId is bound to the goal it was signed FOR, so another goal's slot
+// can never fund this goal. A brand-new draft goal always needs its OWN
+// slot: the Authorize button creates the policy + goal and opens the wallet
+// for EXACTLY ONE delegated-slot signature (draft amount, minimum output
+// prefilled from the LIVE QUOTE — never zero). One popup, then the goal is
+// ACTIVE. Nothing is broadcast at prompt time: the runtime's cron executes
+// only when the condition is true, inside the signed slot.
 //
 // Drafts whose asset is not on the delegated allowlist are REFUSED here —
 // no form, no activation. This component never signs by itself and never
@@ -26,7 +24,6 @@ import { useEffect, useId, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Repeat, ShieldCheck, ShieldOff, X } from "lucide-react";
 import { useAgentAutonomy } from "@/hooks/useAgentAutonomy";
-import { findCoveringDelegation } from "@/lib/autonomy/draft-activation";
 import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import {
@@ -74,42 +71,15 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
   const sellTokenInfo = tokens.find((t) => t.address.toLowerCase() === formState.sell.toLowerCase());
   const buyTokenInfo = tokens.find((t) => t.address.toLowerCase() === formState.buy.toLowerCase());
 
-  // STANDING-DELEGATION CHECK (same predicates the activation uses): a live
-  // policy + unexpired, unconsumed slot already covering pair, exact amount
-  // and daily cap means activation needs NO wallet popup.
-  const covering = (() => {
-    if (!config?.delegated?.chainId || !sellTokenInfo || !buyTokenInfo) return null;
-    const toBaseUnits = (human: string): string | null => {
-      const cleaned = human.trim();
-      if (!/^\d*(\.\d*)?$/.test(cleaned) || cleaned === "" || cleaned === ".") return null;
-      const [whole = "0", frac = ""] = cleaned.split(".");
-      const fracPadded = frac.padEnd(sellTokenInfo.decimals, "0").slice(0, sellTokenInfo.decimals);
-      try {
-        return BigInt(whole + fracPadded).toString();
-      } catch {
-        return null;
-      }
-    };
-    const sellAmountRaw = toBaseUnits(formState.sellAmount);
-    const maxDailyRaw = toBaseUnits(formState.maxDaily);
-    if (!sellAmountRaw || !maxDailyRaw) return null;
-    return findCoveringDelegation(autonomy.policies, autonomy.slots, {
-      chainId: config.delegated.chainId,
-      sellToken: formState.sell,
-      buyToken: formState.buy,
-      sellAmountRaw,
-      maxDailyRaw,
-      now: new Date(),
-    });
-  })();
-
   // LIVE QUOTE prefill for the one-signature slot floor. Silent on failure:
   // the activate step refuses to sign with an empty minimum output, so a
   // failed prefill degrades to a clear message instead of a zero floor.
+  // NOTE: every new goal signs its OWN slot — a slot from another goal can
+  // never fund this one (witness actionId binding) — so the quote is always
+  // needed before activating.
   useEffect(() => {
     if (draft.supported === false) return;
     if (!sellTokenInfo || !buyTokenInfo) return;
-    if (covering) return; // no signature will be requested — no quote needed
     let cancelled = false;
     const load = async () => {
       try {
@@ -137,7 +107,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
     return () => {
       cancelled = true;
     };
-  }, [draft.supported, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps, covering]);
+  }, [draft.supported, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps]);
 
   const handleAuthorize = async () => {
     if (!formState.sell || !formState.buy) {
@@ -289,11 +259,9 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
             >
               <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span className="min-w-0 flex-1" data-testid="agent-autonomy-draft-mode-text">
-                {covering
-                  ? "Covered by your existing delegation: activating creates the goal with no wallet signature. Your live slot (same pair, same amount) is what the runtime redeems when the trigger fires."
-                  : `One wallet signature will be requested: a single delegated slot for ${amountLabel || "the draft amount"}${
+                {`One wallet signature will be requested: a single delegated slot bound to THIS goal for ${amountLabel || "the draft amount"}${
                       quotedMinOut ? ` with minimum output ≥ ${quotedMinOut} ${draft.targetAsset} (live quote)` : " with the minimum output set from the live quote"
-                    }. One popup, then the goal is active. Nothing is broadcast until the condition is true.`}
+                  }. One popup, then the goal is active. Signatures are never reused from other goals, and nothing is broadcast until the condition is true.`}
               </span>
             </div>
 
@@ -433,9 +401,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
                         ? "Working…"
                         : !authenticated
                           ? "Sign in & authorize"
-                          : covering
-                            ? "Activate goal — no signature needed"
-                            : "Authorize & sign once"}
+                          : "Authorize & sign once"}
                   </button>
                   <button
                     type="button"
