@@ -94,12 +94,13 @@ export interface AIProviderResponse {
    */
   transferProposal?: TransferProposal;
   /**
-   * Autonomous Agent Runtime (ADDITIVE) — set only when the deterministic
-   * provider detected clearly recurring/conditional trade phrasing (spec
-   * §20). It carries a REVIEW-ONLY goal draft built by
+   * Autonomous Agent Runtime — set when the shared extraction preflight or
+   * deterministic fallback detects conditional trade phrasing. It carries
+   * a REVIEW-ONLY goal draft built by
    * lib/autonomy/chat-draft.ts: nothing is activated, authorized, or
-   * executed by chat text. Taken from that module's pure builder, never
-   * from model output. Optional/additive — every existing construction of
+   * executed by chat text. Semantic model fields are validated in code;
+   * addresses, routes, live reference prices, and transaction authority stay in code.
+   * Optional/additive — every existing construction of
    * AIProviderResponse remains valid without change.
    */
   autonomyGoalDraft?: AutonomyGoalDraft;

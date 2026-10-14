@@ -7,7 +7,8 @@ import { DiagnosticsAIProvider, type AIProviderStats } from "./ai-provider-diagn
 import { GuardrailAIProvider } from "./ai-provider-guardrails";
 import { CircuitBreakerAIProvider } from "./circuit-breaker-ai-provider";
 import { FallbackAIProvider } from "./fallback-ai-provider";
-import { DeterministicAIProvider } from "./deterministic-ai-provider";
+import { isConditionalTradeSentence, parseTradeSentence } from "@/lib/autonomy/trade-sentence-parser";
+import { buildAutonomyResponse, resolveAmountOnlyFollowUp, DeterministicAIProvider } from "./deterministic-ai-provider";
 import { TimeoutAIProvider } from "./ai-provider-timeout";
 import {
   ProviderChainAIProvider,
@@ -40,6 +41,19 @@ class TaskRoutedAIProvider implements AIProvider {
   lastChain: ProviderChainAIProvider | null = null;
 
   async generateReply(request: Parameters<AIProvider["generateReply"]>[0]) {
+    // Resolve these before every spot-swap/provider/tool route. The extraction
+    // model sees no tools and can only propose fields validated by code.
+    const followUp = resolveAmountOnlyFollowUp(request);
+    if (followUp) return followUp;
+    if (isConditionalTradeSentence(request.prompt)) {
+      const parsed = await parseTradeSentence(request.prompt);
+      if (parsed.match) return buildAutonomyResponse(request, parsed.match);
+      return {
+        intent: "general_help" as const,
+        reply: parsed.error,
+        actions: [], highlights: [], followUps: [],
+      };
+    }
     // Clear execution intents take the existing deterministic prepare-only path.
     // No model capability/list/balance loop is needed to parse a sized order.
     if (!isTransferPrompt(request.prompt) && isTradeExecutionPrompt(request.prompt) &&

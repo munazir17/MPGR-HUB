@@ -59,17 +59,22 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
   const [activated, setActivated] = useState(false);
   const [activatedMode, setActivatedMode] = useState<"standing" | "signed" | null>(null);
   // Minimum output per trade, prefilled from the LIVE quote — never zero.
-  const [quotedMinOut, setQuotedMinOut] = useState<string>("");
+  const [quote, setQuote] = useState<{ key: string; minOut: string } | null>(null);
   const formState = form ?? autonomyDraftToForm(draft, tokens);
   const setField = (patch: Partial<AutonomyAuthorizeFormState>) => setForm({ ...formState, ...patch });
   const canAuthorize = Boolean(config?.enabled && !config.emergencyDisabled) && draft.supported !== false;
-  const verb = draft.triggerKind === "price_below" ? "Buy" : "Sell";
+  const verb = draft.side === "sell" ? "Sell" : "Buy";
   const direction = draft.triggerKind === "price_below" ? "falls below" : "rises above";
   const triggerLabel = draft.triggerKind === "price_below" ? "below" : "above";
   const amountLabel = draft.amountPerTrade ? `${draft.amountPerTrade} ${draft.spendAsset}` : "";
 
   const sellTokenInfo = tokens.find((t) => t.address.toLowerCase() === formState.sell.toLowerCase());
   const buyTokenInfo = tokens.find((t) => t.address.toLowerCase() === formState.buy.toLowerCase());
+
+  // A quote belongs to exactly these inputs. Editing the amount/pair/slippage
+  // immediately invalidates the floor, even if the replacement request fails.
+  const quoteKey = JSON.stringify([formState.sell, formState.buy, formState.sellAmount, formState.slippageBps]);
+  const quotedMinOut = quote?.key === quoteKey ? quote.minOut : "";
 
   // LIVE QUOTE prefill for the one-signature slot floor. Silent on failure:
   // the activate step refuses to sign with an empty minimum output, so a
@@ -97,7 +102,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
         const payload = (await res.json().catch(() => null)) as { proposal?: { minToAmount?: string } } | null;
         const minOut = payload?.proposal?.minToAmount;
         if (!cancelled && typeof minOut === "string" && Number.parseFloat(minOut) > 0) {
-          setQuotedMinOut((current) => (current === minOut ? current : minOut));
+          setQuote({ key: quoteKey, minOut });
         }
       } catch {
         /* prefill stays empty; the explicit message covers activation */
@@ -107,7 +112,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
     return () => {
       cancelled = true;
     };
-  }, [draft.supported, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps]);
+  }, [draft.supported, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps, quoteKey]);
 
   const handleAuthorize = async () => {
     if (!formState.sell || !formState.buy) {
@@ -209,7 +214,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
               data-testid="agent-autonomy-draft-summary"
               className="mb-3 text-sm font-medium leading-relaxed text-white"
             >
-              {verb} {draft.targetAsset} when the price {direction} {draft.triggerPrice} {draft.spendAsset}
+              {verb} {draft.targetAsset} when the price {direction} {draft.triggerPrice} USDC
               {amountLabel ? ` · up to ${amountLabel} per trade` : ""}
             </p>
 
@@ -236,7 +241,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted">Buy/receive token</dt>
-                <dd className="font-medium text-white">{draft.targetAsset}</dd>
+                <dd className="font-medium text-white">{buyTokenInfo?.symbol ?? (draft.side === "sell" ? "USDC" : draft.targetAsset)}</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted">Trigger</dt>
@@ -260,7 +265,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
               <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span className="min-w-0 flex-1" data-testid="agent-autonomy-draft-mode-text">
                 {`One wallet signature will be requested: a single delegated slot bound to THIS goal for ${amountLabel || "the draft amount"}${
-                      quotedMinOut ? ` with minimum output ≥ ${quotedMinOut} ${draft.targetAsset} (live quote)` : " with the minimum output set from the live quote"
+                      quotedMinOut ? ` with minimum output ≥ ${quotedMinOut} ${buyTokenInfo?.symbol ?? ""} (live quote)` : " with the minimum output set from the live quote"
                   }. One popup, then the goal is active. Signatures are never reused from other goals, and nothing is broadcast until the condition is true.`}
               </span>
             </div>

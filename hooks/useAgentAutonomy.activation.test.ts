@@ -372,9 +372,13 @@ describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
     );
     expect(posted).toBeDefined();
     const body = JSON.parse((posted![1] as { body: string }).body) as {
-      slots: Array<{ permit: { amount: string }; witness: { minAmountOut: string } }>;
+      goalId: string;
+      slots: Array<{ permit: { amount: string }; witness: { minAmountOut: string; actionId: string } }>;
     };
     expect(body.slots).toHaveLength(1);
+    expect(body.goalId).toBe("goal_1");
+    expect(body.slots[0].witness.actionId).toBe(mocks.actionIdFor("goal_1"));
+    expect(body.slots[0].witness.actionId).not.toBe(mocks.actionIdFor("goal_prev"));
     expect(body.slots[0].permit.amount).toBe("50000000");
     expect(BigInt(body.slots[0].witness.minAmountOut)).toBe(28550000n); // 0.2855 × 1e8, NOT zero
   });

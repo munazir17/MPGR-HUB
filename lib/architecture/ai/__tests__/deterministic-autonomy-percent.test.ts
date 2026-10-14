@@ -130,9 +130,9 @@ describe("DeterministicAIProvider amount-only follow-up", () => {
       autonomyGoalDraft: openDraft,
     };
 
-    const response = await new DeterministicAIProvider().generateReply(
-      makeRequest("1 USDC", [previousAssistantTurn]),
-    );
+    const next = makeRequest("1 USDC", [previousAssistantTurn]);
+    next.lastAssistantMessage = { autonomyGoalDraft: openDraft };
+    const response = await new DeterministicAIProvider().generateReply(next);
 
     // No swap prepare ran; the amount landed on the SAME draft.
     expect(runTool).not.toHaveBeenCalled();

@@ -13,6 +13,7 @@ import { hasNegativeTradeAmount } from "./tool-call-normalization";
 // per-trade amount instead of falling into the swap/help flows.
 import {
   applyAmountToDraft,
+  validateAutonomyMatch,
   buildAutonomyReplyText,
   buildGoalDraft,
   detectAmountOnlyFollowUp,
@@ -47,7 +48,6 @@ import { answerWalletBalance } from "./wallet-balance-answer";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
-import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
 import { findKnownTradeToken } from "@/lib/trade/trade-tokens";
 
@@ -90,52 +90,7 @@ export class DeterministicAIProvider implements AIProvider {
     if (amountFollowUp) return amountFollowUp;
 
     const autonomyRequest = detectAutonomousTradeRequest(request.prompt);
-    if (autonomyRequest) {
-      // ALLOWLIST DISCIPLINE first: only delegated-allowlist symbols with a
-      // registered USDC route may become drafts at all. An unsupported asset
-      // never triggers a price read or any other tool — the draft is still
-      // produced, but flagged unsupported so the UI card and review SAY it is
-      // not available for autonomous trading. No tokens, routes, or contract
-      // allowlist entries are added anywhere.
-      const unanchored = buildGoalDraft(autonomyRequest, request.prompt);
-      if (unanchored.supported === false) {
-        return {
-          intent: "general_help",
-          reply: unanchored.unsupportedReason ?? `${autonomyRequest.targetAsset} is not available for autonomous trading.`,
-          actions: [],
-          highlights: [],
-          followUps: ["Which assets support autonomous goals?", "How does autonomous mode work?"],
-          autonomyGoalDraft: unanchored,
-        };
-      }
-
-      const anchor = await resolveAnchor(autonomyRequest, request);
-      const draft =
-        anchor && unanchored.percentDrop != null
-          ? buildGoalDraft(autonomyRequest, request.prompt, anchor)
-          : unanchored;
-
-      // A percent trigger that could not be anchored to a live reference
-      // price produces NO draft at all — an unanchored percentage would be a
-      // made-up number. The user is asked for an absolute trigger instead.
-      if (autonomyRequest.percentDrop != null && !draft.triggerPrice) {
-        return helpResponse(
-          `I could not get a live ${autonomyRequest.targetAsset} price just now, so I can't anchor a ${autonomyRequest.percentDrop}% trigger. Try again in a moment, or give me an absolute price like "when it falls below $340".`,
-        );
-      }
-
-      return {
-        intent: "general_help",
-        reply: buildAutonomyReplyText(
-          autonomyRequest,
-          draft.referencePrice ? { referencePrice: draft.referencePrice } : null,
-        ),
-        actions: [],
-        highlights: [],
-        followUps: ["Open Autonomous Goals", "How does autonomous mode work?"],
-        autonomyGoalDraft: draft,
-      };
-    }
+    if (autonomyRequest) return buildAutonomyResponse(request, autonomyRequest);
 
     if (isTransferPrompt(request.prompt)) {
       return prepareOrExplainTransfer(request);
@@ -666,28 +621,35 @@ function formatReferencePrice(value: number): string {
  * '$1'), attach it to the open autonomous draft. Do not start a spot swap
  * and do not answer with portfolio help." The draft counts as open when the
  * LAST assistant turn of this conversation carried it — read from the
- * deterministic lastAssistantMessage (preferred) or, failing that, from the
- * ranked relevantHistory. Anything else (no draft, an unsupported draft)
- * returns null and the normal branches run unchanged.
+ * deterministic lastAssistantMessage, never from ranked relevantHistory.
+ * Without an open draft the normal branches run unchanged.
  */
-function resolveAmountOnlyFollowUp(request: AIProviderRequest): AIProviderResponse | null {
+export function resolveAmountOnlyFollowUp(request: AIProviderRequest): AIProviderResponse | null {
+  // Only actual conversation state is authoritative; ranked memory may be
+  // from an unrelated turn and must never resurrect a draft.
+  const draft = request.lastAssistantMessage?.autonomyGoalDraft;
+  if (!draft) return null;
   const hit = detectAmountOnlyFollowUp(request.prompt);
-  if (!hit) return null;
-  const draft =
-    request.lastAssistantMessage?.autonomyGoalDraft ??
-    (Array.isArray(request.memoryContext?.relevantHistory)
-      ? ([...request.memoryContext.relevantHistory]
-          .reverse()
-          .find((m) => (m as { role?: unknown })?.role === "assistant") as
-          | { autonomyGoalDraft?: AutonomyGoalDraft }
-          | undefined)?.autonomyGoalDraft
-      : undefined);
-  if (!draft || draft.supported === false) return null;
+  if (!hit) {
+    // Invalid amount-only text is still a draft follow-up, not a spot order.
+    if (/^(?:\$\s*)?-?\d+(?:\.\d+)?\s*(?:usdc|usd|dollars?|bucks)?(?:\s+per\s+trade)?$/i.test(request.prompt.trim())) {
+      return { ...helpResponse("Enter a positive amount within the policy cap."), autonomyGoalDraft: draft };
+    }
+    return null;
+  }
+  if (draft.supported === false) {
+    return { ...helpResponse(draft.unsupportedReason ?? "This asset is not available for autonomous trading."), autonomyGoalDraft: draft };
+  }
 
+  if (draft.side === "sell" && /(?:\$|usdc|usd|dollars?|bucks)/i.test(request.prompt)) {
+    return { ...helpResponse(`This sell spends ${draft.spendAsset}; enter an amount in that asset rather than USDC.`), autonomyGoalDraft: draft };
+  }
+  const error = validateAutonomyMatch({ ...draft, amountPerTrade: hit.amount });
+  if (error) return { ...helpResponse(error), autonomyGoalDraft: draft };
   const updated = applyAmountToDraft(draft, hit.amount);
   const anchor = updated.referencePrice ? ` (reference: ${updated.targetAsset} is ${updated.referencePrice})` : "";
   const trigger = updated.triggerPrice
-    ? ` when the price goes ${updated.triggerKind === "price_below" ? "below" : "above"} ${updated.triggerPrice} ${updated.spendAsset}`
+    ? ` when the price goes ${updated.triggerKind === "price_below" ? "below" : "above"} ${updated.triggerPrice} USDC`
     : "";
   return {
     intent: "general_help",
@@ -700,5 +662,58 @@ function resolveAmountOnlyFollowUp(request: AIProviderRequest): AIProviderRespon
     highlights: [],
     followUps: ["Open Autonomous Goals", "How does autonomous mode work?"],
     autonomyGoalDraft: updated,
+  };
+}
+
+/** Shared review-only reply builder. Its only tool is the read-only price lookup. */
+export async function buildAutonomyResponse(
+  request: AIProviderRequest,
+  autonomyRequest: NonNullable<ReturnType<typeof detectAutonomousTradeRequest>>,
+): Promise<AIProviderResponse> {
+  const error = validateAutonomyMatch(autonomyRequest);
+  if (error) return helpResponse(error);
+  // ALLOWLIST DISCIPLINE first: only delegated-allowlist symbols with a
+  // registered USDC route may become drafts at all. An unsupported asset
+  // never triggers a price read or any other tool — the draft is still
+  // produced, but flagged unsupported so the UI card and review SAY it is
+  // not available for autonomous trading. No tokens, routes, or contract
+  // allowlist entries are added anywhere.
+  const unanchored = buildGoalDraft(autonomyRequest, request.prompt);
+  if (unanchored.supported === false) {
+    return {
+      intent: "general_help",
+      reply: unanchored.unsupportedReason ?? `${autonomyRequest.targetAsset} is not available for autonomous trading.`,
+      actions: [],
+      highlights: [],
+      followUps: ["Which assets support autonomous goals?", "How does autonomous mode work?"],
+      autonomyGoalDraft: unanchored,
+    };
+  }
+
+  const anchor = await resolveAnchor(autonomyRequest, request);
+  const draft =
+    anchor && unanchored.percentDrop != null
+      ? buildGoalDraft(autonomyRequest, request.prompt, anchor)
+      : unanchored;
+
+  // A percent trigger that could not be anchored to a live reference
+  // price produces NO draft at all — an unanchored percentage would be a
+  // made-up number. The user is asked for an absolute trigger instead.
+  if (autonomyRequest.percentDrop != null && !draft.triggerPrice) {
+    return helpResponse(
+      `I could not get a live ${autonomyRequest.targetAsset} price just now, so I can't anchor a ${autonomyRequest.percentDrop}% trigger. Try again in a moment, or give me an absolute price like "when it falls below $340".`,
+    );
+  }
+
+  return {
+    intent: "general_help",
+    reply: buildAutonomyReplyText(
+      autonomyRequest,
+      draft.referencePrice ? { referencePrice: draft.referencePrice } : null,
+    ),
+    actions: [],
+    highlights: [],
+    followUps: ["Open Autonomous Goals", "How does autonomous mode work?"],
+    autonomyGoalDraft: draft,
   };
 }

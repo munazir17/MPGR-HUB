@@ -384,3 +384,20 @@ describe("chat autonomous draft vs manual goal flow", () => {
     expect(reviewHtml).not.toContain('data-testid="agent-autonomy-draft-authorize"');
   });
 });
+
+
+describe("sell draft direction and runtime ratio mapping", () => {
+  it("sells the target for USDC and compares the inverse USD price", () => {
+    const form = autonomyDraftToForm({ ...fixtures.DRAFT, side: "sell", spendAsset: "AAPLc", triggerPrice: "250" }, [fixtures.USDC, fixtures.AAPLc]);
+    expect(form.sell).toBe(fixtures.AAPLc.address);
+    expect(form.buy).toBe(fixtures.USDC.address);
+    expect(form.sellAmount).toBe("1");
+    expect(form.kind).toBe("price_above");
+    expect(form.threshold).toBe("0.004");
+  });
+
+  it("rounds a non-terminating inverse conservatively (never before the USD threshold)", () => {
+    const form = autonomyDraftToForm({ ...fixtures.DRAFT, side: "sell", spendAsset: "AAPLc", triggerPrice: "3" }, [fixtures.USDC, fixtures.AAPLc]);
+    expect(form.threshold).toBe("0.333333333333333334");
+  });
+});

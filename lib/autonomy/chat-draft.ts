@@ -1,8 +1,8 @@
 // lib/autonomy/chat-draft.ts
 //
 // Deterministic detection of AUTONOMOUS trade phrasing (spec §20) and the
-// goal draft it produces. Pure module — used by the deterministic AI
-// provider so a chat message like
+// goal draft it produces. Pure module — used by the shared chat preflight
+// and deterministic fallback so a chat message like
 //
 //   "Buy AAPLc whenever it falls below 200 USDC, max 20 USDC per trade"
 //
@@ -29,6 +29,7 @@
 // that says it is NOT available for autonomous trading — no tokens, routes,
 // or contract allowlist entries are added here.
 
+import { AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, findExecutorRoute } from "@/lib/executor/executor-config";
 
 export interface AutonomyGoalDraft {
@@ -82,6 +83,7 @@ const PERCENT_ABOVE = /\b(?:rises?|climbs?|gains?|jumps?|up)\s+(?:by\s+)?(\d{1,2
 const MAX_PLAUSIBLE_PERCENT = 50;
 
 export interface AutonomyRequestMatch {
+  side?: "buy" | "sell";
   triggerKind: "price_below" | "price_above";
   /**
    * Absolute dollar trigger when the prompt named a price point; the empty
@@ -119,7 +121,8 @@ export function detectAutonomousTradeRequest(prompt: string): AutonomyRequestMat
   // ("…drops 1%, max 5 USDC per trade") is not a price and is skipped.
   const amount = AMOUNT.exec(text);
   const amountSpan = amount ? { from: amount.index, to: amount.index + amount[0].length } : null;
-  const dollarPrice = firstNonOverlappingPricePoint(text, amountSpan);
+  const clausePrice = /\b(?:falls?|drops?|goes?|dips?|gets?|rises?|climbs?)\s+(?:to|below|under|above|over|past)\s*\$?\s*(\d+(?:\.\d+)?)(?![\d.%])/i.exec(text);
+  const dollarPrice = clausePrice?.[1] ?? firstNonOverlappingPricePoint(text, amountSpan);
 
   if (!dollarPrice && !percent) return null;
   // A trigger clause is still REQUIRED for absolute prices (unchanged from
@@ -130,10 +133,12 @@ export function detectAutonomousTradeRequest(prompt: string): AutonomyRequestMat
   const target = extractTargetAsset(text);
   if (!target) return null;
 
-  const spend = extractSpendAsset(text) ?? (isStablecoinLike(target) ? "USDC" : "USDC");
+  const side = /\b(?:sell|selling)\b/i.test(text) ? "sell" : "buy";
+  const spend = extractSpendAsset(text) ?? (side === "sell" ? target : "USDC");
   const amountPerTrade = amount ? (amount[1] ?? amount[2] ?? amount[3] ?? amount[4] ?? null) : null;
 
   return {
+    side,
     triggerKind: dollarPrice ? (below ? "price_below" : "price_above") : percent!.kind,
     triggerPrice: dollarPrice ?? "",
     percentDrop: percent ? percent.percent : null,
@@ -333,11 +338,11 @@ export function buildAutonomyReplyText(match: AutonomyRequestMatch, anchor?: { r
     lines.push(
       `${match.targetAsset} is ${anchor.referencePrice} — ${match.percentDrop}% ${match.triggerKind === "price_below" ? "down" : "up"} is ${triggerPrice}.`,
       "",
-      `I can create this as an autonomous goal: ${match.triggerKind === "price_below" ? "buy" : "sell"} ${match.targetAsset} when the price goes ${verb} ${triggerPrice} ${match.spendAsset}${limit}.`,
+      `I can create this as an autonomous goal: ${match.side ?? (match.triggerKind === "price_below" ? "buy" : "sell")} ${match.targetAsset} when the price goes ${verb} ${triggerPrice} USDC${limit}.`,
     );
   } else {
     lines.push(
-      `I can create this as an autonomous goal: ${match.triggerKind === "price_below" ? "buy" : "sell"} ${match.targetAsset} when the price goes ${match.triggerKind === "price_below" ? "below" : "above"} ${triggerPrice} ${match.spendAsset}${limit}.`,
+      `I can create this as an autonomous goal: ${match.side ?? (match.triggerKind === "price_below" ? "buy" : "sell")} ${match.targetAsset} when the price goes ${match.triggerKind === "price_below" ? "below" : "above"} ${triggerPrice} USDC${limit}.`,
     );
   }
   return [
@@ -364,7 +369,7 @@ export function buildGoalDraft(
   return {
     targetAsset: match.targetAsset,
     spendAsset: match.spendAsset,
-    side: match.triggerKind === "price_below" ? "buy" : "sell",
+    side: match.side ?? (match.triggerKind === "price_below" ? "buy" : "sell"),
     triggerKind: match.triggerKind,
     triggerPrice,
     amountPerTrade: match.amountPerTrade,
@@ -374,4 +379,28 @@ export function buildGoalDraft(
     supported: check.ok,
     unsupportedReason: check.ok ? null : check.reason ?? null,
   };
+}
+
+/** Shared semantic checks for model, regex, and amount-only follow-ups.
+ * Policy-specific (pair/chain/raw-unit) caps are checked again at authorization.
+ */
+export function validateAutonomyMatch(match: { side?: "buy" | "sell"; targetAsset?: string; spendAsset: string; amountPerTrade: string | null }): string | null {
+  const selling = match.side === "sell";
+  const expectedSpend = selling ? match.targetAsset : "USDC";
+  if (!expectedSpend || match.spendAsset.toUpperCase() !== expectedSpend.toUpperCase()) {
+    return selling ? "A sell must spend the named asset and receive USDC; specify the amount in that asset, not dollars." : "Autonomous buy drafts require USDC as the spend asset.";
+  }
+  const decimals = selling ? (checkAutonomyTarget(expectedSpend).decimals ?? 0) : 6;
+  if (match.amountPerTrade != null) {
+    const amount = match.amountPerTrade;
+    const parsed = parseDecimal(amount);
+    const ceiling = parseDecimal(AUTONOMY_LIMITS.maxPerTradeHuman)!;
+    const daily = parseDecimal(AUTONOMY_LIMITS.maxDailyHuman)!;
+    if (!parsed || parsed.decimals > decimals || parsed.value <= 0n ||
+        parsed.value * 10n ** BigInt(ceiling.decimals) > ceiling.value * 10n ** BigInt(parsed.decimals) ||
+        parsed.value * 10n ** BigInt(daily.decimals) > daily.value * 10n ** BigInt(parsed.decimals)) {
+      return `The amount must be positive, have at most ${decimals} ${expectedSpend} decimals, and be within the per-trade policy cap (${AUTONOMY_LIMITS.maxPerTradeHuman} ${expectedSpend}).`;
+    }
+  }
+  return null;
 }
