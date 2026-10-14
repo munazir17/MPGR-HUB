@@ -5,7 +5,19 @@ import { hasNegativeTradeAmount } from "./tool-call-normalization";
 // draft instead of a one-shot swap proposal. The matcher is intentionally
 // narrow — a plain "Swap 1 USDC to AAPLc" never matches, so every existing
 // assisted flow is unchanged. Nothing is activated by chat text alone.
-import { buildAutonomyReplyText, buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
+//
+// PRODUCTION FIX (percent triggers + amount follow-up): "Buy AAPLc when it
+// drops 1%" now anchors the reference price at draft time via the read-only
+// get_pair tool and stores price_below at reference × (1 − pct/100); a next
+// message that is ONLY an amount ("1 USDC", "$1") fills the open draft's
+// per-trade amount instead of falling into the swap/help flows.
+import {
+  applyAmountToDraft,
+  buildAutonomyReplyText,
+  buildGoalDraft,
+  detectAmountOnlyFollowUp,
+  detectAutonomousTradeRequest,
+} from "@/lib/autonomy/chat-draft";
 import {
   extractBaseSwapIntent,
   extractUnresolvedSwapOrder,
@@ -35,6 +47,7 @@ import { answerWalletBalance } from "./wallet-balance-answer";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
+import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
 import { findKnownTradeToken } from "@/lib/trade/trade-tokens";
 
@@ -62,20 +75,65 @@ export class DeterministicAIProvider implements AIProvider {
     const balanceAnswer = await answerWalletBalance(request);
     if (balanceAnswer) return balanceAnswer;
 
-    // Autonomous-goal phrasing ("Buy AAPLc whenever it falls below $200")
-    // runs BEFORE the trade branches: without this, a recurring request
-    // would be mis-read as a one-shot swap. Deliberately narrow matcher;
-    // the reply explains the authorization boundary and never activates
-    // anything (spec §20: "Do not silently activate autonomous execution").
+    // Autonomous-goal phrasing ("Buy AAPLc whenever it falls below $200",
+    // "Buy AAPLc when it drops 1%") runs BEFORE the trade branches: without
+    // this, a recurring request would be mis-read as a one-shot swap.
+    // Deliberately narrow matcher; the reply explains the authorization
+    // boundary and never activates anything (spec §20: "Do not silently
+    // activate autonomous execution").
+    //
+    // AMOUNT FOLLOW-UP first: when THIS conversation's previous assistant
+    // turn left an open goal draft and the new message is ONLY an amount
+    // ("1 USDC", "$1"), the amount fills that draft. It must never start a
+    // spot swap and never fall through to generic portfolio help.
+    const amountFollowUp = resolveAmountOnlyFollowUp(request);
+    if (amountFollowUp) return amountFollowUp;
+
     const autonomyRequest = detectAutonomousTradeRequest(request.prompt);
     if (autonomyRequest) {
+      // ALLOWLIST DISCIPLINE first: only delegated-allowlist symbols with a
+      // registered USDC route may become drafts at all. An unsupported asset
+      // never triggers a price read or any other tool — the draft is still
+      // produced, but flagged unsupported so the UI card and review SAY it is
+      // not available for autonomous trading. No tokens, routes, or contract
+      // allowlist entries are added anywhere.
+      const unanchored = buildGoalDraft(autonomyRequest, request.prompt);
+      if (unanchored.supported === false) {
+        return {
+          intent: "general_help",
+          reply: unanchored.unsupportedReason ?? `${autonomyRequest.targetAsset} is not available for autonomous trading.`,
+          actions: [],
+          highlights: [],
+          followUps: ["Which assets support autonomous goals?", "How does autonomous mode work?"],
+          autonomyGoalDraft: unanchored,
+        };
+      }
+
+      const anchor = await resolveAnchor(autonomyRequest, request);
+      const draft =
+        anchor && unanchored.percentDrop != null
+          ? buildGoalDraft(autonomyRequest, request.prompt, anchor)
+          : unanchored;
+
+      // A percent trigger that could not be anchored to a live reference
+      // price produces NO draft at all — an unanchored percentage would be a
+      // made-up number. The user is asked for an absolute trigger instead.
+      if (autonomyRequest.percentDrop != null && !draft.triggerPrice) {
+        return helpResponse(
+          `I could not get a live ${autonomyRequest.targetAsset} price just now, so I can't anchor a ${autonomyRequest.percentDrop}% trigger. Try again in a moment, or give me an absolute price like "when it falls below $340".`,
+        );
+      }
+
       return {
         intent: "general_help",
-        reply: buildAutonomyReplyText(autonomyRequest),
+        reply: buildAutonomyReplyText(
+          autonomyRequest,
+          draft.referencePrice ? { referencePrice: draft.referencePrice } : null,
+        ),
         actions: [],
         highlights: [],
         followUps: ["Open Autonomous Goals", "How does autonomous mode work?"],
-        autonomyGoalDraft: buildGoalDraft(autonomyRequest, request.prompt),
+        autonomyGoalDraft: draft,
       };
     }
 
@@ -566,5 +624,81 @@ function helpResponse(reply: string): AIProviderResponse {
     actions: [],
     highlights: [],
     followUps: getFollowUpPrompts("general_help"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Autonomous-draft helpers (percent anchoring + amount-only follow-up)
+// ---------------------------------------------------------------------------
+
+/**
+ * Live reference price for a percent trigger, read through the EXISTING
+ * read-only get_pair tool (Chainlink equity feed, DEX leg for wrapped
+ * assets — never invented). Returns null when no trusted live price exists;
+ * the caller then refuses to anchor rather than guessing a number.
+ */
+async function resolveAnchor(
+  match: NonNullable<ReturnType<typeof detectAutonomousTradeRequest>>,
+  request: AIProviderRequest,
+): Promise<{ referencePrice: string } | null> {
+  if (match.percentDrop == null) return null;
+  const result = await runRegisteredTool("get_pair", { symbol: match.targetAsset }, request);
+  if (!result || !result.success) return null;
+  const data = result.data as
+    | {
+        stock?: { usdFeed?: number | null; usdDex?: number | null } | null;
+        wrapped?: { usd?: number | null } | null;
+      }
+    | undefined;
+  const raw = data?.stock?.usdFeed ?? data?.stock?.usdDex ?? data?.wrapped?.usd ?? null;
+  if (raw == null || !Number.isFinite(raw) || raw <= 0) return null;
+  return { referencePrice: formatReferencePrice(raw) };
+}
+
+/** Up to 6 decimals, trailing zeros trimmed: 347 → "347", 347.36 → "347.36". */
+function formatReferencePrice(value: number): string {
+  const fixed = value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+  return fixed;
+}
+
+/**
+ * "If the same conversation's next message is only an amount ('1 USDC',
+ * '$1'), attach it to the open autonomous draft. Do not start a spot swap
+ * and do not answer with portfolio help." The draft counts as open when the
+ * LAST assistant turn of this conversation carried it — read from the
+ * deterministic lastAssistantMessage (preferred) or, failing that, from the
+ * ranked relevantHistory. Anything else (no draft, an unsupported draft)
+ * returns null and the normal branches run unchanged.
+ */
+function resolveAmountOnlyFollowUp(request: AIProviderRequest): AIProviderResponse | null {
+  const hit = detectAmountOnlyFollowUp(request.prompt);
+  if (!hit) return null;
+  const draft =
+    request.lastAssistantMessage?.autonomyGoalDraft ??
+    (Array.isArray(request.memoryContext?.relevantHistory)
+      ? ([...request.memoryContext.relevantHistory]
+          .reverse()
+          .find((m) => (m as { role?: unknown })?.role === "assistant") as
+          | { autonomyGoalDraft?: AutonomyGoalDraft }
+          | undefined)?.autonomyGoalDraft
+      : undefined);
+  if (!draft || draft.supported === false) return null;
+
+  const updated = applyAmountToDraft(draft, hit.amount);
+  const anchor = updated.referencePrice ? ` (reference: ${updated.targetAsset} is ${updated.referencePrice})` : "";
+  const trigger = updated.triggerPrice
+    ? ` when the price goes ${updated.triggerKind === "price_below" ? "below" : "above"} ${updated.triggerPrice} ${updated.spendAsset}`
+    : "";
+  return {
+    intent: "general_help",
+    reply: [
+      `Added ${hit.amount} ${updated.spendAsset} per trade to your autonomous goal draft${anchor}: ${updated.side === "buy" ? "Buy" : "Sell"} ${updated.targetAsset}${trigger}.`,
+      "",
+      "Review the draft card below and authorize it — nothing is activated or executed until you explicitly do.",
+    ].join("\n"),
+    actions: [],
+    highlights: [],
+    followUps: ["Open Autonomous Goals", "How does autonomous mode work?"],
+    autonomyGoalDraft: updated,
   };
 }

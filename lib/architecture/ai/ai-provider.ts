@@ -48,6 +48,16 @@ export interface AIProviderRequest {
   /** Phase 3C Part 2 — optional so this remains backward compatible;
    *  lib/agent-engine.ts populates it on every call. */
   address?: string;
+  /**
+   * The conversation's most recent assistant message, passed through
+   * verbatim by lib/agent-engine.ts. relevantHistory is RANKED (recency +
+   * keyword overlap) and can drop the immediately-previous turn, but
+   * follow-up semantics (e.g. an amount-only reply attaching to an open
+   * autonomous goal draft) need the ACTUAL last assistant turn
+   * deterministically. Optional/additive so every existing construction
+   * stays valid.
+   */
+  lastAssistantMessage?: { autonomyGoalDraft?: AutonomyGoalDraft } | null;
 }
 
 export interface AIProviderResponse {

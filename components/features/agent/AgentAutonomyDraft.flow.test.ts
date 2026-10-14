@@ -256,7 +256,11 @@ describe("chat autonomous draft vs manual goal flow", () => {
     const html = renderStage();
     expect(html).toContain('data-testid="agent-autonomy-draft-review"');
     expect(html).toContain("Review autonomous goal");
-    expect(html).toContain("Authorize &amp; activate goal");
+    // The production-fix activation model: without a covering delegation the
+    // button says exactly what will happen — ONE wallet signature.
+    expect(html).toContain("Authorize &amp; sign once");
+    expect(html).toContain('data-testid="agent-autonomy-draft-authorization-mode"');
+    expect(html).toContain("One wallet signature will be requested");
     expect(html).not.toContain('data-testid="agent-autonomy-manual-form"');
     expect(html).not.toContain("New autonomous goal");
     expect(html).toContain('data-testid="agent-autonomy-panel"');
@@ -317,5 +321,66 @@ describe("chat autonomous draft vs manual goal flow", () => {
     expect(html).not.toContain("New autonomous goal");
     expect(html).toContain('data-testid="agent-autonomy-panel"');
     expect(html).toContain('aria-expanded="false"');
+  });
+
+  it("shows BOTH anchored numbers on the card and in the review for percent drafts", () => {
+    const anchored: AutonomyGoalDraft = {
+      ...DRAFT,
+      triggerPrice: "343.53",
+      referencePrice: "347",
+      percentDrop: 1,
+    };
+    const html = renderToStaticMarkup(
+      createElement(AgentChatBubble, {
+        message: {
+          id: "a2",
+          role: "assistant",
+          content: "AAPLc is 347 — 1% down is 343.53.",
+          timestamp: "2026-10-04T00:00:02Z",
+          autonomyGoalDraft: anchored,
+        },
+        onReviewAutonomyGoal: () => {},
+      }),
+    );
+    // "AAPLc is 347, 1% down is 343.53" — both numbers, on the draft card.
+    expect(html).toContain('data-testid="agent-autonomy-draft-card"');
+    expect(html).toContain('data-testid="agent-autonomy-draft-anchor"');
+    expect(html).toContain("AAPLc is 347");
+    expect(html).toContain("343.53");
+  });
+
+  it("a non-allowlisted asset renders a refusal card with NO review and NO activation", () => {
+    const unsupported: AutonomyGoalDraft = {
+      ...DRAFT,
+      targetAsset: "FOOc",
+      supported: false,
+      unsupportedReason: "FOOc is not available for autonomous trading.",
+    };
+    const html = renderToStaticMarkup(
+      createElement(AgentChatBubble, {
+        message: {
+          id: "a3",
+          role: "assistant",
+          content: "FOOc is not available for autonomous trading.",
+          timestamp: "2026-10-04T00:00:03Z",
+          autonomyGoalDraft: unsupported,
+        },
+        onReviewAutonomyGoal: () => {},
+      }),
+    );
+    // The card SAYS it is not available for autonomous trading…
+    expect(html).toContain('data-testid="agent-autonomy-draft-card-unavailable"');
+    expect(html).toContain("FOOc is not available for autonomous trading");
+    // …and there is NO draft-review button at all — nothing to activate.
+    expect(html).not.toContain('data-testid="agent-autonomy-draft-card"');
+    expect(html).not.toContain("Authorize");
+
+    // Even if such a draft somehow opened in the review, it refuses there too.
+    const reviewHtml = renderToStaticMarkup(
+      createElement(AgentAutonomyDraftReview, { autonomy: { ...fixtures.autonomy, draft: unsupported } as never }),
+    );
+    expect(reviewHtml).toContain('data-testid="agent-autonomy-draft-unavailable"');
+    expect(reviewHtml).toContain("not available for autonomous trading");
+    expect(reviewHtml).not.toContain('data-testid="agent-autonomy-draft-authorize"');
   });
 });
