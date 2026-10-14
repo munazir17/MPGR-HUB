@@ -125,8 +125,15 @@ function baseMainnetRpcUrl(): string {
   return process.env.BASE_RPC_URL?.trim() || "https://mainnet.base.org";
 }
 
-/** Broadcast an already-validated executor call. Testable via injected sender. */
-export type DelegatedBroadcastFn = (tx: { to: Address; data: Hex; chainId: number; value?: bigint }) => Promise<Hash>;
+/**
+ * Broadcast an already-validated executor call. Testable via injected sender.
+ * `onStage` optionally reports the sub-stage ("estimate" then "send") so a
+ * budget-end timeout can name the step that was in flight; purely diagnostic.
+ */
+export type DelegatedBroadcastFn = (
+  tx: { to: Address; data: Hex; chainId: number; value?: bigint },
+  onStage?: (stage: "estimate" | "send") => void,
+) => Promise<Hash>;
 
 async function unavailable(message: string): Promise<Hash> {
   throw new Error(message);
@@ -144,8 +151,9 @@ export function createDelegatedBroadcaster(): { broadcast: DelegatedBroadcastFn;
   const client = createWalletClient({ account, chain, transport: http(baseSepoliaRpcUrl()) });
   return {
     address: account.address,
-    broadcast: async (tx) => {
+    broadcast: async (tx, onStage) => {
       if (tx.chainId !== BASE_SEPOLIA_CHAIN_ID) throw new Error(`broadcaster: refusing chain ${tx.chainId} (Base Sepolia only)`);
+      onStage?.("send");
       return client.sendTransaction({ to: tx.to, data: tx.data, chain: client.chain, kzg: undefined });
     },
   };
@@ -171,13 +179,24 @@ export function createMainnetDelegatedBroadcaster(
     chain: base as Chain,
     transport: http(baseMainnetRpcUrl(), { timeout: bounds.timeoutMs, retryCount: bounds.retryCount }),
   });
+  const estimateClient = createPublicClient({
+    chain: base as Chain,
+    transport: http(baseMainnetRpcUrl(), { timeout: bounds.timeoutMs, retryCount: bounds.retryCount }),
+  });
   return {
     address: account.address,
-    broadcast: async (tx) => {
+    broadcast: async (tx, onStage) => {
       if (tx.chainId !== BASE_MAINNET_CHAIN_ID) throw new Error(`broadcaster: refusing chain ${tx.chainId} (Base mainnet only)`);
       const value = tx.value ?? 0n;
       if (value !== 0n) throw new Error("broadcaster: refusing native value on a delegated mainnet execution");
-      return client.sendTransaction({ to: tx.to, data: tx.data, chain: client.chain, kzg: undefined });
+      // Split the two node steps viem's sendTransaction would otherwise run
+      // invisibly, so a budget-end timeout can name the in-flight stage.
+      // Passing the estimated `gas` back in makes sendTransaction skip its
+      // own estimation — the same estimate, the same transaction.
+      onStage?.("estimate");
+      const gas = await estimateClient.estimateGas({ account: account.address, to: tx.to, data: tx.data, value });
+      onStage?.("send");
+      return client.sendTransaction({ to: tx.to, data: tx.data, chain: client.chain, kzg: undefined, gas });
     },
   };
 }

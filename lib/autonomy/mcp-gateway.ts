@@ -27,7 +27,7 @@ import {
   type ToolOutcome,
 } from "@/lib/mcp/mcp-trade-service";
 import { createMcpDeps } from "@/lib/mcp/mcp-deps";
-import type { AutonomyFailureCode } from "./types";
+import type { AutonomyFailureCode, DelegatedExecutionStage } from "./types";
 
 export interface QuotedSwap {
   quoteId: string;
@@ -67,8 +67,8 @@ export interface McpGateway {
   prepare(input: Record<string, unknown>): Promise<GatewayResult<PreparedSwap>>;
   status(chainId: number, txHash: string): Promise<GatewayResult<{ status: "confirmed" | "reverted" | "pending_or_unknown"; blockNumber?: string }>>;
   verify(quoteId: string, txHash: string, expectedSender?: string, expectedIntentId?: string): Promise<GatewayResult<{ verified: boolean; checks: Array<{ name: string; ok: boolean }>; actualBuyAmountRaw?: string; feeAmountRaw?: string; blockNumber?: string }>>;
-  /** Phase 2 delegated execution: broadcast a fully-validated witness-authorized swap (Base Sepolia only). */
-  delegateSwap(input: Record<string, unknown>): Promise<GatewayResult<{ txHash: string; expectedSender?: string | null }>>;
+  /** Phase 2 delegated execution: broadcast a fully-validated witness-authorized swap (Base Sepolia only). `onStage` optionally reports the broadcast sub-stage (estimate/send) for budget-end diagnostics. */
+  delegateSwap(input: Record<string, unknown>, onStage?: (stage: DelegatedExecutionStage) => void): Promise<GatewayResult<{ txHash: string; expectedSender?: string | null }>>;
   /** Raw deps for callers that must reuse MCP views (verification formatting). */
   deps(): McpDeps;
 }
@@ -148,12 +148,12 @@ export class McpTradeGateway implements McpGateway {
     return new McpTradeGateway({
       ...createMcpDeps(),
       delegatedBroadcaster: anyConfigured
-        ? async (tx) => {
+        ? async (tx, onStage) => {
             const broadcaster = createDelegatedBroadcasterFor(tx.chainId);
             if (!broadcaster.address) {
               throw new Error(`no delegated broadcaster is configured for chain ${tx.chainId} (fail-closed).`);
             }
-            return broadcaster.broadcast(tx);
+            return broadcaster.broadcast(tx, onStage);
           }
         : undefined,
     });
@@ -235,8 +235,8 @@ export class McpTradeGateway implements McpGateway {
     };
   }
 
-  async delegateSwap(input: Record<string, unknown>): Promise<GatewayResult<{ txHash: string; expectedSender?: string | null }>> {
-    const outcome = await delegateSwap(this.mcpDeps, input);
+  async delegateSwap(input: Record<string, unknown>, onStage?: (stage: DelegatedExecutionStage) => void): Promise<GatewayResult<{ txHash: string; expectedSender?: string | null }>> {
+    const outcome = await delegateSwap(this.mcpDeps, input, onStage);
     if (!outcome.ok) return fail(outcome);
     const d = outcome.data as Record<string, unknown>;
     return { ok: true, data: { txHash: str(d.txHash), expectedSender: (d.expectedSender as string | undefined) ?? null } };

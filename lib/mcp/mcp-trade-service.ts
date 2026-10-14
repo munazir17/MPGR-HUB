@@ -101,7 +101,7 @@ export interface McpDeps {
    * Phase 2 delegated path ONLY: the operator broadcaster (Base Sepolia).
    * Fail-closed: when absent, mpgr_delegate_swap refuses. Never user keys.
    */
-  delegatedBroadcaster?: (tx: { to: Address; data: Hex; chainId: number; value?: bigint }) => Promise<Hex>;
+  delegatedBroadcaster?: (tx: { to: Address; data: Hex; chainId: number; value?: bigint }, onStage?: (stage: "estimate" | "send") => void) => Promise<Hex>;
   /**
    * Base mainnet MCP trading (executor path AND 0x fallback). OFF unless
    * MPGR_MCP_ENABLE_BASE_MAINNET=true. The registry entry is a deployed fact;
@@ -1009,7 +1009,7 @@ import { logEmergencySwitchDecision, readAutonomousEmergencySwitch } from "@/lib
  * executor call and broadcasts with the operator broadcaster. The user's
  * signature travels as authorization bytes; it is never logged.
  */
-export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolOutcome> {
+export async function delegateSwap(deps: McpDeps, input: unknown, onStage?: (stage: "estimate" | "send") => void): Promise<ToolOutcome> {
   const args = asRecord(input);
   const chainId = parseChainId(args.chainId);
   if (!isDelegatedChainId(chainId)) {
@@ -1180,7 +1180,7 @@ export async function delegateSwap(deps: McpDeps, input: unknown): Promise<ToolO
       return fail("BROADCAST_REFUSED_BY_GATE", `refused to sign: ${gate.reason}${gate.detail ? ` (${gate.detail})` : ""}`);
     }
 
-    const txHash = await broadcast({ to: executor, data, chainId, value: 0n });
+    const txHash = await broadcast({ to: executor, data, chainId, value: 0n }, onStage);
     return {
       ok: true,
       data: jsonSafe({

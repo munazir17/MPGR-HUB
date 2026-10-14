@@ -139,7 +139,10 @@ function makeMainnetHarness(options: HarnessOptions = {}) {
     quoteSecret: TEST_SECRET,
     delegatedRegistry: { 8453: deployment },
     reader: (chainId) => fakeReader(state, chainId, chainId === 8453 ? deployment.executor : EXECUTOR),
-    delegatedBroadcaster: async (tx) => {
+    delegatedBroadcaster: async (tx, onStage) => {
+      // The fake broadcaster has already estimated by the time it is called;
+      // it is the send itself that hangs / answers below.
+      onStage?.("send");
       options.onBroadcastStart?.();
       if (options.broadcastFails) throw new Error("RPC connection reset during broadcast");
       broadcasts.push(tx);
@@ -908,6 +911,46 @@ describe("post-EXECUTING budget — a slow or failing RPC is recorded in the sam
       expect(slot!.consumedAt ?? null, "no hash was returned => slot NOT consumed").toBeNull();
       // The spend stays counted: the broadcast may have reached the node.
       expect(await h.store.getDayLedger(policy.id, utcDayKey(h.now()))).toEqual({ status: "OK", spendRaw: SELL_AMOUNT, actions: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a hang past 45 s persists the in-flight stage in the same tick and does not consume the slot", async () => {
+    // Regression for the production failure after PR #109: maxDuration was
+    // 120 and the budget 110 s, but the platform killed the tick at ~60 s, so
+    // the real error was never written and the goal fell through to the reap
+    // text ("no transaction recorded"). The budget is now anchored at 45 s
+    // after tick start, leaving 15 s before the 60 s kill for this write.
+    expect(AUTONOMY_EXECUTION_BUDGET_SECONDS).toBe(45);
+    let onStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      onStart = resolve;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const h = makeMainnetHarness({ broadcastHangs: true, onBroadcastStart: () => onStart() });
+      const { goal, policy } = await createMainnetGoal(h);
+      await signMainnetSlot(h, goal.id, policy);
+      await h.adapter.bootstrapPosture(policy);
+
+      const tick = h.scheduler.tick({ now: h.now() });
+      await started; // the send is in flight and never answers (nonce stays 0)
+      await vi.advanceTimersByTimeAsync(45_000);
+      await tick;
+
+      const after = (await h.store.getGoal(goal.id))!;
+      // Persisted by THIS tick — not EXECUTING, and never the reap's message.
+      expect(after.status).toBe("WAITING");
+      expect(after.pendingExecution).toBeNull();
+      expect(after.lastResult?.code).toBe("RPC_ERROR");
+      expect(after.lastResult?.message).toMatch(/RPC timeout/);
+      expect(after.lastResult?.message).toMatch(/in-flight stage: send/);
+      expect(after.lastResult?.message).not.toMatch(/no transaction recorded/i);
+      // No hash returned => the authorization slot is NOT consumed.
+      const [slot] = await h.slots.listSlots(WALLET.toLowerCase(), policy.id);
+      expect(slot!.consumedAt ?? null).toBeNull();
+      expect(slot!.consumedByTxHash ?? null).toBeNull();
     } finally {
       vi.useRealTimers();
     }
