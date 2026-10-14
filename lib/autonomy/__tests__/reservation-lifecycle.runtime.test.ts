@@ -11,6 +11,7 @@ import { InMemoryPerformanceMonitor } from "@/lib/architecture/core/performance-
 import { AutonomyRuntime } from "@/lib/autonomy/runtime";
 import { BusAuditSink } from "@/lib/autonomy/audit";
 import { AUTONOMY_LIMITS } from "@/lib/autonomy/config";
+import { executionKeyForSlot } from "@/lib/autonomy/idempotency";
 import { InMemoryAutonomyStore } from "@/lib/autonomy/store";
 import type { McpGateway } from "@/lib/autonomy/mcp-gateway";
 import {
@@ -179,7 +180,9 @@ describe("runtime spend reservations — commit/release/ambiguous decisions", ()
       // the goal is re-due in the SAME slot — the existing RESERVED
       // reservation is resumed: still ONE charge, ONE broadcast.
       h.store.markSpendAttempt = (...args) => InMemoryAutonomyStore.prototype.markSpendAttempt.apply(h.store, args);
-      h.store.claimExecution = () => Promise.resolve(true); // claim lease expired
+      // The claim's TTL has elapsed: drop it for real, so this tick may take the
+      // slot again. (Only a claim still held closes the goal — see below.)
+      await h.store.releaseExecution(executionKeyForSlot(goal.id, slot));
       const current = (await h.store.getGoal(goal.id))!;
       await h.store.transitionGoal(goal.id, current.wallet, ["WAITING", "ACTIVE"], current.updatedAt, {
         status: "ACTIVE",
@@ -201,9 +204,16 @@ describe("runtime spend reservations — commit/release/ambiguous decisions", ()
         pendingExecution: null,
       });
       const before = h.adapter.options.requests.length;
+      // The slot's claim is held again and its hash is in the action history, so
+      // the goal is closed as UNKNOWN (the hash is named) — never re-attempted.
       const dup = await h.runtime.evaluateGoal(goal.id);
-      expect(dup.kind).toBe("DUPLICATE_PREVENTED");
+      expect(dup.kind).toBe("UNRESOLVED_BROADCAST");
       expect(h.adapter.options.requests.length).toBe(before);
+      const closed = (await h.store.getGoal(goal.id))!;
+      expect(closed.status).toBe("FAILED");
+      const recorded = (await h.store.listActionRecords(goal.id)).find((r) => r.txHash);
+      expect(recorded?.txHash).toMatch(/^0x/);
+      expect(closed.lastResult?.message).toContain(recorded!.txHash!);
       expect(await h.store.getDayLedger(goal.policyId, day)).toEqual({ status: "OK", spendRaw: usdc("20"), actions: 1 });
     }));
 

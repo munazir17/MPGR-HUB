@@ -265,10 +265,13 @@ AUTHORIZATION / DELEGATION   <-- THE GATE THAT STOPS IT TODAY
 
 EXECUTION ADAPTER   (unreachable today)
   7. claimExecution(`exec-${goalId}:${nextEvaluationAt}`) SET-NX, 86 400 s guard.
-     Duplicate -> DUPLICATE_PREVENTED, parked, never re-submitted.   runtime.ts:404-412
+     A claim already held on the slot with no transaction hash means an earlier tick
+     was interrupted -> UNRESOLVED_BROADCAST: goal FAILED (outcome UNKNOWN), never
+     re-submitted, no new slot. Checked before the quote too (closeIfUnresolvedBroadcast).
   8. tryRecordDailyAction — atomic append-capped ledger claim; null -> POLICY_REJECTED.
   9. Quote freshness re-check at broadcast time: expired -> QUOTE_STALE, nothing sent.
- 10. CAS ACTIVE|WAITING -> EXECUTING (loser releases its claim).     runtime.ts:426-437
+ 10. No goal write while the swap is in flight: the goal stays ACTIVE|WAITING.
+     (Earlier builds wrote EXECUTING here, before the broadcast; see docs/AUTONOMY.md.)
  11. Prepare: mainnet/v1 path -> gateway.prepare(quoteId, "APPROVAL") producing an
      UNSIGNED transactionRequest; delegated path skips v1 prepare (PHASE 5 F-9) because
      preparation IS the adapter's re-validation of the signed slot.
@@ -283,7 +286,7 @@ EXECUTION ADAPTER   (unreachable today)
      MPGRExecutorDelegated.swapOnBehalfOfUniswapV3 -> operator broadcaster.
 
 TRANSACTION
- 13. On txHash: CAS -> EXECUTING with pendingExecution{txHash, quoteId, idempotencyKey,
+ 13. On txHash: CAS ACTIVE|WAITING -> EXECUTING with pendingExecution{txHash, quoteId, idempotencyKey,
      expected/minBuyAmountRaw, expectedSender = broadcaster for the delegated path},
      stats.triggered += 1, nextEvaluationAt = now + 30 s.
      Audit: TRANSACTION_SUBMITTED. Action record: SUBMITTED/PENDING_VERIFICATION.

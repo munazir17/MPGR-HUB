@@ -8,6 +8,39 @@ The project follows a milestone-based development roadmap.
 
 # Unreleased
 
+## Autonomous agent — no EXECUTING write before the broadcast result
+
+### Fixed
+
+- The goal was written to `EXECUTING` ("Authorization verified — submitting
+  transaction.") before the broadcast ran. A serverless kill after that write
+  left the goal to the stuck-execution reap, and no error was ever persisted
+  for the real failure. The goal now stays `ACTIVE`/`WAITING` while the swap is
+  in flight, and `EXECUTING` + `pendingExecution` are written together, only
+  once a transaction hash is returned.
+- An adapter error (including an estimate revert) is persisted by the same
+  evaluation, with the in-flight stage appended (`[stage: estimate]`). The goal
+  is never left `EXECUTING`.
+- The attempt marker, state re-read, reservation writes and failure write are
+  bounded to 3 s. A hung store fails closed and the stage is logged to stderr
+  even when Redis fails.
+- A hash that returns after the tick budget ended is now recorded on the goal
+  (moves to `EXECUTING` for verification) instead of only being logged.
+- A tick killed after its execution claim or attempt marker was written, with
+  no transaction hash recorded, used to park the goal as `DUPLICATE_PREVENTED`.
+  The goal could then open a later evaluation slot and broadcast again. The
+  next tick now closes it: `FAILED`, `lastResult` outcome UNKNOWN, nothing
+  retried, no new slot, and the adapter is not called. A human must reconcile
+  on-chain. A goal holding a transaction hash keeps the verification path.
+- A goal paused during a swap keeps `PAUSED` (the late write is not forced to
+  `EXECUTING`), and a hash returned in that window is kept in the action
+  record. A goal closed during prepare is not broadcast.
+
+### Unchanged
+
+- The slot is consumed only after a transaction hash. No contract or bytecode
+  change. No feature flag changed.
+
 ## Autonomous agent — goals no longer stay stuck in EXECUTING after a crashed tick
 
 ### Fixed

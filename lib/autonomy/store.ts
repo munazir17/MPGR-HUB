@@ -167,6 +167,8 @@ export interface AutonomyStore {
   // -- idempotency -----------------------------------------------------------
   /** SET-NX claim. True => this caller owns the key for the lease duration. */
   claimExecution(idempotencyKey: string, ttlSeconds: number): Promise<boolean>;
+  /** Read-only: true while an execution claim for this key is held (not expired). */
+  hasExecutionClaim(idempotencyKey: string): Promise<boolean>;
   releaseExecution(idempotencyKey: string): Promise<void>;
   /** Per-goal evaluation lease (prevents concurrent ticks on one goal). */
   tryAcquireGoalLease(goalId: string, token: string, ttlSeconds: number): Promise<boolean>;
@@ -527,6 +529,11 @@ export class InMemoryAutonomyStore implements AutonomyStore {
     if (this.execKeys.has(idempotencyKey)) return false;
     this.execKeys.set(idempotencyKey, nowMs + ttlSeconds * 1000);
     return true;
+  }
+
+  async hasExecutionClaim(idempotencyKey: string): Promise<boolean> {
+    this.sweepExpired(this.clock());
+    return this.execKeys.has(idempotencyKey);
   }
 
   async releaseExecution(idempotencyKey: string): Promise<void> {

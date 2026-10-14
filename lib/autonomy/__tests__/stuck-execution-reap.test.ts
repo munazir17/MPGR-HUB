@@ -1,20 +1,14 @@
-// Regression tests — a goal left in EXECUTING by a tick that died before it
-// could record `pendingExecution.txHash`.
+// Regression tests — the stuck-execution reap and the crash window around it.
 //
-// runtime.ts writes EXECUTING (+ "Authorization verified — submitting
-// transaction.") BEFORE `adapter.executeSwap`. A tick that dies inside that
-// window (serverless kill, timeout, lost Redis write) used to leave a goal
-// NOTHING could ever move again:
-//   * scheduler due-selection only picked EXECUTING goals that HAVE a
-//     `pendingExecution`, so no later tick re-selected it;
-//   * EXECUTING cannot reach PAUSED/CANCELLED, so cancel/revoke could not
-//     clear it either.
-// The UI then reported EXECUTING forever with no transaction to show.
+// The runtime writes EXECUTING (together with `pendingExecution.txHash`) only
+// AFTER the adapter has returned a transaction hash. The goal stays ACTIVE/WAITING
+// while a broadcast is in flight, so a tick killed inside the adapter never leaves
+// an EXECUTING goal behind. The stuck-execution reap only closes goals that ARE
+// EXECUTING with no pending execution, which older builds could leave behind.
 //
-// The reap pass pinned here: EXECUTING + no pendingExecution + no progress for
-// STUCK_EXECUTION_REAP_SECONDS => FAILED, the daily-spend reservation is
-// released ONLY when the attempt marker was never set, the result says nothing
-// was broadcast, NO tx hash is ever invented, and no swap is retried.
+// A tick killed after its claim or attempt marker was written is closed on the
+// next tick as an UNKNOWN broadcast outcome (see the unresolved-broadcast closure
+// in runtime.ts). It is never re-broadcast, and the reap is not involved.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AUTONOMY_LIMITS } from "@/lib/autonomy/config";
@@ -182,39 +176,56 @@ describe("stuck-execution reap (crashed tick left the goal EXECUTING)", () => {
     expect((await h.store.getGoal(goal.id))!.lastResult?.message).toMatch(/nothing was broadcast/i);
   });
 
-  it("a tick killed inside the execution adapter leaves exactly the state the reap closes", async () =>
+  it("a tick killed inside the execution adapter is closed as UNKNOWN on the next tick — never re-broadcast, never a new slot", async () =>
     enabled(async () => {
       const h = harness;
       const { goal, policy } = await createActiveGoal(h, { maxTrades: 3 });
+      let adapterCalls = 0;
+      h.adapter.executeSwap = () => {
+        adapterCalls += 1;
+        return new Promise<never>(() => {});
+      };
 
-      // The tick "dies" inside the adapter: the promise never settles AND the
-      // runtime's post-EXECUTING budget timer never fires (fake timers stand in
-      // for a serverless kill that stops the process). The goal stays EXECUTING
-      // with nothing recorded.
+      // The tick "dies" inside the adapter: the promise never settles and the
+      // runtime's budget timer never fires (fake timers stand in for a serverless
+      // kill that stops the process).
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       try {
-        h.adapter.executeSwap = () => new Promise<never>(() => {});
         void h.runtime.evaluateGoal(goal.id);
-        for (let i = 0; i < 200 && (await h.store.getGoal(goal.id))?.status !== "EXECUTING"; i += 1) {
+        for (let i = 0; i < 200 && adapterCalls === 0; i += 1) {
           await vi.advanceTimersByTimeAsync(5);
         }
-        expect((await h.store.getGoal(goal.id))?.status).toBe("EXECUTING");
+        expect(adapterCalls).toBe(1);
 
-        const stuck = (await h.store.getGoal(goal.id))!;
-        expect(stuck.pendingExecution).toBeNull();
-        // The attempt marker is written before the adapter, so this crash keeps
-        // the spend counted — the reap must not free it.
-        const execId = executionKeyForSlot(goal.id, stuck.nextEvaluationAt);
+        // While in flight and after the kill: NOT EXECUTING, no hash recorded.
+        const killed = (await h.store.getGoal(goal.id))!;
+        expect(killed.status).toBe("ACTIVE");
+        expect(killed.pendingExecution).toBeNull();
+
+        // The claim and the attempt marker were both written before the adapter.
+        const execId = executionKeyForSlot(goal.id, killed.nextEvaluationAt);
+        expect(await h.store.hasExecutionClaim(execId)).toBe(true);
         expect(reservationState(h, policy.id, execId)).toBe("ATTEMPTING");
 
+        // Past the reap window and the evaluation lease, the next tick selects the
+        // goal and closes it as UNKNOWN — the reap is not what closes it.
         pastReapWindow(h);
         const summary = await h.scheduler.tick({ now: h.now() });
-
-        expect(summary.results[0]).toEqual({ goalId: goal.id, kind: "STUCK_EXECUTION_REAPED" });
+        expect(summary.results).toEqual([{ goalId: goal.id, kind: "UNRESOLVED_BROADCAST" }]);
         const after = (await h.store.getGoal(goal.id))!;
         expect(after.status).toBe("FAILED");
-        expect(after.pendingExecution).toBeNull();
+        expect(after.lastResult).toMatchObject({ outcome: "FAILED", code: "TIMEOUT" });
+        expect(after.lastResult?.message).toMatch(/Broadcast outcome UNKNOWN/);
+        expect(after.lastResult?.message).toMatch(/Nothing will be retried automatically/);
+
+        // The adapter is never called again, the spend stays counted, and no later
+        // tick reopens the goal or opens a new slot.
+        expect(adapterCalls).toBe(1);
         expect(await h.store.getDayLedger(policy.id, dayOf(h))).toEqual({ status: "OK", spendRaw: usdc("20"), actions: 1 });
+        const later = await h.scheduler.tick({ now: h.now() });
+        expect(later.results.some((r) => r.goalId === goal.id)).toBe(false);
+        expect((await h.store.getGoal(goal.id))!.status).toBe("FAILED");
+        expect(adapterCalls).toBe(1);
       } finally {
         vi.useRealTimers();
       }

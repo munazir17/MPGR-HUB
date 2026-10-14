@@ -157,16 +157,20 @@ describe("autonomous runtime — full authorized execution (test-only delegation
       expect((await harness.store.getDayLedger(after.policyId, day)).actions).toBe(2);
     }));
 
-  it("execution slot idempotency: a pre-claimed slot key blocks a second execution attempt", async () =>
+  it("execution slot idempotency: a slot claimed by an interrupted attempt (no hash) is closed as UNKNOWN — the adapter is never called", async () =>
     enabled(async () => {
       const { goal } = await createActiveGoal(harness, { maxTrades: 5 });
-      // Another worker already claimed the exact slot key the runtime derives.
+      // An earlier tick already claimed the exact slot key the runtime derives,
+      // and no transaction hash was ever recorded for it: it was interrupted.
       const slotKey = `exec-${goal.id}:${goal.nextEvaluationAt}`;
       expect(await harness.store.claimExecution(slotKey, 1000)).toBe(true);
       const result = await harness.runtime.evaluateGoal(goal.id);
-      expect(result.kind).toBe("DUPLICATE_PREVENTED");
+      expect(result.kind).toBe("UNRESOLVED_BROADCAST");
       expect(harness.adapter.options.requests).toHaveLength(0);
-      expect(harness.auditEvents).toContain("DUPLICATE_PREVENTED");
+      expect(harness.auditEvents).toContain("GOAL_FAILED");
+      const after = (await harness.store.getGoal(goal.id))!;
+      expect(after.status).toBe("FAILED");
+      expect(after.lastResult?.message).toMatch(/Broadcast outcome UNKNOWN/);
     }));
 
   it("never executes on a stale quote: harness clock ahead of quote TTL -> QUOTE_STALE, no execution", async () =>

@@ -379,15 +379,14 @@ export function canTransitionGoal(from: GoalStatus, to: GoalStatus): boolean {
 }
 
 /**
- * How long an EXECUTING goal may sit without a recorded transaction before a
- * tick reaps it (see `isStuckExecuting`).
+ * How long a LEGACY EXECUTING goal may sit without a recorded transaction
+ * before a tick reaps it (see `isStuckExecuting`).
  *
- * The runtime writes EXECUTING *before* it invokes the execution adapter, so a
- * tick that dies in that window (serverless kill, timeout, lost Redis write)
- * leaves a goal that NOTHING can move again: due selection only picks
- * EXECUTING goals that HAVE a `pendingExecution`, and EXECUTING cannot reach
- * PAUSED/CANCELLED. The UI then reports EXECUTING forever with no tx hash and
- * cancel/revoke cannot clear it.
+ * The current runtime writes EXECUTING only together with `pendingExecution`
+ * (after the adapter returns a hash), so it never produces this state. Goals
+ * left in it by builds that wrote EXECUTING before the broadcast are closed
+ * here: EXECUTING, no pending execution, and no progress for this long. An
+ * ACTIVE or WAITING goal is never reaped, whatever its timestamps.
  *
  * 120s also equals `AUTONOMY_LIMITS.evaluationLeaseSeconds`, which is
  * deliberate: the reap additionally requires the per-goal evaluation lease to
@@ -402,6 +401,7 @@ export const STUCK_EXECUTION_REAP_SECONDS = 120;
  *
  * `lastEvaluationAt` is written by the same CAS that writes EXECUTING; the
  * `updatedAt` fallback only matters for a record written by an older build.
+ * Only legacy goals reach this state (see STUCK_EXECUTION_REAP_SECONDS).
  * An unparseable timestamp is NEVER treated as stale — a fresh goal must not
  * be reaped because of a malformed date.
  */

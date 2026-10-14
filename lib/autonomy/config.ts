@@ -67,16 +67,18 @@ export function isAutonomousExecutionEmergencyDisabled(): boolean {
  * TICK TIME BUDGET (Base mainnet broadcast fix).
  *
  * `app/api/agent/autonomy/tick/route.ts` runs with `maxDuration` =
- * AUTONOMY_TICK_MAX_DURATION_SECONDS. Once a goal writes EXECUTING, the platform
- * can kill the invocation at any moment. A kill there leaves the goal EXECUTING
- * with no transaction recorded, which the stuck-execution reap then closes —
- * that is the crash path, not a normal result of a slow RPC.
+ * AUTONOMY_TICK_MAX_DURATION_SECONDS. The platform can kill the invocation at
+ * any moment. A kill during a broadcast leaves the goal ACTIVE/WAITING (it is
+ * not written to EXECUTING until a hash returns), so the next tick can select
+ * it. That tick closes it as an UNKNOWN broadcast outcome, because the slot's
+ * claim is held with no hash. The real outcome must still be written in the
+ * same tick whenever the tick is alive.
  *
- * So all post-EXECUTING work (attempt marker, prepare, KV switch re-read,
- * adapter/broadcast) must END by tickStart + AUTONOMY_EXECUTION_BUDGET_SECONDS,
+ * So all broadcast work (state re-read, attempt marker, prepare, KV switch
+ * re-read, adapter/broadcast) must END by tickStart + AUTONOMY_EXECUTION_BUDGET_SECONDS,
  * which leaves AUTONOMY_TICK_PERSIST_RESERVE_SECONDS for writing the real
- * outcome. The budget is anchored at the TICK start (not the EXECUTING write),
- * so no goal in any scheduler batch can outlive the tick.
+ * outcome. The budget is anchored at the TICK start, so no goal in any
+ * scheduler batch can outlive the tick.
  *
  * PRODUCTION EVIDENCE (after PR #109): a 1 USDC AAPLc goal still ended in the
  * stuck-execution reap even though maxDuration was 120 — the platform killed
