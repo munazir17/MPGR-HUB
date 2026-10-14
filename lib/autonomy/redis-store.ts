@@ -442,6 +442,11 @@ export class RedisAutonomyStore implements AutonomyStore {
     return result !== null;
   }
 
+  async hasExecutionClaim(idempotencyKey: string): Promise<boolean> {
+    const count = await this.redis().exists(KEY.exec(idempotencyKey));
+    return Number(count) > 0;
+  }
+
   async releaseExecution(idempotencyKey: string): Promise<void> {
     await this.redis().del(KEY.exec(idempotencyKey));
   }

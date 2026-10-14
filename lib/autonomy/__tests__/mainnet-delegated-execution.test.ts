@@ -898,6 +898,7 @@ describe("post-EXECUTING budget — a slow or failing RPC is recorded in the sam
 
       const tick = h.scheduler.tick({ now: h.now() });
       await started; // the broadcast is in flight and never answers
+      expect((await h.store.getGoal(goal.id))!.status, "not EXECUTING while in flight").not.toBe("EXECUTING");
       await vi.advanceTimersByTimeAsync(AUTONOMY_EXECUTION_BUDGET_SECONDS * 1000);
       await tick;
 
@@ -936,6 +937,7 @@ describe("post-EXECUTING budget — a slow or failing RPC is recorded in the sam
 
       const tick = h.scheduler.tick({ now: h.now() });
       await started; // the send is in flight and never answers (nonce stays 0)
+      expect((await h.store.getGoal(goal.id))!.status, "ACTIVE while the send is in flight").toBe("ACTIVE");
       await vi.advanceTimersByTimeAsync(45_000);
       await tick;
 

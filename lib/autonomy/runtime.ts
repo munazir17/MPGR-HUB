@@ -98,10 +98,12 @@ export interface EvaluateOptions {
 /** Result of the post-EXECUTING steps that run under the budget. They return a step and write no goal state. */
 type BroadcastStep =
   | { kind: "PREPARE_REFUSED"; code: AutonomyFailureCode; message: string }
+  | { kind: "STATE_UNREADABLE" }
+  | { kind: "GOAL_CLOSED"; status: GoalStatus | null }
   | { kind: "ATTEMPT_NOT_RECORDED" }
   | { kind: "SWITCH_REFUSED"; message: string }
   | { kind: "BUDGET_ENDED" }
-  | { kind: "ADAPTER_THREW" }
+  | { kind: "ADAPTER_THREW"; stage: DelegatedExecutionStage | null }
   | { kind: "ADAPTER_RESULT"; result: DelegatedSwapResult };
 
 type UnbroadcastStep = Exclude<BroadcastStep, { kind: "ADAPTER_RESULT" }>;
@@ -163,6 +165,67 @@ function budgetEndedBeforeBroadcast(stage: DelegatedExecutionStage | null): stri
   return `RPC timeout: the execution budget ended before the broadcast was sent (in-flight stage: ${stage ?? "prepare"}). Nothing was broadcast by this attempt. The spend reservation stays counted and the authorization slot was not consumed.`;
 }
 
+/**
+ * Goal statuses an in-flight broadcast may write into. The goal is never
+ * EXECUTING while the adapter is working — only once a hash has come back.
+ */
+const OPEN_GOAL_STATUSES: readonly GoalStatus[] = ["ACTIVE", "WAITING"];
+
+type GoalTransitionPatch = Parameters<AutonomyStore["transitionGoal"]>[4];
+
+/**
+ * Upper bound, in ms, for each Redis call on the broadcast path that can be
+ * skipped or failed safely: the state re-read, the attempt marker, the
+ * reservation writes and the failure write. A hung Upstash must not eat the
+ * tick. The hash write is NOT bounded — see recordSubmittedGoal.
+ */
+export const BROADCAST_STORE_BUDGET_MS = 3_000;
+
+type Bounded<T> = { ok: true; value: T } | { ok: false; reason: "TIMEOUT" | "ERROR" };
+
+/**
+ * Runs one store call with a hard upper bound. A timeout or an error resolves
+ * (never rejects) so the caller can fail closed. The abandoned call is not
+ * cancelled; its late result is ignored.
+ */
+function bounded<T>(label: string, work: () => Promise<T>, budgetMs: number = BROADCAST_STORE_BUDGET_MS): Promise<Bounded<T>> {
+  return new Promise<Bounded<T>>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.error(`[autonomy] ${label} did not answer within ${budgetMs} ms — continuing without it (fail closed)`);
+      resolve({ ok: false, reason: "TIMEOUT" });
+    }, budgetMs);
+    let pending: Promise<T>;
+    try {
+      pending = work();
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    pending.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ ok: true, value });
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        console.error(`[autonomy] ${label} failed — continuing without it (fail closed)`);
+        resolve({ ok: false, reason: "ERROR" });
+      },
+    );
+  });
+}
+
+/** Appends the in-flight stage to a persisted error, so the record names the step that failed. */
+function withStage(message: string, stage: string | null): string {
+  return stage ? `${message} [stage: ${stage}]` : message;
+}
+
 export type EvaluationResult =
   | { kind: "SKIPPED"; reason: "NOT_FOUND" | "DISABLED" | "LEASE_BUSY" | "STATE_CHANGED"; message: string }
   | { kind: "CONDITION_NOT_MET"; price: string; nextEvaluationAt: string; message: string }
@@ -174,6 +237,7 @@ export type EvaluationResult =
   | { kind: "EXECUTION_FAILED"; failureCode: AutonomyFailureCode; message: string }
   | { kind: "UNCERTAIN"; txHash: string; message: string }
   | { kind: "STUCK_EXECUTION_REAPED"; message: string }
+  | { kind: "UNRESOLVED_BROADCAST"; message: string }
   | { kind: "GOAL_CLOSED"; status: GoalStatus; message: string };
 
 /**
@@ -189,6 +253,17 @@ const STUCK_EXECUTION_MESSAGE =
 
 /** Failure code reported for a reaped, never-submitted execution attempt. */
 const STUCK_EXECUTION_CODE: AutonomyFailureCode = "EXECUTION_UNAVAILABLE";
+
+/**
+ * Written when an evaluation slot already holds an execution claim but no
+ * transaction hash was recorded: an earlier tick was interrupted after the claim
+ * or the attempt marker. The message is the operator-facing contract, so it
+ * states the outcome as UNKNOWN and says what happens next. TIMEOUT is used
+ * because the interrupted tick ran out of its time budget.
+ */
+const UNRESOLVED_BROADCAST_CODE: AutonomyFailureCode = "TIMEOUT";
+const UNRESOLVED_BROADCAST_MESSAGE =
+  "Broadcast outcome UNKNOWN: an earlier attempt for this evaluation slot was interrupted after its execution claim or attempt marker was written, and no transaction hash was recorded. Nothing will be retried automatically and no new evaluation slot is opened. A human must reconcile this goal — check the broadcaster wallet's on-chain transactions before taking any action.";
 
 const NON_EVALUABLE: readonly GoalStatus[] = ["DRAFT", "PAUSED", "COMPLETED", "FAILED", "EXPIRED", "CANCELLED", "EXECUTING"];
 
@@ -213,16 +288,23 @@ export class AutonomyRuntime {
       }
 
       // CRASH RECOVERY — an EXECUTING goal with no pending execution and no
-      // progress for STUCK_EXECUTION_REAP_SECONDS is a tick that died between
-      // the EXECUTING write and the tx-hash write. Nothing else can select it
-      // (due selection requires a pendingExecution) and the user cannot clear
-      // it (EXECUTING cannot reach PAUSED/CANCELLED), so it would report
-      // EXECUTING forever. This runs BEFORE the feature-flag gate on purpose:
-      // the reap never quotes, signs or broadcasts — it only closes a state
-      // that can no longer make progress.
+      // progress for STUCK_EXECUTION_REAP_SECONDS. The current runtime never
+      // writes that state (EXECUTING is written together with the tx hash), so
+      // this only closes goals left behind by older builds that wrote EXECUTING
+      // before the broadcast. A goal that is ACTIVE or WAITING is never reaped
+      // here. This runs BEFORE the feature-flag gate on purpose: the reap never
+      // quotes, signs or broadcasts — it only closes a state that can no longer
+      // make progress.
       if (isStuckExecuting(goal, now)) {
         return this.reapStuckExecution(goal, now);
       }
+
+      // UNRESOLVED BROADCAST — an open goal whose current slot already holds an
+      // execution claim with no transaction hash: an earlier tick was interrupted
+      // after the claim or the attempt marker. Closed here, before any quote, so
+      // the adapter is never reached again and no new slot is opened.
+      const unresolved = await this.closeIfUnresolvedBroadcast(goal, now);
+      if (unresolved) return unresolved;
 
       if (!isAutonomousRuntimeEnabled()) {
         return { kind: "SKIPPED", reason: "DISABLED", message: "Autonomous runtime is disabled." };
@@ -418,9 +500,11 @@ export class AutonomyRuntime {
   /**
    * Close out an EXECUTING goal that never recorded a transaction.
    *
-   * The ACT path writes EXECUTING before it invokes the execution adapter; if
-   * that tick dies before `pendingExecution.txHash` is persisted, the goal is
-   * unreachable (see `isStuckExecuting`). This pass:
+   * Legacy goals only: builds before the hash-first ordering wrote EXECUTING
+   * before the execution adapter, so a tick that died in that window left the
+   * goal unreachable (see `isStuckExecuting`). The current ACT path never writes
+   * EXECUTING without a hash, and a goal that is not EXECUTING is never reaped.
+   * This pass:
    *
    *   1. takes the per-goal evaluation lease, so a tick that is still alive
    *      is never reaped underneath (returns SKIPPED/LEASE_BUSY instead);
@@ -494,6 +578,86 @@ export class AutonomyRuntime {
     } finally {
       await this.deps.store.releaseGoalLease(goal.id, leaseToken);
     }
+  }
+
+  /**
+   * UNRESOLVED BROADCAST, step 1 (runs on every open goal's tick, before any
+   * quote or flag gate). Read-only unless the claim is present. A claim on the
+   * current slot is only ever taken by a tick about to broadcast, so a claim
+   * with no hash on the goal means that tick was interrupted. Under the goal
+   * lease, the goal is re-read and the claim re-checked, then the goal is closed.
+   * A live tick holding the lease is never closed underneath: the check returns
+   * LEASE_BUSY and the goal is left as it is.
+   */
+  private async closeIfUnresolvedBroadcast(goal: AgentGoal, now: Date): Promise<EvaluationResult | null> {
+    if (!OPEN_GOAL_STATUSES.includes(goal.status)) return null;
+    if (!(await this.deps.store.hasExecutionClaim(executionKeyForSlot(goal.id, goal.nextEvaluationAt)))) return null;
+
+    const leaseToken = `unresolved-${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`;
+    const leased = await this.deps.store.tryAcquireGoalLease(goal.id, leaseToken, AUTONOMY_LIMITS.evaluationLeaseSeconds);
+    if (!leased) {
+      return { kind: "SKIPPED", reason: "LEASE_BUSY", message: "Another evaluation holds this goal's lease." };
+    }
+    try {
+      const current = await this.deps.store.getGoal(goal.id);
+      if (!current || !OPEN_GOAL_STATUSES.includes(current.status) || current.pendingExecution) {
+        return { kind: "SKIPPED", reason: "STATE_CHANGED", message: "Goal state changed during evaluation." };
+      }
+      const idempotencyKey = executionKeyForSlot(current.id, current.nextEvaluationAt);
+      if (!(await this.deps.store.hasExecutionClaim(idempotencyKey))) return null;
+      return await this.closeUnresolvedBroadcast(current, idempotencyKey, now);
+    } finally {
+      await this.deps.store.releaseGoalLease(goal.id, leaseToken);
+    }
+  }
+
+  /**
+   * UNRESOLVED BROADCAST, step 2 — close the goal. The outcome is UNKNOWN: the
+   * interrupted tick may have broadcast, so nothing is retried, the adapter is
+   * never called, no new evaluation slot is opened, and the spend reservation
+   * stays counted (never released here). If a hash is in the action history for
+   * this slot, the message names it and says it was not verified automatically.
+   * A transaction hash stored on the goal (pendingExecution) is never closed
+   * here: that goal is verified by the verification pass instead.
+   */
+  private async closeUnresolvedBroadcast(goal: AgentGoal, idempotencyKey: string, now: Date): Promise<EvaluationResult> {
+    const updatedAt = now.toISOString();
+    const records = await this.deps.store.listActionRecords(goal.id);
+    const recordedHash = records.find((r) => r.idempotencyKey === idempotencyKey && r.txHash)?.txHash ?? null;
+    const message = recordedHash
+      ? `${UNRESOLVED_BROADCAST_MESSAGE} Transaction ${recordedHash} is recorded for this slot in the action history; the goal was not set to verify it, so confirm that transaction on-chain.`
+      : UNRESOLVED_BROADCAST_MESSAGE;
+
+    const written = await this.deps.store.transitionGoal(goal.id, goal.wallet, OPEN_GOAL_STATUSES, goal.updatedAt, {
+      status: "FAILED",
+      lastEvaluationAt: updatedAt,
+      updatedAt,
+      nextEvaluationAt: updatedAt,
+      lastAction: "broadcast outcome unknown — manual reconciliation required",
+      lastResult: { at: updatedAt, outcome: "FAILED", code: UNRESOLVED_BROADCAST_CODE, message },
+      stats: { ...goal.stats, consecutiveFailures: goal.stats.consecutiveFailures + 1 },
+    });
+    if (!written) {
+      return { kind: "SKIPPED", reason: "STATE_CHANGED", message: "Goal state changed during evaluation." };
+    }
+
+    console.error(`[autonomy] goal ${goal.id}: broadcast outcome UNKNOWN for slot ${idempotencyKey} — goal closed for manual reconciliation`);
+    await this.audit(goal.wallet, "EXECUTION_FAILED", now, goal.id, goal.policyId, {
+      code: UNRESOLVED_BROADCAST_CODE,
+      unresolved: true,
+      txHashRecorded: recordedHash !== null,
+    });
+    await this.audit(goal.wallet, "GOAL_FAILED", now, goal.id, goal.policyId, { reason: "UNRESOLVED_BROADCAST", code: UNRESOLVED_BROADCAST_CODE });
+    // recordAction replaces the record for this key, so the hash is carried over.
+    await this.recordAction(goal, idempotencyKey, null, {
+      status: "FAILED",
+      outcome: "FAILED",
+      verified: false,
+      failureCode: UNRESOLVED_BROADCAST_CODE,
+      message,
+      ...(recordedHash ? { txHash: recordedHash } : {}),
+    }, now);
+    return { kind: "UNRESOLVED_BROADCAST", message };
   }
 
   // -------------------------------------------------------------------------
@@ -646,17 +810,18 @@ export class AutonomyRuntime {
       );
     }
 
-    // ACT — idempotency claim, spend reservation, budget gate, CAS to EXECUTING,
-    // then prepare, attempt marker, execute — all under the post-EXECUTING budget.
+    // ACT — idempotency claim, spend reservation, budget gate, then prepare,
+    // attempt marker and execute under the broadcast budget. The goal is NOT
+    // written to EXECUTING until the adapter returns a transaction hash.
     // Same derivation the stuck-execution reap uses — see executionKeyForSlot.
     const budgetEndsAtMs = budgetAnchor.getTime() + AUTONOMY_EXECUTION_BUDGET_SECONDS * 1000;
     const idempotencyKey = executionKeyForSlot(goal.id, goal.nextEvaluationAt);
     const claimed = await this.deps.store.claimExecution(idempotencyKey, AUTONOMY_LIMITS.executionGuardSeconds);
     if (!claimed) {
+      // The slot was claimed by an attempt that recorded no hash. The early check
+      // in evaluateGoal normally closes this first; this is the same outcome.
       await this.audit(goal.wallet, "DUPLICATE_PREVENTED", now, goal.id, goal.policyId, { idempotencyKey });
-      // Advance past the consumed slot so the goal cannot livelock on it.
-      await this.park(goal, "DUPLICATE_PREVENTED", "This evaluation slot already produced an execution — duplicate prevented.", now, undefined, "FAILED");
-      return { kind: "DUPLICATE_PREVENTED", message: "This evaluation slot already produced an execution — duplicate prevented." };
+      return this.closeUnresolvedBroadcast(goal, idempotencyKey, now);
     }
 
     // ATOMIC daily spend reservation: both caps (maxDailyRaw and
@@ -693,9 +858,10 @@ export class AutonomyRuntime {
       // The same execution id already reached (or passed) an attempt — this
       // is a duplicate retry. NEVER invoke the adapter again; the reservation
       // keeps whatever state the winner left it in (never double-counted).
+      // An attempt marker (or a commit) already exists for this execution id, and
+      // this tick holds the claim, so the earlier attempt recorded no hash here.
       await this.audit(goal.wallet, "DUPLICATE_PREVENTED", now, goal.id, goal.policyId, { idempotencyKey, reservationState: reservation.state });
-      await this.park(goal, "DUPLICATE_PREVENTED", "This execution id already produced an attempt — duplicate prevented.", now, undefined, "FAILED");
-      return { kind: "DUPLICATE_PREVENTED", message: "This execution id already produced an attempt — duplicate prevented." };
+      return this.closeUnresolvedBroadcast(goal, idempotencyKey, now);
     }
 
     // Quote freshness at broadcast time (spec §13 — never execute stale data).
@@ -705,10 +871,10 @@ export class AutonomyRuntime {
       return this.parkWithFailure(goal, "QUOTE_STALE", "Quote expired before execution could start — nothing was broadcast.", now, { conditionChecked: true });
     }
 
-    // TIME BUDGET GATE — before the EXECUTING write. With too little of the
-    // tick's budget left, nothing can be broadcast safely: nothing was sent, so
-    // the reservation is released as UNATTEMPTED (the verified path), the claim
-    // is dropped, and the goal is retried on a later tick. RPC_ERROR is an
+    // TIME BUDGET GATE — before the broadcast. With too little of the tick's
+    // budget left, nothing can be broadcast safely: nothing was sent, so the
+    // reservation is released as UNATTEMPTED (the verified path), the claim is
+    // dropped, and the goal is retried on a later tick. RPC_ERROR is an
     // infrastructure code, so this is not a trade-failure strike.
     if (budgetEndsAtMs - this.deps.now().getTime() < AUTONOMY_MIN_EXECUTION_BUDGET_SECONDS * 1000) {
       await this.releaseReservation(decision.policy.id, dayKey, idempotencyKey, { reason: "UNATTEMPTED" }, now);
@@ -722,29 +888,19 @@ export class AutonomyRuntime {
       );
     }
 
-    const executing = await this.deps.store.transitionGoal(goal.id, goal.wallet, ["ACTIVE", "WAITING"], goal.updatedAt, {
-      status: "EXECUTING",
-      lastEvaluationAt: updatedAt,
-      updatedAt,
-      lastAction: "executing authorized swap",
-      lastResult: { at: updatedAt, outcome: "TRADE_EXECUTED", code: null, message: "Authorization verified — submitting transaction." },
-    });
-    if (!executing) {
-      // State changed under us; drop the claims — the winner owns the slot.
-      // The reservation is provably unattempted (the adapter was never
-      // invoked and the attempt marker was never set) — the one verified
-      // UNATTEMPTED release path.
-      await this.releaseReservation(decision.policy.id, dayKey, idempotencyKey, { reason: "UNATTEMPTED" }, now);
-      await this.deps.store.releaseExecution(idempotencyKey);
-      return { kind: "SKIPPED", reason: "STATE_CHANGED", message: "Goal state changed during evaluation." };
-    }
+    // NO GOAL WRITE BEFORE THE BROADCAST RESULT. The goal stays ACTIVE/WAITING
+    // while the swap is in flight. EXECUTING (+ pendingExecution) is written only
+    // once the adapter has returned a transaction hash — see recordSubmittedGoal.
+    // A tick killed anywhere before that point leaves an ACTIVE/WAITING goal that
+    // the scheduler can still select. Its claim on this slot is what the next tick
+    // sees, and closeIfUnresolvedBroadcast closes the goal as UNKNOWN. The
+    // stuck-execution reap only closes a goal that IS EXECUTING, so it never
+    // touches this one.
 
-    // POST-EXECUTING WORK, UNDER THE TICK BUDGET. From here to the adapter's
-    // result — prepare, attempt marker, emergency-switch re-read, broadcast —
-    // runs under one deadline (AUTONOMY_EXECUTION_BUDGET_SECONDS after the tick
-    // started). The work RETURNS a step and writes no goal state. Every failure
-    // is persisted below with its real reason, so a slow RPC never ends in the
-    // stuck-execution reap.
+    // POST-BUDGET WORK, UNDER THE TICK BUDGET. From prepare to the adapter's
+    // result runs under one deadline (AUTONOMY_EXECUTION_BUDGET_SECONDS after the
+    // tick started). The work RETURNS a step and writes no goal state. Every
+    // failure is persisted below with its real reason and the in-flight stage.
     const progress: BroadcastProgress = { adapterInvoked: false, abandoned: false, stage: null };
     const work = this.runBroadcastSteps({
       goal,
@@ -762,17 +918,18 @@ export class AutonomyRuntime {
       // Stop the abandoned work from ever starting the adapter, then record what
       // actually happened: a broadcast may already be in flight.
       progress.abandoned = true;
-      void work.then(
-        (late) => this.noteLateBroadcast(goal, late),
-        () => undefined,
-      );
-      return this.failBudgetEnded(executing, idempotencyKey, decision.policy.id, dayKey, progress.adapterInvoked, progress.stage);
+      void work
+        .then((late) => this.recordLateBroadcast(goal, late, { quote, idempotencyKey }))
+        .catch((error: unknown) => {
+          void error;
+          console.error(`[autonomy] goal ${goal.id}: a late broadcast result could not be recorded — reconcile this goal`);
+        });
+      return this.failBudgetEnded(goal, idempotencyKey, decision.policy.id, dayKey, progress.adapterInvoked, progress.stage);
     }
     const step = outcome.value;
     if (step.kind !== "ADAPTER_RESULT") {
       return this.closeUnbroadcastStep(step, {
         goal,
-        executing,
         policyId: decision.policy.id,
         dayKey,
         idempotencyKey,
@@ -790,17 +947,18 @@ export class AutonomyRuntime {
       } else {
         await this.markReservationAmbiguous(decision.policy.id, dayKey, idempotencyKey, now);
       }
-      return this.failAfterClaim(executing, idempotencyKey, result.code, result.message, now);
+      return this.failAfterClaim(goal, idempotencyKey, result.code, withStage(result.message, progress.stage), now, progress.stage);
     }
 
-    // TRANSACTION SUBMITTED — the spend is consumed (conservative: it stays
-    // counted even if the receipt later shows a revert). Enter the
-    // verification state.
+    // TRANSACTION SUBMITTED — a hash came back, so the spend is consumed
+    // (conservative: it stays counted even if the receipt later shows a revert).
+    // Only now does the goal move to EXECUTING, and only with that hash.
     await this.commitReservation(decision.policy.id, dayKey, idempotencyKey, now);
     const submittedAt = now.toISOString();
-    await this.deps.store.transitionGoal(goal.id, goal.wallet, ["EXECUTING"], executing.updatedAt, {
+    await this.recordSubmittedGoal(goal, result.txHash, {
       status: "EXECUTING",
       updatedAt: submittedAt,
+      lastEvaluationAt: submittedAt,
       nextEvaluationAt: new Date(now.getTime() + AUTONOMY_LIMITS.verificationRetrySeconds * 1000).toISOString(),
       pendingExecution: {
         txHash: result.txHash,
@@ -833,13 +991,13 @@ export class AutonomyRuntime {
   }
 
   // -------------------------------------------------------------------------
-  // Post-EXECUTING budget (see AUTONOMY_EXECUTION_BUDGET_SECONDS)
+  // Post-budget broadcast work (see AUTONOMY_EXECUTION_BUDGET_SECONDS)
   // -------------------------------------------------------------------------
 
   /**
-   * Prepare → attempt marker → emergency-switch re-read → adapter. Returns a
-   * step and writes no goal state, so when the budget ends the caller can
-   * record the outcome without racing this work.
+   * Prepare → goal re-read → attempt marker → emergency-switch re-read → adapter.
+   * Returns a step and writes no goal state, so when the budget ends the caller
+   * can record the outcome without racing this work.
    */
   private async runBroadcastSteps(ctx: BroadcastContext): Promise<BroadcastStep> {
     const { goal, policy, dayKey, idempotencyKey, quote, slippageBps, budgetEndsAtMs, progress, now } = ctx;
@@ -868,15 +1026,22 @@ export class AutonomyRuntime {
       await this.audit(goal.wallet, "TRADE_PREPARED", now, goal.id, goal.policyId, { quoteId: quote.quoteId, steps: prepared.data.steps.length });
     }
 
+    // GOAL STILL OPEN — the goal is not EXECUTING during the broadcast, so a
+    // pause or cancel that landed during prepare is caught here, before the
+    // attempt marker. That is the last point where the reservation can still be
+    // released as UNATTEMPTED. The read is bounded: a hung store fails closed.
+    const live = await bounded("goal state re-read", () => this.deps.store.getGoal(goal.id));
+    if (!live.ok) return { kind: "STATE_UNREADABLE" };
+    if (!live.value || !OPEN_GOAL_STATUSES.includes(live.value.status)) {
+      return { kind: "GOAL_CLOSED", status: live.value?.status ?? null };
+    }
+
     // ATTEMPT MARKER — persisted BEFORE the execution adapter is invoked.
     // Once this is visible a crash may have broadcast: the reservation is
-    // never released automatically after this point.
-    let attemptState: SpendReservationState | null = null;
-    try {
-      attemptState = await this.deps.store.markSpendAttempt(policy.id, dayKey, idempotencyKey);
-    } catch (error) {
-      void error;
-    }
+    // never released automatically after this point. Bounded: a timeout is
+    // treated as "not recorded", so the adapter is NOT invoked (fail closed).
+    const marker = await bounded("spend attempt marker", () => this.deps.store.markSpendAttempt(policy.id, dayKey, idempotencyKey));
+    const attemptState: SpendReservationState | null = marker.ok ? marker.value : null;
     if (attemptState !== "ATTEMPTING") {
       // Missing/Redis failure/lost response (or a state that is no longer
       // safely attemptable): DO NOT invoke the adapter (fail closed).
@@ -931,7 +1096,7 @@ export class AutonomyRuntime {
       // UNKNOWN error: the broadcast MAY have happened. The caller marks the
       // reservation AMBIGUOUS (spend stays counted) and never releases it.
       void error;
-      return { kind: "ADAPTER_THREW" };
+      return { kind: "ADAPTER_THREW", stage: progress.stage };
     }
     return { kind: "ADAPTER_RESULT", result };
   }
@@ -939,41 +1104,74 @@ export class AutonomyRuntime {
   /** Persists the real outcome for a step that did not reach a broadcast result. */
   private async closeUnbroadcastStep(
     step: UnbroadcastStep,
-    c: { goal: AgentGoal; executing: AgentGoal; policyId: string; dayKey: string; idempotencyKey: string; now: Date },
+    c: { goal: AgentGoal; policyId: string; dayKey: string; idempotencyKey: string; now: Date },
   ): Promise<EvaluationResult> {
     switch (step.kind) {
       case "PREPARE_REFUSED":
         // A whitelisted verified-pre-broadcast refusal frees the reservation;
         // anything unknown keeps it counted (never released automatically).
         await this.releaseForFailure(c.policyId, c.dayKey, c.idempotencyKey, step.code, c.now);
-        return this.failAfterClaim(c.executing, c.idempotencyKey, step.code, step.message, c.now);
+        return this.failAfterClaim(c.goal, c.idempotencyKey, step.code, withStage(step.message, "prepare"), c.now, "prepare");
+      case "GOAL_CLOSED":
+        // Paused, cancelled or otherwise closed during prepare. Nothing was
+        // attempted (no marker, no adapter), so the reservation is provably
+        // UNATTEMPTED and the claim is dropped: the slot is not consumed.
+        this.deps.logger.warn("Goal closed during prepare — nothing was broadcast", { goalId: c.goal.id, status: step.status });
+        await this.releaseUnattempted(c);
+        return { kind: "SKIPPED", reason: "STATE_CHANGED", message: "Goal state changed during evaluation." };
+      case "STATE_UNREADABLE":
+        // The state re-read failed or timed out before the marker: nothing was
+        // attempted, so the reservation and claim are released as UNATTEMPTED.
+        await this.releaseUnattempted(c);
+        return this.failAfterClaim(
+          c.goal,
+          c.idempotencyKey,
+          "RPC_ERROR",
+          "Goal state could not be re-read before the broadcast — nothing was broadcast. The goal is retried on a later tick.",
+          c.now,
+          "goal-reread",
+        );
       case "ATTEMPT_NOT_RECORDED":
         // The reservation is left as-is (it counts against the day — conservative)
         // and is recoverable later via the verified UNATTEMPTED path once a
         // human confirms nothing was sent.
         this.deps.logger.error("Spend attempt marker could not be persisted — adapter NOT invoked", { goalId: c.goal.id });
         return this.failAfterClaim(
-          c.executing,
+          c.goal,
           c.idempotencyKey,
           "RPC_ERROR",
           "Spend attempt marker could not be persisted — the execution adapter was NOT invoked. The reservation stays reserved (recoverable as UNATTEMPTED).",
           c.now,
+          "attempt-marker",
         );
       case "SWITCH_REFUSED":
-        return this.controlPlaneRefuseAfterClaim(c.executing, c.idempotencyKey, "EXECUTION_UNAVAILABLE", step.message, c.now);
+        return this.controlPlaneRefuseAfterClaim(c.goal, c.idempotencyKey, "EXECUTION_UNAVAILABLE", step.message, c.now, "execution-boundary");
       case "ADAPTER_THREW":
-        this.deps.logger.error("Autonomous execution adapter threw", { goalId: c.goal.id });
+        this.deps.logger.error("Autonomous execution adapter threw", { goalId: c.goal.id, stage: step.stage ?? "unknown" });
         await this.markReservationAmbiguous(c.policyId, c.dayKey, c.idempotencyKey, c.now);
         return this.failAfterClaim(
-          c.executing,
+          c.goal,
           c.idempotencyKey,
           "EXECUTION_UNAVAILABLE",
-          "Execution adapter failed unexpectedly — the broadcast outcome is UNKNOWN. The spend reservation is kept (AMBIGUOUS), never released.",
+          withStage(
+            "Execution adapter failed unexpectedly — the broadcast outcome is UNKNOWN. The spend reservation is kept (AMBIGUOUS), never released.",
+            step.stage,
+          ),
           c.now,
+          step.stage,
         );
       case "BUDGET_ENDED":
-        return this.failBudgetEnded(c.executing, c.idempotencyKey, c.policyId, c.dayKey, false, null);
+        return this.failBudgetEnded(c.goal, c.idempotencyKey, c.policyId, c.dayKey, false, null);
     }
+  }
+
+  /**
+   * Nothing was attempted (no attempt marker, adapter never invoked): release the
+   * reservation as UNATTEMPTED and drop the execution claim. Both are bounded.
+   */
+  private async releaseUnattempted(c: { policyId: string; dayKey: string; idempotencyKey: string; now: Date }): Promise<void> {
+    await this.releaseReservation(c.policyId, c.dayKey, c.idempotencyKey, { reason: "UNATTEMPTED" }, c.now);
+    await bounded("execution claim release", () => this.deps.store.releaseExecution(c.idempotencyKey));
   }
 
   /**
@@ -982,7 +1180,7 @@ export class AutonomyRuntime {
    * UNKNOWN unless it was never invoked.
    */
   private async failBudgetEnded(
-    executing: AgentGoal,
+    goal: AgentGoal,
     idempotencyKey: string,
     policyId: string,
     dayKey: string,
@@ -992,26 +1190,74 @@ export class AutonomyRuntime {
     const at = this.deps.now();
     await this.markReservationAmbiguous(policyId, dayKey, idempotencyKey, at);
     return this.failAfterClaim(
-      executing,
+      goal,
       idempotencyKey,
       "RPC_ERROR",
       adapterInvoked ? budgetEndedAdapterInvoked(stage) : budgetEndedBeforeBroadcast(stage),
       at,
+      stage ?? (adapterInvoked ? "verifyOnChain" : "prepare"),
     );
   }
 
   /**
-   * A broadcast that returned a hash AFTER the budget ended. The adapter has
-   * already recorded the hash on the authorization slot, but this goal has
-   * moved on, so surface it to operators instead of dropping it silently.
+   * A broadcast that returned a hash AFTER the budget ended. The tick has already
+   * persisted the timeout (WAITING, RPC_ERROR) and the adapter has recorded the
+   * hash on the authorization slot. The transaction is real, so it is recorded
+   * now: the goal moves to EXECUTING with that hash, verification decides the
+   * outcome, and the action record is updated. A late FAILURE is not re-written —
+   * the timeout already reported it honestly. Not budget-bounded, for the same
+   * reason as recordSubmittedGoal.
    */
-  private noteLateBroadcast(goal: AgentGoal, step: BroadcastStep): void {
-    if (step.kind === "ADAPTER_RESULT" && step.result.ok) {
-      this.deps.logger.error("Broadcast returned a transaction hash after the execution budget ended — the hash is recorded on the authorization slot", {
-        goalId: goal.id,
-        txHash: step.result.txHash,
-      });
+  private async recordLateBroadcast(
+    goal: AgentGoal,
+    step: BroadcastStep,
+    c: { quote: QuotedSwap; idempotencyKey: string },
+  ): Promise<void> {
+    if (step.kind !== "ADAPTER_RESULT" || !step.result.ok) return;
+    const txHash = step.result.txHash;
+    this.deps.logger.error("Broadcast returned a transaction hash after the execution budget ended — recording it on the goal", {
+      goalId: goal.id,
+      txHash,
+    });
+    const current = await this.deps.store.getGoal(goal.id);
+    if (!current) {
+      console.error(`[autonomy] goal ${goal.id} not found: late transaction ${txHash} is recorded on the authorization slot only — reconcile`);
+      return;
     }
+    const now = this.deps.now();
+    const submittedAt = now.toISOString();
+    await this.recordSubmittedGoal(current, txHash, {
+      status: "EXECUTING",
+      updatedAt: submittedAt,
+      lastEvaluationAt: submittedAt,
+      nextEvaluationAt: new Date(now.getTime() + AUTONOMY_LIMITS.verificationRetrySeconds * 1000).toISOString(),
+      pendingExecution: {
+        txHash,
+        quoteId: c.quote.quoteId,
+        idempotencyKey: c.idempotencyKey,
+        submittedAt,
+        verifyAttempts: 0,
+        expectedBuyAmountRaw: c.quote.expectedBuyAmountRaw,
+        minBuyAmountRaw: c.quote.minBuyAmountRaw,
+        expectedSender: expectedSenderFor(this.deps.adapter),
+      },
+      lastAction: `transaction submitted ${txHash} (after the tick budget)`,
+      lastResult: {
+        at: submittedAt,
+        outcome: "WAITING_VERIFICATION",
+        code: null,
+        message: "Transaction submitted after the tick budget ended — verifying receipt before reporting any result.",
+      },
+      stats: { ...current.stats, triggered: current.stats.triggered + 1 },
+    });
+    await this.audit(goal.wallet, "TRANSACTION_SUBMITTED", now, goal.id, goal.policyId, { txHash, idempotencyKey: c.idempotencyKey, late: true });
+    await this.recordAction(goal, c.idempotencyKey, null, {
+      status: "SUBMITTED",
+      outcome: "PENDING_VERIFICATION",
+      verified: false,
+      message: "Submitted after the tick budget ended — awaiting receipt verification.",
+      txHash,
+    }, now, c.quote);
   }
 
   // Helpers
@@ -1022,7 +1268,7 @@ export class AutonomyRuntime {
    * logged and swallowed: a missed release keeps the spend counted (safe).
    * Returns the resulting state, or null when the store refused the release
    * (including "not in a releasable state" — e.g. UNATTEMPTED once the
-   * attempt marker is set) or the call failed.
+   * attempt marker is set), the call failed, or it did not answer in time.
    */
   private async releaseReservation(
     policyId: string,
@@ -1032,13 +1278,10 @@ export class AutonomyRuntime {
     now: Date,
   ): Promise<SpendReservationState | null> {
     void now;
-    try {
-      return await this.deps.store.releaseDailySpend(policyId, dayKey, execId, release);
-    } catch (error) {
-      void error;
-      this.deps.logger.error("Spend reservation release failed — spend stays counted (conservative)", { execId });
-      return null;
-    }
+    const outcome = await bounded("spend reservation release", () => this.deps.store.releaseDailySpend(policyId, dayKey, execId, release));
+    if (outcome.ok) return outcome.value;
+    this.deps.logger.error("Spend reservation release failed — spend stays counted (conservative)", { execId });
+    return null;
   }
 
   /**
@@ -1063,26 +1306,48 @@ export class AutonomyRuntime {
    * reservation is marked AMBIGUOUS — spend STAYS counted, never released.
    */
   private async markReservationAmbiguous(policyId: string, dayKey: string, execId: string, now: Date): Promise<void> {
-    try {
-      await this.deps.store.markSpendAmbiguous(policyId, dayKey, execId);
-    } catch (error) {
-      void error;
+    void now;
+    const outcome = await bounded("spend reservation mark", () => this.deps.store.markSpendAmbiguous(policyId, dayKey, execId));
+    if (!outcome.ok) {
       this.deps.logger.error("Spend reservation could not be marked AMBIGUOUS — it stays counted in its prior state", { execId });
     }
-    void now;
   }
 
   /** Consume the reservation (successful or reverted execution). */
   private async commitReservation(policyId: string, dayKey: string, execId: string, now: Date): Promise<void> {
-    try {
-      await this.deps.store.commitDailySpend(policyId, dayKey, execId);
-    } catch (error) {
-      void error;
+    void now;
+    const outcome = await bounded("spend reservation commit", () => this.deps.store.commitDailySpend(policyId, dayKey, execId));
+    if (!outcome.ok) {
       // A lost commit response leaves the reservation ATTEMPTING — it still
       // counts against the day (conservative); recovery marks it AMBIGUOUS.
       this.deps.logger.error("Spend reservation commit failed — spend stays counted (conservative)", { execId });
     }
-    void now;
+  }
+
+  /**
+   * Moves the goal to EXECUTING with the broadcast hash. Called ONLY with a hash
+   * in hand. Deliberately NOT budget-bounded: this is the one write that must not
+   * be abandoned, because the transaction exists. A CAS miss while the goal is
+   * still open (a field edit moved updatedAt) is retried once against the fresh
+   * updatedAt. A goal the user closed mid-flight keeps its status; the caller still
+   * writes the action record and audit event, and the hash is logged here.
+   */
+  private async recordSubmittedGoal(goal: AgentGoal, txHash: string, patch: GoalTransitionPatch): Promise<void> {
+    try {
+      let written = await this.deps.store.transitionGoal(goal.id, goal.wallet, OPEN_GOAL_STATUSES, goal.updatedAt, patch);
+      if (!written) {
+        const current = await this.deps.store.getGoal(goal.id);
+        if (current && OPEN_GOAL_STATUSES.includes(current.status)) {
+          written = await this.deps.store.transitionGoal(goal.id, goal.wallet, OPEN_GOAL_STATUSES, current.updatedAt, patch);
+        }
+      }
+      if (written) return;
+    } catch (error) {
+      void error;
+    }
+    console.error(
+      `[autonomy] goal ${goal.id}: broadcast returned transaction ${txHash} but the goal could not be moved to EXECUTING — the hash is recorded on the authorization slot and the action record; reconcile this goal`,
+    );
   }
 
   private backoff(failures: number, now: Date): string {
@@ -1153,59 +1418,75 @@ export class AutonomyRuntime {
    * execution key is not released.
    */
   private async controlPlaneRefuseAfterClaim(
-    executingGoal: AgentGoal,
+    goal: AgentGoal,
     idempotencyKey: string,
     code: AutonomyFailureCode,
     message: string,
     now: Date,
+    stage: string,
   ): Promise<EvaluationResult> {
+    console.error(`[autonomy] goal ${goal.id} refused at stage ${stage} (${code}) — nothing was broadcast`);
     const updatedAt = now.toISOString();
     void idempotencyKey;
-    await this.deps.store.transitionGoal(executingGoal.id, executingGoal.wallet, ["EXECUTING"], executingGoal.updatedAt, {
-      status: "WAITING",
-      lastEvaluationAt: updatedAt,
-      updatedAt,
-      nextEvaluationAt: new Date(now.getTime() + executingGoal.cooldownSeconds * 1000).toISOString(),
-      lastAction: `control-plane refusal: ${code}`,
-      lastResult: { at: updatedAt, outcome: "AUTHORIZATION_MISSING", code, message },
-      stats: { ...executingGoal.stats, evaluations: executingGoal.stats.evaluations + 1 },
-    });
-    await this.audit(executingGoal.wallet, "AUTHORIZATION_CHECKED", now, executingGoal.id, executingGoal.policyId, {
+    await bounded("goal control-plane write", () =>
+      this.deps.store.transitionGoal(goal.id, goal.wallet, OPEN_GOAL_STATUSES, goal.updatedAt, {
+        status: "WAITING",
+        lastEvaluationAt: updatedAt,
+        updatedAt,
+        nextEvaluationAt: new Date(now.getTime() + goal.cooldownSeconds * 1000).toISOString(),
+        lastAction: `control-plane refusal: ${code}`,
+        lastResult: { at: updatedAt, outcome: "AUTHORIZATION_MISSING", code, message },
+        stats: { ...goal.stats, evaluations: goal.stats.evaluations + 1 },
+      }),
+    );
+    await this.audit(goal.wallet, "AUTHORIZATION_CHECKED", now, goal.id, goal.policyId, {
       authorized: false,
       reason: "EMERGENCY_SWITCH",
       controlPlane: true,
     });
-    return { kind: "PARKED", failureCode: code, message, nextEvaluationAt: new Date(now.getTime() + executingGoal.cooldownSeconds * 1000).toISOString() };
+    return { kind: "PARKED", failureCode: code, message, nextEvaluationAt: new Date(now.getTime() + goal.cooldownSeconds * 1000).toISOString() };
   }
 
-  /** Failure AFTER the idempotency claim — the slot is consumed. */
+  /**
+   * Failure AFTER the idempotency claim — the slot is consumed. The goal is still
+   * ACTIVE/WAITING here (no EXECUTING write precedes a broadcast), so the failure
+   * is CASed from those statuses. The stage is logged FIRST, before any Redis call,
+   * so it is recorded even when the store is hung or failing. The goal write is
+   * bounded to BROADCAST_STORE_BUDGET_MS.
+   */
   private async failAfterClaim(
-    executingGoal: AgentGoal,
+    goal: AgentGoal,
     idempotencyKey: string,
     code: AutonomyFailureCode,
     message: string,
     now: Date,
+    stage: string | null = null,
   ): Promise<EvaluationResult> {
+    console.error(`[autonomy] goal ${goal.id} execution failed at stage ${stage ?? "unknown"} (${code}): ${message}`);
     const updatedAt = now.toISOString();
     // The spend reservation is handled by the caller (released only for
     // verified pre-broadcast refusals, committed/AMBIGUOUS otherwise) —
     // over-counting is safe, under-counting is not. Switch/infrastructure
     // codes never increment the trade-failure counter and never fail the goal.
     const infra = isInfrastructureOutageCode(code);
-    const failures = infra ? executingGoal.stats.consecutiveFailures : executingGoal.stats.consecutiveFailures + 1;
+    const failures = infra ? goal.stats.consecutiveFailures : goal.stats.consecutiveFailures + 1;
     const shouldFail = !infra && (failures >= AUTONOMY_LIMITS.maxConsecutiveFailures || isTerminalFailureCode(code));
-    const cas = await this.deps.store.transitionGoal(executingGoal.id, executingGoal.wallet, ["EXECUTING"], executingGoal.updatedAt, {
-      status: shouldFail ? "FAILED" : "WAITING",
-      lastEvaluationAt: updatedAt,
-      updatedAt,
-      nextEvaluationAt: shouldFail ? updatedAt : this.backoff(failures, now),
-      lastAction: `execution failed: ${code}`,
-      lastResult: { at: updatedAt, outcome: "FAILED", code, message },
-      stats: { ...executingGoal.stats, consecutiveFailures: failures },
-    });
-    void cas;
-    await this.audit(executingGoal.wallet, "EXECUTION_FAILED", now, executingGoal.id, executingGoal.policyId, { code });
-    await this.recordAction(executingGoal, idempotencyKey, null, {
+    const write = await bounded("goal failure write", () =>
+      this.deps.store.transitionGoal(goal.id, goal.wallet, OPEN_GOAL_STATUSES, goal.updatedAt, {
+        status: shouldFail ? "FAILED" : "WAITING",
+        lastEvaluationAt: updatedAt,
+        updatedAt,
+        nextEvaluationAt: shouldFail ? updatedAt : this.backoff(failures, now),
+        lastAction: `execution failed: ${code}`,
+        lastResult: { at: updatedAt, outcome: "FAILED", code, message },
+        stats: { ...goal.stats, consecutiveFailures: failures },
+      }),
+    );
+    if (!write.ok || write.value === null) {
+      console.error(`[autonomy] goal ${goal.id}: failure ${code} was not recorded on the goal — it stays open until the next tick decides`);
+    }
+    await this.audit(goal.wallet, "EXECUTION_FAILED", now, goal.id, goal.policyId, { code });
+    await this.recordAction(goal, idempotencyKey, null, {
       status: "FAILED",
       outcome: "FAILED",
       verified: false,
@@ -1213,7 +1494,7 @@ export class AutonomyRuntime {
       message,
     }, now);
     if (shouldFail) {
-      await this.audit(executingGoal.wallet, "GOAL_FAILED", now, executingGoal.id, executingGoal.policyId, { reason: "EXECUTION_FAILURE", code });
+      await this.audit(goal.wallet, "GOAL_FAILED", now, goal.id, goal.policyId, { reason: "EXECUTION_FAILURE", code });
     }
     return { kind: "EXECUTION_FAILED", failureCode: code, message };
   }

@@ -28,24 +28,49 @@ VERIFY → REMEMBER → CONTINUE/WAIT: due-goal selection (scheduler), quote
 fetch (MCP), deterministic condition evaluation (bigint, decimals-aware),
 policy evaluation (live day counters), authorization check, execution-slot
 claim (SET-NX idempotency, taken BEFORE the daily ledger), quote freshness
-re-check, CAS → EXECUTING, prepare/execute via MCP, then verification with
-bounded retries (10 × 30 s backoff). Pending verification runs even when
+re-check, then prepare/execute via MCP while the goal stays ACTIVE/WAITING.
+Only when the adapter returns a transaction hash does the goal move to
+EXECUTING with `pendingExecution`; then verification runs with bounded
+retries (10 × 30 s backoff). Pending verification runs even when
 the flag is later switched off.
 
-**Stuck-execution reap.** The ACT path writes EXECUTING *before* it invokes
-the execution adapter, so a tick that dies in that window (serverless kill,
-timeout, lost store write) leaves a goal that nothing could previously move:
-due selection only picked EXECUTING goals that HAVE a `pendingExecution`, and
-EXECUTING cannot reach PAUSED/CANCELLED — so the UI reported EXECUTING
-forever with no transaction and cancel/revoke could not clear it. A tick now
-reaps that state: EXECUTING + no `pendingExecution` + no progress for
-`STUCK_EXECUTION_REAP_SECONDS` (120 s, `types.ts`) ⇒ the goal moves to
-FAILED, its daily-spend reservation is released with reason `UNATTEMPTED`
-**only** while it is still RESERVED (the attempt marker was never set), the
-result text states that nothing was broadcast, and no transaction hash is
-ever invented or retried. The reap takes the per-goal evaluation lease first,
-so a tick that is still alive is never reaped underneath, and it runs even
-when the flag is off — closing the state never needs to broadcast.
+**Broadcast ordering and the stuck-execution reap.** The goal is never written
+to EXECUTING before the adapter returns a transaction hash. While a swap is in
+flight the goal stays ACTIVE/WAITING, so a tick killed mid-call leaves a goal
+the scheduler can still select, and the next tick closes it (see below). A
+failed or timed-out broadcast is written in
+the same invocation, with the in-flight stage in the message (for example
+`[stage: estimate]`). Any Redis call on the failure path (state re-read,
+attempt marker, reservation writes, failure write) is bounded to 3 s, and the
+stage is logged even if Redis fails. The hash write is not bounded, because
+abandoning it would lose a real transaction. A hash that returns after the
+tick budget has ended is still recorded: the goal moves to EXECUTING and
+verification decides the outcome.
+
+**Unresolved broadcast.** A slot's execution claim is only taken by a tick that
+is about to broadcast. So a claim on the goal's current slot with no transaction
+hash on the goal means that tick was interrupted after the claim or the attempt
+marker was written (killed, or its outcome write was lost). The next tick closes
+the goal before any quote, with no adapter call: `FAILED`, `lastResult.outcome`
+`FAILED`, code `TIMEOUT`, and a message that starts `Broadcast outcome UNKNOWN`,
+says nothing will be retried automatically, and asks a human to reconcile
+on-chain. No new evaluation slot is opened. The daily spend reservation stays
+counted. If a hash is in the action history for that slot, the message names
+it and says it was not verified automatically. A goal that holds a hash
+(`pendingExecution`) is never closed this way: it keeps the verification path.
+A tick that still holds the goal lease is never closed underneath (LEASE_BUSY).
+The lease can outlive a killed tick by up to `evaluationLeaseSeconds` (120 s),
+so the closure happens on the first tick after that.
+
+The stuck-execution reap now only closes legacy goals left in EXECUTING with
+no `pendingExecution` by older builds. Those are FAILED after
+`STUCK_EXECUTION_REAP_SECONDS` (120 s, `types.ts`). The daily-spend reservation
+is released with reason `UNATTEMPTED` **only** while it is still RESERVED (the
+attempt marker was never set). The result text says nothing was broadcast, and
+no transaction hash is invented or retried. The reap takes the per-goal
+evaluation lease first, so a tick that is still alive is never reaped
+underneath, and it runs even when the flag is off. A goal that is not
+EXECUTING is never reaped.
 
 ### 3. MODE A preserved (zero breaking changes)
 MODE A (assisted) code paths are untouched: same tools, same routes, same
@@ -119,9 +144,11 @@ remain user-signature flows behind their own confirmation modals.
 ### 11. Idempotency everywhere
 Every autonomous action, job, and notification carries an idempotency key
 (`idempotency.ts`; quote id + goal id + eval slot). Execution slots are
-claimed SET-NX **before** the daily-ledger increment; duplicate evaluations
-park the goal (`DUPLICATE_PREVENTED`) and never re-submit; verification
-claiming is likewise SET-NX.
+claimed SET-NX **before** the daily-ledger increment. A slot whose claim is
+already held with no transaction hash was left by an interrupted tick, so the
+goal is closed as `FAILED` with an UNKNOWN broadcast outcome (see "Unresolved
+broadcast" in §1 below). It is never re-submitted and no new slot is opened.
+Verification claiming is likewise SET-NX.
 
 ### 12. Bounded retries + failure taxonomy
 Exact spec codes: `QUOTE_FAILED, NO_LIQUIDITY, POLICY_REJECTED,
