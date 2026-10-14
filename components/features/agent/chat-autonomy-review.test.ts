@@ -1,8 +1,9 @@
+import { reviewQuoteFixture } from "./test-fixtures/chat-review-quote";
 import { parseBaseUnits } from "@/lib/autonomy/policy-engine";
 import { describe, expect, it } from "vitest";
 import { buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
 import type { AutonomyConfig } from "@/hooks/useAgentAutonomy";
-import { CHAT_REVIEW_TOKENS, chatQuoteMinOutHuman, chatDraftToForm, chatQuoteKey, chatReviewAuthorizationError, validateChatReviewForm } from "./chat-autonomy-review";
+import { CHAT_REVIEW_TOKENS, chatQuoteMinOutHuman, chatReviewQuoteFromProposal, chatQuoteReviewError, chatDraftToForm, chatQuoteKey, chatReviewAuthorizationError, validateChatReviewForm } from "./chat-autonomy-review";
 import { autonomyFormToDraftInput } from "./autonomy-authorize-form";
 
 const config: AutonomyConfig = {
@@ -13,7 +14,7 @@ const config: AutonomyConfig = {
 const prompt = "Buy AAPLc whenever price falls 1% worth 1 USDC";
 const draft = buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt, { referencePrice: "347" });
 const form = chatDraftToForm(draft);
-const ready = () => ({ form, config, tokens: CHAT_REVIEW_TOKENS, quote: { key: chatQuoteKey(form), minOutAtomic: "280000", buyDecimals: 8 }, authenticated: true, walletChainId: 8453 });
+const ready = () => ({ form, config, tokens: CHAT_REVIEW_TOKENS, quote: { key: chatQuoteKey(form), minOutAtomic: "280000", buyDecimals: 8, proposal: reviewQuoteFixture(form) }, authenticated: true, walletChainId: 8453 });
 
 describe("Chat-only Base review preflight", () => {
   it("initializes the exact parsed draft from registered Base token metadata", () => {
@@ -107,5 +108,30 @@ describe("exact atomic quote / human signing seam", () => {
     expect(chatQuoteMinOutHuman(quote, decimals)).toBe(human);
     expect(parseBaseUnits(chatQuoteMinOutHuman(quote, decimals)!, decimals)).toBe(atomic);
     expect(chatQuoteMinOutHuman(quote, decimals + 1)).toBeNull();
+  });
+});
+
+describe("complete, fresh executable review", () => {
+  it.each([
+    { to: { ...reviewQuoteFixture(form).to, decimals: 18 } },
+    { fromAmount: "2000000" }, { slippageBps: 90 }, { minToAmount: "0.0028" },
+    { to: { ...reviewQuoteFixture(form).to, address: form.sell } }, { fees: null },
+  ])("rejects mismatched or incomplete API quote metadata %j", (patch) => {
+    expect(() => chatReviewQuoteFromProposal({ ...reviewQuoteFixture(form), ...patch }, form)).toThrow();
+  });
+  it("requires proposal details and exact canonical atomic floor", () => {
+    expect(chatQuoteReviewError({ key: chatQuoteKey(form), minOutAtomic: "280000", buyDecimals: 8 }, form)).toMatch(/live quote/);
+    const quote = chatReviewQuoteFromProposal(reviewQuoteFixture(form), form);
+    expect(chatQuoteReviewError(quote, form)).toBeNull();
+    expect(chatQuoteReviewError({ ...quote, minOutAtomic: "290000" }, form)).toMatch(/floor/);
+  });
+  it.each([
+    { quotedAt: new Date(Date.now() - 60_000).toISOString(), expiresAt: new Date(Date.now() - 30_000).toISOString() },
+    { quotedAt: new Date(Date.now() + 60_000).toISOString(), expiresAt: new Date(Date.now() + 90_000).toISOString() },
+    { executionAvailable: false }, { liquidityAvailable: false },
+    { risk: [{ id: "critical", severity: "critical", title: "Unsafe", detail: "Test risk" }] },
+  ])("does not authorize stale, future, nonexecutable or critical-risk snapshots %j", (patch) => {
+    const quote = chatReviewQuoteFromProposal({ ...reviewQuoteFixture(form), ...patch }, form);
+    expect(chatQuoteReviewError(quote, form)).not.toBeNull();
   });
 });

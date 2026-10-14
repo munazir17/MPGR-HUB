@@ -259,7 +259,7 @@ describe("chat autonomous draft vs manual goal flow", () => {
     expect(html).toContain("Review autonomous goal");
     // The production-fix activation model: without a covering delegation the
     // button says exactly what will happen — ONE wallet signature.
-    expect(html).toContain("Authorize &amp; sign once");
+    expect(html).toContain("Confirm &amp; authorize one execution");
     expect(html).toContain('data-testid="agent-autonomy-draft-authorization-mode"');
     expect(html).toContain("One wallet signature will be requested");
     expect(html).not.toContain('data-testid="agent-autonomy-manual-form"');

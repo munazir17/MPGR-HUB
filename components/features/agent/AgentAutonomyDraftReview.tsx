@@ -6,20 +6,11 @@
 // draft. Opened from the in-chat draft card — NEVER from the manual
 // Autonomous Goals panel, and never the other way around.
 //
-// ACTIVATION MODEL (corrected production flow): a Permit2 slot's witness
-// actionId is bound to the goal it was signed FOR, so another goal's slot
-// can never fund this goal. A brand-new draft goal always needs its OWN
-// slot: the Authorize button creates the policy + goal and opens the wallet
-// for EXACTLY ONE delegated-slot signature (draft amount, minimum output
-// prefilled from the LIVE QUOTE — never zero). One popup, then the goal is
-// ACTIVE. Nothing is broadcast at prompt time: the runtime's cron executes
-// only when the condition is true, inside the signed slot.
-//
-// Drafts whose asset is not on the delegated allowlist are REFUSED here —
-// no form, no activation. This component never signs by itself and never
-// bypasses limits: activation goes through useAgentAutonomy.activateDraft,
-// which the server re-validates end to end.
+// Goal-bound authorization only. Reservation stays DRAFT until a saved slot
+// and server activation are confirmed. Each slot permits one execution.
+// This component never broadcasts or chooses signing-domain semantics.
 
+import { formatUnits } from "viem";
 import { useEffect, useId, useState } from "react";
 import { useAccount } from "wagmi";
 import { AnimatePresence, motion } from "framer-motion";
@@ -31,30 +22,32 @@ import {
   autonomyFormToDraftInput,
   type AutonomyAuthorizeFormState,
 } from "./autonomy-authorize-form";
-import { CHAT_REVIEW_TOKENS, chatQuoteMinOutHuman, chatDraftToForm, chatQuoteKey, chatReviewAuthorizationError, validateChatReviewForm, type ChatReviewQuote } from "./chat-autonomy-review";
+import { CHAT_REVIEW_TOKENS, chatReviewQuoteFromProposal, chatQuoteExpiry, chatQuoteMinOutHuman, chatDraftToForm, chatQuoteKey, chatReviewAuthorizationError, validateChatReviewForm, type ChatReviewQuote } from "./chat-autonomy-review";
 
 interface AgentAutonomyDraftReviewProps {
   autonomy: ReturnType<typeof useAgentAutonomy>;
+  embedded?: boolean;
 }
 
-export function AgentAutonomyDraftReview({ autonomy }: AgentAutonomyDraftReviewProps) {
+export function AgentAutonomyDraftReview({ autonomy, embedded = false }: AgentAutonomyDraftReviewProps) {
   const { draft, clearDraft } = autonomy;
   return (
     <AnimatePresence>
-      {draft && <DraftReviewDialog key={JSON.stringify(draft)} draft={draft} autonomy={autonomy} onClose={clearDraft} />}
+      {draft && <DraftReviewDialog embedded={embedded} key={JSON.stringify(draft)} draft={draft} autonomy={autonomy} onClose={clearDraft} />}
     </AnimatePresence>
   );
 }
 
 interface DraftReviewDialogProps {
+  embedded?: boolean;
   draft: AutonomyGoalDraft;
   autonomy: ReturnType<typeof useAgentAutonomy>;
   onClose: () => void;
 }
 
-function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps) {
+function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDialogProps) {
   const titleId = useId();
-  const { chainId: walletChainId, isConnected } = useAccount();
+  const { address: walletAddress, chainId: walletChainId, isConnected } = useAccount();
   const { tokens: runtimeTokens, busy, error, dismissError, activateDraft, config, settingsRead, authenticated, authenticating, signIn } = autonomy;
   const tokens = CHAT_REVIEW_TOKENS;
   const settingsState = settingsRead?.state;
@@ -65,18 +58,24 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
   // Minimum output per trade, prefilled from the LIVE quote — never zero.
   const [quote, setQuote] = useState<ChatReviewQuote | null>(null);
   const [quoteRetry, setQuoteRetry] = useState(0);
+  const [quoteExpired, setQuoteExpired] = useState(false);
+  useEffect(() => {
+    if (!quote?.proposal) return;
+    const timer = setTimeout(() => setQuoteExpired(true), Math.max(0, chatQuoteExpiry(quote) - Date.now()) + 1);
+    return () => clearTimeout(timer);
+  }, [quote]);
   const formState = form ?? chatDraftToForm(draft);
   const setField = (patch: Partial<AutonomyAuthorizeFormState>) => setForm({ ...formState, ...patch });
   const formError = validateChatReviewForm(formState, config?.limits);
-  const authorizationError = chatReviewAuthorizationError({ form: formState, config, settingsRead, tokens: runtimeTokens, quote, authenticated, walletChainId: isConnected ? walletChainId : undefined });
+  const authorizationError = chatReviewAuthorizationError({ form: formState, config, settingsRead, tokens: runtimeTokens, quote, authenticated, walletAddress, walletChainId: isConnected ? walletChainId : undefined });
   const canAuthorize = !authorizationError && draft.supported !== false;
   const verb = draft.side === "sell" ? "Sell" : "Buy";
   const direction = draft.triggerKind === "price_below" ? "falls below" : "rises above";
-  const triggerLabel = draft.triggerKind === "price_below" ? "below" : "above";
-  const amountLabel = draft.amountPerTrade ? `${draft.amountPerTrade} ${draft.spendAsset}` : "";
 
   const sellTokenInfo = tokens.find((t) => t.address.toLowerCase() === formState.sell.toLowerCase());
   const buyTokenInfo = tokens.find((t) => t.address.toLowerCase() === formState.buy.toLowerCase());
+
+  const amountLabel = formState.sellAmount ? `${formState.sellAmount} ${sellTokenInfo?.symbol ?? draft.spendAsset}` : "";
 
   // A quote belongs to exactly these inputs. Editing the amount/pair/slippage
   // immediately invalidates the floor, even if the replacement request fails.
@@ -90,8 +89,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
   // never fund this one (witness actionId binding) — so the quote is always
   // needed before activating.
   useEffect(() => {
-    if (draft.supported === false || !authenticated || formError || !config?.enabled || config.emergencyDisabled ||
-        config.productionGate !== true || config.executionAvailable !== true || (settingsState && settingsState !== "loaded")) return;
+    if (draft.supported === false || !authenticated || formError || (settingsState && settingsState !== "loaded")) return;
     if (!sellTokenInfo || !buyTokenInfo) return;
     let cancelled = false;
     const load = async () => {
@@ -107,11 +105,9 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
           }),
         });
         if (!res.ok) throw new Error("Quote unavailable");
-        const payload = (await res.json().catch(() => null)) as { proposal?: { minToAmount?: string } } | null;
-        const minOutAtomic = payload?.proposal?.minToAmount;
-        const next = { key: quoteKey, minOutAtomic: minOutAtomic ?? "", buyDecimals: buyTokenInfo.decimals };
-        if (!chatQuoteMinOutHuman(next, buyTokenInfo.decimals)) throw new Error("Invalid quote floor");
-        if (!cancelled) setQuote(next);
+        const payload = (await res.json().catch(() => null)) as { proposal?: unknown } | null;
+        const next = chatReviewQuoteFromProposal(payload?.proposal, { sell: sellTokenInfo.address, buy: buyTokenInfo.address, sellAmount: formState.sellAmount, slippageBps: formState.slippageBps });
+        if (!cancelled) { setQuoteExpired(false); setQuote(next); }
       } catch {
         if (!cancelled) setQuote({ key: quoteKey, minOutAtomic: "", buyDecimals: buyTokenInfo.decimals, error: "Could not load a valid live quote. Retry the quote; no goal was created." });
       }
@@ -120,13 +116,14 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
     return () => {
       cancelled = true;
     };
-  }, [draft.supported, authenticated, formError, config?.enabled, config?.emergencyDisabled, config?.productionGate, config?.executionAvailable, settingsState, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps, quoteKey, quoteRetry]);
+  }, [draft.supported, authenticated, formError, settingsState, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps, quoteKey, quoteRetry]);
 
   const handleAuthorize = async () => {
     // Guard the handler as well as the button. No auth/policy/goal/signing
     // action is allowed for an incomplete or stale-input review.
-    if (!canAuthorize || busy) {
-      setNotice(authorizationError ?? "This draft cannot be authorized.");
+    const currentError = chatReviewAuthorizationError({ form: formState, config, settingsRead, tokens: runtimeTokens, quote, authenticated, walletAddress, walletChainId: isConnected ? walletChainId : undefined });
+    if (currentError || !canAuthorize || busy) {
+      setNotice(currentError ?? authorizationError ?? "This draft cannot be authorized.");
       return;
     }
     const result = await activateDraft({
@@ -151,8 +148,8 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
       setActivatedMode(result.mode);
       setNotice(
         result.mode === "standing"
-          ? "Goal activated with your existing delegation — no signature was needed. It stays inside the limits you set."
-          : "Goal activated. One slot signature covers it, and it stays inside the limits you set.",
+          ? "Active — awaiting trigger, using this goal’s own saved permission. No new signature was needed. Settlement is not yet verified."
+          : "Active — awaiting trigger. One saved slot permits one execution only, not the entire recurring schedule. Settlement is not yet verified.",
       );
     }
   };
@@ -164,17 +161,17 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
 
   return (
     <motion.div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm sm:items-center"
+      className={embedded ? "w-full px-3 py-4 sm:px-4" : "fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm sm:items-center"}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
     >
       <motion.div
-        role="dialog"
-        aria-modal="true"
+        role={embedded ? "region" : "dialog"}
+        aria-modal={embedded ? undefined : true}
         aria-labelledby={titleId}
         data-testid="agent-autonomy-draft-review"
-        className="max-h-[90dvh] w-full max-w-[440px] overflow-y-auto overscroll-contain rounded-t-3xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-3xl sm:p-8"
+        className={embedded ? "mx-auto w-full min-w-0 max-w-[600px] rounded-2xl border border-white/10 bg-surface p-3 sm:p-5" : "max-h-[90dvh] w-full max-w-[440px] overflow-y-auto overscroll-contain rounded-t-3xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-3xl sm:p-8"}
         initial={{ y: 40, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 20, opacity: 0 }}
@@ -198,7 +195,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
           </button>
         </div>
 
-        <p className="mb-3 text-xs text-muted">Inactive until you authorize it. This reviews the chat draft — it is not the manual Autonomous Goals form.</p>
+        <p className="mb-3 text-xs text-muted">Draft — inactive. Review and explicitly confirm below. Nothing is broadcast by this review; it is not the manual Autonomous Goals form.</p>
 
         {draft.supported === false ? (
           <div
@@ -240,7 +237,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
             >
               <div className="flex justify-between gap-3">
                 <dt className="text-muted">Sell/spend token</dt>
-                <dd className="font-medium text-white">{draft.spendAsset}</dd>
+                <dd className="font-medium text-white">{sellTokenInfo?.symbol ?? draft.spendAsset}</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted">Buy/receive token</dt>
@@ -248,17 +245,33 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted">Trigger</dt>
-                <dd className="font-medium text-white">{triggerLabel}</dd>
+                <dd className="font-medium text-white">{formState.kind === "price_below" ? "below" : "above"}</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted">Trigger price</dt>
-                <dd className="font-medium text-white">{draft.triggerPrice}</dd>
+                <dd className="font-medium text-white">{formState.threshold}</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted">Amount per trade</dt>
-                <dd className="font-medium text-white">{amountLabel || "—"}</dd>
+                <dd className="font-medium text-white">{formState.sellAmount ? `${formState.sellAmount} ${sellTokenInfo?.symbol ?? draft.spendAsset}` : "—"}</dd>
               </div>
             </dl>
+
+            {quote?.key === quoteKey && quote.proposal && (
+              <section data-testid="chat-quote-details" className="mb-4 space-y-2 break-words rounded-xl border border-white/10 p-3 text-xs text-muted" aria-label="Executable quote review">
+                <p className="font-medium text-white">{!quoteExpired ? "Quote snapshot — not a settlement" : "Quote expired — refresh before confirming"}</p>
+                <p>Expected output: {formatUnits(BigInt(quote.proposal.toAmount), quote.buyDecimals)} {buyTokenInfo?.symbol}</p>
+                <p>Minimum output: {quotedMinOut} {buyTokenInfo?.symbol} · Slippage: {formState.slippageBps / 100}%</p>
+                <p>Provider: {quote.proposal.providerLabel} · Base Mainnet (8453)</p>
+                <p>Quoted: {quote.proposal.quotedAt} · Expires: {new Date(chatQuoteExpiry(quote)).toISOString()}</p>
+                <p>Agent fee: {quote.proposal.agentFee?.displayAmount ?? "No applied fee quoted"}{quote.proposal.agentFee?.bps != null ? ` (${quote.proposal.agentFee.bps} bps, inside swap)` : ""}</p>
+                <p>Gas fee: {quote.proposal.fees.gasFee ? `${quote.proposal.fees.gasFee.amount} atomic units (${quote.proposal.fees.gasFee.token})` : "Not quoted; wallet/network cost may apply"}</p>
+                <p>Protocol fee: {quote.proposal.fees.protocolFee ? `${quote.proposal.fees.protocolFee.amount} atomic units (${quote.proposal.fees.protocolFee.token})` : "Not quoted"}</p>
+                <p>Read-only quote availability is separate from autonomous execution readiness. Runtime obtains a fresh quote at the trigger and must still meet your signed floor.</p>
+                {quote.proposal.risk.map((risk, i) => <p key={i}>{risk.severity}: {risk.title} — {risk.detail}</p>)}
+                {quote.proposal.warnings.map((warning, i) => <p key={i}>{warning}</p>)}
+              </section>
+            )}
 
             {/* ACTIVATION MODE — standing delegation vs exactly one signature */}
             <div
@@ -269,7 +282,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
               <span className="min-w-0 flex-1" data-testid="agent-autonomy-draft-mode-text">
                 {`One wallet signature will be requested: a single delegated slot bound to THIS goal for ${amountLabel || "the draft amount"}${
                       quotedMinOut ? ` with minimum output ≥ ${quotedMinOut} ${buyTokenInfo?.symbol ?? ""} (live quote)` : " with the minimum output set from the live quote"
-                  }. One popup, then the goal is active. Signatures are never reused from other goals, and nothing is broadcast until the condition is true.`}
+                  }. The goal stays draft/awaiting authorization until persistence and activation are confirmed. A slot is single-use, not recurring schedule permission. Additional executions need additional goal-bound permission. Nothing is broadcast until the condition is true.`}
               </span>
             </div>
 
@@ -299,13 +312,13 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
             ) : (
               <>
                 <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
-                  <label className="space-y-1">
+                  <label className="min-w-0 space-y-1">
                     <span className="text-muted">Sell/spend token</span>
                     <select
                       data-testid="autonomy-draft-sell"
                       value={formState.sell}
                       onChange={(e) => setField({ sell: e.target.value })}
-                      className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                      className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                     >
                       <option value="">Select…</option>
                       {tokens.map((t) => (
@@ -315,13 +328,13 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
                       ))}
                     </select>
                   </label>
-                  <label className="space-y-1">
+                  <label className="min-w-0 space-y-1">
                     <span className="text-muted">Buy/receive token</span>
                     <select
                       data-testid="autonomy-draft-buy"
                       value={formState.buy}
                       onChange={(e) => setField({ buy: e.target.value })}
-                      className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                      className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                     >
                       <option value="">Select…</option>
                       {tokens.map((t) => (
@@ -331,24 +344,24 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
                       ))}
                     </select>
                   </label>
-                  <label className="space-y-1">
+                  <label className="min-w-0 space-y-1">
                     <span className="text-muted">Amount per trade</span>
                     <input
                       data-testid="autonomy-draft-amount"
                       value={formState.sellAmount}
                       onChange={(e) => setField({ sellAmount: e.target.value })}
                       inputMode="decimal"
-                      className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                      className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                     />
                   </label>
-                  <label className="space-y-1">
+                  <label className="min-w-0 space-y-1">
                     <span className="text-muted">Trigger</span>
                     <span className="flex gap-1">
                       <select
                         data-testid="autonomy-draft-trigger"
                         value={formState.kind}
                         onChange={(e) => setField({ kind: e.target.value as AutonomyAuthorizeFormState["kind"] })}
-                        className="w-full rounded-l-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                        className="min-w-0 w-full rounded-l-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                       >
                         <option value="price_below">below</option>
                         <option value="price_above">above</option>
@@ -358,26 +371,26 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
                         value={formState.threshold}
                         onChange={(e) => setField({ threshold: e.target.value })}
                         inputMode="decimal"
-                        className="w-full rounded-r-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                        className="min-w-0 w-full rounded-r-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                       />
                     </span>
                   </label>
-                  <label className="space-y-1">
+                  <label className="min-w-0 space-y-1">
                     <span className="text-muted">Daily cap (spend)</span>
                     <input
                       value={formState.maxDaily}
                       onChange={(e) => setField({ maxDaily: e.target.value })}
                       inputMode="decimal"
-                      className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                      className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                     />
                   </label>
-                  <label className="space-y-1">
+                  <label className="min-w-0 space-y-1">
                     <span className="text-muted">Max trades total</span>
                     <input
                       value={formState.maxTrades}
                       onChange={(e) => setField({ maxTrades: Number(e.target.value) || 0 })}
                       inputMode="numeric"
-                      className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                      className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                     />
                   </label>
                 </div>
@@ -421,7 +434,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
                       ? "Signing in…"
                       : busy
                         ? "Working…"
-                        : "Authorize & sign once"}
+                        : "Confirm & authorize one execution"}
                   </button>
                   <button
                     type="button"

@@ -1,3 +1,5 @@
+import { reviewQuoteFixture } from "./test-fixtures/chat-review-quote";
+import { chatDraftToForm } from "./chat-autonomy-review";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -42,7 +44,7 @@ const autonomy = {
   draft: buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt, { referencePrice: "347" }),
   tokens: CHAT_REVIEW_TOKENS, config, settingsRead: { state: "loaded", httpStatus: 200 } as AutonomySettingsDiagnostic, authenticated: true, authenticating: false, busy: false, error: null,
   clearDraft: vi.fn(), dismissError: vi.fn(), refresh: vi.fn(async () => {}), signIn: vi.fn(async () => true),
-  activateDraft: vi.fn(async () => { throw new Error("Verification must never authorize a goal"); }),
+  activateDraft: vi.fn(async (): Promise<{ ok: boolean; mode?: "signed" | "standing" }> => { throw new Error("Verification must never authorize a goal"); }),
 };
 const network = vi.fn<typeof fetch>();
 type Props = Record<string, unknown> & { children?: ReactNode };
@@ -76,7 +78,7 @@ beforeEach(() => {
   network.mockImplementation(async (url, init) => {
     expect(url).toBe("/api/trade/quote");
     expect(init?.method).toBe("POST");
-    return new Response(JSON.stringify({ proposal: { minToAmount: "280000" } }), { status: 200 });
+    return new Response(JSON.stringify({ proposal: reviewQuoteFixture(chatDraftToForm(autonomy.draft)) }), { status: 200 });
   });
   vi.stubGlobal("fetch", network);
 });
@@ -150,7 +152,7 @@ describe("Chat draft review effect and validation behavior", () => {
     tree = render();
     network.mockResolvedValueOnce(new Response("{}", { status: 503 }));
     await effects();
-    finishOld(new Response(JSON.stringify({ proposal: { minToAmount: "280000" } }), { status: 200 }));
+    finishOld(new Response(JSON.stringify({ proposal: reviewQuoteFixture(chatDraftToForm(autonomy.draft)) }), { status: 200 }));
     await effects();
     expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
     expect(autonomy.activateDraft).not.toHaveBeenCalled();
@@ -185,14 +187,13 @@ describe("Chat draft review effect and validation behavior", () => {
 
 
 describe("Chat settings and production/readiness failures", () => {
-  it.each(["productionGate", "executionAvailable"] as const)("blocks button AND direct handler when %s is false; performs no quote, activation or sign-in", async (gate) => {
+  it.each(["productionGate", "executionAvailable"] as const)("blocks authorization when %s is false but permits a read-only quote", async (gate) => {
     render(); await effects(); // a valid old quote exists before readiness changes
     autonomy.config = { ...config, [gate]: false };
     network.mockClear();
     const tree = render(); await effects();
     expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
     await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
-    expect(network).not.toHaveBeenCalled();
     expect(autonomy.activateDraft).not.toHaveBeenCalled();
     expect(autonomy.signIn).not.toHaveBeenCalled();
     expect(find(tree, "autonomy-draft-amount").props.value).toBe("1");
@@ -220,7 +221,35 @@ describe("Chat settings and production/readiness failures", () => {
     expect(html).toContain("production safety gate");
     expect(html).toContain("loaded · HTTP 200");
     expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
-    expect(network).not.toHaveBeenCalled();
+    expect(network).toHaveBeenCalledTimes(1); // read-only even with execution gates off
     expect(autonomy.activateDraft).not.toHaveBeenCalled();
   });
+});
+
+it("shows output/provider/freshness/fees/risks in review and passes one exact human floor on explicit confirmation", async () => {
+  render(); await effects();
+  const tree = render(); const html = renderToStaticMarkup(tree);
+  expect(html).toContain("Expected output: 0.0029 AAPLc");
+  expect(html).toContain("Minimum output: 0.0028 AAPLc");
+  expect(html).toContain("Provider:"); expect(html).toContain("Expires:"); expect(html).toContain("Agent fee:");
+  expect(html).toContain("single-use, not recurring schedule permission");
+  autonomy.activateDraft.mockResolvedValueOnce({ ok: true, mode: "signed" });
+  await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
+  expect(autonomy.activateDraft).toHaveBeenCalledWith(expect.objectContaining({ minAmountOutHuman: "0.0028", sellAmount: "1", maxTrades: 10, condition: { kind: "price_below", threshold: "343.53" } }));
+});
+it("a previously enabled handler refuses a quote that expires before the click", async () => {
+  render(); await effects(); const tree = render();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+  try { await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)(); }
+  finally { clock.mockRestore(); }
+  expect(autonomy.activateDraft).not.toHaveBeenCalled();
+});
+it.each(["enabled", "productionGate", "executionAvailable"] as const)("quotes read-only with %s off, without activation or signing", async (gate) => {
+  autonomy.config = { ...config, [gate]: false };
+  render(); await effects(); const tree = render();
+  expect(network).toHaveBeenCalledTimes(1);
+  expect(renderToStaticMarkup(tree)).toContain("Expected output: 0.0029 AAPLc");
+  expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+  expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  expect(autonomy.signIn).not.toHaveBeenCalled();
 });

@@ -2,6 +2,9 @@ import { autonomySettingsReadError, type AutonomySettingsDiagnostic } from "@/li
 // Chat-only review metadata/validation. Never used by the Manual form.
 // The registry is the same Base allowlist used by the existing tokens API;
 // showing review options does not enable the runtime or authorize anything.
+import { revalidateTradeProposal } from "@/lib/trade/trade-confirmation";
+import { TRADE_QUOTE_MAX_AGE_MS } from "@/lib/trade/trade-config";
+import { isSupportedTradeProvider, type TradeProposal } from "@/lib/trade/trade-types";
 import { formatUnits, isAddress } from "viem";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as registry, findExecutorRoute } from "@/lib/executor/executor-config";
 import { AUTONOMY_LIMITS, AUTONOMY_SLIPPAGE_BOUNDS } from "@/lib/autonomy/config";
@@ -18,7 +21,7 @@ export function chatDraftToForm(draft: AutonomyGoalDraft): AutonomyAuthorizeForm
   return { ...form, sellAmount: draft.amountPerTrade ?? "" };
 }
 
-export function chatQuoteKey(form: AutonomyAuthorizeFormState): string {
+export function chatQuoteKey(form: Pick<AutonomyAuthorizeFormState, "sell" | "buy" | "sellAmount" | "slippageBps">): string {
   return JSON.stringify([form.sell, form.buy, form.sellAmount, form.slippageBps]);
 }
 
@@ -50,13 +53,57 @@ export function validateChatReviewForm(form: AutonomyAuthorizeFormState, limits:
   return null;
 }
 
-export interface ChatReviewQuote { key: string; minOutAtomic: string; buyDecimals: number; error?: string }
+export interface ChatReviewQuote { key: string; minOutAtomic: string; buyDecimals: number; proposal?: TradeProposal; error?: string }
 
 /** Canonical API atomic floor -> existing human-unit signing seam, exactly once. */
 export function chatQuoteMinOutHuman(quote: ChatReviewQuote | null, decimals: number): string | null {
   if (!quote || quote.buyDecimals !== decimals || !Number.isSafeInteger(decimals) || decimals < 0 || decimals > 255 ||
       !/^[0-9]+$/.test(quote.minOutAtomic) || BigInt(quote.minOutAtomic) <= 0n) return null;
   return formatUnits(BigInt(quote.minOutAtomic), decimals);
+}
+
+/** Fail closed on partial API fixtures, mismapped identities and stale quotes. */
+export function chatReviewQuoteFromProposal(value: unknown, form: Pick<AutonomyAuthorizeFormState, "sell" | "buy" | "sellAmount" | "slippageBps">): ChatReviewQuote {
+  const p = value as TradeProposal | null;
+  const sell = CHAT_REVIEW_TOKENS.find((t) => t.address.toLowerCase() === form.sell.toLowerCase());
+  const buy = CHAT_REVIEW_TOKENS.find((t) => t.address.toLowerCase() === form.buy.toLowerCase());
+  if (!sell || !buy || !p || p.chainId !== registry.chainId || p.network !== "base" ||
+      p.from?.address?.toLowerCase() !== sell.address.toLowerCase() || p.to?.address?.toLowerCase() !== buy.address.toLowerCase() ||
+      p.from.decimals !== sell.decimals || p.to.decimals !== buy.decimals ||
+      p.from.symbol !== sell.symbol || p.to.symbol !== buy.symbol ||
+      p.fromAmount !== parseBaseUnits(form.sellAmount, sell.decimals) || p.slippageBps !== form.slippageBps ||
+      !isSupportedTradeProvider(p.provider) || typeof p.providerLabel !== "string" ||
+      typeof p.toAmount !== "string" || !/^[0-9]+$/.test(p.toAmount) || BigInt(p.toAmount) <= 0n ||
+      typeof p.minToAmount !== "string" || !/^[0-9]+$/.test(p.minToAmount) || BigInt(p.minToAmount) <= 0n || BigInt(p.minToAmount) > BigInt(p.toAmount) ||
+      typeof p.quotedAt !== "string" || !Number.isFinite(Date.parse(p.quotedAt)) ||
+      typeof p.expiresAt !== "string" || !(Date.parse(p.expiresAt) > Date.parse(p.quotedAt)) ||
+      !Array.isArray(p.risk) || !p.risk.every((r) => r && ["info", "warning", "critical"].includes(r.severity) && typeof r.title === "string" && typeof r.detail === "string") ||
+      !Array.isArray(p.warnings) || !p.warnings.every((w) => typeof w === "string") || !p.fees || typeof p.fees !== "object") {
+    throw new Error("Invalid or mismatched quote details");
+  }
+  for (const fee of [p.fees.gasFee, p.fees.protocolFee]) {
+    if (fee && (typeof fee.amount !== "string" || !/^[0-9]+$/.test(fee.amount) || typeof fee.token !== "string")) throw new Error("Invalid fee details");
+  }
+  if (p.agentFee && (typeof p.agentFee.amountAtomic !== "string" || !/^[0-9]+$/.test(p.agentFee.amountAtomic) ||
+      !["applied", "skipped"].includes(p.agentFee.status) || (p.agentFee.displayAmount !== null && typeof p.agentFee.displayAmount !== "string") ||
+      (p.agentFee.bps !== null && !Number.isSafeInteger(p.agentFee.bps)))) throw new Error("Invalid agent fee details");
+  return { key: chatQuoteKey(form), minOutAtomic: p.minToAmount, buyDecimals: buy.decimals, proposal: p };
+}
+
+export function chatQuoteExpiry(quote: ChatReviewQuote): number {
+  return quote.proposal ? Math.min(Date.parse(quote.proposal.expiresAt), Date.parse(quote.proposal.quotedAt) + TRADE_QUOTE_MAX_AGE_MS) : 0;
+}
+
+export function chatQuoteReviewError(quote: ChatReviewQuote | null, form: AutonomyAuthorizeFormState, walletAddress?: `0x${string}`): string | null {
+  if (!quote || quote.key !== chatQuoteKey(form) || !quote.proposal) return quote?.key === chatQuoteKey(form) && quote.error ? quote.error : "A valid live quote for this pair, amount and slippage is required before authorization.";
+  try { chatReviewQuoteFromProposal(quote.proposal, form); } catch { return "Quote details do not match this review. Refresh the quote."; }
+  if (quote.minOutAtomic !== quote.proposal.minToAmount || quote.buyDecimals !== quote.proposal.to.decimals) return "Quote floor or decimals do not match this review. Refresh the quote.";
+  const now = Date.now();
+  if (chatQuoteExpiry(quote) <= now || Date.parse(quote.proposal.quotedAt) > now + 1000) return "Quote expired or its freshness could not be confirmed. Refresh the quote before confirming.";
+  const checked = revalidateTradeProposal(quote.proposal, walletAddress);
+  if (checked.error) return checked.error.message;
+  if (quote.proposal.risk.some((risk) => risk.severity === "critical")) return "Critical quote risks block authorization. Review the risks and refresh.";
+  return null;
 }
 
 export function chatReviewAuthorizationError(args: {
@@ -67,6 +114,7 @@ export function chatReviewAuthorizationError(args: {
   quote: ChatReviewQuote | null;
   authenticated: boolean;
   walletChainId: number | undefined;
+  walletAddress?: `0x${string}`;
 }): string | null {
   const { form, config, tokens, quote, authenticated, walletChainId } = args;
   const readError = autonomySettingsReadError(args.settingsRead);
@@ -87,9 +135,5 @@ export function chatReviewAuthorizationError(args: {
   });
   if (!ready) return "Runtime token details are unavailable. Retry loading settings; the review values are preserved.";
   if (!authenticated) return "Sign in to load the live quote. Sign-in alone does not authorize a goal.";
-  const buy = CHAT_REVIEW_TOKENS.find((t) => t.address.toLowerCase() === form.buy.toLowerCase())!;
-  if (!quote || quote.key !== chatQuoteKey(form) || !chatQuoteMinOutHuman(quote, buy.decimals)) {
-    return quote?.key === chatQuoteKey(form) && quote.error ? quote.error : "A valid live quote for this pair, amount and slippage is required before authorization.";
-  }
-  return null;
+  return chatQuoteReviewError(quote, form, args.walletAddress);
 }

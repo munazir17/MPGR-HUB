@@ -323,7 +323,9 @@ export function AgentExperience({
 
             {/* BODY — flex-1, owns the scrolling. */}
             <div className="relative min-h-0 flex-1 overflow-y-auto">
-              {!isConnected ? (
+              {autonomy.draft ? (
+                <AgentAutonomyDraftReview autonomy={autonomy} embedded />
+              ) : !isConnected ? (
                 emptyState
               ) : !hasLoaded ? (
                 <div className="flex min-h-full items-center justify-center px-4 py-8">
@@ -425,7 +427,6 @@ export function AgentExperience({
         stepLabel={transferQuote.stepLabel}
         onConfirmAndSend={transferQuote.confirmAndSend}
       />
-      <AgentAutonomyDraftReview autonomy={autonomy} />
     </>
   );
 }

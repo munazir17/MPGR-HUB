@@ -134,7 +134,7 @@ const TERMINAL = new Set(["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"]);
 
 /** Goal counts for the agent's autonomous-status reply — total and non-terminal. */
 export function summarizeAutonomyGoals(goals: AutonomyGoalView[]): { total: number; active: number } {
-  return { total: goals.length, active: goals.filter((g) => !TERMINAL.has(g.status)).length };
+  return { total: goals.length, active: goals.filter((g) => ["ACTIVE", "WAITING", "EXECUTING"].includes(g.status)).length };
 }
 
 export interface AgentAutonomyDraftInput {
