@@ -2,7 +2,7 @@ import { autonomySettingsReadError, type AutonomySettingsDiagnostic } from "@/li
 // Chat-only review metadata/validation. Never used by the Manual form.
 // The registry is the same Base allowlist used by the existing tokens API;
 // showing review options does not enable the runtime or authorize anything.
-import { isAddress } from "viem";
+import { formatUnits, isAddress } from "viem";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as registry, findExecutorRoute } from "@/lib/executor/executor-config";
 import { AUTONOMY_LIMITS, AUTONOMY_SLIPPAGE_BOUNDS } from "@/lib/autonomy/config";
 import { normalizeCondition, parseBaseUnits } from "@/lib/autonomy/policy-engine";
@@ -50,7 +50,14 @@ export function validateChatReviewForm(form: AutonomyAuthorizeFormState, limits:
   return null;
 }
 
-export interface ChatReviewQuote { key: string; minOut: string; error?: string }
+export interface ChatReviewQuote { key: string; minOutAtomic: string; buyDecimals: number; error?: string }
+
+/** Canonical API atomic floor -> existing human-unit signing seam, exactly once. */
+export function chatQuoteMinOutHuman(quote: ChatReviewQuote | null, decimals: number): string | null {
+  if (!quote || quote.buyDecimals !== decimals || !Number.isSafeInteger(decimals) || decimals < 0 || decimals > 255 ||
+      !/^[0-9]+$/.test(quote.minOutAtomic) || BigInt(quote.minOutAtomic) <= 0n) return null;
+  return formatUnits(BigInt(quote.minOutAtomic), decimals);
+}
 
 export function chatReviewAuthorizationError(args: {
   form: AutonomyAuthorizeFormState;
@@ -81,7 +88,7 @@ export function chatReviewAuthorizationError(args: {
   if (!ready) return "Runtime token details are unavailable. Retry loading settings; the review values are preserved.";
   if (!authenticated) return "Sign in to load the live quote. Sign-in alone does not authorize a goal.";
   const buy = CHAT_REVIEW_TOKENS.find((t) => t.address.toLowerCase() === form.buy.toLowerCase())!;
-  if (!quote || quote.key !== chatQuoteKey(form) || !parseBaseUnits(quote.minOut, buy.decimals)) {
+  if (!quote || quote.key !== chatQuoteKey(form) || !chatQuoteMinOutHuman(quote, buy.decimals)) {
     return quote?.key === chatQuoteKey(form) && quote.error ? quote.error : "A valid live quote for this pair, amount and slippage is required before authorization.";
   }
   return null;

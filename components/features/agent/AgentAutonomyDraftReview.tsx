@@ -31,8 +31,7 @@ import {
   autonomyFormToDraftInput,
   type AutonomyAuthorizeFormState,
 } from "./autonomy-authorize-form";
-import { CHAT_REVIEW_TOKENS, chatDraftToForm, chatQuoteKey, chatReviewAuthorizationError, validateChatReviewForm, type ChatReviewQuote } from "./chat-autonomy-review";
-import { parseBaseUnits } from "@/lib/autonomy/policy-engine";
+import { CHAT_REVIEW_TOKENS, chatQuoteMinOutHuman, chatDraftToForm, chatQuoteKey, chatReviewAuthorizationError, validateChatReviewForm, type ChatReviewQuote } from "./chat-autonomy-review";
 
 interface AgentAutonomyDraftReviewProps {
   autonomy: ReturnType<typeof useAgentAutonomy>;
@@ -82,7 +81,7 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
   // A quote belongs to exactly these inputs. Editing the amount/pair/slippage
   // immediately invalidates the floor, even if the replacement request fails.
   const quoteKey = chatQuoteKey(formState);
-  const quotedMinOut = quote?.key === quoteKey ? quote.minOut : "";
+  const quotedMinOut = quote?.key === quoteKey && buyTokenInfo ? chatQuoteMinOutHuman(quote, buyTokenInfo.decimals) ?? "" : "";
 
   // Quote reads require a session: wait for explicit sign-in, never sign in
   // from this effect. A failed/invalid prefill leaves authorization disabled
@@ -109,11 +108,12 @@ function DraftReviewDialog({ draft, autonomy, onClose }: DraftReviewDialogProps)
         });
         if (!res.ok) throw new Error("Quote unavailable");
         const payload = (await res.json().catch(() => null)) as { proposal?: { minToAmount?: string } } | null;
-        const minOut = payload?.proposal?.minToAmount;
-        if (typeof minOut !== "string" || !parseBaseUnits(minOut, buyTokenInfo.decimals)) throw new Error("Invalid quote floor");
-        if (!cancelled) setQuote({ key: quoteKey, minOut });
+        const minOutAtomic = payload?.proposal?.minToAmount;
+        const next = { key: quoteKey, minOutAtomic: minOutAtomic ?? "", buyDecimals: buyTokenInfo.decimals };
+        if (!chatQuoteMinOutHuman(next, buyTokenInfo.decimals)) throw new Error("Invalid quote floor");
+        if (!cancelled) setQuote(next);
       } catch {
-        if (!cancelled) setQuote({ key: quoteKey, minOut: "", error: "Could not load a valid live quote. Retry the quote; no goal was created." });
+        if (!cancelled) setQuote({ key: quoteKey, minOutAtomic: "", buyDecimals: buyTokenInfo.decimals, error: "Could not load a valid live quote. Retry the quote; no goal was created." });
       }
     };
     void load();

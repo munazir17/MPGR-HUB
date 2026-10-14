@@ -1,7 +1,8 @@
+import { parseBaseUnits } from "@/lib/autonomy/policy-engine";
 import { describe, expect, it } from "vitest";
 import { buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
 import type { AutonomyConfig } from "@/hooks/useAgentAutonomy";
-import { CHAT_REVIEW_TOKENS, chatDraftToForm, chatQuoteKey, chatReviewAuthorizationError, validateChatReviewForm } from "./chat-autonomy-review";
+import { CHAT_REVIEW_TOKENS, chatQuoteMinOutHuman, chatDraftToForm, chatQuoteKey, chatReviewAuthorizationError, validateChatReviewForm } from "./chat-autonomy-review";
 import { autonomyFormToDraftInput } from "./autonomy-authorize-form";
 
 const config: AutonomyConfig = {
@@ -12,7 +13,7 @@ const config: AutonomyConfig = {
 const prompt = "Buy AAPLc whenever price falls 1% worth 1 USDC";
 const draft = buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt, { referencePrice: "347" });
 const form = chatDraftToForm(draft);
-const ready = () => ({ form, config, tokens: CHAT_REVIEW_TOKENS, quote: { key: chatQuoteKey(form), minOut: "0.0028" }, authenticated: true, walletChainId: 8453 });
+const ready = () => ({ form, config, tokens: CHAT_REVIEW_TOKENS, quote: { key: chatQuoteKey(form), minOutAtomic: "280000", buyDecimals: 8 }, authenticated: true, walletChainId: 8453 });
 
 describe("Chat-only Base review preflight", () => {
   it("initializes the exact parsed draft from registered Base token metadata", () => {
@@ -64,7 +65,7 @@ describe("Chat-only Base review preflight", () => {
   });
   it("refuses absent/malformed quotes, over-precision floors and quotes for old inputs", () => {
     for (const minOut of ["", "0", "-1", "NaN", "1e-3", "0.000000001"]) {
-      expect(chatReviewAuthorizationError({ ...ready(), quote: { key: chatQuoteKey(form), minOut } })).not.toBeNull();
+      expect(chatReviewAuthorizationError({ ...ready(), quote: { key: chatQuoteKey(form), minOutAtomic: minOut, buyDecimals: 8 } })).not.toBeNull();
     }
     expect(chatReviewAuthorizationError({ ...ready(), quote: null })).not.toBeNull();
     for (const patch of [{ sellAmount: "2" }, { slippageBps: 90 }, { buy: CHAT_REVIEW_TOKENS.find((t) => t.symbol === "WETH")!.address }]) {
@@ -89,5 +90,22 @@ describe("Chat authorization requires confirmed live gates independently of sett
   });
   it.each(["loading", "http_error", "invalid_json", "invalid_response", "network_error", "timeout"] as const)("never authorizes stale valid settings while the read is %s", (state) => {
     expect(chatReviewAuthorizationError({ ...ready(), settingsRead: { state, httpStatus: state === "http_error" ? 503 : 200 } })).not.toBeNull();
+  });
+});
+
+
+describe("exact atomic quote / human signing seam", () => {
+  it.each([
+    [8, "280000", "0.0028"], // AAPLc
+    [18, "2500000000000000", "0.0025"], // WETH
+    [6, "1234567", "1.234567"], // USDC
+    [0, "7", "7"],
+    [18, "123456789012345678901234567890", "123456789012.34567890123456789"],
+    [18, "1", "0.000000000000000001"],
+  ])("preserves every atomic unit at %i decimals", (decimals, atomic, human) => {
+    const quote = { key: "test", minOutAtomic: atomic, buyDecimals: decimals };
+    expect(chatQuoteMinOutHuman(quote, decimals)).toBe(human);
+    expect(parseBaseUnits(chatQuoteMinOutHuman(quote, decimals)!, decimals)).toBe(atomic);
+    expect(chatQuoteMinOutHuman(quote, decimals + 1)).toBeNull();
   });
 });

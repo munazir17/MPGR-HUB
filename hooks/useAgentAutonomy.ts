@@ -26,6 +26,7 @@ import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 import { readAutonomySettings, type AutonomySettingsDiagnostic } from "@/lib/api/autonomy-settings";
 import { useWalletAuth } from "@/hooks/useWalletAuth";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
+import { parseBaseUnits } from "@/lib/autonomy/policy-engine";
 import { findLiveSlotBoundToGoal } from "@/lib/autonomy/draft-activation";
 import {
   delegatedActionId,
@@ -484,15 +485,10 @@ export function useAgentAutonomy() {
         return { ok: false, message: `Switch your wallet to ${chainLabel} to sign delegated slots.` };
       }
       const buyTokenDecimals = tokens.find((t) => t.address.toLowerCase() === goal.trade.buyToken.toLowerCase())?.decimals;
-      if (!buyTokenDecimals) return { ok: false, message: "Token details are still loading — try again." };
-      const cleaned = input.minAmountOutHuman.trim();
-      if (!/^\d*(\.\d*)?$/.test(cleaned) || cleaned === "" || cleaned === ".") {
-        return { ok: false, message: "Enter the minimum output per trade." };
-      }
-      const [whole = "0", frac = ""] = cleaned.split(".");
-      const fracPadded = frac.padEnd(buyTokenDecimals, "0").slice(0, buyTokenDecimals);
-      const minAmountOut = BigInt(whole + fracPadded);
-      if (minAmountOut <= 0n) return { ok: false, message: "The minimum output must be above zero." };
+      if (buyTokenDecimals === undefined) return { ok: false, message: "Token details are still loading — try again." };
+      const rawMinAmountOut = parseBaseUnits(input.minAmountOutHuman.trim(), buyTokenDecimals);
+      if (!rawMinAmountOut) return { ok: false, message: "Enter a positive minimum output within token precision." };
+      const minAmountOut = BigInt(rawMinAmountOut);
       const count = Math.max(1, Math.min(5, Math.floor(input.count)));
       const deadlineCap = Math.floor(new Date(policy.expiresAt).getTime() / 1000);
       const deadline = Math.min(Math.floor(Date.now() / 1000) + Math.floor(input.expiresInHours * 3600), deadlineCap);
@@ -654,20 +650,8 @@ export function useAgentAutonomy() {
       if (!sellTokenInfo || !buyTokenInfo) {
         return { ok: false, message: "Token details are still loading — try again." };
       }
-      const toBaseUnits = (human: string): string | null => {
-        const cleaned = human.trim();
-        if (!/^\d*(\.\d*)?$/.test(cleaned) || cleaned === "" || cleaned === ".") return null;
-        const [whole = "0", frac = ""] = cleaned.split(".");
-        const fracPadded = frac.padEnd(sellTokenInfo.decimals, "0").slice(0, sellTokenInfo.decimals);
-        try {
-          const value = BigInt(whole + fracPadded);
-          return value > 0n ? value.toString() : null;
-        } catch {
-          return null;
-        }
-      };
-      const sellAmountRaw = toBaseUnits(input.sellAmount);
-      const maxDailyRaw = toBaseUnits(input.maxDaily);
+      const sellAmountRaw = parseBaseUnits(input.sellAmount, sellTokenInfo.decimals);
+      const maxDailyRaw = parseBaseUnits(input.maxDaily, sellTokenInfo.decimals);
       if (!sellAmountRaw || !maxDailyRaw) {
         return { ok: false, message: "Enter a positive per-trade amount and daily cap." };
       }
@@ -680,7 +664,7 @@ export function useAgentAutonomy() {
       // a DIFFERENT goal can never authorize this goal's broadcast (witness
       // actionId binding), so no cross-goal coverage is consulted here.
       const cleanedMinOut = input.minAmountOutHuman.trim();
-      if (!cleanedMinOut || !/^\d*(\.\d*)?$/.test(cleanedMinOut) || Number.parseFloat(cleanedMinOut || "0") <= 0) {
+      if (!parseBaseUnits(cleanedMinOut, buyTokenInfo.decimals)) {
         return { ok: false, message: "A live quote is needed to set the minimum output before signing. Refresh and try again." };
       }
       setBusy(true);

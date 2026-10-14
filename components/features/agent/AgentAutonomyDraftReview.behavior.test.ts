@@ -76,7 +76,7 @@ beforeEach(() => {
   network.mockImplementation(async (url, init) => {
     expect(url).toBe("/api/trade/quote");
     expect(init?.method).toBe("POST");
-    return new Response(JSON.stringify({ proposal: { minToAmount: "0.0028" } }), { status: 200 });
+    return new Response(JSON.stringify({ proposal: { minToAmount: "280000" } }), { status: 200 });
   });
   vi.stubGlobal("fetch", network);
 });
@@ -150,7 +150,7 @@ describe("Chat draft review effect and validation behavior", () => {
     tree = render();
     network.mockResolvedValueOnce(new Response("{}", { status: 503 }));
     await effects();
-    finishOld(new Response(JSON.stringify({ proposal: { minToAmount: "0.0028" } }), { status: 200 }));
+    finishOld(new Response(JSON.stringify({ proposal: { minToAmount: "280000" } }), { status: 200 }));
     await effects();
     expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
     expect(autonomy.activateDraft).not.toHaveBeenCalled();
