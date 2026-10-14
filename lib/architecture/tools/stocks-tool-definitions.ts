@@ -182,15 +182,15 @@ export const getPairTool: AgentTool = {
       });
     }
     try {
-      const { ok, payload } = await getJson(`/api/market/pair?symbol=${encodeURIComponent(query)}`);
+      const { ok, status, payload } = await getJson(`/api/market/pair?symbol=${encodeURIComponent(query)}`);
       if (!ok || !payload) {
         return toolError("get_pair", {
           code: toolFailureCode(payload?.code),
           message:
             typeof payload?.error === "string"
               ? payload.error
-              : `Could not load pair data for "${query}".`,
-        });
+              : `Could not load pair data for "${query}" (HTTP ${status}).`,
+        }, { source: `pair-api HTTP ${status}` });
       }
       const detail = payload as unknown as TapePairDetail;
       return toolSuccess(
@@ -199,6 +199,8 @@ export const getPairTool: AgentTool = {
           pair: detail.pair,
           stock: detail.stockEntry
             ? {
+                symbol: detail.stockEntry.symbol,
+                address: detail.stockEntry.address,
                 usdFeed: detail.stockEntry.usdFeed,
                 usdDex: detail.stockEntry.usdDex,
                 premiumBps: detail.stockEntry.premiumBps,
@@ -207,11 +209,15 @@ export const getPairTool: AgentTool = {
                 feedStale: detail.stockEntry.feedStale,
                 paused: detail.stockEntry.paused,
                 feedUpdatedAt: detail.stockEntry.feedUpdatedAt,
+                dexUpdatedAt: detail.stockEntry.dexUpdatedAt,
                 source: detail.stockEntry.source,
               }
             : null,
           wrapped: detail.wrappedEntry,
-          asOf: detail.asOf,
+          asOf: detail.referenceAsOf ?? detail.asOf,
+          chainId: detail.chainId,
+          degraded: detail.referenceAsOf ? false : detail.degraded,
+          referenceLookup: detail.referenceLookup,
           blockNumber: detail.blockNumber,
         },
         { source: "server-aggregated tape (Chainlink + DexScreener)", chainId: 8453 },
@@ -359,7 +365,7 @@ export const getPremiumTool: AgentTool = {
       });
     }
     try {
-      const { ok, payload } = await getJson(`/api/market/pair?symbol=${encodeURIComponent(pair.symbol)}`);
+      const { ok, status, payload } = await getJson(`/api/market/pair?symbol=${encodeURIComponent(pair.symbol)}`);
       if (!ok || !payload) {
         return toolError("get_premium", {
           code: toolFailureCode(payload?.code),

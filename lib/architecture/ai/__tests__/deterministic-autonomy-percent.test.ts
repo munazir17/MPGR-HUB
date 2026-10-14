@@ -49,9 +49,9 @@ function makeRequest(
 
 function pairResult(usdFeed: number | null) {
   return toolSuccess("get_pair", {
-    pair: { symbol: "AAPLc" },
-    stock: usdFeed == null ? null : { usdFeed, usdDex: null, stale: false, feedStale: false, paused: false },
-    wrapped: null,
+    pair: { symbol: "AAPLc", address: "0xb200000000000000000000C2e324d24d7eEcd1fb", live: true, official: true },
+    stock: usdFeed == null ? null : { symbol: "AAPLc", address: "0xb200000000000000000000C2e324d24d7eEcd1fb", usdFeed, usdDex: null, stale: false, feedStale: false, paused: false, feedUpdatedAt: Math.floor(Date.now() / 1000) },
+    wrapped: null, chainId: 8453, asOf: new Date().toISOString(),
   });
 }
 

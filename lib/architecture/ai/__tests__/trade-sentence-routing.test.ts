@@ -33,7 +33,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("NEXT_PUBLIC_AI_PROVIDER", "gemini");
   model(json());
-  readPrice.mockResolvedValue(toolSuccess("get_pair", { stock: { usdFeed: 347 } }));
+  readPrice.mockResolvedValue(toolSuccess("get_pair", {
+    pair: { symbol: "AAPLc", address: "0xb200000000000000000000C2e324d24d7eEcd1fb", live: true, official: true },
+    stock: { symbol: "AAPLc", address: "0xb200000000000000000000C2e324d24d7eEcd1fb", usdFeed: 347, usdDex: null, stale: false, feedStale: false, feedUpdatedAt: Math.floor(Date.now() / 1000) },
+    chainId: 8453, asOf: new Date().toISOString(), wrapped: null,
+  }));
 });
 afterEach(() => vi.unstubAllEnvs());
 

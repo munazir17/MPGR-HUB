@@ -1,3 +1,5 @@
+import { selectReferencePrice } from "@/lib/autonomy/reference-price";
+import { logger } from "@/lib/architecture/core/logger";
 import { formatTradeReview, formatTradePrice, publicAgentContent } from "@/lib/trade/trade-chat";
 import { hasNegativeTradeAmount } from "./tool-call-normalization";
 // Autonomous Agent Runtime (ADDITIVE, spec §20): clearly recurring /
@@ -598,22 +600,22 @@ async function resolveAnchor(
 ): Promise<{ referencePrice: string } | null> {
   if (match.percentDrop == null) return null;
   const result = await runRegisteredTool("get_pair", { symbol: match.targetAsset }, request);
-  if (!result || !result.success) return null;
-  const data = result.data as
-    | {
-        stock?: { usdFeed?: number | null; usdDex?: number | null } | null;
-        wrapped?: { usd?: number | null } | null;
-      }
-    | undefined;
-  const raw = data?.stock?.usdFeed ?? data?.stock?.usdDex ?? data?.wrapped?.usd ?? null;
-  if (raw == null || !Number.isFinite(raw) || raw <= 0) return null;
-  return { referencePrice: formatReferencePrice(raw) };
-}
-
-/** Up to 6 decimals, trailing zeros trimmed: 347 → "347", 347.36 → "347.36". */
-function formatReferencePrice(value: number): string {
-  const fixed = value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
-  return fixed;
+  if (!result || !result.success) {
+    logger.warn("Conditional reference price tool failed", { symbol: match.targetAsset, code: result?.error?.code ?? "EMPTY_TOOL_RESULT", source: result?.metadata?.source });
+    return null;
+  }
+  const reference = selectReferencePrice(result.data, match.targetAsset);
+  if (!reference.ok) {
+    const data = result.data as { referenceLookup?: { state?: unknown; httpStatus?: unknown } } | undefined;
+    logger.warn("Conditional reference price refused", {
+      symbol: match.targetAsset, code: reference.code,
+      // Only fixed, non-secret diagnostic fields from our own pair API.
+      lookupState: typeof data?.referenceLookup?.state === "string" ? data.referenceLookup.state : undefined,
+      httpStatus: typeof data?.referenceLookup?.httpStatus === "number" ? data.referenceLookup.httpStatus : undefined,
+    });
+    return null;
+  }
+  return { referencePrice: reference.referencePrice };
 }
 
 /**
@@ -701,7 +703,7 @@ export async function buildAutonomyResponse(
   // made-up number. The user is asked for an absolute trigger instead.
   if (autonomyRequest.percentDrop != null && !draft.triggerPrice) {
     return helpResponse(
-      `I could not get a live ${autonomyRequest.targetAsset} price just now, so I can't anchor a ${autonomyRequest.percentDrop}% trigger. Try again in a moment, or give me an absolute price like "when it falls below $340".`,
+      `I could not get a live ${autonomyRequest.targetAsset} price just now, so I can't anchor a ${autonomyRequest.percentDrop}% trigger. Your parsed request is ${autonomyRequest.amountPerTrade ?? "an unspecified amount of"} ${autonomyRequest.spendAsset} per trade at a ${autonomyRequest.percentDrop}% drop; no goal was created. Try again when a live reference is available.`,
     );
   }
 

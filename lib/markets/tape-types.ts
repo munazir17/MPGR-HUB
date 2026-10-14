@@ -68,6 +68,10 @@ export interface TapeSnapshot {
 }
 
 export interface TapePairDetail extends TapeSnapshot {
+  /** Fresh observation for this pair only; does not re-date the cached tape. */
+  referenceAsOf?: string;
+  /** Safe provider diagnostics: never URLs, credentials, RPC bodies, or keys. */
+  referenceLookup?: { provider: "dexscreener"; mode: "single_token"; state: string; httpStatus?: number };
   /** The single pair the /api/market/pair caller asked for. */
   pair: {
     symbol: string;
