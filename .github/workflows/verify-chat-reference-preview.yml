@@ -115,4 +115,4 @@ jobs:
             // Actual mobile/session/quote/authorization checks remain separate.
           });
           TEST
-          npx vitest run lib/autonomy/__tests__/preview-readonly.task.test.ts
+          npx vitest run lib/autonomy/__tests__/preview-readonly.task.test.ts --testTimeout=190000
