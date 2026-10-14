@@ -264,3 +264,21 @@ describe("delegated dashboard status follows the runtime configuration", () => {
     expect(renderedText(readiness)).toContain("no delegated adapter is selected");
   });
 });
+
+it("preserves a manually edited goal form across closing and reopening", () => {
+  const config = runtimeConfig();
+  let tree = openPanel(config);
+  const collect = (node: ReactNode): ReactElement<Record<string, unknown>>[] => {
+    if (Array.isArray(node)) return node.flatMap(collect);
+    if (!node || typeof node !== "object" || !("props" in node)) return [];
+    const el = node as ReactElement<Record<string, unknown>>;
+    return [el, ...collect(el.props.children as ReactNode)];
+  };
+  const amount = collect(tree).find((el) => el.type === "input" && el.props.inputMode === "decimal" && el.props.value === "50");
+  expect(amount).toBeDefined();
+  (amount!.props.onChange as (e: { target: { value: string } }) => void)({ target: { value: "2.5" } });
+  tree = renderPanel(null, config); header(tree).props.onClick();
+  tree = renderPanel(null, config); expect(header(tree).props["aria-expanded"]).toBe(false);
+  header(tree).props.onClick(); tree = renderPanel(null, config);
+  expect(collect(tree).some((el) => el.type === "input" && el.props.value === "2.5")).toBe(true);
+});

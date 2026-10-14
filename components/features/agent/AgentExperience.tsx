@@ -47,7 +47,7 @@ import { AgentErrorBoundary } from "@/components/features/agent/AgentErrorBounda
 import { AgentX402PaymentModal } from "@/components/features/agent/AgentX402PaymentModal";
 import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTradeConfirmationModal";
 import { AgentTransferConfirmationModal } from "@/components/features/agent/AgentTransferConfirmationModal";
-import { AgentAutonomyPanel } from "@/components/features/agent/AgentAutonomyPanel";
+import { AgentTradingLauncher } from "@/components/features/agent/AgentTradingLauncher";
 import { AgentAutonomyDraftReview } from "@/components/features/agent/AgentAutonomyDraftReview";
 import { useAgentAutonomy } from "@/hooks/useAgentAutonomy";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -361,10 +361,6 @@ export function AgentExperience({
               )}
             </AnimatePresence>
 
-            {/* Autonomous Goals (ADDITIVE) — MANUAL entry point only.
-                Chat-created drafts open AgentAutonomyDraftReview, not this panel. */}
-            {isConnected && <AgentAutonomyPanel autonomy={autonomy} />}
-
             {/* DOCK — pinned to the stage bottom (the stage, not the
                 document). Composer + State B chip row live here. */}
             <motion.div
@@ -388,6 +384,9 @@ export function AgentExperience({
               </p>
             </motion.div>
           </div>
+          <AgentTradingLauncher autonomy={autonomy} connected={isConnected} onConnect={() => openConnectModal?.()}
+            proposals={messages.flatMap((m) => m.tradeProposal ? [m.tradeProposal] : []).slice(-5).reverse()}
+            onReviewTrade={tradeQuote.openProposal} />
         </AgentErrorBoundary>
       </main>
 
