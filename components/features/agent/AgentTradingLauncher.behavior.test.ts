@@ -67,7 +67,7 @@ describe("external Manual / Autonomy launcher", () => {
   });
   it("is placed after the chat surface and dock but before the page's branding, with wrapping 44px targets", () => {
     const source = readFileSync(new URL("./AgentExperience.tsx", import.meta.url), "utf8");
-    expect(source).toMatch(/<\/div>\s*<AgentTradingLauncher/);
+    expect(source).toMatch(/<\/div>\s*\{instantSwapError[\s\S]*?<AgentTradingLauncher/);
     expect(source.indexOf("<AgentTradingLauncher")).toBeGreaterThan(source.indexOf("{/* DOCK"));
     const tree = render(); expect(nodes(tree).some((el) => String(el.props.className).includes("flex-wrap"))).toBe(true);
     expect(byId(tree, "trading-launcher-manual").props.className).toContain("min-h-[44px]");

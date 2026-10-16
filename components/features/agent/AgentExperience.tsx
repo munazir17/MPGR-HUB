@@ -161,6 +161,7 @@ export function AgentExperience({
   // supersedes an in-flight quote, so a slow response can never open the
   // modal for the asset the user tapped before it.
   const instantSwapRunRef = useRef(0);
+  const [instantSwapError, setInstantSwapError] = useState<string | null>(null);
   // While a swap is actually being signed/submitted, a late one-tap quote
   // must NOT replace the open proposal (that would drop the running flow
   // and any transaction it already broadcast).
@@ -192,11 +193,13 @@ export function AgentExperience({
         openConnectModal?.();
         return;
       }
+      setInstantSwapError(null);
       handleSend(buildInstantSwapPrompt(symbol));
       const runId = (instantSwapRunRef.current += 1);
       void fetchInstantSwapProposal({ symbol }).then((result) => {
         if (instantSwapRunRef.current !== runId) return;
-        if (!result.ok || tradeBusyRef.current) return;
+        if (!result.ok) { setInstantSwapError(`Prepare swap failed (${result.code}): ${result.message}`); return; }
+        if (tradeBusyRef.current) return;
         openTradeProposalRef.current(result.proposal);
       });
     },
@@ -384,6 +387,7 @@ export function AgentExperience({
               </p>
             </motion.div>
           </div>
+          {instantSwapError && <p role="alert" className="my-2 break-words text-xs text-red-300">{instantSwapError}</p>}
           <AgentTradingLauncher autonomy={autonomy} connected={isConnected} onConnect={() => openConnectModal?.()}
             proposals={messages.flatMap((m) => m.tradeProposal ? [m.tradeProposal] : []).slice(-5).reverse()}
             onReviewTrade={tradeQuote.openProposal} />

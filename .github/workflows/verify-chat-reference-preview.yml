@@ -1,5 +1,6 @@
-# PR #113 GET-only evidence. No cookies, sign-in, signing, goal writes,
-# authorization writes, quote or tick requests. Reuses the existing Preview automation secret without printing it.
+# PR #113 anonymous Preview evidence. Browser GETs + a sessionless quote
+# refusal probe only. No sign-in, signing, goal/permission writes, execution or tick.
+# Reuses the existing Preview automation secret without printing it.
 name: Chat reference Preview (read-only)
 on:
   pull_request:
@@ -148,3 +149,22 @@ jobs:
           else
             echo "::warning::BLOCKED: no settings evidence obtained; inspect prior step status."
           fi
+
+      - name: Reproduce baseline and verify anonymous mobile entry flows on exact deployed commits
+        if: steps.access.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CHAT_PREVIEW_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          CHAT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          npx playwright install --with-deps chromium
+          node scripts/verify-preview-user-flows.mjs
+      - name: Save anonymous Preview browser and refusal evidence
+        if: always() && steps.access.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr113-preview-user-flows-${{ github.event.pull_request.head.sha }}
+          path: p0-preview-evidence/
+          retention-days: 7
+          if-no-files-found: warn

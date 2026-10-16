@@ -36,7 +36,7 @@ function Audit() {
   const autonomy = {
     draft, config: scenario === "missing-adapter" ? { ...config, delegated: undefined } : config, tokens: CHAT_REVIEW_TOKENS, settingsRead: { state: scenario === "settings" ? "loading" : "loaded", httpStatus: 200, deploymentEnvironment: "preview", runtimeGate: scenario === "runtime-missing" ? "missing" : ["runtime", "preview-blocked"].includes(scenario) ? "disabled" : "enabled", productionGate: ["production", "preview-blocked"].includes(scenario) ? "missing" : "enabled" },
     busy, error: null, authenticated, authenticating: false, goals: [], policies: [], slots: [], manualFormOpen: manualForm,
-    clearDraft: () => setDraft(null), dismissError: () => {}, refresh: async () => {},
+    openWithDraft: setDraft, clearDraft: () => setDraft(null), dismissError: () => {}, refresh: async () => {},
     signIn: async () => { setAuthenticated(true); return true; },
     activateDraft: async () => {
       setCalls((n) => n + 1); setBusy(true);
