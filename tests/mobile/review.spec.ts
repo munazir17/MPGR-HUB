@@ -205,7 +205,16 @@ test("compact quote has collapsed technical sections and no duplicate visible ri
   const review = page.getByTestId("agent-autonomy-draft-review");
   console.log("COMPACT_REVIEW", testInfo.project.name, JSON.stringify(await review.evaluate((node) => ({ reviewHeight: node.scrollHeight, summaryHeight: node.querySelector('[data-testid="chat-quote-details"]')!.getBoundingClientRect().height }))));
   await expect(button(page)).toBeInViewport();
-  expect(await button(page).evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  const target = await button(page).evaluate((node) => ({
+    layout: (node as HTMLElement).offsetHeight, minimum: parseFloat(getComputedStyle(node).minHeight),
+    // Animated parent translations can yield 43.99993896484375 for an
+    // actual 44 CSS-pixel layout box. Keep the 44px contract, measure the
+    // visual rectangle to hundredth-pixel precision, and also verify layout.
+    visual: Math.round(node.getBoundingClientRect().height * 100) / 100,
+  }));
+  expect(target.layout).toBeGreaterThanOrEqual(44);
+  expect(target.minimum).toBeGreaterThanOrEqual(44);
+  expect(target.visual).toBeGreaterThanOrEqual(44);
   await page.screenshot({ path: testInfo.outputPath("compact-top.png") });
   await expect(review.locator("summary", { hasText: "Fee & execution details" })).toBeVisible();
   await expect(review.locator("details[open]")).toHaveCount(0);
