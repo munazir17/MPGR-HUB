@@ -23,6 +23,10 @@ test.beforeEach(async ({ page }) => {
     await route.fulfill({ json: { proposal } });
   });
 });
+async function editSetup(page: Page) {
+  const details = page.getByTestId("review-edit");
+  if (!(await details.evaluate((node) => node.hasAttribute("open")))) await details.locator("summary").tap();
+}
 async function open(page: Page, state = "ready", modal = false) {
   await page.goto(modal ? "/?modal" : "/");
   await page.getByLabel("Fixture state").selectOption(state);
@@ -38,7 +42,7 @@ test("parsed draft initialization, scrolling, tap feedback, retry and launcher",
   await expect(page.getByLabel("Max trades total")).toHaveValue(String(form.maxTrades));
   await expect(button(page)).toBeEnabled();
   await button(page).scrollIntoViewIfNeeded();
-  expect(await page.getByTestId("chat-scroll").evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
+  await expect(button(page)).toBeInViewport();
   expect(await button(page).evaluate((node) => {
     const r = node.getBoundingClientRect(); return node.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
   })).toBe(true);
@@ -63,7 +67,7 @@ test("parsed draft initialization, scrolling, tap feedback, retry and launcher",
 });
 for (const [state, reason] of [
   ["runtime", /runtime is not enabled/i], ["production", /production safety gate/i],
-  ["adapter", /execution is not ready/i], ["delegated", /delegated authorization is unavailable/i],
+  ["adapter", /execution is not ready/i], ["missing-executor", /delegated authorization is unavailable/i], ["unsigned-wallet", /delegated authorization is unavailable/i], ["delegated", /delegated authorization is unavailable/i],
   ["emergency", /disabled by the operator/i], ["settings", /settings are loading/i],
   ["disconnected", /connect your wallet/i], ["network", /Base Mainnet/i], ["session", /sign in to load/i],
 ] as const) {
@@ -80,9 +84,11 @@ for (const [state, reason] of [
 }
 test("invalid form explains the block, corrected amount gets matching fresh quote", async ({ page }) => {
   await open(page); await expect(button(page)).toBeEnabled();
+  await editSetup(page);
   await page.getByTestId("autonomy-draft-amount").fill("0");
   await expect(button(page)).toBeDisabled();
   await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText(/positive per-trade amount/);
+  await editSetup(page);
   await page.getByTestId("autonomy-draft-amount").fill("2");
   await expect(button(page)).toBeEnabled();
   expect(requests).toBeGreaterThan(1);
@@ -148,7 +154,7 @@ test("modal focuses and traps keyboard, Escape closes and restores opener", asyn
   await expect(page.getByTestId("open-review")).toBeFocused();
 });
 test("trigger price has its own accessible input name", async ({ page }) => {
-  await open(page);
+  await open(page); await editSetup(page);
   await expect(page.getByRole("textbox", { name: "Trigger price (USDC)", exact: true })).toHaveValue("343.53");
 });
 test("late quote response for an old amount cannot replace the current quote", async ({ page }) => {
@@ -162,6 +168,7 @@ test("late quote response for an old amount cannot replace the current quote", a
     await route.fulfill({ json: { proposal: reviewQuoteFixture({ ...form, sellAmount: input.amount }) } });
   });
   await open(page); await seen;
+  await editSetup(page);
   await page.getByTestId("autonomy-draft-amount").fill("2");
   await expect(button(page)).toBeEnabled();
   finish(); await page.waitForLoadState("networkidle");
@@ -172,6 +179,7 @@ test("focused inputs and action remain reachable in a shortened keyboard-style v
   await open(page);
   const size = page.viewportSize()!;
   await page.setViewportSize({ width: size.width, height: 500 });
+  await editSetup(page);
   const input = page.getByTestId("autonomy-draft-amount");
   await input.focus(); await input.fill("3");
   await expect(input).toBeFocused();
@@ -191,4 +199,127 @@ test("viewport evidence: CTA is scrollable and not intercepted", async ({ page }
   await button(page).scrollIntoViewIfNeeded();
   await expect(button(page)).toBeDisabled();
   await page.screenshot({ path: testInfo.outputPath("review-gated.png") });
+});
+test("compact quote has collapsed technical sections and no duplicate visible risk prose", async ({ page }, testInfo) => {
+  await open(page); await expect(button(page)).toBeEnabled();
+  const review = page.getByTestId("agent-autonomy-draft-review");
+  console.log("COMPACT_REVIEW", testInfo.project.name, JSON.stringify(await review.evaluate((node) => ({ reviewHeight: node.scrollHeight, summaryHeight: node.querySelector('[data-testid="chat-quote-details"]')!.getBoundingClientRect().height }))));
+  await expect(button(page)).toBeInViewport();
+  expect(await button(page).evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  await page.screenshot({ path: testInfo.outputPath("compact-top.png") });
+  await expect(review.locator("summary", { hasText: "Fee & execution details" })).toBeVisible();
+  await expect(review.locator("details[open]")).toHaveCount(0);
+  expect(await page.getByTestId("chat-quote-details").evaluate((node) => node.getBoundingClientRect().height)).toBeLessThan(460);
+});
+
+test("actual executor fee, material approval and stock risks stay visible; technical details expand without overflow", async ({ page }, testInfo) => {
+  const proposal = reviewQuoteFixture(form, true);
+  await page.route("**/api/trade/quote", (route) => route.fulfill({ json: { proposal } }));
+  await open(page); await expect(button(page)).toBeEnabled();
+  await expect(page.getByTestId("quote-agent")).toHaveText("0.25% · 0.0025 USDC");
+  await expect(page.getByTestId("quote-provider")).toHaveText("MPGR Executor · Base Mainnet");
+  await expect(page.getByTestId("quote-gas")).toHaveText("Not quoted");
+  const safety = page.getByTestId("quote-safety");
+  await expect(safety).toContainText("Separate Executor approval required for the gross sell amount");
+  await expect(safety).toContainText("not direct shares or issuer subscription");
+  expect(await safety.evaluate((node) => node.closest("details:not([open])") === null)).toBe(true);
+  await page.getByTestId("chat-scroll").evaluate((node) => { node.scrollTop = 230; });
+  await page.screenshot({ path: testInfo.outputPath("executor-summary.png") });
+  const sections = page.getByTestId("quote-technical-details");
+  for (const label of ["Fee & execution details", "Slippage & quote validity", "Risks & network requirements"]) {
+    const detail = sections.locator("details").filter({ has: page.locator("summary", { hasText: label }) });
+    await detail.locator("summary").tap();
+    await expect(detail).toHaveAttribute("open", "");
+    expect(await detail.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+    await expect(button(page)).toBeInViewport();
+    await detail.locator("summary").tap();
+    await expect(detail).not.toHaveAttribute("open", "");
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await expect(button(page)).toBeEnabled();
+});
+
+for (const change of ["network", "disconnected", "session", "wallet-change"]) {
+  test(`old quote values disappear on ${change}; returning requires a new quote`, async ({ page }) => {
+    await open(page); await expect(button(page)).toBeEnabled();
+    await expect(page.getByTestId("quote-expected")).toHaveText("0.0029 AAPLc");
+    let release!: () => void;
+    const pending = new Promise<void>((done) => { release = done; });
+    await page.route("**/api/trade/quote", async (route) => {
+      await pending;
+      const proposal = reviewQuoteFixture(form);
+      proposal.toAmount = "300000"; proposal.minToAmount = "290000";
+      if (change === "wallet-change") proposal.taker = "0x3333333333333333333333333333333333333333";
+      await route.fulfill({ json: { proposal } });
+    });
+    await page.getByLabel("Fixture state").selectOption(change);
+    await expect(page.getByTestId("quote-expected")).toHaveText("—");
+    await expect(page.getByTestId("quote-minimum")).toHaveText("—");
+    await expect(page.getByTestId("quote-provider")).toHaveText("Not quoted");
+    await expect(button(page)).toBeDisabled();
+    if (change !== "wallet-change") await page.getByLabel("Fixture state").selectOption("ready");
+    await expect(page.getByTestId("quote-expected")).toHaveText("—");
+    await expect(button(page)).toBeDisabled();
+    release();
+    await expect(button(page)).toBeEnabled();
+    await expect(page.getByTestId("quote-expected")).toHaveText("0.003 AAPLc");
+    await expect(page.getByTestId("activation-calls")).toHaveText("0");
+  });
+}
+
+test("expiry removes apparently valid applied fee, output and provider; refresh waits for replacement", async ({ page }) => {
+  await page.clock.install();
+  await page.route("**/api/trade/quote", async (route) => {
+    const proposal = reviewQuoteFixture(form, true);
+    const now = await page.evaluate(() => Date.now());
+    proposal.quotedAt = new Date(now).toISOString(); proposal.expiresAt = new Date(now + 30_000).toISOString();
+    await route.fulfill({ json: { proposal } });
+  });
+  await open(page); await expect(button(page)).toBeEnabled();
+  await expect(page.getByTestId("quote-agent")).toHaveText("0.25% · 0.0025 USDC");
+  await page.clock.fastForward(31_000);
+  await expect(button(page)).toBeDisabled();
+  await expect(page.getByTestId("quote-validity")).toContainText(/expired|too old/i);
+  for (const field of ["expected", "minimum"]) await expect(page.getByTestId(`quote-${field}`)).toHaveText("—");
+  for (const field of ["agent", "provider"]) await expect(page.getByTestId(`quote-${field}`)).toHaveText("Not quoted");
+  let release!: () => void;
+  const pending = new Promise<void>((done) => { release = done; });
+  await page.route("**/api/trade/quote", async (route) => {
+    await pending;
+    const proposal = reviewQuoteFixture(form, true);
+    const now = await page.evaluate(() => Date.now());
+    proposal.quotedAt = new Date(now).toISOString(); proposal.expiresAt = new Date(now + 30_000).toISOString();
+    await route.fulfill({ json: { proposal } });
+  });
+  await page.getByRole("button", { name: "Refresh live quote" }).tap();
+  await expect(button(page)).toBeDisabled();
+  await expect(page.getByTestId("quote-agent")).toHaveText("Not quoted");
+  release(); await expect(button(page)).toBeEnabled();
+  await expect(page.getByTestId("quote-agent")).toHaveText("0.25% · 0.0025 USDC");
+});
+
+test("unknown critical and unmatched material warnings are not hidden in collapsed disclosures", async ({ page }) => {
+  const proposal = reviewQuoteFixture(form, true);
+  proposal.risk = [...proposal.risk, { id: "new-mandatory-check", severity: "critical", title: "Mandatory verification", detail: "Additional verification is required; do not proceed." }];
+  proposal.warnings = [...proposal.warnings, "Eligibility must be confirmed before proceeding.", "Eligibility must be confirmed before proceeding."];
+  await page.route("**/api/trade/quote", (route) => route.fulfill({ json: { proposal } }));
+  await open(page); await expect(button(page)).toBeDisabled();
+  const safety = page.getByTestId("quote-safety");
+  await expect(safety).toContainText("Additional verification is required; do not proceed.");
+  await expect(safety).toContainText("Eligibility must be confirmed before proceeding.");
+  await expect(safety.getByText("Eligibility must be confirmed before proceeding.", { exact: true })).toHaveCount(1);
+  expect(await safety.evaluate((node) => node.closest("details:not([open])") === null)).toBe(true);
+  await expect(page.getByTestId("activation-calls")).toHaveText("0");
+});
+
+test("native disclosure summaries support keyboard and remain inside the modal focus trap", async ({ page }) => {
+  await open(page, "ready", true); await expect(button(page)).toBeEnabled();
+  const detail = page.getByTestId("review-edit");
+  await detail.locator("summary").focus(); await page.keyboard.press("Space");
+  await expect(detail).toHaveAttribute("open", "");
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("autonomy-draft-sell")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByTestId("open-review")).toBeFocused();
 });

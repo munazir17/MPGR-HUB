@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const harness = vi.hoisted(() => ({
   states: [] as unknown[], stateIndex: 0, effectIndex: 0,
   deps: [] as unknown[][], cleanup: [] as (undefined | (() => void))[], pending: [] as (() => void)[],
-  wallet: { isConnected: true, chainId: 8453 },
+  wallet: { isConnected: true, chainId: 8453, address: "0x1111111111111111111111111111111111111111" },
 }));
 vi.mock("react", async (load) => {
   const real = await load<typeof import("react")>();
@@ -76,7 +76,7 @@ async function effects() {
 }
 beforeEach(() => {
   harness.states = []; harness.deps = []; harness.cleanup = []; harness.pending = [];
-  harness.wallet = { isConnected: true, chainId: 8453 };
+  harness.wallet = { isConnected: true, chainId: 8453, address: "0x1111111111111111111111111111111111111111" };
   autonomy.tokens = CHAT_REVIEW_TOKENS; autonomy.config = config; autonomy.settingsRead = { state: "loaded", httpStatus: 200 }; autonomy.authenticated = true;
   vi.clearAllMocks();
   network.mockImplementation(async (url, init) => {
@@ -233,9 +233,9 @@ describe("Chat settings and production/readiness failures", () => {
 it("shows output/provider/freshness/fees/risks in review and passes one exact human floor on explicit confirmation", async () => {
   render(); await effects();
   const tree = render(); const html = renderToStaticMarkup(tree);
-  expect(html).toContain("Expected output: 0.0029 AAPLc");
-  expect(html).toContain("Minimum output: 0.0028 AAPLc");
-  expect(html).toContain("Provider:"); expect(html).toContain("Expires:"); expect(html).toContain("Agent fee:");
+  expect(html).toMatch(/Expected output<\/dt>.*?>0\.0029 AAPLc<\/dd>/);
+  expect(html).toMatch(/Minimum after slippage<\/dt>.*?>0\.0028 AAPLc<\/dd>/);
+  expect(html).toContain("Provider / network"); expect(html).toContain("Expires:"); expect(html).toContain("Agent fee");
   expect(html).toContain("single-use, not recurring schedule permission");
   autonomy.activateDraft.mockResolvedValueOnce({ ok: true, mode: "signed" });
   await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
@@ -252,8 +252,37 @@ it.each(["enabled", "productionGate", "executionAvailable"] as const)("quotes re
   autonomy.config = { ...config, [gate]: false };
   render(); await effects(); const tree = render();
   expect(network).toHaveBeenCalledTimes(1);
-  expect(renderToStaticMarkup(tree)).toContain("Expected output: 0.0029 AAPLc");
+  expect(renderToStaticMarkup(tree)).toMatch(/Expected output<\/dt>.*?>0\.0029 AAPLc<\/dd>/);
   expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
   expect(autonomy.activateDraft).not.toHaveBeenCalled();
   expect(autonomy.signIn).not.toHaveBeenCalled();
+});
+
+it.each(["network", "disconnect", "session", "wallet"])("immediately removes old quote values on %s change and waits for a fresh matching quote", async (change) => {
+  render(); await effects();
+  expect(renderToStaticMarkup(render())).toContain("0.0029 AAPLc");
+  if (change === "network") harness.wallet.chainId = 1;
+  if (change === "disconnect") harness.wallet.isConnected = false;
+  if (change === "session") autonomy.authenticated = false;
+  if (change === "wallet") harness.wallet.address = "0x3333333333333333333333333333333333333333";
+  const changed = render();
+  expect(renderToStaticMarkup(changed)).not.toContain("0.0029 AAPLc");
+  expect(find(changed, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+  await effects();
+  if (change === "wallet") { // old taker response is refused as well
+    expect(renderToStaticMarkup(render())).not.toContain("0.0029 AAPLc");
+    expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+  }
+  harness.wallet = { isConnected: true, chainId: 8453, address: "0x1111111111111111111111111111111111111111" };
+  autonomy.authenticated = true;
+  let resolve!: (value: Response) => void;
+  network.mockImplementation(() => new Promise((done) => { resolve = done; }));
+  expect(renderToStaticMarkup(render())).not.toContain("0.0029 AAPLc");
+  await effects();
+  expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+  resolve(new Response(JSON.stringify({ proposal: reviewQuoteFixture(chatDraftToForm(autonomy.draft)) })));
+  await new Promise((done) => setTimeout(done, 0));
+  expect(renderToStaticMarkup(render())).toContain("0.0029 AAPLc");
+  expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(false);
+  expect(autonomy.activateDraft).not.toHaveBeenCalled();
 });

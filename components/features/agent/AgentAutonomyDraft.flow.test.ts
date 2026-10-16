@@ -257,11 +257,11 @@ describe("chat autonomous draft vs manual goal flow", () => {
     const html = renderStage();
     expect(html).toContain('data-testid="agent-autonomy-draft-review"');
     expect(html).toContain("Review autonomous goal");
-    // The production-fix activation model: without a covering delegation the
-    // button says exactly what will happen — ONE wallet signature.
+    // A new goal requires its own goal-bound signature. Only a valid saved
+    // permission for that same goal may avoid redundant re-signing.
     expect(html).toContain("Confirm &amp; authorize one execution");
     expect(html).toContain('data-testid="agent-autonomy-draft-authorization-mode"');
-    expect(html).toContain("One wallet signature will be requested");
+    expect(html).toContain("A new goal requests its own signature");
     expect(html).not.toContain('data-testid="agent-autonomy-manual-form"');
     expect(html).not.toContain("New autonomous goal");
     expect(html).toContain('data-testid="agent-autonomy-panel"');
@@ -398,9 +398,10 @@ describe("exact conditional-buy reproduction review", () => {
       autonomy: { ...fixtures.autonomy, draft, activateDraft: authorize } as never,
     }));
     expect(html).toContain('data-testid="agent-autonomy-draft-review"');
-    expect(html).toContain("Buy AAPLc when the price falls below 343.53 USDC");
+    expect(html).toContain("Below $343.53");
     expect(html).toContain("1 USDC");
-    expect(html).toContain("AAPLc is 347");
+    expect(html).toContain("USDC → AAPLc");
+    expect(html).toContain("AAPLc is 347"); // retained on demand, not repeated in the default summary
     expect(html).toContain('value="1"');
     expect(html).toContain('value="343.53"');
     const form = autonomyDraftToForm(draft, [fixtures.USDC, fixtures.AAPLc]);

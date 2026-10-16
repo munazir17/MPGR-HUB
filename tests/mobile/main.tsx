@@ -28,6 +28,8 @@ function Audit() {
   if (scenario === "runtime") config.enabled = false;
   if (scenario === "production") config.productionGate = false;
   if (scenario === "adapter") config.executionAvailable = false;
+  if (scenario === "missing-executor") config.delegated.executor = "";
+  if (scenario === "unsigned-wallet") config.delegated.walletSigningSupported = false;
   if (scenario === "emergency") config.emergencyDisabled = true;
   if (scenario === "delegated") config.delegated.chainId = 84532;
   const autonomy = {
@@ -48,7 +50,7 @@ function Audit() {
     <main className="mx-auto max-w-xl p-2 text-white">
       <p>Isolated fixtures — no live wallet/API/execution</p>
       <label>Fixture state <select aria-label="Fixture state" className="bg-surface" value={scenario} onChange={(e) => { setScenario(e.target.value); setAuthenticated(e.target.value !== "session"); }}>
-        {["ready", "runtime", "production", "adapter", "delegated", "emergency", "settings", "disconnected", "network", "session", "throw", "success", "wallet-change"].map((v) => <option key={v}>{v}</option>)}
+        {["ready", "runtime", "production", "adapter", "missing-executor", "unsigned-wallet", "delegated", "emergency", "settings", "disconnected", "network", "session", "throw", "success", "wallet-change"].map((v) => <option key={v}>{v}</option>)}
       </select></label>
       <button data-testid="open-review" className="m-2 min-h-[44px]" onClick={() => setDraft(parsed)}>Review parsed AAPLc draft</button>
       <p data-testid="activation-calls">{calls}</p>
