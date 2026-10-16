@@ -23,11 +23,27 @@ const origins = [baselineURL, currentURL].map(value => {
 });
 const output = "p0-preview-evidence";
 mkdirSync(output, { recursive: true });
-const results = { observedAt: new Date().toISOString(), baselineSHA, currentSHA: process.env.CHAT_HEAD_SHA, deployments: [] };
+const results = { observedAt: new Date().toISOString(), baselineSHA, currentSHA: process.env.CHAT_HEAD_SHA, deployments: [], failures: [] };
+// Independent public-chain evidence must survive an older baseline-screen
+// failure. This is still read-only and does not attest provider/trading health.
+results.swapFeeAudit = await readSwapFeeAudit();
+writeFileSync(`${output}/swap-fee-audit.json`, JSON.stringify(results.swapFeeAudit, null, 2));
+let stage = "browser launch";
+const failure = error => {
+  const message = (error instanceof Error ? error.message : "Unknown verification error").replaceAll(bypass, "[REDACTED]").slice(0, 6000);
+  results.failures.push({ stage, message });
+  const escaped = `${stage}: ${message}`.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+  console.error(`::error title=Read-only Preview assertion failed::${escaped}`);
+  // Keep every assertion consequential; continue only to collect independent
+  // evidence, NEVER to turn a failed baseline/current check into a pass.
+  process.exitCode = 1;
+};
 const browser = await chromium.launch({ args: ["--no-sandbox", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
 try {
   for (const [index, origin] of origins.entries()) {
     const label = index === 0 ? "baseline" : "current";
+    stage = `${label}: HTTP authorization/settings`;
+    try {
     const get = async path => {
       assert.ok(["/api/auth/session", "/api/agent/autonomy/config", "/api/agent/autonomy/tokens?chainId=8453", "/api/agent/autonomy/goals"].includes(path));
       const response = await fetch(origin + path, { method: "GET", redirect: "manual", headers: { "x-vercel-protection-bypass": bypass }, signal: AbortSignal.timeout(60_000) });
@@ -67,6 +83,8 @@ try {
     for (const [width, height] of [[360, 800], [390, 844]]) {
       const context = await browser.newContext({ viewport: { width, height }, isMobile: true, hasTouch: true });
       const page = await context.newPage();
+      stage = `${label}: ${width}x${height} initial hydration`;
+      try {
       // The bypass header is sent ONLY to this allowlisted Preview origin.
       // Block all non-GET browser requests (including analytics/visitors), all
       // external hosts and any RPC/sign-in/authorization attempt.
@@ -76,7 +94,11 @@ try {
         return route.continue({ headers: { ...request.headers(), "x-vercel-protection-bypass": bypass } });
       });
       await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      // Navbar's Connect control is aria-hidden until RainbowKit has mounted.
+      // Seeing SSR markup alone is not proof that a tab is interactive.
+      await expect(page.getByRole("button", { name: "Connect", exact: true })).toBeVisible({ timeout: 30_000 });
       const launcher = page.getByTestId("agent-trading-launcher"); await expect(launcher).toBeVisible({ timeout: 30_000 });
+      stage = `${label}: ${width}x${height} manual entry`;
       if (index === 0) await page.getByTestId("trading-launcher-manual").tap();
       else {
         await expect(page.getByTestId("trading-launcher-manual")).toHaveCount(0);
@@ -109,7 +131,12 @@ try {
         await page.getByRole("button", { name: "Close Recent swaps", exact: true }).tap();
       }
       await manualForm.scrollIntoViewIfNeeded(); await page.screenshot({ path: `${output}/${label}-${width}-manual.png`, fullPage: true });
-      if (index === 1) await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      if (index === 1) {
+        await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        await expect(page.getByRole("button", { name: "Connect", exact: true })).toBeVisible({ timeout: 30_000 });
+        await expect(launcher).toBeVisible({ timeout: 30_000 });
+      }
+      stage = `${label}: ${width}x${height} gated local draft review`;
       await page.getByTestId("trading-launcher-autonomy").tap();
       const composer = launcher.getByRole("form", { name: "Draft a conditional goal" });
       await expect(composer).toHaveCount(1);
@@ -124,12 +151,15 @@ try {
       await page.screenshot({ path: `${output}/${label}-${width}-autonomy.png`, fullPage: true });
       result.mobile.push({ width, height, manualFormAvailable: true, manualSurface: index === 1 ? "/swap" : "Agent Manual tab", agentManualControlsRemoved: index === 1, localDraftReviewAvailable: true,
         authorizationButtonDisabled: true, walletConnected: false, signed: false, executed: false });
-      await context.close();
+      } catch (error) {
+        failure(error);
+        await page.screenshot({ path: `${output}/${label}-${width}-failed.png`, fullPage: true }).catch(() => {});
+      } finally { await context.close(); }
     }
+    } catch (error) { failure(error); }
   }
-  results.swapFeeAudit = await readSwapFeeAudit();
-  writeFileSync(`${output}/swap-fee-audit.json`, JSON.stringify(results.swapFeeAudit, null, 2));
-} finally {
+} catch (error) { failure(error); }
+finally {
   await browser.close();
   writeFileSync(`${output}/results.json`, JSON.stringify(results, null, 2));
   console.log(`::notice title=PR113 deployed user-flow evidence::${JSON.stringify(results)}`);
