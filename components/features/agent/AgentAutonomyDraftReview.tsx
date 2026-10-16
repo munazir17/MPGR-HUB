@@ -111,8 +111,9 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
   const setField = (patch: Partial<AutonomyAuthorizeFormState>) => setForm({ ...formState, ...patch });
   const quoteContext = JSON.stringify([walletAddress, walletChainId, isConnected, authenticated]);
   const currentQuote = quote?.contextKey === quoteContext && quote.key === chatQuoteKey(formState) ? quote : null;
+  const expiryError = quoteExpired ? "Quote expired. Refresh the quote before confirming." : null;
   const formError = validateChatReviewForm(formState, config?.limits);
-  const authorizationError = chatReviewAuthorizationError({ form: formState, config, settingsRead, tokens: runtimeTokens, quote: currentQuote, authenticated, walletAddress, walletChainId: isConnected ? walletChainId : undefined });
+  const authorizationError = chatReviewAuthorizationError({ form: formState, config, settingsRead, tokens: runtimeTokens, quote: currentQuote, authenticated, walletAddress, walletChainId: isConnected ? walletChainId : undefined }) ?? expiryError;
   const canAuthorize = !authorizationError && draft.supported !== false;
   const sellTokenInfo = tokens.find((t) => t.address.toLowerCase() === formState.sell.toLowerCase());
   const buyTokenInfo = tokens.find((t) => t.address.toLowerCase() === formState.buy.toLowerCase());
@@ -166,7 +167,7 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
   const handleAuthorize = async () => {
     // Guard the handler as well as the button. No auth/policy/goal/signing
     // action is allowed for an incomplete or stale-input review.
-    const currentError = chatReviewAuthorizationError({ form: formState, config, settingsRead, tokens: runtimeTokens, quote: currentQuote, authenticated, walletAddress, walletChainId: isConnected ? walletChainId : undefined });
+    const currentError = chatReviewAuthorizationError({ form: formState, config, settingsRead, tokens: runtimeTokens, quote: currentQuote, authenticated, walletAddress, walletChainId: isConnected ? walletChainId : undefined }) ?? expiryError;
     if (authorizationInFlight.current) return;
     if (currentError || !canAuthorize || busy) {
       setNotice(currentError ?? authorizationError ?? "This draft cannot be authorized.");
@@ -210,7 +211,7 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
     }
   };
 
-  const quoteError = chatQuoteReviewError(currentQuote, formState, walletAddress);
+  const quoteError = chatQuoteReviewError(currentQuote, formState, walletAddress) ?? expiryError;
   const quoteValid = isConnected && walletChainId === 8453 && !quoteExpired && !quoteError;
   const quoteMessage = !isConnected ? "Connect your wallet for a quote." : walletChainId !== 8453 ? "Switch to Base Mainnet for a quote."
     : !authenticated ? "Sign in for a quote." : formError ? "Complete trade setup for a quote."

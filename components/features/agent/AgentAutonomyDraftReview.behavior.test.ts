@@ -286,3 +286,25 @@ it.each(["network", "disconnect", "session", "wallet"])("immediately removes old
   expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(false);
   expect(autonomy.activateDraft).not.toHaveBeenCalled();
 });
+
+it("an expiry timer's latched invalid state overrides a still-fresh clock check in both UI and handler", async () => {
+  const realSetTimeout = setTimeout;
+  let expire: (() => void) | undefined;
+  vi.stubGlobal("setTimeout", (callback: () => void, ms: number) => {
+    if (ms > 1000 && ms <= 31_000) expire = callback;
+    return realSetTimeout(callback, ms);
+  });
+  render(); await effects(); render(); await effects();
+  expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(false);
+  expect(expire).toBeTypeOf("function");
+  expire!(); // reproduces timer/render/clock ordering, without moving Date.now
+  const expired = render();
+  expect(find(expired, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+  const html = renderToStaticMarkup(expired);
+  expect(html).toContain("Quote expired");
+  expect(html).not.toContain("Quote ready");
+  expect(html).not.toContain("0.0029 AAPLc");
+  await (find(expired, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
+  expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  expect(autonomy.signIn).not.toHaveBeenCalled();
+});
