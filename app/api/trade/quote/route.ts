@@ -1,3 +1,4 @@
+import { swapFeePolicyError } from "@/lib/swap/swap-policy";
 import { publicTradeError } from "@/lib/trade/trade-chat";
 import { NextResponse } from "next/server";
 
@@ -47,6 +48,12 @@ export async function POST(request: Request) {
     ? { ...(parsedBody.value as Record<string, unknown>), taker: session.wallet }
     : parsedBody.value;
 
+  // Swap is a stricter consumer, not a new provider or routing path. Agent's
+  // backward-compatible quotes remain unchanged. Never cache this policy bit.
+  const requireFee = !!body && typeof body === "object" && "requireMPGRFee" in body && body.requireMPGRFee === true;
+  if (body && typeof body === "object" && "requireMPGRFee" in body && typeof body.requireMPGRFee !== "boolean") {
+    return json({ error: "requireMPGRFee must be boolean", code: "INVALID_INPUT" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  }
   const parsed = await parseTradeSwapRequest(body, { requireTaker: true });
   if (!parsed.ok) {
     return json(
@@ -142,6 +149,10 @@ export async function POST(request: Request) {
     );
   }
 
+  if (requireFee) {
+    const invalid = swapFeePolicyError(result.proposal);
+    if (invalid) return json({ error: invalid, code: "EXECUTION_UNAVAILABLE" }, { status: 422, headers: { "Cache-Control": "no-store" } });
+  }
   return json(
     { proposal: result.proposal },
     { status: 200, headers: { "Cache-Control": "no-store" } },

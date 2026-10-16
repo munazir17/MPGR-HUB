@@ -3,19 +3,25 @@
 import { buildExecutorIntent, encodeExecutorSwap, approvalAuthorization } from "../../lib/executor/executor-intent";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT } from "../../lib/executor/executor-config";
 import { buildTradeProposal } from "../../lib/trade/trade-proposal";
-import { reviewQuoteFixture } from "../../components/features/agent/test-fixtures/chat-review-quote";
+import { isNativeEthSentinel } from "../../lib/trade/trade-config";
+import { MANUAL_SWAP_TOKENS } from "../../lib/trade/manual-swap";
+import { parseHumanTokenAmount, formatAtomicAmount } from "../../lib/trade/trade-format";
 import type { AutonomyAuthorizeFormState } from "../../components/features/agent/autonomy-authorize-form";
 export function simulatedExecutorQuote(form: AutonomyAuthorizeFormState) {
-  const base = reviewQuoteFixture(form);
+  const from = MANUAL_SWAP_TOKENS.find(t => t.address.toLowerCase() === form.sell.toLowerCase());
+  const to = MANUAL_SWAP_TOKENS.find(t => t.address.toLowerCase() === form.buy.toLowerCase());
+  if (!from || !to) throw new Error("Unsupported simulated token");
+  const base = { from, to, taker: "0x1111111111111111111111111111111111111111" as const, fromAmount: parseHumanTokenAmount(form.sellAmount, from.decimals)!.toString() };
   const result = buildExecutorIntent({ deployment: BASE_MAINNET_EXECUTOR_DEPLOYMENT, taker: base.taker,
-    sellToken: form.sell, buyToken: form.buy, sellAmount: BigInt(base.fromAmount), expectedBuyAmount: 290000n,
+    sellToken: isNativeEthSentinel(form.sell) ? BASE_MAINNET_EXECUTOR_DEPLOYMENT.weth : form.sell, buyToken: isNativeEthSentinel(form.buy) ? BASE_MAINNET_EXECUTOR_DEPLOYMENT.weth : form.buy,
+    sellNative: isNativeEthSentinel(form.sell), buyNative: isNativeEthSentinel(form.buy), sellAmount: BigInt(base.fromAmount), expectedBuyAmount: 10n ** BigInt(to.decimals) / 100n,
     slippageBps: form.slippageBps, authorization: "APPROVAL", nowSeconds: Math.floor(Date.now() / 1000),
     quoteId: "offline-browser", feeBps: 25, feeRecipient: "0x2222222222222222222222222222222222222222" });
   if (!result.ok) throw new Error(result.error.message);
   const intent = result.value;
   const built = buildTradeProposal({ from: base.from, to: base.to, taker: base.taker, slippageBps: form.slippageBps, provider: "mpgr-executor",
     agentFee: { status: "applied", bps: 25, amountAtomic: intent.feeAmount, recipient: intent.feeRecipient,
-      displayAmount: "0.0025 USDC", reason: null, collection: "mpgr-executor" },
+      displayAmount: `${formatAtomicAmount(intent.feeAmount, from.decimals, from.decimals)} ${from.symbol}`, reason: null, collection: "mpgr-executor" },
     quote: { liquidityAvailable: true, fromToken: form.sell, toToken: form.buy, fromAmount: intent.sellAmount,
       toAmount: intent.expectedBuyAmount, minToAmount: intent.minBuyAmount, permit2: null,
       transaction: encodeExecutorSwap(intent, approvalAuthorization()), issues: { allowance: { currentAllowance: "0", spender: intent.executor }, balance: null, simulationIncomplete: false } } });

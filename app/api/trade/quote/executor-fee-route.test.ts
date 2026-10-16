@@ -378,3 +378,23 @@ describe("OFFLINE command → real parser/tool runtime → existing Executor quo
     expect(result.reply).not.toMatch(/swap confirmed|successful/i);
   });
 });
+
+describe("Swap-only fee policy on existing quote API (Agent unchanged)", () => {
+  it("returns compliant Executor quote with exact on-chain recipient, independent of 0x public fee wallet", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "0x9999999999999999999999999999999999999999");
+    const response = await POST(post({ requireMPGRFee: true }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).proposal.agentFee.recipient).toBe(FEE_RECIPIENT);
+  });
+  it.each(["cdp-trade-api", "0x-swap-api", "aerodrome-slipstream"])("blocks a fee-less %s quote on Swap but preserves Agent's legacy API", async provider => {
+    const impl = mocks.routed.getMockImplementation()!;
+    mocks.routed.mockImplementation(async (...args) => ({ ...await impl(...args), provider }));
+    const body = { fromToken: "MPGR", toToken: "USDC", amount: "1" };
+    const legacy = await POST(post(body)); expect(legacy.status).toBe(200);
+    expect((await legacy.json()).proposal.agentFee.status).toBe("skipped");
+    const strict = await POST(post({ ...body, requireMPGRFee: true })); expect(strict.status).toBe(422);
+    expect(await strict.json()).toMatchObject({ code: "EXECUTION_UNAVAILABLE", error: expect.stringContaining("cannot safely collect") });
+    expect(mocks.routed).toHaveBeenCalledTimes(1); // policy cannot leak via shared cache
+  });
+  it.each(["true", 1, null])("rejects malformed policy opt-in %s", async requireMPGRFee => { const r = await POST(post({ requireMPGRFee })); expect(r.status).toBe(400); expect(mocks.routed).not.toHaveBeenCalled(); });
+});

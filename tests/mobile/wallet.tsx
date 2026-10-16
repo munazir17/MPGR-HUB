@@ -1,7 +1,12 @@
 // Browser-test wallet state only. No provider, connector, key or signing API.
-import { createContext, useContext } from "react";
+import { useLayoutEffect, createContext, useContext } from "react";
 export const WalletContext = createContext({ address: "0x1111111111111111111111111111111111111111" as `0x${string}`, isConnected: true, chainId: 8453 });
-export const useAccount = () => useContext(WalletContext);
+export const useAccount = () => {
+  const account = useContext(WalletContext);
+  useLayoutEffect(() => { (window as unknown as { simulatedAccount: typeof account }).simulatedAccount = account; }, [account]);
+  return account;
+};
+export const useSwitchChain = () => ({ switchChain: () => {} });
 export const useChainId = () => useContext(WalletContext).chainId;
 const record = (method: string) => {
   const log = ((window as unknown as { simulatedWalletCalls?: string[] }).simulatedWalletCalls ??= []);

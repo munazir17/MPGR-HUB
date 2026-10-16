@@ -1,6 +1,7 @@
 // Authorized PR113 Preview acceptance probe. Anonymous browser GETs only;
 // unauthenticated quote POSTs per deployment must refuse before providers.
 // No wallet connection, auth cookies, signatures, goal writes or execution.
+import { readSwapFeeAudit } from "./read-swap-fee-audit.mjs";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
@@ -87,11 +88,26 @@ try {
         await expect(page.getByRole("heading", { name: "MPGR Swap", exact: true })).toBeVisible();
         await expect(page.getByText("Limit orders — not available", { exact: true })).toBeVisible();
       }
-      const manualForm = page.getByRole("form", { name: "Prepare a manual swap" });
+      const manualForm = page.getByRole("form", { name: index === 0 ? "Prepare a manual swap" : "Swap tokens" });
       await expect(manualForm).toHaveCount(1);
-      await expect(manualForm.getByLabel("Sell token", { exact: true })).toBeVisible();
-      await manualForm.getByLabel("Sell amount", { exact: true }).fill("1");
-      await expect(manualForm.getByRole("button", { name: "Connect wallet to prepare", exact: true })).toBeVisible();
+      if (index === 0) {
+        await expect(manualForm.getByLabel("Sell token", { exact: true })).toBeVisible();
+        await manualForm.getByLabel("Sell amount", { exact: true }).fill("1");
+        await expect(manualForm.getByRole("button", { name: "Connect wallet to prepare", exact: true })).toBeVisible();
+      } else {
+        await expect(manualForm.getByRole("button", { name: "You receive token: WETH", exact: true })).toBeVisible();
+        await expect(manualForm.getByRole("button", { name: "You pay token: USDC", exact: true })).toBeVisible();
+        await manualForm.getByLabel("You pay amount", { exact: true }).fill("1");
+        await expect(manualForm.getByRole("button", { name: "Connect wallet", exact: true })).toBeVisible();
+        await expect(manualForm.getByLabel("You receive amount", { exact: true })).toHaveValue("");
+        await page.getByRole("button", { name: "Slippage settings", exact: true }).tap();
+        await page.getByLabel("Custom slippage (%)").fill("5.01");
+        await expect(page.getByRole("button", { name: "Apply slippage", exact: true })).toBeDisabled();
+        await page.getByRole("button", { name: "Close Swap settings", exact: true }).tap();
+        await page.getByRole("button", { name: "Recent swaps", exact: true }).tap();
+        await expect(page.getByRole("dialog", { name: "Recent swaps", exact: true })).toContainText("No swaps submitted");
+        await page.getByRole("button", { name: "Close Recent swaps", exact: true }).tap();
+      }
       await manualForm.scrollIntoViewIfNeeded(); await page.screenshot({ path: `${output}/${label}-${width}-manual.png`, fullPage: true });
       if (index === 1) await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
       await page.getByTestId("trading-launcher-autonomy").tap();
@@ -111,6 +127,8 @@ try {
       await context.close();
     }
   }
+  results.swapFeeAudit = await readSwapFeeAudit();
+  writeFileSync(`${output}/swap-fee-audit.json`, JSON.stringify(results.swapFeeAudit, null, 2));
 } finally {
   await browser.close();
   writeFileSync(`${output}/results.json`, JSON.stringify(results, null, 2));
