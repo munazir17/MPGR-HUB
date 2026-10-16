@@ -142,6 +142,9 @@ beforeEach(async () => {
   vi.stubEnv("MPGR_AUTONOMOUS_AGENT_ENABLED", "true");
   vi.stubEnv("MPGR_AUTONOMOUS_EMERGENCY_DISABLE", "false");
   vi.stubEnv("MPGR_AUTONOMOUS_EXECUTION_ADAPTER", "");
+  // Isolate executor/signature checks with the production gate explicitly on
+  // in this local test process. Gate-off admission has its own regressions.
+  vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", "true");
   await redis.reset();
   broadcasterSeam.createCalls = 0;
   broadcasterSeam.broadcastCalls = [];
@@ -391,4 +394,21 @@ describe("A4 — the missing capability: delegated execution cannot attach to a 
     const body = (await res.json()) as { slots: unknown[] };
     expect(body.slots).toHaveLength(0);
   });
+  it.each([undefined, "false"])("refuses a valid signed mainnet slot with production gate %s", async (gate) => {
+    if (gate === undefined) delete process.env.AUTONOMOUS_PRODUCTION_ENABLED;
+    else vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", gate);
+    const executor = "0x1111111111111111111111111111111111111111" as Address;
+    vi.stubEnv("MPGR_MAINNET_DELEGATED_EXECUTOR", executor);
+    const { policyBody, goalBody } = await activateGoal(await allowlistedPair());
+    const policyId = policyBody.policy!.id;
+    const goalId = (goalBody as { goal: { id: string } }).goal.id;
+    const [policy] = await systemUnderTest.store.listPolicies(USER.toLowerCase());
+    const slot = await signedMainnetSlot(policy, goalId, executor);
+    const response = await AUTHORIZATION_POST(post("/api/agent/autonomy/authorization", { policyId, goalId, slots: [{ slotIndex: 0, ...slot }] }));
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe("PRODUCTION_GATE_DISABLED");
+    expect(await systemUnderTest.slots.listSlots(USER.toLowerCase(), policyId)).toHaveLength(0);
+    expect(broadcasterSeam.broadcastCalls).toHaveLength(0);
+  });
+
 });

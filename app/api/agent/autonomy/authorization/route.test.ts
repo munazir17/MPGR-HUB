@@ -370,3 +370,21 @@ it("CAS failure after valid persistence does not report ACTIVE", async () => {
   spy.mockRestore();
   expect((await systemUnderTest.store.getGoal(GOAL_ID))?.status).toBe("DRAFT");
 });
+
+it.each([undefined, "false"])("production-gated mainnet cannot register a permission (%s)", async (flag) => {
+  if (flag === undefined) delete process.env.AUTONOMOUS_PRODUCTION_ENABLED;
+  else process.env.AUTONOMOUS_PRODUCTION_ENABLED = flag;
+  const basePolicy = await systemUnderTest.store.getPolicy(POLICY_ID);
+  await systemUnderTest.store.createPolicy({ ...basePolicy!, id: "pol_mainnet_gate", chainId: 8453 });
+  const save = vi.spyOn(systemUnderTest.slots, "saveSlots");
+  try {
+    const response = await POST(new Request("http://localhost/api/agent/autonomy/authorization", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ policyId: "pol_mainnet_gate", goalId: GOAL_ID, slots: [{}] }),
+    }));
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe("PRODUCTION_GATE_DISABLED");
+    expect(save).not.toHaveBeenCalled();
+    expect(await systemUnderTest.slots.listSlots(USER.toLowerCase())).toHaveLength(0);
+  } finally { save.mockRestore(); }
+});
