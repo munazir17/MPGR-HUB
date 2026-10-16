@@ -229,6 +229,7 @@ describe("hardening §16: wallet scoping (cross-wallet inspect/modify/revoke)", 
 describe("hardening §16: response hygiene — no key material or internal details", () => {
   beforeEach(() => {
     flag(true);
+    vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", "true"); // isolated ready Mainnet write fixture
     vi.stubEnv("CRON_SECRET", "cron-secret-value");
     vi.stubEnv("MPGR_BROADCASTER_PRIVATE_KEY", "0x" + "11".repeat(32));
   });
@@ -316,6 +317,7 @@ describe("hardening §16: response hygiene — no key material or internal detai
 describe("hardening §15 round-2: expired SIWE, malformed bodies, duplicate creation, audit emission", () => {
   beforeEach(() => {
     flag(true);
+    vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", "true"); // isolated ready Mainnet write fixture
   });
 
   it("an EXPIRED/invalid SIWE session is indistinguishable from no session: 401 everywhere (fail-closed)", async () => {
