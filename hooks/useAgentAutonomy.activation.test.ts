@@ -539,3 +539,78 @@ it("exhausted single-use nonce indexes fail closed, not an instruction to recycl
   expect(result.ok).toBe(false); expect(result.message).toContain("cannot be recycled");
   expect(wallet.signCalls).toHaveLength(0); expect(fixture.slotPostCount).toBe(0);
 });
+
+// Deferred GETs reproduce mobile reconnect / rapid retry ordering, with no
+// wallet provider, live session, signing or write endpoints.
+it("an older same-wallet refresh cannot overwrite newer disabled settings", async () => {
+  const api = await bootHook();
+  let resolveOld!: (response: Response) => void;
+  let count = 0;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    expect(init?.method).toBe("GET");
+    if (String(input).endsWith("/config")) {
+      if (count++ === 0) return new Promise<Response>((resolve) => { resolveOld = resolve; });
+      return jsonResponse({ ...CONFIG, enabled: false });
+    }
+    return jsonResponse({ goals: [] });
+  }));
+  const oldRead = (api.refresh as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 0));
+  await (api.refresh as () => Promise<void>)();
+  resolveOld(jsonResponse(CONFIG)); await oldRead;
+  const { useAgentAutonomy } = await import("@/hooks/useAgentAutonomy");
+  hooks.beginRender();
+  expect(useAgentAutonomy().config?.enabled).toBe(false);
+  expect(wallet.signCalls).toHaveLength(0);
+});
+
+it("late policy/slot reads from the old wallet cannot replace the new wallet state", async () => {
+  const api = await bootHook();
+  const originalWallet = wallet.address;
+  let resolveOld!: (response: Response) => void;
+  let old = true;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    expect(init?.method).toBe("GET");
+    const path = String(input);
+    if (path.endsWith("/config")) return jsonResponse(CONFIG);
+    if (path.endsWith("/tokens")) return jsonResponse({ tokens: [USDC, AAPLc] });
+    if (path.endsWith("/goals")) return jsonResponse({ goals: [] });
+    if (path.endsWith("/policy")) {
+      if (old) return new Promise<Response>((resolve) => { resolveOld = resolve; });
+      return jsonResponse({ policies: [{ id: "new_wallet_policy" }] });
+    }
+    return jsonResponse({ slots: [{ id: old ? "old_wallet_slot" : "new_wallet_slot" }], walletSigningSupported: true });
+  }));
+  const oldRead = (api.refresh as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 0));
+  old = false; wallet.address = "0x" + "cd".repeat(20);
+  try {
+    const { useAgentAutonomy } = await import("@/hooks/useAgentAutonomy");
+    hooks.beginRender(); await useAgentAutonomy().refresh();
+    resolveOld(jsonResponse({ policies: [{ id: "old_wallet_policy" }] })); await oldRead;
+    hooks.beginRender(); const next = useAgentAutonomy();
+    expect(next.policies).toEqual([{ id: "new_wallet_policy" }]);
+    expect(next.slots).toEqual([{ id: "new_wallet_slot" }]);
+    expect(wallet.signCalls).toHaveLength(0);
+  } finally { wallet.address = originalWallet; }
+});
+
+it("disconnect invalidates pending settings and clears the previous wallet view", async () => {
+  const api = await bootHook();
+  const originalWallet = wallet.address;
+  let resolveOld!: (response: Response) => void;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/config")
+    ? new Promise<Response>((resolve) => { resolveOld = resolve; }) : jsonResponse({ goals: [] })));
+  const oldRead = (api.refresh as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 0));
+  wallet.address = "";
+  try {
+    const { useAgentAutonomy } = await import("@/hooks/useAgentAutonomy");
+    hooks.beginRender(); await useAgentAutonomy().refresh();
+    resolveOld(jsonResponse(CONFIG)); await oldRead;
+    hooks.beginRender(); const next = useAgentAutonomy();
+    expect(next.config).toBeNull();
+    expect(next.settingsRead.state).toBe("wallet_required");
+    expect(next.goals).toEqual([]); expect(next.policies).toEqual([]); expect(next.slots).toEqual([]);
+  } finally { wallet.address = originalWallet; }
+});

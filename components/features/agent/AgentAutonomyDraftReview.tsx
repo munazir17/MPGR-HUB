@@ -11,7 +11,7 @@
 // This component never broadcasts or chooses signing-domain semantics.
 
 import { formatUnits } from "viem";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useAccount } from "wagmi";
 import { AnimatePresence, motion } from "framer-motion";
 import { Repeat, ShieldCheck, ShieldOff, X } from "lucide-react";
@@ -48,13 +48,56 @@ interface DraftReviewDialogProps {
 function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDialogProps) {
   const titleId = useId();
   const { address: walletAddress, chainId: walletChainId, isConnected } = useAccount();
-  const { tokens: runtimeTokens, busy, error, dismissError, activateDraft, config, settingsRead, authenticated, authenticating, signIn } = autonomy;
+  const { tokens: runtimeTokens, busy: controllerBusy, error, dismissError, activateDraft, config, settingsRead, authenticated, authenticating, signIn } = autonomy;
   const tokens = CHAT_REVIEW_TOKENS;
   const settingsState = settingsRead?.state;
   const [form, setForm] = useState<AutonomyAuthorizeFormState | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const authorizationInFlight = useRef(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const busy = controllerBusy || submitting;
   const [notice, setNotice] = useState<string | null>(null);
   const [activated, setActivated] = useState(false);
   const [activatedMode, setActivatedMode] = useState<"standing" | "signed" | null>(null);
+  // Only the modal owns focus/body scrolling. The embedded review stays in
+  // Chat's existing scroll container and must not trap keyboard navigation.
+  useEffect(() => {
+    if (embedded || !dialogRef.current) return;
+    const opener = document.activeElement;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialogRef.current.focus({ preventScroll: true });
+    return () => {
+      document.body.style.overflow = overflow;
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, [embedded]);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (embedded || !dialog) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!busy) onClose();
+      }
+      if (event.key !== "Tab") return;
+      const controls = [...dialog.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]',
+      )].filter((node) => node.getClientRects().length > 0);
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!first || (event.shiftKey && (document.activeElement === first || document.activeElement === dialog))) {
+        event.preventDefault();
+        (last ?? dialog).focus();
+      } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    dialog.addEventListener("keydown", onKeyDown);
+    return () => dialog.removeEventListener("keydown", onKeyDown);
+  }, [embedded, busy, onClose]);
   // Minimum output per trade, prefilled from the LIVE quote — never zero.
   const [quote, setQuote] = useState<ChatReviewQuote | null>(null);
   const [quoteRetry, setQuoteRetry] = useState(0);
@@ -116,41 +159,52 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
     return () => {
       cancelled = true;
     };
-  }, [draft.supported, authenticated, formError, settingsState, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps, quoteKey, quoteRetry]);
+  }, [draft.supported, authenticated, formError, settingsState, sellTokenInfo, buyTokenInfo, formState.sellAmount, formState.slippageBps, quoteKey, quoteRetry, walletAddress]);
 
   const handleAuthorize = async () => {
     // Guard the handler as well as the button. No auth/policy/goal/signing
     // action is allowed for an incomplete or stale-input review.
     const currentError = chatReviewAuthorizationError({ form: formState, config, settingsRead, tokens: runtimeTokens, quote, authenticated, walletAddress, walletChainId: isConnected ? walletChainId : undefined });
+    if (authorizationInFlight.current) return;
     if (currentError || !canAuthorize || busy) {
       setNotice(currentError ?? authorizationError ?? "This draft cannot be authorized.");
       return;
     }
-    const result = await activateDraft({
-      sellToken: formState.sell,
-      buyToken: formState.buy,
-      condition: { kind: formState.kind, threshold: formState.threshold },
-      sellAmount: formState.sellAmount,
-      maxDaily: formState.maxDaily,
-      maxSlippageBps: formState.slippageBps,
-      maxActionsPerDay: Math.max(formState.maxTrades * 2, 10),
-      ttlDays: formState.ttlDays,
-      cooldownSeconds: formState.cooldownSeconds,
-      maxTrades: formState.maxTrades,
-      description: autonomyFormToDraftInput(formState).description,
-      // Minimum output from the LIVE QUOTE — never zero (validated again in
-      // the hook and re-validated server-side when the slot is registered).
-      minAmountOutHuman: quotedMinOut,
-    });
-    if (!result.ok) setNotice(result.message);
-    if (result.ok) {
-      setActivated(true);
-      setActivatedMode(result.mode);
-      setNotice(
-        result.mode === "standing"
-          ? "Active — awaiting trigger, using this goal’s own saved permission. No new signature was needed. Settlement is not yet verified."
-          : "Active — awaiting trigger. One saved slot permits one execution only, not the entire recurring schedule. Settlement is not yet verified.",
-      );
+    authorizationInFlight.current = true;
+    setSubmitting(true);
+    setNotice(null);
+    try {
+      const result = await activateDraft({
+        sellToken: formState.sell,
+        buyToken: formState.buy,
+        condition: { kind: formState.kind, threshold: formState.threshold },
+        sellAmount: formState.sellAmount,
+        maxDaily: formState.maxDaily,
+        maxSlippageBps: formState.slippageBps,
+        maxActionsPerDay: Math.max(formState.maxTrades * 2, 10),
+        ttlDays: formState.ttlDays,
+        cooldownSeconds: formState.cooldownSeconds,
+        maxTrades: formState.maxTrades,
+        description: autonomyFormToDraftInput(formState).description,
+        // Minimum output from the LIVE QUOTE — never zero (validated again in
+        // the hook and re-validated server-side when the slot is registered).
+        minAmountOutHuman: quotedMinOut,
+      });
+      if (!result.ok) setNotice(result.message);
+      if (result.ok) {
+        setActivated(true);
+        setActivatedMode(result.mode);
+        setNotice(
+          result.mode === "standing"
+            ? "Active — awaiting trigger, using this goal’s own saved permission. No new signature was needed. Settlement is not yet verified."
+            : "Active — awaiting trigger. One saved slot permits one execution only, not the entire recurring schedule. Settlement is not yet verified.",
+        );
+      }
+    } catch {
+      setNotice("Activation could not be confirmed. Retry this same draft to reconcile its saved state; do not create a second goal.");
+    } finally {
+      authorizationInFlight.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -167,9 +221,12 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
       exit={{ opacity: 0 }}
     >
       <motion.div
+        ref={dialogRef}
+        tabIndex={-1}
         role={embedded ? "region" : "dialog"}
         aria-modal={embedded ? undefined : true}
         aria-labelledby={titleId}
+        aria-busy={busy}
         data-testid="agent-autonomy-draft-review"
         className={embedded ? "mx-auto w-full min-w-0 max-w-[600px] rounded-2xl border border-white/10 bg-surface p-3 sm:p-5" : "max-h-[90dvh] w-full max-w-[440px] overflow-y-auto overscroll-contain rounded-t-3xl border border-white/[0.08] bg-surface bg-gradient-surface p-6 shadow-glow-lg sm:rounded-3xl sm:p-8"}
         initial={{ y: 40, opacity: 0 }}
@@ -195,7 +252,9 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
           </button>
         </div>
 
-        <p className="mb-3 text-xs text-muted">Draft — inactive. Review and explicitly confirm below. Nothing is broadcast by this review; it is not the manual Autonomous Goals form.</p>
+        <p role="status" className="mb-3 text-xs text-muted">{activated
+          ? "Active — awaiting trigger. Execution still requires fresh runtime checks and saved permission. Settlement is not yet verified."
+          : "Draft — inactive. Review and explicitly confirm below. Nothing is broadcast by this review; it is not the manual Autonomous Goals form."}</p>
 
         {draft.supported === false ? (
           <div
@@ -287,7 +346,7 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
             </div>
 
             {error && (
-              <div className="mb-3 flex items-center gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+              <div role="alert" className="mb-3 flex items-center gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
                 <span className="min-w-0 flex-1">{error}</span>
                 <button type="button" onClick={dismissError} aria-label="Dismiss error">
                   <X className="h-3.5 w-3.5" />
@@ -295,8 +354,8 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
               </div>
             )}
             {notice && (
-              <div className="mb-3 flex items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
-                <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <div role={activated ? "status" : "alert"} className={`mb-3 flex items-center gap-2 rounded-xl border px-3 py-2 text-xs ${activated ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-200" : "border-red-400/20 bg-red-500/10 text-red-200"}`}>
+                {activated ? <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <ShieldOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
                 <span className="min-w-0 flex-1">{notice}</span>
               </div>
             )}
@@ -311,7 +370,7 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
               </button>
             ) : (
               <>
-                <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
+                <fieldset disabled={busy} className="mb-3 grid min-w-0 grid-cols-2 gap-2 text-xs">
                   <label className="min-w-0 space-y-1">
                     <span className="text-muted">Sell/spend token</span>
                     <select
@@ -368,6 +427,7 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
                       </select>
                       <input
                         data-testid="autonomy-draft-price"
+                        aria-label="Trigger price (USDC)"
                         value={formState.threshold}
                         onChange={(e) => setField({ threshold: e.target.value })}
                         inputMode="decimal"
@@ -393,7 +453,7 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
                       className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                     />
                   </label>
-                </div>
+                </fieldset>
                 <p className="mb-3 text-[10px] leading-relaxed text-muted">
                   Slippage limit {formState.slippageBps / 100}% · at least {formState.cooldownSeconds / 60} min between checks · authorization expires in{" "}
                   {formState.ttlDays} days. MPGR never holds your keys — the goal executes only through the non-custodial executor inside these limits.
@@ -439,6 +499,7 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
                   <button
                     type="button"
                     onClick={onClose}
+                    disabled={busy}
                     className="min-h-[36px] rounded-lg border border-white/[0.1] px-3 text-xs text-muted transition-colors hover:text-white"
                   >
                     Close

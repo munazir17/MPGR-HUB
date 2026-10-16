@@ -14,7 +14,11 @@ const harness = vi.hoisted(() => ({
 }));
 vi.mock("react", async (load) => {
   const real = await load<typeof import("react")>();
-  return { ...real, useId: () => "review-title", useState: (initial: unknown) => {
+  return { ...real, useId: () => "review-title", useRef: (initial: unknown) => {
+    const i = harness.stateIndex++;
+    if (!(i in harness.states)) harness.states[i] = { current: initial };
+    return harness.states[i];
+  }, useState: (initial: unknown) => {
     const i = harness.stateIndex++;
     if (!(i in harness.states)) harness.states[i] = initial;
     return [harness.states[i], (next: unknown) => { harness.states[i] = typeof next === "function" ? next(harness.states[i]) : next; }];

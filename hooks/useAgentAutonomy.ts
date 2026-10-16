@@ -217,6 +217,7 @@ export function useAgentAutonomy() {
   const hasPendingRef = useRef(false);
   const tokensFetchedRef = useRef(false);
   const loadedWalletRef = useRef<string | undefined>(undefined);
+  const refreshVersionRef = useRef(0);
 
   /**
    * Ensure the connected wallet has a valid server-side SIWE session before
@@ -232,7 +233,10 @@ export function useAgentAutonomy() {
   }, [walletAuthenticated, walletAuthenticate]);
 
   const refresh = useCallback(async () => {
-    if (!walletKey) return;
+    // Latest read wins, including same-wallet retries and disconnects. Checking
+    // only wallet identity cannot reject an older response for the same wallet.
+    const version = ++refreshVersionRef.current;
+    const isCurrent = () => refreshVersionRef.current === version && loadedWalletRef.current === walletKey;
     // Wallet switched (or first load): drop the previous wallet's state
     // before applying the fresh fetch so stale goals/policies never
     // flash. The reset happens in the async continuation (never
@@ -241,7 +245,7 @@ export function useAgentAutonomy() {
     const walletChanged = loadedWalletRef.current !== walletKey;
     loadedWalletRef.current = walletKey;
     await Promise.resolve();
-    if (loadedWalletRef.current !== walletKey) return;
+    if (!isCurrent()) return;
     setSettingsRead({ state: "loading" });
     if (walletChanged) {
       setConfig(null);
@@ -253,9 +257,13 @@ export function useAgentAutonomy() {
       hasPendingRef.current = false;
       setError(null);
     }
+    if (!walletKey) {
+      setSettingsRead({ state: "wallet_required" });
+      return;
+    }
     const [configRes, goalsRes] = await Promise.all([
       readAutonomySettings().then((settings) => {
-        if (loadedWalletRef.current !== walletKey) return null;
+        if (!isCurrent()) return null;
         // Settings are public: do not hide their result behind session-scoped
         // goals latency/failure. Clear stale config on SAME-wallet read failures.
         setConfig(settings.config);
@@ -264,9 +272,10 @@ export function useAgentAutonomy() {
       }),
       fetchWithSession("/api/agent/autonomy/goals", { method: "GET" }).then((r) => r.json()).catch(() => null),
     ]);
-    if (loadedWalletRef.current !== walletKey) return; // a newer wallet took over
+    if (!isCurrent()) return; // a newer wallet took over
     if (configRes?.enabled && !tokensFetchedRef.current) {
       const tokensRes = await fetchWithSession("/api/agent/autonomy/tokens", { method: "GET" }).then((r) => r.json()).catch(() => null);
+      if (!isCurrent()) return;
       if (tokensRes && Array.isArray(tokensRes.tokens)) {
         tokensFetchedRef.current = true;
         setTokens(tokensRes.tokens as AutonomyTokenOption[]);
@@ -280,6 +289,7 @@ export function useAgentAutonomy() {
         fetchWithSession("/api/agent/autonomy/policy", { method: "GET" }).then((r) => r.json()).catch(() => null),
         fetchWithSession("/api/agent/autonomy/authorization", { method: "GET" }).then((r) => r.json()).catch(() => null),
       ]);
+      if (!isCurrent()) return;
       if (policyRes && Array.isArray(policyRes.policies)) setPolicies(policyRes.policies as AutonomyPolicyView[]);
       if (slotsRes && Array.isArray(slotsRes.slots)) {
         setSlots(slotsRes.slots as DelegatedSlotView[]);
