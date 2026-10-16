@@ -1,0 +1,234 @@
+PR #113 mobile audit — captured local red/green evidence
+Baseline source: 01a091af28e605965528458b887435b39d3a0640
+Fixed source: 868d199 + 39ce255
+Browser evidence is isolated Chromium mobile emulation, not live Preview/wallet.
+
+
+=== BASELINE BROWSER MATRIX ===
+  ✓   1 [mobile-360] › tests/mobile/review.spec.ts:28:5 › parsed draft initialization, scrolling, tap feedback, retry and launcher (7.2s)
+  ✓   2 [mobile-360] › tests/mobile/review.spec.ts:62:7 › fail closed: runtime (3.1s)
+  ✓   3 [mobile-360] › tests/mobile/review.spec.ts:62:7 › fail closed: production (2.5s)
+  ✓   4 [mobile-360] › tests/mobile/review.spec.ts:62:7 › fail closed: adapter (2.9s)
+  ✓   5 [mobile-360] › tests/mobile/review.spec.ts:62:7 › fail closed: delegated (2.8s)
+  ✓   6 [mobile-360] › tests/mobile/review.spec.ts:62:7 › fail closed: emergency (3.0s)
+  ✓   7 [mobile-360] › tests/mobile/review.spec.ts:62:7 › fail closed: settings (2.7s)
+  ✓   8 [mobile-360] › tests/mobile/review.spec.ts:62:7 › fail closed: disconnected (2.3s)
+  ✓   9 [mobile-360] › tests/mobile/review.spec.ts:62:7 › fail closed: network (2.2s)
+  ✓  10 [mobile-360] › tests/mobile/review.spec.ts:62:7 › fail closed: session (3.7s)
+  ✓  11 [mobile-360] › tests/mobile/review.spec.ts:73:5 › invalid form explains the block, corrected amount gets matching fresh quote (2.9s)
+  ✓  12 [mobile-360] › tests/mobile/review.spec.ts:82:5 › quote loading, failed refresh, retry and expiry stay fail closed (3.9s)
+  ✘  13 [mobile-360] › tests/mobile/review.spec.ts:104:5 › wallet account change refreshes the wallet-bound quote automatically (7.1s)
+  ✘  14 [mobile-360] › tests/mobile/review.spec.ts:110:5 › synchronous repeated taps call activation only once; close cannot discard in-flight review (7.6s)
+  ✘  15 [mobile-360] › tests/mobile/review.spec.ts:116:5 › unexpected activation rejection is visible, retryable, and not a success alert (8.8s)
+  ✘  16 [mobile-360] › tests/mobile/review.spec.ts:122:5 › confirmed activation is waiting for trigger, not labelled inactive (8.8s)
+  ✘  17 [mobile-360] › tests/mobile/review.spec.ts:128:5 › modal focuses and traps keyboard, Escape closes and restores opener (4.7s)
+  ✓  18 [mobile-390] › tests/mobile/review.spec.ts:28:5 › parsed draft initialization, scrolling, tap feedback, retry and launcher (6.9s)
+  ✓  19 [mobile-390] › tests/mobile/review.spec.ts:62:7 › fail closed: runtime (2.9s)
+  ✓  20 [mobile-390] › tests/mobile/review.spec.ts:62:7 › fail closed: production (3.0s)
+  ✓  21 [mobile-390] › tests/mobile/review.spec.ts:62:7 › fail closed: adapter (2.8s)
+  ✓  22 [mobile-390] › tests/mobile/review.spec.ts:62:7 › fail closed: delegated (2.9s)
+  ✓  23 [mobile-390] › tests/mobile/review.spec.ts:62:7 › fail closed: emergency (2.5s)
+  ✓  24 [mobile-390] › tests/mobile/review.spec.ts:62:7 › fail closed: settings (2.6s)
+  ✓  25 [mobile-390] › tests/mobile/review.spec.ts:62:7 › fail closed: disconnected (2.6s)
+  ✓  26 [mobile-390] › tests/mobile/review.spec.ts:62:7 › fail closed: network (3.0s)
+  ✓  27 [mobile-390] › tests/mobile/review.spec.ts:62:7 › fail closed: session (3.3s)
+  ✓  28 [mobile-390] › tests/mobile/review.spec.ts:73:5 › invalid form explains the block, corrected amount gets matching fresh quote (2.7s)
+  ✓  29 [mobile-390] › tests/mobile/review.spec.ts:82:5 › quote loading, failed refresh, retry and expiry stay fail closed (4.3s)
+  ✘  30 [mobile-390] › tests/mobile/review.spec.ts:104:5 › wallet account change refreshes the wallet-bound quote automatically (7.1s)
+  ✘  31 [mobile-390] › tests/mobile/review.spec.ts:110:5 › synchronous repeated taps call activation only once; close cannot discard in-flight review (7.3s)
+  ✘  32 [mobile-390] › tests/mobile/review.spec.ts:116:5 › unexpected activation rejection is visible, retryable, and not a success alert (9.0s)
+  ✘  33 [mobile-390] › tests/mobile/review.spec.ts:122:5 › confirmed activation is waiting for trigger, not labelled inactive (8.5s)
+  ✘  34 [mobile-390] › tests/mobile/review.spec.ts:128:5 › modal focuses and traps keyboard, Escape closes and restores opener (5.8s)
+  10 failed
+    [mobile-360] › tests/mobile/review.spec.ts:104:5 › wallet account change refreshes the wallet-bound quote automatically 
+    [mobile-360] › tests/mobile/review.spec.ts:110:5 › synchronous repeated taps call activation only once; close cannot discard in-flight review 
+    [mobile-360] › tests/mobile/review.spec.ts:116:5 › unexpected activation rejection is visible, retryable, and not a success alert 
+    [mobile-360] › tests/mobile/review.spec.ts:122:5 › confirmed activation is waiting for trigger, not labelled inactive 
+    [mobile-360] › tests/mobile/review.spec.ts:128:5 › modal focuses and traps keyboard, Escape closes and restores opener 
+    [mobile-390] › tests/mobile/review.spec.ts:104:5 › wallet account change refreshes the wallet-bound quote automatically 
+    [mobile-390] › tests/mobile/review.spec.ts:110:5 › synchronous repeated taps call activation only once; close cannot discard in-flight review 
+    [mobile-390] › tests/mobile/review.spec.ts:116:5 › unexpected activation rejection is visible, retryable, and not a success alert 
+    [mobile-390] › tests/mobile/review.spec.ts:122:5 › confirmed activation is waiting for trigger, not labelled inactive 
+    [mobile-390] › tests/mobile/review.spec.ts:128:5 › modal focuses and traps keyboard, Escape closes and restores opener 
+  24 passed (3.2m)
+
+=== BASELINE ACCESSIBLE NAME ===
+    Expected: "343.53"
+
+=== BASELINE VALID MAINNET ADMISSION ===
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  app/api/agent/autonomy/activation-route-audit.test.ts > A4 — the missing capability: delegated execution cannot attach to a UI-activated goal > refuses a valid signed mainnet slot with production gate undefined
+ FAIL  app/api/agent/autonomy/activation-route-audit.test.ts > A4 — the missing capability: delegated execution cannot attach to a UI-activated goal > refuses a valid signed mainnet slot with production gate false
+AssertionError: expected 201 to be 503 // Object.is equality
+ Test Files  1 failed (1)
+      Tests  2 failed | 12 passed (14)
+   Duration  3.09s (transform 1.02s, setup 0ms, import 2.10s, tests 361ms, environment 0ms)
+
+=== BASELINE EARLY MAINNET ADMISSION ===
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  app/api/agent/autonomy/authorization/route.test.ts > production-gated mainnet cannot register a permission (undefined)
+ FAIL  app/api/agent/autonomy/authorization/route.test.ts > production-gated mainnet cannot register a permission (false)
+AssertionError: expected 400 to be 503 // Object.is equality
+ Test Files  1 failed (1)
+      Tests  2 failed | 22 passed (24)
+   Duration  2.87s (transform 642ms, setup 0ms, import 1.70s, tests 515ms, environment 0ms)
+
+=== BASELINE REFRESH RACES ===
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  hooks/useAgentAutonomy.activation.test.ts > an older same-wallet refresh cannot overwrite newer disabled settings
+AssertionError: expected true to be false // Object.is equality
+ FAIL  hooks/useAgentAutonomy.activation.test.ts > late policy/slot reads from the old wallet cannot replace the new wallet state
+AssertionError: expected [ { id: 'old_wallet_policy' } ] to deeply equal [ { id: 'new_wallet_policy' } ]
+ FAIL  hooks/useAgentAutonomy.activation.test.ts > disconnect invalidates pending settings and clears the previous wallet view
+AssertionError: expected { enabled: true, …(5) } to be null
+- Expected:
++ Received:
+ Test Files  1 failed (1)
+      Tests  3 failed | 19 passed (22)
+   Duration  2.97s (transform 673ms, setup 0ms, import 459ms, tests 1.33s, environment 1ms)
+
+=== FINAL BROWSER MATRIX ===
+  ✓   1 [mobile-360] › tests/mobile/review.spec.ts:31:5 › parsed draft initialization, scrolling, tap feedback, retry and launcher (8.1s)
+  ✓   2 [mobile-360] › tests/mobile/review.spec.ts:70:7 › fail closed: runtime (3.2s)
+  ✓   3 [mobile-360] › tests/mobile/review.spec.ts:70:7 › fail closed: production (3.5s)
+  ✓   4 [mobile-360] › tests/mobile/review.spec.ts:70:7 › fail closed: adapter (3.9s)
+  ✓   5 [mobile-360] › tests/mobile/review.spec.ts:70:7 › fail closed: delegated (3.6s)
+  ✓   6 [mobile-360] › tests/mobile/review.spec.ts:70:7 › fail closed: emergency (3.5s)
+  ✓   7 [mobile-360] › tests/mobile/review.spec.ts:70:7 › fail closed: settings (3.3s)
+  ✓   8 [mobile-360] › tests/mobile/review.spec.ts:70:7 › fail closed: disconnected (4.1s)
+  ✓   9 [mobile-360] › tests/mobile/review.spec.ts:70:7 › fail closed: network (3.7s)
+  ✓  10 [mobile-360] › tests/mobile/review.spec.ts:70:7 › fail closed: session (3.9s)
+  ✓  11 [mobile-360] › tests/mobile/review.spec.ts:81:5 › invalid form explains the block, corrected amount gets matching fresh quote (4.7s)
+  ✓  12 [mobile-360] › tests/mobile/review.spec.ts:90:5 › quote loading, failed refresh, retry and expiry stay fail closed (4.7s)
+  ✓  13 [mobile-360] › tests/mobile/review.spec.ts:114:5 › wallet account change refreshes the wallet-bound quote automatically (3.3s)
+  ✓  14 [mobile-360] › tests/mobile/review.spec.ts:120:5 › synchronous repeated taps call activation only once; close cannot discard in-flight review (3.6s)
+  ✓  15 [mobile-360] › tests/mobile/review.spec.ts:126:5 › unexpected activation rejection is visible, retryable, and not a success alert (4.0s)
+  ✓  16 [mobile-360] › tests/mobile/review.spec.ts:132:5 › confirmed activation is waiting for trigger, not labelled inactive (3.9s)
+  ✓  17 [mobile-360] › tests/mobile/review.spec.ts:138:5 › modal focuses and traps keyboard, Escape closes and restores opener (7.4s)
+  ✓  18 [mobile-360] › tests/mobile/review.spec.ts:150:5 › trigger price has its own accessible input name (3.3s)
+  ✓  19 [mobile-360] › tests/mobile/review.spec.ts:154:5 › late quote response for an old amount cannot replace the current quote (3.5s)
+  ✓  20 [mobile-360] › tests/mobile/review.spec.ts:171:5 › focused inputs and action remain reachable in a shortened keyboard-style viewport (3.8s)
+  ✓  21 [mobile-360] › tests/mobile/review.spec.ts:185:5 › viewport evidence: CTA is scrollable and not intercepted (3.7s)
+  ✓  22 [mobile-390] › tests/mobile/review.spec.ts:31:5 › parsed draft initialization, scrolling, tap feedback, retry and launcher (5.6s)
+  ✓  23 [mobile-390] › tests/mobile/review.spec.ts:70:7 › fail closed: runtime (2.5s)
+  ✓  24 [mobile-390] › tests/mobile/review.spec.ts:70:7 › fail closed: production (2.4s)
+  ✓  25 [mobile-390] › tests/mobile/review.spec.ts:70:7 › fail closed: adapter (2.2s)
+  ✓  26 [mobile-390] › tests/mobile/review.spec.ts:70:7 › fail closed: delegated (2.4s)
+  ✓  27 [mobile-390] › tests/mobile/review.spec.ts:70:7 › fail closed: emergency (2.5s)
+  ✓  28 [mobile-390] › tests/mobile/review.spec.ts:70:7 › fail closed: settings (2.2s)
+  ✓  29 [mobile-390] › tests/mobile/review.spec.ts:70:7 › fail closed: disconnected (2.6s)
+  ✓  30 [mobile-390] › tests/mobile/review.spec.ts:70:7 › fail closed: network (2.3s)
+  ✓  31 [mobile-390] › tests/mobile/review.spec.ts:70:7 › fail closed: session (2.7s)
+  ✓  32 [mobile-390] › tests/mobile/review.spec.ts:81:5 › invalid form explains the block, corrected amount gets matching fresh quote (2.4s)
+  ✓  33 [mobile-390] › tests/mobile/review.spec.ts:90:5 › quote loading, failed refresh, retry and expiry stay fail closed (3.6s)
+  ✓  34 [mobile-390] › tests/mobile/review.spec.ts:114:5 › wallet account change refreshes the wallet-bound quote automatically (3.0s)
+  ✓  35 [mobile-390] › tests/mobile/review.spec.ts:120:5 › synchronous repeated taps call activation only once; close cannot discard in-flight review (2.7s)
+  ✓  36 [mobile-390] › tests/mobile/review.spec.ts:126:5 › unexpected activation rejection is visible, retryable, and not a success alert (2.9s)
+  ✓  37 [mobile-390] › tests/mobile/review.spec.ts:132:5 › confirmed activation is waiting for trigger, not labelled inactive (2.7s)
+  ✓  38 [mobile-390] › tests/mobile/review.spec.ts:138:5 › modal focuses and traps keyboard, Escape closes and restores opener (5.4s)
+  ✓  39 [mobile-390] › tests/mobile/review.spec.ts:150:5 › trigger price has its own accessible input name (2.4s)
+  ✓  40 [mobile-390] › tests/mobile/review.spec.ts:154:5 › late quote response for an old amount cannot replace the current quote (2.8s)
+  ✓  41 [mobile-390] › tests/mobile/review.spec.ts:171:5 › focused inputs and action remain reachable in a shortened keyboard-style viewport (2.9s)
+  ✓  42 [mobile-390] › tests/mobile/review.spec.ts:185:5 › viewport evidence: CTA is scrollable and not intercepted (3.2s)
+  42 passed (2.7m)
+
+=== FINAL FOCUSED VITEST ===
+ Test Files  11 passed (11)
+      Tests  219 passed (219)
+   Duration  16.61s (transform 1.66s, setup 0ms, import 10.49s, tests 3.65s, environment 1ms)
+
+=== FULL OFFLINE CHECK (ANALYTICS-ONLY PRELOAD) ===
+React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).
+React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).
+React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).
+React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).
+✖ 59 problems (0 errors, 59 warnings)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stderr | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stderr | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stderr | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stderr | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stderr | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+stdout | lib/autonomy/__tests__/scheduler.test.ts > scheduler > retry/backoff: consecutive failures eventually FAIL a goal (bounded retries)
+ Test Files  280 passed | 5 skipped (285)
+      Tests  3557 passed | 24 skipped (3581)
+   Duration  326.40s (transform 11.52s, setup 0ms, import 190.67s, tests 74.66s, environment 39ms)
+
+=== FINAL LINT ===
+React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).
+React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).
+React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).
+React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).
+✖ 59 problems (0 errors, 59 warnings)
+
+=== FINAL TYPECHECK ===
+
+> mpgr-hub@0.1.0 typecheck
+> tsc --noEmit
+
+
+=== BUILD (NETWORK-BLOCKED FONT) ===
+    ./app/layout.tsx
+
+
+✓ Finished writing to filesystem cache in 16.4s
+
+> Build error occurred
+Error: Turbopack build failed with 1 error:
+[next]/internal/font/google/inter_31011fd.module.css
+Error: next/font: error:
+Failed to fetch Inter from Google Fonts.
+If you are offline or behind a proxy, self-host the font with next/font/local, or set HTTP_PROXY/HTTPS_PROXY so Next.js can reach fonts.googleapis.com.
+
+Import trace:
+  Server Component:
+    [next]/internal/font/google/inter_31011fd.module.css
+    [next]/internal/font/google/inter_31011fd.js
+    ./app/layout.tsx
+
+
+    at ignore-listed frames
