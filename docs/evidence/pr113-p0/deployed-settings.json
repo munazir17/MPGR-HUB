@@ -1,0 +1,36 @@
+{
+  "commit": "d086b4145d1503014b16691540101086751cfaed",
+  "observedAt": "2026-10-16T18:59:45.123Z",
+  "settings": {
+    "HTTP": 200,
+    "valid": true,
+    "deploymentEnvironment": "preview",
+    "noStore": true,
+    "enabled": false,
+    "emergencyDisabled": false,
+    "productionGate": false,
+    "executionAvailable": false,
+    "runtimeFlag": "disabled",
+    "productionFlag": "missing",
+    "delegatedBase": false,
+    "delegatedChainId": null,
+    "walletSigningSupported": true
+  },
+  "tokens": {
+    "HTTP": 404,
+    "code": "AUTONOMY_DISABLED",
+    "count": null
+  },
+  "goals": {
+    "HTTP": 404,
+    "code": "AUTONOMY_DISABLED"
+  },
+  "policy": {
+    "HTTP": 404,
+    "code": "AUTONOMY_DISABLED"
+  },
+  "authorization": {
+    "HTTP": 404,
+    "code": "AUTONOMY_DISABLED"
+  }
+}

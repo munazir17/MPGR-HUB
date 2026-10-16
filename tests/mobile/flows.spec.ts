@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { test, expect, type Page, type TestInfo } from "@playwright/test";
 import { simulatedExecutorQuote } from "./flow-fixtures";
 import { CHAT_REVIEW_TOKENS, chatDraftToForm } from "../../components/features/agent/chat-autonomy-review";
@@ -10,6 +11,7 @@ const prompt = "Buy AAPLc whenever price falls below $200 worth 1 USDC";
 const form = chatDraftToForm(buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt));
 interface FixtureOptions { ready?: boolean; quoteStatus?: number; authExpired?: boolean; shortQuote?: boolean; policyBlocked?: boolean; permissionFailsOnce?: boolean }
 async function setup(page: Page, options: FixtureOptions = {}) {
+  page.on("pageerror", error => { throw error; });
   const trace: { method: string; path: string; status: number }[] = [];
   const policies: AutonomyPolicyView[] = [], goals: AutonomyGoalView[] = [], slots: DelegatedSlotView[] = [];
   let quotes = 0, permissions = 0;
@@ -41,10 +43,10 @@ async function setup(page: Page, options: FixtureOptions = {}) {
     else if (path === "/api/agent/autonomy/authorization" && method === "GET") json = { slots, walletSigningSupported: true };
     else if (path === "/api/agent/autonomy/policy" && method === "POST") {
       if (options.policyBlocked) { status = 503; json = { code: "PRODUCTION_GATE_DISABLED", error: "Simulated policy refusal" }; }
-      else { status = 201; const policy = { ...body, id: "policy-browser", wallet, maxPerTradeRaw: "1000000", maxDailyRaw: "100000000", expiresAt: new Date(Date.now() + 86400_000).toISOString(), revokedAt: null } as AutonomyPolicyView; policies.push(policy); json = { policy }; }
+      else { status = 201; const policy = { ...body, id: "policy-browser", wallet, enabled: true, maxPerTradeRaw: "1000000", maxDailyRaw: "100000000", expiresAt: new Date(Date.now() + 86400_000).toISOString(), revokedAt: null } as AutonomyPolicyView; policies.push(policy); json = { policy }; }
     } else if (path === "/api/agent/autonomy/goals" && method === "POST") {
       status = 201; const goal = { ...body, id: "goal-browser", status: "DRAFT", trade: { sellToken: policies[0].sellToken, buyToken: policies[0].buyToken, sellAmountRaw: "1000000", slippageBps: 100 },
-        expiresAt: policies[0].expiresAt, stats: { evaluations: 0, triggered: 0, verified: 0, consecutiveFailures: 0 }, pendingTxHash: null, lastResult: null, updatedAt: new Date().toISOString() } as AutonomyGoalView;
+        expiresAt: policies[0].expiresAt, stats: { evaluations: 0, triggered: 0, verified: 0, consecutiveFailures: 0 }, pendingTxHash: null, lastResult: null, createdAt: new Date().toISOString(), nextEvaluationAt: new Date().toISOString(), lastEvaluationAt: null, lastAction: null, updatedAt: new Date().toISOString() } as AutonomyGoalView;
       goals.push(goal); json = { goal };
     } else if (path === "/api/agent/autonomy/authorization" && method === "POST") {
       permissions++;
@@ -52,7 +54,11 @@ async function setup(page: Page, options: FixtureOptions = {}) {
       expect(body.slots[0].witness.actionId).toBe(delegatedActionId(goals[0].id));
       expect(body.slots[0].permit.amount).toBe("1000000"); expect(BigInt(body.slots[0].witness.minAmountOut)).toBeGreaterThan(0n);
       if (options.permissionFailsOnce && permissions === 1) { status = 503; json = { error: "Simulated permission persistence failure" }; }
-      else { status = 201; slots.push({ id: "slot-browser", policyId: body.policyId, goalId: body.goalId } as DelegatedSlotView); json = { ok: true }; }
+      else { status = 201; slots.push({ id: "slot-browser", policyId: body.policyId, goalId: body.goalId, slotIndex: 0, chainId: 8453, wallet,
+        sellToken: policies[0].sellToken, buyToken: policies[0].buyToken, amountRaw: body.slots[0].permit.amount,
+        minAmountOutRaw: body.slots[0].witness.minAmountOut, deadline: body.slots[0].permit.deadline,
+        deadlineIso: new Date(body.slots[0].permit.deadline * 1000).toISOString(), status: "active",
+        consumedAt: null, consumedByTxHash: null, revokedAt: null, createdAt: new Date().toISOString(), actionId: body.slots[0].witness.actionId }); json = { ok: true }; }
     } else if (path === "/api/agent/autonomy/goals/goal-browser" && method === "PATCH") {
       expect(slots).toHaveLength(1); expect(slots[0].goalId).toBe(goals[0].id); goals[0].status = "ACTIVE"; json = { goal: goals[0] };
     } else throw new Error(`Unexpected API request: ${method} ${path}`);
@@ -63,7 +69,9 @@ async function setup(page: Page, options: FixtureOptions = {}) {
   return { trace, policies, goals, slots, quoteCount: () => quotes };
 }
 async function evidence(page: Page, info: TestInfo, trace: unknown) {
-  await info.attach("simulated-api-trace", { body: JSON.stringify(trace, null, 2), contentType: "application/json" });
+  const path = info.outputPath("api-trace.json");
+  await writeFile(path, JSON.stringify(trace, null, 2));
+  await info.attach("simulated-api-trace", { path, contentType: "application/json" });
   await page.screenshot({ path: info.outputPath("flow.png"), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
@@ -115,6 +123,7 @@ test("Autonomy: gated Preview still permits local draft → real review, but zer
 test("Autonomy: isolated ready configuration traverses policy → goal → own-goal permission → activation, without swap/broadcast", async ({ page }, info) => {
   const state = await setup(page, { ready: true }); await draft(page); const activate = page.getByTestId("agent-autonomy-draft-authorize"); await expect(activate).toBeEnabled(); await activate.tap();
   await expect.poll(() => state.goals[0]?.status).toBe("ACTIVE"); expect(state.policies).toHaveLength(1); expect(state.goals).toHaveLength(1); expect(state.slots).toHaveLength(1);
+  await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("Active — awaiting trigger");
   expect(state.slots[0].goalId).toBe(state.goals[0].id); expect(await walletCalls(page)).toEqual(["delegated-signature"]); await evidence(page, info, state.trace);
 });
 test("Autonomy: server policy refusal stops before goal creation, signing or activation", async ({ page }, info) => {
@@ -126,6 +135,7 @@ test("Autonomy: permission persistence failure leaves DRAFT; retry uses same pol
   const state = await setup(page, { ready: true, permissionFailsOnce: true }); await draft(page); await page.getByTestId("agent-autonomy-draft-authorize").tap();
   await expect(page.getByText("Simulated permission persistence failure", { exact: false }).first()).toBeVisible(); expect(state.goals[0].status).toBe("DRAFT"); expect(state.slots).toHaveLength(0);
   await page.getByTestId("agent-autonomy-draft-authorize").tap(); await expect.poll(() => state.goals[0]?.status).toBe("ACTIVE");
+  await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("Active — awaiting trigger");
   expect(state.policies).toHaveLength(1); expect(state.goals).toHaveLength(1); expect(state.slots).toHaveLength(1); expect(await walletCalls(page)).not.toContain("simulated-send"); await evidence(page, info, state.trace);
 });
 for (const scenario of ["wrong-network", "other-wallet"]) test(`Manual: ${scenario} after review is refused by the real execution controller before wallet submission`, async ({ page }, info) => {

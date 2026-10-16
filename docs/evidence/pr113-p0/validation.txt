@@ -1,0 +1,31 @@
+PR113 P0 flow validation — 2026-10-17 IST
+Product implementation: d086b4145d1503014b16691540101086751cfaed
+Original deployed baseline: e15c3b126e5fe481bc5d4198aa966ae32b160943
+
+Focused command:
+npx vitest run lib/trade/__tests__/base-rpc-transport.test.ts lib/autonomy/__tests__/autonomy-status-initialization.test.ts app/api/trade/quote/route.test.ts app/api/trade/price/route.test.ts app/api/agent/autonomy/activation-route-audit.test.ts app/api/trade/stocks/quote/route.test.ts app/api/agent/autonomy/authorization/route.test.ts lib/trade/__tests__/trade-price-impact.test.ts hooks/useAgentAutonomy.auth.test.ts hooks/useAgentAutonomy.activation.test.ts components/features/agent/AgentAutonomyDraftReview.behavior.test.ts app/api/agent/autonomy/autonomy-routes-security.test.ts lib/trade/__tests__/trade-fee-collection-architecture.test.ts components/features/agent/AgentTradeConfirmationModal.render.test.ts components/features/agent/AgentAutonomyDraft.flow.test.ts app/api/trade/quote/trading-hardening.test.ts lib/api/autonomy-settings.test.ts components/features/agent/chat-autonomy-review.test.ts components/features/agent/AutonomyQuoteSummary.test.ts lib/autonomy/__tests__/production-gate.test.ts components/features/agent/AgentStage.render.test.ts lib/trade/__tests__/trade-token-resolution.test.ts app/api/trade/quote/executor-fee-route.test.ts components/features/agent/AgentAutonomyPanel.behavior.test.ts lib/trade/__tests__/trade-executor-quote.test.ts lib/trade/__tests__/manual-swap.test.ts lib/trade/__tests__/trade-agent-fee.test.ts lib/trade/__tests__/zero-ex-native-fee.test.ts lib/trade/__tests__/trade-cdp-client.test.ts lib/trade/__tests__/instant-swap.test.ts lib/trade/__tests__/trade-swap-funds-safety.test.ts lib/trade/__tests__/tokenized-stock-sell-value-target.test.ts lib/trade/__tests__/trade-chat.test.ts lib/trade/__tests__/trade-execution.test.ts lib/trade/__tests__/tokenized-stock-amount-unit.test.ts lib/trade/__tests__/tokenized-stock-route.test.ts lib/trade/__tests__/transfer-basename.test.ts lib/trade/__tests__/aerodrome-slipstream.test.ts lib/trade/__tests__/trade-tokens.test.ts app/api/agent/autonomy/config/route.test.ts lib/trade/__tests__/trade-quote-cache.test.ts components/features/agent/AgentTradingLauncher.behavior.test.ts lib/trade/__tests__/transfer-execution.test.ts lib/trade/__tests__/transfer-proposal.test.ts lib/trade/__tests__/tokenized-stock-fail-closed.test.ts lib/trade/__tests__/trade-jwt.test.ts lib/trade/__tests__/tokenized-stock-funding.test.ts lib/trade/__tests__/transfer-request.test.ts lib/trade/__tests__/trade-proposal.test.ts lib/trade/__tests__/trade-confirmation.test.ts lib/trade/__tests__/transfer-confirmation.test.ts lib/trade/__tests__/trade-request.test.ts lib/trade/__tests__/trade-permit2.test.ts
+
+
+ Test Files  53 passed (53)
+      Tests  688 passed (688)
+   Start at  18:53:10
+   Duration  83.02s (transform 4.49s, setup 0ms, import 52.59s, tests 14.45s, environment 16ms)
+
+Fresh browser run (real controllers, isolated APIs/wallets): npm run test:mobile
+  ✓  94 [mobile-390] › tests/mobile/review.spec.ts:332:5 › native disclosure summaries support keyboard and remain inside the modal focus trap (3.5s)
+
+  94 passed (3.1m)
+47 cases each at360x800 and390x844;24 new integrated flow cases,70 earlier compact/review cases.
+24 per-case API traces retained in simulated-api-traces.json.
+
+TypeScript: pass. Lint:0 errors,59 existing warnings. Diff check:clean.
+
+Deployed anonymous browser/API baseline and fix: passed.
+https://github.com/munazir17/MPGR-HUB/actions/runs/38951335568/job/117143163961
+8 actual deployed screenshots and safe JSON (7-day artifact):
+https://github.com/munazir17/MPGR-HUB/actions/runs/38951335568/artifacts/12067883549
+Artifact storage redirect unavailable to sandbox; safe annotation mirrored as deployed-results.json.
+
+Implementation-head CI:10 pass,2 opt-in skipped; no workflow dispatch.
+Authenticated deployed quote/provider health and live wallet/settlement acceptance NOT VERIFIED.
+Mainnet autonomy remains disabled. No live signatures/trades/broadcasts/production writes/merge.
