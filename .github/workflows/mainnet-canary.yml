@@ -52,7 +52,7 @@ jobs:
       CANARY_ADDRESS: ${{ secrets.CANARY_ADDRESS || '' }}
       SEPOLIA_BROADCASTER_ADDRESS: ${{ vars.SEPOLIA_BROADCASTER_ADDRESS || secrets.SEPOLIA_BROADCASTER_ADDRESS || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -77,7 +77,7 @@ jobs:
       BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
       CANARY_ADDRESS: ${{ secrets.CANARY_ADDRESS || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -113,7 +113,7 @@ jobs:
       CANARY_ADDRESS: ${{ secrets.CANARY_ADDRESS || '' }}
       SEPOLIA_BROADCASTER_ADDRESS: ${{ vars.SEPOLIA_BROADCASTER_ADDRESS || secrets.SEPOLIA_BROADCASTER_ADDRESS || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 20

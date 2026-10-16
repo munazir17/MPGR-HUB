@@ -41,7 +41,7 @@ jobs:
       FOUNDRY_PROFILE: default
     steps:
       - name: Checkout reviewed deployment revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
 
@@ -118,7 +118,7 @@ jobs:
       FOUNDRY_PROFILE: default
     steps:
       - name: Checkout the same reviewed deployment revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
 
