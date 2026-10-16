@@ -23,6 +23,9 @@ describe("compact quote presentation — no execution or fee arithmetic changes"
     p.agentFee = { ...p.agentFee!, amountAtomic: "123456", displayAmount: "9.9999 USDC", bps: 17 };
     expect(summary(p)).toContain("0.17% · 0.123456 USDC");
     expect(summary(p)).not.toContain("9.9999 USDC");
+    p.risk = p.risk.filter((r) => r.id !== "executor-approval");
+    p.warnings = p.warnings.filter((w) => !w.startsWith("Executor spending approval required:"));
+    expect(summary(p)).toContain("Separate Executor approval may be needed (a Base transaction).");
   });
   it("does not invent 25bps or an applied fee for CDP, skipped or absent metadata", () => {
     const p = reviewQuoteFixture(form);
@@ -59,7 +62,7 @@ describe("compact quote presentation — no execution or fee arithmetic changes"
     const html = renderToStaticMarkup(createElement(AutonomyQuoteDetails, { form, proposal: p, expiresAt: Date.now() + 30_000, diagnostics: "Settings unavailable", sourcePrompt: prompt }));
     expect(html.match(/<details /g)).toHaveLength(3);
     expect(html).not.toContain(' open=""');
-    for (const text of ["Fee &amp; execution details", "Slippage &amp; quote validity", "Risks &amp; network requirements", "single-use, not recurring schedule permission", "987654321 atomic units", "Settings unavailable", "authorization expires in 30 days"])
+    for (const text of ["Fee &amp; execution details", "Slippage &amp; quote validity", "Risks &amp; network requirements", "single-use, not recurring schedule permission", "987654321 atomic units", "Settings unavailable", "authorization expires in 30 days", "not autonomous signing or broadcasting", "An authorized runtime may broadcast only after the trigger and all execution checks pass"])
       expect(html).toContain(text);
     for (const risk of p.risk) if (["executor-approval", "tokenized-swap", "slippage"].includes(risk.id)) expect(html).toContain(risk.detail.replace(/'/g, "&#x27;"));
     expect(html).not.toContain("0.000000000987654321"); // gas-token decimals are NOT known

@@ -97,6 +97,7 @@ export function AutonomyQuoteSummary({ form, sellSymbol, buySymbol, proposal, va
     <div className="mt-2 space-y-1 border-t border-white/10 pt-2 leading-relaxed text-muted" data-testid="quote-safety">
       <p>Base Mainnet only. Nothing executes until required authorization and trigger conditions are satisfied.</p>
       {stock && !proposal?.risk.some((r) => r.id === "tokenized-swap" && compactRisk(r, proposal) !== null) && <p>{stock.symbol} is a tokenized stock token, not direct shares or issuer subscription. Liquidity may be thin; prices may differ from Chainlink.</p>}
+      {proposal?.provider === "mpgr-executor" && !proposal.risk.some((r) => r.id === "executor-approval" && compactRisk(r, proposal) !== null) && <p>Separate Executor approval may be needed (a Base transaction).</p>}
       {risks.visible.map((line) => <p key={normalized(line)}>{line}</p>)}
     </div>
   </section>;
@@ -121,6 +122,7 @@ export function AutonomyQuoteDetails({ form, proposal, expiresAt, diagnostics, s
         {proposal?.agentFee?.status === "skipped" && proposal.agentFee.reason && <p>{proposal.agentFee.reason}</p>}
         <p>Gas: {proposal?.fees.gasFee ? `${proposal.fees.gasFee.amount} atomic units (${proposal.fees.gasFee.token})` : "Not quoted; wallet/network cost may apply."}</p>
         <p>Protocol: {proposal?.fees.protocolFee ? `${proposal.fees.protocolFee.amount} atomic units (${proposal.fees.protocolFee.token})` : "Not quoted."}</p>
+        <p>Provider notes below describe the underlying Manual quote source, not autonomous signing or broadcasting. This review saves a goal-bound permission, not a signed swap. An authorized runtime may broadcast only after the trigger and all execution checks pass.</p>
         <RiskLines facts={feeFacts} />
       </div>
     </details>
