@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { useAgentAutonomy } from "@/hooks/useAgentAutonomy";
 import { useTradeQuote } from "@/hooks/useTradeQuote";
 import { WalletAuthProvider } from "@/hooks/useWalletAuth";
+import { SwapExperience } from "@/components/features/swap/SwapExperience";
 import { AgentTradingLauncher } from "@/components/features/agent/AgentTradingLauncher";
 import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTradeConfirmationModal";
 import { AgentAutonomyDraftReview } from "@/components/features/agent/AgentAutonomyDraftReview";
@@ -14,7 +15,8 @@ function Controllers() {
   const { isConnected } = useAccount();
   const autonomy = useAgentAutonomy();
   const trade = useTradeQuote();
-  return <><AgentTradingLauncher autonomy={autonomy} connected={isConnected} onConnect={() => {}} proposals={[]} onReviewTrade={trade.openProposal} />
+  return <><SwapExperience />
+    <AgentTradingLauncher autonomy={autonomy} connected={isConnected} onConnect={() => {}} proposals={[]} onReviewTrade={trade.openProposal} />
     <div className="h-[70dvh] overflow-y-auto"><AgentAutonomyDraftReview autonomy={autonomy} embedded /></div>
     <AgentTradeConfirmationModal {...trade} onClose={trade.close} onConfirmAndSwap={trade.confirmAndSwap} />
     <p data-testid="flow-state">{trade.executionState}</p><p data-testid="flow-auth">{String(autonomy.authenticated)}</p>

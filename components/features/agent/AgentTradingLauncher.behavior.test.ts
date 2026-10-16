@@ -28,26 +28,27 @@ const render = (connected = true) => AgentTradingLauncher({ autonomy: autonomy a
 const click = (tree: ReactNode, id: string) => (byId(tree, id).props.onClick as () => void)();
 beforeEach(() => { state.mode = null; vi.clearAllMocks(); });
 
-describe("external Manual / Autonomy launcher", () => {
+describe("command-first Agent / Autonomy launcher", () => {
   it("is visible with both panels closed; opening or closing performs no writes, quotes or authorization", () => {
     let tree = render();
-    expect(byId(tree, "trading-manual-content").props.hidden).toBe(true);
+    expect(byId(tree, "trading-manual-content")).toBeUndefined();
+    expect(byId(tree, "trading-launcher-manual")).toBeUndefined();
     expect(byId(tree, "trading-autonomy-content").props.hidden).toBe(true);
-    click(tree, "trading-launcher-manual"); tree = render();
-    expect(byId(tree, "trading-manual-content").props.hidden).toBe(false);
-    click(tree, "trading-launcher-manual"); tree = render();
-    expect(byId(tree, "trading-manual-content").props.hidden).toBe(true);
+    click(tree, "trading-launcher-autonomy"); tree = render();
+    expect(byId(tree, "trading-autonomy-content").props.hidden).toBe(false);
+    click(tree, "trading-launcher-autonomy"); tree = render();
+    expect(byId(tree, "trading-autonomy-content").props.hidden).toBe(true);
     expect(review).not.toHaveBeenCalled(); expect(connect).not.toHaveBeenCalled();
     expect(autonomy.activateDraft).not.toHaveBeenCalled(); expect(autonomy.authorizeGoal).not.toHaveBeenCalled();
     expect(autonomy.signDelegatedSlots).not.toHaveBeenCalled();
   });
-  it("keeps one identical Autonomy panel in the tree while switching modes", () => {
+  it("keeps one identical Autonomy panel in the tree while opening and closing", () => {
     const panel = (tree: ReactNode) => nodes(tree).filter((el) => el.type === AgentAutonomyPanel);
     let tree = render(); expect(panel(tree)).toHaveLength(1);
     click(tree, "trading-launcher-autonomy"); tree = render();
     expect(panel(tree)[0].props.expanded).toBe(true);
     expect(panel(tree)[0].props.autonomy).toBe(autonomy);
-    click(tree, "trading-launcher-manual"); tree = render();
+    click(tree, "trading-launcher-autonomy"); tree = render();
     expect(panel(tree)).toHaveLength(1); expect(panel(tree)[0].props.expanded).toBe(false);
     click(tree, "trading-launcher-autonomy"); tree = render();
     expect(panel(tree)[0].type).toBe(AgentAutonomyPanel); expect(panel(tree)[0].key).toBeNull();
@@ -70,7 +71,7 @@ describe("external Manual / Autonomy launcher", () => {
     expect(source).toMatch(/<\/div>\s*\{instantSwapError[\s\S]*?<AgentTradingLauncher/);
     expect(source.indexOf("<AgentTradingLauncher")).toBeGreaterThan(source.indexOf("{/* DOCK"));
     const tree = render(); expect(nodes(tree).some((el) => String(el.props.className).includes("flex-wrap"))).toBe(true);
-    expect(byId(tree, "trading-launcher-manual").props.className).toContain("min-h-[44px]");
-    expect(byId(tree, "trading-launcher-manual").props["aria-controls"]).toBe("trading-manual");
+    expect(byId(tree, "trading-launcher-autonomy").props.className).toContain("min-h-[44px]");
+    expect(byId(tree, "trading-launcher-autonomy").props["aria-controls"]).toBe("trading-autonomy");
   });
 });

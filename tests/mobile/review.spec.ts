@@ -57,9 +57,8 @@ test("parsed draft initialization, scrolling, tap feedback, retry and launcher",
   await page.getByTestId("open-review").tap();
   await expect(page.getByTestId("autonomy-draft-amount")).toHaveValue("1");
   await page.getByTestId("agent-autonomy-draft-review-close").tap();
-  await page.getByTestId("trading-launcher-manual").tap();
-  await expect(page.getByTestId("trading-manual-content")).toBeVisible();
-  await page.getByTestId("trading-manual-content").getByRole("button", { name: /Swap proposal ready/i }).tap();
+  await expect(page.getByTestId("trading-launcher-manual")).toHaveCount(0);
+  await page.getByLabel("Command swap proposals").getByRole("button", { name: /Swap proposal ready/i }).tap();
   await expect(page.getByTestId("manual-review")).toBeVisible();
   await page.getByTestId("trading-launcher-autonomy").tap();
   await expect(page.getByTestId("trading-autonomy-content")).toBeVisible();
@@ -78,10 +77,10 @@ for (const [state, reason] of [
     await expect(page.getByTestId("activation-calls")).toHaveText("0");
     if (state === "preview-blocked") {
       await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("runtime flag: disabled; production flag: missing");
-      await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("Use Manual mode");
+      await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("Use MPGR Swap");
       await expect(button(page)).toBeInViewport();
-      await page.getByTestId("trading-launcher-manual").tap();
-      await expect(page.getByTestId("trading-manual-content")).toBeVisible();
+      await expect(page.getByTestId("trading-launcher-manual")).toHaveCount(0);
+      await expect(page.getByLabel("Command swap proposals")).toBeVisible();
       await expect(page.getByTestId("activation-calls")).toHaveText("0");
     }
     if (state === "session") {

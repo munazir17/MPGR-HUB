@@ -1,3 +1,4 @@
+import { tradeCommandInputError } from "@/lib/agent-intelligence/trade-command-guard";
 // lib/architecture/ai/agent-tool-calling.ts
 
 import type {
@@ -188,6 +189,8 @@ export async function runToolCallingLoop(
   // on-chain reads BEFORE the model is called, so a single-token balance
   // ("What is my MSTRc balance?") can never come back as a portfolio summary
   // or a guessed number. Everything else keeps the normal tool loop.
+  const inputError = tradeCommandInputError(request.prompt);
+  if (inputError) return { intent: "general_help", reply: inputError, actions: [], highlights: [], followUps: [] };
   const balanceAnswer = await answerWalletBalance(request);
   if (balanceAnswer) return balanceAnswer;
 

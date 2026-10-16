@@ -86,7 +86,7 @@ describe("Chat authorization requires confirmed live gates independently of sett
   it("does not suggest retry/sign-in as a fix for a disabled runtime flag", () => {
     const message = chatReviewAuthorizationError({ ...ready(), config: { ...config, enabled: false }, settingsRead: { state: "loaded", httpStatus: 200, runtimeGate: "missing" } });
     expect(message).toMatch(/runtime flag: missing/);
-    expect(message).toContain("Use Manual mode");
+    expect(message).toContain("Use MPGR Swap");
     expect(message).toContain("unavailable on this deployment");
     expect(message).not.toMatch(/Retry loading settings/);
   });
@@ -143,14 +143,14 @@ it("explains the verified Preview block and directs to Manual without suggesting
   expect(message).toContain("Mainnet autonomous authorization is unavailable in Preview");
   expect(message).toContain("runtime flag: disabled");
   expect(message).toContain("production flag: missing");
-  expect(message).toContain("Use Manual mode");
+  expect(message).toContain("Use MPGR Swap");
   expect(message).not.toMatch(/must review Preview configuration|Retry loading settings|enable (?:Mainnet autonomy|the production gate) in Preview/i);
 });
 it("does not mislabel Production as Preview or let deployment diagnostics enable a missing gate", () => {
   expect(chatReviewAuthorizationError({ ...ready(), settingsRead: { state: "loaded", deploymentEnvironment: "preview" } })).toBeNull();
   for (const deploymentEnvironment of ["preview", "production", "unknown"] as const) {
     const message = chatReviewAuthorizationError({ ...ready(), config: { ...config, productionGate: false }, settingsRead: { state: "loaded", productionGate: "missing", deploymentEnvironment } });
-    expect(message).toContain("Use Manual mode");
+    expect(message).toContain("Use MPGR Swap");
     expect(message).toContain(deploymentEnvironment === "preview" ? "unavailable in Preview" : "unavailable on this deployment");
     if (deploymentEnvironment !== "preview") expect(message).not.toContain("in Preview");
   }

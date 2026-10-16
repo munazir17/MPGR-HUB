@@ -42,6 +42,15 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("conditional trade preflight (before any model tool loop/spot prepare)", () => {
+  it("keeps the requested absolute-price example review-only, with missing spend amount still missing", async () => {
+    model(json({ trigger: { kind: "price_below", price: 200 } }));
+    const response = await getAIProvider().generateReply(request("Buy AAPLc if its price falls below $200"));
+    expect(response.autonomyGoalDraft).toMatchObject({ targetAsset: "AAPLc", triggerKind: "price_below", triggerPrice: "200", amountPerTrade: null });
+    expect(response.tradeProposal).toBeUndefined();
+    expect(runToolCallingLoop).not.toHaveBeenCalled();
+    expect(readPrice.mock.calls.every(([tool]) => tool === "get_pair")).toBe(true);
+    expect(response.reply).toMatch(/review|draft/i);
+  });
   it("parses a normal 'price drops 1%' sentence into a draft anchored at the live price", async () => {
     const response = await getAIProvider().generateReply(request("Buy AAPLc when price drops 1%"));
     expect(response.autonomyGoalDraft).toMatchObject({ targetAsset: "AAPLc", triggerKind: "price_below", triggerPrice: "343.53", referencePrice: "347", amountPerTrade: null });

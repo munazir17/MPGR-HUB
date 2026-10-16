@@ -1,0 +1,23 @@
+PR113 Swap / command-first Agent — 2026-10-17 IST
+Baseline: bb70ec86cf394f7412b2d053df3f1b4d33475d10
+
+Complete offline suite: npx vitest run
+ Test Files  286 passed | 5 skipped (291)
+      Tests  3668 passed | 24 skipped (3692)
+   Start at  19:55:56
+   Duration  295.45s (transform 8.90s, setup 0ms, import 165.90s, tests 69.20s, environment 37ms)
+
+
+Mobile: LD_LIBRARY_PATH=/home/user/mobile-browser/libs/lib:/tmp MOBILE_CHROMIUM_EXECUTABLE=/tmp/chromium npm run test:mobile
+  108 passed (5.5m)
+
+54 cases at each of 360x800 and 390x844. 38 real-controller/simulated API cases plus 70 review/layout cases.
+38 per-case API traces in simulated-api-traces.json. Six representative simulated screenshots.
+TypeScript: npx tsc --noEmit — PASS
+Lint: npm run lint — 0 errors, 59 existing warnings
+Diff check: git diff --check — PASS
+
+Test-only AgentKit telemetry boundary is mocked; no unhandled-rejection suppression.
+No live wallet signatures, approvals, goal authorizations, trades, broadcasts or production writes.
+Authenticated Preview/provider health and live settlement remain UNVERIFIED.
+Protocol limit orders remain NOT INTEGRATED; see docs/BASE-LIMIT-ORDER-PROPOSAL.md.

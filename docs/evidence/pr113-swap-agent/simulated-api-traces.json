@@ -1,0 +1,1560 @@
+[
+  {
+    "case": "flows-Autonomy-gated-Previ-5833f-ermission-activation-writes-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Autonomy-gated-Previ-5833f-ermission-activation-writes-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Autonomy-isolated-re-aa5e3-tion-without-swap-broadcast-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/tokens",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/policy",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/goals",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/agent/autonomy/goals/goal-browser",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Autonomy-isolated-re-aa5e3-tion-without-swap-broadcast-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/tokens",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/policy",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/goals",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/agent/autonomy/goals/goal-browser",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Autonomy-permission--d99e4-wn-permission-before-ACTIVE-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/tokens",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/policy",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/goals",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 503
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/agent/autonomy/goals/goal-browser",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Autonomy-permission--d99e4-wn-permission-before-ACTIVE-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/tokens",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/policy",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/goals",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 503
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 201
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/agent/autonomy/goals/goal-browser",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Autonomy-server-poli-108c3-ation-signing-or-activation-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/tokens",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/policy",
+        "status": 503
+      }
+    ]
+  },
+  {
+    "case": "flows-Autonomy-server-poli-108c3-ation-signing-or-activation-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/tokens",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/policy",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/authorization",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/agent/autonomy/policy",
+        "status": 503
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-disconnected-wa-f92a2--request-a-quote-or-execute-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-disconnected-wa-f92a2--request-a-quote-or-execute-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-expiry-edit-inv-26a7d-stale-review-and-submission-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-expiry-edit-inv-26a7d-stale-review-and-submission-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-failed-metadata-3223f--a-token-or-prepare-a-quote-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/token",
+        "status": 503
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-failed-metadata-3223f--a-token-or-prepare-a-quote-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/token",
+        "status": 503
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-local-search-ex-8d5c9-ment-liquidity-or-execution-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/token",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 502
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-local-search-ex-8d5c9-ment-liquidity-or-execution-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/token",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 502
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-other-wallet-af-4a0d3-er-before-wallet-submission-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/nonce",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/auth/verify",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-other-wallet-af-4a0d3-er-before-wallet-submission-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/nonce",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/auth/verify",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-quote-401-requi-7a475-ached-authenticated-session-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 401
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/nonce",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/auth/verify",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-quote-401-requi-7a475-ached-authenticated-session-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 401
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/nonce",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/auth/verify",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-real-UI-exposes-2b4a4--review-or-wallet-execution-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 503
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-real-UI-exposes-2b4a4--review-or-wallet-execution-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 503
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-real-UI-exposes-771d3--review-or-wallet-execution-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 429
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-real-UI-exposes-771d3--review-or-wallet-execution-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 429
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-select-quote-re-f3a46-xact-approval-Executor-swap-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-select-quote-re-f3a46-xact-approval-Executor-swap-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-simulated-insuf-4aa73--reports-settlement-success-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-simulated-insuf-4aa73--reports-settlement-success-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-simulated-rever-0112b--reports-settlement-success-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-simulated-rever-0112b--reports-settlement-success-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-simulated-walle-354b6--reports-settlement-success-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-simulated-walle-354b6--reports-settlement-success-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-wallet-change-a-8bda6--stale-review-or-settlement-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/nonce",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/auth/verify",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-wallet-change-a-8bda6--stale-review-or-settlement-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "path": "/api/auth/nonce",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/auth/verify",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-wrong-network-a-e5138-er-before-wallet-submission-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-wrong-network-a-e5138-er-before-wallet-submission-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      },
+      {
+        "method": "POST",
+        "path": "/api/trade/quote",
+        "status": 200
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-wrong-network-i-05ce1-e-metadata-quote-or-signing-mobile-360",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      }
+    ]
+  },
+  {
+    "case": "flows-Swap-wrong-network-i-05ce1-e-metadata-quote-or-signing-mobile-390",
+    "evidence": "Simulated HTTP responses and wallet transport; not live acceptance",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/config",
+        "status": 200
+      },
+      {
+        "method": "GET",
+        "path": "/api/agent/autonomy/goals",
+        "status": 404
+      }
+    ]
+  }
+]

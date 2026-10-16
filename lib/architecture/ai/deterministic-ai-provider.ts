@@ -1,3 +1,5 @@
+import { tradeCommandInputError } from "@/lib/agent-intelligence/trade-command-guard";
+import { isExecutableRouteRequest } from "@/lib/agent-intelligence/swap-intent";
 import { selectReferencePrice } from "@/lib/autonomy/reference-price";
 import { logger } from "@/lib/architecture/core/logger";
 import { formatTradeReview, formatTradePrice, publicAgentContent } from "@/lib/trade/trade-chat";
@@ -69,6 +71,8 @@ export class DeterministicAIProvider implements AIProvider {
   readonly requiresNetwork = false;
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
+    const inputError = tradeCommandInputError(request.prompt);
+    if (inputError) return helpResponse(inputError);
     if (hasNegativeTradeAmount(request.prompt)) return helpResponse("The swap amount must be positive. Nothing was signed or submitted.");
     const conditionalInputError = conditionalTradeInputError(request.prompt);
     if (conditionalInputError) return helpResponse(conditionalInputError);
@@ -109,7 +113,7 @@ export class DeterministicAIProvider implements AIProvider {
     }
 
     const directSwap = extractBaseSwapIntent(request.prompt);
-    if (directSwap && !directSwap.quoteOnly && isTradeExecutionPrompt(request.prompt)) {
+    if (directSwap && ((directSwap.quoteOnly && directSwap.amount) || (!directSwap.quoteOnly && (isTradeExecutionPrompt(request.prompt) || isExecutableRouteRequest(request.prompt))))) {
       return prepareOrExplainBaseSwap(request, directSwap);
     }
 
@@ -363,7 +367,8 @@ async function quoteBaseSwapSide(
  * Natural "swap X to Y" over the existing supported token universe.
  *
  *   - no amount yet       → ask for it (no API call, no guessed unit)
- *   - quote/price wording → trade_get_price (reference only)
+ *   - unsized quote/price wording → trade_get_price (reference only)
+ *   - sized quote → executable proposal for review (never authorization)
  *   - otherwise           → prepare_swap, which routes B20 legs through
  *                           the Aerodrome path and everything else
  *                           through the existing CDP → 0x quote route
@@ -375,7 +380,7 @@ async function prepareOrExplainBaseSwap(
   request: AIProviderRequest,
   intent: BaseSwapIntent,
 ): Promise<AIProviderResponse> {
-  if (intent.quoteOnly) {
+  if (intent.quoteOnly && !intent.amount) {
     return quoteBaseSwapSide(request, intent);
   }
 
@@ -437,7 +442,7 @@ async function prepareOrExplainTrade(
   // card claims an execution route is ready. Research phrasing without an
   // execution verb ("check AAPLc price", "NVDAc premium vs feed",
   // "should I buy AAPLc?") keeps the research path untouched.
-  const wantsExecution = isTradeExecutionPrompt(request.prompt);
+  const wantsExecution = (isTradeExecutionPrompt(request.prompt) || isExecutableRouteRequest(request.prompt));
 
   if (wantsQuote || wantsExecution) {
     if (!symbol) {

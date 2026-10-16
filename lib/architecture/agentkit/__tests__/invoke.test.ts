@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -7,6 +7,14 @@ import {
   invokeAgentKitAction,
   stripSecretsFromPayload,
 } from "../invoke";
+
+// Same offline analytics boundary as prepare-only-wallet.test.ts. Keep the real
+// SDK, policy action and signing-denial assertions; never send SDK telemetry.
+beforeEach(() => vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+  if (String(input) !== "https://cca-lite.coinbase.com/amp") throw new Error("Unexpected network request in AgentKit invocation boundary test");
+  return new Response("{}", { status: 200 });
+})));
+afterEach(() => vi.unstubAllGlobals());
 
 describe("invokeAgentKitAction allowlist gate", () => {
   it("denies native_transfer before AgentKit can sign", async () => {

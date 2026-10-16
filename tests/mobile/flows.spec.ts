@@ -9,7 +9,8 @@ const wallet = "0x1111111111111111111111111111111111111111";
 const token = (symbol: string) => CHAT_REVIEW_TOKENS.find(t => t.symbol === symbol)!.address;
 const prompt = "Buy AAPLc whenever price falls below $200 worth 1 USDC";
 const form = chatDraftToForm(buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt));
-interface FixtureOptions { ready?: boolean; quoteStatus?: number; authExpired?: boolean; shortQuote?: boolean; policyBlocked?: boolean; permissionFailsOnce?: boolean }
+const importedAddress = "0x1234567890abcdef1234567890abcdef12345678";
+interface FixtureOptions { importStatus?: number; ready?: boolean; quoteStatus?: number; authExpired?: boolean; shortQuote?: boolean; policyBlocked?: boolean; permissionFailsOnce?: boolean }
 async function setup(page: Page, options: FixtureOptions = {}) {
   page.on("pageerror", error => { throw error; });
   const trace: { method: string; path: string; status: number }[] = [];
@@ -26,6 +27,11 @@ async function setup(page: Page, options: FixtureOptions = {}) {
     else if (path === "/api/agent/autonomy/config") json = { enabled: !!options.ready, emergencyDisabled: false, productionGate: !!options.ready, executionAvailable: !!options.ready,
       delegated: { chainId: options.ready ? 8453 : null, executor: options.ready ? "0x2222222222222222222222222222222222222222" : null, walletSigningSupported: true },
       limits: { maxGoalsPerWallet: 5, minCooldownSeconds: 60, maxPolicyTtlDays: 30, maxPerTradeHuman: "100", maxDailyHuman: "500", maxSlippageBps: 100 } };
+    else if (path === "/api/trade/token") {
+      expect(body).toEqual({ address: importedAddress, chainId: 8453 });
+      status = options.importStatus ?? 200;
+      json = status === 200 ? { chainId: 8453, token: { address: importedAddress, symbol: "NEW", name: "Simulated imported token", decimals: 6, kind: "erc20", verified: false } } : { code: "PROVIDER_ERROR", error: "Simulated Base metadata unavailable" };
+    }
     else if (path === "/api/trade/quote") {
       quotes++;
       status = options.quoteStatus ?? (options.authExpired && quotes === 1 ? 401 : 200);
@@ -76,24 +82,24 @@ async function evidence(page: Page, info: TestInfo, trace: unknown) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 const walletCalls = (page: Page) => page.evaluate(() => (window as unknown as { simulatedWalletCalls?: string[] }).simulatedWalletCalls ?? []);
-async function manual(page: Page) { await page.getByTestId("trading-launcher-manual").tap(); await page.getByLabel("Sell amount", { exact: true }).fill("1"); }
+async function manual(page: Page) { await expect(page.getByTestId("trading-launcher-manual")).toHaveCount(0); await page.getByLabel("Sell amount", { exact: true }).fill("1"); }
 async function draft(page: Page) {
   await page.getByTestId("trading-launcher-autonomy").tap(); await page.getByLabel("USDC per trade").fill("1"); await page.getByLabel("Trigger price (USD)").fill("200");
   await page.getByRole("button", { name: "Review local draft", exact: true }).tap();
 }
-test("Manual: select, quote, refresh, review and explicitly confirm through real controllers; simulated exact approval + Executor swap", async ({ page }, info) => {
+test("Swap: select, quote, refresh, review and explicitly confirm through real controllers; simulated exact approval + Executor swap", async ({ page }, info) => {
   const state = await setup(page); await manual(page);
   await page.getByLabel("Buy token", { exact: true }).selectOption(token("AAPLc"));
   await page.getByRole("button", { name: "Prepare swap", exact: true }).tap(); await expect(page.getByText("Quote ready — not a settlement")).toBeVisible();
   expect(await walletCalls(page)).toEqual([]); await page.getByRole("button", { name: "Refresh quote", exact: true }).tap();
   await expect(page.getByRole("button", { name: "Review swap", exact: true })).toBeEnabled(); expect(state.quoteCount()).toBe(2);
   await page.getByRole("button", { name: "Review swap", exact: true }).tap(); await expect(page.getByRole("heading", { name: "Confirm swap" })).toBeVisible();
-  await expect(page.getByText("0.0025 USDC", { exact: false })).toBeVisible(); expect(await walletCalls(page)).toEqual([]);
-  await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByTestId("flow-state")).toHaveText("SUCCESS");
+  await expect(page.getByRole("dialog").getByText("0.0025 USDC", { exact: false })).toBeVisible(); expect(await walletCalls(page)).toEqual([]);
+  await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByTestId("swap-status")).toContainText("Swap confirmed.");
   expect((await walletCalls(page)).filter(c => c === "simulated-send")).toHaveLength(2); expect(await walletCalls(page)).not.toContain("delegated-signature");
   expect(state.policies).toHaveLength(0); await evidence(page, info, state.trace);
 });
-test("Manual: expiry, edit invalidation and wallet/network validation prevent stale review and submission", async ({ page }, info) => {
+test("Swap: expiry, edit invalidation and wallet/network validation prevent stale review and submission", async ({ page }, info) => {
   const state = await setup(page, { shortQuote: true }); await manual(page);
   await page.getByRole("button", { name: "Prepare swap", exact: true }).tap(); await expect(page.getByText("Quote ready — not a settlement")).toBeVisible();
   await expect(page.getByText("Quote expired — refresh before review")).toBeVisible({ timeout: 4000 }); await expect(page.getByRole("button", { name: "Review swap", exact: true })).toBeDisabled();
@@ -102,12 +108,12 @@ test("Manual: expiry, edit invalidation and wallet/network validation prevent st
   await page.getByRole("button", { name: "Prepare swap", exact: true }).tap(); await expect(page.getByRole("alert")).toContainText("Switch your wallet"); expect(state.quoteCount()).toBe(1);
   expect(await walletCalls(page)).not.toContain("simulated-send"); await evidence(page, info, state.trace);
 });
-for (const status of [429, 503]) test(`Manual: real UI exposes quote HTTP ${status}, no review or wallet execution`, async ({ page }, info) => {
+for (const status of [429, 503]) test(`Swap: real UI exposes quote HTTP ${status}, no review or wallet execution`, async ({ page }, info) => {
   const state = await setup(page, { quoteStatus: status }); await manual(page); await page.getByRole("button", { name: "Prepare swap", exact: true }).tap();
   await expect(page.getByRole("alert")).toContainText(`HTTP ${status}`); await expect(page.getByRole("button", { name: "Review swap", exact: true })).toHaveCount(0);
   expect(await walletCalls(page)).toEqual([]); await evidence(page, info, state.trace);
 });
-test("Manual: quote 401 requires explicit retry and re-enters existing SIWE even with a cached authenticated session", async ({ page }, info) => {
+test("Swap: quote 401 requires explicit retry and re-enters existing SIWE even with a cached authenticated session", async ({ page }, info) => {
   const state = await setup(page, { authExpired: true }); await manual(page); await page.getByRole("button", { name: "Prepare swap", exact: true }).tap();
   await expect(page.getByRole("alert")).toContainText("HTTP 401"); expect(await walletCalls(page)).toEqual([]); expect(state.quoteCount()).toBe(1);
   await page.getByRole("button", { name: "Sign in and retry quote", exact: true }).tap(); await expect(page.getByText("Quote ready — not a settlement")).toBeVisible();
@@ -138,15 +144,70 @@ test("Autonomy: permission persistence failure leaves DRAFT; retry uses same pol
   await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("Active — awaiting trigger");
   expect(state.policies).toHaveLength(1); expect(state.goals).toHaveLength(1); expect(state.slots).toHaveLength(1); expect(await walletCalls(page)).not.toContain("simulated-send"); await evidence(page, info, state.trace);
 });
-for (const scenario of ["wrong-network", "other-wallet"]) test(`Manual: ${scenario} after review is refused by the real execution controller before wallet submission`, async ({ page }, info) => {
+for (const scenario of ["wrong-network", "other-wallet"]) test(`Swap: ${scenario} after review is refused by the real execution controller before wallet submission`, async ({ page }, info) => {
   const state = await setup(page); await manual(page); await page.getByRole("button", { name: "Prepare swap", exact: true }).tap();
   await page.getByRole("button", { name: "Review swap", exact: true }).tap(); await expect(page.getByRole("button", { name: "Confirm & Swap", exact: true })).toBeEnabled();
   await page.getByLabel("Wallet fixture").selectOption(scenario);
-  await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByTestId("flow-state")).toHaveText("ERROR");
+  await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByRole("dialog").getByRole("alert")).toContainText(scenario === "wrong-network" ? "Switch your wallet to Base" : "Connect the wallet for this swap");
+  await expect(page.getByRole("button", { name: "Swap unavailable", exact: true })).toBeDisabled();
+  await expect(page.getByTestId("swap-status")).toHaveCount(0);
   expect(await walletCalls(page)).not.toContain("simulated-send"); expect(state.policies).toHaveLength(0); await evidence(page, info, state.trace);
 });
-test("Manual: disconnected wallet can edit but cannot request a quote or execute", async ({ page }, info) => {
+test("Swap: disconnected wallet can edit but cannot request a quote or execute", async ({ page }, info) => {
   const state = await setup(page); await manual(page); await page.getByLabel("Wallet fixture").selectOption("disconnected");
   await page.getByLabel("Sell amount", { exact: true }).fill("1"); await page.getByRole("button", { name: "Connect wallet to prepare", exact: true }).tap();
   expect(state.quoteCount()).toBe(0); expect(await walletCalls(page)).toEqual([]); await evidence(page, info, state.trace);
+});
+
+test("Swap: local search, exact Base import and unsupported route never imply endorsement, liquidity or execution", async ({ page }, info) => {
+  const state = await setup(page, { quoteStatus: 502 }); await manual(page);
+  const search = page.getByLabel("Search tokens or Base contract");
+  await search.fill("Wrapped Ether");
+  await page.getByLabel("Buy token", { exact: true }).selectOption(token("WETH"));
+  await expect(search).toHaveValue("");
+  await search.fill(importedAddress); await page.getByRole("button", { name: "Validate and import as buy token", exact: true }).tap();
+  await expect(page.getByLabel("Buy token", { exact: true })).toHaveValue(importedAddress);
+  await expect(page.getByLabel("Buy token", { exact: true }).locator("option:checked")).toContainText("unverified");
+  await expect(page.getByText(/Import is not endorsement/)).toBeVisible();
+  expect(state.quoteCount()).toBe(0); expect(await walletCalls(page)).toEqual([]);
+  await page.getByRole("button", { name: "Prepare swap", exact: true }).tap();
+  await expect(page.getByRole("alert")).toContainText("HTTP 502");
+  await expect(page.getByRole("button", { name: "Review swap", exact: true })).toHaveCount(0);
+  expect(await walletCalls(page)).toEqual([]); expect(state.goals).toHaveLength(0); await evidence(page, info, state.trace);
+});
+test("Swap: failed metadata validation cannot add a token or prepare a quote", async ({ page }, info) => {
+  const state = await setup(page, { importStatus: 503 }); await manual(page);
+  await page.getByLabel("Search tokens or Base contract").fill(importedAddress); await page.getByRole("button", { name: "Validate and import as buy token", exact: true }).tap();
+  await expect(page.getByRole("alert")).toContainText("metadata unavailable");
+  await expect(page.getByLabel("Buy token", { exact: true })).toHaveValue(token("WETH"));
+  expect(state.quoteCount()).toBe(0); expect(await walletCalls(page)).toEqual([]); await evidence(page, info, state.trace);
+});
+test("Swap: wrong-network import fails before metadata, quote or signing", async ({ page }, info) => {
+  const state = await setup(page); await page.getByLabel("Wallet fixture").selectOption("wrong-network");
+  await page.getByLabel("Search tokens or Base contract").fill(importedAddress); await page.getByRole("button", { name: "Validate and import as buy token", exact: true }).tap();
+  await expect(page.getByRole("alert")).toContainText("8453"); expect(state.trace.some(t => t.path === "/api/trade/token")).toBe(false);
+  expect(state.quoteCount()).toBe(0); expect(await walletCalls(page)).toEqual([]); await evidence(page, info, state.trace);
+});
+test("Swap: wallet change after quote clears it; no stale review or settlement", async ({ page }, info) => {
+  const state = await setup(page); await manual(page); await page.getByRole("button", { name: "Prepare swap", exact: true }).tap();
+  await expect(page.getByRole("button", { name: "Review swap", exact: true })).toBeEnabled();
+  await page.getByLabel("Wallet fixture").selectOption("other-wallet");
+  await expect(page.getByRole("button", { name: "Review swap", exact: true })).toHaveCount(0);
+  // Existing shared auth may re-enter simulated SIWE for a changed wallet;
+  // that is not a trade/Permit2/delegated signature or broadcast.
+  expect((await walletCalls(page)).every(call => call === "siwe-signature")).toBe(true);
+  expect(state.quoteCount()).toBe(1); await expect(page.getByLabel("Sell amount", { exact: true })).toHaveValue("");
+  await expect(page.getByTestId("swap-status")).toHaveCount(0); await evidence(page, info, state.trace);
+});
+for (const scenario of ["insufficient", "wallet-rejected", "reverted"] as const) test(`Swap: simulated ${scenario} never reports settlement success`, async ({ page }, info) => {
+  const state = await setup(page); await manual(page); await page.getByRole("button", { name: "Prepare swap", exact: true }).tap();
+  await page.getByRole("button", { name: "Review swap", exact: true }).tap();
+  await expect(page.getByRole("heading", { name: "Confirm swap" })).toBeVisible();
+  await page.evaluate(s => { (window as unknown as { simulatedWalletScenario: string }).simulatedWalletScenario = s; }, scenario);
+  await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap();
+  await expect(page.getByRole("dialog")).toContainText(scenario === "insufficient" ? /enough|balance/i : scenario === "wallet-rejected" ? /rejected|declined/i : /approval.*failed/i);
+  await expect(page.getByTestId("swap-status")).toHaveCount(0);
+  if (scenario === "insufficient") expect(await walletCalls(page)).not.toContain("simulated-send");
+  else expect((await walletCalls(page)).filter(c => c === "simulated-send")).toHaveLength(1);
+  expect(state.goals).toHaveLength(0); await evidence(page, info, state.trace);
 });

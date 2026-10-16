@@ -6,14 +6,14 @@ import { revalidateTradeProposal } from "./trade-confirmation";
 import { KNOWN_TRADE_TOKENS } from "./trade-tokens";
 import { findBasePairByAddress, isNotYetLiveB20 } from "@/lib/markets/base-pairs";
 import type { Address } from "viem";
-import type { TradeProposal } from "./trade-types";
+import type { TradeProposal, TradeTokenRef } from "./trade-types";
 
-export const MANUAL_SWAP_TOKENS = [...new Map(KNOWN_TRADE_TOKENS.filter(t => !isNotYetLiveB20(t.symbol) && findBasePairByAddress(t.address)?.live !== false).map(t => [t.address.toLowerCase(), t])).values()];
+export const MANUAL_SWAP_TOKENS: TradeTokenRef[] = [...new Map(KNOWN_TRADE_TOKENS.filter(t => !isNotYetLiveB20(t.symbol) && findBasePairByAddress(t.address)?.live !== false).map(t => [t.address.toLowerCase(), t])).values()].map(t => ({ ...t, verified: true }));
 export interface ManualSwapInput { fromToken: string; toToken: string; amount: string; slippageBps: number }
-export function manualSwapInputError(input: ManualSwapInput): string | null {
-  const from = MANUAL_SWAP_TOKENS.find(t => t.address === input.fromToken);
-  const to = MANUAL_SWAP_TOKENS.find(t => t.address === input.toToken);
-  if (!from || !to || from === to) return "Select two different supported tokens.";
+export function manualSwapInputError(input: ManualSwapInput, tokens: readonly TradeTokenRef[] = MANUAL_SWAP_TOKENS): string | null {
+  const from = tokens.find(t => t.address.toLowerCase() === input.fromToken.toLowerCase());
+  const to = tokens.find(t => t.address.toLowerCase() === input.toToken.toLowerCase());
+  if (!from || !to || from.address.toLowerCase() === to.address.toLowerCase()) return "Select two different supported tokens.";
   // B20 decimals are verified on the server; never convert an amount using
   // catalog display defaults. Non-B20 precision can be checked locally.
   if (!/^\d+(?:\.\d+)?$/.test(input.amount) || !/[1-9]/.test(input.amount) ||
@@ -28,8 +28,8 @@ export function manualQuoteFresh(proposal: TradeProposal, now = Date.now()): boo
 export class ManualSwapQuoteError extends Error {
   constructor(public status: number, public code: string, message: string) { super(`Quote HTTP ${status} (${code}): ${message}`); }
 }
-export async function requestManualSwapQuote(input: ManualSwapInput, account: Address, signal?: AbortSignal): Promise<TradeProposal> {
-  const invalid = manualSwapInputError(input);
+export async function requestManualSwapQuote(input: ManualSwapInput, account: Address, signal?: AbortSignal, tokens: readonly TradeTokenRef[] = MANUAL_SWAP_TOKENS): Promise<TradeProposal> {
+  const invalid = manualSwapInputError(input, tokens);
   if (invalid) throw new Error(invalid);
   const response = await fetch("/api/trade/quote", { method: "POST", credentials: "include", cache: "no-store", signal,
     headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(input) });

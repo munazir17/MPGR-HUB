@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { chromium, expect } from "@playwright/test";
 
-const baselineSHA = "e15c3b126e5fe481bc5d4198aa966ae32b160943";
+const baselineSHA = "bb70ec86cf394f7412b2d053df3f1b4d33475d10";
 const repo = process.env.REPO;
 assert.equal(repo, "munazir17/MPGR-HUB");
 const api = path => JSON.parse(execFileSync("gh", ["api", `repos/${repo}/${path}`], { encoding: "utf8" }));
@@ -38,8 +38,10 @@ try {
     const tokens = await get("/api/agent/autonomy/tokens?chainId=8453"); const goals = await get("/api/agent/autonomy/goals");
     const session = await get("/api/auth/session");
     const manualQuotes = [];
-    for (const [path, input] of [["/api/trade/quote", { fromToken: "USDC", toToken: "WETH", amount: "1", slippageBps: 100 }],
-      ["/api/trade/stocks/quote", { symbol: "AAPLc", side: "BUY", amount: "1" }]]) {
+    const anonymousRequests = [["/api/trade/quote", { fromToken: "USDC", toToken: "WETH", amount: "1", slippageBps: 100 }],
+      ["/api/trade/stocks/quote", { symbol: "AAPLc", side: "BUY", amount: "1" }]];
+    if (index === 1) anonymousRequests.push(["/api/trade/token", { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", chainId: 8453 }]);
+    for (const [path, input] of anonymousRequests) {
       const response = await fetch(origin + path, { method: "POST", redirect: "manual", credentials: "omit",
         headers: { "x-vercel-protection-bypass": bypass, Origin: origin, "Content-Type": "application/json" },
         body: JSON.stringify(input), signal: AbortSignal.timeout(60_000) });
@@ -74,19 +76,28 @@ try {
       });
       await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
       const launcher = page.getByTestId("agent-trading-launcher"); await expect(launcher).toBeVisible({ timeout: 30_000 });
-      await page.getByTestId("trading-launcher-manual").tap();
-      const manualForm = launcher.getByRole("form", { name: "Prepare a manual swap" });
-      await expect(manualForm).toHaveCount(index === 0 ? 0 : 1);
-      if (index === 1) {
-        await expect(manualForm.getByLabel("Sell token", { exact: true })).toBeVisible();
-        await manualForm.getByLabel("Sell amount", { exact: true }).fill("1");
-        await expect(manualForm.getByRole("button", { name: "Connect wallet to prepare", exact: true })).toBeVisible();
+      if (index === 0) await page.getByTestId("trading-launcher-manual").tap();
+      else {
+        await expect(page.getByTestId("trading-launcher-manual")).toHaveCount(0);
+        await expect(page.getByRole("form", { name: "Prepare a manual swap" })).toHaveCount(0);
+        await page.screenshot({ path: `${output}/${label}-${width}-agent-command-first.png`, fullPage: true });
+        await page.getByRole("button", { name: "Open menu", exact: true }).tap();
+        await page.getByRole("dialog", { name: "MPGR HUB menu", exact: true }).getByRole("link", { name: "MPGR Swap", exact: true }).tap();
+        await expect(page).toHaveURL(`${origin}/swap`);
+        await expect(page.getByRole("heading", { name: "MPGR Swap", exact: true })).toBeVisible();
+        await expect(page.getByText("Limit orders — not available", { exact: true })).toBeVisible();
       }
-      await launcher.scrollIntoViewIfNeeded(); await page.screenshot({ path: `${output}/${label}-${width}-manual.png`, fullPage: true });
+      const manualForm = page.getByRole("form", { name: "Prepare a manual swap" });
+      await expect(manualForm).toHaveCount(1);
+      await expect(manualForm.getByLabel("Sell token", { exact: true })).toBeVisible();
+      await manualForm.getByLabel("Sell amount", { exact: true }).fill("1");
+      await expect(manualForm.getByRole("button", { name: "Connect wallet to prepare", exact: true })).toBeVisible();
+      await manualForm.scrollIntoViewIfNeeded(); await page.screenshot({ path: `${output}/${label}-${width}-manual.png`, fullPage: true });
+      if (index === 1) await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
       await page.getByTestId("trading-launcher-autonomy").tap();
       const composer = launcher.getByRole("form", { name: "Draft a conditional goal" });
-      await expect(composer).toHaveCount(index === 0 ? 0 : 1);
-      if (index === 1) {
+      await expect(composer).toHaveCount(1);
+      {
         await composer.getByLabel("USDC per trade").fill("1"); await composer.getByLabel("Trigger price (USD)").fill("200");
         await composer.getByRole("button", { name: "Review local draft", exact: true }).tap();
         await expect(page.getByTestId("agent-autonomy-draft-authorize")).toBeDisabled();
@@ -95,8 +106,8 @@ try {
         await page.getByTestId("agent-autonomy-draft-authorize").scrollIntoViewIfNeeded();
       }
       await page.screenshot({ path: `${output}/${label}-${width}-autonomy.png`, fullPage: true });
-      result.mobile.push({ width, height, manualFormAvailable: index === 1, localDraftReviewAvailable: index === 1,
-        authorizationButtonDisabled: index === 1 ? true : null, walletConnected: false, signed: false, executed: false });
+      result.mobile.push({ width, height, manualFormAvailable: true, manualSurface: index === 1 ? "/swap" : "Agent Manual tab", agentManualControlsRemoved: index === 1, localDraftReviewAvailable: true,
+        authorizationButtonDisabled: true, walletConnected: false, signed: false, executed: false });
       await context.close();
     }
   }

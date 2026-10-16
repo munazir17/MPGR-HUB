@@ -35,6 +35,7 @@ vi.mock("next/link", () => ({
 const { AppSidebar } = await import("@/components/layout/AppSidebar");
 
 const EXPECTED_ENTRIES: Record<string, string> = {
+  "MPGR Swap": "/swap",
   "Reward Hub": "/rewards",
   Leaderboard: "/leaderboard",
   Campaigns: "/campaigns",
@@ -62,9 +63,9 @@ const REMOVED_LABELS = [
 describe("AppSidebar (rendered)", () => {
   const html = renderToString(createElement(AppSidebar, { open: true, onClose: () => {} }));
 
-  it("renders the drawer with exactly the four requested groups", () => {
+  it("renders the drawer with the trading and existing product groups", () => {
     expect(html).toContain("MPGR HUB menu");
-    for (const group of ["Rewards", "Play", "Ecosystem", "Account"]) {
+    for (const group of ["Trading", "Rewards", "Play", "Ecosystem", "Account"]) {
       expect(html).toContain(group);
     }
     // The old "Learn" group is gone.
