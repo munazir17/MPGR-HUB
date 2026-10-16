@@ -4,7 +4,7 @@
 //
 // This is the contract every game (MPGR Run today, MPGR Clicker / Memory
 // Challenge / Space Shooter / 2048 / Pet Raising / Speed Run / Roguelike /
-// AI Battle Arena later) is built against. Nothing here is MPGR-Run-
+// Battle Arena later) is built against. Nothing here is MPGR-Run-
 // specific — game-specific fields live in each game's own module.
 //
 // Mirrors the discipline already used by lib/staking/staking-types.ts and

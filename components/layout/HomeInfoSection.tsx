@@ -33,7 +33,7 @@ const CARDS = [
   {
     icon: Bot,
     title: "MPGR Agent",
-    body: "An AI workspace for on-chain research and action. The agent reasons over live market data, calls read-only tools for pair prices, premiums and contract verification, and prepares swaps and payments that wait for your explicit confirmation before anything moves.",
+    body: "A workspace for on-chain research and action. The agent reasons over live market data, calls read-only tools for pair prices, premiums and contract verification, and prepares swaps and payments that wait for your explicit confirmation before anything moves.",
   },
   {
     icon: Network,
@@ -53,7 +53,7 @@ export function HomeInfoSection() {
       <div className="mx-auto mt-8 max-w-3xl text-center">
         <p className="eyebrow">{APP_NAME}</p>
         <h2 className="display-l mt-3 text-[28px] text-white md:text-4xl md:leading-[44px]">
-          Build. Explore. Trade. Earn with AI on Base.
+          Trade, research and manage on Base.
         </h2>
 
         {/* Supporting agent description — moved here from the hero so the

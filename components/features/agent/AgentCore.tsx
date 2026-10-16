@@ -17,7 +17,7 @@
 //           bar once a thread exists
 //
 // Behavior hooks (all presentation):
-//   state="thinking"  → the gold filament brightens and spins faster
+//   state="thinking"  → the blue filament brightens and spins faster
 //   squashSignal      → increment to fire the ~200ms send squash
 //   prefers-reduced-motion → static poster pose (globals.css freezes
 //   the float classes; framer's useReducedMotion skips the squash)
@@ -92,7 +92,7 @@ export function AgentCore({
 
   if (variant === "jewel") {
     // 28px badge: same material, minimal layers — a shrunken core with
-    // its blue rim and a gold filament dot that brightens on "thinking".
+    // its blue rim and a blue filament dot that brightens on "thinking".
     return (
       <motion.span
         animate={controls}
@@ -116,11 +116,11 @@ export function AgentCore({
           )}
           style={{
             background:
-              "radial-gradient(circle, #f3da9b 0%, #e2c073 60%, transparent 100%)",
+              "radial-gradient(circle, #b9dcff 0%, #4da3ff 60%, transparent 100%)",
             opacity: thinking ? 1 : 0.65,
             boxShadow: thinking
-              ? "0 0 6px rgba(226,192,115,0.9)"
-              : "0 0 3px rgba(226,192,115,0.4)",
+              ? "0 0 6px rgba(77,163,255,0.9)"
+              : "0 0 3px rgba(77,163,255,0.4)",
           }}
         />
       </motion.span>
@@ -190,7 +190,7 @@ export function AgentCore({
             }}
           />
 
-          {/* Gold inner filament — a gyroscope ring inside the sphere.
+          {/* Blue inner filament — a gyroscope ring inside the sphere.
               The animated wrapper rotates in screen space while the
               inner arc keeps its tilt, so the ring slowly tumbles.
               Thinking brightens it and spins it faster. */}
@@ -200,14 +200,14 @@ export function AgentCore({
               animationDuration: thinking ? "3.6s" : "9s",
               opacity: thinking ? 1 : 0.6,
               filter: thinking
-                ? "drop-shadow(0 0 10px rgba(226,192,115,0.75))"
-                : "drop-shadow(0 0 5px rgba(226,192,115,0.35))",
+                ? "drop-shadow(0 0 10px rgba(77,163,255,0.75))"
+                : "drop-shadow(0 0 5px rgba(77,163,255,0.35))",
               transition: "opacity 400ms, filter 400ms",
             }}
           >
             <span
               style={torusArc({
-                color: "#e2c073",
+                color: "#4da3ff",
                 thickness: 2,
                 tilt: 58,
                 spin: 24,
@@ -225,10 +225,10 @@ export function AgentCore({
             )}
             style={{
               background:
-                "radial-gradient(circle, #f3da9b 0%, #e2c073 55%, rgba(226,192,115,0) 100%)",
+                "radial-gradient(circle, #b9dcff 0%, #4da3ff 55%, rgba(77,163,255,0) 100%)",
               boxShadow: thinking
-                ? "0 0 18px rgba(226,192,115,0.95)"
-                : "0 0 10px rgba(226,192,115,0.5)",
+                ? "0 0 18px rgba(77,163,255,0.95)"
+                : "0 0 10px rgba(77,163,255,0.5)",
             }}
           />
         </span>

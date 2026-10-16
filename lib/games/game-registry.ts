@@ -161,9 +161,9 @@ export const GAME_REGISTRY: GameDefinition[] = [
   {
     id: "ai-battle-arena",
     slug: "ai-battle-arena",
-    name: "AI Battle Arena",
-    tagline: "Outsmart the machine.",
-    description: "Strategic battles against AI opponents.",
+    name: "Battle Arena",
+    tagline: "Outplay your opponent.",
+    description: "Strategic competitive battles.",
     category: "strategy",
     difficulty: "extreme",
     estimatedPlayTime: "3–10min",

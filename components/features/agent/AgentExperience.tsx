@@ -212,11 +212,11 @@ export function AgentExperience({
     onReadyRef.current?.({ sendMessage: handleSend, prepareSwap: handlePrepareSwap });
   }, [handleSend, handlePrepareSwap]);
 
-  // Home entrance stagger: topbar 0 / core 80 / line 160 / chips+dock 240ms.
-  const rise = (delay: number) => ({
-    initial: reduceMotion ? false : ({ opacity: 0, y: 12 } as const),
+  // Keep motion for real state changes only; initial content renders in place.
+  const rise = (_delay: number) => ({
+    initial: false,
     animate: { opacity: 1, y: 0 },
-    transition: { delay, duration: 0.44, ease: "easeOut" as const },
+    transition: { duration: 0.2, ease: "easeOut" as const },
   });
 
   // STATE A chips — centered + wrapping on desktop, snap-scrolled row on
@@ -244,11 +244,7 @@ export function AgentExperience({
 
   const emptyState = (
     <>
-      {/* Inner radial — sits BEHIND the core only, never site-wide. */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute left-1/2 top-[36%] h-[min(60%,460px)] w-[min(72%,560px)] -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/[0.07] blur-3xl"
-      />
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-gradient-to-b from-primary/[0.025] to-transparent" />
       <div className="relative flex min-h-full flex-col items-center justify-center gap-5 px-4 py-6 text-center sm:gap-6 sm:py-8">
         <motion.div {...rise(0.08)}>
           <AgentCore
@@ -298,7 +294,7 @@ export function AgentExperience({
               Height = the first viewport's remainder; the BODY owns the
               scroll so the DOCK (composer) never leaves the viewport. */}
           <div
-            className="stage-grain relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-surface shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_24px_80px_-32px_rgba(0,0,0,0.72)] md:rounded-[20px] h-[calc(100dvh_-_116px_-_env(safe-area-inset-top))] min-h-[480px] sm:min-h-[520px] md:h-[calc(100dvh_-_120px_-_env(safe-area-inset-top))] lg:h-[calc(100dvh_-_128px_-_env(safe-area-inset-top))] lg:min-h-[640px]"
+            className="stage-grain relative flex flex-col overflow-hidden rounded-lg border border-white/[0.10] bg-surface shadow-[0_12px_40px_-28px_rgba(0,0,0,0.65)] md:rounded-xl h-[calc(100dvh_-_116px_-_env(safe-area-inset-top))] min-h-[480px] sm:min-h-[520px] md:h-[calc(100dvh_-_120px_-_env(safe-area-inset-top))] lg:h-[calc(100dvh_-_128px_-_env(safe-area-inset-top))] lg:min-h-[640px]"
             data-testid="agent-chat-surface"
           >
             {/* TOP BAR — the folded hero lives here (testid inside the

@@ -57,18 +57,15 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* Ambient light: one cool top glow + a faint warm counter-glow.
-   Extremely restrained — depth without noise. No site-wide grid, no
-   particles. */
+/* Keep the page flat and readable. Accent light belongs to active UI,
+   not to the whole viewport. */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  background:
-    radial-gradient(ellipse 50% 36% at 50% -8%, rgba(77, 163, 255, 0.14), transparent 60%),
-    radial-gradient(ellipse 28% 22% at 88% 18%, rgba(226, 192, 115, 0.06), transparent 55%);
+  background: linear-gradient(180deg, rgba(77, 163, 255, 0.035), transparent 22%);
 }
 
 /* Display headings: tighter optical tracking for a premium feel. */
@@ -163,17 +160,13 @@ a[role="button"],
     gap: 0.5rem;
     min-height: 52px;
     padding: 0 1.375rem;
-    border-radius: var(--r-cta);
+    border-radius: 10px;
     font-weight: 600;
     color: #ffffff;
     cursor: pointer;
-    border: 1px solid rgba(140, 199, 255, 0.38);
-    background: linear-gradient(180deg, #6ab2ff 0%, #4da3ff 44%, #2472eb 100%);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.28),
-      inset 0 -1px 0 rgba(9, 32, 74, 0.4),
-      0 3px 0 #1e63db,
-      0 8px 16px rgba(30, 99, 219, 0.22);
+    border: 1px solid rgba(77, 163, 255, 0.45);
+    background: #2472eb;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
     transition:
       transform var(--t-med) var(--ease-out),
       box-shadow var(--t-med) var(--ease-out),
@@ -211,7 +204,8 @@ a[role="button"],
     border-radius: 12px;
   }
 
-  /* Gold physical button — value / claim actions. */
+  /* Secondary action button — kept as a distinct utility, but uses the
+     same neutral/blue product language instead of a gold treatment. */
   .btn-gold {
     position: relative;
     display: inline-flex;
@@ -221,17 +215,13 @@ a[role="button"],
     gap: 0.5rem;
     min-height: 52px;
     padding: 0 1.375rem;
-    border-radius: var(--r-cta);
-    font-weight: 700;
-    color: #221907;
+    border-radius: 10px;
+    font-weight: 600;
+    color: #ffffff;
     cursor: pointer;
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    background: linear-gradient(180deg, #f3da9b 0%, #e2c073 46%, #ddb765 100%);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.55),
-      inset 0 -1px 0 rgba(94, 66, 15, 0.35),
-      0 3px 0 #b98f3e,
-      0 8px 16px rgba(221, 183, 101, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: #182334;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
     transition:
       transform var(--t-med) var(--ease-out),
       box-shadow var(--t-med) var(--ease-out),
@@ -250,10 +240,7 @@ a[role="button"],
   }
   .btn-gold:active:not(:disabled) {
     transform: translateY(2px) scale(0.98);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.45),
-      0 1px 0 #b98f3e,
-      0 3px 8px rgba(221, 183, 101, 0.16);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
   }
   .btn-gold:disabled {
     cursor: not-allowed;
@@ -269,7 +256,7 @@ a[role="button"],
 
   /* Quiet secondary action — hairline ghost. */
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] font-medium text-white/80 transition-colors duration-200 hover:border-white/[0.16] hover:bg-white/[0.07] hover:text-white active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-white/[0.10] bg-white/[0.025] font-medium text-white/80 transition-colors duration-200 hover:border-white/[0.18] hover:bg-white/[0.05] hover:text-white active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   /* Card hover lift — pointer-fine devices ONLY (no sticky hover on
@@ -311,7 +298,7 @@ a[role="button"],
   /* Pill chip (filters, quick links, suggestion prompts).
      32–36px tall, hairline, quiet until hovered. */
   .chip {
-    @apply inline-flex min-h-[36px] items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 text-xs font-medium text-white/80 transition-colors duration-200 hover:border-white/[0.16] hover:bg-white/[0.06] hover:text-white active:scale-[0.98];
+    @apply inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] px-3.5 text-xs font-medium text-white/80 transition-colors duration-200 hover:border-white/[0.18] hover:bg-white/[0.05] hover:text-white active:scale-[0.99];
   }
 
   /* ==========================================================================
@@ -363,15 +350,8 @@ a[role="button"],
     right: -5px;
   }
 
-  /* Optional ~2% grain, STAGE only. */
-  .stage-grain::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.022'/%3E%3C/svg%3E");
-    background-size: 160px 160px;
-  }
+  /* No texture overlay: surfaces stay flat and predictable. */
+  .stage-grain::after { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

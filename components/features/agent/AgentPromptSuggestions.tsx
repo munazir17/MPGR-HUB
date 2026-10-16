@@ -61,9 +61,9 @@ export function AgentPromptSuggestions({
               key={suggestion.id}
               type="button"
               disabled={disabled}
-              initial={{ opacity: 0, y: 8 }}
+              initial={false}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.05, duration: 0.28 }}
+              transition={{ duration: 0.18 }}
               onClick={() => onSelect(suggestion.buildPrompt?.(window.location.origin) ?? suggestion.prompt)}
               className="chip min-h-[44px] snap-start justify-center px-4 text-[13px] text-white/85 hover:border-primary/30 hover:bg-primary/[0.06] hover:text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -85,7 +85,7 @@ export function AgentPromptSuggestions({
             type="button"
             disabled={disabled}
             onClick={() => onSelect(suggestion.buildPrompt?.(window.location.origin) ?? suggestion.prompt)}
-            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 py-1.5 text-xs font-medium text-white/70 transition-colors duration-200 hover:border-white/[0.18] hover:bg-white/[0.06] hover:text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-lg border border-white/[0.08] bg-white/[0.025] px-3.5 py-1.5 text-xs font-medium text-white/70 transition-colors duration-200 hover:border-white/[0.18] hover:bg-white/[0.06] hover:text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {suggestion.label}
           </button>
@@ -101,11 +101,11 @@ export function AgentPromptSuggestions({
           key={suggestion.id}
           type="button"
           disabled={disabled}
-          initial={{ opacity: 0, y: 8 }}
+          initial={false}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: i * 0.04, duration: 0.28 }}
+          transition={{ duration: 0.18 }}
           onClick={() => onSelect(suggestion.buildPrompt?.(window.location.origin) ?? suggestion.prompt)}
-          className="flex min-h-[44px] cursor-pointer items-center justify-between rounded-full border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-left text-sm text-white/90 transition-colors hover:border-white/[0.18] hover:bg-white/[0.06] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex min-h-[44px] cursor-pointer items-center justify-between rounded-lg border border-white/[0.08] bg-white/[0.025] px-4 py-2.5 text-left text-sm text-white/90 transition-colors hover:border-white/[0.18] hover:bg-white/[0.06] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <span>{suggestion.label}</span>
           <ChevronRight className="h-3.5 w-3.5 text-primary" aria-hidden />
