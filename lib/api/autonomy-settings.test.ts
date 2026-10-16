@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { autonomySettingsReadError, publicGateState, readAutonomySettings } from "./autonomy-settings";
+import { publicDeploymentEnvironment, autonomySettingsReadError, publicGateState, readAutonomySettings } from "./autonomy-settings";
 
 const config = {
   enabled: false, emergencyDisabled: false, productionGate: false, executionAvailable: false,
@@ -20,7 +20,7 @@ describe("public autonomy settings diagnostics (GET-only, no signing)", () => {
     const network = vi.fn<typeof fetch>().mockResolvedValue(response);
     vi.stubGlobal("fetch", network);
     const result = await readAutonomySettings();
-    expect(result).toEqual({ config, diagnostic: { state: "loaded", httpStatus: 200, runtimeGate: "missing", productionGate: "disabled" } });
+    expect(result).toEqual({ config, diagnostic: { deploymentEnvironment: "unknown", state: "loaded", httpStatus: 200, runtimeGate: "missing", productionGate: "disabled" } });
     expect(autonomySettingsReadError(result.diagnostic)).toBeNull();
     expect(network).toHaveBeenCalledOnce();
     expect(network).toHaveBeenCalledWith("/api/agent/autonomy/config", expect.objectContaining({ method: "GET", credentials: "include", cache: "no-store", signal: expect.any(AbortSignal) }));
@@ -64,4 +64,15 @@ it("does not label an interrupted response body as malformed JSON", async () => 
     expect(result.config).toBeNull();
     expect(result.diagnostic).toMatchObject({ state, httpStatus: 200 });
   }
+});
+
+
+it.each(["preview", "production", "development", null, undefined, "private-env-label"])("classifies environment metadata without reflecting arbitrary values (%s)", async (environment) => {
+  const expected = ["preview", "production", "development"].includes(environment ?? "") ? environment : "unknown";
+  expect(publicDeploymentEnvironment(environment)).toBe(expected);
+  const response = json(config);
+  if (environment != null) response.headers.set("x-mpgr-autonomy-deployment-environment", environment);
+  const result = await readAutonomySettings(vi.fn<typeof fetch>().mockResolvedValue(response));
+  expect(result.diagnostic.deploymentEnvironment).toBe(expected);
+  expect(result.config).toEqual(config); // classification never changes gates
 });

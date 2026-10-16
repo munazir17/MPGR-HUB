@@ -456,21 +456,29 @@ it.each([undefined, "false"])("production refusal persists neither a policy, goa
   } finally { createPolicy.mockRestore(); createGoal.mockRestore(); saveSlots.mockRestore(); }
 });
 
-it("runtime-off requests cannot create a policy, goal or permission", async () => {
+it.each([undefined, "false"])("runtime-off (%s) requests cannot create a policy, goal or permission", async (runtimeGate) => {
   const pair = await allowlistedPair();
   const seed = await POLICY_POST(post("/api/agent/autonomy/policy", { authorized: true, sellToken: pair.sell, buyToken: pair.buy, maxPerTrade: "50", maxDaily: "100", maxSlippageBps: 100, maxActionsPerDay: 10, ttlDays: 30 }));
   const { policy } = await seed.json(); expect(seed.status).toBe(201);
-  vi.stubEnv("MPGR_AUTONOMOUS_AGENT_ENABLED", "false");
-  const responses = await Promise.all([
-    POLICY_POST(post("/api/agent/autonomy/policy", { authorized: true, sellToken: pair.sell, buyToken: pair.buy })),
-    GOALS_POST(post("/api/agent/autonomy/goals", { policyId: policy.id, condition: { kind: "price_below", threshold: "200" }, sellAmount: "50" })),
-    AUTHORIZATION_POST(post("/api/agent/autonomy/authorization", { policyId: policy.id, goalId: "goal_no_write", slots: [{}] })),
-  ]);
-  for (const response of responses) { expect(response.status).toBe(404); expect((await response.json()).code).toBe("AUTONOMY_DISABLED"); }
-  expect(await systemUnderTest.store.listPolicies(USER.toLowerCase())).toHaveLength(1); // only the seeded policy
-  expect(await systemUnderTest.store.listGoals(USER.toLowerCase())).toHaveLength(0);
-  expect(await systemUnderTest.slots.listSlots(USER.toLowerCase())).toHaveLength(0);
-  expect(broadcasterSeam.broadcastCalls).toHaveLength(0);
+  vi.stubEnv("MPGR_AUTONOMOUS_AGENT_ENABLED", runtimeGate);
+  const createPolicy = vi.spyOn(systemUnderTest.store, "createPolicy");
+  const createGoal = vi.spyOn(systemUnderTest.store, "createGoal");
+  const saveSlots = vi.spyOn(systemUnderTest.slots, "saveSlots");
+  try {
+    const responses = await Promise.all([
+      POLICY_POST(post("/api/agent/autonomy/policy", { authorized: true, sellToken: pair.sell, buyToken: pair.buy })),
+      GOALS_POST(post("/api/agent/autonomy/goals", { policyId: policy.id, condition: { kind: "price_below", threshold: "200" }, sellAmount: "50" })),
+      AUTHORIZATION_POST(post("/api/agent/autonomy/authorization", { policyId: policy.id, goalId: "goal_no_write", slots: [{}] })),
+    ]);
+    for (const response of responses) { expect(response.status).toBe(404); expect((await response.json()).code).toBe("AUTONOMY_DISABLED"); }
+    expect(await systemUnderTest.store.listPolicies(USER.toLowerCase())).toHaveLength(1); // only the seeded policy
+    expect(await systemUnderTest.store.listGoals(USER.toLowerCase())).toHaveLength(0);
+    expect(await systemUnderTest.slots.listSlots(USER.toLowerCase())).toHaveLength(0);
+    expect(broadcasterSeam.broadcastCalls).toHaveLength(0);
+    expect(createPolicy).not.toHaveBeenCalled();
+    expect(createGoal).not.toHaveBeenCalled();
+    expect(saveSlots).not.toHaveBeenCalled();
+  } finally { createPolicy.mockRestore(); createGoal.mockRestore(); saveSlots.mockRestore(); }
 });
 
 it("mocked ready Mainnet lifecycle persists an own-goal permission before ACTIVE; retry is idempotent and never broadcasts", async () => {

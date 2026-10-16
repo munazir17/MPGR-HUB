@@ -122,9 +122,16 @@ export function chatReviewAuthorizationError(args: {
   const readError = autonomySettingsReadError(args.settingsRead);
   if (readError) return readError;
   if (!config) return "Autonomy settings have not loaded. Retry loading settings; no goal was created.";
-  if (!config.enabled) return `Autonomous runtime is not enabled on this deployment${args.settingsRead?.runtimeGate && args.settingsRead.runtimeGate !== "unknown" ? ` (runtime flag: ${args.settingsRead.runtimeGate})` : ""}. An operator must review Preview configuration; retrying or signing in cannot enable a disabled flag. No goal was created.`;
+  const where = args.settingsRead?.deploymentEnvironment === "preview" ? "in Preview" : "on this deployment";
+  const unavailable = `Mainnet autonomous authorization is unavailable ${where}. Use Manual mode for user-confirmed swaps.`;
+  const runtimeGate = args.settingsRead?.runtimeGate;
+  const productionGate = args.settingsRead?.productionGate;
+  const runtimeNote = runtimeGate && runtimeGate !== "unknown" ? `runtime flag: ${runtimeGate}` : "";
+  const productionNote = config.productionGate !== true && productionGate && productionGate !== "unknown" ? `production flag: ${productionGate}` : "";
+  const notes = [runtimeNote, productionNote].filter(Boolean).join("; ");
+  if (!config.enabled) return `Autonomous runtime is not enabled${notes ? ` (${notes})` : ""}. ${unavailable} Retrying or signing in cannot enable these gates. No goal was created.`;
   if (config.emergencyDisabled) return "Autonomous goals are disabled by the operator.";
-  if (config.productionGate !== true) return "The production safety gate is not enabled. Base Mainnet live authorization remains blocked; retrying or signing in cannot enable execution.";
+  if (config.productionGate !== true) return `The production safety gate is not enabled${productionNote ? ` (${productionNote})` : ""}. ${unavailable} Retrying or signing in cannot enable execution.`;
   if (config.executionAvailable !== true) return "Autonomous execution is not ready on this deployment. An operator must review runtime/adapter readiness; the draft remains inactive.";
   const invalid = validateChatReviewForm(form, config.limits);
   if (invalid) return invalid;

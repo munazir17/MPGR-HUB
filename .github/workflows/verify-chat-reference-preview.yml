@@ -69,7 +69,7 @@ jobs:
           cat > lib/autonomy/__tests__/preview-readonly.task.test.ts <<'TEST'
           import { expect, it } from "vitest";
           import { writeFileSync } from "node:fs";
-          import { isAutonomySettings } from "@/lib/api/autonomy-settings";
+          import { isAutonomySettings, publicDeploymentEnvironment } from "@/lib/api/autonomy-settings";
           import { selectReferencePrice } from "../reference-price";
           import { buildGoalDraft, detectAutonomousTradeRequest } from "../chat-draft";
           import { chatDraftToForm } from "@/components/features/agent/chat-autonomy-review";
@@ -94,6 +94,7 @@ jobs:
             const evidence = {
               commit: process.env.CHAT_HEAD_SHA, observedAt: new Date().toISOString(),
               settings: { HTTP: settings.status, valid: isAutonomySettings(settings.data),
+                deploymentEnvironment: publicDeploymentEnvironment(settings.headers.get("x-mpgr-autonomy-deployment-environment")),
                 noStore: settings.headers.get("cache-control")?.includes("no-store") === true,
                 enabled: boolean(settings.data?.enabled), emergencyDisabled: boolean(settings.data?.emergencyDisabled),
                 productionGate: boolean(settings.data?.productionGate), executionAvailable: boolean(settings.data?.executionAvailable),

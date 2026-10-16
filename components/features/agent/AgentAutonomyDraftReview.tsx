@@ -380,7 +380,7 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
                 <AutonomyQuoteDetails form={formState} proposal={currentQuote?.proposal} expiresAt={currentQuote ? chatQuoteExpiry(currentQuote) : undefined}
                   referenceLabel={draft.referencePrice && draft.percentDrop != null ? `${draft.targetAsset} is ${draft.referencePrice}; requested move ${draft.percentDrop}%.` : undefined}
                   sourcePrompt={draft.sourcePrompt} diagnostics={settingsRead && <div data-testid="autonomy-settings-diagnostics"><p>
-                    Settings GET /api/agent/autonomy/config: {settingsRead.state}{settingsRead.httpStatus !== undefined ? ` · HTTP ${settingsRead.httpStatus}` : ""}
+                    Settings GET /api/agent/autonomy/config: {settingsRead.state}{settingsRead.deploymentEnvironment && settingsRead.deploymentEnvironment !== "unknown" ? ` · environment ${settingsRead.deploymentEnvironment}` : ""}{settingsRead.httpStatus !== undefined ? ` · HTTP ${settingsRead.httpStatus}` : ""}
                     {settingsRead.runtimeGate ? ` · runtime flag ${settingsRead.runtimeGate}` : ""}{settingsRead.productionGate ? ` · production flag ${settingsRead.productionGate}` : ""}
                   </p><button type="button" disabled={busy} onClick={() => { void autonomy.refresh(); }} className="mt-2 min-h-[44px] rounded-lg border border-white/10 px-3">Retry loading settings</button></div>} />
                 <div className="sticky bottom-0 z-10 -mx-1 border-t border-white/10 bg-surface px-1 pt-2 pb-1" aria-label="Authorization controls">

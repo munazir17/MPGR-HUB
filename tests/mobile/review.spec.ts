@@ -66,7 +66,7 @@ test("parsed draft initialization, scrolling, tap feedback, retry and launcher",
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 for (const [state, reason] of [
-  ["runtime", /runtime is not enabled/i], ["production", /production safety gate/i],
+  ["runtime", /runtime is not enabled/i], ["runtime-missing", /runtime flag: missing/i], ["preview-blocked", /unavailable in Preview/i], ["missing-adapter", /delegated authorization is unavailable/i], ["production", /production safety gate/i],
   ["adapter", /execution is not ready/i], ["missing-executor", /delegated authorization is unavailable/i], ["unsigned-wallet", /delegated authorization is unavailable/i], ["delegated", /delegated authorization is unavailable/i],
   ["emergency", /disabled by the operator/i], ["settings", /settings are loading/i],
   ["disconnected", /connect your wallet/i], ["network", /Base Mainnet/i], ["session", /sign in to load/i],
@@ -76,6 +76,14 @@ for (const [state, reason] of [
     await expect(button(page)).toBeDisabled();
     await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText(reason);
     await expect(page.getByTestId("activation-calls")).toHaveText("0");
+    if (state === "preview-blocked") {
+      await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("runtime flag: disabled; production flag: missing");
+      await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("Use Manual mode");
+      await expect(button(page)).toBeInViewport();
+      await page.getByTestId("trading-launcher-manual").tap();
+      await expect(page.getByTestId("trading-manual-content")).toBeVisible();
+      await expect(page.getByTestId("activation-calls")).toHaveText("0");
+    }
     if (state === "session") {
       await page.getByTestId("agent-autonomy-draft-sign-in").tap();
       await expect(button(page)).toBeEnabled();

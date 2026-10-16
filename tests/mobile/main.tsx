@@ -25,7 +25,8 @@ function Audit() {
   const [manualForm, setManualForm] = useState(false);
   const modal = new URLSearchParams(location.search).has("modal");
   const config = { ...baseConfig, delegated: { ...baseConfig.delegated } };
-  if (scenario === "runtime") config.enabled = false;
+  if (["runtime", "runtime-missing", "preview-blocked"].includes(scenario)) config.enabled = false;
+  if (scenario === "preview-blocked") config.productionGate = false;
   if (scenario === "production") config.productionGate = false;
   if (scenario === "adapter") config.executionAvailable = false;
   if (scenario === "missing-executor") config.delegated.executor = "";
@@ -33,7 +34,7 @@ function Audit() {
   if (scenario === "emergency") config.emergencyDisabled = true;
   if (scenario === "delegated") config.delegated.chainId = 84532;
   const autonomy = {
-    draft, config, tokens: CHAT_REVIEW_TOKENS, settingsRead: { state: scenario === "settings" ? "loading" : "loaded", httpStatus: 200, productionGate: scenario === "production" ? "missing" : "enabled" },
+    draft, config: scenario === "missing-adapter" ? { ...config, delegated: undefined } : config, tokens: CHAT_REVIEW_TOKENS, settingsRead: { state: scenario === "settings" ? "loading" : "loaded", httpStatus: 200, deploymentEnvironment: "preview", runtimeGate: scenario === "runtime-missing" ? "missing" : ["runtime", "preview-blocked"].includes(scenario) ? "disabled" : "enabled", productionGate: ["production", "preview-blocked"].includes(scenario) ? "missing" : "enabled" },
     busy, error: null, authenticated, authenticating: false, goals: [], policies: [], slots: [], manualFormOpen: manualForm,
     clearDraft: () => setDraft(null), dismissError: () => {}, refresh: async () => {},
     signIn: async () => { setAuthenticated(true); return true; },
@@ -50,7 +51,7 @@ function Audit() {
     <main className="mx-auto max-w-xl p-2 text-white">
       <p>Isolated fixtures — no live wallet/API/execution</p>
       <label>Fixture state <select aria-label="Fixture state" className="bg-surface" value={scenario} onChange={(e) => { setScenario(e.target.value); setAuthenticated(e.target.value !== "session"); }}>
-        {["ready", "runtime", "production", "adapter", "missing-executor", "unsigned-wallet", "delegated", "emergency", "settings", "disconnected", "network", "session", "throw", "success", "wallet-change"].map((v) => <option key={v}>{v}</option>)}
+        {["ready", "runtime", "runtime-missing", "preview-blocked", "production", "adapter", "missing-adapter", "missing-executor", "unsigned-wallet", "delegated", "emergency", "settings", "disconnected", "network", "session", "throw", "success", "wallet-change"].map((v) => <option key={v}>{v}</option>)}
       </select></label>
       <button data-testid="open-review" className="m-2 min-h-[44px]" onClick={() => setDraft(parsed)}>Review parsed AAPLc draft</button>
       <p data-testid="activation-calls">{calls}</p>

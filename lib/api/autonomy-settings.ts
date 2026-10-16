@@ -12,7 +12,14 @@ export function publicGateState(value: string | undefined): PublicGateState {
 function headerGate(value: string | null): PublicGateState {
   return ["enabled", "disabled", "missing", "invalid"].includes(value ?? "") ? value as PublicGateState : "unknown";
 }
+export type DeploymentEnvironment = "preview" | "production" | "development" | "unknown";
+/** Platform classification only; arbitrary custom labels/values stay private.
+ * Diagnostic context, NEVER an execution/authorization gate. */
+export function publicDeploymentEnvironment(value: string | null | undefined): DeploymentEnvironment {
+  return value === "preview" || value === "production" || value === "development" ? value : "unknown";
+}
 export interface AutonomySettingsDiagnostic {
+  deploymentEnvironment?: DeploymentEnvironment;
   state: "loading" | "wallet_required" | "loaded" | "http_error" | "invalid_json" | "invalid_response" | "network_error" | "timeout";
   httpStatus?: number;
   runtimeGate?: PublicGateState;
@@ -37,7 +44,7 @@ export function isAutonomySettings(value: unknown): value is AutonomyConfig {
 export async function readAutonomySettings(fetchImpl: typeof fetch = fetchWithSession): Promise<{ config: AutonomyConfig | null; diagnostic: AutonomySettingsDiagnostic }> {
   try {
     const response = await fetchImpl("/api/agent/autonomy/config", { method: "GET", cache: "no-store", signal: AbortSignal.timeout(10_000) });
-    const diagnostic = { httpStatus: response.status, runtimeGate: headerGate(response.headers.get("x-mpgr-autonomy-runtime-gate")), productionGate: headerGate(response.headers.get("x-mpgr-autonomy-production-gate")) };
+    const diagnostic = { deploymentEnvironment: publicDeploymentEnvironment(response.headers.get("x-mpgr-autonomy-deployment-environment")), httpStatus: response.status, runtimeGate: headerGate(response.headers.get("x-mpgr-autonomy-runtime-gate")), productionGate: headerGate(response.headers.get("x-mpgr-autonomy-production-gate")) };
     if (!response.ok) return { config: null, diagnostic: { ...diagnostic, state: "http_error" } };
     let value: unknown;
     try { value = await response.json(); } catch (error) {

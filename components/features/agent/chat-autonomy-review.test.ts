@@ -86,7 +86,8 @@ describe("Chat authorization requires confirmed live gates independently of sett
   it("does not suggest retry/sign-in as a fix for a disabled runtime flag", () => {
     const message = chatReviewAuthorizationError({ ...ready(), config: { ...config, enabled: false }, settingsRead: { state: "loaded", httpStatus: 200, runtimeGate: "missing" } });
     expect(message).toMatch(/runtime flag: missing/);
-    expect(message).toMatch(/operator must review Preview configuration/);
+    expect(message).toContain("Use Manual mode");
+    expect(message).toContain("unavailable on this deployment");
     expect(message).not.toMatch(/Retry loading settings/);
   });
   it.each(["loading", "http_error", "invalid_json", "invalid_response", "network_error", "timeout"] as const)("never authorizes stale valid settings while the read is %s", (state) => {
@@ -134,4 +135,34 @@ describe("complete, fresh executable review", () => {
     const quote = chatReviewQuoteFromProposal({ ...reviewQuoteFixture(form), ...patch }, form);
     expect(chatQuoteReviewError(quote, form)).not.toBeNull();
   });
+});
+
+it("explains the verified Preview block and directs to Manual without suggesting enablement", () => {
+  const message = chatReviewAuthorizationError({ ...ready(), config: { ...config, enabled: false, productionGate: false },
+    settingsRead: { state: "loaded", httpStatus: 200, runtimeGate: "disabled", productionGate: "missing", deploymentEnvironment: "preview" } });
+  expect(message).toContain("Mainnet autonomous authorization is unavailable in Preview");
+  expect(message).toContain("runtime flag: disabled");
+  expect(message).toContain("production flag: missing");
+  expect(message).toContain("Use Manual mode");
+  expect(message).not.toMatch(/must review Preview configuration|Retry loading settings|enable (?:Mainnet autonomy|the production gate) in Preview/i);
+});
+it("does not mislabel Production as Preview or let deployment diagnostics enable a missing gate", () => {
+  expect(chatReviewAuthorizationError({ ...ready(), settingsRead: { state: "loaded", deploymentEnvironment: "preview" } })).toBeNull();
+  for (const deploymentEnvironment of ["preview", "production", "unknown"] as const) {
+    const message = chatReviewAuthorizationError({ ...ready(), config: { ...config, productionGate: false }, settingsRead: { state: "loaded", productionGate: "missing", deploymentEnvironment } });
+    expect(message).toContain("Use Manual mode");
+    expect(message).toContain(deploymentEnvironment === "preview" ? "unavailable in Preview" : "unavailable on this deployment");
+    if (deploymentEnvironment !== "preview") expect(message).not.toContain("in Preview");
+  }
+});
+
+it.each(["runtime-missing", "production-missing", "stale-quote", "wrong-network", "disconnected", "missing-adapter"])("mocked Preview readiness remains closed with %s missing/invalid", (block) => {
+  const args: Parameters<typeof chatReviewAuthorizationError>[0] = { ...ready(), settingsRead: { state: "loaded", deploymentEnvironment: "preview" } };
+  if (block === "runtime-missing") { args.config = { ...config, enabled: false }; args.settingsRead!.runtimeGate = "missing"; }
+  if (block === "production-missing") { args.config = { ...config, productionGate: false }; args.settingsRead!.productionGate = "missing"; }
+  if (block === "stale-quote") { args.quote!.proposal!.quotedAt = new Date(Date.now() - 60_000).toISOString(); args.quote!.proposal!.expiresAt = new Date(Date.now() - 30_000).toISOString(); }
+  if (block === "wrong-network") args.walletChainId = 1;
+  if (block === "disconnected") args.walletChainId = undefined;
+  if (block === "missing-adapter") args.config = { ...config, delegated: undefined };
+  expect(chatReviewAuthorizationError(args)).not.toBeNull();
 });
