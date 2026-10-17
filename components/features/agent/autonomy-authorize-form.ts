@@ -30,14 +30,20 @@ export function autonomyDraftToForm(
     draft && tokens.find((t) => t.symbol.toLowerCase() === draft.targetAsset.toLowerCase());
   const spend =
     draft && tokens.find((t) => t.symbol.toLowerCase() === draft.spendAsset.toLowerCase());
+  const selling = draft?.side === "sell";
+  // Runtime conditions compare sell-token / buy-token. For a sell to USDC
+  // that ratio is the reciprocal of the user's USDC-per-asset trigger.
+  const condition = selling && draft ? sellCondition(draft) : {
+    kind: draft?.triggerKind ?? "price_below" as const, threshold: draft?.triggerPrice ?? "",
+  };
   const sellAmount = draft?.amountPerTrade ?? "50";
   const perTrade = Number(sellAmount);
   return {
-    sell: spend?.address ?? usdc?.address ?? "",
-    buy: target?.address ?? "",
+    sell: selling ? target?.address ?? "" : spend?.address ?? usdc?.address ?? "",
+    buy: selling ? usdc?.address ?? "" : target?.address ?? "",
     sellAmount,
-    threshold: draft?.triggerPrice ?? "",
-    kind: draft?.triggerKind ?? "price_below",
+    threshold: condition.threshold,
+    kind: condition.kind,
     maxDaily: Number.isFinite(perTrade) && perTrade > 0 ? String(Math.max(perTrade * 2, 10)) : "100",
     slippageBps: 100,
     maxTrades: 10,
@@ -63,4 +69,20 @@ export function autonomyFormToDraftInput(form: AutonomyAuthorizeFormState): Agen
       form.kind === "price_below" ? "falls below" : "rises above"
     } ${form.threshold}`,
   };
+}
+
+/** Decimal-safe inverse, rounded conservatively so conversion never fires early. */
+function sellCondition(draft: AutonomyGoalDraft): { kind: "price_below" | "price_above"; threshold: string } {
+  const kind = draft.triggerKind === "price_below" ? "price_above" : "price_below";
+  const text = draft.triggerPrice;
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return { kind, threshold: "" };
+  const [whole, fraction = ""] = text.split(".");
+  const scale = 10n ** 18n;
+  const price = BigInt(whole + fraction.padEnd(18, "0").slice(0, 18));
+  if (price <= 0n) return { kind, threshold: "" };
+  const numerator = scale * scale;
+  const inverse = kind === "price_above" ? (numerator + price - 1n) / price : numerator / price;
+  if (inverse <= 0n) return { kind, threshold: "" };
+  const frac = (inverse % scale).toString().padStart(18, "0").replace(/0+$/, "");
+  return { kind, threshold: `${inverse / scale}${frac ? "." + frac : ""}` };
 }

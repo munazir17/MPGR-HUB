@@ -1,0 +1,310 @@
+import { reviewQuoteFixture } from "./test-fixtures/chat-review-quote";
+import { chatDraftToForm } from "./chat-autonomy-review";
+import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Small hook harness, following the existing hook tests. Real review component
+// and effects; only wallet/session/network state is mocked. No signing, goals,
+// activation, executor, or transaction endpoint can be called by this harness.
+const harness = vi.hoisted(() => ({
+  states: [] as unknown[], stateIndex: 0, effectIndex: 0,
+  deps: [] as unknown[][], cleanup: [] as (undefined | (() => void))[], pending: [] as (() => void)[],
+  wallet: { isConnected: true, chainId: 8453, address: "0x1111111111111111111111111111111111111111" },
+}));
+vi.mock("react", async (load) => {
+  const real = await load<typeof import("react")>();
+  return { ...real, useId: () => "review-title", useRef: (initial: unknown) => {
+    const i = harness.stateIndex++;
+    if (!(i in harness.states)) harness.states[i] = { current: initial };
+    return harness.states[i];
+  }, useState: (initial: unknown) => {
+    const i = harness.stateIndex++;
+    if (!(i in harness.states)) harness.states[i] = initial;
+    return [harness.states[i], (next: unknown) => { harness.states[i] = typeof next === "function" ? next(harness.states[i]) : next; }];
+  }, useEffect: (effect: () => void | (() => void), deps: unknown[]) => {
+    const i = harness.effectIndex++;
+    if (!harness.deps[i] || deps.some((v, j) => !Object.is(v, harness.deps[i][j]))) {
+      harness.cleanup[i]?.();
+      harness.deps[i] = deps;
+      harness.pending.push(() => { harness.cleanup[i] = effect() || undefined; });
+    }
+  } };
+});
+vi.mock("wagmi", () => ({ useAccount: () => harness.wallet }));
+vi.mock("framer-motion", async () => ({ AnimatePresence: (await import("react")).Fragment, motion: { div: "div" } }));
+import type { AutonomySettingsDiagnostic } from "@/lib/api/autonomy-settings";
+import { AgentAutonomyDraftReview } from "./AgentAutonomyDraftReview";
+import { CHAT_REVIEW_TOKENS } from "./chat-autonomy-review";
+import { buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
+
+const prompt = "Buy AAPLc whenever price falls 1% worth 1 USDC";
+const config = {
+  enabled: true, emergencyDisabled: false, productionGate: true, executionAvailable: true,
+  delegated: { chainId: 8453, executor: "0x1111111111111111111111111111111111111111", walletSigningSupported: true },
+  limits: { maxGoalsPerWallet: 5, minCooldownSeconds: 60, maxPolicyTtlDays: 30, maxPerTradeHuman: "100", maxDailyHuman: "500", maxSlippageBps: 100 },
+};
+const autonomy = {
+  draft: buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt, { referencePrice: "347" }),
+  tokens: CHAT_REVIEW_TOKENS, config, settingsRead: { state: "loaded", httpStatus: 200 } as AutonomySettingsDiagnostic, authenticated: true, authenticating: false, busy: false, error: null,
+  clearDraft: vi.fn(), dismissError: vi.fn(), refresh: vi.fn(async () => {}), signIn: vi.fn(async () => true),
+  activateDraft: vi.fn(async (): Promise<{ ok: boolean; mode?: "signed" | "standing" }> => { throw new Error("Verification must never authorize a goal"); }),
+};
+const network = vi.fn<typeof fetch>();
+type Props = Record<string, unknown> & { children?: ReactNode };
+function render() {
+  harness.stateIndex = harness.effectIndex = 0;
+  const outer = AgentAutonomyDraftReview({ autonomy: autonomy as never }) as ReactElement<{ children: ReactElement }>;
+  const dialog = outer.props.children as ReactElement<Record<string, unknown>>;
+  return (dialog.type as (props: Record<string, unknown>) => ReactElement)(dialog.props);
+}
+function find(tree: ReactNode, id: string): ReactElement<Props> {
+  if (isValidElement<Props>(tree)) {
+    if (tree.props["data-testid"] === id) return tree;
+    for (const child of Array.isArray(tree.props.children) ? tree.props.children : [tree.props.children]) {
+      try { return find(child, id); } catch { /* next child */ }
+    }
+  }
+  throw new Error(`No element ${id}`);
+}
+function edit(tree: ReactNode, id: string, value: string) {
+  (find(tree, id).props.onChange as (event: { target: { value: string } }) => void)({ target: { value } });
+}
+async function effects() {
+  for (const effect of harness.pending.splice(0)) effect();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+beforeEach(() => {
+  harness.states = []; harness.deps = []; harness.cleanup = []; harness.pending = [];
+  harness.wallet = { isConnected: true, chainId: 8453, address: "0x1111111111111111111111111111111111111111" };
+  autonomy.tokens = CHAT_REVIEW_TOKENS; autonomy.config = config; autonomy.settingsRead = { state: "loaded", httpStatus: 200 }; autonomy.authenticated = true;
+  vi.clearAllMocks();
+  network.mockImplementation(async (url, init) => {
+    expect(url).toBe("/api/trade/quote");
+    expect(init?.method).toBe("POST");
+    return new Response(JSON.stringify({ proposal: reviewQuoteFixture(chatDraftToForm(autonomy.draft)) }), { status: 200 });
+  });
+  vi.stubGlobal("fetch", network);
+});
+afterEach(() => {
+  harness.cleanup.forEach((fn) => fn?.());
+  vi.unstubAllGlobals();
+});
+
+describe("Chat draft review effect and validation behavior", () => {
+  it("renders canonical options/selections on mobile-style first render, without fetching or signing", () => {
+    autonomy.tokens = [];
+    const tree = render();
+    const html = renderToStaticMarkup(tree);
+    expect(html).toMatch(/<option[^>]*selected=""[^>]*>USDC<\/option>/);
+    expect(html).toMatch(/<option[^>]*selected=""[^>]*>AAPLc<\/option>/);
+    expect(find(tree, "autonomy-draft-amount").props.value).toBe("1");
+    expect(find(tree, "autonomy-draft-price").props.value).toBe("343.53");
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    expect(network).not.toHaveBeenCalled();
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+    expect(autonomy.signIn).not.toHaveBeenCalled();
+  });
+  it("enables only after the matching quote and all required validation succeeds, without authorizing", async () => {
+    expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    await effects();
+    const tree = render();
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(false);
+    expect(JSON.parse(network.mock.calls[0][1]!.body as string)).toMatchObject({ amount: "1", fromToken: CHAT_REVIEW_TOKENS.find((t) => t.symbol === "USDC")!.address,
+      toToken: CHAT_REVIEW_TOKENS.find((t) => t.symbol === "AAPLc")!.address, slippageBps: 100 });
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+    expect(autonomy.signIn).not.toHaveBeenCalled();
+  });
+  it("preserves edits when runtime metadata arrives late and immediately invalidates a previous quote", async () => {
+    autonomy.tokens = [];
+    let tree = render();
+    await effects();
+    tree = render();
+    edit(tree, "autonomy-draft-amount", "2");
+    autonomy.tokens = CHAT_REVIEW_TOKENS;
+    tree = render();
+    expect(find(tree, "autonomy-draft-amount").props.value).toBe("2");
+    expect(find(tree, "autonomy-draft-price").props.value).toBe("343.53");
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    network.mockResolvedValueOnce(new Response("{}", { status: 503 }));
+    await effects();
+    tree = render();
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    expect(renderToStaticMarkup(tree)).toContain("Could not load a valid live quote");
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  });
+  it("cannot authorize an invalid form even if its click handler is invoked directly", async () => {
+    let tree = render(); await effects(); tree = render();
+    edit(tree, "autonomy-draft-price", "");
+    tree = render();
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+    expect(autonomy.signIn).not.toHaveBeenCalled();
+  });
+  it.each(["0", "NaN", "0.000000001"])("refuses a malformed or invalid quote floor %s", async (minToAmount) => {
+    network.mockResolvedValueOnce(new Response(JSON.stringify({ proposal: { minToAmount } }), { status: 200 }));
+    render(); await effects();
+    expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  });
+  it("a late response for old inputs cannot enable the edited form", async () => {
+    let finishOld!: (response: Response) => void;
+    network.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
+    let tree = render(); await effects();
+    edit(tree, "autonomy-draft-amount", "2");
+    tree = render();
+    network.mockResolvedValueOnce(new Response("{}", { status: 503 }));
+    await effects();
+    finishOld(new Response(JSON.stringify({ proposal: reviewQuoteFixture(chatDraftToForm(autonomy.draft)) }), { status: 200 }));
+    await effects();
+    expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  });
+  it("requires explicit sign-in, then a quote, then a separate explicit authorization", async () => {
+    autonomy.authenticated = false;
+    let tree = render(); await effects();
+    expect(network).not.toHaveBeenCalled();
+    expect(autonomy.signIn).not.toHaveBeenCalled();
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    (find(tree, "agent-autonomy-draft-sign-in").props.onClick as () => void)();
+    await effects();
+    expect(autonomy.signIn).toHaveBeenCalledTimes(1);
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+    autonomy.authenticated = true;
+    tree = render(); await effects(); tree = render();
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(false);
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  });
+  it("keeps wrong-network, unavailable, and emergency states disabled even with a quote", async () => {
+    render(); await effects();
+    harness.wallet.chainId = 84532;
+    expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    harness.wallet.chainId = 8453;
+    autonomy.config = { ...config, emergencyDisabled: true };
+    expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    autonomy.config = { ...config, enabled: false };
+    expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("Chat settings and production/readiness failures", () => {
+  it.each(["productionGate", "executionAvailable"] as const)("blocks authorization when %s is false but permits a read-only quote", async (gate) => {
+    render(); await effects(); // a valid old quote exists before readiness changes
+    autonomy.config = { ...config, [gate]: false };
+    network.mockClear();
+    const tree = render(); await effects();
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+    expect(autonomy.signIn).not.toHaveBeenCalled();
+    expect(find(tree, "autonomy-draft-amount").props.value).toBe("1");
+    expect(find(tree, "autonomy-draft-price").props.value).toBe("343.53");
+  });
+  it("shows HTTP/schema diagnostics instead of calling a stale config ready", async () => {
+    render(); await effects();
+    autonomy.settingsRead = { state: "http_error", httpStatus: 503 };
+    network.mockClear();
+    const tree = render(); await effects();
+    expect(renderToStaticMarkup(tree)).toContain("HTTP 503");
+    expect(renderToStaticMarkup(tree)).toContain("Settings GET failed");
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+    expect(autonomy.signIn).not.toHaveBeenCalled();
+    expect(network).not.toHaveBeenCalled();
+  });
+  it("separates a loaded but disabled runtime flag from the production gate", async () => {
+    autonomy.config = { ...config, enabled: false, productionGate: false, executionAvailable: false };
+    autonomy.settingsRead = { state: "loaded", httpStatus: 200, runtimeGate: "missing", productionGate: "disabled" };
+    const tree = render(); await effects();
+    const html = renderToStaticMarkup(tree);
+    expect(html).toContain("runtime flag: missing");
+    expect(html).toContain("production safety gate");
+    expect(html).toContain("loaded · HTTP 200");
+    expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+    expect(network).toHaveBeenCalledTimes(1); // read-only even with execution gates off
+    expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  });
+});
+
+it("shows output/provider/freshness/fees/risks in review and passes one exact human floor on explicit confirmation", async () => {
+  render(); await effects();
+  const tree = render(); const html = renderToStaticMarkup(tree);
+  expect(html).toMatch(/Expected output<\/dt>.*?>0\.0029 AAPLc<\/dd>/);
+  expect(html).toMatch(/Minimum after slippage<\/dt>.*?>0\.0028 AAPLc<\/dd>/);
+  expect(html).toContain("Provider / network"); expect(html).toContain("Expires:"); expect(html).toContain("Agent fee");
+  expect(html).toContain("single-use, not recurring schedule permission");
+  autonomy.activateDraft.mockResolvedValueOnce({ ok: true, mode: "signed" });
+  await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
+  expect(autonomy.activateDraft).toHaveBeenCalledWith(expect.objectContaining({ minAmountOutHuman: "0.0028", sellAmount: "1", maxTrades: 10, condition: { kind: "price_below", threshold: "343.53" } }));
+});
+it("a previously enabled handler refuses a quote that expires before the click", async () => {
+  render(); await effects(); const tree = render();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+  try { await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)(); }
+  finally { clock.mockRestore(); }
+  expect(autonomy.activateDraft).not.toHaveBeenCalled();
+});
+it.each(["enabled", "productionGate", "executionAvailable"] as const)("quotes read-only with %s off, without activation or signing", async (gate) => {
+  autonomy.config = { ...config, [gate]: false };
+  render(); await effects(); const tree = render();
+  expect(network).toHaveBeenCalledTimes(1);
+  expect(renderToStaticMarkup(tree)).toMatch(/Expected output<\/dt>.*?>0\.0029 AAPLc<\/dd>/);
+  expect(find(tree, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+  expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  expect(autonomy.signIn).not.toHaveBeenCalled();
+});
+
+it.each(["network", "disconnect", "session", "wallet"])("immediately removes old quote values on %s change and waits for a fresh matching quote", async (change) => {
+  render(); await effects();
+  expect(renderToStaticMarkup(render())).toContain("0.0029 AAPLc");
+  if (change === "network") harness.wallet.chainId = 1;
+  if (change === "disconnect") harness.wallet.isConnected = false;
+  if (change === "session") autonomy.authenticated = false;
+  if (change === "wallet") harness.wallet.address = "0x3333333333333333333333333333333333333333";
+  const changed = render();
+  expect(renderToStaticMarkup(changed)).not.toContain("0.0029 AAPLc");
+  expect(find(changed, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+  await effects();
+  if (change === "wallet") { // old taker response is refused as well
+    expect(renderToStaticMarkup(render())).not.toContain("0.0029 AAPLc");
+    expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+  }
+  harness.wallet = { isConnected: true, chainId: 8453, address: "0x1111111111111111111111111111111111111111" };
+  autonomy.authenticated = true;
+  let resolve!: (value: Response) => void;
+  network.mockImplementation(() => new Promise((done) => { resolve = done; }));
+  expect(renderToStaticMarkup(render())).not.toContain("0.0029 AAPLc");
+  await effects();
+  expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+  resolve(new Response(JSON.stringify({ proposal: reviewQuoteFixture(chatDraftToForm(autonomy.draft)) })));
+  await new Promise((done) => setTimeout(done, 0));
+  expect(renderToStaticMarkup(render())).toContain("0.0029 AAPLc");
+  expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(false);
+  expect(autonomy.activateDraft).not.toHaveBeenCalled();
+});
+
+it("an expiry timer's latched invalid state overrides a still-fresh clock check in both UI and handler", async () => {
+  const realSetTimeout = setTimeout;
+  let expire: (() => void) | undefined;
+  vi.stubGlobal("setTimeout", (callback: () => void, ms: number) => {
+    if (ms > 1000 && ms <= 31_000) expire = callback;
+    return realSetTimeout(callback, ms);
+  });
+  render(); await effects(); render(); await effects();
+  expect(find(render(), "agent-autonomy-draft-authorize").props.disabled).toBe(false);
+  expect(expire).toBeTypeOf("function");
+  expire!(); // reproduces timer/render/clock ordering, without moving Date.now
+  const expired = render();
+  expect(find(expired, "agent-autonomy-draft-authorize").props.disabled).toBe(true);
+  const html = renderToStaticMarkup(expired);
+  expect(html).toContain("Quote expired");
+  expect(html).not.toContain("Quote ready");
+  expect(html).not.toContain("0.0029 AAPLc");
+  await (find(expired, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)();
+  expect(autonomy.activateDraft).not.toHaveBeenCalled();
+  expect(autonomy.signIn).not.toHaveBeenCalled();
+});

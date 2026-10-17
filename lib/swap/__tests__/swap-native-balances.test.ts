@@ -1,0 +1,10 @@
+import { it, expect, vi, beforeEach } from "vitest";
+vi.mock("@/lib/wagmi",()=>({config:{}}));
+vi.mock("wagmi/actions",()=>({ getBalance:vi.fn(async()=>({value:2n*10n**18n})),readContract:vi.fn(async(_c:unknown,p:{functionName:string})=>p.functionName==="decimals"?18:100n*10n**18n),getAccount:vi.fn(),getPublicClient:vi.fn() }));
+import {getBalance,readContract} from "wagmi/actions";
+import {readSwapBalance} from "../swap-wallet";
+import {MANUAL_SWAP_TOKENS} from "@/lib/trade/manual-swap";
+const wallet="0x1111111111111111111111111111111111111111" as const;
+beforeEach(()=>vi.clearAllMocks());
+it("native ETH balance is the Base native RPC balance; no ERC20 call to the sentinel",async()=>{expect(await readSwapBalance(wallet,MANUAL_SWAP_TOKENS.find(t=>t.symbol==="ETH")!)).toEqual({value:2n*10n**18n,decimals:18});expect(getBalance).toHaveBeenCalledWith(expect.anything(),{address:wallet,chainId:8453});expect(readContract).not.toHaveBeenCalled();});
+it("WETH remains its separate ERC20 balanceOf/decimals on chain 8453, not native ETH",async()=>{const weth=MANUAL_SWAP_TOKENS.find(t=>t.symbol==="WETH")!;expect(await readSwapBalance(wallet,weth)).toEqual({value:100n*10n**18n,decimals:18});expect(getBalance).not.toHaveBeenCalled();expect(readContract).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({address:weth.address,functionName:"balanceOf",args:[wallet],chainId:8453}));});

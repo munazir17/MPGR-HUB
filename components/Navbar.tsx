@@ -22,6 +22,7 @@ import { useHolderTier } from "@/lib/useHolderTier";
 
 const PRIMARY_LINKS = [
   { href: "/", label: "Agent" },
+  { href: "/swap", label: "Swap" },
   { href: "/rewards", label: "Rewards" },
   { href: "/staking", label: "Staking" },
   { href: "/games", label: "Games" },

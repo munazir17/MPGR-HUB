@@ -1,0 +1,170 @@
+# PR #113 anonymous Preview evidence. Browser GETs + a sessionless quote
+# refusal probe only. No sign-in, signing, goal/permission writes, execution or tick.
+# Reuses the existing Preview automation secret without printing it.
+name: Chat reference Preview (read-only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  deployments: read
+jobs:
+  reference:
+    if: github.event.pull_request.number == 113 && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check authorized Preview access availability
+        id: access
+        env:
+          PREVIEW_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          if [ -z "$PREVIEW_BYPASS" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::BLOCKED: configured Preview automation secret is unavailable. No live verification performed."
+            echo "## BLOCKED — no authorized Preview access" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.access.outputs.available == 'true'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        if: steps.access.outputs.available == 'true'
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install existing test dependencies
+        if: steps.access.outputs.available == 'true'
+        run: npm ci --no-audit --no-fund
+      - name: Wait for this exact commit's Preview deployment
+        if: steps.access.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          for i in $(seq 1 40); do
+            ID=$(gh api "repos/$REPO/deployments?sha=$HEAD_SHA&per_page=10" --jq '[.[] | select(.environment == "Preview")][0].id // empty')
+            if [ -n "$ID" ]; then
+              STATE=$(gh api "repos/$REPO/deployments/$ID/statuses" --jq '.[0].state // "pending"')
+              if [ "$STATE" = "success" ]; then
+                URL=$(gh api "repos/$REPO/deployments/$ID/statuses" --jq '.[0].environment_url')
+                echo "CHAT_PREVIEW_URL=$URL" >> "$GITHUB_ENV"
+                exit 0
+              fi
+              if [ "$STATE" = "failure" ] || [ "$STATE" = "error" ]; then exit 1; fi
+            fi
+            sleep 10
+          done
+          echo "::error::Preview did not become ready within the bounded wait."
+          exit 1
+      - name: Verify real reference and build a review-only draft in memory
+        if: steps.access.outputs.available == 'true'
+        env:
+          CHAT_PREVIEW_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          CHAT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Ephemeral test artifact: not application code or a production path.
+          cat > lib/autonomy/__tests__/preview-readonly.task.test.ts <<'TEST'
+          import { expect, it } from "vitest";
+          import { writeFileSync } from "node:fs";
+          import { isAutonomySettings, publicDeploymentEnvironment } from "@/lib/api/autonomy-settings";
+          import { selectReferencePrice } from "../reference-price";
+          import { buildGoalDraft, detectAutonomousTradeRequest } from "../chat-draft";
+          import { chatDraftToForm } from "@/components/features/agent/chat-autonomy-review";
+          it("reads the actual deployed reference without authorizing or creating a goal", async () => {
+            const origin = process.env.CHAT_PREVIEW_URL!;
+            expect(origin).toMatch(/^https:\/\/mpgr-hub-ezxs-[a-z0-9]+-munazir-razas-projects\.vercel\.app$/);
+            const read = async (path: string) => {
+              // Exhaustive GET allowlist. No auth cookies, sign-in or writes.
+              expect(["/api/market/pair?symbol=AAPLc", "/api/agent/autonomy/config", "/api/agent/autonomy/tokens?chainId=8453", "/api/agent/autonomy/goals", "/api/agent/autonomy/policy", "/api/agent/autonomy/authorization"]).toContain(path);
+              const response = await fetch(origin + path, { method: "GET", redirect: "manual", cache: "no-store",
+                headers: { "x-vercel-protection-bypass": process.env.CHAT_PREVIEW_BYPASS! }, signal: AbortSignal.timeout(60000) });
+              const data = await response.json().catch(() => null);
+              return { status: response.status, data, headers: response.headers };
+            };
+            const [settings, tokens, goals, policy, authorization] = await Promise.all([
+              read("/api/agent/autonomy/config"), read("/api/agent/autonomy/tokens?chainId=8453"),
+              read("/api/agent/autonomy/goals"), read("/api/agent/autonomy/policy"), read("/api/agent/autonomy/authorization"),
+            ]);
+            const gate = (value: string | null) => ["enabled", "disabled", "missing", "invalid"].includes(value ?? "") ? value : "unknown";
+            const boolean = (value: unknown) => typeof value === "boolean" ? value : null;
+            const code = (value: unknown) => typeof value === "string" && ["AUTH_REQUIRED", "AUTONOMY_DISABLED", "EXECUTOR_NOT_CONFIGURED", "INVALID_CHAIN", "RATE_LIMITED"].includes(value) ? value : null;
+            const evidence = {
+              commit: process.env.CHAT_HEAD_SHA, observedAt: new Date().toISOString(),
+              settings: { HTTP: settings.status, valid: isAutonomySettings(settings.data),
+                deploymentEnvironment: publicDeploymentEnvironment(settings.headers.get("x-mpgr-autonomy-deployment-environment")),
+                noStore: settings.headers.get("cache-control")?.includes("no-store") === true,
+                enabled: boolean(settings.data?.enabled), emergencyDisabled: boolean(settings.data?.emergencyDisabled),
+                productionGate: boolean(settings.data?.productionGate), executionAvailable: boolean(settings.data?.executionAvailable),
+                runtimeFlag: gate(settings.headers.get("x-mpgr-autonomy-runtime-gate")), productionFlag: gate(settings.headers.get("x-mpgr-autonomy-production-gate")),
+                delegatedBase: settings.data?.delegated?.chainId === 8453,
+                delegatedChainId: [8453, 84532].includes(settings.data?.delegated?.chainId) ? settings.data.delegated.chainId : null, walletSigningSupported: boolean(settings.data?.delegated?.walletSigningSupported) },
+              tokens: { HTTP: tokens.status, code: code(tokens.data?.code), count: Array.isArray(tokens.data?.tokens) ? tokens.data.tokens.length : null },
+              goals: { HTTP: goals.status, code: code(goals.data?.code) }, policy: { HTTP: policy.status, code: code(policy.data?.code) },
+              authorization: { HTTP: authorization.status, code: code(authorization.data?.code) },
+            };
+            // Fixed fields/enums only. No env values, bodies, cookies or wallets.
+            writeFileSync("preview-settings-evidence.json", JSON.stringify(evidence));
+            expect(settings.status).toBe(200);
+            expect(isAutonomySettings(settings.data)).toBe(true);
+            expect(settings.data.productionGate).toBe(false); // mandated fail-closed Preview
+            const pair = await read("/api/market/pair?symbol=AAPLc");
+            console.log("Preview pair HTTP status", pair.status);
+            expect(pair.status).toBe(200);
+            expect(pair.data).not.toBeNull();
+            const detail = pair.data;
+            const lookupStates = ["recovered", "http_error", "malformed_response", "no_matching_price", "invalid_price", "missing_tape_entry", "network_error"];
+            console.log("Safe provider diagnostics", JSON.stringify({ feedPresent: typeof detail.stockEntry?.usdFeed === "number",
+              dexPresent: typeof detail.stockEntry?.usdDex === "number", feedStale: detail.stockEntry?.feedStale === true,
+              degraded: detail.degraded === true,
+              lookup: lookupStates.includes(detail.referenceLookup?.state) ? detail.referenceLookup.state : null,
+              providerHTTP: typeof detail.referenceLookup?.httpStatus === "number" ? detail.referenceLookup.httpStatus : null }));
+            const selected = selectReferencePrice({ ...detail, stock: detail.stockEntry, wrapped: detail.wrappedEntry,
+              asOf: detail.referenceAsOf ?? detail.asOf, degraded: detail.referenceAsOf ? false : detail.degraded }, "AAPLc");
+            // Result is a fixed validation code or public market price, not a
+            // provider body, credential, auth cookie, or arbitrary error string.
+            console.log("Validated real Preview reference", JSON.stringify(selected));
+            expect(selected.ok).toBe(true);
+            if (!selected.ok) return;
+            const prompt = "Buy AAPLc whenever price falls 1% worth 1 USDC";
+            const draft = buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt, { referencePrice: selected.referencePrice });
+            const form = chatDraftToForm(draft);
+            expect(draft).toMatchObject({ targetAsset: "AAPLc", spendAsset: "USDC", amountPerTrade: "1", percentDrop: 1 });
+            expect(form).toMatchObject({ sellAmount: "1", threshold: draft.triggerPrice, kind: "price_below" });
+            console.log("In-memory draft only", JSON.stringify({ amount: draft.amountPerTrade, percent: draft.percentDrop, reference: draft.referencePrice, trigger: draft.triggerPrice }));
+            // Actual mobile/session/quote/authorization checks remain separate.
+          });
+          TEST
+          npx vitest run lib/autonomy/__tests__/preview-readonly.task.test.ts --testTimeout=190000
+      - name: Publish safe settings diagnostics as a check annotation
+        if: always() && steps.access.outputs.available == 'true'
+        run: |
+          if [ -f preview-settings-evidence.json ]; then
+            echo "::notice title=Read-only Preview autonomy settings::$(cat preview-settings-evidence.json)"
+            echo '## Read-only Preview autonomy settings' >> "$GITHUB_STEP_SUMMARY"
+            cat preview-settings-evidence.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::BLOCKED: no settings evidence obtained; inspect prior step status."
+          fi
+
+      - name: Reproduce baseline and verify anonymous mobile entry flows on exact deployed commits
+        if: steps.access.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CHAT_PREVIEW_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          CHAT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          npx playwright install --with-deps chromium
+          node scripts/verify-preview-user-flows.mjs
+      - name: Save anonymous Preview browser and refusal evidence
+        if: always() && steps.access.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr113-preview-user-flows-${{ github.event.pull_request.head.sha }}
+          path: p0-preview-evidence/
+          retention-days: 7
+          if-no-files-found: warn

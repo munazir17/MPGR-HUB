@@ -1,3 +1,5 @@
+import { tradeCommandInputError } from "@/lib/agent-intelligence/trade-command-guard";
+import { isExecutableRouteRequest } from "@/lib/agent-intelligence/swap-intent";
 import { extractBaseSwapIntent, extractUnresolvedSwapOrder, extractTradeSymbol, isTradeExecutionPrompt, isTransferPrompt } from "@/lib/agent-intelligence";
 import type { AIProvider } from "./ai-provider";
 import type { AIProviderKind } from "./ai-provider-config";
@@ -7,7 +9,8 @@ import { DiagnosticsAIProvider, type AIProviderStats } from "./ai-provider-diagn
 import { GuardrailAIProvider } from "./ai-provider-guardrails";
 import { CircuitBreakerAIProvider } from "./circuit-breaker-ai-provider";
 import { FallbackAIProvider } from "./fallback-ai-provider";
-import { DeterministicAIProvider } from "./deterministic-ai-provider";
+import { isConditionalTradeSentence, parseTradeSentence } from "@/lib/autonomy/trade-sentence-parser";
+import { buildAutonomyResponse, resolveAmountOnlyFollowUp, DeterministicAIProvider } from "./deterministic-ai-provider";
 import { TimeoutAIProvider } from "./ai-provider-timeout";
 import {
   ProviderChainAIProvider,
@@ -40,12 +43,29 @@ class TaskRoutedAIProvider implements AIProvider {
   lastChain: ProviderChainAIProvider | null = null;
 
   async generateReply(request: Parameters<AIProvider["generateReply"]>[0]) {
+    // Resolve these before every spot-swap/provider/tool route. The extraction
+    // model sees no tools and can only propose fields validated by code.
+    const inputError = tradeCommandInputError(request.prompt);
+    if (inputError) return { intent: "general_help" as const, reply: inputError, actions: [], highlights: [], followUps: [] };
+    const followUp = resolveAmountOnlyFollowUp(request);
+    if (followUp) return followUp;
+    if (isConditionalTradeSentence(request.prompt)) {
+      const parsed = await parseTradeSentence(request.prompt);
+      if (parsed.match) return buildAutonomyResponse(request, parsed.match);
+      return {
+        intent: "general_help" as const,
+        reply: parsed.error,
+        actions: [], highlights: [], followUps: [],
+      };
+    }
     // Clear execution intents take the existing deterministic prepare-only path.
     // No model capability/list/balance loop is needed to parse a sized order.
-    if (!isTransferPrompt(request.prompt) && isTradeExecutionPrompt(request.prompt) &&
-      (extractBaseSwapIntent(request.prompt) || extractUnresolvedSwapOrder(request.prompt) || extractTradeSymbol(request.prompt))) {
+    const swapIntent = extractBaseSwapIntent(request.prompt);
+    if (!isTransferPrompt(request.prompt) && (isTradeExecutionPrompt(request.prompt) || isExecutableRouteRequest(request.prompt) || (swapIntent?.quoteOnly && swapIntent.amount)) &&
+      (swapIntent || extractUnresolvedSwapOrder(request.prompt) || extractTradeSymbol(request.prompt))) {
       return safetyNet.generateReply(request);
     }
+    if (isExecutableRouteRequest(request.prompt)) return { intent: "general_help" as const, reply: "Specify a sell amount and two exact Base assets, for example: Show me the best available route for 100 USDC to ETH. Routes use provider priority; executable alternatives are not compared.", actions: [], highlights: [], followUps: [] };
     const task = classifyAgentTask(request.prompt);
     const order = resolveProviderKindOrder(task);
     const networkProviders = order

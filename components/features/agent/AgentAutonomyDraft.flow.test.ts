@@ -1,6 +1,7 @@
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import { autonomyDraftToForm } from "./autonomy-authorize-form";
 
@@ -24,8 +25,8 @@ const fixtures = vi.hoisted(() => {
     // must reuse the structured draft rather than reconstructing from text.
     sourcePrompt: "please set that up for me",
   };
-  const USDC = { address: "0x1111111111111111111111111111111111111111", symbol: "USDC", decimals: 6 };
-  const AAPLc = { address: "0x2222222222222222222222222222222222222222", symbol: "AAPLc", decimals: 8 };
+  const USDC = { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", symbol: "USDC", decimals: 6 };
+  const AAPLc = { address: "0xb200000000000000000000C2e324d24d7eEcd1fb", symbol: "AAPLc", decimals: 8 };
   const autonomy = {
     config: {
       enabled: true,
@@ -256,11 +257,11 @@ describe("chat autonomous draft vs manual goal flow", () => {
     const html = renderStage();
     expect(html).toContain('data-testid="agent-autonomy-draft-review"');
     expect(html).toContain("Review autonomous goal");
-    // The production-fix activation model: without a covering delegation the
-    // button says exactly what will happen — ONE wallet signature.
-    expect(html).toContain("Authorize &amp; sign once");
+    // A new goal requires its own goal-bound signature. Only a valid saved
+    // permission for that same goal may avoid redundant re-signing.
+    expect(html).toContain("Confirm &amp; authorize one execution");
     expect(html).toContain('data-testid="agent-autonomy-draft-authorization-mode"');
-    expect(html).toContain("One wallet signature will be requested");
+    expect(html).toContain("A new goal requests its own signature");
     expect(html).not.toContain('data-testid="agent-autonomy-manual-form"');
     expect(html).not.toContain("New autonomous goal");
     expect(html).toContain('data-testid="agent-autonomy-panel"');
@@ -382,5 +383,68 @@ describe("chat autonomous draft vs manual goal flow", () => {
     expect(reviewHtml).toContain('data-testid="agent-autonomy-draft-unavailable"');
     expect(reviewHtml).toContain("not available for autonomous trading");
     expect(reviewHtml).not.toContain('data-testid="agent-autonomy-draft-authorize"');
+  });
+});
+
+
+describe("exact conditional-buy reproduction review", () => {
+  it("renders the parsed amount and anchored trigger without authorizing anything", () => {
+    const prompt = "Buy AAPLc whenever price falls 1% worth 1 USDC";
+    const match = detectAutonomousTradeRequest(prompt);
+    expect(match).not.toBeNull();
+    const draft = buildGoalDraft(match!, prompt, { referencePrice: "347" });
+    const authorize = vi.fn();
+    const html = renderToStaticMarkup(createElement(AgentAutonomyDraftReview, {
+      autonomy: { ...fixtures.autonomy, draft, activateDraft: authorize } as never,
+    }));
+    expect(html).toContain('data-testid="agent-autonomy-draft-review"');
+    expect(html).toContain("Below $343.53");
+    expect(html).toContain("1 USDC");
+    expect(html).toContain("USDC → AAPLc");
+    expect(html).toContain("AAPLc is 347"); // retained on demand, not repeated in the default summary
+    expect(html).toContain('value="1"');
+    expect(html).toContain('value="343.53"');
+    const form = autonomyDraftToForm(draft, [fixtures.USDC, fixtures.AAPLc]);
+    expect(form).toMatchObject({ sell: fixtures.USDC.address, buy: fixtures.AAPLc.address, sellAmount: "1", threshold: "343.53", kind: "price_below" });
+    expect(authorize).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("sell draft direction and runtime ratio mapping", () => {
+  it("sells the target for USDC and compares the inverse USD price", () => {
+    const form = autonomyDraftToForm({ ...fixtures.DRAFT, side: "sell", spendAsset: "AAPLc", triggerPrice: "250" }, [fixtures.USDC, fixtures.AAPLc]);
+    expect(form.sell).toBe(fixtures.AAPLc.address);
+    expect(form.buy).toBe(fixtures.USDC.address);
+    expect(form.sellAmount).toBe("1");
+    expect(form.kind).toBe("price_above");
+    expect(form.threshold).toBe("0.004");
+  });
+
+  it("rounds a non-terminating inverse conservatively (never before the USD threshold)", () => {
+    const form = autonomyDraftToForm({ ...fixtures.DRAFT, side: "sell", spendAsset: "AAPLc", triggerPrice: "3" }, [fixtures.USDC, fixtures.AAPLc]);
+    expect(form.threshold).toBe("0.333333333333333334");
+  });
+});
+
+describe("Chat review missing-catalog regression", () => {
+  it("renders Base USDC/AAPLc options and selections even when the runtime token request is empty", () => {
+    const html = renderToStaticMarkup(createElement(AgentAutonomyDraftReview, {
+      autonomy: { ...fixtures.autonomy, draft: DRAFT, tokens: [] } as never,
+    }));
+    expect(html).toMatch(/<option[^>]*selected=""[^>]*>USDC<\/option>/);
+    expect(html).toMatch(/<option[^>]*selected=""[^>]*>AAPLc<\/option>/);
+    expect(html).toMatch(/data-testid="agent-autonomy-draft-authorize"[^>]*\sdisabled=""/);
+  });
+  it("remounts review state when a different structured draft reuses the same prompt", () => {
+    const first = AgentAutonomyDraftReview({ autonomy: { ...fixtures.autonomy, draft: DRAFT } as never }) as ReactElement<{ children: ReactElement }>;
+    const changed = AgentAutonomyDraftReview({ autonomy: { ...fixtures.autonomy, draft: { ...DRAFT, triggerPrice: "0.20" } } as never }) as ReactElement<{ children: ReactElement }>;
+    expect(changed.props.children.key).not.toBe(first.props.children.key);
+  });
+  it("does not enable authorization before a validated live quote exists", () => {
+    const html = renderToStaticMarkup(createElement(AgentAutonomyDraftReview, {
+      autonomy: { ...fixtures.autonomy, draft: DRAFT } as never,
+    }));
+    expect(html).toMatch(/data-testid="agent-autonomy-draft-authorize"[^>]*\sdisabled=""/);
   });
 });

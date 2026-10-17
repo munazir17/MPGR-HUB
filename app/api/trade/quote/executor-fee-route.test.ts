@@ -1,3 +1,6 @@
+import { getAIProvider } from "@/lib/architecture/ai/ai-provider-registry";
+import type { AIProviderRequest } from "@/lib/architecture/ai/ai-provider";
+import { BASE_USDC, NATIVE_ETH_SENTINEL } from "@/lib/trade/trade-config";
 // app/api/trade/quote/executor-fee-route.test.ts
 //
 // REGRESSION: the browser quote route must route a supported pair through
@@ -21,6 +24,15 @@ const mocks = vi.hoisted(() => ({
   wallet: "0x2222222222222222222222222222222222222222",
 }));
 
+// The real tool sends exact known addresses; validate their metadata without RPC.
+vi.mock("@/lib/trade/trade-public-client", () => ({ getTradePublicClient: () => ({
+  getCode: async () => "0x6000",
+  readContract: async ({ address, functionName }: { address: string; functionName: string }) => {
+    const symbol = address.toLowerCase() === BASE_USDC.toLowerCase() ? "USDC" : address.toLowerCase() === CANONICAL_WETH.toLowerCase() ? "WETH" : null;
+    if (!symbol) throw new Error("Unexpected metadata contract in offline command test");
+    return ({ decimals: symbol === "USDC" ? 6 : 18, symbol, name: symbol, totalSupply: 100000000n, balanceOf: 0n } as Record<string, unknown>)[functionName];
+  },
+}) }));
 vi.mock("@/lib/trade/trade-swap-router", () => ({ createRoutedSwapQuote: mocks.routed }));
 vi.mock("@/lib/trade/trade-price-impact", () => ({ estimateQuotePriceImpactBps: async () => null }));
 vi.mock("@/lib/trade/trade-rate-limit", () => ({
@@ -337,3 +349,60 @@ describe("POST /api/trade/quote — B20 tokenized stocks use the SAME executor f
     expect(mocks.routed).not.toHaveBeenCalled();
   });
 });
+
+describe("OFFLINE command → real parser/tool runtime → existing Executor quote API", () => {
+  it.each([
+    ["Buy $10 of ETH on Base", "10000000", true],
+    ["Swap 20 USDC to WETH", "20000000", false],
+    ["Show me the best available route for 100 USDC to ETH", "100000000", true],
+  ] as const)("preserves exact identity, amount and atomic 25bps fee: %s", async (prompt, gross, nativeOut) => {
+    const http = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url !== "/api/trade/quote") throw new Error("Unexpected network request in offline command-to-Executor test");
+      return POST(new Request("https://app.test" + url, init));
+    });
+    vi.stubGlobal("fetch", http);
+    const result = await getAIProvider().generateReply({ prompt, address: WALLET, agentContext: { isConnected: true }, previousIntent: null, memoryContext: {} } as AIProviderRequest);
+    const proposal = result.tradeProposal;
+    expect(proposal).toBeDefined();
+    expect(proposal).toMatchObject({ provider: "mpgr-executor", chainId: 8453, fromAmount: gross, requiresConfirmation: true, to: { symbol: nativeOut ? "ETH" : "WETH", address: nativeOut ? NATIVE_ETH_SENTINEL : CANONICAL_WETH } });
+    expect(proposal!.agentFee).toMatchObject({ status: "applied", bps: 25, amountAtomic: (BigInt(gross) * 25n / 10000n).toString(), collection: "mpgr-executor" });
+    expect(proposal!.transaction!.to).toBe(EXECUTOR);
+    const decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: proposal!.transaction!.data });
+    const [params] = decoded.args as unknown as readonly [Record<string, unknown>];
+    expect(params.grossAmountIn).toBe(BigInt(gross));
+    expect(params.expectedFeeAmount).toBe(BigInt(gross) * 25n / 10000n);
+    expect(params.unwrapNativeOut).toBe(nativeOut);
+    expect(http).toHaveBeenCalledTimes(1); expect(mocks.routed).not.toHaveBeenCalled();
+    expect(result.reply).toContain("Executable alternatives were not compared.");
+    expect(result.reply).toContain("Confirm swap?");
+    expect(result.reply).not.toMatch(/swap confirmed|successful/i);
+  });
+});
+
+describe("Swap-only fee policy on existing quote API (Agent unchanged)", () => {
+  it("returns compliant Executor quote with exact on-chain recipient, independent of 0x public fee wallet", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MPGR_AGENT_FEE_RECIPIENT", "0x9999999999999999999999999999999999999999");
+    const response = await POST(post({ requireMPGRFee: true }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).proposal.agentFee.recipient).toBe(FEE_RECIPIENT);
+  });
+  it.each(["cdp-trade-api", "0x-swap-api", "aerodrome-slipstream"])("blocks a fee-less %s quote on Swap but preserves Agent's legacy API", async provider => {
+    const impl = mocks.routed.getMockImplementation()!;
+    mocks.routed.mockImplementation(async (...args) => ({ ...await impl(...args), provider }));
+    const body = { fromToken: "MPGR", toToken: "USDC", amount: "1" };
+    const legacy = await POST(post(body)); expect(legacy.status).toBe(200);
+    expect((await legacy.json()).proposal.agentFee.status).toBe("skipped");
+    const strict = await POST(post({ ...body, requireMPGRFee: true })); expect(strict.status).toBe(422);
+    expect(await strict.json()).toMatchObject({ code: "EXECUTION_UNAVAILABLE", error: expect.stringContaining("cannot safely collect") });
+    expect(mocks.routed).toHaveBeenCalledTimes(1); // policy cannot leak via shared cache
+  });
+  it.each(["true", 1, null])("rejects malformed policy opt-in %s", async requireMPGRFee => { const r = await POST(post({ requireMPGRFee })); expect(r.status).toBe(400); expect(mocks.routed).not.toHaveBeenCalled(); });
+});
+
+it("strict Swap confirmation refresh gets a new executable quote instead of the completed six-second cache", async()=>{
+ const first=await (await POST(post({requireMPGRFee:true}))).json();
+ const reader=fakeReader({out:900_000_000_000_000n});mocks.reader=reader;
+ const cached=await (await POST(post({requireMPGRFee:true}))).json();expect(cached.proposal.toAmount).toBe(first.proposal.toAmount);expect(reader.simulateContract).not.toHaveBeenCalled();
+ const fresh=await (await POST(post({requireMPGRFee:true,refreshQuote:true}))).json();expect(fresh.proposal.toAmount).toBe("900000000000000");expect(reader.simulateContract).toHaveBeenCalledTimes(1);
+});
+it.each([{refreshQuote:true},{requireMPGRFee:true,refreshQuote:"yes"}])("rejects invalid/legacy refresh opt-in %j",async body=>{expect((await POST(post(body))).status).toBe(400);});

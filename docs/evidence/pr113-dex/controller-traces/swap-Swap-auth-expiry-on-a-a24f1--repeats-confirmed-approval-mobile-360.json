@@ -1,0 +1,42 @@
+[
+  {
+    "method": "GET",
+    "path": "/api/auth/session",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/config",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/goals",
+    "status": 404
+  },
+  {
+    "method": "POST",
+    "path": "/api/trade/quote",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/api/trade/quote",
+    "status": 401
+  },
+  {
+    "method": "GET",
+    "path": "/api/auth/nonce",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/api/auth/verify",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/api/trade/quote",
+    "status": 200
+  }
+]

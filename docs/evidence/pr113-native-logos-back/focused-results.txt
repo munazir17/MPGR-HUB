@@ -1,0 +1,7 @@
+ ✓ lib/swap/__tests__/token-logos.test.ts (7 tests) 8ms
+ ✓ lib/swap/__tests__/swap-navigation.test.ts (11 tests) 8ms
+
+ Test Files  11 passed (11)
+      Tests  147 passed (147)
+   Start at  05:12:55
+   Duration  15.26s (transform 1.96s, setup 0ms, import 11.54s, tests 804ms, environment 1ms)

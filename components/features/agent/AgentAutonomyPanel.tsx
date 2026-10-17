@@ -3,7 +3,7 @@
 // components/features/agent/AgentAutonomyPanel.tsx
 //
 // Autonomous Agent Runtime — MINIMAL UI (spec §19). A collapsible drawer
-// rendered below the chat stage body. It contains exactly what the spec
+// rendered outside the chat stage through the shared trading launcher. It contains exactly what the spec
 // asks for and nothing more:
 //
 //   1. MODE DISPLAY   — whether the runtime is available, and that it is
@@ -32,6 +32,7 @@ import {
   type AutonomyTokenOption,
 } from "@/hooks/useAgentAutonomy";
 import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID } from "@/lib/executor/executor-config";
+import { findLiveSlotBoundToGoal } from "@/lib/autonomy/draft-activation";
 import { formatTokenAmount } from "@/lib/format";
 import {
   autonomyDraftToForm,
@@ -40,6 +41,8 @@ import {
 } from "./autonomy-authorize-form";
 
 interface AgentAutonomyPanelProps {
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
   autonomy: ReturnType<typeof useAgentAutonomy>;
 }
 
@@ -125,10 +128,11 @@ function relative(iso: string): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
+export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: AgentAutonomyPanelProps) {
   const { config, goals, policies, tokens, busy, error, dismissError, pause, resume, cancel, revokePolicy, revokeSlot, signDelegatedSlots, slots, slotsSigningSupported, authorizeGoal, mutate, authenticated, authenticating, signIn } =
     autonomy;
-  const [open, setOpen] = useState(false);
+  const [localOpen, setOpen] = useState(false);
+  const open = expanded ?? localOpen;
   const [form, setForm] = useState<AutonomyAuthorizeFormState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [delegatedGoalId, setDelegatedGoalId] = useState("");
@@ -136,7 +140,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
   const [delegatedMinOut, setDelegatedMinOut] = useState("");
   const [delegatedHours, setDelegatedHours] = useState(24);
 
-  const activeCount = useMemo(() => goals.filter((g) => !["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"].includes(g.status)).length, [goals]);
+  const activeCount = useMemo(() => goals.filter((g) => ["ACTIVE", "WAITING", "EXECUTING"].includes(g.status)).length, [goals]);
 
   // Manual entry point only — never pre-filled from a chat draft.
   const formState = form ?? autonomyDraftToForm(null, tokens);
@@ -159,7 +163,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
     const result = await authorizeGoal(autonomyFormToDraftInput(formState));
     if (result.ok) {
       setForm(null);
-      setNotice("Goal activated. It stays inside the limits you set.");
+      setNotice("Draft saved — awaiting goal-bound authorization. It is not active yet.");
     }
   };
 
@@ -169,7 +173,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
     <div className="shrink-0 border-t border-white/[0.06] bg-white/[0.02]" data-testid="agent-autonomy-panel">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => onExpandedChange ? onExpandedChange(!open) : setOpen((v) => !v)}
         className="flex min-h-[44px] w-full items-center gap-2 px-3 text-left sm:px-4 md:px-5"
         aria-expanded={open}
       >
@@ -185,7 +189,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
           </span>
         ) : config.enabled ? (
           <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-muted ring-1 ring-white/10">
-            Off until you activate a goal{activeCount > 0 ? ` · ${activeCount} active` : ""}
+            {activeCount > 0 ? `${activeCount} active / awaiting trigger` : "No active goals"}
           </span>
         ) : null}
         <span className="flex-1" />
@@ -201,7 +205,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
             transition={{ duration: 0.22 }}
             className="overflow-hidden"
           >
-            <div className="max-h-72 space-y-3 overflow-y-auto px-3 pb-3 sm:px-4 md:px-5">
+            <div className="max-h-[65dvh] space-y-3 overflow-y-auto px-3 pb-3 sm:px-4 md:px-5">
               {error && (
                 <div className="flex items-center gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
                   <span className="min-w-0 flex-1">{error}</span>
@@ -362,7 +366,9 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                     // A stale selection simply falls back to the first eligible goal.
                     if (eligibleGoals.length === 0 || config.emergencyDisabled) return null;
                     const goal = eligibleGoals.find((g) => g.id === delegatedGoalId) ?? eligibleGoals[0];
-                    const activeCount = slots.filter((s) => s.goalId === goal.id && s.status === "active").length;
+                    const usedCount = slots.filter((s) => s.goalId === goal.id).length;
+                    const savedPermission = goal.status === "DRAFT" && !!findLiveSlotBoundToGoal(
+                      policies.filter((p) => p.id === goal.policyId), slots.filter((s) => s.policyId === goal.policyId), { id: goal.id, ...goal.trade }, new Date());
                     return (
                       <div className="grid grid-cols-2 gap-2 text-xs">
                         <label className="col-span-2 space-y-1">
@@ -370,7 +376,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                           <select
                             value={goal.id}
                             onChange={(e) => setDelegatedGoalId(e.target.value)}
-                            className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                            className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                           >
                             {eligibleGoals.map((g) => (
                               <option key={g.id} value={g.id}>
@@ -379,26 +385,26 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                             ))}
                           </select>
                         </label>
-                        <label className="space-y-1">
-                          <span className="text-muted">Slots ({5 - activeCount} free)</span>
+                        <label className="min-w-0 space-y-1">
+                          <span className="text-muted">Slots ({Math.max(0, 5 - usedCount)} unused indexes)</span>
                           <select
                             value={delegatedCount}
                             onChange={(e) => setDelegatedCount(Number(e.target.value))}
-                            className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                            className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                           >
-                            {[1, 2, 3, 4, 5].filter((n) => n <= 5 - activeCount).map((n) => (
+                            {[1, 2, 3, 4, 5].filter((n) => n <= 5 - usedCount).map((n) => (
                               <option key={n} value={n}>
                                 {n}
                               </option>
                             ))}
                           </select>
                         </label>
-                        <label className="space-y-1">
+                        <label className="min-w-0 space-y-1">
                           <span className="text-muted">Expires in</span>
                           <select
                             value={delegatedHours}
                             onChange={(e) => setDelegatedHours(Number(e.target.value))}
-                            className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                            className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                           >
                             <option value={1}>1 hour</option>
                             <option value={6}>6 hours</option>
@@ -415,13 +421,13 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                             onChange={(e) => setDelegatedMinOut(e.target.value)}
                             inputMode="decimal"
                             placeholder="0.00"
-                            className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                            className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                           />
                         </label>
                         <button
                           type="button"
                           data-testid="delegated-sign-button"
-                          disabled={busy || !slotsSigningSupported}
+                          disabled={busy || (!savedPermission && (!slotsSigningSupported || usedCount >= 5))}
                           onClick={async () => {
                             const result = await signDelegatedSlots({
                               policyId: goal.policyId,
@@ -432,16 +438,17 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                             });
                             if (result.ok) {
                               setDelegatedMinOut("");
-                              setNotice("Delegated slots signed and registered. Each executes at most once, exactly as signed.");
+                              setNotice(savedPermission ? "Activation confirmed with this goal’s saved permission. No new signature was requested." : "Delegated slots signed and registered. Each executes at most once, exactly as signed.");
                             }
                           }}
                           className="col-span-2 flex min-h-[36px] items-center justify-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 text-[11px] font-semibold text-sky-200 transition-colors hover:bg-sky-500/20 disabled:opacity-50"
                         >
                           <PenLine className="h-3 w-3" aria-hidden="true" />
-                          {slotsSigningSupported
+                          {savedPermission ? "Activate with saved permission (no new signature)" : slotsSigningSupported
                             ? `Sign ${delegatedCount} slot${delegatedCount > 1 ? "s" : ""} with wallet`
                             : "Wallet signing unavailable for this executor build"}
                         </button>
+                        {usedCount >= 5 && <p className="col-span-2 text-[10px] text-muted">All five goal-bound nonce indexes have been used. Revocation cannot recycle them.</p>}
                         {!slotsSigningSupported && (
                           <p className="col-span-2 text-[10px] leading-relaxed text-muted">
                             The deployed executor&apos;s witness type string is not signable by standard wallets — signing opens
@@ -461,12 +468,12 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                     New autonomous goal
                   </p>
                   <div className="grid grid-cols-2 gap-2 text-xs">
-                    <label className="space-y-1">
+                    <label className="min-w-0 space-y-1">
                       <span className="text-muted">Sell (spend)</span>
                       <select
                         value={formState.sell}
                         onChange={(e) => setField({ sell: e.target.value })}
-                        className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                        className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                       >
                         <option value="">Select…</option>
                         {tokens.map((t) => (
@@ -476,12 +483,12 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                         ))}
                       </select>
                     </label>
-                    <label className="space-y-1">
+                    <label className="min-w-0 space-y-1">
                       <span className="text-muted">Buy (receive)</span>
                       <select
                         value={formState.buy}
                         onChange={(e) => setField({ buy: e.target.value })}
-                        className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                        className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                       >
                         <option value="">Select…</option>
                         {tokens.map((t) => (
@@ -491,22 +498,22 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                         ))}
                       </select>
                     </label>
-                    <label className="space-y-1">
+                    <label className="min-w-0 space-y-1">
                       <span className="text-muted">Amount per trade</span>
                       <input
                         value={formState.sellAmount}
                         onChange={(e) => setField({ sellAmount: e.target.value })}
                         inputMode="decimal"
-                        className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                        className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                       />
                     </label>
-                    <label className="space-y-1">
+                    <label className="min-w-0 space-y-1">
                       <span className="text-muted">Trigger</span>
                       <span className="flex gap-1">
                         <select
                           value={formState.kind}
                           onChange={(e) => setField({ kind: e.target.value as AutonomyAuthorizeFormState["kind"] })}
-                          className="w-full rounded-l-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                          className="min-w-0 w-full rounded-l-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                         >
                           <option value="price_below">below</option>
                           <option value="price_above">above</option>
@@ -516,26 +523,26 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                           onChange={(e) => setField({ threshold: e.target.value })}
                           inputMode="decimal"
                           placeholder="200"
-                          className="w-full rounded-r-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                          className="min-w-0 w-full rounded-r-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                         />
                       </span>
                     </label>
-                    <label className="space-y-1">
+                    <label className="min-w-0 space-y-1">
                       <span className="text-muted">Daily cap (spend)</span>
                       <input
                         value={formState.maxDaily}
                         onChange={(e) => setField({ maxDaily: e.target.value })}
                         inputMode="decimal"
-                        className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                        className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                       />
                     </label>
-                    <label className="space-y-1">
+                    <label className="min-w-0 space-y-1">
                       <span className="text-muted">Max trades total</span>
                       <input
                         value={formState.maxTrades}
                         onChange={(e) => setField({ maxTrades: Number(e.target.value) || 0 })}
                         inputMode="numeric"
-                        className="w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
+                        className="min-w-0 w-full rounded-lg border border-white/[0.1] bg-surface-2 px-2 py-1.5 text-white"
                       />
                     </label>
                   </div>
@@ -551,7 +558,7 @@ export function AgentAutonomyPanel({ autonomy }: AgentAutonomyPanelProps) {
                       disabled={busy}
                       className="min-h-[36px] flex-1 rounded-lg bg-gradient-blue px-3 text-xs font-semibold text-white disabled:opacity-50"
                     >
-                      {busy && authenticating ? "Signing in…" : busy ? "Working…" : !authenticated ? "Sign in & authorize" : "Authorize & activate goal"}
+                      {busy && authenticating ? "Signing in…" : busy ? "Working…" : !authenticated ? "Sign in & save draft" : "Save draft (inactive)"}
                     </button>
                     {formDirty && (
                       <button
@@ -602,7 +609,7 @@ function GoalRow({ goal, symbolFor, humanFor, busy, onPause, onResume, onCancel,
   const direction = goal.condition.kind === "price_below" ? "below" : "above";
   const canPause = goal.status === "ACTIVE" || goal.status === "WAITING";
   const canResume = goal.status === "PAUSED";
-  const canCancel = ["ACTIVE", "WAITING", "PAUSED"].includes(goal.status);
+  const canCancel = ["ACTIVE", "WAITING", "PAUSED", "DRAFT"].includes(goal.status);
 
   const saveLimits = async (patch: GoalLimitsPatch) => {
     setSaving(true);

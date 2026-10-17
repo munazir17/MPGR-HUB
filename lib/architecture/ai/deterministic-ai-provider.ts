@@ -1,3 +1,7 @@
+import { tradeCommandInputError } from "@/lib/agent-intelligence/trade-command-guard";
+import { isExecutableRouteRequest } from "@/lib/agent-intelligence/swap-intent";
+import { selectReferencePrice } from "@/lib/autonomy/reference-price";
+import { logger } from "@/lib/architecture/core/logger";
 import { formatTradeReview, formatTradePrice, publicAgentContent } from "@/lib/trade/trade-chat";
 import { hasNegativeTradeAmount } from "./tool-call-normalization";
 // Autonomous Agent Runtime (ADDITIVE, spec §20): clearly recurring /
@@ -13,10 +17,12 @@ import { hasNegativeTradeAmount } from "./tool-call-normalization";
 // per-trade amount instead of falling into the swap/help flows.
 import {
   applyAmountToDraft,
+  validateAutonomyMatch,
   buildAutonomyReplyText,
   buildGoalDraft,
   detectAmountOnlyFollowUp,
   detectAutonomousTradeRequest,
+  conditionalTradeInputError,
 } from "@/lib/autonomy/chat-draft";
 import {
   extractBaseSwapIntent,
@@ -47,7 +53,6 @@ import { answerWalletBalance } from "./wallet-balance-answer";
 import type { X402PaymentProposal } from "@/lib/x402/x402-proposal";
 import type { TokenizedStockReport, TradeProposal } from "@/lib/trade/trade-types";
 import type { TransferProposal } from "@/lib/trade/transfer-types";
-import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
 import { hydrateTradeSwapArguments } from "@/lib/trade/trade-request";
 import { findKnownTradeToken } from "@/lib/trade/trade-tokens";
 
@@ -66,7 +71,11 @@ export class DeterministicAIProvider implements AIProvider {
   readonly requiresNetwork = false;
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
+    const inputError = tradeCommandInputError(request.prompt);
+    if (inputError) return helpResponse(inputError);
     if (hasNegativeTradeAmount(request.prompt)) return helpResponse("The swap amount must be positive. Nothing was signed or submitted.");
+    const conditionalInputError = conditionalTradeInputError(request.prompt);
+    if (conditionalInputError) return helpResponse(conditionalInputError);
     // Strict wallet-balance questions ("What is my MSTRc balance?", "How much
     // MPGR do I have?", "What's in my wallet?", "How much is my wallet
     // worth?") are answered from live reads — and ONLY what was asked. This
@@ -90,52 +99,7 @@ export class DeterministicAIProvider implements AIProvider {
     if (amountFollowUp) return amountFollowUp;
 
     const autonomyRequest = detectAutonomousTradeRequest(request.prompt);
-    if (autonomyRequest) {
-      // ALLOWLIST DISCIPLINE first: only delegated-allowlist symbols with a
-      // registered USDC route may become drafts at all. An unsupported asset
-      // never triggers a price read or any other tool — the draft is still
-      // produced, but flagged unsupported so the UI card and review SAY it is
-      // not available for autonomous trading. No tokens, routes, or contract
-      // allowlist entries are added anywhere.
-      const unanchored = buildGoalDraft(autonomyRequest, request.prompt);
-      if (unanchored.supported === false) {
-        return {
-          intent: "general_help",
-          reply: unanchored.unsupportedReason ?? `${autonomyRequest.targetAsset} is not available for autonomous trading.`,
-          actions: [],
-          highlights: [],
-          followUps: ["Which assets support autonomous goals?", "How does autonomous mode work?"],
-          autonomyGoalDraft: unanchored,
-        };
-      }
-
-      const anchor = await resolveAnchor(autonomyRequest, request);
-      const draft =
-        anchor && unanchored.percentDrop != null
-          ? buildGoalDraft(autonomyRequest, request.prompt, anchor)
-          : unanchored;
-
-      // A percent trigger that could not be anchored to a live reference
-      // price produces NO draft at all — an unanchored percentage would be a
-      // made-up number. The user is asked for an absolute trigger instead.
-      if (autonomyRequest.percentDrop != null && !draft.triggerPrice) {
-        return helpResponse(
-          `I could not get a live ${autonomyRequest.targetAsset} price just now, so I can't anchor a ${autonomyRequest.percentDrop}% trigger. Try again in a moment, or give me an absolute price like "when it falls below $340".`,
-        );
-      }
-
-      return {
-        intent: "general_help",
-        reply: buildAutonomyReplyText(
-          autonomyRequest,
-          draft.referencePrice ? { referencePrice: draft.referencePrice } : null,
-        ),
-        actions: [],
-        highlights: [],
-        followUps: ["Open Autonomous Goals", "How does autonomous mode work?"],
-        autonomyGoalDraft: draft,
-      };
-    }
+    if (autonomyRequest) return buildAutonomyResponse(request, autonomyRequest);
 
     if (isTransferPrompt(request.prompt)) {
       return prepareOrExplainTransfer(request);
@@ -149,7 +113,7 @@ export class DeterministicAIProvider implements AIProvider {
     }
 
     const directSwap = extractBaseSwapIntent(request.prompt);
-    if (directSwap && !directSwap.quoteOnly && isTradeExecutionPrompt(request.prompt)) {
+    if (directSwap && ((directSwap.quoteOnly && directSwap.amount) || (!directSwap.quoteOnly && (isTradeExecutionPrompt(request.prompt) || isExecutableRouteRequest(request.prompt))))) {
       return prepareOrExplainBaseSwap(request, directSwap);
     }
 
@@ -403,7 +367,8 @@ async function quoteBaseSwapSide(
  * Natural "swap X to Y" over the existing supported token universe.
  *
  *   - no amount yet       → ask for it (no API call, no guessed unit)
- *   - quote/price wording → trade_get_price (reference only)
+ *   - unsized quote/price wording → trade_get_price (reference only)
+ *   - sized quote → executable proposal for review (never authorization)
  *   - otherwise           → prepare_swap, which routes B20 legs through
  *                           the Aerodrome path and everything else
  *                           through the existing CDP → 0x quote route
@@ -415,7 +380,7 @@ async function prepareOrExplainBaseSwap(
   request: AIProviderRequest,
   intent: BaseSwapIntent,
 ): Promise<AIProviderResponse> {
-  if (intent.quoteOnly) {
+  if (intent.quoteOnly && !intent.amount) {
     return quoteBaseSwapSide(request, intent);
   }
 
@@ -477,7 +442,7 @@ async function prepareOrExplainTrade(
   // card claims an execution route is ready. Research phrasing without an
   // execution verb ("check AAPLc price", "NVDAc premium vs feed",
   // "should I buy AAPLc?") keeps the research path untouched.
-  const wantsExecution = isTradeExecutionPrompt(request.prompt);
+  const wantsExecution = (isTradeExecutionPrompt(request.prompt) || isExecutableRouteRequest(request.prompt));
 
   if (wantsQuote || wantsExecution) {
     if (!symbol) {
@@ -643,22 +608,22 @@ async function resolveAnchor(
 ): Promise<{ referencePrice: string } | null> {
   if (match.percentDrop == null) return null;
   const result = await runRegisteredTool("get_pair", { symbol: match.targetAsset }, request);
-  if (!result || !result.success) return null;
-  const data = result.data as
-    | {
-        stock?: { usdFeed?: number | null; usdDex?: number | null } | null;
-        wrapped?: { usd?: number | null } | null;
-      }
-    | undefined;
-  const raw = data?.stock?.usdFeed ?? data?.stock?.usdDex ?? data?.wrapped?.usd ?? null;
-  if (raw == null || !Number.isFinite(raw) || raw <= 0) return null;
-  return { referencePrice: formatReferencePrice(raw) };
-}
-
-/** Up to 6 decimals, trailing zeros trimmed: 347 → "347", 347.36 → "347.36". */
-function formatReferencePrice(value: number): string {
-  const fixed = value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
-  return fixed;
+  if (!result || !result.success) {
+    logger.warn("Conditional reference price tool failed", { symbol: match.targetAsset, code: result?.error?.code ?? "EMPTY_TOOL_RESULT", source: result?.metadata?.source });
+    return null;
+  }
+  const reference = selectReferencePrice(result.data, match.targetAsset);
+  if (!reference.ok) {
+    const data = result.data as { referenceLookup?: { state?: unknown; httpStatus?: unknown } } | undefined;
+    logger.warn("Conditional reference price refused", {
+      symbol: match.targetAsset, code: reference.code,
+      // Only fixed, non-secret diagnostic fields from our own pair API.
+      lookupState: typeof data?.referenceLookup?.state === "string" ? data.referenceLookup.state : undefined,
+      httpStatus: typeof data?.referenceLookup?.httpStatus === "number" ? data.referenceLookup.httpStatus : undefined,
+    });
+    return null;
+  }
+  return { referencePrice: reference.referencePrice };
 }
 
 /**
@@ -666,28 +631,35 @@ function formatReferencePrice(value: number): string {
  * '$1'), attach it to the open autonomous draft. Do not start a spot swap
  * and do not answer with portfolio help." The draft counts as open when the
  * LAST assistant turn of this conversation carried it — read from the
- * deterministic lastAssistantMessage (preferred) or, failing that, from the
- * ranked relevantHistory. Anything else (no draft, an unsupported draft)
- * returns null and the normal branches run unchanged.
+ * deterministic lastAssistantMessage, never from ranked relevantHistory.
+ * Without an open draft the normal branches run unchanged.
  */
-function resolveAmountOnlyFollowUp(request: AIProviderRequest): AIProviderResponse | null {
+export function resolveAmountOnlyFollowUp(request: AIProviderRequest): AIProviderResponse | null {
+  // Only actual conversation state is authoritative; ranked memory may be
+  // from an unrelated turn and must never resurrect a draft.
+  const draft = request.lastAssistantMessage?.autonomyGoalDraft;
+  if (!draft) return null;
   const hit = detectAmountOnlyFollowUp(request.prompt);
-  if (!hit) return null;
-  const draft =
-    request.lastAssistantMessage?.autonomyGoalDraft ??
-    (Array.isArray(request.memoryContext?.relevantHistory)
-      ? ([...request.memoryContext.relevantHistory]
-          .reverse()
-          .find((m) => (m as { role?: unknown })?.role === "assistant") as
-          | { autonomyGoalDraft?: AutonomyGoalDraft }
-          | undefined)?.autonomyGoalDraft
-      : undefined);
-  if (!draft || draft.supported === false) return null;
+  if (!hit) {
+    // Invalid amount-only text is still a draft follow-up, not a spot order.
+    if (/^(?:\$\s*)?-?\d+(?:\.\d+)?\s*(?:usdc|usd|dollars?|bucks)?(?:\s+per\s+trade)?$/i.test(request.prompt.trim())) {
+      return { ...helpResponse("Enter a positive amount within the policy cap."), autonomyGoalDraft: draft };
+    }
+    return null;
+  }
+  if (draft.supported === false) {
+    return { ...helpResponse(draft.unsupportedReason ?? "This asset is not available for autonomous trading."), autonomyGoalDraft: draft };
+  }
 
+  if (draft.side === "sell" && /(?:\$|usdc|usd|dollars?|bucks)/i.test(request.prompt)) {
+    return { ...helpResponse(`This sell spends ${draft.spendAsset}; enter an amount in that asset rather than USDC.`), autonomyGoalDraft: draft };
+  }
+  const error = validateAutonomyMatch({ ...draft, amountPerTrade: hit.amount });
+  if (error) return { ...helpResponse(error), autonomyGoalDraft: draft };
   const updated = applyAmountToDraft(draft, hit.amount);
   const anchor = updated.referencePrice ? ` (reference: ${updated.targetAsset} is ${updated.referencePrice})` : "";
   const trigger = updated.triggerPrice
-    ? ` when the price goes ${updated.triggerKind === "price_below" ? "below" : "above"} ${updated.triggerPrice} ${updated.spendAsset}`
+    ? ` when the price goes ${updated.triggerKind === "price_below" ? "below" : "above"} ${updated.triggerPrice} USDC`
     : "";
   return {
     intent: "general_help",
@@ -700,5 +672,58 @@ function resolveAmountOnlyFollowUp(request: AIProviderRequest): AIProviderRespon
     highlights: [],
     followUps: ["Open Autonomous Goals", "How does autonomous mode work?"],
     autonomyGoalDraft: updated,
+  };
+}
+
+/** Shared review-only reply builder. Its only tool is the read-only price lookup. */
+export async function buildAutonomyResponse(
+  request: AIProviderRequest,
+  autonomyRequest: NonNullable<ReturnType<typeof detectAutonomousTradeRequest>>,
+): Promise<AIProviderResponse> {
+  const error = validateAutonomyMatch(autonomyRequest);
+  if (error) return helpResponse(error);
+  // ALLOWLIST DISCIPLINE first: only delegated-allowlist symbols with a
+  // registered USDC route may become drafts at all. An unsupported asset
+  // never triggers a price read or any other tool — the draft is still
+  // produced, but flagged unsupported so the UI card and review SAY it is
+  // not available for autonomous trading. No tokens, routes, or contract
+  // allowlist entries are added anywhere.
+  const unanchored = buildGoalDraft(autonomyRequest, request.prompt);
+  if (unanchored.supported === false) {
+    return {
+      intent: "general_help",
+      reply: unanchored.unsupportedReason ?? `${autonomyRequest.targetAsset} is not available for autonomous trading.`,
+      actions: [],
+      highlights: [],
+      followUps: ["Which assets support autonomous goals?", "How does autonomous mode work?"],
+      autonomyGoalDraft: unanchored,
+    };
+  }
+
+  const anchor = await resolveAnchor(autonomyRequest, request);
+  const draft =
+    anchor && unanchored.percentDrop != null
+      ? buildGoalDraft(autonomyRequest, request.prompt, anchor)
+      : unanchored;
+
+  // A percent trigger that could not be anchored to a live reference
+  // price produces NO draft at all — an unanchored percentage would be a
+  // made-up number. The user is asked for an absolute trigger instead.
+  if (autonomyRequest.percentDrop != null && !draft.triggerPrice) {
+    return helpResponse(
+      `I could not get a live ${autonomyRequest.targetAsset} price just now, so I can't anchor a ${autonomyRequest.percentDrop}% trigger. Your parsed request is ${autonomyRequest.amountPerTrade ?? "an unspecified amount of"} ${autonomyRequest.spendAsset} per trade at a ${autonomyRequest.percentDrop}% drop; no goal was created. Try again when a live reference is available.`,
+    );
+  }
+
+  return {
+    intent: "general_help",
+    reply: buildAutonomyReplyText(
+      autonomyRequest,
+      draft.referencePrice ? { referencePrice: draft.referencePrice } : null,
+    ),
+    actions: [],
+    highlights: [],
+    followUps: ["Open Autonomous Goals", "How does autonomous mode work?"],
+    autonomyGoalDraft: draft,
   };
 }

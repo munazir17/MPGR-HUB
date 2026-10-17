@@ -2,36 +2,18 @@
 //
 // ACTIVATION-FLOW AUDIT (route level).
 //
-// Question under audit: "Authorize & activate goal" flipped a goal to ACTIVE
-// with NO on-chain approval popup. Is that intentional and safe?
-//
-// This suite drives the REAL production route handlers (policy POST -> goals
-// POST, exactly the two calls hooks/useAgentAutonomy.ts#authorizeGoal makes)
-// against the REAL RedisAutonomyStore, and proves:
-//
-//   A1. Activation is TWO off-chain writes and nothing else: one policy row,
-//       one goal row, two audit events. No transaction hash, no signature
-//       bytes, no approval, no broadcast — the goal is ACTIVE with
-//       triggered/verified == 0 and pendingTxHash == null.
-//   A2. The SIWE session is the ONLY credential consumed. The policy records
-//       a non-secret session digest (`authorizationRef`) as provenance; it is
-//       not, and cannot be mistaken for, an ERC-20/Permit2 token approval.
-//   A3. `authorized: true` is an explicit opt-in — omitting it is a 400.
-//   A4. THE MISSING CAPABILITY: the policy route can only ever mint a Base
-//       MAINNET (8453) policy over MAINNET tokens, while the delegated
-//       execution control plane is Base Sepolia (84532) only. So even a
-//       genuinely user-signed Permit2 witness slot is refused for a
-//       UI-activated goal (POLICY_CHAIN_MISMATCH) — delegated capability
-//       cannot be attached to it, and `GET /authorization` stays empty.
-//
-// Nothing here sends a transaction or touches a network.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+// Regression: policy + goal writes reserve a non-runnable DRAFT, not ACTIVE.
+// A SIWE grant is not a Permit2 slot. All tests are offline; there is no
+// broadcaster or live wallet involved. Activation after persisted goal-bound
+// permission is covered by authorization/route.test.ts.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";
 
 import { LuaRedis } from "@/lib/__tests__/helpers/lua-redis";
 import { RedisAutonomyStore } from "@/lib/autonomy/redis-store";
 import { RedisDelegatedAuthorizationStore } from "@/lib/autonomy/delegated-redis-store";
+import { setEmergencySwitchReaderForTests } from "@/lib/autonomy/emergency-switch";
 import { policyHashFor } from "@/lib/autonomy/delegated-authorization";
 import {
   DELEGATED_EXECUTOR_ADDRESS,
@@ -41,6 +23,13 @@ import {
 } from "@/lib/executor/delegated-executor";
 import { AUTONOMY_CHAIN_ID, type AutonomyPolicy } from "@/lib/autonomy/types";
 
+// Isolated readiness seam for the lifecycle test below. Real policy/goal/slot
+// handlers, signature validation and Redis state machines are NOT replaced.
+vi.mock("@/lib/autonomy", () => ({ autonomyStatus: () => ({
+  executionAvailable: true, emergencyDisabled: false,
+  productionGate: process.env.AUTONOMOUS_PRODUCTION_ENABLED === "true",
+  delegated: { chainId: 8453 },
+}) }));
 const redis = new LuaRedis();
 vi.mock("@/lib/api/redis", () => ({ getRedis: () => redis.client() }));
 
@@ -93,6 +82,7 @@ vi.mock("@/lib/trade/trade-rate-limit", () => ({
 import { POST as POLICY_POST } from "./policy/route";
 import { POST as GOALS_POST, GET as GOALS_GET } from "./goals/route";
 import { POST as AUTHORIZATION_POST, GET as AUTHORIZATION_GET } from "./authorization/route";
+import { PATCH as GOAL_PATCH } from "./goals/[id]/route";
 import { GET as TOKENS_GET } from "./tokens/route";
 import type { AutonomySystem } from "@/lib/autonomy/index";
 
@@ -157,10 +147,15 @@ async function allowlistedPair(): Promise<{ sell: string; buy: string }> {
   return tokens.pairs[0];
 }
 
+afterEach(() => { setEmergencySwitchReaderForTests(null); });
+
 beforeEach(async () => {
   vi.stubEnv("MPGR_AUTONOMOUS_AGENT_ENABLED", "true");
   vi.stubEnv("MPGR_AUTONOMOUS_EMERGENCY_DISABLE", "false");
   vi.stubEnv("MPGR_AUTONOMOUS_EXECUTION_ADAPTER", "");
+  // Isolate executor/signature checks with the production gate explicitly on
+  // in this local test process. Gate-off admission has its own regressions.
+  vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", "true");
   await redis.reset();
   broadcasterSeam.createCalls = 0;
   broadcasterSeam.broadcastCalls = [];
@@ -176,8 +171,8 @@ describe("A1 — activation is two off-chain writes and nothing else", () => {
     expect(goalRes?.status).toBe(201);
 
     const goal = (goalBody as { goal: Record<string, unknown> }).goal;
-    // The UI's exact reported state: ACTIVE, 0 triggered, 0 verified, no tx.
-    expect(goal.status).toBe("ACTIVE");
+    // The reserved goal's truthful state: DRAFT, 0 triggered, 0 verified, no tx.
+    expect(goal.status).toBe("DRAFT");
     expect(goal.stats).toEqual({ evaluations: 0, triggered: 0, verified: 0, consecutiveFailures: 0 });
     expect(goal.pendingTxHash).toBeNull();
     expect(goal.lastAction).toBeNull();
@@ -209,7 +204,7 @@ describe("A1 — activation is two off-chain writes and nothing else", () => {
       goals: Array<{ status: string; pendingTxHash: string | null; stats: Record<string, number>; recentActions: unknown[] }>;
     };
     expect(listed.goals).toHaveLength(1);
-    expect(listed.goals[0].status).toBe("ACTIVE");
+    expect(listed.goals[0].status).toBe("DRAFT");
     expect(listed.goals[0].pendingTxHash).toBeNull();
     expect(listed.goals[0].stats.triggered).toBe(0);
     expect(listed.goals[0].stats.verified).toBe(0);
@@ -282,6 +277,24 @@ describe("A3 — authorization is explicit, never implied", () => {
   });
 });
 
+async function signedMainnetSlot(policy: AutonomyPolicy, goalId: string, executor: Address) {
+  const deadline = Math.floor(Date.now() / 1000) + 3600;
+  const permit = { token: policy.sellToken, amount: "50000000", nonce: "987654321", deadline };
+  const witness = {
+    owner: USER.toLowerCase() as Address,
+    buyToken: policy.buyToken,
+    minAmountOut: "1",
+    deadline,
+    actionId: delegatedActionId(goalId),
+    policyHash: policyHashFor(policy),
+  };
+  // Digest over THIS chain's Permit2 domain with THIS chain's executor as
+  // spender — so the recovered signer is bound to (wallet, chain, executor).
+  const digest = delegatedPermitDigest({ permit, witness }, AUTONOMY_CHAIN_ID, executor);
+  const signature: Hex = await userAccount.sign({ hash: digest });
+  return { permit, witness, signature };
+}
+
 describe("A4 — the missing capability: delegated execution cannot attach to a UI-activated goal", () => {
   it("the policy route always mints a Base MAINNET (8453) policy over mainnet tokens", async () => {
     const pair = await allowlistedPair();
@@ -315,23 +328,6 @@ describe("A4 — the missing capability: delegated execution cannot attach to a 
    *       policyHash, deadline, signature recovery against the 8453 domain with
    *       the 8453 executor as spender) still applies.
    */
-  async function signedMainnetSlot(policy: AutonomyPolicy, goalId: string, executor: Address) {
-    const deadline = Math.floor(Date.now() / 1000) + 3600;
-    const permit = { token: policy.sellToken, amount: "50000000", nonce: "987654321", deadline };
-    const witness = {
-      owner: USER.toLowerCase() as Address,
-      buyToken: policy.buyToken,
-      minAmountOut: "1",
-      deadline,
-      actionId: delegatedActionId(goalId),
-      policyHash: policyHashFor(policy),
-    };
-    // Digest over THIS chain's Permit2 domain with THIS chain's executor as
-    // spender — so the recovered signer is bound to (wallet, chain, executor).
-    const digest = delegatedPermitDigest({ permit, witness }, AUTONOMY_CHAIN_ID, executor);
-    const signature: Hex = await userAccount.sign({ hash: digest });
-    return { permit, witness, signature };
-  }
 
   it("refuses the slot while no mainnet delegated executor is pinned (fail-closed)", async () => {
     vi.stubEnv("MPGR_MAINNET_DELEGATED_EXECUTOR", "");
@@ -410,4 +406,107 @@ describe("A4 — the missing capability: delegated execution cannot attach to a 
     const body = (await res.json()) as { slots: unknown[] };
     expect(body.slots).toHaveLength(0);
   });
+  it.each([undefined, "false"])("refuses a valid signed mainnet slot with production gate %s", async (gate) => {
+    const executor = "0x1111111111111111111111111111111111111111" as Address;
+    vi.stubEnv("MPGR_MAINNET_DELEGATED_EXECUTOR", executor);
+    const { policyBody, goalBody } = await activateGoal(await allowlistedPair());
+    if (gate === undefined) delete process.env.AUTONOMOUS_PRODUCTION_ENABLED;
+    else vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", gate);
+    const policyId = policyBody.policy!.id;
+    const goalId = (goalBody as { goal: { id: string } }).goal.id;
+    const [policy] = await systemUnderTest.store.listPolicies(USER.toLowerCase());
+    const slot = await signedMainnetSlot(policy, goalId, executor);
+    const response = await AUTHORIZATION_POST(post("/api/agent/autonomy/authorization", { policyId, goalId, slots: [{ slotIndex: 0, ...slot }] }));
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe("PRODUCTION_GATE_DISABLED");
+    expect(await systemUnderTest.slots.listSlots(USER.toLowerCase(), policyId)).toHaveLength(0);
+    expect(broadcasterSeam.broadcastCalls).toHaveLength(0);
+  });
+
+});
+
+it.each([undefined, "false"])("production refusal persists neither a policy, goal nor slot (%s), even concurrently", async (gate) => {
+  const pair = await allowlistedPair();
+  const seeded = await POLICY_POST(post("/api/agent/autonomy/policy", {
+    authorized: true, sellToken: pair.sell, buyToken: pair.buy,
+    maxPerTrade: "50", maxDaily: "100", maxSlippageBps: 100, maxActionsPerDay: 10, ttlDays: 30,
+  }));
+  const { policy } = await seeded.json();
+  expect(seeded.status).toBe(201);
+  if (gate === undefined) delete process.env.AUTONOMOUS_PRODUCTION_ENABLED;
+  else vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", gate);
+  const createPolicy = vi.spyOn(systemUnderTest.store, "createPolicy");
+  const createGoal = vi.spyOn(systemUnderTest.store, "createGoal");
+  const saveSlots = vi.spyOn(systemUnderTest.slots, "saveSlots");
+  try {
+    const responses = await Promise.all([
+      POLICY_POST(post("/api/agent/autonomy/policy", { authorized: true, sellToken: pair.sell, buyToken: pair.buy, maxPerTrade: "50", maxDaily: "100", maxSlippageBps: 100, maxActionsPerDay: 10, ttlDays: 30 })),
+      GOALS_POST(post("/api/agent/autonomy/goals", { policyId: policy.id, condition: { kind: "price_below", threshold: "200" }, sellAmount: "50" })),
+      AUTHORIZATION_POST(post("/api/agent/autonomy/authorization", { policyId: policy.id, goalId: "goal_gate_test", slots: [{}] })),
+    ]);
+    for (const response of responses) {
+      expect(response.status).toBe(503);
+      expect((await response.json()).code).toBe("PRODUCTION_GATE_DISABLED");
+    }
+    expect(createPolicy).not.toHaveBeenCalled(); expect(createGoal).not.toHaveBeenCalled(); expect(saveSlots).not.toHaveBeenCalled();
+    expect(await systemUnderTest.store.listPolicies(USER.toLowerCase())).toHaveLength(1); // seeded, never a new one
+    expect(await systemUnderTest.store.listGoals(USER.toLowerCase())).toHaveLength(0);
+    expect(await systemUnderTest.slots.listSlots(USER.toLowerCase())).toHaveLength(0);
+    expect(broadcasterSeam.broadcastCalls).toHaveLength(0);
+  } finally { createPolicy.mockRestore(); createGoal.mockRestore(); saveSlots.mockRestore(); }
+});
+
+it.each([undefined, "false"])("runtime-off (%s) requests cannot create a policy, goal or permission", async (runtimeGate) => {
+  const pair = await allowlistedPair();
+  const seed = await POLICY_POST(post("/api/agent/autonomy/policy", { authorized: true, sellToken: pair.sell, buyToken: pair.buy, maxPerTrade: "50", maxDaily: "100", maxSlippageBps: 100, maxActionsPerDay: 10, ttlDays: 30 }));
+  const { policy } = await seed.json(); expect(seed.status).toBe(201);
+  vi.stubEnv("MPGR_AUTONOMOUS_AGENT_ENABLED", runtimeGate);
+  const createPolicy = vi.spyOn(systemUnderTest.store, "createPolicy");
+  const createGoal = vi.spyOn(systemUnderTest.store, "createGoal");
+  const saveSlots = vi.spyOn(systemUnderTest.slots, "saveSlots");
+  try {
+    const responses = await Promise.all([
+      POLICY_POST(post("/api/agent/autonomy/policy", { authorized: true, sellToken: pair.sell, buyToken: pair.buy })),
+      GOALS_POST(post("/api/agent/autonomy/goals", { policyId: policy.id, condition: { kind: "price_below", threshold: "200" }, sellAmount: "50" })),
+      AUTHORIZATION_POST(post("/api/agent/autonomy/authorization", { policyId: policy.id, goalId: "goal_no_write", slots: [{}] })),
+    ]);
+    for (const response of responses) { expect(response.status).toBe(404); expect((await response.json()).code).toBe("AUTONOMY_DISABLED"); }
+    expect(await systemUnderTest.store.listPolicies(USER.toLowerCase())).toHaveLength(1); // only the seeded policy
+    expect(await systemUnderTest.store.listGoals(USER.toLowerCase())).toHaveLength(0);
+    expect(await systemUnderTest.slots.listSlots(USER.toLowerCase())).toHaveLength(0);
+    expect(broadcasterSeam.broadcastCalls).toHaveLength(0);
+    expect(createPolicy).not.toHaveBeenCalled();
+    expect(createGoal).not.toHaveBeenCalled();
+    expect(saveSlots).not.toHaveBeenCalled();
+  } finally { createPolicy.mockRestore(); createGoal.mockRestore(); saveSlots.mockRestore(); }
+});
+
+it("mocked ready Mainnet lifecycle persists an own-goal permission before ACTIVE; retry is idempotent and never broadcasts", async () => {
+  setEmergencySwitchReaderForTests(async () => ({ allowed: true, reason: "ENABLED", correlationId: "offline-mainnet-fixture" }));
+  const executor = "0x1111111111111111111111111111111111111111" as Address;
+  vi.stubEnv("MPGR_MAINNET_DELEGATED_EXECUTOR", executor);
+  const { policyRes, policyBody, goalRes, goalBody } = await activateGoal(await allowlistedPair());
+  expect(policyRes.status).toBe(201); expect(goalRes?.status).toBe(201);
+  expect(goalBody.goal.status).toBe("DRAFT");
+  const id = goalBody.goal.id;
+  const ctx = { params: Promise.resolve({ id }) };
+  const noPermission = await GOAL_PATCH(post(`/api/agent/autonomy/goals/${id}`, { action: "activate" }), ctx);
+  expect(noPermission.status).toBe(409);
+  expect((await noPermission.json()).code).toBe("AUTHORIZATION_REQUIRED");
+  const policy = await systemUnderTest.store.getPolicy(policyBody.policy!.id);
+  const slot = await signedMainnetSlot(policy!, id, executor);
+  const registered = await AUTHORIZATION_POST(post("/api/agent/autonomy/authorization", { policyId: policyBody.policy!.id, goalId: id, slots: [{ slotIndex: 0, ...slot }] }));
+  expect(registered.status).toBe(201);
+  const savedSlots = await systemUnderTest.slots.listSlots(USER.toLowerCase());
+  expect(savedSlots).toHaveLength(1); expect(savedSlots[0].goalId).toBe(id);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const activated = await GOAL_PATCH(post(`/api/agent/autonomy/goals/${id}`, { action: "activate" }), ctx);
+    expect(activated.status).toBe(200);
+    expect((await activated.json()).goal).toMatchObject({ id, status: "ACTIVE" });
+  }
+  const goals = await systemUnderTest.store.listGoals(USER.toLowerCase());
+  expect(goals).toHaveLength(1); expect(goals[0].status).toBe("ACTIVE");
+  expect(goals[0].stats.verified).toBe(0);
+  expect(await systemUnderTest.slots.listSlots(USER.toLowerCase())).toHaveLength(1);
+  expect(broadcasterSeam.createCalls).toBe(0); expect(broadcasterSeam.broadcastCalls).toHaveLength(0);
 });

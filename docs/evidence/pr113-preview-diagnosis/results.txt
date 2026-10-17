@@ -1,0 +1,91 @@
+PR113 Preview disabled-state follow-up — 2026-10-16
+Implementation: 6e49ac6cd62d6b0b3f420e686bb5e11a86fa84dd
+Baseline: c004a143797e15705f3d8a0fa22883215403fc78
+
+Fresh focused command:
+npx vitest run lib/autonomy/__tests__/autonomy-status-initialization.test.ts hooks/useAgentAutonomy.activation.test.ts components/features/agent/AgentAutonomyDraftReview.behavior.test.ts app/api/agent/autonomy/authorization/route.test.ts app/api/agent/autonomy/autonomy-routes-security.test.ts app/api/agent/autonomy/activation-route-audit.test.ts components/features/agent/AgentAutonomyDraft.flow.test.ts lib/api/autonomy-settings.test.ts lib/autonomy/__tests__/production-gate.test.ts components/features/agent/AutonomyQuoteSummary.test.ts components/features/agent/AgentAutonomyPanel.behavior.test.ts components/features/agent/chat-autonomy-review.test.ts app/api/agent/autonomy/config/route.test.ts components/features/agent/AgentTradingLauncher.behavior.test.ts
+
+Passed files:
+lib/autonomy/__tests__/autonomy-status-initialization.test.ts: 28 passed
+hooks/useAgentAutonomy.activation.test.ts: 22 passed
+components/features/agent/AgentAutonomyDraftReview.behavior.test.ts: 24 passed
+app/api/agent/autonomy/authorization/route.test.ts: 24 passed
+app/api/agent/autonomy/autonomy-routes-security.test.ts: 11 passed
+app/api/agent/autonomy/activation-route-audit.test.ts: 19 passed
+components/features/agent/AgentAutonomyDraft.flow.test.ts: 13 passed
+lib/api/autonomy-settings.test.ts: 24 passed
+lib/autonomy/__tests__/production-gate.test.ts: 16 passed
+components/features/agent/AutonomyQuoteSummary.test.ts: 8 passed
+components/features/agent/AgentAutonomyPanel.behavior.test.ts: 9 passed
+components/features/agent/chat-autonomy-review.test.ts: 66 passed
+app/api/agent/autonomy/config/route.test.ts: 5 passed
+components/features/agent/AgentTradingLauncher.behavior.test.ts: 5 passed
+
+
+ Test Files  14 passed (14)
+      Tests  274 passed (274)
+   Start at  18:12:49
+   Duration  23.22s (transform 2.35s, setup 0ms, import 13.18s, tests 5.87s, environment 1ms)
+
+Fresh mobile: npm run test:mobile
+360x800 and 390x844; isolated browser fixtures, not live wallet acceptance.
+  ✓  69 [mobile-390] › tests/mobile/review.spec.ts:318:5 › unknown critical and unmatched material warnings are not hidden in collapsed disclosures (1.2s)
+  ✓  70 [mobile-390] › tests/mobile/review.spec.ts:332:5 › native disclosure summaries support keyboard and remain inside the modal focus trap (3.2s)
+
+  70 passed (2.4m)
+
+Fresh TypeScript:
+> mpgr-hub@0.1.0 typecheck
+> tsc --noEmit
+Exit: 0
+
+Fresh lint:
+✖ 59 problems (0 errors, 59 warnings)
+Exit: 0
+
+Workflow YAML (js-yaml) and generated TypeScript syntax (transpileModule): pass.
+No workflow execution/dispatch or network requests in that syntax check.
+
+Safe read-only baseline annotation (not a new-head/deployment-row observation):
+{
+  "commit": "c004a143797e15705f3d8a0fa22883215403fc78",
+  "observedAt": "2026-10-16T17:56:25.881Z",
+  "settings": {
+    "HTTP": 200,
+    "valid": true,
+    "noStore": true,
+    "enabled": false,
+    "emergencyDisabled": false,
+    "productionGate": false,
+    "executionAvailable": false,
+    "runtimeFlag": "disabled",
+    "productionFlag": "missing",
+    "delegatedBase": false,
+    "delegatedChainId": null,
+    "walletSigningSupported": true
+  },
+  "tokens": {
+    "HTTP": 404,
+    "code": "AUTONOMY_DISABLED",
+    "count": null
+  },
+  "goals": {
+    "HTTP": 404,
+    "code": "AUTONOMY_DISABLED"
+  },
+  "policy": {
+    "HTTP": 404,
+    "code": "AUTONOMY_DISABLED"
+  },
+  "authorization": {
+    "HTTP": 404,
+    "code": "AUTONOMY_DISABLED"
+  }
+}
+
+Runtime/production false or missing: zero createPolicy/createGoal/saveSlots calls,
+zero new records and no broadcast; existing setup policy unchanged.
+
+PNG evidence: isolated production-gate fixture, known Preview diagnostic.
+Both screenshots are from the fresh 70-pass run, not authenticated Preview/physical devices.
+No environment edits or live authorization/execution. See report for provenance limits.

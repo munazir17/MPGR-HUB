@@ -1,0 +1,10 @@
+[WebServer] Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+Running 4 tests using 1 worker
+
+  ✓  1 [mobile-360] › tests/mobile/swap.spec.ts:141:5 › Swap: wrong receipt hash cannot promote submitted metadata to confirmed activity (4.4s)
+  ✓  2 [mobile-360] › tests/mobile/swap.spec.ts:149:5 › Swap: delayed history receipt cannot overwrite a different review as successfully settled (4.3s)
+  ✓  3 [mobile-390] › tests/mobile/swap.spec.ts:141:5 › Swap: wrong receipt hash cannot promote submitted metadata to confirmed activity (4.2s)
+  ✓  4 [mobile-390] › tests/mobile/swap.spec.ts:149:5 › Swap: delayed history receipt cannot overwrite a different review as successfully settled (4.7s)
+
+  4 passed (23.2s)
