@@ -4,6 +4,7 @@ import { History } from "lucide-react";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { useWalletAuth } from "@/hooks/useWalletAuth";
 import { useSwapExecution } from "@/hooks/useSwapExecution";
+import { SwapBackButton } from "./SwapBackButton";
 import { SwapForm } from "./SwapForm";
 import { SwapActivity } from "./SwapActivity";
 import { SwapExecutionDialog } from "./SwapExecutionDialog";
@@ -14,7 +15,7 @@ export function SwapExperience() {
   const [activity, setActivity] = useState(false);
   const trade = useSwapExecution(() => setBalanceRevision(n => n + 1), authenticate);
   return <main className="relative mx-auto w-full max-w-[520px] px-3 py-4 text-white sm:px-5 sm:py-12">
-    <header className="mb-3 flex items-start justify-between px-2"><div><p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-emerald-300/75">Onchain. On your terms.</p>
+    <header className="mb-3 flex items-start justify-between gap-2 px-1"><SwapBackButton disabled={trade.isBusy} /><div className="min-w-0 flex-1"><p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-emerald-300/75">Onchain. On your terms.</p>
       <h1 className="text-[28px] font-semibold tracking-tight">MPGR Swap</h1><p className="mt-1 text-xs text-zinc-500">Your assets. Your wallet. Your signature.</p></div>
       <button type="button" aria-label="Recent swaps" onClick={() => { setActivity(true); void trade.checkHistory(); }} className="mt-5 flex h-11 w-11 items-center justify-center rounded-full border border-white/10 text-zinc-400 hover:bg-white/5"><History size={19} /></button>
     </header>

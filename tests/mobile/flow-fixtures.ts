@@ -24,7 +24,7 @@ export function simulatedExecutorQuote(form: AutonomyAuthorizeFormState, output?
       displayAmount: `${formatAtomicAmount(intent.feeAmount, from.decimals, from.decimals)} ${from.symbol}`, reason: null, collection: "mpgr-executor" },
     quote: { liquidityAvailable: true, fromToken: form.sell, toToken: form.buy, fromAmount: intent.sellAmount,
       toAmount: intent.expectedBuyAmount, minToAmount: intent.minBuyAmount, permit2: null,
-      transaction: encodeExecutorSwap(intent, approvalAuthorization()), issues: { allowance: { currentAllowance: "0", spender: intent.executor }, balance: null, simulationIncomplete: false } } });
+      transaction: encodeExecutorSwap(intent, approvalAuthorization()), issues: { allowance: isNativeEthSentinel(form.sell) ? null : { currentAllowance: "0", spender: intent.executor }, balance: null, simulationIncomplete: false } } });
   if (!built.ok) throw new Error(built.error.message);
   return built.proposal;
 }

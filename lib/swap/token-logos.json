@@ -1,0 +1,41 @@
+{
+  "chainId": 8453,
+  "sources": {
+    "tokenList": "https://github.com/Uniswap/default-token-list/blob/716f1807cfd5ceb178e09636ba8e977b622ca777/src/tokens/base.json",
+    "artwork": "https://github.com/trustwallet/assets/tree/c0df8990ccacc249690e539fcac2d3cd5fe3bd20"
+  },
+  "tokens": {
+    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": {
+      "kind": "native",
+      "src": "/tokens/base/0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.png",
+      "source": "https://github.com/trustwallet/assets/blob/c0df8990ccacc249690e539fcac2d3cd5fe3bd20/blockchains/ethereum/info/logo.png",
+      "sha256": "c253d7c5d4203783e31bde1d33e143f6a9ce1defac24ab5e06948847696b80a1",
+      "width": 192,
+      "height": 192
+    },
+    "0x4200000000000000000000000000000000000006": {
+      "kind": "erc20",
+      "src": "/tokens/base/0x4200000000000000000000000000000000000006.png",
+      "source": "https://github.com/trustwallet/assets/blob/c0df8990ccacc249690e539fcac2d3cd5fe3bd20/blockchains/base/assets/0x4200000000000000000000000000000000000006/logo.png",
+      "sha256": "228ddcb906c830630fd41ffc9774a595614ba2b5bb955577fc5bd7cccb85271a",
+      "width": 256,
+      "height": 256
+    },
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": {
+      "kind": "erc20",
+      "src": "/tokens/base/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.png",
+      "source": "https://github.com/trustwallet/assets/blob/c0df8990ccacc249690e539fcac2d3cd5fe3bd20/blockchains/base/assets/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913/logo.png",
+      "sha256": "d2cc38acdd9b15d87c1eef790ef729cb8effcf97f6707464b4f0289c90029663",
+      "width": 256,
+      "height": 256
+    },
+    "0x2ae3f1ec7f1f5012cfeab0185bfc7aa3cf0dec22": {
+      "kind": "erc20",
+      "src": "/tokens/base/0x2ae3f1ec7f1f5012cfeab0185bfc7aa3cf0dec22.png",
+      "source": "https://github.com/trustwallet/assets/blob/c0df8990ccacc249690e539fcac2d3cd5fe3bd20/blockchains/base/assets/0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22/logo.png",
+      "sha256": "29f438f8d17766debfeb2eeb2866141629212f1e9bbd9b6c88f027932c582112",
+      "width": 256,
+      "height": 256
+    }
+  }
+}

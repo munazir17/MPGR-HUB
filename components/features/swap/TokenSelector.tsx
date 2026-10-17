@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { isAddress } from "viem";
 import { Search, Check, Loader2 } from "lucide-react";
+import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { importBaseToken, TokenImportError } from "@/lib/trade/token-import";
 import type { TradeTokenRef } from "@/lib/trade/trade-types";
 import { SwapDialog } from "./SwapDialog";
@@ -35,7 +36,7 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize }
     className="flex min-h-[76px] w-full items-center gap-3 rounded-2xl px-3 py-3 text-left hover:bg-white/5 focus-visible:outline focus-visible:outline-emerald-300" aria-label={`Select ${t.symbol} ${t.address}`}>
     <TokenIcon token={t} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold"><bdi>{t.symbol}</bdi>{!t.verified && <span className="ml-2 text-[10px] font-normal text-amber-300">Unverified</span>}</span>
       <span className="block truncate text-xs text-zinc-400">{tokenName(t.name)}</span>
-      <span className="block break-all font-mono text-[10px] text-zinc-500">{t.address}</span></span>
+      <span className="block break-all font-mono text-[10px] text-zinc-500">{isNativeEthSentinel(t.address) ? "Native Base asset · no ERC-20 contract" : t.address}</span></span>
     {selected.toLowerCase() === t.address.toLowerCase() && <Check size={18} className="shrink-0 text-emerald-300" />}
   </button>;
   return <SwapDialog title="Select a token" onClose={onClose}>

@@ -4,7 +4,7 @@ import { useAccount, useSwitchChain } from "wagmi";
 import { ArrowDownUp, ChevronDown, Loader2, Settings2 } from "lucide-react";
 import { formatUnits } from "viem";
 import { MANUAL_SWAP_TOKENS, ManualSwapQuoteError, manualSwapInputError, type ManualSwapInput } from "@/lib/trade/manual-swap";
-import { TRADE_DEFAULT_SLIPPAGE_BPS, isNativeEthSentinel } from "@/lib/trade/trade-config";
+import { TRADE_DEFAULT_SLIPPAGE_BPS, NATIVE_ETH_SENTINEL, isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { formatAtomicAmount, parseHumanTokenAmount } from "@/lib/trade/trade-format";
 import { useSwapBalances, type SwapBalance } from "@/hooks/useSwapBalances";
 import { swapQuoteFresh, swapQuoteNeedsRefresh } from "@/lib/swap/swap-lifecycle";
@@ -12,7 +12,7 @@ import { requestSwapQuote } from "@/lib/swap/swap-quote";
 import { estimateSwapGas } from "@/lib/swap/swap-wallet";
 import { parseSlippagePercent, safeMaximum, slippagePercent } from "@/lib/swap/swap-policy";
 import type { TradeProposal, TradeTokenRef } from "@/lib/trade/trade-types";
-import { TokenIcon } from "./TokenIcon";
+import { TokenIcon, tokenName } from "./TokenIcon";
 import { TokenSelector } from "./TokenSelector";
 import { SlippageSettings } from "./SlippageSettings";
 import { SwapDetails } from "./SwapDetails";
@@ -27,7 +27,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
   const { address, chainId, isConnected } = useAccount();
   const { switchChain } = useSwitchChain();
   const [input, setInput] = useState<ManualSwapInput>({ fromToken: MANUAL_SWAP_TOKENS.find(t => t.symbol === "USDC")!.address,
-    toToken: MANUAL_SWAP_TOKENS.find(t => t.symbol === "WETH")!.address, amount: "", slippageBps: TRADE_DEFAULT_SLIPPAGE_BPS });
+    toToken: NATIVE_ETH_SENTINEL, amount: "", slippageBps: TRADE_DEFAULT_SLIPPAGE_BPS });
   const [imports, setImports] = useState<TradeTokenRef[]>([]);
   const tokens = useMemo(() => [...new Map([...MANUAL_SWAP_TOKENS, ...imports].map(t => [t.address.toLowerCase(), t])).values()], [imports]);
   const pay = tokens.find(t => t.address.toLowerCase() === input.fromToken.toLowerCase())!;
@@ -135,11 +135,12 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
           value={amountValue} placeholder={isPay ? "0.00" : busy ? "Quoting…" : "—"}
           onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); if (isPay) e.currentTarget.form?.requestSubmit(); } }}
           onChange={isPay ? e => edit({ amount: e.target.value }) : undefined} />
-        <button type="button" aria-label={isPay ? `You pay token: ${token.symbol}` : `You receive token: ${token.symbol}`} onClick={() => setSelect(isPay ? "fromToken" : "toToken")}
+        <button type="button" aria-label={isPay ? `You pay token: ${token.symbol}` : `You receive token: ${token.symbol}`} title={`${tokenName(token.name)} · Base 8453 · ${isNativeEthSentinel(token.address) ? "Native asset (not an ERC-20 contract)" : token.address}`} onClick={() => setSelect(isPay ? "fromToken" : "toToken")}
           disabled={executionBusy} className="ml-auto flex min-h-12 max-w-[52%] shrink-0 items-center gap-2 rounded-full border border-white/10 bg-[#232c3a] py-1.5 pl-1.5 pr-3 text-sm font-semibold hover:bg-[#2a3545] disabled:opacity-40">
           <TokenIcon token={token} /><bdi className="truncate">{token.symbol}</bdi><ChevronDown size={14} className="shrink-0 text-zinc-400" /></button>
       </div>
-      {!token.verified && <p className="text-xs text-amber-300">Unverified token. Import is not endorsement; it may be unsafe or unsellable.</p>}
+      <p className="truncate text-[11px] text-zinc-400" title={tokenName(token.name)}>{tokenName(token.name)}{isNativeEthSentinel(token.address) ? " · Native Base asset" : ""}</p>
+      {!token.verified && <p className="text-xs text-amber-300">Unverified token. Import is not endorsement; it may be unsafe or unsellable.<span className="mt-1 block break-all font-mono text-[10px]">{token.address}</span></p>}
     </div>;
   };
   let rate = "";

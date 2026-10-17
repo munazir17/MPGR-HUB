@@ -1,0 +1,35 @@
+Final source validation (no live execution):
+- npm run typecheck: PASS.
+- npm run lint: 0 errors, 61 existing warnings.
+- npm test -- --maxWorkers=1: 3773 passed, 24 existing skips; 294 files passed / 5 skipped.
+- Focused Swap/Executor fee-route/native balance/import/logo/navigation/costs units: 147 passed / 11 files.
+- node --check scripts/verify-preview-user-flows.mjs: PASS.
+- git diff --cached --check: PASS.
+- Frozen-source native UI + duplicate symbols + reversal + exact balances browser run: 26 passed (1.9m).
+  Includes 360x800, 390x844 and desktop 1280x900, actual local PNG loading,
+  native ETH vs WETH unsigned intent/approval/execution simulations,
+  in-app and direct-entry Back, fallback and separate balance/MAX behavior.
+
+Earlier attempts, not mislabeled as clean passes:
+- Full 180-case browser suite: 179 passed / 1 failure caused by a Vite document
+  reload while SwapDetails was edited during the run. Trace confirms navigation
+  back to flows.html during duplicate-symbol assertions. That exact case passed
+  at both widths in the final frozen-source run; no assertion was weakened.
+- Initial full units: 3771 passed / 2 unchanged AgentKit ESM-boundary timeouts
+  during simultaneous browser + lint load. Isolated 8/8 passed; the subsequent
+  clean full suite passed all 3773 tests with the original timeouts unchanged.
+- Earlier extra screenshots: 5 passed / 1 desktop case hit the original 30s
+  test deadline under concurrent load. Final frozen-source screenshots/cases
+  passed without increasing timeouts. The superseded images are not used here.
+- Initial native-pay failures exposed an allowance issue in the simulated quote
+  fixture. Corrected to allowance:null for native input, matching existing
+  production trade-executor-quote behavior. Production approvals unchanged.
+
+Hosted build, automatic CI/Preview and exact pushed SHA are recorded separately
+in the PR113 delivery comment. No workflow was dispatched. A previous hosted
+build is not treated as validation of this change. Local Next build remains
+subject to the sandbox's Google Fonts network restriction.
+
+Mock/controller tests are not physical-wallet/provider/settlement acceptance.
+No real wallet signatures, live trades, broadcasts, production-setting writes,
+Agent-wallet creation, gate changes or merge. Existing PR113 remains OPEN.

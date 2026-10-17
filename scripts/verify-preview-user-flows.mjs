@@ -117,8 +117,20 @@ try {
         await manualForm.getByLabel("Sell amount", { exact: true }).fill("1");
         await expect(manualForm.getByRole("button", { name: "Connect wallet to prepare", exact: true })).toBeVisible();
       } else {
-        await expect(manualForm.getByRole("button", { name: "You receive token: WETH", exact: true })).toBeVisible();
+        await expect(manualForm.getByRole("button", { name: "You receive token: ETH", exact: true })).toBeVisible();
         await expect(manualForm.getByRole("button", { name: "You pay token: USDC", exact: true })).toBeVisible();
+        for (const panel of ["pay-panel", "receive-panel"]) {
+          const image = manualForm.getByTestId(panel).locator("img");
+          await expect(image).toHaveCount(1);
+          await expect.poll(() => image.evaluate(e => e.complete && e.naturalWidth > 0)).toBe(true);
+        }
+        await manualForm.getByRole("button", { name: "You receive token: ETH", exact: true }).tap();
+        for (const [symbol, address] of [["ETH", "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"], ["WETH", "0x4200000000000000000000000000000000000006"], ["USDC", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"]]) {
+          const image = page.getByRole("button", { name: `Select ${symbol} ${address}`, exact: true }).locator("img");
+          await expect(image).toHaveAttribute("src", `/tokens/base/${address.toLowerCase()}.png`);
+          await expect.poll(() => image.evaluate(e => e.complete && e.naturalWidth > 0)).toBe(true);
+        }
+        await page.getByRole("button", { name: "Close Select a token", exact: true }).tap();
         expect(await manualForm.getByTestId("pay-panel").evaluate(e => e.getBoundingClientRect().top)).toBeLessThan(await manualForm.getByTestId("receive-panel").evaluate(e => e.getBoundingClientRect().top));
         await expect(manualForm.getByTestId("pay-panel").getByRole("button", { name: "MAX", exact: true })).toBeDisabled();
         await expect(manualForm.getByTestId("receive-panel").getByRole("button", { name: "MAX", exact: true })).toHaveCount(0);
@@ -138,7 +150,23 @@ try {
       }
       await manualForm.scrollIntoViewIfNeeded(); await page.screenshot({ path: `${output}/${label}-${width}-manual.png`, fullPage: true });
       if (index === 1) {
-        await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        // Actual Next router back after menu navigation; public GETs only.
+        await page.getByRole("button", { name: "Go back", exact: true }).tap();
+        await expect(page).toHaveURL(`${origin}/`);
+        await expect(launcher).toBeVisible({ timeout: 30_000 });
+        // A new tab has no useful in-app history: direct Swap entry returns
+        // to HUB, not to an external page/about:blank. Same GET allowlist.
+        const direct = await context.newPage();
+        await direct.route("**/*", route => {
+          const request = route.request();
+          if (new URL(request.url()).origin !== origin || request.method() !== "GET") return route.abort();
+          return route.continue({ headers: { ...request.headers(), "x-vercel-protection-bypass": bypass } });
+        });
+        await direct.goto(`${origin}/swap`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        await expect(direct.getByRole("button", { name: "Connect", exact: true })).toBeVisible({ timeout: 30_000 });
+        await direct.getByRole("button", { name: "Go back", exact: true }).tap();
+        await expect(direct).toHaveURL(`${origin}/`);
+        await direct.close();
         await expect(page.getByRole("button", { name: "Connect", exact: true })).toBeVisible({ timeout: 30_000 });
         await expect(launcher).toBeVisible({ timeout: 30_000 });
       }
@@ -156,6 +184,7 @@ try {
       }
       await page.screenshot({ path: `${output}/${label}-${width}-autonomy.png`, fullPage: true });
       result.mobile.push({ width, height, manualFormAvailable: true, manualSurface: index === 1 ? "/swap" : "Agent Manual tab", agentManualControlsRemoved: index === 1, localDraftReviewAvailable: true,
+        nativeDefault: index === 1 ? true : null, verifiedLocalLogos: index === 1 ? true : null, backHistoryAndDirectEntry: index === 1 ? true : null,
         authorizationButtonDisabled: true, walletConnected: false, signed: false, executed: false });
       } catch (error) {
         failure(error);

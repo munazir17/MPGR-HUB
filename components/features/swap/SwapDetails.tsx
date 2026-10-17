@@ -1,3 +1,4 @@
+import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { swapQuoteFresh } from "@/lib/swap/swap-lifecycle";
 import { swapFeePolicyError } from "@/lib/swap/swap-policy";
 import { formatAtomicAmount } from "@/lib/trade/trade-format";
@@ -32,7 +33,8 @@ export function SwapDetails({ proposal: p, feeState = "quoted", issue, payToken 
       {row("Est. network fee", fee(p.fees.gasFee))}
       {row("Receive address", p.taker)}
       {row("Collection recipient", valid ? p.agentFee!.recipient! : "Unverified")}
-      {row("Pay contract", p.from.address)}{row("Receive contract", p.to.address)}
+      {row(isNativeEthSentinel(p.from.address) ? "Pay asset" : "Pay contract", isNativeEthSentinel(p.from.address) ? "Native ETH on Base (8453) · no ERC-20 contract" : p.from.address)}
+      {row(isNativeEthSentinel(p.to.address) ? "Receive asset" : "Receive contract", isNativeEthSentinel(p.to.address) ? "Native ETH on Base (8453) · no ERC-20 contract" : p.to.address)}
     </dl>
     <div className="space-y-3 px-4 pb-4 text-zinc-400">
       <p>Network fees, including L1 data costs, are re-estimated before each signature. Signing is blocked if verification is unavailable.</p>

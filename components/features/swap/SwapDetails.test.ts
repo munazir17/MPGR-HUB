@@ -19,3 +19,10 @@ it("an unsupported proposal is blocked even if a caller mistakenly asks for veri
 it("no quote shows an unverified amount, not a fabricated zero charge or waiver",()=>{
  const html=renderToStaticMarkup(createElement(SwapDetails,{proposal:null,issue:"No supported quote"}));expect(html.match(/mpgr-fee-row/g)).toHaveLength(1);expect(html).toContain("Amount unavailable");expect(html).toContain("unsupported/unverified");expect(html).toContain('role="alert"');
 });
+
+it.each(["sell", "buy"] as const)("native %s is not displayed as an ERC20 contract", side=>{
+ const form=chatDraftToForm(buildGoalDraft(detectAutonomousTradeRequest(prompt)!,prompt));
+ const native="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
+ const p=simulatedExecutorQuote({...form, sell:side==="sell"?native:form.sell, buy:side==="buy"?native:form.sell});
+ const html=renderToStaticMarkup(createElement(SwapDetails,{proposal:p}));expect(html).toContain("Native ETH on Base (8453)");expect(html).toContain("no ERC-20 contract");expect(html.toLowerCase()).not.toContain(native.toLowerCase());
+});
