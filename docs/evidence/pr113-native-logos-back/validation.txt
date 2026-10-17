@@ -33,3 +33,12 @@ subject to the sandbox's Google Fonts network restriction.
 Mock/controller tests are not physical-wallet/provider/settlement acceptance.
 No real wallet signatures, live trades, broadcasts, production-setting writes,
 Agent-wallet creation, gate changes or merge. Existing PR113 remains OPEN.
+
+Hosted harness follow-up: d1cf90d CI quality/build and Vercel succeeded. The
+read-only reference run 39006077133 failed at fresh-tab Swap readiness because
+the new harness incorrectly awaited the homepage Navbar Connect button. Source
+app/swap/page.tsx renders only SwapExperience; Navbar is page-owned, not global.
+The earlier actual Next Back and local-logo assertions had already completed.
+Replaced that invalid readiness selector with an actual Swap settings open/close
+interaction, which proves hydration rather than bypassing it. No application,
+wallet or execution code changed. Automatic exact-HEAD rerun is reported in PR.

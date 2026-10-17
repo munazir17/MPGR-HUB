@@ -150,6 +150,7 @@ try {
       }
       await manualForm.scrollIntoViewIfNeeded(); await page.screenshot({ path: `${output}/${label}-${width}-manual.png`, fullPage: true });
       if (index === 1) {
+        stage = `${label}: ${width}x${height} actual Next history Back`;
         // Actual Next router back after menu navigation; public GETs only.
         await page.getByRole("button", { name: "Go back", exact: true }).tap();
         await expect(page).toHaveURL(`${origin}/`);
@@ -162,8 +163,13 @@ try {
           if (new URL(request.url()).origin !== origin || request.method() !== "GET") return route.abort();
           return route.continue({ headers: { ...request.headers(), "x-vercel-protection-bypass": bypass } });
         });
+        stage = `${label}: ${width}x${height} fresh-tab direct-entry Back`;
         await direct.goto(`${origin}/swap`, { waitUntil: "domcontentloaded", timeout: 60_000 });
-        await expect(direct.getByRole("button", { name: "Connect", exact: true })).toBeVisible({ timeout: 30_000 });
+        // /swap deliberately has no homepage Navbar/Connect control. Prove
+        // actual Swap hydration with a reversible, read-only interaction.
+        await direct.getByRole("button", { name: "Slippage settings", exact: true }).tap();
+        await expect(direct.getByRole("dialog", { name: "Swap settings", exact: true })).toBeVisible();
+        await direct.getByRole("button", { name: "Close Swap settings", exact: true }).tap();
         await direct.getByRole("button", { name: "Go back", exact: true }).tap();
         await expect(direct).toHaveURL(`${origin}/`);
         await direct.close();
