@@ -45,6 +45,19 @@ export function swapFeePolicyError(p: TradeProposal): string | null {
     return null;
   } catch { return "Malformed executable swap. Request a fresh quote."; }
 }
+// Admission/signing check uses the QUOTED output. Settlement verification below
+// instead uses the committed minimum and actual event output; never reconstruct
+// a historical expected quote from an amount that happened to settle.
+export function swapQuotePolicyError(p: TradeProposal): string | null {
+  const invalid = swapFeePolicyError(p); if (invalid) return invalid;
+  try {
+    if (!Number.isInteger(p.slippageBps) || p.slippageBps < TRADE_MIN_SLIPPAGE_BPS || p.slippageBps > TRADE_MAX_SLIPPAGE_BPS ||
+        BigInt(p.toAmount) <= 0n || BigInt(p.minToAmount) !== BigInt(p.toAmount) * BigInt(10000 - p.slippageBps) / 10000n) {
+      return "The minimum receive does not match the quoted output and selected slippage. Request a fresh quote.";
+    }
+    return null;
+  } catch { return "Invalid quoted amounts. Request a fresh quote."; }
+}
 export interface SwapSettlement { verified: boolean; amountOut: string | null; feeAmount: string | null; feeRecipient: Address | null; reason: string | null }
 export function verifySwapSettlement(p: TradeProposal, receipt: ReceiptLike): SwapSettlement {
   const unknown = (reason: string): SwapSettlement => ({ verified: false, amountOut: null, feeAmount: null, feeRecipient: null, reason });

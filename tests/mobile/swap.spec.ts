@@ -49,10 +49,10 @@ test("Swap: expired quote requires refresh; editing amount invalidates prior exe
 });
 for (const status of [429, 503]) test(`Swap: actionable HTTP ${status}, no execution`, async ({ page }, info) => {
   const state = await setup(page, { quoteStatus: status }); await page.getByLabel("You pay amount", { exact: true }).fill("1");
-  await expect(page.getByRole("alert")).toContainText(`HTTP ${status}`); await expect(page.getByRole("button", { name: "Confirm Swap", exact: true })).toHaveCount(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
+  await expect(page.getByRole("alert")).toContainText("Simulated quote service refusal"); await expect(page.getByRole("button", { name: "Confirm Swap", exact: true })).toHaveCount(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });
 test("Swap: expired session requires explicit SIWE retry", async ({ page }, info) => {
-  const state = await setup(page, { authExpired: true }); await page.getByLabel("You pay amount", { exact: true }).fill("1"); await expect(page.getByRole("alert")).toContainText("HTTP 401");
+  const state = await setup(page, { authExpired: true }); await page.getByLabel("You pay amount", { exact: true }).fill("1"); await expect(page.getByRole("alert")).toContainText("Simulated quote service refusal");
   await page.getByRole("button", { name: "Sign in and retry quote", exact: true }).tap(); await expect(page.getByRole("button", { name: "Confirm Swap", exact: true })).toBeEnabled(); expect(await walletCalls(page)).toEqual(["siwe-signature"]); await evidence(page, info, state.trace);
 });
 for (const change of ["wrong-network", "other-wallet"]) test(`Swap: ${change} after review blocks before a signature`, async ({ page }, info) => {
@@ -71,11 +71,12 @@ test("Swap: search, exact contract validation, duplicate symbols and unsupported
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); const search = page.getByLabel("Search tokens or Base contract");
   await search.fill("No such token"); await expect(page.getByText(/No results\./)).toBeVisible(); await search.fill("0x123"); await expect(page.getByRole("alert")).toContainText("Invalid address");
   await search.fill(importedAddress); await page.getByRole("button", { name: "Validate Base token" }).tap(); await expect(page.getByText(/Import is not endorsement/)).toBeVisible();
-  await page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).tap();
-  await expect(page.getByTestId("receive-panel")).toContainText("Unverified token");
-  await page.getByRole("button", { name: "You receive token: USDC", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("USDC");
+  await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeDisabled();
+  await expect(page.getByTestId("token-route-unavailable")).toContainText("Needs verified route/allowlist registration");
+  await page.getByRole("button", { name: "Close Select a token" }).tap();
+  await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("USDC");
   await expect(page.getByRole("button", { name: `Select USDC ${token("USDC")}`, exact: true })).toBeVisible(); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeVisible(); await expect(page.getByRole("dialog").locator("img")).toHaveCount(1); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).locator("img")).toHaveCount(0); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).getByTestId("token-logo-fallback")).toHaveCount(1);
-  await page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).tap(); await page.getByLabel("You pay amount", { exact: true }).fill("1"); await expect(page.getByRole("alert")).toContainText("HTTP 422"); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
+  await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeDisabled(); expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });
 test("Swap: failed metadata never offers selectable token", async ({ page }, info) => {
   const state = await setup(page, { importStatus: 503 }); await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill(importedAddress); await page.getByRole("button", { name: "Validate Base token" }).tap(); await expect(page.getByRole("alert")).toContainText("metadata unavailable"); await expect(page.getByRole("button", { name: `Select NEW ${importedAddress}`, exact: true })).toHaveCount(0); expect(state.quoteCount()).toBe(0); await evidence(page, info, state.trace);
@@ -119,7 +120,7 @@ test("Swap: real receipt-backed session history, separate hashes, exact output a
 
 test("Swap: auth expiry on approval recovery requires explicit sign-in and never repeats confirmed approval", async ({ page }, info) => {
   const state = await setup(page, { authExpiresOnRefresh: true }); await review(page); await scenario(page, "swap-rejected"); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByRole("alert")).toContainText("Swap cancelled");
-  await scenario(page, "connected"); await page.getByRole("button", { name: "Refresh quote & retry", exact: true }).tap(); await expect(page.getByRole("alert")).toContainText("HTTP 401");
+  await scenario(page, "connected"); await page.getByRole("button", { name: "Refresh quote & retry", exact: true }).tap(); await expect(page.getByRole("alert")).toContainText("Simulated quote service refusal");
   await page.getByRole("button", { name: "Sign in & refresh quote", exact: true }).tap(); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByTestId("swap-status")).toBeVisible();
   expect(await walletCalls(page)).toContain("siwe-signature");
   const approved = await page.evaluate(() => (window as unknown as { simulatedTransactions: { data: string }[] }).simulatedTransactions.filter(t => t.data.startsWith("0x095ea7b3")).length); expect(approved).toBe(1); await evidence(page, info, state.trace);
@@ -173,7 +174,9 @@ test("Swap correction: pay first, MAX belongs only to pay, one contextual fee ac
  expect((await page.locator("body").textContent())!.match(/MPGR fee/g)).toHaveLength(1); await evidence(page,info,state.trace);
 });
 test("Swap correction: receive selection never changes pay or silently reverses the pair",async({page},info)=>{
- const state=await setup(page);await quoted(page);await choose(page,"receive","USDC");
+ const state=await setup(page);await quoted(page);
+ await page.getByRole("button",{name:"You receive token: ETH",exact:true}).tap(); await page.getByLabel("Search tokens or Base contract").fill("USDC");
+ await expect(page.getByRole("button",{name:`Select USDC ${address("USDC")}`,exact:true})).toBeDisabled(); await page.getByRole("button",{name:"Close Select a token"}).tap();
  await expect(page.getByRole("button",{name:"You pay token: USDC",exact:true})).toBeVisible();await expect(page.getByRole("button",{name:"You receive token: ETH",exact:true})).toBeVisible();await expect(page.getByLabel("You pay amount",{exact:true})).toHaveValue("1");
  await choose(page,"receive","AAPLc");await expect(page.getByLabel("You pay amount",{exact:true})).toHaveValue("1");await expect(page.getByRole("button",{name:"You pay token: USDC",exact:true})).toBeVisible();await expect(page.getByRole("button",{name:"Confirm Swap",exact:true})).toBeEnabled();expect(await sends(page)).toHaveLength(0);await evidence(page,info,state.trace);
 });
@@ -207,4 +210,15 @@ test("Swap correction: manual quote double click and debounce produce only one r
 });
 test("Swap correction: long decimal entry wraps legibly without field or page clipping",async({page},info)=>{
  const state=await setup(page);const field=page.getByLabel("You pay amount",{exact:true});await field.fill("12345678901234567890.123456");await expect(field).toHaveValue("12345678901234567890.123456");expect(await field.evaluate(e=>e.scrollWidth<=e.clientWidth&&e.scrollHeight<=e.clientHeight)).toBe(true);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await evidence(page,info,state.trace);
+});
+
+test("Swap: ETH/WETH same underlying selection is disabled before quote or wallet prompt", async ({ page }, info) => {
+ const state = await setup(page); await page.getByRole("button", { name: "Reverse swap direction" }).tap();
+ await page.getByRole("button", { name: "You receive token: USDC", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("WETH");
+ await expect(page.getByRole("button", { name: `Select WETH ${address("WETH")}`, exact: true })).toBeDisabled();
+ await expect(page.getByTestId("token-route-unavailable")).toContainText("Same underlying asset"); expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
+});
+test("Swap: unknown allowance never causes an approval prompt", async ({ page }, info) => {
+ const state = await setup(page); await review(page); await scenario(page, "allowance-read-error"); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap();
+ await expect(page.getByRole("dialog").getByRole("alert")).toContainText("allowance could not be verified"); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });

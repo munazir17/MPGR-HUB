@@ -1,0 +1,17 @@
+[
+  {
+    "method": "GET",
+    "path": "/api/auth/session",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/config",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/goals",
+    "status": 404
+  }
+]

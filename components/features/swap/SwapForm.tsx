@@ -3,11 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAccount, useSwitchChain } from "wagmi";
 import { ArrowDownUp, ChevronDown, Loader2, Settings2 } from "lucide-react";
 import { formatUnits } from "viem";
-import { MANUAL_SWAP_TOKENS, ManualSwapQuoteError, manualSwapInputError, type ManualSwapInput } from "@/lib/trade/manual-swap";
+import { MANUAL_SWAP_TOKENS, ManualSwapQuoteError, type ManualSwapInput } from "@/lib/trade/manual-swap";
 import { TRADE_DEFAULT_SLIPPAGE_BPS, NATIVE_ETH_SENTINEL, isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { formatAtomicAmount, parseHumanTokenAmount } from "@/lib/trade/trade-format";
 import { useSwapBalances, type SwapBalance } from "@/hooks/useSwapBalances";
 import { swapQuoteFresh, swapQuoteNeedsRefresh } from "@/lib/swap/swap-lifecycle";
+import { swapInputError as manualSwapInputError } from "@/lib/swap/swap-capability";
 import { requestSwapQuote } from "@/lib/swap/swap-quote";
 import { estimateSwapGas } from "@/lib/swap/swap-wallet";
 import { parseSlippagePercent, safeMaximum, slippagePercent } from "@/lib/swap/swap-policy";
@@ -172,7 +173,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
       {busy && <Loader2 size={18} className="animate-spin" />}{!isConnected ? "Connect wallet" : chainId !== 8453 ? "Switch to Base" : busy ? "Refreshing quote…" : insufficient ? "Insufficient balance" : invalid ? "Enter a pay amount" : sessionExpired ? "Sign in and retry quote" : fresh ? "Confirm Swap" : proposal ? "Refresh quote" : "Get quote"}
     </button>
     {!reviewOpen && (proposal || error) && <SwapDetails proposal={fresh ? proposal : null} issue={error} payToken={pay} />}
-    {select && <TokenSelector tokens={tokens} selected={input[select]} authorize={authorize} onClose={() => setSelect(null)} onSelect={token => {
+    {select && <TokenSelector tokens={tokens} opposite={select === "fromToken" ? receive : pay} selectingPay={select === "fromToken"} onImport={token => setImports(old => [...old.filter(t => t.address.toLowerCase() !== token.address.toLowerCase()), token])} selected={input[select]} authorize={authorize} onClose={() => setSelect(null)} onSelect={token => {
       setImports(old => [...old.filter(t => t.address.toLowerCase() !== token.address.toLowerCase()), token]);
       const other = select === "fromToken" ? "toToken" : "fromToken";
       if (input[other].toLowerCase() === token.address.toLowerCase()) { setNotice("Choose two different tokens. Your pay token and amount are unchanged."); }

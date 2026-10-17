@@ -33,7 +33,7 @@ export async function setup(page: Page, options: FixtureOptions = {}) {
       status = options.importStatus ?? 200;
       json = status === 200 ? { chainId: 8453, token: { address: importedAddress, symbol: options.importSymbol ?? "NEW", name: options.importName ?? "Simulated imported token", decimals: 6, kind: "erc20", verified: false } } : { code: "PROVIDER_ERROR", error: "Simulated Base metadata unavailable" };
     }
-    else if (path === "/api/trade/quote") {
+    else if ((path === "/api/trade/quote" || path === "/api/swap/quote")) {
       quoteRequestNumber = ++quotes; quoteBodies.push(body);
       status = options.quoteStatus ?? ((options.authExpired && quotes === 1) || (options.authExpiresOnRefresh && quotes === 2) ? 401 : 200);
       if (status !== 200) json = { error: "Simulated quote service refusal", code: status === 401 ? "AUTH_REQUIRED" : "PROVIDER_ERROR" };

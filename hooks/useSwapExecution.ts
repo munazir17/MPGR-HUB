@@ -9,7 +9,7 @@ import { ManualSwapQuoteError } from "@/lib/trade/manual-swap";
 import { revalidateTradeProposal } from "@/lib/trade/trade-confirmation";
 import { requestSwapQuote } from "@/lib/swap/swap-quote";
 import { validateSwapWallet } from "@/lib/swap/swap-wallet";
-import { swapFeePolicyError, verifySwapSettlement, type SwapSettlement } from "@/lib/swap/swap-policy";
+import { swapQuotePolicyError, verifySwapSettlement, type SwapSettlement } from "@/lib/swap/swap-policy";
 import { formatAtomicAmount } from "@/lib/trade/trade-format";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 import type { Hash } from "viem";
@@ -81,7 +81,7 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
     if (swapQuoteNeedsRefresh(proposal)) { await retryQuote(); return; }
     setQuoteUpdated(false);
     const validation = revalidateTradeProposal(proposal, accountRef.current.address);
-    const invalid = swapFeePolicyError(proposal);
+    const invalid = swapQuotePolicyError(proposal);
     if (validation.state !== "VALIDATED" || invalid) {
       setSnapshot(s => ({ ...s, state: "ERROR", error: validation.error ?? { code: "EXECUTION_UNAVAILABLE", message: invalid! } })); return;
     }

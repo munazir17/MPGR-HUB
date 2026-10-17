@@ -73,3 +73,19 @@ it("critical route warnings cannot reach a wallet signature", async () => {
   proposal.risk = [...proposal.risk, { id: "new-critical", severity: "critical", title: "Blocked", detail: "A critical route warning" }];
   expect((await run()).error?.code).toBe("EXECUTION_UNAVAILABLE"); expect(m.send).not.toHaveBeenCalled();
 });
+it.each(["approval", "swap"] as const)("unknown allowance fails closed during %s before any wallet prompt", async phase => {
+  const original = m.read.getMockImplementation()!;
+  m.read.mockImplementation((c, p) => p.functionName === "allowance" ? Promise.reject(new Error("RPC unavailable")) : original(c, p));
+  expect((await validateSwapWallet(proposal, phase))?.code).toBe("PROVIDER_ERROR");
+  expect((await run()).state).toBe("ERROR"); expect(m.send).not.toHaveBeenCalled();
+});
+it("allowance becoming sufficient between execution read and approval safety never sends a redundant approval", async () => {
+  const original = m.read.getMockImplementation()!; let reads = 0;
+  m.read.mockImplementation((c, p) => p.functionName === "allowance" ? Promise.resolve(++reads === 1 ? 0n : BigInt(proposal.fromAmount)) : original(c, p));
+  expect((await run()).error?.code).toBe("QUOTE_CHANGED"); expect(m.send).not.toHaveBeenCalled();
+});
+it.each([undefined, null, -1n, "100000000"])("invalid live allowance %s is not converted into permission", async invalid => {
+  const original = m.read.getMockImplementation()!;
+  m.read.mockImplementation((c, p) => p.functionName === "allowance" ? Promise.resolve(invalid) : original(c, p));
+  expect((await run()).state).toBe("ERROR"); expect(m.send).not.toHaveBeenCalled();
+});

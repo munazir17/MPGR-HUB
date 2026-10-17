@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { decodeFunctionData } from "viem";
-import { parseSlippagePercent, safeMaximum, slippagePercent, swapFeePolicyError, verifySwapSettlement } from "../swap-policy";
+import { decodeFunctionData, encodeFunctionData } from "viem";
+import { parseSlippagePercent, safeMaximum, slippagePercent, swapQuotePolicyError, swapFeePolicyError, verifySwapSettlement } from "../swap-policy";
 import { simulatedExecutorQuote } from "@/tests/mobile/flow-fixtures";
 import { simulatedSwapReceipt } from "@/tests/mobile/swap-receipt-fixture";
 import { LIVE_TRADES, LIVE_PINS, historicalReceipt } from "@/lib/mcp/__tests__/base-mainnet-live-fixtures";
@@ -65,3 +65,15 @@ describe("fee asset is always the pay asset, including native direction", () => 
     expect(verifySwapSettlement(p, simulatedSwapReceipt(p, hash))).toMatchObject({ verified: true, feeAmount: fee });
   });
 });
+
+it("coordinated minimum mutation in proposal AND calldata cannot weaken selected slippage", () => {
+  const p = quote();
+  const decoded = decodeFunctionData({ abi: MPGR_EXECUTOR_ABI, data: p.transaction!.data });
+  if (decoded.functionName !== "swapSlipstreamExactInputSingle") throw Error("Unexpected fixture route");
+  p.minToAmount = "1";
+  p.transaction!.data = encodeFunctionData({ abi: MPGR_EXECUTOR_ABI, functionName: decoded.functionName, args: [{ ...decoded.args[0], amountOutMinimum: 1n }, decoded.args[1], decoded.args[2]] });
+  expect(swapFeePolicyError(p)).toBeNull(); // prior policy only matched displayed/encoded values
+  expect(swapQuotePolicyError(p)).toMatch(/minimum receive/);
+});
+it.each([0, 501, 10000, 1.5, NaN])("quote admission rejects invalid slippage %s", slippageBps => { const p = quote(); p.slippageBps = slippageBps; expect(swapQuotePolicyError(p)).toBeTruthy(); });
+it.each([1, 50, 100, 500])("quote minimum uses exact floor at %s bps", slippageBps => { const p = simulatedExecutorQuote({ ...form, slippageBps }, 100001n); expect(p.minToAmount).toBe((100001n * BigInt(10000 - slippageBps) / 10000n).toString()); expect(swapQuotePolicyError(p)).toBeNull(); });
