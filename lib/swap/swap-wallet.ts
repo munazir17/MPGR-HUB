@@ -7,7 +7,7 @@ import { erc20Abi } from "@/lib/erc20-abi";
 import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment } from "@/lib/executor/executor-config";
 import { isNativeEthSentinel } from "@/lib/trade/trade-config";
-import { manualQuoteFresh } from "@/lib/trade/manual-swap";
+import { swapQuoteFresh } from "./swap-lifecycle";
 import type { TradeError, TradeProposal, TradeTokenRef } from "@/lib/trade/trade-types";
 import { swapFeePolicyError } from "./swap-policy";
 export async function readSwapBalance(account: Address, token: TradeTokenRef) {
@@ -40,7 +40,7 @@ export async function validateSwapWallet(p: TradeProposal, phase: "approval" | "
   const changed = context(); if (changed) return changed;
   const invalid = swapFeePolicyError(p); if (invalid) return fail("EXECUTION_UNAVAILABLE", invalid);
   if (p.risk.some(r => r.severity === "critical")) return fail("EXECUTION_UNAVAILABLE", "A critical route warning prevents signing. Request a fresh quote.");
-  if (!manualQuoteFresh(p)) return fail("QUOTE_EXPIRED", "Quote expired. Refresh it; any confirmed approval is retained.");
+  if (!swapQuoteFresh(p)) return fail("QUOTE_EXPIRED", "Quote expired. Refresh it; any confirmed approval is retained.");
   try {
     const [balance, native, recipient, bps, gas] = await Promise.all([
       readSwapBalance(p.taker, p.from), getBalance(config, { address: p.taker, chainId: 8453 }),
@@ -57,6 +57,6 @@ export async function validateSwapWallet(p: TradeProposal, phase: "approval" | "
       const allowance = await readContract(config, { address: p.from.address, abi: erc20Abi, functionName: "allowance", args: [p.taker, deployment.executor], chainId: 8453 });
       if (allowance < BigInt(p.fromAmount)) return fail("APPROVAL_FAILED", "Actual allowance is insufficient. Retry approval; no swap was submitted.");
     }
-    return context() ?? (!manualQuoteFresh(p) ? fail("QUOTE_EXPIRED", "Quote expired during validation. Refresh before signing.") : null);
+    return context() ?? (!swapQuoteFresh(p) ? fail("QUOTE_EXPIRED", "Quote expired during validation. Refresh before signing.") : null);
   } catch { return fail("PROVIDER_ERROR", "Could not verify live balance, allowance, fee configuration or Base gas. Retry the checks; nothing was submitted by this step."); }
 }

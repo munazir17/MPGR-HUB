@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Loader2, CheckCircle2, ExternalLink } from "lucide-react";
-import { manualQuoteFresh } from "@/lib/trade/manual-swap";
+import { swapQuoteFresh } from "@/lib/swap/swap-lifecycle";
 import type { useSwapExecution } from "@/hooks/useSwapExecution";
 import { SwapDialog } from "./SwapDialog";
 import { SwapDetails, swapAmount } from "./SwapDetails";
@@ -22,23 +22,22 @@ export function SwapExecutionDialog({ trade }: { trade: ReturnType<typeof useSwa
       <div className="border-t border-white/5 pt-3"><p className="text-xs text-zinc-400">{success ? "You received · verified" : "You receive · estimated"}</p>
         <p className="mt-1 break-words text-xl font-medium text-emerald-200">{swapAmount(success ? proof.amountOut! : p.toAmount, p.to)}</p></div>
       <p className="break-words text-xs text-zinc-400">Minimum: {swapAmount(p.minToAmount, p.to)} · Slippage {p.slippageBps / 100}%</p>
-      <p className="break-words text-xs text-zinc-300">MPGR fee: {swapAmount(p.agentFee!.amountAtomic, p.from)} (0.25%) · {success ? "collection verified by Executor receipt" : reverted ? "not collected; swap reverted" : submitted ? "submitted; collection not yet verified" : "quoted, not paid"}</p>
     </div>
     <SwapDetails proposal={p} feeState={success ? "verified" : reverted ? "reverted" : submitted ? "submitted" : "quoted"} />
     {p.risk.filter(r => r.severity !== "info" && !["executor-approval", "router-approval", "permit2-approval"].includes(r.id)).map(r => <p key={r.id} className="text-xs text-amber-200">{r.detail}</p>)}
-    {!submitted && s.state === "IDLE" && <p className="text-xs text-zinc-400">{p.needsPermit2Approval ? "Allowance is checked live. If needed, approve only this pay amount, then sign the swap. Approval alone does not swap or pay the MPGR fee." : "Balance, allowance, recipient, route, minimum and fee configuration are rechecked before signing."}</p>}
+    {!submitted && s.state === "IDLE" && <p className="text-xs text-zinc-400">{p.needsPermit2Approval ? "Allowance is checked live. If needed, approve only this pay amount, then sign the swap. Approval alone does not swap." : "Balance, allowance, recipient, route, minimum and fee configuration are rechecked before signing."}</p>}
+    {trade.quoteUpdated && !trade.isBusy && <p role="status" className="text-xs text-emerald-200">Quote updated — review new output.</p>}
     {trade.isBusy && <p role="status" className="flex items-center gap-2 text-sm text-zinc-300"><Loader2 size={17} className="shrink-0 animate-spin" />{s.stepLabel ?? "Refreshing quote…"}</p>}
-    {!manualQuoteFresh(p, now) && !submitted && !trade.isBusy && <p role="status" className="text-xs text-amber-200">Quote expired. Refresh before signing; confirmed approval is retained.</p>}
+    {!swapQuoteFresh(p, now) && !submitted && !trade.isBusy && <p role="status" className="text-xs text-amber-200">Quote needs updating.</p>}
     {s.error && <p role="alert" className="break-words rounded-xl border border-red-300/10 bg-red-300/5 p-3 text-xs leading-relaxed text-red-200">{s.error.message}</p>}
     {s.approvalHash && <div className="flex items-start justify-between gap-3 text-xs"><p className="text-zinc-400">Approval transaction<br /><span className="text-zinc-500">Not a swap or fee payment</span></p><a className="inline-flex min-h-11 items-center gap-1 text-emerald-300 underline" href={`https://basescan.org/tx/${s.approvalHash}`} target="_blank" rel="noopener noreferrer">View approval<ExternalLink size={12} /></a></div>}
     {s.swapHash && <a className="inline-flex min-h-11 items-center gap-1 text-xs text-emerald-300 underline" href={`https://basescan.org/tx/${s.swapHash}`} target="_blank" rel="noopener noreferrer">View swap on BaseScan<ExternalLink size={12} /></a>}
-    {success && <p role="status" data-testid="swap-status" className="flex items-center gap-2 text-sm text-emerald-200"><CheckCircle2 size={18} />Swap confirmed · output and fee verified</p>}
+    {success && <p role="status" data-testid="swap-status" className="flex items-center gap-2 text-sm text-emerald-200"><CheckCircle2 size={18} />Swap confirmed · output verified</p>}
     {!success && !submitted && !approvalUnknown && <>
-      {s.state === "ERROR" || !manualQuoteFresh(p, now) ? <button type="button" disabled={trade.isBusy} onClick={() => void trade.retryQuote()} className="min-h-12 w-full rounded-2xl bg-emerald-300 px-3 font-semibold text-[#071710] disabled:opacity-40">{trade.sessionExpired ? "Sign in & refresh quote" : "Refresh quote & retry"}</button>
+      {s.state === "ERROR" || !swapQuoteFresh(p, now) ? <button type="button" disabled={trade.isBusy} onClick={() => void trade.retryQuote()} className="min-h-12 w-full rounded-2xl bg-emerald-300 px-3 font-semibold text-[#071710] disabled:opacity-40">{trade.sessionExpired ? "Sign in & refresh quote" : "Refresh quote & retry"}</button>
         : <button type="button" disabled={trade.isBusy} onClick={() => void trade.confirm()} className="min-h-12 w-full rounded-2xl bg-emerald-300 px-3 font-semibold text-[#071710] disabled:opacity-40">{trade.isBusy ? "Waiting for confirmation…" : "Confirm & Swap"}</button>}
     </>}
     {approvalUnknown && !submitted && !trade.isBusy && <button type="button" disabled={trade.checking} onClick={() => void trade.checkHistory()} className="min-h-12 w-full rounded-xl bg-white/10 text-sm">{trade.checking ? "Checking approval…" : "Check approval status"}</button>}
     {!success && submitted && !trade.isBusy && <button type="button" disabled={trade.checking} onClick={() => void trade.checkHistory()} className="min-h-12 w-full rounded-xl bg-white/10 text-sm">{trade.checking ? "Checking receipt…" : "Check submitted swap status"}</button>}
-    <p className="text-[11px] leading-relaxed text-zinc-500">Your wallet explicitly signs each transaction. No separate MPGR fee transaction. Never resubmit an unknown-status swap without checking its hash.</p>
   </SwapDialog>;
 }

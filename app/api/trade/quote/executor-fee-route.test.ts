@@ -398,3 +398,11 @@ describe("Swap-only fee policy on existing quote API (Agent unchanged)", () => {
   });
   it.each(["true", 1, null])("rejects malformed policy opt-in %s", async requireMPGRFee => { const r = await POST(post({ requireMPGRFee })); expect(r.status).toBe(400); expect(mocks.routed).not.toHaveBeenCalled(); });
 });
+
+it("strict Swap confirmation refresh gets a new executable quote instead of the completed six-second cache", async()=>{
+ const first=await (await POST(post({requireMPGRFee:true}))).json();
+ const reader=fakeReader({out:900_000_000_000_000n});mocks.reader=reader;
+ const cached=await (await POST(post({requireMPGRFee:true}))).json();expect(cached.proposal.toAmount).toBe(first.proposal.toAmount);expect(reader.simulateContract).not.toHaveBeenCalled();
+ const fresh=await (await POST(post({requireMPGRFee:true,refreshQuote:true}))).json();expect(fresh.proposal.toAmount).toBe("900000000000000");expect(reader.simulateContract).toHaveBeenCalledTimes(1);
+});
+it.each([{refreshQuote:true},{requireMPGRFee:true,refreshQuote:"yes"}])("rejects invalid/legacy refresh opt-in %j",async body=>{expect((await POST(post(body))).status).toBe(400);});

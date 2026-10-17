@@ -10,17 +10,18 @@ export const token = (symbol: string) => CHAT_REVIEW_TOKENS.find(t => t.symbol =
 const prompt = "Buy AAPLc whenever price falls below $200 worth 1 USDC";
 const form = chatDraftToForm(buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt));
 export const importedAddress = "0x1234567890abcdef1234567890abcdef12345678";
-export interface FixtureOptions { authExpiresOnRefresh?: boolean; feeSkipped?: boolean; importSymbol?: string; importName?: string; importStatus?: number; ready?: boolean; quoteStatus?: number; authExpired?: boolean; shortQuote?: boolean; policyBlocked?: boolean; permissionFailsOnce?: boolean }
+export interface FixtureOptions { refreshOutputAtomic?: string; firstQuoteDelayMs?: number; authExpiresOnRefresh?: boolean; feeSkipped?: boolean; importSymbol?: string; importName?: string; importStatus?: number; ready?: boolean; quoteStatus?: number; authExpired?: boolean; shortQuote?: boolean; policyBlocked?: boolean; permissionFailsOnce?: boolean }
 export async function setup(page: Page, options: FixtureOptions = {}) {
   page.on("pageerror", error => { throw error; });
   const trace: { method: string; path: string; status: number }[] = [];
   const policies: AutonomyPolicyView[] = [], goals: AutonomyGoalView[] = [], slots: DelegatedSlotView[] = [];
+  const quoteBodies: Record<string, unknown>[] = [];
   let quotes = 0, permissions = 0;
   await page.route((url) => !["127.0.0.1", "localhost"].includes(url.hostname), route => route.abort());
   await page.route(url => url.pathname.startsWith("/api/"), async route => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
     const body = method === "GET" ? null : request.postDataJSON();
-    let status = 200; let json: unknown;
+    let status = 200; let json: unknown; let quoteRequestNumber = 0;
     if (path === "/api/auth/session") json = { authenticated: true, wallet };
     else if (path === "/api/auth/nonce") json = { nonce: "offline", issuedAt: new Date().toISOString(), expirationTime: new Date(Date.now() + 60_000).toISOString(), origin: "http://127.0.0.1:4173", chainId: 8453 };
     else if (path === "/api/auth/verify") json = { authenticated: true };
@@ -33,11 +34,11 @@ export async function setup(page: Page, options: FixtureOptions = {}) {
       json = status === 200 ? { chainId: 8453, token: { address: importedAddress, symbol: options.importSymbol ?? "NEW", name: options.importName ?? "Simulated imported token", decimals: 6, kind: "erc20", verified: false } } : { code: "PROVIDER_ERROR", error: "Simulated Base metadata unavailable" };
     }
     else if (path === "/api/trade/quote") {
-      quotes++;
+      quoteRequestNumber = ++quotes; quoteBodies.push(body);
       status = options.quoteStatus ?? ((options.authExpired && quotes === 1) || (options.authExpiresOnRefresh && quotes === 2) ? 401 : 200);
       if (status !== 200) json = { error: "Simulated quote service refusal", code: status === 401 ? "AUTH_REQUIRED" : "PROVIDER_ERROR" };
       else {
-        const proposal = simulatedExecutorQuote({ ...form, sell: body.fromToken, buy: body.toToken, sellAmount: body.amount ?? "1", slippageBps: body.slippageBps });
+        const proposal = simulatedExecutorQuote({ ...form, sell: body.fromToken, buy: body.toToken, sellAmount: body.amount ?? "1", slippageBps: body.slippageBps }, quotes > 1 && options.refreshOutputAtomic ? BigInt(options.refreshOutputAtomic) : undefined);
         const now = await page.evaluate(() => Date.now());
         proposal.quotedAt = new Date(now).toISOString(); proposal.expiresAt = new Date(now + (options.shortQuote && quotes === 1 ? 1600 : 30_000)).toISOString();
         if (options.feeSkipped) { proposal.provider = "cdp-trade-api"; proposal.agentFee = { status: "skipped", bps: null, recipient: null, amountAtomic: "0", displayAmount: null, reason: "Unsupported fee route", collection: null }; }
@@ -70,11 +71,12 @@ export async function setup(page: Page, options: FixtureOptions = {}) {
     } else if (path === "/api/agent/autonomy/goals/goal-browser" && method === "PATCH") {
       expect(slots).toHaveLength(1); expect(slots[0].goalId).toBe(goals[0].id); goals[0].status = "ACTIVE"; json = { goal: goals[0] };
     } else throw new Error(`Unexpected API request: ${method} ${path}`);
+    if (path === "/api/trade/quote" && quoteRequestNumber === 1 && options.firstQuoteDelayMs) await new Promise(resolve => setTimeout(resolve, options.firstQuoteDelayMs));
     trace.push({ method, path, status });
     await route.fulfill({ status, json, headers: { "Cache-Control": "no-store", "X-MPGR-Autonomy-Deployment-Environment": "preview", "X-MPGR-Autonomy-Runtime-Gate": options.ready ? "enabled" : "disabled", "X-MPGR-Autonomy-Production-Gate": options.ready ? "enabled" : "missing" } });
   });
   await page.goto("/flows.html"); await expect(page.getByTestId("flow-auth")).toHaveText("true");
-  return { trace, policies, goals, slots, quoteCount: () => quotes };
+  return { trace, policies, goals, slots, quoteBodies, quoteCount: () => quotes };
 }
 export async function evidence(page: Page, info: TestInfo, trace: unknown) {
   const path = info.outputPath("api-trace.json");

@@ -5,7 +5,7 @@ import { findKnownTradeToken } from "../../lib/trade/trade-tokens";
 import type { TradeProposal } from "../../lib/trade/trade-types";
 import { simulatedSwapReceipt } from "./swap-receipt-fixture";
 type Tx = { minedStatus?: "success" | "reverted"; proposal: TradeProposal; hash: Hash; account: Address; to: Address; data: `0x${string}`; value: bigint; approval: boolean };
-type Browser = { simulatedHistoryDelay?: boolean; simulatedHistoryResolvers?: (() => void)[]; simulatedWalletCalls?: string[]; simulatedWalletScenario?: string; simulatedAccount?: { address: Address; chainId: number; isConnected: boolean }; simulatedProposal?: TradeProposal; simulatedTransactions?: { hash: Hash; to: Address; data: string; value: string }[] };
+type Browser = { simulatedPendingSwap?: () => void; simulatedHistoryDelay?: boolean; simulatedHistoryResolvers?: (() => void)[]; simulatedWalletCalls?: string[]; simulatedWalletScenario?: string; simulatedAccount?: { address: Address; chainId: number; isConnected: boolean }; simulatedProposal?: TradeProposal; simulatedTransactions?: { hash: Hash; to: Address; data: string; value: string }[] };
 const state = () => window as unknown as Browser;
 const record = (method: string) => { (state().simulatedWalletCalls ??= []).push(method); };
 const scenario = () => state().simulatedWalletScenario;
@@ -34,7 +34,7 @@ export async function readContract(_config: unknown, params: { address: Address;
   if (params.functionName === "balanceOf") {
     if (scenario() === "balance-error") throw new Error("Simulated balance unavailable");
     const owner = String(params.args?.[0]);
-    return scenario() === "insufficient" ? 0n : (owner.startsWith("0x3333") ? 42n : 100n) * 10n ** BigInt(decimals) + (balanceChanges.get(balanceKey(owner, params.address)) ?? 0n);
+    return scenario() === "dust-balance" ? 399n : scenario() === "insufficient" ? 0n : (owner.startsWith("0x3333") ? 42n : 100n) * 10n ** BigInt(decimals) + (balanceChanges.get(balanceKey(owner, params.address)) ?? 0n);
   }
   throw new Error(`Unexpected simulated read ${params.functionName}`);
 }
@@ -81,7 +81,7 @@ async function receipt(hash: Hash) {
   }
   return result;
 }
-export async function waitForTransactionReceipt(_config: unknown, params: { hash: Hash }) { record("simulated-receipt"); return receipt(params.hash); }
+export async function waitForTransactionReceipt(_config: unknown, params: { hash: Hash }) { record("simulated-receipt"); if (!transactions.get(params.hash)?.approval && scenario() === "swap-pending") await new Promise<void>(resolve => { state().simulatedPendingSwap = resolve; }); return receipt(params.hash); }
 export async function getTransactionReceipt(_config: unknown, params: { hash: Hash }) {
   if (state().simulatedHistoryDelay) await new Promise<void>(resolve => { (state().simulatedHistoryResolvers ??= []).push(resolve); });
   const result = await receipt(params.hash); record("history-read-completed"); return result;

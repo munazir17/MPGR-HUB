@@ -54,6 +54,12 @@ export async function POST(request: Request) {
   if (body && typeof body === "object" && "requireMPGRFee" in body && typeof body.requireMPGRFee !== "boolean") {
     return json({ error: "requireMPGRFee must be boolean", code: "INVALID_INPUT" }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
+  // Only the strict Swap consumer can request a new executable review quote.
+  // Reuse pending work, but never reuse a completed cache entry for this step.
+  if (body && typeof body === "object" && "refreshQuote" in body && (typeof body.refreshQuote !== "boolean" || !requireFee)) {
+    return json({ error: "refreshQuote requires the strict Swap fee policy and a boolean", code: "INVALID_INPUT" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  }
+  const freshReview = requireFee && "refreshQuote" in body && body.refreshQuote === true;
   const parsed = await parseTradeSwapRequest(body, { requireTaker: true });
   if (!parsed.ok) {
     return json(
@@ -134,6 +140,7 @@ export async function POST(request: Request) {
         provider: quote.provider, quotedAt, priceImpactBps,
       });
     },
+    { fresh: freshReview },
   );
 
   if (!result.ok) {

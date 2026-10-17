@@ -1,0 +1,8 @@
+Full unit regression: 3751 passed, 24 skipped (291 passed files, 5 skipped files); original timeouts, maxWorkers=1.
+Focused Swap/cache/API/render regression: 101 passed, 7 files.
+npx tsc --noEmit: PASS, tracked process exit 0.
+Repository lint: 0 errors, 61 existing warnings; final changed-test/read-only-script lint: PASS.
+Final extra viewport evidence run: 8 passed.
+Local build: BLOCKED by unavailable Google Fonts Inter fetch; no font/config workaround made.
+Complete browser suite final result and exact deployed SHA are reported in the PR delivery comment.
+All wallet/provider scenarios here are simulated; no live signatures, broadcasts or fee transfers.

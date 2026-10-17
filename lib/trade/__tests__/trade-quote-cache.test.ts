@@ -67,3 +67,16 @@ describe("quote cache failure and age boundaries", () => {
     } finally { vi.useRealTimers(); }
   });
 });
+
+it("fresh Swap review bypasses only completed cache, keeping normal consumers and other keys unchanged", async()=>{
+ resetTradeQuoteCache();const compute=vi.fn(async()=>compute.mock.calls.length);
+ expect(await withTradeQuoteCache("wallet:pair",6000,compute)).toBe(1);
+ expect(await withTradeQuoteCache("wallet:pair",6000,compute)).toBe(1);
+ expect(await withTradeQuoteCache("wallet:pair",6000,compute,{fresh:true})).toBe(2);
+ expect(await withTradeQuoteCache("wallet:pair",6000,compute)).toBe(2);expect(compute).toHaveBeenCalledTimes(2);
+});
+it("simultaneous fresh review requests still share one pending provider computation",async()=>{
+ resetTradeQuoteCache();let release!:(n:number)=>void;const compute=vi.fn(()=>new Promise<number>(resolve=>{release=resolve;}));
+ const a=withTradeQuoteCache("fresh",6000,compute,{fresh:true}),b=withTradeQuoteCache("fresh",6000,compute,{fresh:true});
+ release(7);expect(await a).toBe(7);expect(await b).toBe(7);expect(compute).toHaveBeenCalledTimes(1);
+});

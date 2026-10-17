@@ -119,6 +119,12 @@ try {
       } else {
         await expect(manualForm.getByRole("button", { name: "You receive token: WETH", exact: true })).toBeVisible();
         await expect(manualForm.getByRole("button", { name: "You pay token: USDC", exact: true })).toBeVisible();
+        expect(await manualForm.getByTestId("pay-panel").evaluate(e => e.getBoundingClientRect().top)).toBeLessThan(await manualForm.getByTestId("receive-panel").evaluate(e => e.getBoundingClientRect().top));
+        await expect(manualForm.getByTestId("pay-panel").getByRole("button", { name: "MAX", exact: true })).toBeDisabled();
+        await expect(manualForm.getByTestId("receive-panel").getByRole("button", { name: "MAX", exact: true })).toHaveCount(0);
+        await expect(manualForm.getByLabel("You pay amount", { exact: true })).toBeEditable();
+        await expect(manualForm.getByLabel("You receive amount", { exact: true })).not.toBeEditable();
+        for (const copy of ["Non-custodial · Atomic 0.25% MPGR fee", "Direction reversed. Enter a new pay amount.", "Wallet-controlled. Approval is not a swap. Quotes are estimates; receipt verification establishes execution."]) await expect(page.getByText(copy, { exact: true })).toHaveCount(0);
         await manualForm.getByLabel("You pay amount", { exact: true }).fill("1");
         await expect(manualForm.getByRole("button", { name: "Connect wallet", exact: true })).toBeVisible();
         await expect(manualForm.getByLabel("You receive amount", { exact: true })).toHaveValue("");

@@ -4,6 +4,7 @@ import { useAccount } from "wagmi";
 import { getTransaction, getTransactionReceipt } from "wagmi/actions";
 import { config } from "@/lib/wagmi";
 import { executeTrade, idleTradeExecutionSnapshot, type TradeExecutionSnapshot } from "@/lib/trade/trade-execution";
+import { swapQuoteNeedsRefresh } from "@/lib/swap/swap-lifecycle";
 import { ManualSwapQuoteError } from "@/lib/trade/manual-swap";
 import { revalidateTradeProposal } from "@/lib/trade/trade-confirmation";
 import { requestSwapQuote } from "@/lib/swap/swap-quote";
@@ -27,6 +28,7 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
   // Honest session activity, not an invented indexed wallet history. No
   // browser cache can promote a transaction to confirmed/fee-collected.
   const [activities, setActivities] = useState<SwapActivity[]>([]);
+  const [quoteUpdated, setQuoteUpdated] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
   const [checking, setChecking] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -40,13 +42,13 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
   const open = useCallback((p: TradeProposal) => {
     if (active.current) return;
     session.current++;
-    setProposal(p); setProof(null); setSnapshot(idleTradeExecutionSnapshot());
+    setQuoteUpdated(false); setProposal(p); setProof(null); setSnapshot(idleTradeExecutionSnapshot());
   }, []);
   const close = useCallback(() => { if (!active.current) { session.current++; setProposal(null); } }, []);
   const refreshQuote = useCallback(async (p: TradeProposal) => {
     try {
       const next = await requestSwapQuote({ fromToken: p.from.address, toToken: p.to.address,
-        amount: formatAtomicAmount(p.fromAmount, p.from.decimals, p.from.decimals), slippageBps: p.slippageBps }, p.taker, undefined, [p.from, p.to]);
+        amount: formatAtomicAmount(p.fromAmount, p.from.decimals, p.from.decimals), slippageBps: p.slippageBps }, p.taker, undefined, [p.from, p.to], { fresh: true });
       setSessionExpired(false); return next;
     } catch (e) { if (e instanceof ManualSwapQuoteError && e.status === 401) setSessionExpired(true); throw e; }
   }, []);
@@ -54,18 +56,30 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
     if (!proposal || active.current || snapshot.swapHash) return;
     const approval = activities.find(a => a.approvalHash === snapshot.approvalHash)?.approvalStatus;
     if (snapshot.approvalHash && (approval === "pending" || approval === "unknown")) return;
+    if (accountRef.current.chainId !== 8453 || !accountRef.current.isConnected || accountRef.current.address?.toLowerCase() !== proposal.taker.toLowerCase()) {
+      setSnapshot(s => ({ ...s, state: "ERROR", error: { code: "WALLET_REQUIRED", message: "Connect the quoted wallet on Base before refreshing." } })); return;
+    }
     const run = session.current; active.current = true;
     setSnapshot(s => ({ ...s, state: "REQUOTING", error: null }));
     try {
       if (sessionExpired && !(await signIn({ force: true }))) throw new Error(`Wallet sign-in cancelled.${snapshot.approvalHash ? " Your existing approval is retained." : ""} No swap was submitted.`);
       if (!mounted.current || session.current !== run) return;
       const fresh = await refreshQuote(proposal);
-      if (session.current === run) { setProposal(fresh); setSnapshot(s => ({ ...idleTradeExecutionSnapshot(), approvalHash: s.approvalHash })); }
+      if (session.current === run) { setProposal(fresh); setQuoteUpdated(true); setSnapshot(s => ({ ...idleTradeExecutionSnapshot(), approvalHash: s.approvalHash })); }
     } catch (e) { if (session.current === run) setSnapshot(s => ({ ...s, state: "ERROR", error: { code: "PROVIDER_ERROR", message: e instanceof Error ? e.message : "Quote refresh failed." } })); }
     finally { active.current = false; }
   }, [proposal, snapshot.swapHash, snapshot.approvalHash, activities, refreshQuote, sessionExpired, signIn]);
   const confirm = useCallback(async () => {
     if (!proposal || active.current || snapshot.swapHash) return;
+    const approval = activities.find(a => a.approvalHash === snapshot.approvalHash)?.approvalStatus;
+    if (snapshot.approvalHash && (approval === "pending" || approval === "unknown")) return;
+    if (accountRef.current.chainId !== 8453 || !accountRef.current.isConnected || accountRef.current.address?.toLowerCase() !== proposal.taker.toLowerCase()) {
+      setSnapshot(s => ({ ...s, state: "ERROR", error: { code: "WALLET_REQUIRED", message: "Wallet or network changed. Switch to the quoted wallet on Base." } })); return;
+    }
+    // An expired/near-expiry quote is replaced for REVIEW, never for automatic
+    // signing. The next explicit click accepts its new output and minimum.
+    if (swapQuoteNeedsRefresh(proposal)) { await retryQuote(); return; }
+    setQuoteUpdated(false);
     const validation = revalidateTradeProposal(proposal, accountRef.current.address);
     const invalid = swapFeePolicyError(proposal);
     if (validation.state !== "VALIDATED" || invalid) {
@@ -94,7 +108,9 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
     };
     try {
       await executeTrade({ proposal, confirmationState: "READY_FOR_CONFIRMATION", currentAccount: accountRef.current.address, currentChainId: accountRef.current.chainId,
-        refreshQuote, safety: {
+        // Do not let the shared engine silently substitute a new quote. Its
+        // expired-quote refusal is recovered below with an explicit review.
+        safety: {
           beforeSignature: async (p, phase) => {
             if (!mounted.current || session.current !== run) return { code: "INVALID_INPUT", message: "Swap view closed. No further wallet request was initiated." };
             const invalid = await validateSwapWallet(p, phase);
@@ -108,11 +124,23 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
             return verified.verified ? null : { code: "PROVIDER_ERROR", message: verified.reason! };
           },
         } }, update);
+      if (last.error?.code === "QUOTE_EXPIRED" && !last.swapHash && mounted.current && session.current === run) {
+        setSnapshot(s => ({ ...s, state: "REQUOTING", error: null, stepLabel: "Refreshing quote…" }));
+        try {
+          const fresh = await refreshQuote(effective);
+          if (mounted.current && session.current === run) {
+            setProposal(fresh); setQuoteUpdated(true);
+            setSnapshot({ ...idleTradeExecutionSnapshot(), approvalHash: last.approvalHash });
+          }
+        } catch (e) {
+          if (mounted.current && session.current === run) setSnapshot(s => ({ ...s, state: "ERROR", error: { code: "PROVIDER_ERROR", message: e instanceof Error ? e.message : "Quote refresh failed." } }));
+        }
+      }
     } finally {
       if (last.approvalHash && !last.swapHash && approvalStatus === null) setActivities(current => current.map(a => a.id === activityId ? { ...a, approvalStatus: "unknown" } : a));
       active.current = false; refreshBalancesRef.current();
     }
-  }, [proposal, snapshot.swapHash, refreshQuote]);
+  }, [proposal, snapshot.swapHash, snapshot.approvalHash, activities, refreshQuote, retryQuote]);
   const checkHistory = useCallback(async () => {
     if (checking || active.current) return;
     const wallet = accountRef.current;
@@ -158,6 +186,6 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
     const interval = setInterval(() => { void checkHistory(); }, 15_000);
     return () => clearInterval(interval);
   }, [activities, checkHistory]);
-  return { proposal, snapshot, proof, isBusy, open, close, confirm, retryQuote, checking, sessionExpired, historyError, checkHistory,
+  return { proposal, snapshot, proof, isBusy, open, close, confirm, retryQuote, checking, sessionExpired, quoteUpdated, historyError, checkHistory,
     activities: account.isConnected && account.chainId === 8453 ? activities.filter(a => a.proposal.taker.toLowerCase() === account.address?.toLowerCase()) : [] };
 }

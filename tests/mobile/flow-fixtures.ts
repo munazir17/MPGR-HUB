@@ -7,14 +7,14 @@ import { isNativeEthSentinel } from "../../lib/trade/trade-config";
 import { MANUAL_SWAP_TOKENS } from "../../lib/trade/manual-swap";
 import { parseHumanTokenAmount, formatAtomicAmount } from "../../lib/trade/trade-format";
 import type { AutonomyAuthorizeFormState } from "../../components/features/agent/autonomy-authorize-form";
-export function simulatedExecutorQuote(form: AutonomyAuthorizeFormState) {
+export function simulatedExecutorQuote(form: AutonomyAuthorizeFormState, output?: bigint) {
   const from = MANUAL_SWAP_TOKENS.find(t => t.address.toLowerCase() === form.sell.toLowerCase());
   const to = MANUAL_SWAP_TOKENS.find(t => t.address.toLowerCase() === form.buy.toLowerCase());
   if (!from || !to) throw new Error("Unsupported simulated token");
   const base = { from, to, taker: "0x1111111111111111111111111111111111111111" as const, fromAmount: parseHumanTokenAmount(form.sellAmount, from.decimals)!.toString() };
   const result = buildExecutorIntent({ deployment: BASE_MAINNET_EXECUTOR_DEPLOYMENT, taker: base.taker,
     sellToken: isNativeEthSentinel(form.sell) ? BASE_MAINNET_EXECUTOR_DEPLOYMENT.weth : form.sell, buyToken: isNativeEthSentinel(form.buy) ? BASE_MAINNET_EXECUTOR_DEPLOYMENT.weth : form.buy,
-    sellNative: isNativeEthSentinel(form.sell), buyNative: isNativeEthSentinel(form.buy), sellAmount: BigInt(base.fromAmount), expectedBuyAmount: 10n ** BigInt(to.decimals) / 100n,
+    sellNative: isNativeEthSentinel(form.sell), buyNative: isNativeEthSentinel(form.buy), sellAmount: BigInt(base.fromAmount), expectedBuyAmount: output ?? 10n ** BigInt(to.decimals) / 100n,
     slippageBps: form.slippageBps, authorization: "APPROVAL", nowSeconds: Math.floor(Date.now() / 1000),
     quoteId: "offline-browser", feeBps: 25, feeRecipient: "0x2222222222222222222222222222222222222222" });
   if (!result.ok) throw new Error(result.error.message);

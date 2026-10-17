@@ -48,12 +48,13 @@ export async function withTradeQuoteCache<T>(
   key: string,
   ttlMs: number,
   compute: () => Promise<T>,
+  options: { fresh?: boolean } = {},
 ): Promise<T> {
   const nowMs = Date.now();
   prune(nowMs, ttlMs);
 
   const cached = entries.get(key);
-  if (cached && nowMs - cached.storedAtMs < ttlMs) {
+  if (!options.fresh && cached && nowMs - cached.storedAtMs < ttlMs) {
     return cached.value as T;
   }
 

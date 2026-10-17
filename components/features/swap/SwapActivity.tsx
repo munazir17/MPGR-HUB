@@ -14,8 +14,6 @@ export function SwapActivity({ trade, onClose }: { trade: ReturnType<typeof useS
       <header className="flex flex-wrap justify-between gap-2"><h3 className="font-semibold">{a.proposal.from.symbol} → {a.proposal.to.symbol}</h3><time title="Browser submission time" className="text-zinc-500" dateTime={new Date(a.startedAt).toISOString()}>{new Date(a.startedAt).toLocaleString()}</time></header>
       <p className="break-words text-zinc-300">Pay: {swapAmount(a.proposal.fromAmount, a.proposal.from)}</p>
       <p className="break-words text-zinc-300">Received: {a.proof?.verified && a.proof.amountOut ? swapAmount(a.proof.amountOut, a.proposal.to) : "Not verified"}</p>
-      <p className="break-words text-zinc-400">MPGR fee: {a.proof?.verified ? `${swapAmount(a.proof.feeAmount!, a.proposal.from)} · collection verified` : a.swapStatus === "reverted" ? "Not collected — swap reverted" : a.swapHash ? "Submitted; collection not verified" : "Not submitted / not collected by approval"}</p>
-      {a.proof?.verified && <p className="break-all text-[10px] text-zinc-500">Fee recipient: {a.proof.feeRecipient}</p>}
       {([["Approval", a.approvalHash, a.approvalStatus], ["Swap", a.swapHash, a.swapStatus]] as const).map(([label, hash, status]) => hash && <div key={label} className="space-y-1 border-t border-white/5 pt-2">
         <p className="text-zinc-300">{label} · {status === "unverified" || status === "unknown" ? "verification unavailable" : status}</p>
         <p className="break-all font-mono text-[10px] text-zinc-500">{hash}</p>
@@ -24,6 +22,6 @@ export function SwapActivity({ trade, onClose }: { trade: ReturnType<typeof useS
       </div>)}
     </article>)}
     {copy && <p role="status" className="text-xs text-zinc-400">{copy}</p>}
-    <p className="text-[11px] leading-relaxed text-zinc-500">Pending or unavailable receipts are not proof of failure. A confirmed approval is not a confirmed swap. Fees are not labelled collected without the exact Executor event.</p>
+    <p className="text-[11px] leading-relaxed text-zinc-500">Pending or unavailable receipts are not proof of failure. A confirmed approval is not a confirmed swap.</p>
   </SwapDialog>;
 }
