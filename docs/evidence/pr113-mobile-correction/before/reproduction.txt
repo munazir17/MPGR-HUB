@@ -1,0 +1,16 @@
+
+> mpgr-hub@0.1.0 test:mobile
+> playwright test --config tests/mobile/playwright.config.ts --grep baseline:
+
+[WebServer] [33m(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+[WebServer]   - ESM syntax in a file loaded as CommonJS (tests/mobile/vite.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+[WebServer] Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.[39m
+
+Running 4 tests using 1 worker
+
+  ✓  1 [mobile-360] › tests/mobile/swap-correction-baseline.spec.ts:3:5 › baseline: receive above pay, repeated fee and same-token selection silently reverses (4.3s)
+  ✓  2 [mobile-360] › tests/mobile/swap-correction-baseline.spec.ts:9:5 › baseline: short provider expiry clears estimate and makes review require manual refresh (5.2s)
+  ✓  3 [mobile-390] › tests/mobile/swap-correction-baseline.spec.ts:3:5 › baseline: receive above pay, repeated fee and same-token selection silently reverses (4.9s)
+  ✓  4 [mobile-390] › tests/mobile/swap-correction-baseline.spec.ts:9:5 › baseline: short provider expiry clears estimate and makes review require manual refresh (5.8s)
+
+  4 passed (26.5s)

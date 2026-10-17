@@ -1,0 +1,16 @@
+
+> Build error occurred
+Error: Turbopack build failed with 1 error:
+[next]/internal/font/google/inter_31011fd.module.css
+Error: next/font: error:
+Failed to fetch Inter from Google Fonts.
+If you are offline or behind a proxy, self-host the font with next/font/local, or set HTTP_PROXY/HTTPS_PROXY so Next.js can reach fonts.googleapis.com.
+
+Import trace:
+  Server Component:
+    [next]/internal/font/google/inter_31011fd.module.css
+    [next]/internal/font/google/inter_31011fd.js
+    ./app/layout.tsx
+
+
+    at ignore-listed frames

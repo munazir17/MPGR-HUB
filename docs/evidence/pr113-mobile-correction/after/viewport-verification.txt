@@ -1,0 +1,17 @@
+
+> mpgr-hub@0.1.0 test:mobile
+> playwright test --config tests/mobile/playwright.config.ts --grep pay first, MAX|Swap desktop correction|long decimal entry|late aborted response --output=/home/user/swap-correction-final-evidence
+
+
+Running 8 tests using 1 worker
+
+  ✓  1 [mobile-360] › tests/mobile/swap-desktop.spec.ts:4:5 › Swap desktop correction: editable long decimals, pay-first layout, compact action and one fee in review (20.6s)
+  ✓  2 [mobile-360] › tests/mobile/swap.spec.ts:160:5 › Swap correction: pay first, MAX belongs only to pay, one contextual fee across review and no redundant copy (10.5s)
+  ✓  3 [mobile-360] › tests/mobile/swap.spec.ts:188:5 › Swap correction: late aborted response cannot overwrite the newer amount, output or quote (8.2s)
+  ✓  4 [mobile-360] › tests/mobile/swap.spec.ts:208:5 › Swap correction: long decimal entry wraps legibly without field or page clipping (3.5s)
+  ✓  5 [mobile-390] › tests/mobile/swap-desktop.spec.ts:4:5 › Swap desktop correction: editable long decimals, pay-first layout, compact action and one fee in review (15.4s)
+  ✓  6 [mobile-390] › tests/mobile/swap.spec.ts:160:5 › Swap correction: pay first, MAX belongs only to pay, one contextual fee across review and no redundant copy (11.0s)
+  ✓  7 [mobile-390] › tests/mobile/swap.spec.ts:188:5 › Swap correction: late aborted response cannot overwrite the newer amount, output or quote (8.7s)
+  ✓  8 [mobile-390] › tests/mobile/swap.spec.ts:208:5 › Swap correction: long decimal entry wraps legibly without field or page clipping (4.8s)
+
+  8 passed (1.6m)
