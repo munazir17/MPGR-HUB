@@ -35,14 +35,14 @@ it("metadata validation never promotes any of the 35 unregistered assets", () =>
   const assets = MANUAL_SWAP_TOKENS.filter(t => !swapCounterassets(t.address).length);
   expect(assets).toHaveLength(35);
   for (const token of assets) {
-    expect(swapCapabilityStatus(token.address, BASE_USDC, true)).toMatchObject({ code: "REGISTRATION_REQUIRED", selectable: false, message: expect.stringContaining("Metadata validated — not executable") });
-    expect(swapCapabilityStatus(token.address, BASE_USDC)).toMatchObject({ selectable: false, message: expect.stringContaining("Discovery only") });
+    expect(swapCapabilityStatus(token.address, BASE_USDC, true)).toMatchObject({ code: "REGISTRATION_REQUIRED", selectable: false, message: expect.stringContaining("Token details checked — trading is not supported") });
+    expect(swapCapabilityStatus(token.address, BASE_USDC)).toMatchObject({ selectable: false, message: expect.stringContaining("Token available to look up") });
   }
 });
 it("registered selection is explicitly unquoted, not execution acceptance", () => {
-  expect(swapCapabilityStatus(BASE_USDC, d.weth)).toMatchObject({ code: "REGISTERED_UNQUOTED", selectable: true, message: expect.stringContaining("fresh quote and live permission checks required") });
+  expect(swapCapabilityStatus(BASE_USDC, d.weth)).toMatchObject({ code: "REGISTERED_UNQUOTED", selectable: true, message: expect.stringContaining("Get a live quote to check availability") });
 });
 it("non-registered pairs between approved identities can search, without claiming live liquidity or reversing pay", () => {
   const stock = d.routes[1].tokenB;
-  expect(swapCapabilityStatus(stock, d.weth)).toMatchObject({ code: "SEARCH_REQUIRED", selectable: true, message: expect.stringContaining("Liquidity and execution are not verified") });
+  expect(swapCapabilityStatus(stock, d.weth)).toMatchObject({ code: "SEARCH_REQUIRED", selectable: true, message: expect.stringContaining("This pair may need a multi-step route") });
 });

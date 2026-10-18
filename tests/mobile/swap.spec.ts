@@ -77,8 +77,8 @@ test("Swap: search, exact contract validation, duplicate symbols and unsupported
   await search.fill("No such token"); await expect(page.getByText(/No results\./)).toBeVisible(); await search.fill("0x123"); await expect(page.getByRole("alert")).toContainText("Invalid address");
   await search.fill(importedAddress); await page.getByRole("button", { name: "Validate Base token" }).tap(); await expect(page.getByText(/Import is not endorsement/)).toBeVisible();
   await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeDisabled();
-  await expect(page.getByTestId("token-route-unavailable")).toContainText("Metadata validated — not executable: route registration and Executor permission verification required");
-  await expect(page.getByTestId("token-route-unavailable")).toContainText("Pool discovery is not execution support");
+  await expect(page.getByTestId("token-route-unavailable")).toContainText("Token details checked — trading is not supported in MPGR Swap yet");
+  await expect(page.getByTestId("token-route-unavailable")).toContainText("Finding a token or pool does not make it tradable here");
   await page.getByRole("button", { name: "Close Select a token" }).tap();
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("USDC");
   await expect(page.getByRole("button", { name: `Select USDC ${token("USDC")}`, exact: true })).toBeVisible(); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeVisible(); await expect(page.getByRole("dialog").locator("img")).toHaveCount(1); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).locator("img")).toHaveCount(0); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).getByTestId("token-logo-fallback")).toHaveCount(1);
@@ -107,7 +107,11 @@ test("Swap: successful approval survives swap rejection and retry; no second app
 test("Swap: unknown approval receipt blocks a duplicate approval until status recheck", async ({ page }, info) => {
   const state = await setup(page); await review(page); await scenario(page, "approval-receipt-error"); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByRole("alert")).toContainText("receipt is unavailable");
   await expect(page.getByRole("button", { name: "Refresh quote & retry", exact: true })).toHaveCount(0); expect(await sends(page)).toHaveLength(1);
-  await scenario(page, "connected"); await page.getByRole("button", { name: "Check approval status", exact: true }).tap(); await expect(page.getByRole("button", { name: "Refresh quote & retry", exact: true })).toBeEnabled(); await evidence(page, info, state.trace);
+  await scenario(page, "approval-rpc-lag"); await page.getByRole("button", { name: "Check approval status", exact: true }).tap(); await expect(page.getByRole("button", { name: "Refresh quote & retry", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Refresh quote & retry", exact: true }).tap();
+  await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap();
+  await expect(page.getByTestId("swap-status")).toBeVisible(); expect(await sends(page)).toHaveLength(2);
+  await evidence(page, info, state.trace);
 });
 test("Swap: quote expiry after approval preserves approval and requires fresh review", async ({ page }, info) => {
   const state = await setup(page, { shortQuote: true }); await review(page); await scenario(page, "approval-expired"); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByRole("dialog")).toContainText("Quote updated — review new output."); expect(await sends(page)).toHaveLength(1);
@@ -234,7 +238,7 @@ test("Swap: registered token status requires a fresh quote and never promises ex
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap();
   const eth = page.getByRole("button", { name: `Select ETH ${NATIVE_ETH_SENTINEL}`, exact: true });
   await expect(eth).toBeEnabled();
-  await expect(eth.getByTestId("token-route-status")).toContainText("Registered route — fresh quote and live permission checks required");
+  await expect(eth.getByTestId("token-route-status")).toContainText("Get a live quote to check availability");
   expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0);
   await evidence(page, info, state.trace);
 });
@@ -248,8 +252,8 @@ test("Swap: approved but non-registered pair is draft-searchable, not a liquidit
  await row.tap();await page.getByRole("button",{name:"You pay token: USDC",exact:true}).tap();
  await page.getByLabel("Search tokens or Base contract").fill("WETH");
  const weth=page.getByRole("button",{name:`Select WETH ${token("WETH")}`,exact:true});
- await expect(weth).toBeEnabled();await expect(weth.getByTestId("token-route-status")).toContainText("direct-pool search required");
- await expect(weth.getByTestId("token-route-status")).toContainText("Liquidity and execution are not verified");
+ await expect(weth).toBeEnabled();await expect(weth.getByTestId("token-route-status")).toContainText("Get a live quote to find a direct swap");
+ await expect(weth.getByTestId("token-route-status")).toContainText("This pair may need a multi-step route");
  expect(state.quoteCount()).toBe(0);expect(await sends(page)).toHaveLength(0);await evidence(page,info,state.trace);
 });
 
@@ -302,4 +306,55 @@ test("Swap: success event with different mined calldata cannot show a final succ
   await expect(page.getByTestId("swap-status")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Confirm & Swap", exact: true })).toHaveCount(0);
   expect(await sends(page)).toHaveLength(2); await evidence(page, info, state.trace);
+});
+
+
+test("Swap: published-list discovery checks exact Base metadata without granting trading permission", async ({ page }, info) => {
+  const state = await setup(page);
+  const aero = "0x940181a94A35A4569E4529A3CDfB74e38FD98631";
+  await page.route("**/api/swap/tokens", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ chainId: 8453, tokens: [{ address: aero, symbol: "AERO", name: "Aerodrome Finance" }] }) }));
+  await page.route("**/api/trade/token", route => {
+    expect(route.request().postDataJSON()).toEqual({ address: aero, chainId: 8453 });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ chainId: 8453, token: { address: aero, symbol: "AERO", name: "Aerodrome Finance", decimals: 18, kind: "erc20", verified: false } }) });
+  });
+  await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap();
+  await page.getByLabel("Search tokens or Base contract").fill("AERO");
+  await page.getByRole("button", { name: "Search more Base tokens", exact: true }).tap();
+  await expect(page.getByRole("dialog")).toContainText(aero);
+  await expect(page.getByRole("button", { name: `Select AERO ${aero}`, exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Check AERO on Base", exact: true }).tap();
+  const imported = page.getByRole("button", { name: `Select AERO ${aero}`, exact: true });
+  await expect(imported).toBeDisabled(); await expect(imported).toContainText("trading is not supported in MPGR Swap yet");
+  expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
+});
+test("Swap: token-list outage is temporary unavailability, never missing liquidity or successful import", async ({ page }, info) => {
+  const state = await setup(page);
+  await page.route("**/api/swap/tokens", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Base token search is temporarily unavailable. Retry or paste the exact Base contract to check it." }) }));
+  await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap();
+  await page.getByLabel("Search tokens or Base contract").fill("VIRTUAL");
+  await page.getByRole("button", { name: "Search more Base tokens", exact: true }).tap();
+  await expect(page.getByRole("alert")).toContainText("temporarily unavailable");
+  await expect(page.getByRole("dialog")).not.toContainText("No liquidity");
+  expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
+});
+test("Swap: final overview uses actual event output instead of the quote estimate", async ({ page }, info) => {
+  const state = await setup(page); await review(page); await scenario(page, "actual-output-over-quote");
+  await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap();
+  const overview = page.getByRole("dialog", { name: "Transaction overview", exact: true });
+  await expect(overview).toContainText("0.010000000000001234 ETH");
+  await expect(overview).not.toContainText("estimated"); expect(await sends(page)).toHaveLength(2); await evidence(page, info, state.trace);
+});
+
+
+test("Swap: ETH to AAPLc 0.0001 at 1 percent keeps provider failure distinct from liquidity", async ({ page }, info) => {
+  const state = await setup(page); await choose(page, "receive", "AAPLc"); await choose(page, "pay", "ETH");
+  await page.route("**/api/swap/quote", route => {
+    expect(route.request().postDataJSON()).toMatchObject({ fromToken: NATIVE_ETH_SENTINEL, toToken: address("AAPLc"), amount: "0.0001", slippageBps: 100 });
+    return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ code: "PROVIDER_ERROR", error: "Base network verification is temporarily unavailable. Retry the quote; no swap was prepared." }) });
+  });
+  await page.getByLabel("You pay amount", { exact: true }).fill("0.0001");
+  await expect(page.getByRole("alert")).toContainText("temporarily unavailable");
+  await expect(page.getByLabel("You receive amount", { exact: true })).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Confirm Swap", exact: true })).toHaveCount(0);
+  expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });

@@ -1,5 +1,7 @@
 # PR #113 — DEX routing audit and bounded code-only upgrade
 
+**Continuation:** [Preview fixes and remaining blockers](PR113-SWAP-PREVIEW-FIXES.md) records the subsequent approval/completion/discovery fixes and review-only contract source. This document is the original routing delivery snapshot; its immediate mined-input attestation gap is now fixed in that continuation.
+
 Date: 2026-10-18. Incremental baseline: `e73b54fd41016e3cb090408d0e405f17ca707605`.
 
 **Delivery boundary:** an assisted single-hop routing improvement, **not completion of universal DEX routing or an immutable-fee architecture**. PR #113 stays open/unmerged. No signing, public-chain transaction, on-chain deployment, permission/owner/recipient change, production setting or Agent/runtime change is authorized or performed here.

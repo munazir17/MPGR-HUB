@@ -71,7 +71,8 @@ async function receipt(hash: Hash) {
     return { status, transactionHash: hash, blockNumber: 999n, blockHash, from: tx.account, to: tx.to, logs: [] };
   }
   if (scenario() === "swap-receipt-error") throw new Error("Simulated swap receipt unavailable");
-  const result = simulatedSwapReceipt(p, hash, scenario() === "wrong-fee-recipient" ? { feeRecipient: "0x9999999999999999999999999999999999999999" } : {});
+  const actualOut = BigInt(p.toAmount) + (scenario() === "actual-output-over-quote" ? 1234n : 0n);
+  const result = simulatedSwapReceipt(p, hash, scenario() === "wrong-fee-recipient" ? { feeRecipient: "0x9999999999999999999999999999999999999999" } : scenario() === "actual-output-over-quote" ? { amountOut: BigInt(p.toAmount) + 1234n } : {});
   if (scenario() === "wrong-receipt-hash") result.transactionHash = `0x${"ff".repeat(32)}`;
   if (scenario() === "missing-fee-event") result.logs = [];
   result.status = tx.minedStatus ??= (scenario() === "swap-reverted" ? "reverted" : "success");
@@ -83,7 +84,7 @@ async function receipt(hash: Hash) {
         allowances.set(key, (allowances.get(key) ?? 0n) - BigInt(p.fromAmount));
       }
       change(tx.account, p.from.kind === "native" ? native : p.from.address, -BigInt(p.fromAmount));
-      change(tx.account, p.to.kind === "native" ? native : p.to.address, BigInt(p.toAmount));
+      change(tx.account, p.to.kind === "native" ? native : p.to.address, actualOut);
     }
   }
   return { ...result, blockHash };

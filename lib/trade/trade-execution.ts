@@ -542,7 +542,7 @@ export async function executeTrade(
             const allowance = input.safety.readAllowance ? await input.safety.readAllowance(proposal, receipt)
               : await readLiveAllowance(account, proposal.from.address, proposal.permit2Spender);
             if (allowance === null || allowance < BigInt(proposal.fromAmount)) {
-              const snapshot = { ...fail("APPROVAL_FAILED", allowance === null
+              const snapshot = { ...fail(allowance === null ? "PROVIDER_ERROR" : "APPROVAL_FAILED", allowance === null
                 ? "Approval confirmed, but allowance could not be verified. Retry the allowance check; do not repeat approval blindly."
                 : "Approval confirmed, but the actual allowance is still insufficient. Check the token approval and retry."), approvalHash };
               onChange(snapshot); return snapshot;
@@ -634,7 +634,7 @@ export async function executeTrade(
       const snapshot = { ...fail("PROVIDER_ERROR", "Receipt hash does not match the submitted swap. Execution and fee collection are unverified."), approvalHash, swapHash };
       onChange(snapshot); return snapshot;
     }
-    const settlementError = await input.safety?.verifySettlement(proposal, receipt);
+    const settlementError = input.safety ? await input.safety.verifySettlement(proposal, receipt) : undefined;
     if (settlementError) {
       const snapshot = { ...fail(settlementError.code, settlementError.message), approvalHash, swapHash };
       onChange(snapshot); return snapshot;

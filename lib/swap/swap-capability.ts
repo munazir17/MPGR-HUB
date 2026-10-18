@@ -17,7 +17,7 @@ export function swapRouteIssue(from: string, to: string): { code: string; messag
   const invalid = swapPairIssue(from, to); if (invalid) return invalid;
   const sell = swapPoolAsset(from), buy = swapPoolAsset(to);
   if (!findExecutorToken(deployment, sell) || !findExecutorToken(deployment, buy)) {
-    return { code: "FEE_ROUTE_UNREGISTERED", message: `${label(from)} → ${label(to)} has no approved token registration for atomic-fee routing in MPGR Swap. Route/allowlist verification is required; no approval or swap was requested. This does not establish whether external liquidity exists.` };
+    return { code: "FEE_ROUTE_UNREGISTERED", message: `${label(from)} → ${label(to)} is not supported in MPGR Swap yet. Token and route checks are still required before trading here. External liquidity has not been checked. No approval or swap was requested.` };
   }
   return null;
 }
@@ -36,12 +36,12 @@ export function swapCapabilityStatus(from: string, to: string, metadataValidated
   const issue = swapRouteIssue(from, to);
   if (!issue) {
     const registered = findExecutorRoute(deployment, swapPoolAsset(from), swapPoolAsset(to));
-    return registered ? { code: "REGISTERED_UNQUOTED", selectable: true, message: "Registered route — fresh quote and live permission checks required." } :
-      { code: "SEARCH_REQUIRED", selectable: true, message: "Approved token identities — direct-pool search required. Liquidity and execution are not verified; multi-hop is unsupported." };
+    return registered ? { code: "REGISTERED_UNQUOTED", selectable: true, message: "Get a live quote to check availability. Trading is not confirmed yet." } :
+      { code: "SEARCH_REQUIRED", selectable: true, message: "Get a live quote to find a direct swap. This pair may need a multi-step route, which is not supported yet." };
   }
   if (issue.code === "SAME_ASSET") return { code: "SAME_ASSET", selectable: false, message: "Same underlying asset — choose a different receive token." };
   const asset = from;
   const others = swapCounterassets(asset);
-  if (others.length) return { code: "COUNTERASSET_REQUIRED", selectable: false, message: `No approved direct route to this counterasset. Registered counterassets: ${others.map(label).join(", ")}. Change the other asset explicitly.` };
-  return { code: "REGISTRATION_REQUIRED", selectable: false, message: `${metadataValidated ? "Metadata validated" : "Discovery only"} — not executable: route registration and Executor permission verification required. Pool discovery is not execution support.` };
+  if (others.length) return { code: "COUNTERASSET_REQUIRED", selectable: false, message: `This pair is not supported yet. Try a live quote with: ${others.map(label).join(", ")}. Change the other asset explicitly.` };
+  return { code: "REGISTRATION_REQUIRED", selectable: false, message: `${metadataValidated ? "Token details checked" : "Token available to look up"} — trading is not supported in MPGR Swap yet. Finding a token or pool does not make it tradable here.` };
 }

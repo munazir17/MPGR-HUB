@@ -86,7 +86,7 @@ describe("all approved assisted routes, BOTH directions — real builders, offli
 });
 it.each([[BASE_USDC, MPGR_TOKEN_ADDRESS], [MPGR_TOKEN_ADDRESS, BASE_USDC]])("MPGR %s → %s: actionable block, no provider quote or fabricated registration", async (fromToken, toToken) => {
   const r = await POST(request({ fromToken, toToken })); expect(r.status).toBe(422);
-  expect(await r.json()).toMatchObject({ code: "EXECUTION_UNAVAILABLE", reason: "FEE_ROUTE_UNREGISTERED", error: expect.stringContaining("allowlist verification") });
+  expect(await r.json()).toMatchObject({ code: "EXECUTION_UNAVAILABLE", reason: "FEE_ROUTE_UNREGISTERED", error: expect.stringContaining("Token and route checks are still required") });
   expect(r.headers.get("Cache-Control")).toBe("no-store"); expect(m.simulate).not.toHaveBeenCalled(); expect(m.routed).not.toHaveBeenCalled();
 });
 it.each([false, null, "true", 0])("caller cannot disable strict policy with %j", async requireMPGRFee => { expect((await POST(request({ requireMPGRFee }))).status).toBe(400); expect(m.simulate).not.toHaveBeenCalled(); });

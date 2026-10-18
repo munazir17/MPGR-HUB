@@ -168,6 +168,9 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
           try { const receipt = await getTransactionReceipt(config, { hash: a.approvalHash, chainId: 8453 });
             if (receipt.transactionHash.toLowerCase() === a.approvalHash.toLowerCase() && receipt.from.toLowerCase() === a.proposal.taker.toLowerCase() && receipt.to?.toLowerCase() === a.proposal.from.address.toLowerCase()) next.approvalStatus = receipt.status === "success" ? "confirmed" : "reverted";
             else next.approvalStatus = "unknown";
+            // Carry the mined-block floor through manual receipt recovery too.
+            // Never attach an old activity's checkpoint to a newly opened review.
+            if (next.approvalStatus === "confirmed" && mounted.current && session.current === historySession && snapshot.approvalHash === a.approvalHash) approvalReceipt.current = receipt;
           } catch { readFailed = true; /* retain known evidence; RPC failure is not a revert */ }
         }
         if (a.swapHash) {
