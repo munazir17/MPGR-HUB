@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeFunctionData, encodeFunctionData } from "viem";
+import { decodeFunctionData, encodeFunctionData, keccak256 } from "viem";
 import { parseSlippagePercent, safeMaximum, slippagePercent, swapQuotePolicyError, swapFeePolicyError, verifySwapSettlement } from "../swap-policy";
 import { simulatedExecutorQuote } from "@/tests/mobile/flow-fixtures";
 import { simulatedSwapReceipt } from "@/tests/mobile/swap-receipt-fixture";
@@ -77,3 +77,37 @@ it("coordinated minimum mutation in proposal AND calldata cannot weaken selected
 });
 it.each([0, 501, 10000, 1.5, NaN])("quote admission rejects invalid slippage %s", slippageBps => { const p = quote(); p.slippageBps = slippageBps; expect(swapQuotePolicyError(p)).toBeTruthy(); });
 it.each([1, 50, 100, 500])("quote minimum uses exact floor at %s bps", slippageBps => { const p = simulatedExecutorQuote({ ...form, slippageBps }, 100001n); expect(p.minToAmount).toBe((100001n * BigInt(10000 - slippageBps) / 10000n).toString()); expect(swapQuotePolicyError(p)).toBeNull(); });
+
+import { swapRouteCandidates, swapRouteKey, type SwapRoutedProposal } from "../swap-route-candidates";
+function alternativeQuote(): SwapRoutedProposal {
+  const p:SwapRoutedProposal=quote();
+  const decoded=decodeFunctionData({abi:MPGR_EXECUTOR_ABI,data:p.transaction!.data});
+  if(decoded.functionName!=="swapSlipstreamExactInputSingle")throw Error("Wrong fixture method");
+  const route=swapRouteCandidates(p.from.address,p.to.address).find(r=>r.poolFee===500)!;
+  p.transaction={...p.transaction!,data:encodeFunctionData({abi:MPGR_EXECUTOR_ABI,functionName:"swapUniswapV3ExactInputSingle",args:[{...decoded.args[0],router:route.router},500,decoded.args[2]]})};
+  p.swapRouting={version:1,hops:1,route,pool:"0x7777777777777777777777777777777777777777",blockNumber:"100",blockHash:hash,calldataHash:keccak256(p.transaction.data),selection:"highest-quoted-output",comparisonComplete:true,
+    outcomes:swapRouteCandidates(p.from.address,p.to.address).map(r=>({key:swapRouteKey(r),state:swapRouteKey(r)===swapRouteKey(route)?"quoted":"rejected",reason:"OFFLINE_TEST_ONLY",output:swapRouteKey(r)===swapRouteKey(route)?p.toAmount:null})),quoterGasUnits:null,executionSimulation:"not-run-wallet-preflight-required"};
+  return p;
+}
+it("qualified alternate tier/venue survives independent policy and exact receipt checks",()=>{
+  const p=alternativeQuote();expect(swapQuotePolicyError(p)).toBeNull();expect(verifySwapSettlement(p,simulatedSwapReceipt(p,hash)).verified).toBe(true);
+  delete p.swapRouting;expect(swapQuotePolicyError(p)).toBeTruthy(); // no weakening of legacy route checks
+});
+it.each(["calldata","router","tier","pool","block","hops","output","coverage","gas","recipient"])("blocks manipulated dynamic search evidence: %s",what=>{
+  const p=alternativeQuote(),e=p.swapRouting!;
+  if(what==="calldata")e.calldataHash=`0x${"00".repeat(32)}`;
+  if(what==="router")e.route={...e.route,router:p.taker};
+  if(what==="tier")e.route={...e.route,poolFee:100};
+  if(what==="pool")e.pool=`0x${"0".repeat(40)}`;
+  if(what==="block")e.blockHash="0x12";
+  if(what==="hops")Object.assign(e,{hops:2});
+  if(what==="output")e.outcomes.find(o=>o.state==="quoted")!.output="999999999999999999999999";
+  if(what==="coverage")e.outcomes.pop();
+  if(what==="gas")e.quoterGasUnits="NaN";
+  if(what==="recipient")p.agentFee!.recipient="0x3333333333333333333333333333333333333333";
+  expect(swapQuotePolicyError(p)).toBeTruthy();expect(verifySwapSettlement(p,simulatedSwapReceipt(p,hash)).verified).toBe(false);
+});
+it("a coordinated fake fee recipient and matching event are not accepted as configured fee collection",()=>{
+  const p=quote();p.agentFee!.recipient="0x3333333333333333333333333333333333333333";
+  expect(swapFeePolicyError(p)).toBeTruthy();expect(verifySwapSettlement(p,simulatedSwapReceipt(p,hash)).verified).toBe(false);
+});

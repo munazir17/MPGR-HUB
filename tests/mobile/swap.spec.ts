@@ -1,3 +1,7 @@
+import { simulatedExecutorQuote } from "./flow-fixtures";
+import { swapRouteCandidates, swapRouteKey } from "../../lib/swap/swap-route-candidates";
+import { MPGR_EXECUTOR_ABI } from "../../lib/executor/mpgr-executor-abi";
+import { decodeFunctionData, encodeFunctionData, keccak256 } from "viem";
 import { NATIVE_ETH_SENTINEL } from "../../lib/trade/trade-config";
 import { test, expect, type Page } from "@playwright/test";
 import { setup, evidence, walletCalls, importedAddress, token } from "./flow-setup";
@@ -233,4 +237,43 @@ test("Swap: registered token status requires a fresh quote and never promises ex
   await expect(eth.getByTestId("token-route-status")).toContainText("Registered route — fresh quote and live permission checks required");
   expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0);
   await evidence(page, info, state.trace);
+});
+
+test("Swap: approved but non-registered pair is draft-searchable, not a liquidity or execution claim",async({page},info)=>{
+ const state=await setup(page);
+ await page.getByRole("button",{name:"You receive token: ETH",exact:true}).tap();
+ await page.getByLabel("Search tokens or Base contract").fill("AAPLc");
+ const row=page.getByRole("button",{name:`Select AAPLc ${token("AAPLc")}`,exact:true});
+ // The initial pay is USDC, so first select AAPLc, then inspect WETH as a new pay counterasset.
+ await row.tap();await page.getByRole("button",{name:"You pay token: USDC",exact:true}).tap();
+ await page.getByLabel("Search tokens or Base contract").fill("WETH");
+ const weth=page.getByRole("button",{name:`Select WETH ${token("WETH")}`,exact:true});
+ await expect(weth).toBeEnabled();await expect(weth.getByTestId("token-route-status")).toContainText("direct-pool search required");
+ await expect(weth.getByTestId("token-route-status")).toContainText("Liquidity and execution are not verified");
+ expect(state.quoteCount()).toBe(0);expect(await sends(page)).toHaveLength(0);await evidence(page,info,state.trace);
+});
+
+test("Swap: alternate canonical venue/tier passes actual controller approval, submission and receipt verification",async({page},info)=>{
+ const state=await setup(page);
+ await page.route("**/api/swap/quote",async request=>{
+   const body=request.request().postDataJSON();
+   const p=simulatedExecutorQuote({sell:body.fromToken,buy:body.toToken,sellAmount:body.amount,slippageBps:body.slippageBps} as Parameters<typeof simulatedExecutorQuote>[0]);
+   const routes=swapRouteCandidates(p.from.address,p.to.address),route=routes.find(r=>r.poolFee===500)!;
+   const decoded=decodeFunctionData({abi:MPGR_EXECUTOR_ABI,data:p.transaction!.data});
+   if(decoded.functionName!=="swapUniswapV3ExactInputSingle"&&decoded.functionName!=="swapSlipstreamExactInputSingle")throw Error("Unexpected fixture selector");
+   p.transaction={...p.transaction!,data:encodeFunctionData({abi:MPGR_EXECUTOR_ABI,functionName:"swapUniswapV3ExactInputSingle",args:[{...decoded.args[0],router:route.router},500,decoded.args[2]]})};
+   const routed={...p,swapRouting:{version:1,hops:1,route,pool:"0x7777777777777777777777777777777777777777",blockNumber:"100",blockHash:`0x${"ab".repeat(32)}`,calldataHash:keccak256(p.transaction.data),selection:"highest-quoted-output",comparisonComplete:false,
+    outcomes:routes.map(r=>({key:swapRouteKey(r),state:swapRouteKey(r)===swapRouteKey(route)?"quoted":"unavailable",reason:"MOCKED_BROWSER_ONLY",output:swapRouteKey(r)===swapRouteKey(route)?p.toAmount:null})),quoterGasUnits:"10000",executionSimulation:"not-run-wallet-preflight-required"}};
+   await page.evaluate(p=>{(window as unknown as {simulatedProposal:unknown}).simulatedProposal=p;},routed);
+   await request.fulfill({json:{proposal:routed}});
+ });
+ await page.getByLabel("You pay amount",{exact:true}).fill("1");
+ await expect(page.getByRole("button",{name:"Confirm Swap",exact:true})).toBeEnabled();
+ await page.locator("summary").filter({hasText:"Costs & execution details"}).tap();
+ await expect(page.getByText(/Highest quoted output among/)).toContainText("Partial search");
+ await expect(page.getByText("not total transaction cost",{exact:false})).toBeVisible();
+ await page.getByRole("button",{name:"Confirm Swap",exact:true}).tap();
+ await page.getByRole("button",{name:"Confirm & Swap",exact:true}).tap();
+ await expect(page.getByRole("dialog")).toContainText("Swap confirmed");
+ expect(await sends(page)).toHaveLength(2);await evidence(page,info,state.trace);
 });

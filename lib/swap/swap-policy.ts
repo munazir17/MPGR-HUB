@@ -1,6 +1,7 @@
 // Swap-only policy. Never manufactures or modifies provider calldata.
 import { type Address } from "viem";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment, findExecutorRoute, RouterKind } from "@/lib/executor/executor-config";
+import { swapRoutingEvidence, swapRoutingEvidenceValid } from "./swap-route-candidates";
 import { inspectExecutorSwapTransaction, type ExecutorSwapIntent } from "@/lib/executor/executor-intent";
 import { verifyExecutorReceipt, type ReceiptLike } from "@/lib/executor/executor-verify";
 import { verifyAgentFeeInSwapTransaction } from "@/lib/trade/trade-agent-fee";
@@ -26,13 +27,16 @@ export function swapFeePolicyError(p: TradeProposal): string | null {
     if (p.provider !== "mpgr-executor" || p.agentFee?.status !== "applied" || p.agentFee.bps !== 25) return SWAP_FEE_BLOCK;
     const fee = verifyAgentFeeInSwapTransaction(p);
     if (!fee.ok || !fee.fee) return fee.ok ? SWAP_FEE_BLOCK : fee.reason;
+    if (p.agentFee.recipient?.toLowerCase() !== deployment.feeRecipient.toLowerCase()) return SWAP_FEE_BLOCK;
     if (!p.transaction || p.permit2 || p.chainId !== 8453) return "Invalid Base Executor proposal.";
     const inspected = inspectExecutorSwapTransaction(p.transaction);
     if (!inspected.ok) return inspected.reason;
     const x = inspected.value;
     const from = isNativeEthSentinel(p.from.address) ? deployment.weth : p.from.address;
     const to = isNativeEthSentinel(p.to.address) ? deployment.weth : p.to.address;
-    const route = findExecutorRoute(deployment, from, to);
+    const evidence = swapRoutingEvidence(p);
+    if (evidence !== undefined && !swapRoutingEvidenceValid(p, evidence)) return "The route search evidence does not match this transaction. Request a fresh quote.";
+    const route = evidence?.route ?? findExecutorRoute(deployment, from, to);
     const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
     if (!route || !eq(x.router, route.router) || !eq(x.tokenIn, from) || !eq(x.tokenOut, to) ||
         x.grossAmountIn !== BigInt(p.fromAmount) || x.expectedFeeAmount !== fee.fee.amount ||
@@ -67,7 +71,7 @@ export function verifySwapSettlement(p: TradeProposal, receipt: ReceiptLike): Sw
     const inspected = inspectExecutorSwapTransaction(p.transaction);
     if (!inspected.ok) return unknown(inspected.reason);
     const x = inspected.value;
-    const route = findExecutorRoute(deployment, x.tokenIn, x.tokenOut)!;
+    const route = swapRoutingEvidence(p)?.route ?? findExecutorRoute(deployment, x.tokenIn, x.tokenOut)!;
     const intent: ExecutorSwapIntent = {
       version: 1, chainId: 8453, executor: deployment.executor, router: x.router, routerKind: route.kind,
       taker: p.taker, recipient: p.taker, sellToken: { address: x.tokenIn, symbol: p.from.symbol, decimals: p.from.decimals },

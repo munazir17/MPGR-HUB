@@ -1,8 +1,9 @@
 // Swap-only route admission. Discovery/imports never feed this registry.
 import { isAddress, parseAbi, type Abi, type Address, type PublicClient, type Hex } from "viem";
-import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment, BASE_MAINNET_SLIPSTREAM, BASE_MAINNET_UNISWAP_V3, RouterKind } from "@/lib/executor/executor-config";
+import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment, BASE_MAINNET_SLIPSTREAM, BASE_MAINNET_UNISWAP_V3, RouterKind, type ExecutorRoute } from "@/lib/executor/executor-config";
 import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
 import type { ChainReader } from "@/lib/executor/executor-chain";
+import { isSwapRouteCandidate } from "./swap-route-candidates";
 import { swapPoolAsset, swapRouteIssue } from "./swap-capability";
 
 export type SwapRouteReadClient = Pick<PublicClient, "getChainId" | "getBlockNumber" | "readContract" | "getCode" | "getBalance" | "simulateContract"> & { getBlock(args: { blockNumber: bigint }): Promise<{ number: bigint | null; hash: Hex | null; timestamp: bigint }> };
@@ -24,6 +25,7 @@ export function selectRegisteredSwapRoute(from: string, to: string) {
   const routes = deployment.routes.filter(r => (eq(r.tokenA, a) && eq(r.tokenB, b)) || (eq(r.tokenA, b) && eq(r.tokenB, a)));
   // There is currently one approved route per pair. Do not silently choose if
   // a future registry introduces alternatives without matching quote/policy review.
+  if (!routes.length) return reject("FEE_ROUTE_UNREGISTERED", "No legacy pair registration exists. Use the bounded Swap-only pool search.");
   if (routes.length !== 1) return reject("ROUTE_AMBIGUOUS", "Multiple registrations require explicit route comparison and review. No swap was prepared.");
   const route = routes[0];
   const uni = route.kind === RouterKind.UNISWAP_V3_ROUTER02;
@@ -35,7 +37,14 @@ export function selectRegisteredSwapRoute(from: string, to: string) {
 
 /** All admission reads AND the existing proposal builder's reads/quotes share one block. */
 export async function qualifyRegisteredSwapRoute(client: SwapRouteReadClient, from: string, to: string, pinnedBlock?: bigint) {
-  const selected = selectRegisteredSwapRoute(from, to);
+  return qualifySwapRouteCandidate(client, from, to, selectRegisteredSwapRoute(from, to).route, pinnedBlock);
+}
+
+/** Candidate must be from the deterministic approved-token/venue search space. */
+export async function qualifySwapRouteCandidate(client: SwapRouteReadClient, from: string, to: string, route: ExecutorRoute, pinnedBlock?: bigint) {
+  if (!isSwapRouteCandidate(from, to, route)) return reject("VENUE_UNVERIFIED", "This route is outside the approved assisted single-hop search space.");
+  const uni = route.kind === RouterKind.UNISWAP_V3_ROUTER02;
+  const selected = { route, factory: (uni ? BASE_MAINNET_UNISWAP_V3 : BASE_MAINNET_SLIPSTREAM).factory, uni };
   try {
     if (await client.getChainId() !== 8453) throw new SwapRouteQualificationError("UNSUPPORTED_NETWORK", "Base Mainnet could not be verified.", 503);
     const blockNumber = pinnedBlock ?? await client.getBlockNumber({ cacheTime: 0 });
@@ -44,7 +53,7 @@ export async function qualifyRegisteredSwapRoute(client: SwapRouteReadClient, fr
     if (block.number !== blockNumber || !block.hash || !/^0x[0-9a-f]{64}$/i.test(block.hash) || !Number.isFinite(age) || age > 30_000 || age < -15_000) return reject("STALE_BLOCK", "A fresh Base block could not be verified. Retry shortly.");
     const read = (address: Address, abi: Abi, functionName: string, args?: readonly unknown[]) => client.readContract({ address, abi, functionName, args, blockNumber });
     const a = swapPoolAsset(from) as Address, b = swapPoolAsset(to) as Address;
-    const { route, factory, uni } = selected;
+    const { factory } = selected;
     const [sellAllowed, buyAllowed, kind, recipient, bps, owner, paused, da, db, pool] = await Promise.all([
       read(deployment.executor, MPGR_EXECUTOR_ABI, "isTokenAllowed", [a]),
       read(deployment.executor, MPGR_EXECUTOR_ABI, "isTokenAllowed", [b]),

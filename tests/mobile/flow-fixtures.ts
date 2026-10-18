@@ -16,7 +16,7 @@ export function simulatedExecutorQuote(form: AutonomyAuthorizeFormState, output?
     sellToken: isNativeEthSentinel(form.sell) ? BASE_MAINNET_EXECUTOR_DEPLOYMENT.weth : form.sell, buyToken: isNativeEthSentinel(form.buy) ? BASE_MAINNET_EXECUTOR_DEPLOYMENT.weth : form.buy,
     sellNative: isNativeEthSentinel(form.sell), buyNative: isNativeEthSentinel(form.buy), sellAmount: BigInt(base.fromAmount), expectedBuyAmount: output ?? 10n ** BigInt(to.decimals) / 100n,
     slippageBps: form.slippageBps, authorization: "APPROVAL", nowSeconds: Math.floor(Date.now() / 1000),
-    quoteId: "offline-browser", feeBps: 25, feeRecipient: "0x2222222222222222222222222222222222222222" });
+    quoteId: "offline-browser", feeBps: 25, feeRecipient: BASE_MAINNET_EXECUTOR_DEPLOYMENT.feeRecipient });
   if (!result.ok) throw new Error(result.error.message);
   const intent = result.value;
   const built = buildTradeProposal({ from: base.from, to: base.to, taker: base.taker, slippageBps: form.slippageBps, provider: "mpgr-executor",

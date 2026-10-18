@@ -7,7 +7,7 @@ import { swapQuotePolicyError, verifySwapSettlement } from "@/lib/swap/swap-poli
 import { inspectExecutorSwapTransaction } from "@/lib/executor/executor-intent";
 import { simulatedSwapReceipt } from "@/tests/mobile/swap-receipt-fixture";
 import { resetTradeQuoteCache } from "@/lib/trade/trade-quote-cache";
-const m = vi.hoisted(() => ({ owner: "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e", authenticated: true, originError: false, limited: false, chainId: 8453, decimalsMismatch: false, metadataFails: false, poolFails: false, out: 1000000000n, feeBps: 25n, feeRecipient: "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4", allowed: true, routerMismatch: false, impactExpires: false, permissionsFail: false, allowance: 0n, routed: vi.fn(), simulate: vi.fn() }));
+const m = vi.hoisted(() => ({ routeCodeMissing: false, owner: "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e", authenticated: true, originError: false, limited: false, chainId: 8453, decimalsMismatch: false, metadataFails: false, poolFails: false, out: 1000000000n, feeBps: 25n, feeRecipient: "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4", allowed: true, routerMismatch: false, impactExpires: false, permissionsFail: false, allowance: 0n, routed: vi.fn(), simulate: vi.fn() }));
 const wallet = "0x2222222222222222222222222222222222222222";
 vi.mock("@/lib/auth/session-store", () => ({ authenticateRequest: async () => m.authenticated ? { wallet: "0x2222222222222222222222222222222222222222" } : null }));
 vi.mock("@/lib/trade/trade-rate-limit", () => ({ checkRateLimit: async () => ({ allowed: !m.limited, retryAfterSeconds: 30 }), clientIpFromRequest: () => "offline" }));
@@ -20,7 +20,7 @@ vi.mock("@/lib/trade/trade-public-client", () => ({ getTradePublicClient: () => 
   getBlock: async () => ({ number: 100n, hash: `0x${"ab".repeat(32)}`, timestamp: BigInt(Math.floor(Date.now() / 1000)) }),
   getBalance: async () => 10n ** 30n,
   simulateContract: m.simulate,
-  getCode: async () => m.metadataFails ? "0x" : "0x6000",
+  getCode: async ({ address }: { address: string }) => m.metadataFails || (m.routeCodeMissing && address.toLowerCase() === d.executor.toLowerCase()) ? "0x" : "0x6000",
   readContract: async ({ address, functionName, args }: { address: string; functionName: string; args?: string[] }) => {
     if (m.permissionsFail) throw new Error("Permissions provider diagnostics");
     if (functionName === "allowance") return m.allowance;
@@ -52,8 +52,8 @@ function request(body: Record<string, unknown> = {}) {
 }
 beforeEach(() => {
   resetTradeQuoteCache(); vi.clearAllMocks();
-  Object.assign(m, { owner: d.owner, authenticated: true, originError: false, limited: false, chainId: 8453, decimalsMismatch: false, metadataFails: false, poolFails: false, out: 1000000000n, feeBps: 25n, feeRecipient: "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4", allowed: true, routerMismatch: false, impactExpires: false, permissionsFail: false, allowance: 0n });
-  m.simulate.mockImplementation(async () => { if (m.poolFails) throw new Error("Provider private diagnostics"); return { result: [m.out, 0n, 0n, 10000n] }; });
+  Object.assign(m, { routeCodeMissing: false, owner: d.owner, authenticated: true, originError: false, limited: false, chainId: 8453, decimalsMismatch: false, metadataFails: false, poolFails: false, out: 1000000000n, feeBps: 25n, feeRecipient: "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4", allowed: true, routerMismatch: false, impactExpires: false, permissionsFail: false, allowance: 0n });
+  m.simulate.mockImplementation(async ({address}: {address:string}) => { if (m.poolFails) throw new Error("Provider private diagnostics"); return { result: address.toLowerCase() === d.executor.toLowerCase() ? m.out : [m.out, 0n, 0n, 10000n] }; });
   m.routed.mockImplementation(async (arg: Record<string, unknown>) => ({ ok: true, provider: "cdp-trade-api", value: { ...arg, liquidityAvailable: true, toAmount: "1000000000", minToAmount: "990000000", transaction: { to: "0x5555555555555555555555555555555555555555", data: "0xabcd", value: "0" }, permit2: null, issues: { allowance: null, balance: null, simulationIncomplete: false } } }));
 });
 const directions = d.routes.flatMap(r => [[r.tokenA, r.tokenB], [r.tokenB, r.tokenA]]);
@@ -79,6 +79,7 @@ describe("all approved assisted routes, BOTH directions — real builders, offli
   it.each([[NATIVE_ETH_SENTINEL, BASE_USDC], [BASE_USDC, NATIVE_ETH_SENTINEL]])("native %s → %s preserves value, wrapping and approval identity", async (fromToken, toToken) => {
     const { proposal: p } = await (await POST(request({ fromToken, toToken }))).json();
     expect(p.transaction.value).toBe(fromToken === NATIVE_ETH_SENTINEL ? p.fromAmount : "0");
+    expect(p.swapRouting.executionSimulation).toBe(fromToken === NATIVE_ETH_SENTINEL ? "eth-call-succeeded-no-settlement-proof" : "not-run-wallet-preflight-required");
     expect(p.needsPermit2Approval).toBe(fromToken !== NATIVE_ETH_SENTINEL);
     expect(swapQuotePolicyError(p)).toBeNull();
   });
@@ -97,7 +98,7 @@ it.each([[NATIVE_ETH_SENTINEL, d.weth], [d.weth, NATIVE_ETH_SENTINEL], [BASE_USD
 it("invalid address fails early", async () => expect((await POST(request({ toToken: "0x123" }))).status).toBe(400));
 it("unregistered arbitrary import cannot become executable", async () => { const r = await POST(request({ toToken: "0x1234567890abcdef1234567890abcdef12345678" })); expect(r.status).toBe(422); expect(m.routed).not.toHaveBeenCalled(); });
 it("wrong RPC chain cannot build executable quotes", async () => { m.chainId = 1; expect((await POST(request())).status).toBe(503); expect(m.simulate).not.toHaveBeenCalled(); });
-it("missing deployed route contracts fail before pool quote", async () => { m.metadataFails = true; const r = await POST(request()); expect(r.status).toBe(422); expect((await r.json()).reason).toBe("POOL_UNVERIFIED"); expect(m.simulate).not.toHaveBeenCalled(); });
+it("missing deployed route contracts fail before pool quote", async () => { m.routeCodeMissing = true; const r = await POST(request()); expect(r.status).toBe(422); expect((await r.json()).reason).toBe("POOL_UNVERIFIED"); expect(m.simulate).not.toHaveBeenCalled(); });
 it("changed live token decimals are not replaced with catalog guesses", async () => { m.decimalsMismatch = true; expect((await POST(request())).status).toBe(422); expect(m.simulate).not.toHaveBeenCalled(); });
 it("pool failure never falls back, and does not leak provider text", async () => { m.poolFails = true; const r = await POST(request()); expect(r.status).toBe(503); expect(JSON.stringify(await r.json())).not.toContain("private diagnostics"); expect(m.routed).not.toHaveBeenCalled(); });
 it("zero liquidity is a pool error, not fee success", async () => { m.out = 0n; const r = await POST(request()); expect(r.status).toBe(422); expect((await r.json()).code).toBe("LIQUIDITY_UNAVAILABLE"); });
@@ -135,4 +136,14 @@ it("cached quote cannot conceal a live fee change", async () => {
   expect((await POST(request())).status).toBe(200); m.feeBps = 26n;
   const r = await POST(request()); expect(r.status).toBe(422);
   expect((await r.json()).reason).toBe("FEE_POLICY_INVALID"); expect(m.simulate).toHaveBeenCalledTimes(1);
+});
+
+it("unknown token code blocks metadata before route search", async () => {
+  m.metadataFails = true; expect((await POST(request())).status).toBe(400); expect(m.simulate).not.toHaveBeenCalled();
+});
+it("strict API returns a bound, honest direct search trace and no execution claim", async () => {
+  const r=await POST(request()); expect(r.status).toBe(200); const {proposal:p}=await r.json();
+  expect(p.swapRouting).toMatchObject({hops:1,selection:"highest-quoted-output",executionSimulation:"not-run-wallet-preflight-required"});
+  expect(p.swapRouting.outcomes).toHaveLength(5); expect(p.swapRouting.outcomes.filter((o:{state:string})=>o.state==="quoted")).toHaveLength(1);
+  expect(swapQuotePolicyError(p)).toBeNull(); expect(m.routed).not.toHaveBeenCalled();
 });

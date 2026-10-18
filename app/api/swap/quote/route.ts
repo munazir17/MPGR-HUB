@@ -5,11 +5,10 @@ import { readJsonBody, requestIdFromRequest, verifyTrustedOrigin, withRequestId 
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 import { parseTradeSwapRequest } from "@/lib/trade/trade-request";
 import { getTradePublicClient } from "@/lib/trade/trade-public-client";
-import { buildExecutorSwapProposal } from "@/lib/trade/trade-executor-quote";
-import { withTradeQuoteCache } from "@/lib/trade/trade-quote-cache";
 import { estimateQuotePriceImpactBps } from "@/lib/trade/trade-price-impact";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment, findExecutorToken } from "@/lib/executor/executor-config";
-import { qualifyRegisteredSwapRoute, verifyQualifiedSwapBlock, SwapRouteQualificationError } from "@/lib/swap/swap-route-selection";
+import { searchSwapRoutes } from "@/lib/swap/swap-route-search";
+import { verifyQualifiedSwapBlock, SwapRouteQualificationError } from "@/lib/swap/swap-route-selection";
 import { swapPairIssue, swapPoolAsset, swapRouteIssue } from "@/lib/swap/swap-capability";
 import { swapQuotePolicyError } from "@/lib/swap/swap-policy";
 import { swapQuoteFresh } from "@/lib/swap/swap-lifecycle";
@@ -39,29 +38,23 @@ export async function POST(request: Request) {
   // imports can still be validated separately; they cannot authorize a trade.
   const capability = swapRouteIssue(body.fromToken, body.toToken);
   if (capability) return reply({ code: "EXECUTION_UNAVAILABLE", reason: capability.code, error: capability.message }, 422);
-  let qualified: Awaited<ReturnType<typeof qualifyRegisteredSwapRoute>>;
   try {
-    qualified = await qualifyRegisteredSwapRoute(getTradePublicClient(), body.fromToken, body.toToken);
-  } catch (error) {
-    if (error instanceof SwapRouteQualificationError) return reply({ code: error.status === 503 ? "PROVIDER_ERROR" : "EXECUTION_UNAVAILABLE", reason: error.reason, error: error.message }, error.status);
-    return reply({ code: "PROVIDER_ERROR", error: "Base route verification is unavailable. No swap was prepared." }, 503);
-  }
+    if (await getTradePublicClient().getChainId() !== 8453) return reply({ code: "PROVIDER_ERROR", reason: "UNSUPPORTED_NETWORK", error: "Base Mainnet could not be verified." }, 503);
+  } catch { return reply({ code: "PROVIDER_ERROR", error: "Base network verification is unavailable. No swap was prepared." }, 503); }
   const parsed = await parseTradeSwapRequest({ ...body, taker: session.wallet }, { requireTaker: true });
   if (!parsed.ok) return reply({ code: parsed.error.code, error: parsed.error.message }, parsed.error.code === "PROVIDER_ERROR" ? 503 : 400);
   for (const token of [parsed.value.from, parsed.value.to]) {
     if (findExecutorToken(deployment, swapPoolAsset(token.address))?.decimals !== token.decimals) return reply({ code: "TOKEN_METADATA_UNAVAILABLE", error: "Live token decimals do not match the approved route registration. No swap was prepared." }, 422);
   }
   const p = parsed.value;
-  const result = await withTradeQuoteCache(["strict-swap", qualified.blockNumber.toString(), qualified.blockHash, session.wallet.toLowerCase(), p.from.address.toLowerCase(), p.to.address.toLowerCase(), p.fromAmount, p.from.decimals, p.to.decimals, p.slippageBps].join(":"), 6000,
-    () => buildExecutorSwapProposal({ ...p, reader: qualified.reader, quotedAt: new Date() }), { fresh: body.refreshQuote === true });
-  if (!result.ok) {
-    if (!result.supported) return reply({ code: "EXECUTION_UNAVAILABLE", reason: "FEE_ROUTE_UNREGISTERED", error: "The approved Executor route is unavailable. No alternative fee-less route will be used." }, 422);
-    const error = result.error;
-    const message = error.code === "PROVIDER_ERROR" ? "The registered Base pool could not be quoted. Retry shortly; no approval or swap was requested."
-      : error.code === "LIQUIDITY_UNAVAILABLE" ? "The registered pool returned no executable output for this amount. Try a smaller amount or retry later."
-        : error.message;
-    return reply({ code: error.code, error: message }, error.code === "PROVIDER_ERROR" ? 503 : 422);
+  let search: Awaited<ReturnType<typeof searchSwapRoutes>>;
+  try {
+    search = await searchSwapRoutes(getTradePublicClient(), p, body.refreshQuote === true);
+  } catch (error) {
+    if (error instanceof SwapRouteQualificationError) return reply({ code: error.status === 503 ? "PROVIDER_ERROR" : error.reason === "LIQUIDITY_UNAVAILABLE" ? "LIQUIDITY_UNAVAILABLE" : "EXECUTION_UNAVAILABLE", reason: error.reason, error: error.message }, error.status);
+    return reply({ code: "PROVIDER_ERROR", error: "Direct route comparison is unavailable. Retry; no swap was prepared." }, 503);
   }
+  const { qualified, ...result } = search;
   // Revalidate even cached results. No legacy/provider-only cache can bypass it.
   if (result.proposal.agentFee?.recipient?.toLowerCase() !== deployment.feeRecipient.toLowerCase()) return reply({ code: "EXECUTION_UNAVAILABLE", reason: "FEE_RECIPIENT_CHANGED", error: "The live Executor fee recipient differs from the approved registration. Owner verification is required; no swap was prepared." }, 422);
   const invalid = swapQuotePolicyError(result.proposal);

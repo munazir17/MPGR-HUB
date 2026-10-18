@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as d, BASE_MAINNET_UNISWAP_V3, BASE_MAINNET_SLIPSTREAM } from "@/lib/executor/executor-config";
-import { qualifyRegisteredSwapRoute, selectRegisteredSwapRoute, verifyQualifiedSwapBlock, type SwapRouteReadClient } from "../swap-route-selection";
+import { qualifySwapRouteCandidate, qualifyRegisteredSwapRoute, selectRegisteredSwapRoute, verifyQualifiedSwapBlock, type SwapRouteReadClient } from "../swap-route-selection";
 import { MANUAL_SWAP_TOKENS } from "@/lib/trade/manual-swap";
 import { NATIVE_ETH_SENTINEL } from "@/lib/trade/trade-config";
 const pool = "0x7777777777777777777777777777777777777777";
@@ -77,4 +77,8 @@ it("a block hash change after quote preparation is detected", async () => {
 it("a snapshot expiring during quote preparation is detected", async () => {
   blockAge = 31_000;
   await expect(verifyQualifiedSwapBlock(client, { blockNumber: 100n, blockHash: hash })).rejects.toMatchObject({ reason: "STALE_BLOCK" });
+});
+
+it("a delegated-only module is not an assisted candidate even if addresses look familiar",async()=>{
+ await expect(qualifySwapRouteCandidate(client,route.tokenA,route.tokenB,{...route,kind:3})).rejects.toMatchObject({reason:"VENUE_UNVERIFIED"});expect(read).not.toHaveBeenCalled();
 });

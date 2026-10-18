@@ -9,10 +9,10 @@ describe("complete selectable catalog — exact-address registration, not liquid
     expect(MANUAL_SWAP_TOKENS).toHaveLength(48);
     expect(MANUAL_SWAP_TOKENS.filter(t => swapCounterassets(t.address).length)).toHaveLength(13);
   });
-  it.each(MANUAL_SWAP_TOKENS.map(t => [t.symbol, t] as const))("%s: every counterasset and both directions agree with registry", (_symbol, token) => {
+  it.each(MANUAL_SWAP_TOKENS.map(t => [t.symbol, t] as const))("%s: approved identities can search both directions; discovery cannot authorize execution", (_symbol, token) => {
     for (const other of MANUAL_SWAP_TOKENS) {
       const a = swapPoolAsset(token.address), b = swapPoolAsset(other.address);
-      const registered = a !== b && d.tokens.some(t => t.address.toLowerCase() === a) && d.tokens.some(t => t.address.toLowerCase() === b) && d.routes.some(r => ((r.tokenA.toLowerCase() === a && r.tokenB.toLowerCase() === b) || (r.tokenA.toLowerCase() === b && r.tokenB.toLowerCase() === a)) && (r.kind === 1 || r.kind === 2));
+      const registered = a !== b && d.tokens.some(t => t.address.toLowerCase() === a) && d.tokens.some(t => t.address.toLowerCase() === b);
       expect(swapRouteIssue(token.address, other.address) === null).toBe(registered);
       expect(swapRouteIssue(other.address, token.address) === null).toBe(registered);
       if (registered) expect(swapCounterassets(token.address).map(a => a.toLowerCase())).toContain(other.address.toLowerCase());
@@ -42,7 +42,7 @@ it("metadata validation never promotes any of the 35 unregistered assets", () =>
 it("registered selection is explicitly unquoted, not execution acceptance", () => {
   expect(swapCapabilityStatus(BASE_USDC, d.weth)).toMatchObject({ code: "REGISTERED_UNQUOTED", selectable: true, message: expect.stringContaining("fresh quote and live permission checks required") });
 });
-it("counterasset instructions never reverse the pay asset implicitly", () => {
+it("non-registered pairs between approved identities can search, without claiming live liquidity or reversing pay", () => {
   const stock = d.routes[1].tokenB;
-  expect(swapCapabilityStatus(stock, d.weth)).toMatchObject({ code: "COUNTERASSET_REQUIRED", selectable: false, message: expect.stringContaining("Change the other asset explicitly") });
+  expect(swapCapabilityStatus(stock, d.weth)).toMatchObject({ code: "SEARCH_REQUIRED", selectable: true, message: expect.stringContaining("Liquidity and execution are not verified") });
 });

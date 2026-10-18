@@ -1,5 +1,6 @@
 import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { swapQuoteFresh } from "@/lib/swap/swap-lifecycle";
+import { swapRoutingEvidence } from "@/lib/swap/swap-route-candidates";
 import { swapFeePolicyError } from "@/lib/swap/swap-policy";
 import { formatAtomicAmount } from "@/lib/trade/trade-format";
 import { findKnownTradeToken } from "@/lib/trade/trade-tokens";
@@ -13,6 +14,7 @@ export function SwapDetails({ proposal: p, feeState = "quoted", issue, payToken 
     {issue && <p role="alert" className="break-words px-4 pb-4 text-red-200">{issue}</p>}
   </details>;
   const valid = swapFeePolicyError(p) === null;
+  const routing = valid ? swapRoutingEvidence(p) : undefined;
   const status = !valid ? "Not applied on this route — swap blocked" : feeState === "verified" ? "collection verified" : feeState === "reverted" ? "not collected (swap reverted)" : feeState === "submitted" ? "submitted, unverified" : swapQuoteFresh(p) ? "included in executable route; collection not verified" : "quote expired — collection unverified";
   const fee = (value: { amount: string; token: string } | undefined) => {
     if (!value) return "Not supplied by provider";
@@ -26,6 +28,8 @@ export function SwapDetails({ proposal: p, feeState = "quoted", issue, payToken 
     <summary className="min-h-11 cursor-pointer px-4 py-3 text-zinc-300">Costs &amp; execution details</summary>
     <dl className="space-y-3 px-4 pb-4">
       {row("Provider", p.providerLabel)}
+      {routing && row("Selected pool", `${routing.route.kind === 2 ? "Uniswap V3" : "Aerodrome Slipstream"} · ${routing.route.poolFee !== undefined ? `fee tier ${routing.route.poolFee}` : `tick spacing ${routing.route.tickSpacing}`} · ${routing.pool}`)}
+      {routing && row("Pool quote gas", routing.quoterGasUnits ? `${routing.quoterGasUnits} units (quoter-only; not total transaction cost)` : "Unavailable — not used to rank outputs")}
       {row("Minimum received", swapAmount(p.minToAmount, p.to))}
       {row("Slippage", `${p.slippageBps / 100}%`)}
       {row("MPGR fee (0.25%)", `${valid ? swapAmount(p.agentFee!.amountAtomic, p.from) : `Amount unverified (${p.from.symbol})`} · ${status}`)}
@@ -37,8 +41,9 @@ export function SwapDetails({ proposal: p, feeState = "quoted", issue, payToken 
       {row(isNativeEthSentinel(p.to.address) ? "Receive asset" : "Receive contract", isNativeEthSentinel(p.to.address) ? "Native ETH on Base (8453) · no ERC-20 contract" : p.to.address)}
     </dl>
     <div className="space-y-3 px-4 pb-4 text-zinc-400">
+      <p>Fee configuration is owner-mutable. Preflight checks cannot prevent a later configuration change; receipt verification detects discrepancies after settlement.</p>
       <p>Network fees, including L1 data costs, are re-estimated before each signature. Signing is blocked if verification is unavailable.</p>
-      <p>Provider-priority route. Executable alternatives were not compared.</p>
+      <p>{routing ? `Highest quoted output among ${routing.outcomes.filter(o => o.state === "quoted").length} successfully quoted direct pools (${routing.outcomes.length} candidates assessed). ${routing.comparisonComplete ? "Bounded comparison completed." : "Partial search: some candidate evidence was unavailable."} Not gas-adjusted or a universal best route. ${routing.executionSimulation === "eth-call-succeeded-no-settlement-proof" ? "Executor eth_call succeeded at the quote block; this is not settlement or fee-delivery proof." : "Executor execution simulation is not verified by this quote."} Wallet preflight is still required. Multi-hop and V4 are unsupported.` : "Provider-priority route. Executable alternatives were not compared."}</p>
       {warnings.map((warning, i) => <p key={i} className="break-words text-amber-200">{warning}</p>)}
       {issue && <p role="alert" className="break-words text-red-200">{issue}</p>}
     </div>
