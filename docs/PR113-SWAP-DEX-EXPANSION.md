@@ -94,23 +94,29 @@ Files: `TokenSelector`, `SwapLiquidityInspection`, `tests/mobile/swap.spec.ts` f
 | Fresh audit / capability matrix | `a7567a8528b4d7123b68c664f0894e95332d69e5` |
 | Arbitrary-CA metadata and read-only liquidity inspection | `547c7c86597be92eda189dd49b6321458a65c8f1` |
 | Isolated fixed-fee V2 draft/source tests | `1aac40fc8507ba537d14177d1db93b07825a841a` |
+| Known-pair inspection / fixture follow-up | `35eb7a94b5d20145246b09a3f858b0127325da82` |
 | Final QA documentation | Commit containing this section; exact SHA in delivery / PR comment |
 
-### Executed checks (source head 1aac40f; final UI-refinement rerun recorded below)
+### Executed final-tree checks (application/source head 35eb7a9)
 
-- Full isolated unit regression: **4,224 passed / 24 skipped**, 310 passing / 5 skipped files, 227.66 seconds. No weakened timeout or test expectation in existing suites. Includes the 94 new metadata/liquidity/API/client cases and unchanged Agent/goal authorization regressions.
+- Full isolated unit regression: **4,224 passed / 24 skipped**, 310 passing / 5 skipped files, 228.73 seconds. No weakened timeout or test expectation in existing suites. Includes the 94 new metadata/liquidity/API/client cases and unchanged Agent/goal authorization regressions.
 - Optimized Next production build: **passed**, 34 static pages and the two new dynamic Swap endpoints. Generated-route TypeScript check: **passed**. Local build used the existing external, process-only Google-font fixture because font hosts are outside sandbox egress; real local WOFF2, no repository config/dependency changes, fixture server stopped afterwards. Exact source-head Vercel build also passed without this local fixture.
 - Repository lint: **0 errors / 62 warnings**, with warning locations in unchanged files. Separate changed-file lint: **0 warnings / 0 errors**. `git diff --check` passed.
 - Contracts: **225 passed / 38 skipped**, 263 cases / 17 suites, with **34 draft cases** and two 256-run fuzz cases. Original deployed ABI check passed. Slither fail-high and the unchanged narrow balance-exception checker passed; no detector/config/allowlist weakening. Draft optimized runtime size **14,109 bytes** (below EIP-170), not deployment approval.
-- Full browser regression: result recorded below after completion. Actual controllers with deterministic HTTP/RPC/EIP-1193 fixtures; 360×800 / 390×844 plus explicit desktop. Never physical-wallet or live settlement evidence.
+- Final full browser regression: **224 passed**, 12.2 minutes, including **22 new inspection cases** and all 202 existing cases. Actual controllers with deterministic HTTP/RPC/EIP-1193 fixtures; 360×800 / 390×844 plus explicit desktop. Published-list fixture migration fixed the initial 220-pass/2-failure run without weakening its assertions. Never physical-wallet or live settlement evidence.
 - Isolation diff versus `526fb15`: **22 files**, limited to Swap APIs/modules/UI, isolated draft/source tests, this report and browser tests/fixture branch. No differences in shared `lib/trade`, `lib/executor`, `lib/autonomy`, architecture, Agent hooks/APIs/components, original assisted/delegated contracts, Campaigns, production settings, dependencies/lockfile, deployment scripts or workflows. Browser bundle inspection found none of the new server discovery/metadata error identifiers in client chunks. Existing allowance and terminal overview implementation unchanged.
 
 ### CI and live boundary
 
-At exact application/source head `1aac40fc8507ba537d14177d1db93b07825a841a`, GitHub [CI run 39114615047](https://github.com/munazir17/MPGR-HUB/actions/runs/39114615047) quality/build/contracts/contracts-fork/secret-scan/slither/real-redis passed; read-only [reference run 39114615076](https://github.com/munazir17/MPGR-HUB/actions/runs/39114615076) passed; Vercel/preview comments passed. Deployment and MCP E2E were skipped. Final documentation-head checks are reported separately after push. No merge/close operation performed.
+At exact final application/source head `35eb7a94b5d20145246b09a3f858b0127325da82`, GitHub [CI run 39116067541](https://github.com/munazir17/MPGR-HUB/actions/runs/39116067541) quality/build/contracts/contracts-fork/secret-scan/slither/real-redis passed; read-only [reference run 39116067540](https://github.com/munazir17/MPGR-HUB/actions/runs/39116067540) passed; Vercel/preview comments passed. Deployment and MCP E2E were skipped. Final documentation-head checks are reported separately after push. No merge/close operation performed.
 
 **No new live executable route was enabled.** New pool/path results are discovery-only and cannot authorize signing. Review-source V2/V3/Slip direct/two-hop capabilities are not methods on the deployed Executor. Classic remains discovery-only, V4/Universal Router unsupported. Shared/legacy execution behavior was preserved, not retroactively certified as having immutable fee terms; the deployed mutable recipient race remains explicit and unresolved there. Do not describe legacy conditional availability as a new atomic immutable fee guarantee.
 
 No fresh amount-specific public-RPC quotes, authenticated wallet simulations or settlements are asserted for **USDC↔WETH, MPGR↔USDC, ETH↔AAPLc, stocks, AERO, VIRTUAL, cbZEC or a BNB representation**. This sandbox's outbound allowlist excludes Base RPC providers; no live wallet was used. That is an environment/evidence limit, not proof of production provider outage or absent liquidity. Exact CA import, canonical graph search, source execution and actual live settlement remain distinct. Imported/listed symbols do not establish asset backing or native-chain equivalence.
 
 Activation still requires independent source/security review, explicit deployment/integration/grant approval, fresh canonical pool/transfer/permission/amount/minimum/simulation checks, and receipt/actual-output/fee verification. Nothing was deployed, broadcast, traded, granted or enabled in production. PR #113 stays **OPEN / UNMERGED**.
+
+
+## Final QA documentation stage report
+
+Only this report changes after the final application/source head above. Files/routes/discovery: unchanged from Stages 2–4; no executable additions, no production wiring. Final checks: 4,224 unit passed / 24 skipped; 224 browser passed; optimized build and generated types passed; lint 0 errors / 62 existing-location warnings; changed-file lint clean; 225 contract passed / 38 skipped; ABI and Slither checks passed. Full source/shared-diff isolation reviewed. Live RPC/amount-specific quotes/settlement and immutable deployed fee terms remain unverified/unavailable; approval/audit/integration remain blockers. Final documentation commit and exact-head CI status are pinned in the delivery / PR comment. PR remains OPEN/unmerged.
