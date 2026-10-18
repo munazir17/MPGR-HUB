@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
@@ -16,11 +17,14 @@ import {
     IPermit2SignatureTransfer
 } from "../interfaces/IMPGRExecutorRouters.sol";
 
+import {IMPGRSwapV2RouterDraft} from "./IMPGRSwapV2RouterDraft.sol";
+
 /// @title MPGRSwapPathExecutorDraft — REVIEW ONLY, NOT DEPLOYED OR APP-WIRED
 /// @notice Source-derived from the verified MPGRExecutor at 974c8c1. The existing
 ///         non-proxy deployment cannot acquire these methods. This isolated
 ///         draft preserves its typed pull/wrap/unwrap/balance-delta lifecycle,
-///         fixes fee terms, and prepares bounded mixed two-hop swaps. It is NOT
+///         fixes fee terms, and prepares typed V2/V3/Slipstream direct and
+///         bounded mixed two-hop swaps. It is NOT
 ///         an approved replacement, audited release, V4 adapter or deployment.
 /// @dev No arbitrary calls, route bytecode, user-selected receiver or fee bypass.
 contract MPGRSwapPathExecutorDraft is Ownable2Step, Pausable, ReentrancyGuard {
@@ -49,7 +53,9 @@ contract MPGRSwapPathExecutorDraft is Ownable2Step, Pausable, ReentrancyGuard {
     enum RouterKind {
         NONE,
         AERODROME_SLIPSTREAM,
-        UNISWAP_V3_ROUTER02
+        UNISWAP_V3_ROUTER02,
+        // Draft-local value only; NOT shared/deployed Agent enum kind 3.
+        UNISWAP_V2_ROUTER02
     }
 
     /// @notice How the executor obtains the taker's sell tokens.
@@ -310,6 +316,20 @@ contract MPGRSwapPathExecutorDraft is Ownable2Step, Pausable, ReentrancyGuard {
         amountOut = _finish(p, t);
     }
 
+    /// @notice REVIEW ONLY: fixed-fee single V2 pair through typed Router02.
+    /// No fee-on-transfer supporting method, ETH router method or hidden path.
+    function swapUniswapV2ExactInputSingle(SwapParams calldata p, Authorization calldata auth)
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+        returns (uint256 amountOut)
+    {
+        Trade memory t = _begin(p, RouterKind.UNISWAP_V2_ROUTER02, auth);
+        _callV2(p.router, p.tokenIn, p.tokenOut, t.outReceiver, t.swapAmount, p.amountOutMinimum, p.deadline);
+        amountOut = _finish(p, t);
+    }
+
     // slither-disable-start reentrancy-balance
     // Intentional BEFORE/AFTER balance snapshots, not cached spend authority.
     // Every swap and permission/rescue setter is nonReentrant; fee terms are
@@ -363,8 +383,12 @@ contract MPGRSwapPathExecutorDraft is Ownable2Step, Pausable, ReentrancyGuard {
             {
                 revert InvalidPoolFee(h.poolFee);
             }
-        } else if (h.poolFee != 0 || h.tickSpacing <= 0) {
-            revert InvalidTickSpacing(h.tickSpacing);
+        } else if (h.kind == RouterKind.AERODROME_SLIPSTREAM) {
+            if (h.poolFee != 0 || h.tickSpacing <= 0) revert InvalidTickSpacing(h.tickSpacing);
+        } else if (h.kind == RouterKind.UNISWAP_V2_ROUTER02) {
+            if (h.poolFee != 0 || h.tickSpacing != 0) revert InvalidPath();
+        } else {
+            revert RouterNotAllowed(h.router, h.kind);
         }
     }
 
@@ -391,7 +415,7 @@ contract MPGRSwapPathExecutorDraft is Ownable2Step, Pausable, ReentrancyGuard {
                     sqrtPriceLimitX96: 0
                 })
                 );
-        } else {
+        } else if (h.kind == RouterKind.AERODROME_SLIPSTREAM) {
             ISlipstreamSwapRouter(h.router)
                 .exactInputSingle(
                     ISlipstreamSwapRouter.ExactInputSingleParams({
@@ -407,6 +431,25 @@ contract MPGRSwapPathExecutorDraft is Ownable2Step, Pausable, ReentrancyGuard {
                 );
         }
         // slither-disable-end unused-return
+        if (h.kind == RouterKind.UNISWAP_V2_ROUTER02) {
+            _callV2(h.router, tokenIn, h.tokenOut, receiver, amount, minimum, deadline);
+        }
+    }
+
+    function _callV2(
+        address router,
+        address tokenIn,
+        address tokenOut,
+        address receiver,
+        uint256 amount,
+        uint256 minimum,
+        uint256 deadline
+    ) private {
+        address[] memory path = new address[](2);
+        path[0] = tokenIn;
+        path[1] = tokenOut;
+        // slither-disable-next-line unused-return
+        IMPGRSwapV2RouterDraft(router).swapExactTokensForTokens(amount, minimum, path, receiver, deadline);
     }
 
     // ---------------------------------------------------------------------
@@ -416,8 +459,8 @@ contract MPGRSwapPathExecutorDraft is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Exact fee split for a gross sell amount at the CURRENT fee.
     /// @return fee        floor(grossAmountIn * feeBps / 10_000)
     /// @return swapAmount grossAmountIn - fee
-    function quoteFee(uint256 grossAmountIn) external view returns (uint256 fee, uint256 swapAmount) {
-        fee = (grossAmountIn * feeBps) / BPS_DENOMINATOR;
+    function quoteFee(uint256 grossAmountIn) external pure returns (uint256 fee, uint256 swapAmount) {
+        fee = Math.mulDiv(grossAmountIn, feeBps, BPS_DENOMINATOR);
         swapAmount = grossAmountIn - fee;
     }
 
@@ -492,7 +535,7 @@ contract MPGRSwapPathExecutorDraft is Ownable2Step, Pausable, ReentrancyGuard {
         t.kind = kind;
 
         // Exact fee — floor(G * feeBps / 10_000). Committed by the caller.
-        t.fee = (p.grossAmountIn * feeBps) / BPS_DENOMINATOR;
+        t.fee = Math.mulDiv(p.grossAmountIn, feeBps, BPS_DENOMINATOR);
         if (t.fee != p.expectedFeeAmount) revert FeeMismatch(p.expectedFeeAmount, t.fee);
         if (feeBps != 0 && t.fee == 0) revert FeeRoundsToZero(p.grossAmountIn);
         t.swapAmount = p.grossAmountIn - t.fee;
