@@ -100,8 +100,10 @@ function fail(code: TradeError["code"], message: string): TradeExecutionSnapshot
 /** Optional stricter consumer checks. Swap supplies these; Agent keeps its existing controller. */
 export interface TradeExecutionSafety {
   beforeSignature: (proposal: TradeProposal, phase: "approval" | "swap") => Promise<TradeError | null>;
-  verifySettlement: (proposal: TradeProposal, receipt: TransactionReceipt) => TradeError | null;
-  onApprovalReceipt?: (hash: Hash, status: "success" | "reverted") => void;
+  verifySettlement: (proposal: TradeProposal, receipt: TransactionReceipt) => TradeError | null | Promise<TradeError | null>;
+  onApprovalReceipt?: (hash: Hash, status: "success" | "reverted", receipt?: TransactionReceipt) => void;
+  /** Swap may require a receipt-anchored read; absent this hook legacy consumers are unchanged. */
+  readAllowance?: (proposal: TradeProposal, receipt?: TransactionReceipt) => Promise<bigint | null>;
   onEffectiveProposal?: (proposal: TradeProposal) => void;
 }
 export interface ExecuteTradeInput {
@@ -487,7 +489,7 @@ export async function executeTrade(
       // amountIn, another approve() would be a duplicate transaction and a
       // duplicate wallet prompt for the same token/spender/amount. If the
       // read fails, `null` keeps the original approve step (fail-closed).
-      const existingAllowance = await readLiveAllowance(
+      const existingAllowance = input.safety?.readAllowance ? await input.safety.readAllowance(proposal) : await readLiveAllowance(
         account,
         proposal.from.address,
         proposal.permit2Spender,
@@ -530,14 +532,15 @@ export async function executeTrade(
             // the actual receipt hash, not the original pending explorer link.
             approvalHash = receipt.transactionHash;
           }
-          input.safety?.onApprovalReceipt?.(approvalHash, receipt.status);
+          input.safety?.onApprovalReceipt?.(approvalHash, receipt.status, receipt);
           if (receipt.status !== "success") {
             const snapshot = fail("APPROVAL_FAILED", approvalFailedMessage(proposal));
             onChange({ ...snapshot, approvalHash });
             return { ...snapshot, approvalHash };
           }
           if (input.safety) {
-            const allowance = await readLiveAllowance(account, proposal.from.address, proposal.permit2Spender);
+            const allowance = input.safety.readAllowance ? await input.safety.readAllowance(proposal, receipt)
+              : await readLiveAllowance(account, proposal.from.address, proposal.permit2Spender);
             if (allowance === null || allowance < BigInt(proposal.fromAmount)) {
               const snapshot = { ...fail("APPROVAL_FAILED", allowance === null
                 ? "Approval confirmed, but allowance could not be verified. Retry the allowance check; do not repeat approval blindly."
@@ -631,7 +634,7 @@ export async function executeTrade(
       const snapshot = { ...fail("PROVIDER_ERROR", "Receipt hash does not match the submitted swap. Execution and fee collection are unverified."), approvalHash, swapHash };
       onChange(snapshot); return snapshot;
     }
-    const settlementError = input.safety?.verifySettlement(proposal, receipt);
+    const settlementError = await input.safety?.verifySettlement(proposal, receipt);
     if (settlementError) {
       const snapshot = { ...fail(settlementError.code, settlementError.message), approvalHash, swapHash };
       onChange(snapshot); return snapshot;

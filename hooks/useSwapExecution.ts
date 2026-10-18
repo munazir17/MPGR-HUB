@@ -12,7 +12,9 @@ import { validateSwapWallet } from "@/lib/swap/swap-wallet";
 import { swapQuotePolicyError, verifySwapSettlement, type SwapSettlement } from "@/lib/swap/swap-policy";
 import { formatAtomicAmount } from "@/lib/trade/trade-format";
 import type { TradeProposal } from "@/lib/trade/trade-types";
-import type { Hash } from "viem";
+import type { Hash, TransactionReceipt } from "viem";
+import { swapTransactionMatches } from "@/lib/swap/swap-transaction";
+import { readSwapAllowance } from "@/lib/swap/swap-allowance";
 export interface SwapActivity {
   id: string; proposal: TradeProposal; startedAt: number;
   approvalHash: Hash | null; swapHash: Hash | null;
@@ -32,6 +34,7 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
   const [sessionExpired, setSessionExpired] = useState(false);
   const [checking, setChecking] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const approvalReceipt = useRef<TransactionReceipt | undefined>(undefined);
   const active = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -42,6 +45,7 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
   const open = useCallback((p: TradeProposal) => {
     if (active.current) return;
     session.current++;
+    approvalReceipt.current = undefined;
     setQuoteUpdated(false); setProposal(p); setProof(null); setSnapshot(idleTradeExecutionSnapshot());
   }, []);
   const close = useCallback(() => { if (!active.current) { session.current++; setProposal(null); } }, []);
@@ -113,12 +117,20 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
         safety: {
           beforeSignature: async (p, phase) => {
             if (!mounted.current || session.current !== run) return { code: "INVALID_INPUT", message: "Swap view closed. No further wallet request was initiated." };
-            const invalid = await validateSwapWallet(p, phase);
+            const invalid = await validateSwapWallet(p, phase, approvalReceipt.current);
             return !mounted.current || session.current !== run ? { code: "INVALID_INPUT", message: "Swap view closed. Request a new quote." } : invalid;
           },
           onEffectiveProposal: p => { effective = p; if (session.current === run) setProposal(p); },
-          onApprovalReceipt: (_hash, status) => { approvalStatus = status === "success" ? "confirmed" : "reverted"; refreshBalancesRef.current(); },
-          verifySettlement: (p, receipt) => {
+          readAllowance: (p, receipt) => readSwapAllowance(p, receipt ?? approvalReceipt.current),
+          onApprovalReceipt: (_hash, status, receipt) => {
+            if (status === "success") approvalReceipt.current = receipt;
+            approvalStatus = status === "success" ? "confirmed" : "reverted"; refreshBalancesRef.current();
+          },
+          verifySettlement: async (p, receipt) => {
+            try {
+              const tx = await getTransaction(config, { chainId: 8453, hash: receipt.transactionHash });
+              if (!swapTransactionMatches(p, receipt, tx)) return { code: "PROVIDER_ERROR", message: "The mined transaction does not match the reviewed swap. Do not resubmit; inspect it on BaseScan." };
+            } catch { return { code: "PROVIDER_ERROR", message: "Swap submitted. Its transaction details could not be verified yet. Check status; do not resubmit." }; }
             verified = verifySwapSettlement(p, receipt);
             if (session.current === run) setProof(verified);
             return verified.verified ? null : { code: "PROVIDER_ERROR", message: verified.reason! };
@@ -161,11 +173,7 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
         if (a.swapHash) {
           try {
             const [receipt, tx] = await Promise.all([getTransactionReceipt(config, { hash: a.swapHash, chainId: 8453 }), getTransaction(config, { hash: a.swapHash, chainId: 8453 })]);
-            const transactionMatches = !!a.proposal.transaction
-              && tx.hash.toLowerCase() === a.swapHash!.toLowerCase() && receipt.transactionHash.toLowerCase() === a.swapHash!.toLowerCase()
-              && tx.from.toLowerCase() === a.proposal.taker.toLowerCase() && receipt.from.toLowerCase() === tx.from.toLowerCase()
-              && tx.to?.toLowerCase() === a.proposal.transaction.to.toLowerCase() && receipt.to?.toLowerCase() === tx.to.toLowerCase()
-              && tx.input === a.proposal.transaction.data && tx.value === BigInt(a.proposal.transaction.value);
+            const transactionMatches = swapTransactionMatches(a.proposal, receipt, tx);
             const result = transactionMatches ? verifySwapSettlement(a.proposal, receipt) : null;
             next = { ...next, swapStatus: !transactionMatches ? "unverified" : receipt.status === "reverted" ? "reverted" : result?.verified ? "confirmed" : "unverified", proof: result };
             // Closing/opening a review while this RPC was in flight must not

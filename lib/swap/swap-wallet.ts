@@ -1,5 +1,5 @@
 // Read-only wallet checks; execution remains in trade-execution.ts.
-import { encodeFunctionData, type Address } from "viem";
+import { encodeFunctionData, type Address, type TransactionReceipt } from "viem";
 import { estimateTotalFee } from "viem/op-stack";
 import { getAccount, getBalance, getPublicClient, readContract } from "wagmi/actions";
 import { config } from "@/lib/wagmi";
@@ -10,6 +10,7 @@ import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { swapQuoteFresh } from "./swap-lifecycle";
 import type { TradeError, TradeProposal, TradeTokenRef } from "@/lib/trade/trade-types";
 import { swapQuotePolicyError } from "./swap-policy";
+import { readSwapAllowance } from "./swap-allowance";
 export async function readSwapBalance(account: Address, token: TradeTokenRef) {
   if (isNativeEthSentinel(token.address)) return { value: (await getBalance(config, { address: account, chainId: 8453 })).value, decimals: 18 };
   const [value, decimals] = await Promise.all([
@@ -29,7 +30,7 @@ export async function estimateSwapGas(p: TradeProposal, phase: "approval" | "swa
   if (total <= 0n) throw new Error("Base gas estimate unavailable");
   return total;
 }
-export async function validateSwapWallet(p: TradeProposal, phase: "approval" | "swap"): Promise<TradeError | null> {
+export async function validateSwapWallet(p: TradeProposal, phase: "approval" | "swap", approvalReceipt?: TransactionReceipt): Promise<TradeError | null> {
   const fail = (code: TradeError["code"], message: string): TradeError => ({ code, message });
   const context = () => {
     const account = getAccount(config);
@@ -46,7 +47,9 @@ export async function validateSwapWallet(p: TradeProposal, phase: "approval" | "
   if (!isNativeEthSentinel(p.from.address)) {
     let allowance: bigint;
     try {
-      allowance = await readContract(config, { address: p.from.address, abi: erc20Abi, functionName: "allowance", args: [p.taker, deployment.executor], chainId: 8453 });
+      const value = await readSwapAllowance(p, approvalReceipt);
+      if (value === null) throw new Error("Unknown allowance");
+      allowance = value;
       if (typeof allowance !== "bigint" || allowance < 0n) throw new Error("Unknown allowance");
     } catch { return fail("PROVIDER_ERROR", "Token allowance could not be verified. Retry the check; no approval or swap was requested by this step."); }
     if (phase === "approval" && allowance >= BigInt(p.fromAmount)) return fail("QUOTE_CHANGED", "Allowance now covers this pay amount. Refresh the quote; another approval is not needed.");
@@ -65,7 +68,7 @@ export async function validateSwapWallet(p: TradeProposal, phase: "approval" | "
     const nativePay = isNativeEthSentinel(p.from.address) ? BigInt(p.fromAmount) : 0n;
     if (native.value < nativePay + gas * 2n) return fail("INSUFFICIENT_BALANCE", "Insufficient ETH for the pay amount and a buffered Base network fee. Lower the amount or add ETH.");
     if (phase === "swap" && !isNativeEthSentinel(p.from.address)) {
-      const allowance = await readContract(config, { address: p.from.address, abi: erc20Abi, functionName: "allowance", args: [p.taker, deployment.executor], chainId: 8453 });
+      const allowance = await readSwapAllowance(p, approvalReceipt);
       if (typeof allowance !== "bigint" || allowance < 0n) throw new Error("Unknown allowance");
       if (allowance < BigInt(p.fromAmount)) return fail("APPROVAL_FAILED", "Actual allowance is insufficient. Retry approval; no swap was submitted.");
     }

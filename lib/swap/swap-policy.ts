@@ -62,9 +62,9 @@ export function swapQuotePolicyError(p: TradeProposal): string | null {
     return null;
   } catch { return "Invalid quoted amounts. Request a fresh quote."; }
 }
-export interface SwapSettlement { verified: boolean; amountOut: string | null; feeAmount: string | null; feeRecipient: Address | null; reason: string | null }
+export interface SwapSettlement { verified: boolean; amountIn: string | null; amountOut: string | null; feeAmount: string | null; feeRecipient: Address | null; reason: string | null }
 export function verifySwapSettlement(p: TradeProposal, receipt: ReceiptLike): SwapSettlement {
-  const unknown = (reason: string): SwapSettlement => ({ verified: false, amountOut: null, feeAmount: null, feeRecipient: null, reason });
+  const unknown = (reason: string): SwapSettlement => ({ verified: false, amountIn: null, amountOut: null, feeAmount: null, feeRecipient: null, reason });
   try {
     const invalid = swapFeePolicyError(p);
     if (invalid || !p.transaction) return unknown(invalid ?? "Missing transaction.");
@@ -83,6 +83,6 @@ export function verifySwapSettlement(p: TradeProposal, receipt: ReceiptLike): Sw
     };
     const proof = verifyExecutorReceipt(receipt, intent);
     if (!proof.verified || !proof.event) return unknown("Receipt did not verify the exact Executor swap and fee collection. Do not resubmit; inspect the transaction.");
-    return { verified: true, amountOut: proof.event.amountOut, feeAmount: proof.event.feeAmount, feeRecipient: proof.event.feeRecipient, reason: null };
+    return { verified: true, amountIn: proof.event.grossAmountIn, amountOut: proof.event.amountOut, feeAmount: proof.event.feeAmount, feeRecipient: proof.event.feeRecipient, reason: null };
   } catch { return unknown("Execution evidence is unavailable. No output or fee collection has been verified."); }
 }

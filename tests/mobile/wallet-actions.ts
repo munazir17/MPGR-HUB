@@ -18,9 +18,15 @@ const balanceKey = (owner: string, token: string) => `${owner}:${token}`.toLower
 const change = (owner: string, token: string, delta: bigint) => { const key = balanceKey(owner, token); balanceChanges.set(key, (balanceChanges.get(key) ?? 0n) + delta); };
 const allowanceKey = (account: string, token: string, spender: string) => `${account}:${token}:${spender}`.toLowerCase();
 export function getAccount() { return state().simulatedAccount ?? { address: "0x1111111111111111111111111111111111111111", chainId: 8453, isConnected: true }; }
+const blockHash = `0x${"aa".repeat(32)}` as Hash;
+let lagReads = 0;
+export async function getBlock(_config: unknown, params: { blockNumber?: bigint }) {
+  const lagged = scenario() === "approval-rpc-lag" && params.blockNumber == null && applied.size > 0 && lagReads++ < 2;
+  return { number: params.blockNumber ?? (lagged ? 998n : 1000n), hash: blockHash };
+}
 export function getPublicClient() { return {}; }
 export async function getBalance(_config?: unknown, params?: { address: Address }) { record("native-balance-read"); const owner = params?.address ?? getAccount().address; return { value: scenario() === "insufficient-gas" ? 0n : (owner.startsWith("0x3333") ? 3n : 2n) * 10n ** 18n + (balanceChanges.get(balanceKey(owner, native)) ?? 0n), decimals: 18 }; }
-export async function readContract(_config: unknown, params: { address: Address; functionName: string; args?: readonly unknown[] }) {
+export async function readContract(_config: unknown, params: { address: Address; functionName: string; args?: readonly unknown[]; blockNumber?: bigint }) {
   record(params.functionName);
   const decimals = findKnownTradeToken(params.address)?.decimals ?? 6;
   if (params.functionName === "decimals") return decimals;
@@ -28,6 +34,7 @@ export async function readContract(_config: unknown, params: { address: Address;
   if (params.functionName === "feeBps") return scenario() === "fee-changed" ? 50 : 25;
   if (params.functionName === "allowance") {
     if (scenario() === "allowance-read-error") throw new Error("Simulated unavailable allowance");
+    if (scenario() === "approval-rpc-lag" && applied.size > 0 && params.blockNumber == null) return 0n;
     const [owner, spender] = params.args!;
     return allowances.get(allowanceKey(String(owner), params.address, String(spender))) ?? 0n;
   }
@@ -61,7 +68,7 @@ async function receipt(hash: Hash) {
     }
     if (!applied.has(hash)) { applied.add(hash); change(tx.account, native, -1_000_000_000_000n); }
     if (scenario() === "approval-expired") await new Promise(r => setTimeout(r, 1800));
-    return { status, transactionHash: hash, blockNumber: 999n, from: tx.account, to: tx.to, logs: [] };
+    return { status, transactionHash: hash, blockNumber: 999n, blockHash, from: tx.account, to: tx.to, logs: [] };
   }
   if (scenario() === "swap-receipt-error") throw new Error("Simulated swap receipt unavailable");
   const result = simulatedSwapReceipt(p, hash, scenario() === "wrong-fee-recipient" ? { feeRecipient: "0x9999999999999999999999999999999999999999" } : {});
@@ -79,12 +86,12 @@ async function receipt(hash: Hash) {
       change(tx.account, p.to.kind === "native" ? native : p.to.address, BigInt(p.toAmount));
     }
   }
-  return result;
+  return { ...result, blockHash };
 }
 export async function waitForTransactionReceipt(_config: unknown, params: { hash: Hash }) { record("simulated-receipt"); if (!transactions.get(params.hash)?.approval && scenario() === "swap-pending") await new Promise<void>(resolve => { state().simulatedPendingSwap = resolve; }); return receipt(params.hash); }
 export async function getTransactionReceipt(_config: unknown, params: { hash: Hash }) {
   if (state().simulatedHistoryDelay) await new Promise<void>(resolve => { (state().simulatedHistoryResolvers ??= []).push(resolve); });
   const result = await receipt(params.hash); record("history-read-completed"); return result;
 }
-export async function getTransaction(_config: unknown, params: { hash: Hash }) { const tx = transactions.get(params.hash); if (!tx) throw new Error("Unknown simulated transaction"); return { from: tx.account, to: tx.to, input: tx.data, value: tx.value, hash: tx.hash }; }
+export async function getTransaction(_config: unknown, params: { hash: Hash }) { const tx = transactions.get(params.hash); if (!tx) throw new Error("Unknown simulated transaction"); return { from: tx.account, to: tx.to, input: scenario() === "wrong-mined-input" && !tx.approval ? "0x" : tx.data, value: tx.value, hash: tx.hash, blockNumber: 999n, blockHash }; }
 export const config = {};

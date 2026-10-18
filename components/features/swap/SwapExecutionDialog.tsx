@@ -16,6 +16,20 @@ export function SwapExecutionDialog({ trade }: { trade: ReturnType<typeof useSwa
   const reverted = submitted && s.error?.code === "SEND_FAILED";
   const approvalStatus = trade.activities.find(a => a.approvalHash === s.approvalHash)?.approvalStatus;
   const approvalUnknown = !!s.approvalHash && (approvalStatus === "pending" || approvalStatus === "unknown");
+  if (success) return <SwapDialog title="Transaction overview" onClose={trade.close}>
+    <div role="status" data-testid="swap-status" className="flex items-center gap-2 text-emerald-200"><CheckCircle2 size={20} />Swap confirmed · output verified</div>
+    <dl className="space-y-4 rounded-2xl border border-white/10 p-4">
+      <div><dt className="text-xs text-zinc-400">You paid · verified</dt><dd className="mt-1 break-words text-xl">{swapAmount(proof.amountIn!, p.from)}</dd></div>
+      <div><dt className="text-xs text-zinc-400">You received · verified</dt><dd className="mt-1 break-words text-xl text-emerald-200">{swapAmount(proof.amountOut!, p.to)}</dd></div>
+      <div data-testid="mpgr-fee-row"><dt className="text-xs text-zinc-400">MPGR fee (0.25%) · collection verified</dt><dd className="break-words text-sm">{swapAmount(proof.feeAmount!, p.from)} · included in amount paid</dd></div>
+      <div><dt className="text-xs text-zinc-400">Network</dt><dd>Base</dd></div>
+      <div><dt className="text-xs text-zinc-400">Receive address</dt><dd className="break-all text-xs">{p.taker}</dd></div>
+    </dl>
+    <p className="text-xs text-zinc-400">Amounts verified against the mined transaction and Executor event. Network gas is additional and is not included in the amount paid above.</p>
+    <a className="inline-flex min-h-11 items-center gap-1 text-sm text-emerald-300 underline" href={`https://basescan.org/tx/${s.swapHash}`} target="_blank" rel="noopener noreferrer">View swap on BaseScan<ExternalLink size={14} /></a>
+    {s.approvalHash && <a className="inline-flex min-h-11 items-center gap-1 text-xs text-zinc-400 underline" href={`https://basescan.org/tx/${s.approvalHash}`} target="_blank" rel="noopener noreferrer">View approval<ExternalLink size={12} /></a>}
+    <button type="button" onClick={trade.close} className="min-h-12 w-full rounded-2xl bg-emerald-300 font-semibold text-[#071710]">Done</button>
+  </SwapDialog>;
   return <SwapDialog title="Confirm Swap" onClose={trade.close} busy={trade.isBusy}>
     <div className="space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
       <div><p className="text-xs text-zinc-400">You pay</p><p className="mt-1 break-words text-xl font-medium">{swapAmount(p.fromAmount, p.from)}</p></div>

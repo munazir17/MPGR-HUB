@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, type TransactionReceipt } from "viem";
-const m = vi.hoisted(() => ({ read: vi.fn(), send: vi.fn(), wait: vi.fn(), balance: vi.fn(), account: vi.fn(), gas: vi.fn() }));
-vi.mock("wagmi/actions", () => ({ readContract: m.read, sendTransaction: m.send, waitForTransactionReceipt: m.wait, getBalance: m.balance, getAccount: m.account, getPublicClient: () => ({}), signTypedData: vi.fn() }));
+const m = vi.hoisted(() => ({ block: vi.fn(), read: vi.fn(), send: vi.fn(), wait: vi.fn(), balance: vi.fn(), account: vi.fn(), gas: vi.fn() }));
+vi.mock("wagmi/actions", () => ({ getBlock: m.block, readContract: m.read, sendTransaction: m.send, waitForTransactionReceipt: m.wait, getBalance: m.balance, getAccount: m.account, getPublicClient: () => ({}), signTypedData: vi.fn() }));
 vi.mock("viem/op-stack", () => ({ estimateTotalFee: m.gas }));
 vi.mock("@/lib/wagmi", () => ({ config: {} }));
 import { executeTrade, type TradeExecutionSafety } from "@/lib/trade/trade-execution";
@@ -21,6 +21,7 @@ const safety: TradeExecutionSafety = { beforeSignature: validateSwapWallet, veri
 const run = () => executeTrade({ proposal, currentAccount: proposal.taker, currentChainId: 8453, confirmationState: "READY_FOR_CONFIRMATION", safety }, () => {});
 beforeEach(() => {
   vi.resetAllMocks(); proposal = p(); allowance = 0n;
+  m.block.mockResolvedValue({ number: 1000n, hash: h2 });
   m.account.mockImplementation(() => ({ isConnected: true, address: proposal.taker, chainId: 8453 }));
   m.balance.mockResolvedValue({ value: 10n ** 18n }); m.gas.mockResolvedValue(10n ** 12n);
   m.read.mockImplementation(async (_c, request) => {

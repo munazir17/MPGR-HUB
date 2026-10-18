@@ -119,7 +119,7 @@ test("Swap: exact balances, ERC20 MAX and native ETH reserve are not WETH balanc
 });
 test("Swap: real receipt-backed session history, separate hashes, exact output and collected fee", async ({ page }, info) => {
   const state = await setup(page); await page.getByRole("button", { name: "Recent swaps", exact: true }).tap(); await expect(page.getByRole("dialog")).toContainText("No swaps submitted"); await page.getByRole("button", { name: "Close Recent swaps", exact: true }).tap();
-  await review(page); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByTestId("swap-status")).toBeVisible(); await page.getByRole("button", { name: "Close Confirm Swap", exact: true }).tap();
+  await review(page); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByTestId("swap-status")).toBeVisible(); await page.getByRole("button", { name: /^Close (Confirm Swap|Transaction overview)$/ }).tap();
   await page.getByRole("button", { name: "Recent swaps", exact: true }).tap(); const dialog = page.getByRole("dialog"); await expect(dialog.getByText("Approval · confirmed", { exact: true })).toBeVisible(); await expect(dialog.getByText("Swap · confirmed", { exact: true })).toBeVisible(); await expect(dialog.getByTestId("mpgr-fee-row")).toHaveCount(0); await expect(dialog.getByRole("link", { name: "View approval on BaseScan" })).toHaveAttribute("href", /\/tx\/0x[0-9a-f]{64}$/);
   await evidence(page, info, state.trace);
 });
@@ -135,7 +135,7 @@ test("Swap: duplicate confirmation clicks cannot duplicate approval or swap, bal
   const state = await setup(page); await review(page);
   await page.getByRole("button", { name: "Confirm & Swap", exact: true }).evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
   await expect(page.getByTestId("swap-status")).toBeVisible(); expect(await sends(page)).toHaveLength(2);
-  await page.getByRole("button", { name: "Close Confirm Swap", exact: true }).tap(); await expect(page.getByTestId("pay-panel")).toContainText("Balance: 99"); await expect(page.getByTestId("receive-panel")).toContainText("Balance: 2.009998"); await evidence(page, info, state.trace);
+  await page.getByRole("button", { name: /^Close (Confirm Swap|Transaction overview)$/ }).tap(); await expect(page.getByTestId("pay-panel")).toContainText("Balance: 99"); await expect(page.getByTestId("receive-panel")).toContainText("Balance: 2.009998"); await evidence(page, info, state.trace);
 });
 test("Swap: balance read failure is explicit, retry reads exact wallet and wallet switch cannot reuse balance or history", async ({ page }, info) => {
   await page.addInitScript(() => { (window as unknown as { simulatedWalletScenario: string }).simulatedWalletScenario = "balance-error"; });
@@ -148,13 +148,13 @@ test("Swap: balance read failure is explicit, retry reads exact wallet and walle
 test("Swap: wrong receipt hash cannot promote submitted metadata to confirmed activity", async ({ page }, info) => {
   const state = await setup(page); await review(page); await scenario(page, "wrong-receipt-hash"); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap();
   await expect(page.getByRole("alert")).toContainText("Receipt hash does not match"); await expect(page.getByTestId("swap-status")).toHaveCount(0);
-  await page.getByRole("button", { name: "Close Confirm Swap", exact: true }).tap(); await page.getByRole("button", { name: "Recent swaps", exact: true }).tap();
+  await page.getByRole("button", { name: /^Close (Confirm Swap|Transaction overview)$/ }).tap(); await page.getByRole("button", { name: "Recent swaps", exact: true }).tap();
   await page.getByRole("button", { name: "Refresh transaction status", exact: true }).tap(); await expect(page.getByRole("dialog")).toContainText("Received: Not verified"); await expect(page.getByRole("dialog")).toContainText("Swap · verification unavailable");
   await scenario(page, "connected"); await page.getByRole("button", { name: "Refresh transaction status", exact: true }).tap(); await expect(page.getByRole("dialog")).toContainText("Swap · confirmed"); expect(await sends(page)).toHaveLength(2); await evidence(page, info, state.trace);
 });
 
 test("Swap: delayed history receipt cannot overwrite a different review as successfully settled", async ({ page }, info) => {
-  const state = await setup(page); await review(page); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByTestId("swap-status")).toBeVisible(); await page.getByRole("button", { name: "Close Confirm Swap", exact: true }).tap();
+  const state = await setup(page); await review(page); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap(); await expect(page.getByTestId("swap-status")).toBeVisible(); await page.getByRole("button", { name: /^Close (Confirm Swap|Transaction overview)$/ }).tap();
   await page.evaluate(() => { (window as unknown as { simulatedHistoryDelay: boolean }).simulatedHistoryDelay = true; });
   await page.getByRole("button", { name: "Recent swaps", exact: true }).tap();
   await page.waitForFunction(() => !!(window as unknown as { simulatedHistoryResolvers?: unknown[] }).simulatedHistoryResolvers?.length);
@@ -276,4 +276,30 @@ test("Swap: alternate canonical venue/tier passes actual controller approval, su
  await page.getByRole("button",{name:"Confirm & Swap",exact:true}).tap();
  await expect(page.getByRole("dialog")).toContainText("Swap confirmed");
  expect(await sends(page)).toHaveLength(2);await evidence(page,info,state.trace);
+});
+
+
+test("Swap: mined approval survives lagging latest RPC; same dialog becomes final non-actionable overview", async ({ page }, info) => {
+  const state = await setup(page); await choose(page, "receive", "AAPLc"); await review(page);
+  await scenario(page, "approval-rpc-lag");
+  await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap();
+  const overview = page.getByRole("dialog", { name: "Transaction overview", exact: true });
+  await expect(overview).toBeVisible(); await expect(overview.getByTestId("swap-status")).toContainText("confirmed");
+  await expect(overview).toContainText("You paid · verified"); await expect(overview).toContainText("1 USDC");
+  await expect(overview).toContainText("You received · verified");
+  await expect(overview.getByTestId("mpgr-fee-row")).toContainText("0.0025 USDC");
+  await expect(overview).not.toContainText("estimated"); await expect(overview).not.toContainText("Minimum:");
+  await expect(overview.getByRole("button", { name: "Confirm & Swap", exact: true })).toHaveCount(0);
+  await expect(overview.getByRole("button", { name: /Refresh quote/ })).toHaveCount(0);
+  await expect(overview.getByRole("link", { name: "View swap on BaseScan", exact: true })).toHaveAttribute("href", /https:\/\/basescan.org\/tx\/0x[0-9a-f]{64}$/);
+  expect(await sends(page)).toHaveLength(2); await evidence(page, info, state.trace);
+  await overview.getByRole("button", { name: "Done", exact: true }).tap(); await expect(overview).toHaveCount(0);
+});
+test("Swap: success event with different mined calldata cannot show a final success or resubmit", async ({ page }, info) => {
+  const state = await setup(page); await review(page); await scenario(page, "wrong-mined-input");
+  await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap();
+  await expect(page.getByRole("alert")).toContainText("does not match the reviewed swap");
+  await expect(page.getByTestId("swap-status")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Confirm & Swap", exact: true })).toHaveCount(0);
+  expect(await sends(page)).toHaveLength(2); await evidence(page, info, state.trace);
 });
