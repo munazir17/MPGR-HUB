@@ -21,7 +21,7 @@ const TAKER: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
 
 const deployment: SwapPathExecutorDeployment = {
   chainId: 8453, executor: EXECUTOR, owner: TAKER, weth: BASE_WETH, permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
-  deployTx: "0x" + "11".repeat(32), deployBlock: 1, explorerUrl: "https://basescan.org/address/0x51",
+  deployTx: ("0x" + "11".repeat(32)) as `0x${string}`, deployBlock: 1, explorerUrl: "https://basescan.org/address/0x51",
   venues: [SWAP_PATH_VENUES.uniswapV2, SWAP_PATH_VENUES.aerodromeClassic, SWAP_PATH_VENUES.uniswapV3, SWAP_PATH_VENUES.slipstream],
   tokens: [BASE_WETH, BASE_USDC, TOKEN_A, TOKEN_B],
 };
@@ -36,7 +36,7 @@ function pathTx(args: { tokenIn?: Address; tokenOut?: Address; gross?: bigint; f
     recipient: args.recipient ?? TAKER, deadline: args.deadline ?? 9999999999n, intentId: keccak256("0x01"), unwrapNativeOut: args.unwrap ?? false,
   }, hops.map(h => ({ router: h.router as Address, tokenOut: h.tokenOut as Address, kind: h.kind ?? 3, poolFee: 0, tickSpacing: 0, stable: false, pool: h.pool ?? POOL })),
   { kind: 0, deadline: 0n, nonce: 0n, v: 0, r: ("0x" + "0".repeat(64)) as Hex, s: ("0x" + "0".repeat(64)) as Hex, signature: "0x" }] });
-  return { to: args.to ?? EXECUTOR, data, value: (args.value ?? 0n).toString() };
+  return { to: (args.to ?? EXECUTOR) as Address, data, value: (args.value ?? 0n).toString() };
 }
 const ctx = (from = TOKEN_A, to = TOKEN_B) => ({ deployment, fromAddress: from, toAddress: to, taker: TAKER, nativeIn: false, nativeOut: false });
 
@@ -103,7 +103,7 @@ describe("deployment gating", () => {
 });
 
 describe("policy and settlement", () => {
-  const proposal = (tx: { to: string; data: string; value: string }, over: Partial<TradeProposal> = {}): TradeProposal => ({
+  const proposal = (tx: { to: Address; data: Hex; value: string }, over: Partial<TradeProposal> = {}): TradeProposal => ({
     id: "p1", kind: "swap", network: "base", chainId: 8453, provider: "mpgr-executor", providerLabel: "MPGR Swap executor",
     from: ref(TOKEN_A, "A", 18), to: ref(TOKEN_B, "B", 18), fromAmount: "1000000", toAmount: "1000", minToAmount: "990",
     slippageBps: 100, taker: TAKER, liquidityAvailable: true, executionAvailable: true,
@@ -113,7 +113,7 @@ describe("policy and settlement", () => {
     needsPermit2Approval: false, permit2Spender: null, risk: [], warnings: [], displayFromAmount: "0.000001", displayToAmount: "0.000001",
     displayMinToAmount: "0.0000009", description: "test", postConfirmationSteps: [], requiresConfirmation: true, phase: "awaiting_signature", ...over,
   });
-  const evidence = (tx: { to: string; data: string; value: string }): SwapPathRoutingEvidence => ({
+  const evidence = (tx: { to: Address; data: Hex; value: string }): SwapPathRoutingEvidence => ({
     version: 2, key: "k", hops: 1, pools: [POOL], blockNumber: "1", blockHash: ("0x" + "ab".repeat(32)) as Hex,
     calldataHash: keccak256(tx.data as Hex), outcomes: [{ key: "k", state: "quoted", reason: "QUOTE_ONLY_NOT_EXECUTION_PROOF", output: "1000" }],
     executionSimulation: "not-run-wallet-preflight-required",
@@ -140,12 +140,12 @@ describe("policy and settlement", () => {
       const data = encodeAbiParameters(
         [{ type: "address" }, { type: "address" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }, { type: "address" }, { type: "uint16" }, { type: "uint8" }, { type: "uint8" }],
         [TOKEN_A, TOKEN_B, 1_000_000n, fee, 997_500n, out, recipient, 25, 3, 0]);
-      return { address: EXECUTOR, topics, data };
+      return { address: EXECUTOR, topics: topics as Hex[], data };
     };
     const pathLog = () => {
       const topics = encodeEventTopics({ abi: MPGR_SWAP_EXECUTOR_ABI, eventName: "SwapPathExecuted", args: { intentId: keccak256("0x01"), pathHash: keccak256("0x02") } });
       const data = encodeAbiParameters([{ type: "uint8" }], [1]);
-      return { address: EXECUTOR, topics, data };
+      return { address: EXECUTOR, topics: topics as Hex[], data };
     };
     const good = verifySwapPathSettlement(p, deployment, { status: "success", logs: [log(2500n, SWAP_FEE_RECIPIENT, 1000n), pathLog()] });
     expect(good.verified).toBe(true);

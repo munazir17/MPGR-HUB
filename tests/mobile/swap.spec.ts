@@ -77,8 +77,7 @@ test("Swap: search, exact contract validation, duplicate symbols and unsupported
   await search.fill("No such token"); await expect(page.getByText(/No results\./)).toBeVisible(); await search.fill("0x123"); await expect(page.getByRole("alert")).toContainText("Invalid address");
   await search.fill(importedAddress); await page.getByRole("button", { name: "Validate Base token" }).tap(); await expect(page.getByText(/Import is not endorsement/)).toBeVisible();
   await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeDisabled();
-  await expect(page.getByTestId("token-route-unavailable")).toContainText("Token details checked — trading is not supported in MPGR Swap yet");
-  await expect(page.getByTestId("token-route-unavailable")).toContainText("Finding a token or pool does not make it tradable here");
+  await expect(page.getByTestId("token-route-unavailable")).toContainText("Route not supported");
   await page.getByRole("button", { name: "Close Select a token" }).tap();
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("USDC");
   await expect(page.getByRole("button", { name: `Select USDC ${token("USDC")}`, exact: true })).toBeVisible(); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeVisible(); await expect(page.getByRole("dialog").locator("img")).toHaveCount(1); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).locator("img")).toHaveCount(0); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).getByTestId("token-logo-fallback")).toHaveCount(1);
@@ -226,7 +225,7 @@ test("Swap: ETH/WETH same underlying selection is disabled before quote or walle
  const state = await setup(page); await page.getByRole("button", { name: "Reverse swap direction" }).tap();
  await page.getByRole("button", { name: "You receive token: USDC", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("WETH");
  await expect(page.getByRole("button", { name: `Select WETH ${address("WETH")}`, exact: true })).toBeDisabled();
- await expect(page.getByTestId("token-route-unavailable")).toContainText("Same underlying asset"); expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
+ await expect(page.getByTestId("token-route-unavailable")).toContainText("Same asset"); expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });
 test("Swap: unknown allowance never causes an approval prompt", async ({ page }, info) => {
  const state = await setup(page); await review(page); await scenario(page, "allowance-read-error"); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap();
@@ -238,7 +237,7 @@ test("Swap: registered token status requires a fresh quote and never promises ex
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap();
   const eth = page.getByRole("button", { name: `Select ETH ${NATIVE_ETH_SENTINEL}`, exact: true });
   await expect(eth).toBeEnabled();
-  await expect(eth.getByTestId("token-route-status")).toContainText("Get a live quote to check availability");
+  await expect(eth.getByTestId("token-route-status")).toContainText("Available to swap");
   expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0);
   await evidence(page, info, state.trace);
 });
@@ -252,8 +251,7 @@ test("Swap: approved but non-registered pair is draft-searchable, not a liquidit
  await row.tap();await page.getByRole("button",{name:"You pay token: USDC",exact:true}).tap();
  await page.getByLabel("Search tokens or Base contract").fill("WETH");
  const weth=page.getByRole("button",{name:`Select WETH ${token("WETH")}`,exact:true});
- await expect(weth).toBeEnabled();await expect(weth.getByTestId("token-route-status")).toContainText("Get a live quote to find a direct swap");
- await expect(weth.getByTestId("token-route-status")).toContainText("This pair may need a multi-step route");
+ await expect(weth).toBeEnabled();await expect(weth.getByTestId("token-route-status")).toContainText("Quote verifies route");
  expect(state.quoteCount()).toBe(0);expect(await sends(page)).toHaveLength(0);await evidence(page,info,state.trace);
 });
 

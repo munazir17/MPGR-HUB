@@ -12,7 +12,8 @@ async function imported(page: Page, pay = false, touch = true) {
   await page.getByLabel("Search tokens or Base contract").fill(importedAddress);
   await press("Validate Base token");
   await expect(page.getByRole("button", { name: `Select NEW ${importedAddress}`, exact: true })).toBeDisabled();
-  await press(`Inspect NEW liquidity ${importedAddress}`);
+  const details = page.getByTestId("import-technical-details").locator("summary");
+  if (touch) await details.tap(); else await details.click();
 }
 test("Swap discovery: imported CA can inspect pools, never becomes an executable quote or signature", async ({ page }) => {
   const state = await setup(page); let requests = 0;
@@ -75,6 +76,6 @@ test("Swap discovery: known ETH to AAPLc can inspect a two-hop path without chan
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("AAPLc"); await page.getByRole("button", { name: `Select AAPLc ${token("AAPLc")}`, exact: true }).tap();
   await page.getByRole("button", { name: "You pay token: USDC", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("ETH"); await page.getByRole("button", { name: `Select ETH 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`, exact: true }).tap();
   await page.route("**/api/swap/liquidity", async route => { expect(route.request().postDataJSON()).toEqual({ chainId: 8453, fromToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", toToken: token("AAPLc") }); const data = payload(); data.paths[0].tokens = [token("WETH"), token("USDC"), token("AAPLc")]; data.paths[0].poolsPerHop = [[pool], ["0x4444444444444444444444444444444444444444"]]; data.observations[0].tokenA = token("WETH"); data.observations[0].tokenB = token("USDC"); data.observations.push({ ...data.observations[0], venue: "slipstream", factory: "0xf8f2eb4940cfe7d13603dddd87f123820fc061ef", key: 10, tokenA: token("USDC"), tokenB: token("AAPLc"), pool: "0x4444444444444444444444444444444444444444" }); await route.fulfill({ json: data }); });
-  await page.getByRole("button", { name: "You receive token: AAPLc", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("AAPLc"); await page.getByRole("button", { name: `Inspect AAPLc liquidity ${token("AAPLc")}`, exact: true }).tap(); await page.getByRole("button", { name: "Check liquidity on Base" }).tap(); await expect(page.getByText(/^Two-hop pool path · 1 \/ 1 pool options per hop$/)).toBeVisible();
-  await page.getByRole("button", { name: "Close Select a token" }).tap(); await expect(page.getByRole("button", { name: "You pay token: ETH", exact: true })).toBeVisible(); await expect(page.getByRole("button", { name: "You receive token: AAPLc", exact: true })).toBeVisible(); expect(state.quoteCount()).toBe(0); expect(await walletCalls(page)).toEqual([]);
+  await page.getByTestId("swap-technical-details").locator("summary").tap(); await page.getByRole("button", { name: "Check liquidity on Base" }).tap(); await expect(page.getByText(/^Two-hop pool path · 1 \/ 1 pool options per hop$/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "You pay token: ETH", exact: true })).toBeVisible(); await expect(page.getByRole("button", { name: "You receive token: AAPLc", exact: true })).toBeVisible(); expect(state.quoteCount()).toBe(0); expect(await walletCalls(page)).toEqual([]);
 });

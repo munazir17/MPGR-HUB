@@ -17,6 +17,10 @@ import { TokenIcon, tokenName } from "./TokenIcon";
 import { TokenSelector } from "./TokenSelector";
 import { SlippageSettings } from "./SlippageSettings";
 import { SwapDetails } from "./SwapDetails";
+import { SwapLiquidityInspection } from "./SwapLiquidityInspection";
+import { swapPoolAsset } from "@/lib/swap/swap-capability";
+import { swapRoutingEvidence } from "@/lib/swap/swap-route-candidates";
+import { swapPathRoutingEvidence } from "@/lib/swap/swap-path-evidence";
 interface Props { authenticated: boolean; signIn: (options?: { force?: boolean }) => Promise<boolean>; onConnect: () => void; onReview: (proposal: TradeProposal) => void;
   balanceRevision: number; executionBusy: boolean; settledHash: string | null; reviewOpen: boolean }
 const SETTINGS_KEY = "mpgr:swap:8453:slippage";
@@ -172,6 +176,17 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
       className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-300 px-4 text-base font-semibold text-[#071710] shadow-[0_6px_30px_-12px_rgba(110,231,183,0.4)] hover:bg-emerald-200 disabled:bg-white/[0.07] disabled:text-zinc-500 disabled:shadow-none">
       {busy && <Loader2 size={18} className="animate-spin" />}{!isConnected ? "Connect wallet" : chainId !== 8453 ? "Switch to Base" : busy ? "Refreshing quote…" : insufficient ? "Insufficient balance" : invalid ? "Enter a pay amount" : sessionExpired ? "Sign in and retry quote" : fresh ? "Confirm Swap" : proposal ? "Refresh quote" : "Get quote"}
     </button>
+    {!reviewOpen && swapPoolAsset(pay.address) !== swapPoolAsset(receive.address) && <details data-testid="swap-technical-details" className="rounded-2xl border border-white/5 bg-white/[0.02] px-3 py-1">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-zinc-400 hover:text-zinc-200">Technical route details (read-only)<ChevronDown size={14} className="shrink-0" /></summary>
+      <div className="space-y-2 pb-3 pt-1">
+        {fresh && proposal && (swapRoutingEvidence(proposal) || swapPathRoutingEvidence(proposal)) && <div data-testid="swap-route-evidence" className="space-y-1 text-[11px] text-zinc-400">
+          <p>Hops: {swapPathRoutingEvidence(proposal)?.hops ?? swapRoutingEvidence(proposal)!.hops} · pools verified at block {swapPathRoutingEvidence(proposal)?.blockNumber ?? swapRoutingEvidence(proposal)!.blockNumber}</p>
+          <p>Execution simulation: {swapPathRoutingEvidence(proposal)?.executionSimulation ?? swapRoutingEvidence(proposal)!.executionSimulation}</p>
+          {(swapPathRoutingEvidence(proposal)?.outcomes ?? swapRoutingEvidence(proposal)!.outcomes).map(o => <p key={o.key} className="break-all font-mono text-[10px]">{o.key}: {o.state}{o.output ? ` → ${o.output}` : ""}</p>)}
+        </div>}
+        <SwapLiquidityInspection from={pay} to={receive} authorize={authorize} />
+      </div>
+    </details>}
     {!reviewOpen && (proposal || error) && <SwapDetails proposal={fresh ? proposal : null} issue={error} payToken={pay} />}
     {select && <TokenSelector tokens={tokens} opposite={select === "fromToken" ? receive : pay} selectingPay={select === "fromToken"} onImport={token => setImports(old => [...old.filter(t => t.address.toLowerCase() !== token.address.toLowerCase()), token])} selected={input[select]} authorize={authorize} onClose={() => setSelect(null)} onSelect={token => {
       setImports(old => [...old.filter(t => t.address.toLowerCase() !== token.address.toLowerCase()), token]);

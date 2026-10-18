@@ -1,20 +1,30 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { isAddress } from "viem";
-import { Search, Check, Loader2 } from "lucide-react";
+import { Search, Check, ChevronDown, Loader2 } from "lucide-react";
 import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { TokenImportError } from "@/lib/trade/token-import";
 import type { TradeTokenRef } from "@/lib/trade/trade-types";
 import { SwapDialog } from "./SwapDialog";
 import { swapRouteIssue, swapCapabilityStatus, swapPoolAsset } from "@/lib/swap/swap-capability";
+import { SwapLiquidityInspection } from "./SwapLiquidityInspection";
 import { TokenIcon, tokenName } from "./TokenIcon";
 import { fetchSwapTokenHints } from "@/lib/swap/swap-token-hints";
 import { importSwapToken } from "@/lib/swap/swap-inspection-client";
-import { SwapLiquidityInspection } from "./SwapLiquidityInspection";
 import type { SwapTokenHint } from "@/lib/swap/swap-token-discovery";
+
+/** Concise, truthful row statuses. Full diagnostics live in the swap form's
+ * optional technical details, not on every row. */
+function rowStatus(status: { code: string; selectable: boolean; message: string }) {
+  if (status.selectable) return status.code === "REGISTERED_UNQUOTED" ? { label: "Available to swap", tone: "text-emerald-300" } : { label: "Quote verifies route", tone: "text-zinc-400" };
+  if (status.code === "SAME_ASSET") return { label: "Same asset", tone: "text-zinc-500" };
+  if (status.code === "COUNTERASSET_REQUIRED") return { label: "No route found", tone: "text-amber-300" };
+  return { label: "Route not supported", tone: "text-amber-300" };
+}
+const shortAddress = (address: string) => `${address.slice(0, 10)}…${address.slice(-6)}`;
+
 export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, opposite, selectingPay, onImport }: { tokens: readonly TradeTokenRef[]; selected: string;
   opposite: TradeTokenRef; selectingPay: boolean; onImport: (t: TradeTokenRef) => void; onSelect: (t: TradeTokenRef) => void; onClose: () => void; authorize: (force?: boolean) => Promise<boolean> }) {
-  const [inspectToken, setInspectToken] = useState<TradeTokenRef | null>(null);
   const [hints, setHints] = useState<SwapTokenHint[]>([]);
   const [searched, setSearched] = useState(false);
   const [search, setSearch] = useState("");
@@ -56,34 +66,43 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
   const option = (t: TradeTokenRef) => {
     const issue = issueFor(t);
     const status = swapCapabilityStatus(t.address, opposite.address, imported?.address.toLowerCase() === t.address.toLowerCase());
-    return <div key={t.address}><button type="button" disabled={!!issue} title={status.message} onClick={() => onSelect(t)}
-    className="flex min-h-[76px] w-full items-center gap-3 rounded-2xl px-3 py-3 text-left hover:bg-white/5 focus-visible:outline focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-65" aria-label={`Select ${t.symbol} ${t.address}`}>
-    <TokenIcon token={t} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold"><bdi>{t.symbol}</bdi>{!t.verified && <span className="ml-2 text-[10px] font-normal text-amber-300">Unverified</span>}</span>
-      <span className="block truncate text-xs text-zinc-400">{tokenName(t.name)}</span>
-      <span className="block break-all font-mono text-[10px] text-zinc-500">{isNativeEthSentinel(t.address) ? "Native Base asset · no ERC-20 contract" : t.address}</span><span data-testid={issue ? "token-route-unavailable" : "token-route-status"} className="mt-1 block text-[10px] text-amber-200">{status.message}</span></span>
-    {selected.toLowerCase() === t.address.toLowerCase() && <Check size={18} className="shrink-0 text-emerald-300" />}
-  </button>{swapPoolAsset(t.address) !== swapPoolAsset(opposite.address) && <button type="button" onClick={() => setInspectToken(t)} className="mb-2 min-h-11 w-full rounded-xl border border-white/10 px-3 text-xs text-emerald-300" aria-label={`Inspect ${t.symbol} liquidity ${t.address}`}>Inspect liquidity (read-only)</button>}</div>;
+    const chip = rowStatus(status);
+    return <button key={t.address} type="button" disabled={!!issue} title={status.message} onClick={() => onSelect(t)}
+      className="flex min-h-[64px] w-full items-center gap-3 rounded-2xl px-3 py-2 text-left hover:bg-white/5 focus-visible:outline focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-65"
+      aria-label={`Select ${t.symbol} ${t.address}`}>
+      <TokenIcon token={t} />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-baseline gap-2"><bdi className="truncate text-sm font-semibold">{t.symbol}</bdi>
+          {!t.verified && <span className="shrink-0 text-[10px] text-amber-300">Unverified</span>}
+          <span data-testid={issue ? "token-route-unavailable" : "token-route-status"} className={`ml-auto shrink-0 text-[10px] ${chip.tone}`}>{chip.label}</span></span>
+        <span className="block truncate text-xs text-zinc-400">{tokenName(t.name)}</span>
+        <span className="block truncate font-mono text-[10px] text-zinc-500" title={t.address}>{isNativeEthSentinel(t.address) ? "Native Base asset" : shortAddress(t.address)}</span>
+      </span>
+      {selected.toLowerCase() === t.address.toLowerCase() && <Check size={18} className="shrink-0 text-emerald-300" />}
+    </button>;
   };
   return <SwapDialog title="Select a token" onClose={onClose}>
     <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-black/15 px-3"><Search size={17} className="shrink-0 text-zinc-500" /><input autoFocus aria-label="Search tokens or Base contract" placeholder="Name, symbol or 0x…" value={search}
       className="min-h-12 min-w-0 flex-1 bg-transparent text-sm outline-none" maxLength={160}
-      onChange={e => { run.current++; pending.current?.abort(); setBusy(false); setError(null); setImported(null); setInspectToken(null); setHints([]); setSearched(false); setSearch(e.target.value); }} /></label>
-    <p className="text-xs text-zinc-400">Base tokens · select by exact contract, not symbol alone. Get a live quote to check whether a pair can be swapped.</p>
+      onChange={e => { run.current++; pending.current?.abort(); setBusy(false); setError(null); setImported(null); setHints([]); setSearched(false); setSearch(e.target.value); }} /></label>
     {addressSearch && !exact && <p role="alert" className="text-xs text-amber-300">Invalid address. Paste 0x and 40 hexadecimal characters.</p>}
     {!addressSearch && !results.length && <p className="py-5 text-sm text-zinc-400">No results. Paste an exact Base contract to validate a token.</p>}
-    {addressSearch && exact && !imported && <div className="space-y-3 rounded-2xl border border-amber-300/15 bg-amber-300/5 p-4">
-      <p className="text-xs text-amber-100">Validate any Base ERC-20 contract independently of trading support. Import does not enable swaps.</p>
-      <button type="button" disabled={busy} onClick={() => void validate()} className="min-h-11 w-full rounded-xl bg-white/10 px-3 text-sm font-medium">{busy ? <span className="flex items-center justify-center gap-2"><Loader2 size={16} className="animate-spin" />Validating token…</span> : sessionExpired ? "Sign in and retry validation" : "Validate Base token"}</button>
+    {addressSearch && exact && !imported && <div className="flex items-center gap-3 rounded-2xl border border-amber-300/15 bg-amber-300/5 p-3">
+      <p className="min-w-0 flex-1 text-xs text-amber-100">Validate this Base ERC-20 by exact contract. Import does not enable swaps.</p>
+      <button type="button" disabled={busy} onClick={() => void validate()} className="min-h-11 shrink-0 rounded-xl bg-white/10 px-3 text-sm font-medium">{busy ? <span className="flex items-center gap-2"><Loader2 size={16} className="animate-spin" />Validating…</span> : sessionExpired ? "Sign in and retry" : "Validate Base token"}</button>
     </div>}
     {!addressSearch && search.trim().length >= 2 && <button type="button" disabled={busy} onClick={() => void discover()} className="min-h-11 w-full rounded-xl bg-white/10 px-3 text-sm">{busy ? "Checking token list…" : sessionExpired ? "Sign in and search Base tokens" : "Search more Base tokens"}</button>}
     {!addressSearch && hints.length > 0 && <div className="space-y-3 rounded-xl border border-white/10 p-3">
-      <p className="text-xs text-zinc-400">Found on the Uniswap Base token list. Check the exact contract before importing. Listing does not mean this token can be swapped here.</p>
+      <p className="text-xs text-zinc-400">Found on the Uniswap Base token list. Check the exact contract before importing.</p>
       {hints.map(t => <div key={t.address} className="space-y-1 text-xs"><p><bdi>{t.symbol}</bdi> · <bdi>{t.name}</bdi></p><p className="break-all font-mono text-zinc-400">{t.address}</p><button type="button" disabled={busy} onClick={() => void validate(t.address)} className="min-h-11 text-emerald-300 underline">Check {t.symbol} on Base</button></div>)}
     </div>}
-    {!addressSearch && searched && !hints.length && <p role="status" className="text-xs text-zinc-400">No additional matches on this list. Paste an exact Base contract to check a different token. Native assets on other chains are not Base tokens.</p>}
+    {!addressSearch && searched && !hints.length && <p role="status" className="text-xs text-zinc-400">No additional matches on this list. Paste an exact Base contract to check a different token.</p>}
     {error && <p role="alert" className="break-words text-xs text-red-300">{error}</p>}
-    <div className="max-h-[42dvh] overflow-y-auto">{!addressSearch && [...results].sort((a, b) => Number(!!issueFor(a)) - Number(!!issueFor(b))).map(option)}{imported && option(imported)}</div>
-    {inspectToken && <SwapLiquidityInspection key={`${inspectToken.address}:${opposite.address}:${selectingPay}`} from={selectingPay ? inspectToken : opposite} to={selectingPay ? opposite : inspectToken} authorize={authorize} />}
-    {(imported || results.some(t => !t.verified)) && <p className="rounded-xl bg-amber-300/5 p-3 text-xs text-amber-200">Import is not endorsement. Metadata is not a safety check or proof of liquidity. Tokens may be malicious or unsellable. Execution still requires a supported, fee-compliant route.</p>}
+    <div className="max-h-[46dvh] space-y-1 overflow-y-auto pr-1">{[...results].sort((a, b) => Number(!!issueFor(a)) - Number(!!issueFor(b))).map(option)}{imported && !results.some(t => t.address.toLowerCase() === imported.address.toLowerCase()) && option(imported)}</div>
+    {imported && swapPoolAsset(imported.address) !== swapPoolAsset(opposite.address) && <details data-testid="import-technical-details" className="rounded-2xl border border-white/5 bg-white/[0.02] px-3 py-1">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-zinc-400 hover:text-zinc-200">Technical liquidity details (read-only)<ChevronDown size={14} className="shrink-0" /></summary>
+      <div className="pb-3 pt-1"><SwapLiquidityInspection from={selectingPay ? imported : opposite} to={selectingPay ? opposite : imported} authorize={authorize} /></div>
+    </details>}
+    {(imported || results.some(t => !t.verified)) && <p className="rounded-xl bg-amber-300/5 p-3 text-xs text-amber-200">Import is not endorsement. Execution still requires a supported, fee-compliant route.</p>}
   </SwapDialog>;
 }
