@@ -151,12 +151,12 @@ jobs:
           [ "$(lc "$(retry cast call "$EXECUTOR" 'owner()(address)' $R)")" = "$(lc "$SWAP_EXECUTOR_OWNER")" ] || fail "owner != governance multisig"
           echo "::notice title=Swap executor verified on Base Mainnet::$EXECUTOR"
       - name: Source verification (Basescan, only if key present)
-        if: ${{ secrets.ETHERSCAN_API_KEY != '' }}
         env:
           ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
         continue-on-error: true
         run: |
+          [ -n "$ETHERSCAN_API_KEY" ] || { echo "::notice::ETHERSCAN_API_KEY not set - skipping source verification"; exit 0; }
           forge verify-contract "$EXECUTOR" contracts/swap/MPGRSwapExecutor.sol:MPGRSwapExecutor --chain 8453 \
             --verifier etherscan --etherscan-api-key "$ETHERSCAN_API_KEY" --watch || true
       - name: Upload manifest artifact + PR comment (activation stays manual)
