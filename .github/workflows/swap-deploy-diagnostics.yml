@@ -115,11 +115,12 @@ jobs:
 
       - name: Offline fail-closed regressions (no RPC, no anvil, no side effects)
         run: |
-          set -uo pipefail
+          set -euo pipefail
           FAILED=0
           neg() { # name, expected-substring, cmd...
             local name="$1" want="$2"; shift 2
-            local out; out="$("$@" 2>&1)"; local rc=$?
+            local out rc=0
+            out="$("$@" 2>&1)" || rc=$?
             if [ $rc -eq 0 ]; then echo "FAIL-OPEN: $name (command unexpectedly succeeded)"; FAILED=1; return; fi
             if ! grep -q "$want" <<<"$out"; then echo "WRONG-REASON: $name (missing '$want')"; echo "$out" | head -3; FAILED=1; return; fi
             echo "PASS fail-closed: $name"
