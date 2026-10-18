@@ -1,7 +1,9 @@
 {
   "_comment": "Reviewed, committed pins for the ONE-TIME Base Mainnet MPGRExecutor deployment. DEPLOYED by run 36110098967 (executor 0xD982726e28275661F8aB64054E6b17a70a63505A, see mpgr-executor.json); mainnetDeployEnabled is now false and the record exists, so script/DeployMPGRExecutorBaseMainnet.s.sol and the workflow refuse any further deployment. lib/executor/executor-config.ts now records the deployment in the 8453 registry entry (deployed fact only). Base mainnet MCP TRADING stays OFF until the operator sets MPGR_MCP_ENABLE_BASE_MAINNET=true.",
+  "_swapComment": "MPGRSwapExecutor (contracts/swap) Base Mainnet gate: CLOSED. deploy-swap-executor-base-mainnet.yml, script/DeployMPGRSwapExecutorBaseMainnet.s.sol and scripts/swap-deploy/preflight.sh all fail closed while swapExecutorDeployEnabled != true. Opening it is a separate, explicit owner approval; the executor owner must be a deployed governance multisig (SWAP_EXECUTOR_OWNER variable in environment base-mainnet) and the deployer a dedicated fresh nonce-0 key (SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY secret). Deployment writes a staging manifest sealed by finalize-manifest.sh with the real tx hash/block; routing activation is a further separate reviewed commit of that manifest into lib/swap/swap-executor-config.ts.",
   "chainId": 8453,
   "mainnetDeployEnabled": false,
+  "swapExecutorDeployEnabled": false,
   "owner": "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e",
   "feeRecipient": "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
   "feeBps": 25,

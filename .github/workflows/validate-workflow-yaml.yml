@@ -1,0 +1,39 @@
+name: Validate workflow YAML
+
+# Parses every .github/workflows/*.yml|.yaml so a malformed workflow (like the
+# earlier secrets-in-step-if parse failure) can never land silently again.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  yaml:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse every workflow file
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, sys, yaml
+          files = sorted(glob.glob(".github/workflows/*.yml")) + sorted(glob.glob(".github/workflows/*.yaml"))
+          assert files, "no workflow files found?"
+          bad = []
+          for f in files:
+              try:
+                  yaml.safe_load(open(f))
+                  print("YAML OK:", f)
+              except Exception as e:
+                  bad.append((f, e))
+          if bad:
+              for f, e in bad:
+                  print("YAML FAIL:", f, e)
+              sys.exit(1)
+          print(f"validated {len(files)} workflow files")
+          PY
