@@ -28,10 +28,10 @@ export async function setup(page: Page, options: FixtureOptions = {}) {
     else if (path === "/api/agent/autonomy/config") json = { enabled: !!options.ready, emergencyDisabled: false, productionGate: !!options.ready, executionAvailable: !!options.ready,
       delegated: { chainId: options.ready ? 8453 : null, executor: options.ready ? "0x2222222222222222222222222222222222222222" : null, walletSigningSupported: true },
       limits: { maxGoalsPerWallet: 5, minCooldownSeconds: 60, maxPolicyTtlDays: 30, maxPerTradeHuman: "100", maxDailyHuman: "500", maxSlippageBps: 100 } };
-    else if (path === "/api/trade/token") {
+    else if ((path === "/api/trade/token" || path === "/api/swap/token")) {
       expect(body).toEqual({ address: importedAddress, chainId: 8453 });
       status = options.importStatus ?? 200;
-      json = status === 200 ? { chainId: 8453, token: { address: importedAddress, symbol: options.importSymbol ?? "NEW", name: options.importName ?? "Simulated imported token", decimals: 6, kind: "erc20", verified: false } } : { code: "PROVIDER_ERROR", error: "Simulated Base metadata unavailable" };
+      json = status === 200 ? { chainId: 8453, ...(path === "/api/swap/token" ? { executionAuthorized: false } : {}), token: { address: importedAddress, symbol: options.importSymbol ?? "NEW", name: options.importName ?? "Simulated imported token", decimals: 6, kind: "erc20", verified: false } } : { code: "PROVIDER_ERROR", error: "Simulated Base metadata unavailable" };
     }
     else if ((path === "/api/trade/quote" || path === "/api/swap/quote")) {
       quoteRequestNumber = ++quotes; quoteBodies.push(body);
