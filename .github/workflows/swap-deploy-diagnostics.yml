@@ -1,0 +1,206 @@
+name: Swap deployment diagnostics (read-only)
+
+# READ-ONLY deployment diagnostics that NEVER touch the protected `base-mainnet`
+# environment and NEVER receive production secrets:
+#   - no job declares `environment:`
+#   - SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY is not referenced anywhere here
+#   - nothing broadcasts; no gate may be opened; no file is mutated
+# It verifies: PR head SHA, committed gate values (both must be false),
+# routing-activation null, environment protection rules (admin bypass off,
+# prevent-self-review on, reviewers), offline fail-closed regressions of
+# scripts/swap-deploy/*, deployment-workflow trust structure, and (optional
+# input) whether a given owner address is a GENUINE, correctly configured
+# Safe/multisig on Base (singleton identity + owners + threshold — bytecode
+# presence alone is explicitly NOT sufficient).
+#
+# Secret/variable PRESENCE cannot be read by GITHUB_TOKEN (403 by design);
+# this workflow reports that honestly instead of guessing. Presence is proven
+# at runtime by the deploy job's preflight annotations, after human approval.
+
+on:
+  workflow_dispatch:
+    inputs:
+      owner_address:
+        description: "Owner address to verify as a real Safe on Base (public value of SWAP_EXECUTOR_OWNER; leave empty to skip)"
+        required: false
+        default: ""
+      expected_head:
+        description: "Optional exact PR head SHA that must match"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+  administration: read
+  pull-requests: read
+
+concurrency:
+  group: swap-deploy-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE_RPC: https://mainnet.base.org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Head SHA & PR state
+        run: |
+          set -euo pipefail
+          LOCAL="$(git rev-parse HEAD)"
+          PR_HEAD="$(gh pr view 113 --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+          PR_STATE="$(gh pr view 113 --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
+          echo "checkout HEAD : $LOCAL"
+          echo "PR #113 head  : $PR_HEAD ($PR_STATE)"
+          [ "$PR_STATE" = "OPEN" ] || { echo "::error::PR #113 is not open"; exit 1; }
+          if [ -n "${{ inputs.expected_head }}" ]; then
+            [ "$PR_HEAD" = "${{ inputs.expected_head }}" ] || { echo "::error::PR head does not match expected ${{ inputs.expected_head }}"; exit 1; }
+          fi
+          echo "::notice title=Diagnostics::PR #113 head $PR_HEAD, state $PR_STATE"
+
+      - name: Committed gates must be CLOSED and routing INACTIVE
+        run: |
+          set -euo pipefail
+          SWAP_GATE="$(jq -r '.swapExecutorDeployEnabled' deployments/base-mainnet/deploy-config.json)"
+          LEGACY_GATE="$(jq -r '.mainnetDeployEnabled' deployments/base-mainnet/deploy-config.json)"
+          echo "swapExecutorDeployEnabled=$SWAP_GATE mainnetDeployEnabled=$LEGACY_GATE"
+          [ "$SWAP_GATE" = "false" ] || { echo "::error::swapExecutorDeployEnabled is not false"; exit 1; }
+          [ "$LEGACY_GATE" = "false" ] || { echo "::error::mainnetDeployEnabled is not false"; exit 1; }
+          grep -q 'export const SWAP_PATH_EXECUTOR_DEPLOYMENT: SwapPathExecutorDeployment | null = null;' lib/swap/swap-executor-config.ts \
+            || { echo "::error::SWAP_PATH_EXECUTOR_DEPLOYMENT is not null"; exit 1; }
+          test ! -f deployments/base-mainnet/mpgr-swap-executor.json || { echo "::error::final swap manifest exists unexpectedly"; exit 1; }
+          test ! -f deployments/base-mainnet/mpgr-swap-executor.staging.json || { echo "::error::staging swap manifest exists unexpectedly"; exit 1; }
+          echo "::notice title=Gates::both deployment gates false, routing null, no manifests on disk"
+
+      - name: Environment protection rules (API read; no environment access)
+        run: |
+          set -euo pipefail
+          ENV_JSON="$(gh api "repos/$GITHUB_REPOSITORY/environments/base-mainnet")"
+          BYPASS="$(jq -r '.can_admins_bypass' <<<"$ENV_JSON")"
+          SELF_REVIEW="$(jq -r '[.protection_rules[]? | select(.type=="required_reviewers") | .prevent_self_review][0] // "absent"' <<<"$ENV_JSON")"
+          REVIEWERS="$(jq -r '[.protection_rules[]? | select(.type=="required_reviewers") | .reviewers[]?.reviewer.login] | join(",")' <<<"$ENV_JSON")"
+          echo "can_admins_bypass=$BYPASS prevent_self_review=$SELF_REVIEW reviewers=$REVIEWERS"
+          [ "$BYPASS" = "false" ] || { echo "::error::admin bypass is ENABLED on base-mainnet"; exit 1; }
+          [ "$SELF_REVIEW" = "true" ] || { echo "::error::prevent_self_review is not enabled on base-mainnet"; exit 1; }
+          [ -n "$REVIEWERS" ] || { echo "::error::no required reviewers on base-mainnet"; exit 1; }
+          if gh api "repos/$GITHUB_REPOSITORY/environments/base-mainnet/secrets" >/dev/null 2>&1; then
+            echo "::notice::environment secrets ARE listable by this token (unexpected) - names only would be shown in logs"
+          else
+            echo "::notice title=Secrets::presence NOT visible to GITHUB_TOKEN (403 by design). The deploy job's preflight annotations prove presence at runtime, after human approval. No secret value is ever printed."
+          fi
+          echo "::notice title=Protection::bypass=false, prevent_self_review=true, reviewers=$REVIEWERS"
+
+      - name: Offline fail-closed regressions (no RPC, no anvil, no side effects)
+        run: |
+          set -uo pipefail
+          FAILED=0
+          neg() { # name, expected-substring, cmd...
+            local name="$1" want="$2"; shift 2
+            local out; out="$("$@" 2>&1)"; local rc=$?
+            if [ $rc -eq 0 ]; then echo "FAIL-OPEN: $name (command unexpectedly succeeded)"; FAILED=1; return; fi
+            if ! grep -q "$want" <<<"$out"; then echo "WRONG-REASON: $name (missing '$want')"; echo "$out" | head -3; FAILED=1; return; fi
+            echo "PASS fail-closed: $name"
+          }
+          neg "preflight refuses while committed gate closed" "committed deployment gate is CLOSED" \
+            env BASE_MAINNET_RPC_URL=https://invalid.example BASE_MAINNET_DEPLOYER_PRIVATE_KEY=0x0000000000000000000000000000000000000000000000000000000000000001 SWAP_EXECUTOR_OWNER=0x0000000000000000000000000000000000000001 MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=true bash scripts/swap-deploy/preflight.sh
+          neg "preflight refuses without the dedicated deployer secret" "SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY" \
+            env BASE_MAINNET_RPC_URL=https://invalid.example BASE_MAINNET_DEPLOYER_PRIVATE_KEY= SWAP_EXECUTOR_OWNER=0x0000000000000000000000000000000000000001 MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=true bash scripts/swap-deploy/preflight.sh
+          neg "rehearsal without override fails closed on closed gate" "committed deployment gate is CLOSED" \
+            env SWAP_REHEARSAL_OVERRIDE_GATE=false bash scripts/swap-deploy/rehearse.sh ""
+          neg "finalize cannot seal without staging record" "staging manifest missing" \
+            bash scripts/swap-deploy/finalize-manifest.sh https://invalid.example
+          echo '{"executor":"0x1111111111111111111111111111111111111111","deployer":"0x2222222222222222222222222222222222222222"}' > deployments/base-mainnet/mpgr-swap-executor.staging.json
+          neg "finalize cannot seal without a real broadcast artifact" "broadcast artifact missing" \
+            bash scripts/swap-deploy/finalize-manifest.sh https://invalid.example
+          rm -f deployments/base-mainnet/mpgr-swap-executor.staging.json deployments/base-mainnet/mpgr-swap-executor.json
+          git diff --exit-code -- deployments/ >/dev/null || { echo "SIDE EFFECT: deployments/ mutated"; FAILED=1; }
+          [ $FAILED -eq 0 ] || { echo "::error::fail-closed regressions failed"; exit 1; }
+          echo "::notice title=Fail-closed::all 5 negative regressions passed with zero side effects (no broadcast, no manifest)"
+
+      - name: Deployment-workflow trust structure
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, sys, yaml
+          wf = yaml.safe_load(open(".github/workflows/deploy-swap-executor-base-mainnet.yml"))
+          jobs = wf["jobs"]
+          errs = []
+          if "environment" in jobs.get("gates", {}): errs.append("gates job must NOT have an environment")
+          env = jobs.get("deploy", {}).get("environment")
+          env_name = env if isinstance(env, str) else (env or {}).get("name")
+          if env_name != "base-mainnet": errs.append("deploy job must use environment base-mainnet")
+          if jobs.get("deploy", {}).get("needs") != "gates": errs.append("deploy must need gates")
+          gates_txt = json.dumps(jobs["gates"])
+          if "SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY" in gates_txt: errs.append("production secret referenced in gates job")
+          names = [s.get("name", "") for s in jobs["deploy"]["steps"]]
+          pre = next((i for i, n in enumerate(names) if n.startswith("Preflight")), -1)
+          bc = next((i for i, n in enumerate(names) if n.startswith("Deploy (single broadcast")), -1)
+          seal = next((i for i, n in enumerate(names) if n.startswith("Seal manifest")), -1)
+          if not (0 <= pre < bc < seal): errs.append("step order must be preflight < broadcast < seal")
+          fork = open(".github/workflows/swap-fork-tests-base-mainnet.yml").read()
+          if "--broadcast" in fork or "PRIVATE_KEY" in fork: errs.append("fork-tests workflow must stay read-only")
+          legacy = open(".github/workflows/deploy-executor-base-mainnet.yml").read()
+          if "contracts/swap" in legacy: errs.append("legacy workflow must not reference contracts/swap")
+          if errs:
+              for e in errs: print("::error::", e)
+              sys.exit(1)
+          print("::notice title=Trust structure::environment only on deploy job; gates secret-free; preflight<broadcast<seal; fork workflow read-only; legacy quarantined")
+          PY
+
+      - name: Owner Safe/multisig verification (only with explicit address input)
+        run: |
+          set -euo pipefail
+          OWNER="${{ inputs.owner_address }}"
+          if [ -z "$OWNER" ]; then
+            echo "::notice title=Owner check skipped::re-run this workflow with owner_address set to the public SWAP_EXECUTOR_OWNER value to verify it is a genuine Safe (the variable itself is not readable by this token)"
+            exit 0
+          fi
+          echo "$OWNER" | grep -Eq '^0x[0-9a-fA-F]{40}$' || { echo "::error::owner_address is not a valid address"; exit 1; }
+          SIZE="$(cast codesize "$OWNER" --rpc-url "$BASE_RPC")"
+          [ "$SIZE" -gt 0 ] || { echo "::error::$OWNER has no bytecode on Base - not a multisig"; exit 1; }
+          # Safe proxies keep the implementation (singleton) address in storage slot 0.
+          SLOT0="$(cast storage "$OWNER" 0 --rpc-url "$BASE_RPC")"
+          SINGLETON="0x${SLOT0: -40}"
+          THRESHOLD="$(cast call "$OWNER" 'getThreshold()(uint256)' --rpc-url "$BASE_RPC" 2>/dev/null || echo FAIL)"
+          OWNERS="$(cast call "$OWNER" 'getOwners()(address[])' --rpc-url "$BASE_RPC" 2>/dev/null || echo FAIL)"
+          VERSION="$(cast call "$OWNER" 'VERSION()(string)' --rpc-url "$BASE_RPC" 2>/dev/null || echo FAIL)"
+          echo "singleton=$SINGLETON threshold=$THRESHOLD version=$VERSION"
+          echo "owners=$OWNERS"
+          case "$(echo "$SINGLETON" | tr 'A-Z' 'a-z')" in
+            0xd9db270c1b5e3bd161e8c8503c55ceabee709552) IMPL="GnosisSafe 1.3.0" ;;
+            0x3e5c63644e683549055b9be8653de26e0b4cd36e) IMPL="GnosisSafeL2 1.3.0" ;;
+            0x41675c099f32341bf84bfc5382af534df5c7461a) IMPL="Safe 1.4.1" ;;
+            0x29fcb43b46531bca003ddc8fcb67ffe91900c762) IMPL="SafeL2 1.4.1" ;;
+            *) IMPL="" ;;
+          esac
+          FAILED=0
+          [ -n "$IMPL" ] || { echo "::error::$OWNER is NOT a recognised Safe proxy (singleton $SINGLETON not a canonical Base Safe implementation) - bytecode presence alone is insufficient"; FAILED=1; }
+          [ "$THRESHOLD" != "FAIL" ] || { echo "::error::getThreshold() failed - not a functioning Safe"; FAILED=1; }
+          [ "$OWNERS" != "FAIL" ] || { echo "::error::getOwners() failed - not a functioning Safe"; FAILED=1; }
+          if [ "$FAILED" = "0" ]; then
+            echo "::notice title=Owner verified::$OWNER is a genuine $IMPL (VERSION=$VERSION) with threshold=$THRESHOLD"
+            if [ "$THRESHOLD" != "FAIL" ] && [ "$THRESHOLD" -lt 2 ] 2>/dev/null; then
+              echo "::notice title=Owner advisory::threshold is $THRESHOLD - consider >= 2 signers for governance ownership"
+            fi
+          else
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "# Swap deployment diagnostics (read-only)"
+            echo
+            echo "- Commit checked out: $(git rev-parse HEAD)"
+            echo "- No protected environment was accessed; no production secret was available to this job."
+            echo "- Gates asserted closed; routing asserted null; fail-closed regressions and trust-structure checks above."
+          } >> "$GITHUB_STEP_SUMMARY"

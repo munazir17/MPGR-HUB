@@ -45,8 +45,9 @@ import {MPGRSwapExecutor} from "../contracts/swap/MPGRSwapExecutor.sol";
 ///         scripts/swap-deploy/finalize-manifest.sh reads the Foundry broadcast
 ///         artifact + the tx receipt, re-reads every pin ON-CHAIN, and only
 ///         then writes the final mpgr-swap-executor.json. A final manifest can
-///         therefore never contain a placeholder ("pending-record" does not
-///         exist anywhere in this pipeline).
+///         therefore never contain a placeholder: the legacy placeholder token
+///         does not appear anywhere in this pipeline except the grep guards
+///         that reject it.
 ///
 ///         Dry run (default, broadcasts nothing; preflight still enforced):
 ///           BASE_MAINNET_DEPLOYER_PRIVATE_KEY=... MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=true \
