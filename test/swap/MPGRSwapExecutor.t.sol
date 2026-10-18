@@ -624,3 +624,216 @@ contract MPGRSwapExecutorTest is Test {
         ex.swapExactInput(p, path, auth());
     }
 }
+
+// =====================================================================
+// Multi-venue, aggregator and split-route suite
+// =====================================================================
+
+/// @dev Pancake V3 fixture: UniV3-shaped params WITHOUT a deadline field.
+contract MockPancakeV3Router is MockRouterBase {
+    struct ExactInputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+        uint160 sqrtPriceLimitX96;
+    }
+
+    function exactInputSingle(ExactInputSingleParams calldata p) external payable returns (uint256) {
+        return _swap(p.tokenIn, p.tokenOut, p.recipient, p.amountIn, p.amountOutMinimum, p.sqrtPriceLimitX96);
+    }
+}
+
+/// @dev Stand-in for the 0x Settler deployer registry (ERC-721 feature owner).
+contract MockSettlerRegistry {
+    address public settler;
+    function set(address s) external { settler = s; }
+    function ownerOf(uint256 tokenId) external view returns (address) {
+        require(tokenId == 2, "feature");
+        return settler;
+    }
+}
+
+/// @dev Stand-in for the 0x AllowanceHolder: pulls via the taker's allowance,
+///      exactly like the real one (msg.sender == approved spender).
+contract MockAllowanceHolder {
+    function pull(address token, uint256 amount, address to, address taker) external {
+        IERC20Like(token).transferFrom(taker, to, amount);
+    }
+}
+interface IERC20Like { function transferFrom(address from, address to, uint256 amount) external returns (bool); }
+
+/// @dev Untrusted-calldata stand-in: the "quote payload" chooses recipient and
+///      rate, exactly like a real Settler call would; effects are what we test.
+contract MockSettler {
+    MockAllowanceHolder public constant AH = MockAllowanceHolder(0x0000000000001fF3684f28c67538d4D072C22734);
+    function settle(address tokenIn, uint256 amount, address tokenOut, address outputTo, uint256 rate, address taker) external {
+        AH.pull(tokenIn, amount, address(this), taker);
+        // deterministic "route": mint output at `rate` bps of input
+        MockPermitToken(tokenOut).mint(outputTo, (amount * rate) / 10000);
+    }
+}
+
+contract MPGRSwapExecutorVenuesTest is Test {
+    E ex;
+    MockPermitToken a;
+    MockPermitToken b;
+    MockWETH9 w;
+    MockSwapV2Router v2;
+    MockClassicRouter classic;
+    MockPancakeV3Router pancake;
+    MockFactoryHub hub;
+    MockPool pool;
+    MockSettlerRegistry registry;
+    MockAllowanceHolder ah;
+    MockSettler settler;
+    address taker = address(0xA11CE);
+    address stranger = address(0xB0B);
+    address fee = 0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4;
+    uint256 constant G = 1_000_000;
+
+    function setUp() public {
+        a = new MockPermitToken("USDC mock", "USDC", 6);
+        b = new MockPermitToken("Token mock", "TOKEN", 18);
+        w = new MockWETH9();
+        v2 = new MockSwapV2Router();
+        classic = new MockClassicRouter();
+        pancake = new MockPancakeV3Router();
+        hub = new MockFactoryHub();
+        pool = new MockPool();
+        ah = new MockAllowanceHolder();
+        MockSettlerRegistry reg = new MockSettlerRegistry();
+        settler = new MockSettler();
+        E.RouterConfig[] memory routers = new E.RouterConfig[](5);
+        routers[0] = E.RouterConfig(address(v2), E.RouterKind.UNISWAP_V2_ROUTER02, address(hub));
+        routers[1] = E.RouterConfig(address(classic), E.RouterKind.AERODROME_CLASSIC, address(hub));
+        routers[2] = E.RouterConfig(address(pancake), E.RouterKind.PANCAKE_V3, address(hub));
+        routers[3] = E.RouterConfig(address(new MockSlipstreamRouter()), E.RouterKind.AERODROME_SLIPSTREAM, address(hub));
+        routers[4] = E.RouterConfig(address(new MockUniswapV3Router02()), E.RouterKind.UNISWAP_V3_ROUTER02, address(hub));
+        ex = new E(address(this), address(w), address(new MockPermit2()), routers, 25, fee);
+        // Place the mocks at the protocol-pinned addresses so the constants
+        // under test are exercised exactly as on Mainnet.
+        vm.etch(ex.ZEROX_ALLOWANCE_HOLDER(), address(ah).code);
+        vm.etch(ex.ZEROX_SETTLER_DEPLOYER(), address(reg).code);
+        registry = MockSettlerRegistry(ex.ZEROX_SETTLER_DEPLOYER());
+        registry.set(address(settler));
+        a.mint(taker, 1e24);
+        b.mint(taker, 1e24);
+        a.mint(address(v2), 1e24); a.mint(address(classic), 1e24); a.mint(address(pancake), 1e24);
+        b.mint(address(v2), 1e24); b.mint(address(classic), 1e24); b.mint(address(pancake), 1e24);
+        b.mint(address(settler), 0); // settle() mints output itself
+        hub.set(address(a), address(b), keccak256(abi.encodePacked("v3", uint24(2500))), address(pool));
+        hub.set(address(a), address(b), bytes32("v2"), address(pool));
+        hub.set(address(a), address(b), bytes32("volatile"), address(pool));
+        vm.prank(taker);
+        a.approve(address(ex), type(uint256).max);
+        vm.deal(taker, 1 ether);
+    }
+
+    function params(address out, uint256 minOut) internal view returns (E.SwapParams memory p) {
+        p = E.SwapParams(address(v2), address(a), out, G, G * 25 / 10000, minOut, taker, block.timestamp + 60, bytes32("i"), false);
+    }
+
+    function authz() internal pure returns (E.Authorization memory z) {}
+
+    function testPancakeV3TypedHopExecutesWithFactoryVerifiedPool() public {
+        E.SwapParams memory p = params(address(b), 1);
+        p.router = address(pancake);
+        E.Hop[] memory path = new E.Hop[](1);
+        path[0] = E.Hop(address(pancake), address(b), E.RouterKind.PANCAKE_V3, 2500, 0, false, address(pool));
+        vm.prank(taker);
+        uint256 out = ex.swapExactInput(p, path, authz());
+        assertGt(out, 0);
+        // Wrong fee tier for this kind is rejected like every CLMM adapter.
+        path[0] = E.Hop(address(pancake), address(b), E.RouterKind.PANCAKE_V3, 3000, 0, false, address(pool));
+        vm.expectRevert(abi.encodeWithSelector(E.InvalidPoolFee.selector, 3000));
+        vm.prank(taker);
+        ex.swapExactInput(p, path, authz());
+    }
+
+    function testAggregatorPathAuthenticatesTargetAndMeasuresOutput() public {
+        E.SwapParams memory p = params(address(b), 900_000);
+        p.router = address(settler);
+        E.AggregatorCall memory agg = E.AggregatorCall(address(settler), abi.encodeCall(MockSettler.settle, (address(a), G - G * 25 / 10000, address(b), taker, 10000, address(ex))), block.timestamp + 60);
+        uint256 beforeB = b.balanceOf(taker);
+        vm.prank(taker);
+        uint256 out = ex.swapViaAggregator(p, agg, authz());
+        assertEq(out, b.balanceOf(taker) - beforeB, "measured at the taker");
+        assertEq(out, 997_500, "rate applied to (G - fee)");
+        assertEq(a.balanceOf(fee), G * 25 / 10000, "atomic fee on gross");
+        assertEq(a.allowance(address(ex), ex.ZEROX_ALLOWANCE_HOLDER()), 0, "no dangling approval");
+    }
+
+    function testAggregatorRejectsUnauthenticatedTargetAndStaleDeadline() public {
+        E.SwapParams memory p = params(address(b), 1);
+        MockSettler rogue = new MockSettler();
+        p.router = address(rogue);
+        E.AggregatorCall memory agg = E.AggregatorCall(address(rogue), "", block.timestamp + 60);
+        vm.expectRevert(abi.encodeWithSelector(E.AggregatorTargetNotAuthenticated.selector, address(rogue)));
+        vm.prank(taker);
+        ex.swapViaAggregator(p, agg, authz());
+        // Registry rotation mid-quote: previously-authenticated target now stale.
+        p.router = address(settler);
+        agg = E.AggregatorCall(address(settler), "", block.timestamp + 60);
+        registry.set(address(rogue));
+        vm.expectRevert(abi.encodeWithSelector(E.AggregatorTargetNotAuthenticated.selector, address(settler)));
+        vm.prank(taker);
+        ex.swapViaAggregator(p, agg, authz());
+        // Expired quote deadline.
+        registry.set(address(settler));
+        agg.deadline = block.timestamp - 1;
+        vm.expectRevert();
+        vm.prank(taker);
+        ex.swapViaAggregator(p, agg, authz());
+    }
+
+    function testAggregatorMaliciousRecipientOrShortOutputReverts() public {
+        // Payload sending output to a stranger: measured minimum catches it.
+        E.SwapParams memory p = params(address(b), 900_000);
+        p.router = address(settler);
+        E.AggregatorCall memory agg = E.AggregatorCall(address(settler), abi.encodeCall(MockSettler.settle, (address(a), G - G * 25 / 10000, address(b), stranger, 10000, address(ex))), block.timestamp + 60);
+        vm.expectRevert();
+        vm.prank(taker);
+        ex.swapViaAggregator(p, agg, authz());
+        assertEq(b.balanceOf(taker), 1e24, "taker untouched after revert");
+        // Typed routers can never be passed as an aggregator target.
+        p.router = address(v2);
+        agg.target = address(v2);
+        vm.expectRevert();
+        vm.prank(taker);
+        ex.swapViaAggregator(p, agg, authz());
+    }
+
+    function testSplitRouteBatchSumsLegsAndChargesFeePerLeg() public {
+        E.SwapParams memory p1 = params(address(b), 1);
+        E.SwapParams memory p2 = params(address(b), 1);
+        p2.router = address(classic);
+        p2.grossAmountIn = G; p2.expectedFeeAmount = G * 25 / 10000;
+        E.Hop[] memory h1 = new E.Hop[](1);
+        h1[0] = E.Hop(address(v2), address(b), E.RouterKind.UNISWAP_V2_ROUTER02, 0, 0, false, address(pool));
+        E.Hop[] memory h2 = new E.Hop[](1);
+        h2[0] = E.Hop(address(classic), address(b), E.RouterKind.AERODROME_CLASSIC, 0, 0, false, address(pool));
+        E.SwapParams[] memory ps = new E.SwapParams[](2);
+        ps[0] = p1; ps[1] = p2;
+        E.Hop[][] memory paths = new E.Hop[][](2);
+        paths[0] = h1; paths[1] = h2;
+        E.Authorization[] memory zs = new E.Authorization[](2);
+        a.mint(taker, G); // second leg's gross
+        uint256 beforeB = b.balanceOf(taker);
+        vm.prank(taker);
+        uint256 total = ex.swapExactInputBatch(ps, paths, zs);
+        assertEq(total, b.balanceOf(taker) - beforeB);
+        assertEq(a.balanceOf(fee), 2 * (G * 25 / 10000), "fee per leg on gross");
+        // Mismatched pairs or native value in a batch are rejected.
+        ps[1].tokenOut = address(w);
+        vm.expectRevert(E.BatchMismatch.selector);
+        vm.prank(taker);
+        ex.swapExactInputBatch(ps, paths, zs);
+        ps[1].tokenOut = address(b);
+        vm.expectRevert(E.NativeInBatchUnsupported.selector);
+        vm.prank(taker);
+        ex.swapExactInputBatch{value: 1}(ps, paths, zs);
+    }
+}
