@@ -17,6 +17,8 @@ export const SwapRouterKind = {
   UNISWAP_V3_ROUTER02: 2,
   UNISWAP_V2_ROUTER02: 3,
   AERODROME_CLASSIC: 4,
+  PANCAKE_V3: 5,
+  ZEROX_SETTLER: 6,
 } as const;
 export type SwapRouterKindValue = (typeof SwapRouterKind)[keyof typeof SwapRouterKind];
 export type SwapVenueKind = Exclude<SwapRouterKindValue, typeof SwapRouterKind.NONE>;
@@ -52,6 +54,12 @@ export const SWAP_PATH_VENUES = {
     factory: "0x420DD381b31aEf6683db6B902084cB0FFECe40Da",
     quoter: null,
   },
+  pancakeV3: {
+    kind: SwapRouterKind.PANCAKE_V3,
+    router: "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
+    factory: "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+    quoter: null, // quoted by simulating the typed hop; no trusted quoter pin
+  },
 } as const satisfies Record<string, { kind: SwapVenueKind; router: Address; factory: Address; quoter: Address | null }>;
 export type SwapVenueName = keyof typeof SWAP_PATH_VENUES;
 
@@ -71,12 +79,44 @@ export interface SwapPathExecutorDeployment {
   deployBlock: number;
   explorerUrl: string;
   venues: readonly SwapExecutorVenue[];
-  /** Allowlisted sell/buy tokens (WETH address represents native ETH too). */
-  tokens: readonly Address[];
+  /** Fee terms verified ON-CHAIN at manifest review time. Tokens are
+   * permissionless on-chain, so no token allowlist is part of the manifest. */
+  feeBps: number;
+  maxFeeBps: number;
+  feeTimelockSeconds: number;
+  feeRecipient: Address;
+  /** Informational only (legacy catalog); never an execution gate. */
+  tokens?: readonly Address[];
 }
+
+/** Chain-scoped swap configuration. Base is the first (and currently only)
+ * release chain; adding a network means adding one entry here plus a
+ * deployments/<chain>/ manifest — no cross-chain routing is claimed. */
+export const SWAP_CHAIN_REGISTRY = {
+  8453: {
+    name: "Base",
+    venues: SWAP_PATH_VENUES,
+    weth: "0x4200000000000000000000000000000000000006" as Address,
+    permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3" as Address,
+    manifest: "deployments/base-mainnet/mpgr-swap-executor.json",
+    explorerUrl: "https://basescan.org",
+  },
+} as const;
+
+/** 0x Swap API v2 (Base): quote source only. Execution goes through the
+ * executor's authenticated-settler path, never raw API calldata in the UI. */
+export const ZEROX_API_BASE = "https://base.api.0x.org";
+export const ZEROX_ALLOWANCE_HOLDER: Address = "0x0000000000001fF3684f28c67538d4D072C22734";
+export const ZEROX_SETTLER_DEPLOYER: Address = "0x00000000000004533Fe15556B1E086BB1A72cEae";
+export const ZEROX_TAKER_FEATURE_ID = 2n;
 
 /** NOT DEPLOYED. Fill only from a reviewed, on-chain-verified manifest after
  * explicit owner approval; until then every path route stays non-executable. */
+/** Fee actually enforced by the deployed executor (manifest-pinned at review
+ * time); falls back to the initial policy fee while dormant. */
+export const swapPathFeeBps = (deployment: SwapPathExecutorDeployment | null = SWAP_PATH_EXECUTOR_DEPLOYMENT): number =>
+  deployment?.feeBps ?? SWAP_FEE_BPS;
+
 export const SWAP_PATH_EXECUTOR_DEPLOYMENT: SwapPathExecutorDeployment | null = null;
 
 let testDeployment: SwapPathExecutorDeployment | null | undefined;
@@ -89,7 +129,7 @@ export const swapPathExecutor = (): SwapPathExecutorDeployment | null => testDep
 export const swapPathVenue = (deployment: SwapPathExecutorDeployment, kind: SwapVenueKind): SwapExecutorVenue | undefined =>
   deployment.venues.find(v => v.kind === kind);
 export const swapPathTokenAllowed = (deployment: SwapPathExecutorDeployment, address: string): boolean =>
-  deployment.tokens.some(t => t.toLowerCase() === address.toLowerCase());
+  (deployment.tokens ?? []).some(t => t.toLowerCase() === address.toLowerCase());
 export const swapV3PoolFees: readonly UniswapV3PoolFee[] = UNISWAP_V3_POOL_FEES;
 export const SWAP_PATH_EXECUTOR_NOT_DEPLOYED_MESSAGE =
   "These route shapes need the fixed-fee MPGRSwapExecutor contract. Its source and tests are complete, but it is not deployed; activation requires explicit approval. No fee-less fallback exists.";

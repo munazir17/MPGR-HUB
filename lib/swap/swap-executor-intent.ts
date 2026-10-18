@@ -6,13 +6,16 @@ import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 import { MPGR_SWAP_EXECUTOR_ABI } from "./swap-executor-abi";
 import {
-  SWAP_FEE_BPS, SWAP_FEE_RECIPIENT, SWAP_MAX_PATH_HOPS, SWAP_PATH_VENUES, swapV3PoolFees,
+  SWAP_FEE_BPS, SWAP_FEE_RECIPIENT, SWAP_MAX_PATH_HOPS, SWAP_PATH_VENUES, swapPathExecutor, swapPathFeeBps, swapV3PoolFees,
   type SwapPathExecutorDeployment, type SwapVenueKind,
 } from "./swap-executor-config";
 import { swapPathAsset } from "./swap-path-candidates";
 
 export const SWAP_FEE_DENOMINATOR = 10_000n;
-export const swapPathFeeFloor = (gross: bigint): bigint => (gross * BigInt(SWAP_FEE_BPS)) / SWAP_FEE_DENOMINATOR;
+/// @dev floor(gross * currentGovernedBps / 10000); the manifest pins the bps the
+/// deployed executor was verified with, so UI, quote and contract stay identical.
+export const swapPathFeeFloor = (gross: bigint, deployment: SwapPathExecutorDeployment | null = swapPathExecutor()): bigint =>
+  (gross * BigInt(swapPathFeeBps(deployment))) / SWAP_FEE_DENOMINATOR;
 
 export interface SwapPathHopIntent {
   kind: SwapVenueKind;
@@ -61,7 +64,7 @@ export function inspectSwapExecutorTransaction(
     if (p.tokenIn.toLowerCase() !== tokenIn.toLowerCase() || p.tokenOut.toLowerCase() !== tokenOut.toLowerCase()) return fail("Swap path tokens differ from the reviewed pair.");
     if (p.recipient.toLowerCase() !== ctx.taker.toLowerCase()) return fail("Swap output recipient must be the quoted taker.");
     if (p.unwrapNativeOut !== ctx.nativeOut) return fail("Native unwrap flag does not match the reviewed pair.");
-    if (p.expectedFeeAmount !== swapPathFeeFloor(p.grossAmountIn)) return fail("The committed fee is not floor(gross*25/10000).");
+    if (p.expectedFeeAmount !== swapPathFeeFloor(p.grossAmountIn)) return fail("The committed fee is not floor(gross*feeBps/10000) at the governed fee.");
     if (p.amountOutMinimum <= 0n) return fail("Invalid minimum output.");
     if (!Array.isArray(path) || path.length === 0 || path.length > SWAP_MAX_PATH_HOPS) return fail("Swap path must contain one to three typed hops.");
     if (p.router.toLowerCase() !== path[0].router.toLowerCase()) return fail("First hop router must equal the swap router parameter.");

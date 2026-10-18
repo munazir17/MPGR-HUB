@@ -21,7 +21,7 @@ const TAKER: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
 
 const deployment: SwapPathExecutorDeployment = {
   chainId: 8453, executor: EXECUTOR, owner: TAKER, weth: BASE_WETH, permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
-  deployTx: ("0x" + "11".repeat(32)) as `0x${string}`, deployBlock: 1, explorerUrl: "https://basescan.org/address/0x51",
+  deployTx: ("0x" + "11".repeat(32)) as `0x${string}`, deployBlock: 1, feeBps: 25, maxFeeBps: 100, feeTimelockSeconds: 172800, feeRecipient: SWAP_FEE_RECIPIENT, explorerUrl: "https://basescan.org/address/0x51",
   venues: [SWAP_PATH_VENUES.uniswapV2, SWAP_PATH_VENUES.aerodromeClassic, SWAP_PATH_VENUES.uniswapV3, SWAP_PATH_VENUES.slipstream],
   tokens: [BASE_WETH, BASE_USDC, TOKEN_A, TOKEN_B],
 };
@@ -98,7 +98,12 @@ describe("deployment gating", () => {
     expect(swapPathExecutor()).toBeNull();
     expect(swapPathPairEligible(TOKEN_A, TOKEN_B)).toBe(false);
     expect(swapPathPairEligible(TOKEN_A, TOKEN_B, deployment)).toBe(true);
-    expect(swapPathPairEligible(TOKEN_A, "0xd4000000000000000000000000000000000000dd", deployment)).toBe(false);
+    // Permissionless discovery: an never-catalogued token is eligible for
+    // route SEARCH once a manifest exists; execution still requires a
+    // factory-verified pool and a fresh quote per trade (quote layer).
+    const imported = "0xd4000000000000000000000000000000000000dd";
+    expect(swapPathPairEligible(TOKEN_A, imported, deployment)).toBe(true);
+    expect(swapPathPairEligible(TOKEN_A, imported, null)).toBe(false);
   });
 });
 

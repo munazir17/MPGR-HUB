@@ -18,7 +18,7 @@ export interface SwapPathHop {
   tokenOut: Address;
 }
 export interface SwapPathCandidate { hops: readonly SwapPathHop[] }
-export const MAX_SWAP_PATH_CANDIDATES = 10;
+export const MAX_SWAP_PATH_CANDIDATES = 14;
 export const SWAP_PATH_BRIDGES: readonly Address[] = [BASE_WETH, BASE_USDC];
 
 export const swapPathAsset = (address: string): Address =>
