@@ -424,6 +424,11 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     ///      approval is exactly (G - fee) to the canonical AllowanceHolder,
     ///      (5) input consumption and output are measured, min-out enforced,
     ///      (6) atomic fee on gross input, (7) nonReentrant + paused guards.
+    // slither-disable-start reentrancy-balance
+    // Justification: the pre-call balance read and the post-call equality check
+    // ARE the containment invariant (input must be untouched except the exact
+    // approved pull); the entry is nonReentrant and the callee is authenticated
+    // on-chain, so no interleaved call can move these balances.
     function swapViaAggregator(SwapParams calldata p, AggregatorCall calldata agg, Authorization calldata auth)
         external
         nonReentrant
@@ -457,6 +462,7 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         emit SwapPathExecuted(p.intentId, keccak256(abi.encode(p.tokenIn, agg.target)), 0);
         return t.amountOut;
     }
+    // slither-disable-end reentrancy-balance
 
     /// @notice Split-route execution: several independent legs of the SAME pair
     ///         in one atomic transaction (e.g. 60/40 across venues). Each leg
@@ -617,6 +623,11 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     // Internal — trade lifecycle
     // ---------------------------------------------------------------------
 
+    // slither-disable-start msg-value-loop
+    // Justification: msg.value is read here only to route the native-input
+    // branch. swapExactInputBatch reverts for any nonzero msg.value BEFORE its
+    // loop, so inside a batch msg.value is the constant 0 and no leg can ever
+    // double-spend native value; the single-leg entries are not loops.
     // slither-disable-start reentrancy-balance
     // Justification: `inBalanceBefore` is read before the pull ON PURPOSE — the
     // before/after delta is how fee-on-transfer/rebasing sell tokens are
@@ -668,6 +679,7 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         t.outBalanceBefore = IERC20(p.tokenOut).balanceOf(t.outReceiver);
     }
     // slither-disable-end reentrancy-balance
+    // slither-disable-end msg-value-loop
 
     function _finish(SwapParams calldata p, Trade memory t) private returns (uint256) {
         IERC20 tokenIn = IERC20(p.tokenIn);
