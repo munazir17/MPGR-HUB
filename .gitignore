@@ -16,6 +16,7 @@ cache/
 .env*
 tsconfig.tsbuildinfo
 next-env.d.ts
+.forge-deps
 .forge-deps/
 
 # MPGR Executor: forge script broadcasts (uploaded as CI artifacts instead),

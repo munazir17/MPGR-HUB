@@ -277,6 +277,10 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     }
     // slither-disable-end reentrancy-balance
 
+    // slither-disable-start reentrancy-balance
+    // Justification: beforeIn/beforeOut are intentional pre-call snapshots; the
+    // hop output is MEASURED as a post-call balance delta, and every trading
+    // entry point is nonReentrant, so no interleaved call can move it.
     /// @dev Runs one hop and measures its actual output at the receiver.
     function _runHop(Hop calldata h, address tokenIn, address receiver, uint256 amount, uint256 minimum, uint256 deadline)
         private returns (uint256 out)
@@ -293,6 +297,8 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         out = IERC20(h.tokenOut).balanceOf(receiver) - beforeOut;
         if (out == 0) revert ZeroAmount();
     }
+
+    // slither-disable-end reentrancy-balance
 
     function _validateHop(Hop calldata h, address tokenIn) private view {
         if (h.kind == RouterKind.NONE || routerKind[h.router] != h.kind) revert RouterNotAllowed(h.router, h.kind);

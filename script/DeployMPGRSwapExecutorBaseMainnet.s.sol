@@ -34,8 +34,8 @@ contract DeployMPGRSwapExecutorBaseMainnet is Script {
     address internal constant UNI_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
     address internal constant SLIP_ROUTER = 0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F;
     address internal constant SLIP_FACTORY = 0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef;
-    address internal constant V2_ROUTER = 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24;
-    address internal constant V2_FACTORY = 0x8909dc15e40173ff4699343b6eb8132c65e18ec6;
+    address internal constant V2_ROUTER = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
+    address internal constant V2_FACTORY = 0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6;
     address internal constant CLASSIC_ROUTER = 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43;
     address internal constant CLASSIC_FACTORY = 0x420DD381b31aEf6683db6B902084cB0FFECe40Da;
 
@@ -73,11 +73,11 @@ contract DeployMPGRSwapExecutorBaseMainnet is Script {
         console2.log("MPGRSwapExecutor deployed at", address(executor));
         string memory manifest = string(
             abi.encodePacked(
-                '{"chainId":8453,"executor":"', vm.addrToString(address(executor)),
-                '","owner":"', vm.addrToString(owner),
-                '","feeBps":25,"feeRecipient":"', vm.addrToString(FEE_RECIPIENT_PIN),
-                '","deployTx":"pending-record","weth":"', vm.addrToString(WETH),
-                '","permit2":"', vm.addrToString(PERMIT2), '"}'
+                '{"chainId":8453,"executor":"', vm.toString(address(executor)),
+                '","owner":"', vm.toString(owner),
+                '","feeBps":25,"feeRecipient":"', vm.toString(FEE_RECIPIENT_PIN),
+                '","deployTx":"pending-record","weth":"', vm.toString(WETH),
+                '","permit2":"', vm.toString(PERMIT2), '"}'
             )
         );
         vm.writeFile("./deployments/base-mainnet/mpgr-swap-executor.json", manifest);

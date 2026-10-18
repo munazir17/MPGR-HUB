@@ -15,7 +15,7 @@ function viewportCases(){
   await page.getByRole("button",{name:"You receive token: ETH",exact:true}).click();
   for(const symbol of ["ETH","WETH","USDC"]){const option=page.getByRole("button",{name:`Select ${symbol} ${token(symbol).address}`,exact:true});await expect(option).toContainText(token(symbol).name);await expect(option.locator("img")).toHaveAttribute("src",`/tokens/base/${token(symbol).address.toLowerCase()}.png`);await expect.poll(()=>option.locator("img").evaluate(e=>(e as HTMLImageElement).naturalWidth>0)).toBe(true);}
   await page.screenshot({path:info.outputPath("selector-logos.png"),fullPage:true});
-  await expect(page.getByRole("button",{name:`Select ETH ${NATIVE_ETH_SENTINEL}`,exact:true})).toContainText("no ERC-20 contract");
+  await expect(page.getByRole("button",{name:`Select ETH ${NATIVE_ETH_SENTINEL}`,exact:true})).toContainText("Native Base asset");
   await page.getByRole("button",{name:`Select WETH ${BASE_WETH}`,exact:true}).click();await expect(page.getByTestId("receive-panel")).toContainText("Wrapped Ether");await expect(page.getByTestId("receive-panel")).toContainText("Balance: 100");await imageLoaded(page,"receive");await page.screenshot({path:info.outputPath("weth-selected.png"),fullPage:true});
   await select(page,"receive","AAPLc");await expect(page.getByTestId("receive-panel").getByTestId("token-logo-fallback")).toHaveCount(1);await expect(page.getByTestId("receive-panel").locator("img")).toHaveCount(0);expect(await walletCalls(page)).not.toContain("simulated-send");await evidence(page,info,state.trace);
  });

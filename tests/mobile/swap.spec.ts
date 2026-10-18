@@ -322,7 +322,7 @@ test("Swap: published-list discovery checks exact Base metadata without granting
   await expect(page.getByRole("button", { name: `Select AERO ${aero}`, exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Check AERO on Base", exact: true }).tap();
   const imported = page.getByRole("button", { name: `Select AERO ${aero}`, exact: true });
-  await expect(imported).toBeDisabled(); await expect(imported).toContainText("trading is not supported in MPGR Swap yet");
+  await expect(imported).toBeDisabled(); await expect(imported).toContainText("Route not supported"); await expect(imported).toHaveAttribute("title", /trading is not supported in MPGR Swap yet/);
   expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });
 test("Swap: token-list outage is temporary unavailability, never missing liquidity or successful import", async ({ page }, info) => {
