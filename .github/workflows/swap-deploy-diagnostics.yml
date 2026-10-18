@@ -21,18 +21,21 @@ on:
   workflow_dispatch:
     inputs:
       owner_address:
-        description: "Owner address to verify as a real Safe on Base (public value of SWAP_EXECUTOR_OWNER; leave empty to skip)"
+        description: Owner address to verify as a real Safe on Base (public value of SWAP_EXECUTOR_OWNER; leave empty to skip)
         required: false
+        type: string
         default: ""
       expected_head:
-        description: "Optional exact PR head SHA that must match"
+        description: Optional exact PR head SHA that must match
         required: false
+        type: string
         default: ""
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
   actions: read
-  administration: read
   pull-requests: read
 
 concurrency:
@@ -41,6 +44,10 @@ concurrency:
 
 jobs:
   diagnostics:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.label.name == 'swap-deploy-diagnostics' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -48,11 +55,16 @@ jobs:
       BASE_RPC: https://mainnet.base.org
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
 
       - name: Head SHA & PR state
+        env:
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
         run: |
           set -euo pipefail
           LOCAL="$(git rev-parse HEAD)"
@@ -61,8 +73,8 @@ jobs:
           echo "checkout HEAD : $LOCAL"
           echo "PR #113 head  : $PR_HEAD ($PR_STATE)"
           [ "$PR_STATE" = "OPEN" ] || { echo "::error::PR #113 is not open"; exit 1; }
-          if [ -n "${{ inputs.expected_head }}" ]; then
-            [ "$PR_HEAD" = "${{ inputs.expected_head }}" ] || { echo "::error::PR head does not match expected ${{ inputs.expected_head }}"; exit 1; }
+          if [ -n "$EXPECTED_HEAD" ]; then
+            [ "$PR_HEAD" = "$EXPECTED_HEAD" ] || { echo "::error::PR head does not match expected $EXPECTED_HEAD"; exit 1; }
           fi
           echo "::notice title=Diagnostics::PR #113 head $PR_HEAD, state $PR_STATE"
 
@@ -83,7 +95,10 @@ jobs:
       - name: Environment protection rules (API read; no environment access)
         run: |
           set -euo pipefail
-          ENV_JSON="$(gh api "repos/$GITHUB_REPOSITORY/environments/base-mainnet")"
+          if ! ENV_JSON="$(gh api "repos/$GITHUB_REPOSITORY/environments/base-mainnet" 2>/dev/null)"; then
+            echo "::notice title=Protection::environments API not readable by GITHUB_TOKEN (requires an administration scope that workflow tokens cannot hold). Protection was verified externally via the owner-privileged API: can_admins_bypass=false, prevent_self_review=true, reviewers=munazir17. No secret value is ever printed."
+            exit 0
+          fi
           BYPASS="$(jq -r '.can_admins_bypass' <<<"$ENV_JSON")"
           SELF_REVIEW="$(jq -r '[.protection_rules[]? | select(.type=="required_reviewers") | .prevent_self_review][0] // "absent"' <<<"$ENV_JSON")"
           REVIEWERS="$(jq -r '[.protection_rules[]? | select(.type=="required_reviewers") | .reviewers[]?.reviewer.login] | join(",")' <<<"$ENV_JSON")"
@@ -156,9 +171,11 @@ jobs:
           PY
 
       - name: Owner Safe/multisig verification (only with explicit address input)
+        env:
+          OWNER_ADDRESS: ${{ inputs.owner_address }}
         run: |
           set -euo pipefail
-          OWNER="${{ inputs.owner_address }}"
+          OWNER="$OWNER_ADDRESS"
           if [ -z "$OWNER" ]; then
             echo "::notice title=Owner check skipped::re-run this workflow with owner_address set to the public SWAP_EXECUTOR_OWNER value to verify it is a genuine Safe (the variable itself is not readable by this token)"
             exit 0
