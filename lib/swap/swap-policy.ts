@@ -2,6 +2,9 @@
 import { type Address } from "viem";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment, findExecutorRoute, RouterKind } from "@/lib/executor/executor-config";
 import { swapRoutingEvidence, swapRoutingEvidenceValid } from "./swap-route-candidates";
+import { swapPathExecutor } from "./swap-executor-config";
+import { inspectSwapExecutorTransaction, verifySwapPathSettlement } from "./swap-executor-intent";
+import { swapPathRoutingEvidence, swapPathRoutingEvidenceValid } from "./swap-path-evidence";
 import { inspectExecutorSwapTransaction, type ExecutorSwapIntent } from "@/lib/executor/executor-intent";
 import { verifyExecutorReceipt, type ReceiptLike } from "@/lib/executor/executor-verify";
 import { verifyAgentFeeInSwapTransaction } from "@/lib/trade/trade-agent-fee";
@@ -29,6 +32,20 @@ export function swapFeePolicyError(p: TradeProposal): string | null {
     if (!fee.ok || !fee.fee) return fee.ok ? SWAP_FEE_BLOCK : fee.reason;
     if (p.agentFee.recipient?.toLowerCase() !== deployment.feeRecipient.toLowerCase()) return SWAP_FEE_BLOCK;
     if (!p.transaction || p.permit2 || p.chainId !== 8453) return "Invalid Base Executor proposal.";
+    const swapPathDeployment = swapPathExecutor();
+    if (swapPathDeployment && p.transaction.to.toLowerCase() === swapPathDeployment.executor.toLowerCase()) {
+      const pathIntent = inspectSwapExecutorTransaction(p.transaction, { deployment: swapPathDeployment, fromAddress: p.from.address, toAddress: p.to.address, taker: p.taker, nativeIn: isNativeEthSentinel(p.from.address), nativeOut: isNativeEthSentinel(p.to.address) });
+      if (!pathIntent.ok) return pathIntent.reason;
+      const y = pathIntent.value;
+      const pathEvidence = swapPathRoutingEvidence(p);
+      if (pathEvidence !== undefined && !swapPathRoutingEvidenceValid(p, pathEvidence)) return "The route search evidence does not match this transaction. Request a fresh quote.";
+      if (y.grossAmountIn !== BigInt(p.fromAmount) || y.expectedFeeAmount !== fee.fee.amount ||
+          y.amountOutMinimum !== BigInt(p.minToAmount) || y.amountOutMinimum <= 0n || y.amountOutMinimum > BigInt(p.toAmount) ||
+          y.recipient.toLowerCase() !== p.taker.toLowerCase() || y.unwrapNativeOut !== isNativeEthSentinel(p.to.address) ||
+          BigInt(p.transaction.value) !== (isNativeEthSentinel(p.from.address) ? BigInt(p.fromAmount) : 0n) ||
+          y.hops.length < 1 || y.hops.some(h => BigInt(h.pool) === 0n)) return "The executable path transaction does not match the reviewed tokens, amounts, recipient, minimum or route.";
+      return null;
+    }
     const inspected = inspectExecutorSwapTransaction(p.transaction);
     if (!inspected.ok) return inspected.reason;
     const x = inspected.value;
@@ -68,6 +85,11 @@ export function verifySwapSettlement(p: TradeProposal, receipt: ReceiptLike): Sw
   try {
     const invalid = swapFeePolicyError(p);
     if (invalid || !p.transaction) return unknown(invalid ?? "Missing transaction.");
+    const swapPathDeployment = swapPathExecutor();
+    if (swapPathDeployment && p.transaction.to.toLowerCase() === swapPathDeployment.executor.toLowerCase()) {
+      const proof = verifySwapPathSettlement(p, swapPathDeployment, receipt);
+      return proof.verified ? { verified: true, amountIn: proof.amountIn, amountOut: proof.amountOut, feeAmount: proof.feeAmount, feeRecipient: proof.feeRecipient, reason: null } : unknown(proof.reason ?? "Swap settlement unverified.");
+    }
     const inspected = inspectExecutorSwapTransaction(p.transaction);
     if (!inspected.ok) return unknown(inspected.reason);
     const x = inspected.value;

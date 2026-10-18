@@ -43,6 +43,8 @@ import {
 import { erc20Abi } from "@/lib/erc20-abi";
 import { config } from "@/lib/wagmi";
 import { inspectExecutorSwapTransaction } from "@/lib/executor/executor-intent";
+import { swapPathExecutor } from "@/lib/swap/swap-executor-config";
+import { inspectSwapExecutorTransaction } from "@/lib/swap/swap-executor-intent";
 import { verifyAgentFeeInSwapTransaction } from "./trade-agent-fee";
 import {
   MPGR_EXECUTOR_PROVIDER_ID,
@@ -462,6 +464,26 @@ export async function executeTrade(
     }
     if (feeInvariant.fee) {
       const grossAmountIn = parsePositiveAmount(proposal.fromAmount);
+      const swapPathDeployment = swapPathExecutor();
+      if (swapPathDeployment !== null && tx.to.toLowerCase() === swapPathDeployment.executor.toLowerCase()) {
+        const inspectedPath = inspectSwapExecutorTransaction({ to: tx.to, data: tx.data, value: tx.value }, { deployment: swapPathDeployment, fromAddress: proposal.from.address, toAddress: proposal.to.address, taker: account, nativeIn: isNativeEthSentinel(proposal.from.address), nativeOut: isNativeEthSentinel(proposal.to.address) });
+        if (
+          proposal.permit2 !== null ||
+          !inspectedPath.ok ||
+          grossAmountIn === null ||
+          inspectedPath.value.grossAmountIn !== grossAmountIn ||
+          inspectedPath.value.expectedFeeAmount !== feeInvariant.fee.amount ||
+          inspectedPath.value.recipient.toLowerCase() !== account.toLowerCase() ||
+          BigInt(tx.value || "0") !== (isNativeEthSentinel(proposal.from.address) ? grossAmountIn : 0n)
+        ) {
+          const snapshot = fail(
+            "INVALID_INPUT",
+            "The swap transaction does not match the quoted MPGR fee collected by the Swap executor — nothing was signed.",
+          );
+          onChange(snapshot);
+          return snapshot;
+        }
+      } else {
       const inspected = inspectExecutorSwapTransaction({ to: tx.to, data: tx.data });
       const nativeSell = isNativeEthSentinel(proposal.from.address);
       const value = BigInt(tx.value || "0");
@@ -480,6 +502,7 @@ export async function executeTrade(
         );
         onChange(snapshot);
         return snapshot;
+      }
       }
     }
 

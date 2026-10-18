@@ -12,6 +12,7 @@ import { verifyQualifiedSwapBlock, SwapRouteQualificationError } from "@/lib/swa
 import { swapPairIssue, swapPoolAsset, swapRouteIssue } from "@/lib/swap/swap-capability";
 import { swapQuotePolicyError } from "@/lib/swap/swap-policy";
 import { swapQuoteFresh } from "@/lib/swap/swap-lifecycle";
+import { swapPathPairEligible } from "@/lib/swap/swap-path-quote";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,15 +37,18 @@ export async function POST(request: Request) {
   const pair = swapPairIssue(body.fromToken, body.toToken); if (pair) return reply({ code: pair.code, error: pair.message }, 400);
   // Registry-only refusal is not a claim about metadata or liquidity. Unknown
   // imports can still be validated separately; they cannot authorize a trade.
+  const pathEligible = swapPathPairEligible(body.fromToken, body.toToken);
   const capability = swapRouteIssue(body.fromToken, body.toToken);
-  if (capability) return reply({ code: "EXECUTION_UNAVAILABLE", reason: capability.code, error: capability.message }, 422);
+  if (capability && !pathEligible) return reply({ code: "EXECUTION_UNAVAILABLE", reason: capability.code, error: capability.message }, 422);
   try {
     if (await getTradePublicClient().getChainId() !== 8453) return reply({ code: "PROVIDER_ERROR", reason: "UNSUPPORTED_NETWORK", error: "Base Mainnet could not be verified." }, 503);
   } catch { return reply({ code: "PROVIDER_ERROR", error: "Base network verification is unavailable. No swap was prepared." }, 503); }
   const parsed = await parseTradeSwapRequest({ ...body, taker: session.wallet }, { requireTaker: true });
   if (!parsed.ok) return reply({ code: parsed.error.code, error: parsed.error.message }, parsed.error.code === "PROVIDER_ERROR" ? 503 : 400);
   for (const token of [parsed.value.from, parsed.value.to]) {
-    if (findExecutorToken(deployment, swapPoolAsset(token.address))?.decimals !== token.decimals) return reply({ code: "TOKEN_METADATA_UNAVAILABLE", error: "Live token decimals do not match the approved route registration. No swap was prepared." }, 422);
+    // Path-eligible tokens carry import-verified live decimals; registry pairs
+    // keep the exact deployed-registration check.
+    if (findExecutorToken(deployment, swapPoolAsset(token.address))?.decimals !== token.decimals && !pathEligible) return reply({ code: "TOKEN_METADATA_UNAVAILABLE", error: "Live token decimals do not match the approved route registration. No swap was prepared." }, 422);
   }
   const p = parsed.value;
   let search: Awaited<ReturnType<typeof searchSwapRoutes>>;

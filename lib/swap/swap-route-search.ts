@@ -8,6 +8,9 @@ import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment } from "@/lib/executor/e
 import { buildExecutorSwapProposal, type ExecutorQuoteInput } from "@/lib/trade/trade-executor-quote";
 import { withTradeQuoteCache } from "@/lib/trade/trade-quote-cache";
 import { swapQuoteFresh } from "./swap-lifecycle";
+import { SWAP_PATH_EXECUTOR_NOT_DEPLOYED_MESSAGE, swapPathExecutor } from "./swap-executor-config";
+import { swapPathCandidatesFor, swapPathPairEligible } from "./swap-path-quote";
+import { searchSwapPaths } from "./swap-path-search";
 import { swapQuotePolicyError } from "./swap-policy";
 import { swapRouteCandidates, swapRouteKey, type SwapRoutedProposal, type SwapRouteOutcome, type SwapRoutingEvidence } from "./swap-route-candidates";
 import { qualifySwapRouteCandidate, verifyQualifiedSwapBlock, SwapRouteQualificationError, type SwapRouteReadClient } from "./swap-route-selection";
@@ -58,7 +61,6 @@ async function checkReadyExecutor(client: SwapRouteReadClient, qualified: Awaite
 }
 export async function searchSwapRoutes(client: SwapRouteReadClient, input: ExecutorQuoteInput, fresh = false) {
   const candidates = swapRouteCandidates(input.from.address, input.to.address);
-  if (!candidates.length) throw new SwapRouteQualificationError("FEE_ROUTE_UNREGISTERED", "Exact token registration and Executor allowlist verification are required. Imported metadata cannot authorize execution.");
   if (typeof input.fromAmount !== "string" || !/^[1-9]\d*$/.test(input.fromAmount) || input.fromAmount.length > 78 || BigInt(input.fromAmount) >= 2n ** 256n) throw new SwapRouteQualificationError("INVALID_INPUT", "The gross sell amount must be a positive uint256 atomic integer.");
   if (BigInt(input.fromAmount) * 25n / 10000n === 0n) throw new SwapRouteQualificationError("INVALID_INPUT", "The sell amount is too small to collect the mandatory fee in atomic units.");
   // Fail network verification before metadata/pool simulation. Provider details never reach callers.
@@ -74,6 +76,15 @@ export async function searchSwapRoutes(client: SwapRouteReadClient, input: Execu
   } catch (error) {
     if (error instanceof SwapRouteQualificationError) throw error;
     throw new SwapRouteQualificationError("ROUTE_VERIFICATION_UNAVAILABLE", "Base route verification is unavailable. No swap was prepared.", 503);
+  }
+  const pathDeployment = swapPathExecutor();
+  const pathEligible = pathDeployment !== null && swapPathPairEligible(input.from.address, input.to.address, pathDeployment);
+  if (!candidates.length) {
+    if (pathEligible && pathDeployment) {
+      const pathResult = await searchSwapPaths(client, { ...input, taker: input.taker as Address }, pathDeployment, { number: blockNumber, hash });
+      if (pathResult) return { proposal: pathResult.proposal as SwapRoutedProposal, qualified: { blockNumber: pathResult.blockNumber, blockHash: pathResult.blockHash } as unknown as Awaited<ReturnType<typeof qualifySwapRouteCandidate>> };
+    }
+    throw new SwapRouteQualificationError("FEE_ROUTE_UNREGISTERED", "Exact token registration and Executor allowlist verification are required. Imported metadata cannot authorize execution.");
   }
   const reader = requestReader(client);
   const outcomes: SwapRouteOutcome[] = [];
@@ -128,9 +139,14 @@ export async function searchSwapRoutes(client: SwapRouteReadClient, input: Execu
     }
   }
   if (!winner) {
+    if (pathEligible && pathDeployment) {
+      const pathResult = await searchSwapPaths(client, { ...input, taker: input.taker as Address }, pathDeployment, { number: blockNumber, hash });
+      if (pathResult) return { proposal: pathResult.proposal as SwapRoutedProposal, qualified: { blockNumber: pathResult.blockNumber, blockHash: pathResult.blockHash } as unknown as Awaited<ReturnType<typeof qualifySwapRouteCandidate>> };
+    }
     // Do not relabel provider failure as illiquidity. Show an actionable contract limit too.
     const unavailable = outcomes.some(o => o.state === "unavailable");
-    throw new SwapRouteQualificationError(unavailable ? "ROUTE_VERIFICATION_UNAVAILABLE" : firstFailure?.reason ?? "NO_QUALIFIED_DIRECT_ROUTE", `${unavailable ? "Some direct-pool evidence is unavailable; retry the quote." : firstFailure?.message ?? "No qualified direct pool was found for this amount."} The current Executor cannot execute multi-hop or V4 routes; these require separately approved contract/adapter work.`, unavailable ? 503 : 422);
+    const pathNote = swapPathCandidatesFor(input.from.address, input.to.address).length && !pathDeployment ? ` ${SWAP_PATH_EXECUTOR_NOT_DEPLOYED_MESSAGE}` : "";
+    throw new SwapRouteQualificationError(unavailable ? "ROUTE_VERIFICATION_UNAVAILABLE" : firstFailure?.reason ?? "NO_QUALIFIED_DIRECT_ROUTE", `${unavailable ? "Some direct-pool evidence is unavailable; retry the quote." : firstFailure?.message ?? "No qualified direct pool was found for this amount."} The current Executor cannot execute multi-hop or V4 routes; these require separately approved contract/adapter work.${pathNote}`, unavailable ? 503 : 422);
   }
   await verifyQualifiedSwapBlock(client, winner.qualified);
   const p = winner.proposal;
