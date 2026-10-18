@@ -115,12 +115,13 @@ browser suites listed below.
 | Lint (`npm run lint`) | exit 0, no errors; 63 warnings, all pre-existing (SwapForm warnings verified identical before/after this pass's edits) | `/home/user/swap-final-lint.txt` |
 | Production build + typecheck | `next build` exit 0 (34/34 static pages, `/swap` prerendered, offline font mock); `tsc --noEmit` exit 0 | `/home/user/swap-final-build2.txt` |
 | Browser matrix (mocked harness, real Chromium, 360×800 + 390×844) | focused swap-liquidity suite 22/22; full matrix: 218/224 first run — the 6 failures were stale spec copy-assertions against the intentional concise-status redesign (“no ERC-20 contract” row note, “trading is not supported…” row disclaimer); assertions updated to the new concise statuses (full sentence still enforced via the row `title`), rerun of both affected files: **122/122 green** → effective full matrix **224/224** | `/home/user/swap-browser-full.txt`, `/home/user/swap-browser-rerun.txt` |
-| CI on exact pushed head | pending → recorded in PR comment | GitHub Actions |
-| Vercel Preview + mobile logo check | pending → recorded in PR comment | Preview deployment |
+| CI on exact pushed head `ee08162` | **success** — jobs: build, contracts, contracts-fork, quality, real-redis, reference, secret-scan, slither all pass; deploy workflows skipped (gated, no on-chain action) | GitHub Actions run 39137408722 |
+| Vercel Preview | Deployed SUCCESS for `ee08162`: `https://mpgr-hub-ezxs-git-arena-b8c82200-7f7d9c-munazir-razas-projects.vercel.app` | Vercel check + bot comment |
+| Production-bundle mobile logo verification | Optimized build served via `next start`, driven by real Chromium at 360×800 (isMobile, DSF2): 48 selector rows — 4 rows with locally decoded official artwork (`/tokens/base/0x…png`, `naturalWidth>0`), 44 neutral fallbacks, **0 failed asset requests**; AAPLc row shows neutral fallback (never symbol-matched); screenshots committed under `docs/evidence/pr113-prod-mobile/` (Vercel domain itself is outside this sandbox's network allowlist, so the visual preview confirmation for humans is the URL above) | `docs/evidence/pr113-prod-mobile/01-swap-page.png`, `02-selector-logos.png`, `03-aaplc-fallback.png` |
 | Live network checks | Base RPC is unreachable from this sandbox: **no live quotes or settlements were possible locally**; all on-chain facts cited (deployed executor, routers, owner, fee recipient) come from read-only checks performed earlier in the PR timeline | — |
 
-Full browser matrix: **PENDING_FILL**
-CI / Preview: **PENDING_FILL**
+Full browser matrix: **224/224 effective** (first full run 218 passed + 6 stale-assertion failures; corrected assertion files rerun 122/122).
+CI on `ee08162`: **success** (8 jobs pass, 2 gated deploy workflows skipped). Vercel Preview: **deployed** (URL above).
 
 ## 6. Agent isolation review
 
