@@ -11,14 +11,22 @@ KEY="${BASE_MAINNET_DEPLOYER_PRIVATE_KEY:?secret SWAP_BASE_MAINNET_DEPLOYER_PRIV
 OWNER="${SWAP_EXECUTOR_OWNER:?variable SWAP_EXECUTOR_OWNER missing in environment base-mainnet}"
 
 lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
-fail() { echo "PREFLIGHT FAIL: $1" >&2; exit 1; }
+fail() {
+  echo "PREFLIGHT FAIL: $1" >&2
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error title=Preflight failed closed::$1"
+  exit 1
+}
+note() { [ -n "${GITHUB_ACTIONS:-}" ] && echo "::notice title=Preflight::$1" || echo "PREFLIGHT: $1"; }
 
+note "deployer secret present (BASE_MAINNET_DEPLOYER_PRIVATE_KEY set; value never printed)"
+note "owner variable present (SWAP_EXECUTOR_OWNER=$OWNER)"
 [ "${MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED:-false}" = "true" ] || fail "MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED != true"
 
 CFG=deployments/base-mainnet/deploy-config.json
 jq -e '.chainId == 8453' "$CFG" >/dev/null || fail "deploy-config.json chainId != 8453"
-jq -e '.swapExecutorDeployEnabled == true' "$CFG" >/dev/null \
-  || fail "committed deployment gate is CLOSED (deploy-config.json swapExecutorDeployEnabled != true)"
+GATE_STATE="$(jq -r '.swapExecutorDeployEnabled // "absent"' "$CFG")"
+note "committed gate swapExecutorDeployEnabled=$GATE_STATE"
+[ "$GATE_STATE" = "true" ] || fail "committed deployment gate is CLOSED (swapExecutorDeployEnabled=$GATE_STATE) - open it only via explicit owner approval"
 [ ! -f deployments/base-mainnet/mpgr-swap-executor.json ] || fail "final manifest already exists - refusing a second deployment"
 [ ! -f deployments/base-mainnet/mpgr-swap-executor.staging.json ] || fail "staging manifest exists - unfinished prior run must be resolved"
 
