@@ -78,3 +78,39 @@ Files: `contracts/executor/drafts/IMPGRSwapV2RouterDraft.sol`, `MPGRSwapPathExec
 - Actual executable application additions: **none**. Source-only capabilities now include V2 direct and mixed V2/V3/Slip two-hop. Discovery-only remains the Stage 2 scope.
 - Remaining blockers: independent review/audit, approved deployment and integration, canonical typed router/pool qualification, current per-token/router grants, transfer compatibility, amount-specific bidirectional quotes/minimum/simulation, reliable gas where possible and actual settlement evidence. Existing mutable-fee deployment cannot be upgraded by calling this source. Aerodrome Classic discovery is implemented, but its stable/volatile route ABI still needs a separately reviewed execution extension. V4 needs complete authenticated unlock/callback/currency/hook settlement, not generic calldata.
 - Commit: the commit containing this stage section, reported separately after push. No deploy/broadcast/grant/live trade or production flag changes.
+
+## Stage 4: inspection UX and browser fixture follow-up
+
+The first full browser run had **220 passed / 2 failed**: the published-list test still intercepted the shared old token URL after Swap moved to its own endpoint. Updated only that interception URL and its explicit read-only response marker; original exact-address, disabled-selection, no-quote and no-send assertions are unchanged. Exposed read-only inspection for known pairs too (not just unsupported imports), hide it for ETH/WETH same-underlying pairs, and show explicit direct/two-hop asset paths and pool options. The new ETH→AAPLc inspection case uses a clearly mocked WETH→USDC→AAPLc graph and proves selected pay/receive assets stay unchanged with no quote/signing requests. No new execution is enabled.
+
+Files: `TokenSelector`, `SwapLiquidityInspection`, `tests/mobile/swap.spec.ts` fixture interception, `tests/mobile/swap-liquidity.spec.ts`, this report. Four focused repair/known-pair browser cases passed across both mobile sizes. The new known-pair test first used an ambiguous text locator matching two paragraphs; it now asserts the complete exact two-hop paragraph. No application workaround or safety assertion removal. Final full checks are rerun below. Discovery scope and atomic-fee/deployment blockers are unchanged. Commit containing this section is reported after push.
+
+## Final regression and isolation review
+
+### Stage commits
+
+| Stage | Pushed commit |
+| --- | --- |
+| Fresh audit / capability matrix | `a7567a8528b4d7123b68c664f0894e95332d69e5` |
+| Arbitrary-CA metadata and read-only liquidity inspection | `547c7c86597be92eda189dd49b6321458a65c8f1` |
+| Isolated fixed-fee V2 draft/source tests | `1aac40fc8507ba537d14177d1db93b07825a841a` |
+| Final QA documentation | Commit containing this section; exact SHA in delivery / PR comment |
+
+### Executed checks (source head 1aac40f; final UI-refinement rerun recorded below)
+
+- Full isolated unit regression: **4,224 passed / 24 skipped**, 310 passing / 5 skipped files, 227.66 seconds. No weakened timeout or test expectation in existing suites. Includes the 94 new metadata/liquidity/API/client cases and unchanged Agent/goal authorization regressions.
+- Optimized Next production build: **passed**, 34 static pages and the two new dynamic Swap endpoints. Generated-route TypeScript check: **passed**. Local build used the existing external, process-only Google-font fixture because font hosts are outside sandbox egress; real local WOFF2, no repository config/dependency changes, fixture server stopped afterwards. Exact source-head Vercel build also passed without this local fixture.
+- Repository lint: **0 errors / 62 warnings**, with warning locations in unchanged files. Separate changed-file lint: **0 warnings / 0 errors**. `git diff --check` passed.
+- Contracts: **225 passed / 38 skipped**, 263 cases / 17 suites, with **34 draft cases** and two 256-run fuzz cases. Original deployed ABI check passed. Slither fail-high and the unchanged narrow balance-exception checker passed; no detector/config/allowlist weakening. Draft optimized runtime size **14,109 bytes** (below EIP-170), not deployment approval.
+- Full browser regression: result recorded below after completion. Actual controllers with deterministic HTTP/RPC/EIP-1193 fixtures; 360×800 / 390×844 plus explicit desktop. Never physical-wallet or live settlement evidence.
+- Isolation diff versus `526fb15`: **22 files**, limited to Swap APIs/modules/UI, isolated draft/source tests, this report and browser tests/fixture branch. No differences in shared `lib/trade`, `lib/executor`, `lib/autonomy`, architecture, Agent hooks/APIs/components, original assisted/delegated contracts, Campaigns, production settings, dependencies/lockfile, deployment scripts or workflows. Browser bundle inspection found none of the new server discovery/metadata error identifiers in client chunks. Existing allowance and terminal overview implementation unchanged.
+
+### CI and live boundary
+
+At exact application/source head `1aac40fc8507ba537d14177d1db93b07825a841a`, GitHub [CI run 39114615047](https://github.com/munazir17/MPGR-HUB/actions/runs/39114615047) quality/build/contracts/contracts-fork/secret-scan/slither/real-redis passed; read-only [reference run 39114615076](https://github.com/munazir17/MPGR-HUB/actions/runs/39114615076) passed; Vercel/preview comments passed. Deployment and MCP E2E were skipped. Final documentation-head checks are reported separately after push. No merge/close operation performed.
+
+**No new live executable route was enabled.** New pool/path results are discovery-only and cannot authorize signing. Review-source V2/V3/Slip direct/two-hop capabilities are not methods on the deployed Executor. Classic remains discovery-only, V4/Universal Router unsupported. Shared/legacy execution behavior was preserved, not retroactively certified as having immutable fee terms; the deployed mutable recipient race remains explicit and unresolved there. Do not describe legacy conditional availability as a new atomic immutable fee guarantee.
+
+No fresh amount-specific public-RPC quotes, authenticated wallet simulations or settlements are asserted for **USDC↔WETH, MPGR↔USDC, ETH↔AAPLc, stocks, AERO, VIRTUAL, cbZEC or a BNB representation**. This sandbox's outbound allowlist excludes Base RPC providers; no live wallet was used. That is an environment/evidence limit, not proof of production provider outage or absent liquidity. Exact CA import, canonical graph search, source execution and actual live settlement remain distinct. Imported/listed symbols do not establish asset backing or native-chain equivalence.
+
+Activation still requires independent source/security review, explicit deployment/integration/grant approval, fresh canonical pool/transfer/permission/amount/minimum/simulation checks, and receipt/actual-output/fee verification. Nothing was deployed, broadcast, traded, granted or enabled in production. PR #113 stays **OPEN / UNMERGED**.

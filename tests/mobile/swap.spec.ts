@@ -313,9 +313,9 @@ test("Swap: published-list discovery checks exact Base metadata without granting
   const state = await setup(page);
   const aero = "0x940181a94A35A4569E4529A3CDfB74e38FD98631";
   await page.route("**/api/swap/tokens", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ chainId: 8453, tokens: [{ address: aero, symbol: "AERO", name: "Aerodrome Finance" }] }) }));
-  await page.route("**/api/trade/token", route => {
+  await page.route("**/api/swap/token", route => {
     expect(route.request().postDataJSON()).toEqual({ address: aero, chainId: 8453 });
-    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ chainId: 8453, token: { address: aero, symbol: "AERO", name: "Aerodrome Finance", decimals: 18, kind: "erc20", verified: false } }) });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ chainId: 8453, executionAuthorized: false, token: { address: aero, symbol: "AERO", name: "Aerodrome Finance", decimals: 18, kind: "erc20", verified: false } }) });
   });
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap();
   await page.getByLabel("Search tokens or Base contract").fill("AERO");

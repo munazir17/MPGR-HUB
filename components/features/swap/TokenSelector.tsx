@@ -6,7 +6,7 @@ import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { TokenImportError } from "@/lib/trade/token-import";
 import type { TradeTokenRef } from "@/lib/trade/trade-types";
 import { SwapDialog } from "./SwapDialog";
-import { swapRouteIssue, swapCapabilityStatus } from "@/lib/swap/swap-capability";
+import { swapRouteIssue, swapCapabilityStatus, swapPoolAsset } from "@/lib/swap/swap-capability";
 import { TokenIcon, tokenName } from "./TokenIcon";
 import { fetchSwapTokenHints } from "@/lib/swap/swap-token-hints";
 import { importSwapToken } from "@/lib/swap/swap-inspection-client";
@@ -62,7 +62,7 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
       <span className="block truncate text-xs text-zinc-400">{tokenName(t.name)}</span>
       <span className="block break-all font-mono text-[10px] text-zinc-500">{isNativeEthSentinel(t.address) ? "Native Base asset · no ERC-20 contract" : t.address}</span><span data-testid={issue ? "token-route-unavailable" : "token-route-status"} className="mt-1 block text-[10px] text-amber-200">{status.message}</span></span>
     {selected.toLowerCase() === t.address.toLowerCase() && <Check size={18} className="shrink-0 text-emerald-300" />}
-  </button>{issue && t.address.toLowerCase() !== opposite.address.toLowerCase() && <button type="button" onClick={() => setInspectToken(t)} className="mb-2 min-h-11 w-full rounded-xl border border-white/10 px-3 text-xs text-emerald-300" aria-label={`Inspect ${t.symbol} liquidity ${t.address}`}>Inspect liquidity (read-only)</button>}</div>;
+  </button>{swapPoolAsset(t.address) !== swapPoolAsset(opposite.address) && <button type="button" onClick={() => setInspectToken(t)} className="mb-2 min-h-11 w-full rounded-xl border border-white/10 px-3 text-xs text-emerald-300" aria-label={`Inspect ${t.symbol} liquidity ${t.address}`}>Inspect liquidity (read-only)</button>}</div>;
   };
   return <SwapDialog title="Select a token" onClose={onClose}>
     <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-black/15 px-3"><Search size={17} className="shrink-0 text-zinc-500" /><input autoFocus aria-label="Search tokens or Base contract" placeholder="Name, symbol or 0x…" value={search}
