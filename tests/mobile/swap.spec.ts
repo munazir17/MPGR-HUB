@@ -325,6 +325,24 @@ test("Swap: published-list discovery checks exact Base metadata without granting
   await expect(imported).toBeDisabled(); await expect(imported).toContainText("Route not supported"); await expect(imported).toHaveAttribute("title", /trading is not supported in MPGR Swap yet/);
   expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });
+test("Swap: high price impact demands explicit acknowledgement before confirmation", async ({ page }, info) => {
+  const state = await setup(page, { priceImpactBps: 620 });
+  await page.getByLabel("You pay amount", { exact: true }).fill("1");
+  await expect(page.getByTestId("swap-risk-warning").first()).toBeVisible();
+  await expect(page.getByTestId("swap-risk-warnings")).toContainText("checks can never prove");
+  const confirm = page.getByRole("button", { name: "Confirm Swap", exact: true });
+  await expect(confirm).toBeDisabled();
+  await page.getByTestId("swap-risk-ack").tap();
+  await expect(confirm).toBeEnabled();
+  expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
+});
+test("Swap: a calm quote shows no risk banner and needs no acknowledgement", async ({ page }, info) => {
+  const state = await setup(page);
+  await page.getByLabel("You pay amount", { exact: true }).fill("1");
+  await expect(page.getByRole("button", { name: "Confirm Swap", exact: true })).toBeEnabled();
+  await expect(page.getByTestId("swap-risk-warnings")).toHaveCount(0);
+  expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
+});
 test("Swap: token-list outage is temporary unavailability, never missing liquidity or successful import", async ({ page }, info) => {
   const state = await setup(page);
   await page.route("**/api/swap/tokens", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Base token search is temporarily unavailable. Retry or paste the exact Base contract to check it." }) }));

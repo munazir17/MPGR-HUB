@@ -12,6 +12,7 @@ import { swapInputError as manualSwapInputError } from "@/lib/swap/swap-capabili
 import { requestSwapQuote } from "@/lib/swap/swap-quote";
 import { estimateSwapGas } from "@/lib/swap/swap-wallet";
 import { parseSlippagePercent, safeMaximum, slippagePercent } from "@/lib/swap/swap-policy";
+import { assessSwapRisk, RISK_DISCLAIMER, riskAckRequired } from "@/lib/swap/token-risk";
 import type { TradeProposal, TradeTokenRef } from "@/lib/trade/trade-types";
 import { TokenIcon, tokenName } from "./TokenIcon";
 import { TokenSelector } from "./TokenSelector";
@@ -41,7 +42,10 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
   const [select, setSelect] = useState<"fromToken" | "toToken" | null>(null);
   const [settings, setSettings] = useState(false);
   const [proposal, setProposal] = useState<TradeProposal | null>(null);
+  const [riskAcked, setRiskAcked] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
+  const riskWarnings = useMemo(() => (proposal ? assessSwapRisk({ chainId: 8453, receiveAddress: receive.address, receiveVerified: receive.verified, receiveImported: !receive.verified, priceImpactBps: proposal.priceImpactBps ?? null, sellSideQuoted: null }) : []), [proposal, receive]);
+  const riskAckNeeded = riskAckRequired(riskWarnings);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -79,7 +83,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     try {
       if (!(await authorize()) || version.current !== run) return;
       const next = await requestSwapQuote(input, address!, controller.signal, tokens, { fresh: freshReview });
-      if (version.current === run) { setNow(Date.now()); setProposal(next); if (freshReview) setNotice("Quote updated — review new output."); }
+      if (version.current === run) { setNow(Date.now()); setProposal(next); setRiskAcked(false); if (freshReview) setNotice("Quote updated — review new output."); }
     } catch (cause) {
       if (version.current === run) { if (cause instanceof ManualSwapQuoteError && cause.status === 401) setSessionExpired(true); setError(cause instanceof Error ? cause.message : "Quote unavailable. Retry."); }
     } finally { if (version.current === run) { setBusy(false); busyRef.current = false; } }
@@ -170,9 +174,17 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
       {proposal.risk.filter(r => r.severity !== "info" && !["executor-approval", "router-approval", "permit2-approval"].includes(r.id)).map(r => <p key={r.id} className="text-amber-200">{r.detail}</p>)}
     </div>}
     {input.slippageBps > 100 && <p className="px-1 text-xs text-amber-300">High slippage ({slippagePercent(input.slippageBps)}%). You accept a larger adverse price change.</p>}
+    {fresh && proposal && riskWarnings.length > 0 && <div data-testid="swap-risk-warnings" className="space-y-1 rounded-2xl border border-amber-300/30 bg-amber-300/5 px-3 py-2">
+      {riskWarnings.map(w => <p key={w.code} data-testid="swap-risk-warning" className="text-xs leading-relaxed text-amber-200">{w.message}</p>)}
+      <p className="text-xs leading-relaxed text-zinc-400">{RISK_DISCLAIMER}</p>
+      {riskAckNeeded && <label className="flex items-start gap-2 text-xs text-zinc-200">
+        <input data-testid="swap-risk-ack" type="checkbox" checked={riskAcked} onChange={e => setRiskAcked(e.target.checked)} className="mt-0.5 h-4 w-4 accent-amber-300" />
+        I understand these risks and still want to continue.
+      </label>}
+    </div>}
     {proposal && !fresh && <p role="status" className="px-1 text-xs text-amber-300">Quote needs updating.</p>}
     {insufficient && <p role="alert" className="px-1 text-xs text-amber-300">Insufficient {pay.symbol} balance. Lower the pay amount.</p>}
-    <button type="submit" disabled={busy || executionBusy || (isConnected && chainId === 8453 && (!!invalid || insufficient))}
+    <button type="submit" disabled={busy || executionBusy || (riskAckNeeded && !riskAcked) || (isConnected && chainId === 8453 && (!!invalid || insufficient))}
       className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-300 px-4 text-base font-semibold text-[#071710] shadow-[0_6px_30px_-12px_rgba(110,231,183,0.4)] hover:bg-emerald-200 disabled:bg-white/[0.07] disabled:text-zinc-500 disabled:shadow-none">
       {busy && <Loader2 size={18} className="animate-spin" />}{!isConnected ? "Connect wallet" : chainId !== 8453 ? "Switch to Base" : busy ? "Refreshing quote…" : insufficient ? "Insufficient balance" : invalid ? "Enter a pay amount" : sessionExpired ? "Sign in and retry quote" : fresh ? "Confirm Swap" : proposal ? "Refresh quote" : "Get quote"}
     </button>

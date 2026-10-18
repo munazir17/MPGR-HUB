@@ -10,7 +10,7 @@ export const token = (symbol: string) => CHAT_REVIEW_TOKENS.find(t => t.symbol =
 const prompt = "Buy AAPLc whenever price falls below $200 worth 1 USDC";
 const form = chatDraftToForm(buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt));
 export const importedAddress = "0x1234567890abcdef1234567890abcdef12345678";
-export interface FixtureOptions { refreshOutputAtomic?: string; firstQuoteDelayMs?: number; authExpiresOnRefresh?: boolean; feeSkipped?: boolean; importSymbol?: string; importName?: string; importStatus?: number; ready?: boolean; quoteStatus?: number; authExpired?: boolean; shortQuote?: boolean; policyBlocked?: boolean; permissionFailsOnce?: boolean }
+export interface FixtureOptions { refreshOutputAtomic?: string; firstQuoteDelayMs?: number; authExpiresOnRefresh?: boolean; feeSkipped?: boolean; importSymbol?: string; importName?: string; importStatus?: number; ready?: boolean; quoteStatus?: number; priceImpactBps?: number; authExpired?: boolean; shortQuote?: boolean; policyBlocked?: boolean; permissionFailsOnce?: boolean }
 export async function setup(page: Page, options: FixtureOptions = {}) {
   page.on("pageerror", error => { throw error; });
   const trace: { method: string; path: string; status: number }[] = [];
@@ -41,6 +41,7 @@ export async function setup(page: Page, options: FixtureOptions = {}) {
         const proposal = simulatedExecutorQuote({ ...form, sell: body.fromToken, buy: body.toToken, sellAmount: body.amount ?? "1", slippageBps: body.slippageBps }, quotes > 1 && options.refreshOutputAtomic ? BigInt(options.refreshOutputAtomic) : undefined);
         const now = await page.evaluate(() => Date.now());
         proposal.quotedAt = new Date(now).toISOString(); proposal.expiresAt = new Date(now + (options.shortQuote && quotes === 1 ? 1600 : 30_000)).toISOString();
+        if (options.priceImpactBps !== undefined) proposal.priceImpactBps = options.priceImpactBps;
         if (options.feeSkipped) { proposal.provider = "cdp-trade-api"; proposal.agentFee = { status: "skipped", bps: null, recipient: null, amountAtomic: "0", displayAmount: null, reason: "Unsupported fee route", collection: null }; }
         await page.evaluate(p => { (window as unknown as { simulatedProposal: typeof p }).simulatedProposal = p; }, proposal);
         json = { proposal };
