@@ -29,3 +29,20 @@ describe("complete selectable catalog — exact-address registration, not liquid
     expect(swapRouteIssue(NATIVE_ETH_SENTINEL, BASE_USDC)).toBeNull();
   });
 });
+
+import { swapCapabilityStatus } from "../swap-capability";
+it("metadata validation never promotes any of the 35 unregistered assets", () => {
+  const assets = MANUAL_SWAP_TOKENS.filter(t => !swapCounterassets(t.address).length);
+  expect(assets).toHaveLength(35);
+  for (const token of assets) {
+    expect(swapCapabilityStatus(token.address, BASE_USDC, true)).toMatchObject({ code: "REGISTRATION_REQUIRED", selectable: false, message: expect.stringContaining("Metadata validated — not executable") });
+    expect(swapCapabilityStatus(token.address, BASE_USDC)).toMatchObject({ selectable: false, message: expect.stringContaining("Discovery only") });
+  }
+});
+it("registered selection is explicitly unquoted, not execution acceptance", () => {
+  expect(swapCapabilityStatus(BASE_USDC, d.weth)).toMatchObject({ code: "REGISTERED_UNQUOTED", selectable: true, message: expect.stringContaining("fresh quote and live permission checks required") });
+});
+it("counterasset instructions never reverse the pay asset implicitly", () => {
+  const stock = d.routes[1].tokenB;
+  expect(swapCapabilityStatus(stock, d.weth)).toMatchObject({ code: "COUNTERASSET_REQUIRED", selectable: false, message: expect.stringContaining("Change the other asset explicitly") });
+});

@@ -8,8 +8,8 @@ import { getTradePublicClient } from "@/lib/trade/trade-public-client";
 import { buildExecutorSwapProposal } from "@/lib/trade/trade-executor-quote";
 import { withTradeQuoteCache } from "@/lib/trade/trade-quote-cache";
 import { estimateQuotePriceImpactBps } from "@/lib/trade/trade-price-impact";
-import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment, findExecutorToken, findExecutorRoute } from "@/lib/executor/executor-config";
-import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
+import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment, findExecutorToken } from "@/lib/executor/executor-config";
+import { qualifyRegisteredSwapRoute, verifyQualifiedSwapBlock, SwapRouteQualificationError } from "@/lib/swap/swap-route-selection";
 import { swapPairIssue, swapPoolAsset, swapRouteIssue } from "@/lib/swap/swap-capability";
 import { swapQuotePolicyError } from "@/lib/swap/swap-policy";
 import { swapQuoteFresh } from "@/lib/swap/swap-lifecycle";
@@ -39,31 +39,21 @@ export async function POST(request: Request) {
   // imports can still be validated separately; they cannot authorize a trade.
   const capability = swapRouteIssue(body.fromToken, body.toToken);
   if (capability) return reply({ code: "EXECUTION_UNAVAILABLE", reason: capability.code, error: capability.message }, 422);
+  let qualified: Awaited<ReturnType<typeof qualifyRegisteredSwapRoute>>;
   try {
-    if (await getTradePublicClient().getChainId() !== 8453) return reply({ code: "UNSUPPORTED_NETWORK", error: "The quote service could not verify Base Mainnet. No swap was prepared." }, 503);
-  } catch { return reply({ code: "PROVIDER_ERROR", error: "Base network verification is unavailable. Retry shortly; no swap was prepared." }, 503); }
-  // A registry entry alone is not an executable permission. Verify the exact
-  // assisted deployment's current token and router mappings on each request,
-  // including cache hits, without changing any permissions.
-  try {
-    const client = getTradePublicClient();
-    const from = swapPoolAsset(body.fromToken) as `0x${string}`, to = swapPoolAsset(body.toToken) as `0x${string}`;
-    const route = findExecutorRoute(deployment, from, to)!;
-    const [sellAllowed, buyAllowed, kind] = await Promise.all([
-      client.readContract({ address: deployment.executor, abi: MPGR_EXECUTOR_ABI, functionName: "isTokenAllowed", args: [from] }),
-      client.readContract({ address: deployment.executor, abi: MPGR_EXECUTOR_ABI, functionName: "isTokenAllowed", args: [to] }),
-      client.readContract({ address: deployment.executor, abi: MPGR_EXECUTOR_ABI, functionName: "routerKind", args: [route.router] }),
-    ]);
-    if (sellAllowed !== true || buyAllowed !== true || Number(kind) !== route.kind) return reply({ code: "EXECUTION_UNAVAILABLE", reason: "EXECUTOR_PERMISSION_MISMATCH", error: "This registered route no longer matches the Executor's Base token/router permissions. Owner verification is required; no approval or swap was requested." }, 422);
-  } catch { return reply({ code: "PROVIDER_ERROR", error: "Current Executor token/router permissions could not be verified on Base. Retry shortly; no swap was prepared." }, 503); }
+    qualified = await qualifyRegisteredSwapRoute(getTradePublicClient(), body.fromToken, body.toToken);
+  } catch (error) {
+    if (error instanceof SwapRouteQualificationError) return reply({ code: error.status === 503 ? "PROVIDER_ERROR" : "EXECUTION_UNAVAILABLE", reason: error.reason, error: error.message }, error.status);
+    return reply({ code: "PROVIDER_ERROR", error: "Base route verification is unavailable. No swap was prepared." }, 503);
+  }
   const parsed = await parseTradeSwapRequest({ ...body, taker: session.wallet }, { requireTaker: true });
   if (!parsed.ok) return reply({ code: parsed.error.code, error: parsed.error.message }, parsed.error.code === "PROVIDER_ERROR" ? 503 : 400);
   for (const token of [parsed.value.from, parsed.value.to]) {
     if (findExecutorToken(deployment, swapPoolAsset(token.address))?.decimals !== token.decimals) return reply({ code: "TOKEN_METADATA_UNAVAILABLE", error: "Live token decimals do not match the approved route registration. No swap was prepared." }, 422);
   }
   const p = parsed.value;
-  const result = await withTradeQuoteCache(["strict-swap", session.wallet.toLowerCase(), p.from.address.toLowerCase(), p.to.address.toLowerCase(), p.fromAmount, p.from.decimals, p.to.decimals, p.slippageBps].join(":"), 6000,
-    () => buildExecutorSwapProposal({ ...p, quotedAt: new Date() }), { fresh: body.refreshQuote === true });
+  const result = await withTradeQuoteCache(["strict-swap", qualified.blockNumber.toString(), qualified.blockHash, session.wallet.toLowerCase(), p.from.address.toLowerCase(), p.to.address.toLowerCase(), p.fromAmount, p.from.decimals, p.to.decimals, p.slippageBps].join(":"), 6000,
+    () => buildExecutorSwapProposal({ ...p, reader: qualified.reader, quotedAt: new Date() }), { fresh: body.refreshQuote === true });
   if (!result.ok) {
     if (!result.supported) return reply({ code: "EXECUTION_UNAVAILABLE", reason: "FEE_ROUTE_UNREGISTERED", error: "The approved Executor route is unavailable. No alternative fee-less route will be used." }, 422);
     const error = result.error;
@@ -80,5 +70,12 @@ export async function POST(request: Request) {
   const priceImpactBps = await estimateQuotePriceImpactBps({ quote: result.proposal, fromAddress: p.from.address, toAddress: p.to.address, fromDecimals: p.from.decimals, toDecimals: p.to.decimals });
   // Price-impact reads must not extend the quote lifetime either.
   if (!swapQuoteFresh(result.proposal)) return reply({ code: "QUOTE_EXPIRED", error: "The quote expired during preparation. Request a fresh quote." }, 422);
+  try {
+    await verifyQualifiedSwapBlock(getTradePublicClient(), qualified);
+  } catch (error) {
+    if (error instanceof SwapRouteQualificationError) return reply({ code: "QUOTE_CHANGED", reason: error.reason, error: error.message }, error.status);
+    return reply({ code: "PROVIDER_ERROR", error: "The Base quote snapshot could not be reverified. Request a fresh quote." }, 503);
+  }
+  if (!swapQuoteFresh(result.proposal)) return reply({ code: "QUOTE_EXPIRED", error: "The quote expired during verification. Request a fresh quote." }, 422);
   return reply({ proposal: { ...result.proposal, priceImpactBps } });
 }

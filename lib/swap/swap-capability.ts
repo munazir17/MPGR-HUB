@@ -32,3 +32,14 @@ export function swapCounterassets(address: string): string[] {
 export function swapInputError(input: ManualSwapInput, tokens?: readonly TradeTokenRef[]): string | null {
   return swapPairIssue(input.fromToken, input.toToken)?.message ?? manualSwapInputError(input, tokens);
 }
+
+/** UI facts only: metadata validation never grants routing or on-chain permission. */
+export function swapCapabilityStatus(from: string, to: string, metadataValidated = false) {
+  const issue = swapRouteIssue(from, to);
+  if (!issue) return { code: "REGISTERED_UNQUOTED", selectable: true, message: "Registered route — fresh quote and live permission checks required." };
+  if (issue.code === "SAME_ASSET") return { code: "SAME_ASSET", selectable: false, message: "Same underlying asset — choose a different receive token." };
+  const asset = from;
+  const others = swapCounterassets(asset);
+  if (others.length) return { code: "COUNTERASSET_REQUIRED", selectable: false, message: `No approved direct route to this counterasset. Registered counterassets: ${others.map(label).join(", ")}. Change the other asset explicitly.` };
+  return { code: "REGISTRATION_REQUIRED", selectable: false, message: `${metadataValidated ? "Metadata validated" : "Discovery only"} — not executable: route registration and Executor permission verification required. Pool discovery is not execution support.` };
+}

@@ -1,3 +1,4 @@
+import { NATIVE_ETH_SENTINEL } from "../../lib/trade/trade-config";
 import { test, expect, type Page } from "@playwright/test";
 import { setup, evidence, walletCalls, importedAddress, token } from "./flow-setup";
 import { MANUAL_SWAP_TOKENS } from "../../lib/trade/manual-swap";
@@ -72,7 +73,8 @@ test("Swap: search, exact contract validation, duplicate symbols and unsupported
   await search.fill("No such token"); await expect(page.getByText(/No results\./)).toBeVisible(); await search.fill("0x123"); await expect(page.getByRole("alert")).toContainText("Invalid address");
   await search.fill(importedAddress); await page.getByRole("button", { name: "Validate Base token" }).tap(); await expect(page.getByText(/Import is not endorsement/)).toBeVisible();
   await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeDisabled();
-  await expect(page.getByTestId("token-route-unavailable")).toContainText("Needs verified route/allowlist registration");
+  await expect(page.getByTestId("token-route-unavailable")).toContainText("Metadata validated — not executable: route registration and Executor permission verification required");
+  await expect(page.getByTestId("token-route-unavailable")).toContainText("Pool discovery is not execution support");
   await page.getByRole("button", { name: "Close Select a token" }).tap();
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("USDC");
   await expect(page.getByRole("button", { name: `Select USDC ${token("USDC")}`, exact: true })).toBeVisible(); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeVisible(); await expect(page.getByRole("dialog").locator("img")).toHaveCount(1); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).locator("img")).toHaveCount(0); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).getByTestId("token-logo-fallback")).toHaveCount(1);
@@ -221,4 +223,14 @@ test("Swap: ETH/WETH same underlying selection is disabled before quote or walle
 test("Swap: unknown allowance never causes an approval prompt", async ({ page }, info) => {
  const state = await setup(page); await review(page); await scenario(page, "allowance-read-error"); await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap();
  await expect(page.getByRole("dialog").getByRole("alert")).toContainText("allowance could not be verified"); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
+});
+
+test("Swap: registered token status requires a fresh quote and never promises execution", async ({ page }, info) => {
+  const state = await setup(page);
+  await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap();
+  const eth = page.getByRole("button", { name: `Select ETH ${NATIVE_ETH_SENTINEL}`, exact: true });
+  await expect(eth).toBeEnabled();
+  await expect(eth.getByTestId("token-route-status")).toContainText("Registered route — fresh quote and live permission checks required");
+  expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0);
+  await evidence(page, info, state.trace);
 });
