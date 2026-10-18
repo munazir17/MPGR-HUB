@@ -19,8 +19,10 @@ import {MPGRSwapExecutor} from "../contracts/swap/MPGRSwapExecutor.sol";
 ///           - no deployments/base-mainnet/mpgr-swap-executor.json record exists yet
 ///           - the dedicated deployer key nonce == 0 (a re-run cannot deploy twice)
 ///           - constructor owner equals env SWAP_EXECUTOR_OWNER (operator multisig)
-///         Fee terms are compile-time constants in the contract (25 bps to
-///         0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4); no setter exists.
+///         Fee terms are governance-bounded in the contract: initialised here to
+///         25 bps / 0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4 (both pinned and
+///         re-verified post-deploy), hard-capped at 100 bps on-chain and mutable
+///         only via propose -> 48h timelock -> apply by the owner multisig.
 ///
 ///         Dry run (default, broadcasts nothing):
 ///           forge script script/DeployMPGRSwapExecutorBaseMainnet.s.sol --rpc-url $BASE_RPC
@@ -30,6 +32,7 @@ contract DeployMPGRSwapExecutorBaseMainnet is Script {
     address internal constant WETH = 0x4200000000000000000000000000000000000006;
     address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
     address internal constant FEE_RECIPIENT_PIN = 0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4;
+    uint16 internal constant INITIAL_FEE_BPS = 25;
     address internal constant UNI_V3_ROUTER = 0x2626664c2603336E57B271c5C0b26F421741e481;
     address internal constant UNI_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
     address internal constant SLIP_ROUTER = 0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F;
@@ -59,23 +62,25 @@ contract DeployMPGRSwapExecutorBaseMainnet is Script {
         routers[1] = MPGRSwapExecutor.RouterConfig(SLIP_ROUTER, MPGRSwapExecutor.RouterKind.AERODROME_SLIPSTREAM, SLIP_FACTORY);
         routers[2] = MPGRSwapExecutor.RouterConfig(V2_ROUTER, MPGRSwapExecutor.RouterKind.UNISWAP_V2_ROUTER02, V2_FACTORY);
         routers[3] = MPGRSwapExecutor.RouterConfig(CLASSIC_ROUTER, MPGRSwapExecutor.RouterKind.AERODROME_CLASSIC, CLASSIC_FACTORY);
-        address[] memory tokens = vm.envAddress("SWAP_EXECUTOR_INITIAL_TOKENS", ",");
-        require(tokens.length > 0, "gate: SWAP_EXECUTOR_INITIAL_TOKENS required");
+        // Tokens are permissionless by design: no token allowlist is deployed.
 
         vm.startBroadcast();
         // Runbook: use a fresh dedicated deployer (nonce 0) so a re-run cannot
         // produce a second executor; verify the nonce in the tx record afterwards.
-        MPGRSwapExecutor executor = new MPGRSwapExecutor(owner, WETH, PERMIT2, routers, tokens);
+        MPGRSwapExecutor executor = new MPGRSwapExecutor(owner, WETH, PERMIT2, routers, INITIAL_FEE_BPS, FEE_RECIPIENT_PIN);
         vm.stopBroadcast();
 
-        require(executor.feeBps() == 25, "fee pin");
+        require(executor.feeBps() == INITIAL_FEE_BPS, "fee pin");
         require(executor.feeRecipient() == FEE_RECIPIENT_PIN, "recipient pin");
+        require(executor.MAX_FEE_BPS() == 100, "hard cap pin");
+        require(executor.FEE_TIMELOCK_SECONDS() == 48 hours, "timelock pin");
+        require(executor.pendingEffectiveAt() == 0, "no pending fee change at birth");
         console2.log("MPGRSwapExecutor deployed at", address(executor));
         string memory manifest = string(
             abi.encodePacked(
                 '{"chainId":8453,"executor":"', vm.toString(address(executor)),
                 '","owner":"', vm.toString(owner),
-                '","feeBps":25,"feeRecipient":"', vm.toString(FEE_RECIPIENT_PIN),
+                '","feeBps":25,"maxFeeBps":100,"feeTimelockSeconds":172800,"feeRecipient":"', vm.toString(FEE_RECIPIENT_PIN),
                 '","deployTx":"pending-record","weth":"', vm.toString(WETH),
                 '","permit2":"', vm.toString(PERMIT2), '"}'
             )

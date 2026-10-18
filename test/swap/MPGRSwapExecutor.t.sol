@@ -134,11 +134,7 @@ contract MPGRSwapExecutorTest is Test {
         routers[1] = E.RouterConfig(address(classic), E.RouterKind.AERODROME_CLASSIC, address(hub));
         routers[2] = E.RouterConfig(address(slip), E.RouterKind.AERODROME_SLIPSTREAM, address(hub));
         routers[3] = E.RouterConfig(address(uni), E.RouterKind.UNISWAP_V3_ROUTER02, address(hub));
-        address[] memory tokens = new address[](3);
-        tokens[0] = address(a);
-        tokens[1] = address(b);
-        tokens[2] = address(w);
-        ex = new E(address(this), address(w), address(new MockPermit2()), routers, tokens);
+        ex = new E(address(this), address(w), address(new MockPermit2()), routers, 25, fee);
         a.mint(taker, 1e24);
         b.mint(taker, 1e24);
         address[4] memory venues = [address(v2), address(classic), address(slip), address(uni)];
@@ -252,8 +248,7 @@ contract MPGRSwapExecutorTest is Test {
     }
 
     function testThreeHopV2V3SlipAndPathCycleGuards() public {
-        MockPermitToken c = new MockPermitToken("Third mock", "C", 18);
-        ex.setTokenAllowed(address(c), true);
+        MockPermitToken c = new MockPermitToken("Third mock", "C", 18); // permissionless: no allowlist call
         hub.set(address(w), address(b), keccak256(abi.encodePacked("v3", uint24(3000))), address(pool));
         hub.set(address(b), address(c), keccak256(abi.encodePacked("slip", int24(10))), address(pool));
         c.mint(address(slip), 1e24);
@@ -333,17 +328,35 @@ contract MPGRSwapExecutorTest is Test {
         oneHop(p, h);
     }
 
-    function testUnallowlistedHopOutputBlocked() public {
-        MockPermitToken c = new MockPermitToken("Unlisted", "C", 18);
+    function testPermissionlessNeverSeenTokenTradesWithoutAllowlist() public {
+        MockPermitToken c = new MockPermitToken("Brand new", "NEW", 18);
         hub.set(address(a), address(c), bytes32("v2"), address(pool));
         c.mint(address(v2), 1e24);
-        E.SwapParams memory p = params(address(a), address(b), G, false);
-        E.Hop[] memory path = new E.Hop[](2);
+        E.SwapParams memory p = params(address(a), address(c), G, false);
+        E.Hop[] memory path = new E.Hop[](1);
         path[0] = hop(address(v2), address(c), E.RouterKind.UNISWAP_V2_ROUTER02, 0, 0, false);
-        path[1] = hop(address(v2), address(b), E.RouterKind.UNISWAP_V2_ROUTER02, 0, 0, false);
         p.router = path[0].router;
-        vm.expectRevert(abi.encodeWithSelector(E.TokenNotAllowed.selector, address(c)));
-        ex.swapExactInput(p, path, auth());
+        vm.prank(taker);
+        uint256 out = ex.swapExactInput(p, path, auth());
+        assertGt(out, 0, "never-allowlisted token executed");
+        assertEq(c.balanceOf(taker), out);
+    }
+
+    function testInfrastructureAndCodelessAccountsCannotPoseAsTokens() public {
+        // p.tokenOut mirrors the hostile hop output so the path-shape guard
+        // passes and the typed token validation is what rejects the hop.
+        E.SwapParams memory p = params(address(a), address(v2), G, false);
+        E.Hop memory h = hop(address(v2), address(v2), E.RouterKind.UNISWAP_V2_ROUTER02, 0, 0, false);
+        vm.expectRevert(abi.encodeWithSelector(E.TokenIsInfrastructure.selector, address(v2)));
+        oneHop(p, h);
+        p = params(address(a), address(ex), G, false);
+        h = hop(address(v2), address(ex), E.RouterKind.UNISWAP_V2_ROUTER02, 0, 0, false);
+        vm.expectRevert(abi.encodeWithSelector(E.TokenIsInfrastructure.selector, address(ex)));
+        oneHop(p, h);
+        p = params(address(a), stranger, G, false);
+        h = hop(address(v2), stranger, E.RouterKind.UNISWAP_V2_ROUTER02, 0, 0, false);
+        vm.expectRevert(abi.encodeWithSelector(E.TokenNotAContract.selector, stranger));
+        oneHop(p, h);
     }
 
     function testMeasuredOutputDefendsAgainstLyingRouter() public {
@@ -427,15 +440,68 @@ contract MPGRSwapExecutorTest is Test {
         ex.swapExactInput(p, path, auth());
     }
 
-    function testFeeTermsAreImmutableAndQuoted() public view {
+    function testFeeQuoteMatchesExactFloorArithmetic() public view {
         assertEq(ex.feeBps(), 25);
         assertEq(ex.feeRecipient(), fee);
+        assertEq(ex.MAX_FEE_BPS(), 100);
+        assertEq(ex.FEE_TIMELOCK_SECONDS(), 48 hours);
         (uint256 paid, uint256 net) = ex.quoteFee(type(uint256).max);
         assertEq(paid, (type(uint256).max / 10000) * 25 + ((type(uint256).max % 10000) * 25) / 10000);
         assertEq(net, type(uint256).max - paid);
         (paid, net) = ex.quoteFee(399);
         assertEq(paid, 0, "dust below one fee unit");
         assertEq(net, 399);
+    }
+
+    function testFeeGovernanceRequiresTimelockAndRespectsHardCap() public {
+        address treasury2 = address(0xC0FFEE);
+        // No pending change at birth and no immediate mutation path exists.
+        (uint16 cBps, uint16 cMax, address cRec, uint16 nBps, address nRec, uint48 effAt, uint48 tl) = ex.feeGovernance();
+        assertEq(cBps, 25); assertEq(cMax, 100); assertEq(cRec, fee); assertEq(nBps, 0); assertEq(nRec, address(0)); assertEq(effAt, 0); assertEq(tl, 48 hours);
+        vm.expectRevert(E.FeeChangeNotPending.selector);
+        ex.applyFeeChange();
+
+        // Propose above the on-chain cap is impossible, even by the owner.
+        vm.expectRevert(abi.encodeWithSelector(E.FeeBpsAboveCap.selector, 101, 100));
+        ex.proposeFeeChange(101, treasury2);
+        vm.expectRevert(abi.encodeWithSelector(E.InvalidFeeRecipient.selector, address(0)));
+        ex.proposeFeeChange(50, address(0));
+        // Strangers cannot propose.
+        vm.prank(stranger);
+        vm.expectRevert();
+        ex.proposeFeeChange(50, treasury2);
+
+        // Valid proposal: pending visible, current untouched, timelock armed.
+        vm.expectEmit(true, true, true, true);
+        emit E.FeeChangeProposed(100, treasury2, uint48(block.timestamp) + 48 hours);
+        ex.proposeFeeChange(100, treasury2);
+        assertEq(ex.feeBps(), 25, "current fee unchanged during timelock");
+        assertEq(ex.pendingFeeBps(), 100);
+        assertEq(ex.pendingFeeRecipient(), treasury2);
+        assertEq(ex.pendingEffectiveAt(), block.timestamp + 48 hours);
+
+        // Applying early reverts; cancelling clears; re-propose then wait.
+        vm.expectRevert(abi.encodeWithSelector(E.TimelockNotElapsed.selector, uint48(block.timestamp + 48 hours), block.timestamp));
+        ex.applyFeeChange();
+        ex.cancelFeeChange();
+        assertEq(ex.pendingEffectiveAt(), 0);
+        vm.expectRevert(E.FeeChangeNotPending.selector);
+        ex.applyFeeChange();
+
+        ex.proposeFeeChange(40, treasury2);
+        vm.warp(block.timestamp + 48 hours - 1);
+        vm.expectRevert();
+        ex.applyFeeChange();
+        vm.warp(block.timestamp + 1);
+        vm.expectEmit(true, true, true, true);
+        emit E.FeeChangeApplied(25, 40, fee, treasury2);
+        ex.applyFeeChange(); // permissionless apply after the delay
+        assertEq(ex.feeBps(), 40);
+        assertEq(ex.feeRecipient(), treasury2);
+        assertEq(ex.pendingEffectiveAt(), 0);
+        // The new fee is what trades and quotes use, with exact arithmetic.
+        (uint256 paid,) = ex.quoteFee(10_000);
+        assertEq(paid, 40);
     }
 
     function testWrongFeeExpectationReverts() public {
@@ -526,10 +592,7 @@ contract MPGRSwapExecutorTest is Test {
         MockPermit2 p2 = new MockPermit2();
         E.RouterConfig[] memory routers = new E.RouterConfig[](1);
         routers[0] = E.RouterConfig(address(v2), E.RouterKind.UNISWAP_V2_ROUTER02, address(hub));
-        address[] memory tokens = new address[](2);
-        tokens[0] = address(a);
-        tokens[1] = address(b);
-        E ex2 = new E(address(this), address(w), address(p2), routers, tokens);
+        E ex2 = new E(address(this), address(w), address(p2), routers, 25, fee);
         a.mint(signer, G);
         vm.prank(signer);
         a.approve(address(p2), type(uint256).max); // real Permit2 spender is the Permit2 contract

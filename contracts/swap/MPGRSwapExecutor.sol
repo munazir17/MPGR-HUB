@@ -19,9 +19,18 @@ import {
 
 import {IMPGRSwapV2RouterDraft} from "../executor/drafts/IMPGRSwapV2RouterDraft.sol";
 
-/// @title MPGRSwapExecutor — fixed-fee, typed Base Swap release candidate
+/// @title MPGRSwapExecutor — permissionless-token, governance-bounded-fee typed Base Swap executor
 /// @notice NOT DEPLOYED. Activation requires explicit approval and a verified release manifest.
-/// @dev No arbitrary calldata, fee setters, proxy or Agent dependencies. One atomic bounded path.
+/// @dev Design pillars:
+///      - PERMISSIONLESS TOKENS: any Base contract that behaves like a standard
+///        ERC-20 may be traded. Safety comes from typed adapters, canonical
+///        factory-verified pools, measured balance deltas, exact-input
+///        (fee-on-transfer/rebase rejection), min-out, deadline and atomic fee —
+///        never from a token allowlist. Routers/factories stay allowlisted.
+///      - BOUNDED FEE GOVERNANCE: fee and recipient are storage values changeable
+///        ONLY through propose -> 48h timelock -> apply, hard-capped at
+///        MAX_FEE_BPS on-chain. No immediate setter, no fee-less entry point.
+///      - No arbitrary calldata, no proxy, no Agent dependencies. One atomic path.
 contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -32,8 +41,13 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Basis-point denominator.
     uint256 public constant BPS_DENOMINATOR = 10_000;
 
-    /// @notice Fixed Swap-only fee: no configuration mutation or fee-less path.
-    uint16 public constant MAX_FEE_BPS = 25;
+    /// @notice On-chain hard cap for the protocol fee: 1.00%. Governance can
+    ///         never propose or apply a fee above this, in one step or many.
+    uint16 public constant MAX_FEE_BPS = 100;
+
+    /// @notice Mandatory delay between proposing and applying a fee or
+    ///         recipient change (48h, inside the 48-72h policy window).
+    uint48 public constant FEE_TIMELOCK_SECONDS = 48 hours;
 
     /// @notice SwapExecuted.flags bit: the taker sold native ETH (msg.value).
     uint8 public constant FLAG_NATIVE_IN = 1;
@@ -84,8 +98,8 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Common trade parameters (all enforced on-chain).
     /// @param router            Allowlisted router of the adapter's kind.
-    /// @param tokenIn           Allowlisted sell token (WETH when selling native ETH).
-    /// @param tokenOut          Allowlisted buy token.
+    /// @param tokenIn           Permissionless sell token (WETH when selling native ETH).
+    /// @param tokenOut          Permissionless buy token.
     /// @param grossAmountIn     G: total sell amount taken from the taker (fee included).
     /// @param expectedFeeAmount Must equal floor(G * feeBps / 10_000) at execution.
     /// @param amountOutMinimum  Minimum output the taker must receive (> 0).
@@ -139,18 +153,23 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Canonical Permit2 (SignatureTransfer) used by AuthKind.PERMIT2.
     IPermit2SignatureTransfer public immutable PERMIT2;
 
-    /// @notice Immutable Swap fee terms, enforced on every entry point.
-    uint16 public constant feeBps = 25;
+    /// @notice Current protocol fee in bps. Mutable ONLY via the timelocked
+    ///         governance flow below, always <= MAX_FEE_BPS.
+    uint16 public feeBps;
 
-    /// @notice Fixed existing fee recipient; no recipient setter.
-    address public constant feeRecipient = 0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4;
+    /// @notice Current protocol fee recipient. Mutable ONLY via the timelocked
+    ///         governance flow below.
+    address public feeRecipient;
+
+    /// @notice Pending governance change (zero `pendingEffectiveAt` = none).
+    uint16 public pendingFeeBps;
+    address public pendingFeeRecipient;
+    uint48 public pendingEffectiveAt;
 
     /// @notice Router allowlist: router => adapter kind (NONE = not allowed).
+    ///         Tokens are permissionless; routers/factories never are.
     mapping(address router => RouterKind kind) public routerKind;
     mapping(address router => address factory) public routerFactory;
-
-    /// @notice Token allowlist (both sell and buy side).
-    mapping(address token => bool allowed) public isTokenAllowed;
 
     // ---------------------------------------------------------------------
     // Events
@@ -174,10 +193,13 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         uint8 flags
     );
 
-    event FeeBpsUpdated(uint16 previousFeeBps, uint16 newFeeBps);
-    event FeeRecipientUpdated(address indexed previousRecipient, address indexed newRecipient);
+    /// @notice Governance proposed a fee/recipient change; applicable at `effectiveAt`.
+    event FeeChangeProposed(uint16 newFeeBps, address newFeeRecipient, uint48 effectiveAt);
+    /// @notice A proposed change became active after the timelock elapsed.
+    event FeeChangeApplied(uint16 previousFeeBps, uint16 newFeeBps, address previousRecipient, address newRecipient);
+    /// @notice Governance cancelled a pending change before it became active.
+    event FeeChangeCancelled(uint16 cancelledFeeBps, address cancelledRecipient, uint48 wasEffectiveAt);
     event RouterUpdated(address indexed router, RouterKind previousKind, RouterKind newKind);
-    event TokenAllowlistUpdated(address indexed token, bool allowed);
     event TokensRescued(address indexed token, address indexed to, uint256 amount);
     event NativeRescued(address indexed to, uint256 amount);
 
@@ -191,8 +213,11 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     error NotAContract(address account);
     error FeeBpsAboveCap(uint16 requested, uint16 cap);
     error InvalidFeeRecipient(address recipient);
+    error FeeChangeNotPending();
+    error TimelockNotElapsed(uint48 effectiveAt, uint256 nowTs);
     error RouterNotAllowed(address router, RouterKind expected);
-    error TokenNotAllowed(address token);
+    error TokenIsInfrastructure(address token);
+    error TokenNotAContract(address token);
     error SameToken();
     error ZeroAmount();
     error ZeroMinimumOutput();
@@ -220,27 +245,31 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     // Construction
     // ---------------------------------------------------------------------
 
-    /// @param initialOwner   Admin (the operator's own wallet/multisig). The
-    ///                       deployer gets NO privileges unless it is this address.
-    /// @param weth           Wrapped native token.
-    /// @param permit2        Canonical Permit2 address.
-    /// @param routers        Initial router allowlist.
-    /// @param tokens         Initial token allowlist.
+    /// @param initialOwner        Admin — MUST be the governance multisig. The
+    ///                            deployer gets NO privileges unless it is this address.
+    /// @param weth                Wrapped native token.
+    /// @param permit2             Canonical Permit2 address.
+    /// @param routers             Initial router allowlist (typed adapters + factories).
+    /// @param initialFeeBps       Initial protocol fee (policy: 25). 1..MAX_FEE_BPS.
+    /// @param initialFeeRecipient Initial fee recipient; pinned and verified off-chain
+    ///                            before deployment, re-checked by the deploy script.
     constructor(
         address initialOwner,
         address weth,
         address permit2,
         RouterConfig[] memory routers,
-        address[] memory tokens
+        uint16 initialFeeBps,
+        address initialFeeRecipient
     ) Ownable(initialOwner) {
         if (weth == address(0) || permit2 == address(0)) revert ZeroAddress();
         if (weth.code.length == 0) revert NotAContract(weth);
+        if (initialFeeBps == 0 || initialFeeBps > MAX_FEE_BPS) revert FeeBpsAboveCap(initialFeeBps, MAX_FEE_BPS);
+        if (initialFeeRecipient == address(0)) revert InvalidFeeRecipient(initialFeeRecipient);
         WETH = IWETH9(weth);
         PERMIT2 = IPermit2SignatureTransfer(permit2);
-        for (uint256 i = 0; i < tokens.length; ++i) {
-            _setToken(tokens[i], true);
-        }
-        for (uint256 i = 0; i < routers.length; ++i) {
+        feeBps = initialFeeBps;
+        feeRecipient = initialFeeRecipient;
+        for (uint256 i; i < routers.length; ++i) {
             _setRouter(routers[i].router, routers[i].kind, routers[i].factory);
         }
     }
@@ -251,8 +280,10 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
 
     // slither-disable-start reentrancy-balance
     // These balance snapshots enforce exact consumption and preserve pre-existing dust.
-    // All execution and permission/rescue methods are nonReentrant; fee terms are constants.
+    // All execution and permission/rescue methods are nonReentrant.
     /// @notice One to three typed hops, one fee on gross input, one final minimum.
+    ///         Tokens are permissionless: safety is enforced by typed adapters,
+    ///         factory-verified pools, measured deltas and the atomic fee.
     function swapExactInput(SwapParams calldata p, Hop[] calldata path, Authorization calldata auth)
         external payable nonReentrant whenNotPaused returns (uint256 amountOut)
     {
@@ -300,9 +331,12 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
 
     // slither-disable-end reentrancy-balance
 
+    /// @dev Typed-adapter + canonical-factory validation. The pool MUST be the
+    ///      one the router's own factory reports for this pair/fee/spacing/stable
+    ///      flag, so a malicious or counterfeit pool can never be routed through.
     function _validateHop(Hop calldata h, address tokenIn) private view {
         if (h.kind == RouterKind.NONE || routerKind[h.router] != h.kind) revert RouterNotAllowed(h.router, h.kind);
-        if (!isTokenAllowed[h.tokenOut]) revert TokenNotAllowed(h.tokenOut);
+        _validateToken(h.tokenOut);
         address factory = routerFactory[h.router];
         address pool;
         if (h.kind == RouterKind.UNISWAP_V3_ROUTER02) {
@@ -319,6 +353,15 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
             pool = ISwapClassicFactory(factory).getPool(tokenIn, h.tokenOut, h.stable);
         } else revert InvalidPath();
         if (pool == address(0) || pool != h.pool || pool.code.length == 0) revert InvalidPath();
+    }
+
+    /// @dev Permissionless-token safety: real code, and never this contract, a
+    ///      allowlisted router or its factory (infrastructure can't pose as a token).
+    function _validateToken(address token) private view {
+        if (token.code.length == 0) revert TokenNotAContract(token);
+        if (token == address(this) || routerKind[token] != RouterKind.NONE || routerFactory[token] != address(0)) {
+            revert TokenIsInfrastructure(token);
+        }
     }
 
     function _callHop(Hop calldata h, address tokenIn, address receiver, uint256 amount, uint256 minimum, uint256 deadline) private {
@@ -346,26 +389,73 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Exact fee split for a gross sell amount at the CURRENT fee.
     /// @return fee        floor(grossAmountIn * feeBps / 10_000)
     /// @return swapAmount grossAmountIn - fee
-    function quoteFee(uint256 grossAmountIn) external pure returns (uint256 fee, uint256 swapAmount) {
+    function quoteFee(uint256 grossAmountIn) external view returns (uint256 fee, uint256 swapAmount) {
         fee = Math.mulDiv(grossAmountIn, feeBps, BPS_DENOMINATOR);
         swapAmount = grossAmountIn - fee;
+    }
+
+    /// @notice Full governance state for UIs: current + pending fee terms.
+    function feeGovernance()
+        external
+        view
+        returns (uint16 currentFeeBps, uint16 maxFeeBps, address currentRecipient, uint16 nextFeeBps, address nextRecipient, uint48 effectiveAt, uint48 timelockSeconds)
+    {
+        return (feeBps, MAX_FEE_BPS, feeRecipient, pendingFeeBps, pendingFeeRecipient, pendingEffectiveAt, FEE_TIMELOCK_SECONDS);
+    }
+
+    // ---------------------------------------------------------------------
+    // Fee governance (multisig owner + mandatory timelock)
+    // ---------------------------------------------------------------------
+
+    /// @notice Propose a new fee and/or recipient. Cannot take effect before
+    ///         `block.timestamp + FEE_TIMELOCK_SECONDS`, and the new fee can
+    ///         never exceed MAX_FEE_BPS. Replaces any earlier pending change.
+    function proposeFeeChange(uint16 newFeeBps, address newFeeRecipient) external onlyOwner {
+        if (newFeeBps > MAX_FEE_BPS) revert FeeBpsAboveCap(newFeeBps, MAX_FEE_BPS);
+        if (newFeeRecipient == address(0)) revert InvalidFeeRecipient(newFeeRecipient);
+        pendingFeeBps = newFeeBps;
+        pendingFeeRecipient = newFeeRecipient;
+        pendingEffectiveAt = uint48(block.timestamp) + FEE_TIMELOCK_SECONDS;
+        emit FeeChangeProposed(newFeeBps, newFeeRecipient, pendingEffectiveAt);
+    }
+
+    /// @notice Apply the pending change once the timelock has elapsed.
+    ///         Callable by anyone (liveness), but only after the delay and only
+    ///         for exactly what governance proposed.
+    function applyFeeChange() external {
+        uint48 effectiveAt = pendingEffectiveAt;
+        if (effectiveAt == 0) revert FeeChangeNotPending();
+        if (block.timestamp < effectiveAt) revert TimelockNotElapsed(effectiveAt, block.timestamp);
+        uint16 previousBps = feeBps;
+        address previousRecipient = feeRecipient;
+        feeBps = pendingFeeBps;
+        feeRecipient = pendingFeeRecipient;
+        delete pendingFeeBps;
+        delete pendingFeeRecipient;
+        delete pendingEffectiveAt;
+        emit FeeChangeApplied(previousBps, feeBps, previousRecipient, feeRecipient);
+    }
+
+    /// @notice Cancel a pending change before it becomes active.
+    function cancelFeeChange() external onlyOwner {
+        if (pendingEffectiveAt == 0) revert FeeChangeNotPending();
+        emit FeeChangeCancelled(pendingFeeBps, pendingFeeRecipient, pendingEffectiveAt);
+        delete pendingFeeBps;
+        delete pendingFeeRecipient;
+        delete pendingEffectiveAt;
     }
 
     // ---------------------------------------------------------------------
     // Admin (owner only — Ownable2Step)
     // ---------------------------------------------------------------------
 
-    // Fee terms are constants. There are deliberately NO fee setters, including
-    // owner-only ones, and no alternate zero-fee entry point.
+    // There are deliberately NO immediate fee/recipient setters (owner or
+    // otherwise) and no alternate zero-fee entry point: the timelocked flow
+    // above is the only mutation path, bounded by MAX_FEE_BPS.
 
     /// @notice Allowlist a router for exactly one adapter kind, or remove it (NONE).
     function setRouter(address router, RouterKind kind, address factory) external onlyOwner nonReentrant {
         _setRouter(router, kind, factory);
-    }
-
-    /// @notice Allow or disallow a token.
-    function setTokenAllowed(address token, bool allowed) external onlyOwner nonReentrant {
-        _setToken(token, allowed);
     }
 
     /// @notice Block new trades (cannot trap funds: nothing is held between txs).
@@ -421,7 +511,8 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         _validate(p, kind);
         t.kind = kind;
 
-        // Exact fee — floor(G * feeBps / 10_000). Committed by the caller.
+        // Exact fee — floor(G * feeBps / 10_000) at the CURRENT governed fee.
+        // The caller commits the same value; any drift reverts the trade.
         t.fee = Math.mulDiv(p.grossAmountIn, feeBps, BPS_DENOMINATOR);
         if (t.fee != p.expectedFeeAmount) revert FeeMismatch(p.expectedFeeAmount, t.fee);
         if (feeBps != 0 && t.fee == 0) revert FeeRoundsToZero(p.grossAmountIn);
@@ -439,13 +530,15 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
             WETH.deposit{value: t.swapAmount}();
             if (t.fee != 0) _sendNative(feeRecipient, t.fee);
         } else {
-            uint256 recipientBefore = tokenIn.balanceOf(feeRecipient);
+            address recipient = feeRecipient;
+            uint256 recipientBefore = tokenIn.balanceOf(recipient);
             _pullFromTaker(p, auth);
             uint256 received = tokenIn.balanceOf(address(this)) - t.inBalanceBefore;
             // Rejects fee-on-transfer / rebasing sell tokens: exact economics only.
             if (received != p.grossAmountIn) revert UnsupportedTransferAmount(p.grossAmountIn, received);
-            if (t.fee != 0) tokenIn.safeTransfer(feeRecipient, t.fee);
-            if (tokenIn.balanceOf(feeRecipient) - recipientBefore != t.fee) revert FeeDeliveryMismatch();
+            if (t.fee != 0) tokenIn.safeTransfer(recipient, t.fee);
+            // The treasury must actually receive the fee, or the whole swap reverts.
+            if (tokenIn.balanceOf(recipient) - recipientBefore != t.fee) revert FeeDeliveryMismatch();
         }
 
         // Exact, single-use router allowance for (G - fee).
@@ -502,8 +595,8 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
 
     function _validate(SwapParams calldata p, RouterKind kind) private view {
         if (routerKind[p.router] != kind) revert RouterNotAllowed(p.router, kind);
-        if (!isTokenAllowed[p.tokenIn]) revert TokenNotAllowed(p.tokenIn);
-        if (!isTokenAllowed[p.tokenOut]) revert TokenNotAllowed(p.tokenOut);
+        _validateToken(p.tokenIn);
+        _validateToken(p.tokenOut);
         if (p.tokenIn == p.tokenOut) revert SameToken();
         if (p.grossAmountIn == 0) revert ZeroAmount();
         if (p.amountOutMinimum == 0) revert ZeroMinimumOutput();
@@ -522,9 +615,7 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
                     nonce: auth.nonce,
                     deadline: auth.deadline
                 }),
-                IPermit2SignatureTransfer.SignatureTransferDetails({
-                    to: address(this), requestedAmount: p.grossAmountIn
-                }),
+                IPermit2SignatureTransfer.SignatureTransferDetails({to: address(this), requestedAmount: p.grossAmountIn}),
                 msg.sender,
                 auth.signature
             );
@@ -545,10 +636,10 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     // slither-disable-start arbitrary-send-eth
-    // Justification: `to` is never caller-chosen. Call sites pass only
-    // (a) `feeRecipient` (fixed constant), (b) `msg.sender` (the output
-    // recipient is enforced == taker in _validate), or (c) an owner-only
-    // rescue target. Reentrancy is blocked by nonReentrant on every caller.
+    // Justification: `to` is never caller-chosen for trade flows. Call sites pass
+    // only (a) `feeRecipient` (governed storage, timelocked), (b) `msg.sender`
+    // (the output recipient is enforced == taker in _validate), or (c) an
+    // owner-only rescue target. Reentrancy is blocked by nonReentrant everywhere.
     function _sendNative(address to, uint256 amount) private {
         // Reentrancy is blocked by nonReentrant on every caller.
         (bool ok,) = payable(to).call{value: amount}("");
@@ -566,23 +657,10 @@ contract MPGRSwapExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         if (kind != RouterKind.NONE) {
             if (factory.code.length == 0) revert NotAContract(factory);
             if (router.code.length == 0) revert NotAContract(router);
-            // A token can never double as a router (and vice versa).
-            if (isTokenAllowed[router]) revert ConflictingAllowlist(router);
         }
         emit RouterUpdated(router, routerKind[router], kind);
         routerKind[router] = kind;
         routerFactory[router] = kind == RouterKind.NONE ? address(0) : factory;
-    }
-
-    function _setToken(address token, bool allowed) private {
-        if (token == address(0)) revert ZeroAddress();
-        if (token == address(this)) revert ConflictingAllowlist(token);
-        if (allowed) {
-            if (token.code.length == 0) revert NotAContract(token);
-            if (routerKind[token] != RouterKind.NONE) revert ConflictingAllowlist(token);
-        }
-        isTokenAllowed[token] = allowed;
-        emit TokenAllowlistUpdated(token, allowed);
     }
 }
 
