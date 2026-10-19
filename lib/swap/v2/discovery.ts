@@ -32,11 +32,20 @@ export function asset(value: string): Address {
 }
 const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const other = (p: Pool, token: Address): Address | null => eq(p.token0, token) ? p.token1 : eq(p.token1, token) ? p.token0 : null;
-function validPool(p: Pool): boolean { return [1, 2, 3, 4, 7].includes(p.kind) && !eq(p.token0, p.token1); }
+function validPool(p: Pool): boolean {
+  if (![1, 2, 3, 4, 7].includes(p.kind) || eq(p.token0, p.token1)) return false;
+  if (p.kind === 7) {
+    const key = p.v4Key;
+    if (!key || !eq(p.pool, V4_MANAGER) || !eq(p.router, V4_MANAGER) || !eq(p.factory, V4_MANAGER) || BigInt(key.currency0) >= BigInt(key.currency1) || key.tickSpacing <= 0 || key.tickSpacing > 32767) return false;
+    const token0 = key.currency0 === "0x0000000000000000000000000000000000000000" ? BASE_WETH : key.currency0;
+    return eq(token0, p.token0) && eq(key.currency1, p.token1);
+  }
+  return true;
+}
 async function quoteLeg(source: LiquiditySource, pools: readonly Pool[], tokens: readonly Address[], amountIn: bigint): Promise<Leg | null> {
   let amount = amountIn;
   for (let i = 0; i < pools.length; i++) {
-    try { amount = await source.quote(pools[i], tokens[i], amount); } catch (error) { if (error instanceof V2QuoteError) throw error; return null; }
+    try { amount = await source.quote(pools[i], tokens[i], amount); } catch (error) { if (error instanceof V2QuoteError) throw error; throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "Venue quote unavailable"); }
     if (amount <= 0n) return null;
   }
   return { pools, tokens, amountIn, amountOut: amount };

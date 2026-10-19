@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { decodeFunctionData, type Address } from "viem";
-import { discoverV2Quote, validateV2Quote, V2_FEE_RECIPIENT, V2_DEPLOYMENT, type Pool, type LiquiditySource } from "./discovery";
+import { discoverV2Quote, validateV2Quote, V2_FEE_RECIPIENT, V2_DEPLOYMENT, V4_MANAGER, type Pool, type LiquiditySource } from "./discovery";
 import { buildV2Transaction } from "./transaction";
 import { SWAP_V2_ABI } from "./abi";
 const addr = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as Address;
@@ -54,7 +54,8 @@ describe("unreleased permissionless V2 discovery (unit policy, not fork proof)",
   });
   it("accepts dynamically indexed v3 tiers, Slipstream spacings and v4 PoolKeys", async () => {
     for(const kind of [1,2,4,7] as const) {
-      const p={...edge(kind,A,B,kind),poolFee:kind===2?2500:0,tickSpacing:kind===1?17:0};
+      const p={...edge(kind,A,B,kind),poolFee:kind===2?2500:0,tickSpacing:kind===1?17:0,
+        ...(kind===7 ? {pool:V4_MANAGER,router:V4_MANAGER,factory:V4_MANAGER,v4Key:{currency0:A,currency1:B,fee:0,tickSpacing:200,hooks:addr(0)}} : {})};
       const q=await discoverV2Quote(source([p]),A,B,10000n);expect(q.legs[0].pools[0].kind).toBe(kind);
     }
   });

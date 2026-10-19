@@ -1,6 +1,6 @@
 name: Deploy MPGR Swap Executor V2 (trusted pinned SHA)
 
-# UNQUALIFIED: gate is closed. The real V2 fork suite is not implemented yet.
+# Gate remains CLOSED. This workflow must not be dispatched in the proof-only pass.
 # No production key reaches unreviewed branch code; all code runs from the
 # owner-pinned main ancestor. V1 scripts/gates/manifests are untouched.
 on:
@@ -91,7 +91,10 @@ jobs:
           echo "::notice title=Trusted code verified::executing deployment pipeline from reviewed commit $PINNED_SHA"
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
         with:
-          version: stable
+          version: v1.8.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Install Solidity dependencies (pinned, same as CI)
         run: |
           mkdir -p .forge-deps
@@ -103,7 +106,8 @@ jobs:
         run: |
           set -euo pipefail
           forge test --match-path test/swap/MPGRSwapExecutorV2.t.sol
-          forge test --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol --fork-url "$BASE_MAINNET_RPC_URL" --json > v2-fork-proof.json
+          node scripts/swap-deploy-v2/discover-fork-fixtures.mjs
+          forge test --network base --hardfork base:Beryl --chain-id 8453 --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol --json > v2-fork-proof.json
           python3 scripts/swap-deploy-v2/require-fork-proof.py v2-fork-proof.json
       - name: Preflight against the REAL chain (fail closed; includes genuine-Safe owner verification; nonce need not be zero)
         env:
@@ -120,7 +124,7 @@ jobs:
           SWAP_EXECUTOR_OWNER: ${{ vars.SWAP_EXECUTOR_OWNER }}
         run: |
           set -euo pipefail
-          forge script script/DeployMPGRSwapExecutorV2BaseMainnet.s.sol:DeployMPGRSwapExecutorV2BaseMainnet \
+          forge script script/DeployMPGRSwapExecutorV2BaseMainnet.s.sol:DeployMPGRSwapExecutorV2BaseMainnet --network base --hardfork base:Beryl --chain-id 8453 \
             --rpc-url "$BASE_MAINNET_RPC_URL" --private-key "$BASE_MAINNET_DEPLOYER_PRIVATE_KEY" \
             --broadcast --slow -vv | tee broadcast.txt
       - name: Seal manifest with the real tx receipt + on-chain pin re-reads
