@@ -11,6 +11,18 @@ import { swapQuoteFresh } from "./swap-lifecycle";
 import type { TradeError, TradeProposal, TradeTokenRef } from "@/lib/trade/trade-types";
 import { swapQuotePolicyError } from "./swap-policy";
 import { readSwapAllowance } from "./swap-allowance";
+import { MPGR_SWAP_EXECUTOR_ABI } from "./swap-executor-abi";
+import { swapPathExecutor } from "./swap-executor-config";
+
+// Both executor families share provider "mpgr-executor"; the transaction
+// TARGET identifies which deployed contract will pull funds and take the
+// fee (the same discriminator swap-policy and swap-allowance use). Wallet
+// preflight must verify THAT contract's allowance target and fee terms —
+// the other executor's posture is irrelevant to this swap.
+function swapPathTarget(p: TradeProposal) {
+  const swapDeployment = swapPathExecutor();
+  return swapDeployment && p.transaction && p.transaction.to.toLowerCase() === swapDeployment.executor.toLowerCase() ? swapDeployment : null;
+}
 export async function readSwapBalance(account: Address, token: TradeTokenRef) {
   if (isNativeEthSentinel(token.address)) return { value: (await getBalance(config, { address: account, chainId: 8453 })).value, decimals: 18 };
   const [value, decimals] = await Promise.all([
@@ -23,7 +35,7 @@ export async function readSwapBalance(account: Address, token: TradeTokenRef) {
 export async function estimateSwapGas(p: TradeProposal, phase: "approval" | "swap" = "swap"): Promise<bigint> {
   const client = getPublicClient(config, { chainId: 8453 });
   if (!client || !p.transaction) throw new Error("Base gas estimate unavailable");
-  const tx = phase === "approval" ? { to: p.from.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [deployment.executor, BigInt(p.fromAmount)] }), value: 0n }
+  const tx = phase === "approval" ? { to: p.from.address, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [swapPathTarget(p)?.executor ?? deployment.executor, BigInt(p.fromAmount)] }), value: 0n }
     : { to: p.transaction.to, data: p.transaction.data, value: BigInt(p.transaction.value) };
   // Base is OP Stack: include L1 data, operator and L2 fees, not gas*price alone.
   const total = await estimateTotalFee(client, { account: p.taker, ...tx });
@@ -56,10 +68,15 @@ export async function validateSwapWallet(p: TradeProposal, phase: "approval" | "
     if (phase === "swap" && allowance < BigInt(p.fromAmount)) return fail("APPROVAL_FAILED", "Actual allowance is insufficient. Retry approval; no swap was submitted.");
   }
   try {
+    const pathDeployment = swapPathTarget(p);
+    const feeConfig: [Promise<unknown>, Promise<unknown>] = pathDeployment
+      ? [readContract(config, { address: pathDeployment.executor, abi: MPGR_SWAP_EXECUTOR_ABI, functionName: "feeRecipient", chainId: 8453 }),
+         readContract(config, { address: pathDeployment.executor, abi: MPGR_SWAP_EXECUTOR_ABI, functionName: "feeBps", chainId: 8453 })]
+      : [readContract(config, { address: deployment.executor, abi: MPGR_EXECUTOR_ABI, functionName: "feeRecipient", chainId: 8453 }),
+         readContract(config, { address: deployment.executor, abi: MPGR_EXECUTOR_ABI, functionName: "feeBps", chainId: 8453 })];
     const [balance, native, recipient, bps, gas] = await Promise.all([
       readSwapBalance(p.taker, p.from), getBalance(config, { address: p.taker, chainId: 8453 }),
-      readContract(config, { address: deployment.executor, abi: MPGR_EXECUTOR_ABI, functionName: "feeRecipient", chainId: 8453 }),
-      readContract(config, { address: deployment.executor, abi: MPGR_EXECUTOR_ABI, functionName: "feeBps", chainId: 8453 }),
+      feeConfig[0], feeConfig[1],
       estimateSwapGas(p, phase),
     ]);
     if (String(recipient).toLowerCase() !== p.agentFee!.recipient!.toLowerCase() || Number(bps) !== 25) return fail("QUOTE_CHANGED", "Executor fee configuration changed. Request a fresh quote; nothing was submitted.");

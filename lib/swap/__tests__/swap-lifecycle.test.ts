@@ -3,8 +3,13 @@ import { swapQuoteExpiry, swapQuoteFresh, swapQuoteNeedsRefresh } from "../swap-
 import { simulatedExecutorQuote } from "@/tests/mobile/flow-fixtures";
 import { chatDraftToForm } from "@/components/features/agent/chat-autonomy-review";
 import { buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
-import { decodeFunctionData, encodeFunctionData } from "viem";
+import { decodeFunctionData, encodeFunctionData, keccak256, type Address, type Hex } from "viem";
 import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
+import { BASE_USDC, BASE_WETH } from "@/lib/trade/trade-config";
+import type { TradeProposal } from "@/lib/trade/trade-types";
+import { MPGR_SWAP_EXECUTOR_ABI } from "../swap-executor-abi";
+import { SWAP_PATH_EXECUTOR_DEPLOYMENT, SWAP_PATH_VENUES } from "../swap-executor-config";
+import { swapPathFeeFloor } from "../swap-executor-intent";
 const prompt = "Buy AAPLc whenever price falls below $200 worth 1 USDC";
 const quote = () => simulatedExecutorQuote(chatDraftToForm(buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt)));
 describe("Swap clocks preserve provider and route validity", () => {
@@ -28,5 +33,40 @@ describe("Swap clocks preserve provider and route validity", () => {
   const p=quote();p.expiresAt="invalid";expect(swapQuoteFresh(p)).toBe(false);p.expiresAt=p.quotedAt;expect(swapQuoteFresh(p)).toBe(false);
   p.quotedAt=new Date(Date.now()+10000).toISOString();p.expiresAt=new Date(Date.now()+20000).toISOString();expect(swapQuoteFresh(p)).toBe(false);
   const good=quote();good.transaction!.data="0x";expect(swapQuoteFresh(good)).toBe(false);
+ });
+});
+
+describe("Swap-path executor proposals use the swap-path deadline, not the legacy decoder", () => {
+ const deployment = SWAP_PATH_EXECUTOR_DEPLOYMENT!;
+ const taker = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D" as Address;
+ const pool = "0xc3000000000000000000000000000000000000cc" as Address;
+ const created = 1_700_000_000_000;
+ const pathProposal = (deadline: bigint, fee = swapPathFeeFloor(1_000_000n)): TradeProposal => {
+  const data = encodeFunctionData({ abi: MPGR_SWAP_EXECUTOR_ABI, functionName: "swapExactInput", args: [{
+   router: SWAP_PATH_VENUES.uniswapV2.router, tokenIn: BASE_USDC, tokenOut: BASE_WETH,
+   grossAmountIn: 1_000_000n, expectedFeeAmount: fee, amountOutMinimum: 990n,
+   recipient: taker, deadline, intentId: keccak256("0x01"), unwrapNativeOut: false,
+  }, [{ router: SWAP_PATH_VENUES.uniswapV2.router, tokenOut: BASE_WETH, kind: 3, poolFee: 0, tickSpacing: 0, stable: false, pool }],
+  { kind: 0, deadline: 0n, nonce: 0n, v: 0, r: ("0x" + "0".repeat(64)) as Hex, s: ("0x" + "0".repeat(64)) as Hex, signature: "0x" }] });
+  return {
+   provider: "mpgr-executor", taker,
+   from: { address: BASE_USDC }, to: { address: BASE_WETH },
+   quotedAt: new Date(created).toISOString(), expiresAt: new Date(created + 600_000).toISOString(),
+   transaction: { to: deployment.executor, data, value: "0" },
+  } as unknown as TradeProposal;
+ };
+ it("a valid path proposal is fresh inside its response window (regression: legacy decode zeroed its expiry)", () => {
+  const p = pathProposal(9999999999n);
+  expect(swapQuoteExpiry(p)).toBe(created + 30_000);
+  expect(swapQuoteFresh(p, created + 1_000)).toBe(true);
+  expect(swapQuoteFresh(p, created + 30_000)).toBe(false);
+ });
+ it("the encoded swap-path deadline caps freshness, and fee-tampered calldata fails closed", () => {
+  const deadlineMs = created + 10_000;
+  const p = pathProposal(BigInt(deadlineMs / 1000));
+  expect(swapQuoteExpiry(p)).toBe(deadlineMs);
+  expect(swapQuoteFresh(p, created + 1_000)).toBe(true);
+  expect(swapQuoteFresh(p, deadlineMs)).toBe(false);
+  expect(swapQuoteExpiry(pathProposal(9999999999n, swapPathFeeFloor(1_000_000n) - 1n))).toBe(0);
  });
 });

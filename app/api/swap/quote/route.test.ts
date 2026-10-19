@@ -5,6 +5,10 @@ import { MPGR_TOKEN_ADDRESS } from "@/lib/chain/base";
 import { MANUAL_SWAP_TOKENS } from "@/lib/trade/manual-swap";
 import { swapQuotePolicyError, verifySwapSettlement } from "@/lib/swap/swap-policy";
 import { inspectExecutorSwapTransaction } from "@/lib/executor/executor-intent";
+import { SWAP_PATH_EXECUTOR_DEPLOYMENT } from "@/lib/swap/swap-executor-config";
+import { inspectSwapExecutorTransaction } from "@/lib/swap/swap-executor-intent";
+
+const swapDeployment = SWAP_PATH_EXECUTOR_DEPLOYMENT!;
 import { simulatedSwapReceipt } from "@/tests/mobile/swap-receipt-fixture";
 import { resetTradeQuoteCache } from "@/lib/trade/trade-quote-cache";
 const m = vi.hoisted(() => ({ routeCodeMissing: false, owner: "0xE0e0d239853c5F2Fe0a524d544eC9eB71fef486e", authenticated: true, originError: false, limited: false, chainId: 8453, decimalsMismatch: false, metadataFails: false, poolFails: false, out: 1000000000n, feeBps: 25n, feeRecipient: "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4", allowed: true, routerMismatch: false, impactExpires: false, permissionsFail: false, allowance: 0n, routed: vi.fn(), simulate: vi.fn() }));
@@ -28,6 +32,17 @@ vi.mock("@/lib/trade/trade-public-client", () => ({ getTradePublicClient: () => 
     if (functionName === "routerKind" && m.routerMismatch) return 0;
     if (functionName === "routerKind") return d.routes.find(r => r.router.toLowerCase() === args?.[0]?.toLowerCase())?.kind;
     if (address.toLowerCase() === d.executor.toLowerCase()) return ({ owner: m.owner, paused: false, feeBps: m.feeBps, feeRecipient: m.feeRecipient, MAX_FEE_BPS: 100n } as Record<string, unknown>)[functionName];
+    // Deployed swap-path executor posture (feeBps/feeRecipient/paused).
+    // Faithful fail-closed behaviour: with no route code these reads fail
+    // exactly like every other unknown offline contract.
+    if (address.toLowerCase() === swapDeployment.executor.toLowerCase()) {
+      if (m.routeCodeMissing) throw new Error("Unknown offline contract");
+      return ({ feeBps: m.feeBps, feeRecipient: m.feeRecipient, paused: false } as Record<string, unknown>)[functionName];
+    }
+    // Minimal measured-output data plane for the permissionless swap-path
+    // (V2-family reads; unavailable exactly when pool reads fail).
+    if (functionName === "getPair") { if (m.poolFails) throw new Error("Provider private diagnostics"); return `0x${2000n.toString(16).padStart(40, "0")}`; }
+    if (functionName === "getAmountsOut") { if (m.poolFails) throw new Error("Provider private diagnostics"); return [0n, m.out]; }
     if (functionName === "getPool") {
       const index = d.routes.findIndex(r => [r.tokenA, r.tokenB].every(t => args?.some(a => typeof a === "string" && a.toLowerCase() === t.toLowerCase())));
       return `0x${(1000 + index).toString(16).padStart(40, "0")}`;
@@ -84,19 +99,54 @@ describe("all approved assisted routes, BOTH directions — real builders, offli
     expect(swapQuotePolicyError(p)).toBeNull();
   });
 });
-it.each([[BASE_USDC, MPGR_TOKEN_ADDRESS], [MPGR_TOKEN_ADDRESS, BASE_USDC]])("MPGR %s → %s: actionable block, no provider quote or fabricated registration", async (fromToken, toToken) => {
-  const r = await POST(request({ fromToken, toToken })); expect(r.status).toBe(422);
-  expect(await r.json()).toMatchObject({ code: "EXECUTION_UNAVAILABLE", reason: "FEE_ROUTE_UNREGISTERED", error: expect.stringContaining("Token and route checks are still required") });
-  expect(r.headers.get("Cache-Control")).toBe("no-store"); expect(m.simulate).not.toHaveBeenCalled(); expect(m.routed).not.toHaveBeenCalled();
+it.each([[BASE_USDC, MPGR_TOKEN_ADDRESS], [MPGR_TOKEN_ADDRESS, BASE_USDC]])("MPGR %s → %s: quotes through the deployed Swap executor at the exact 25bps fee, no provider fallback or fabricated registration", async (fromToken, toToken) => {
+  const r = await POST(request({ fromToken, toToken })); expect(r.status).toBe(200);
+  const { proposal: p } = await r.json();
+  // The pair is permissionless on the deployed fixed-fee Swap executor; the
+  // legacy executor and the 0x provider are never used as a fallback.
+  expect(p.transaction.to.toLowerCase()).toBe(swapDeployment.executor.toLowerCase());
+  expect(p.agentFee.status).toBe("applied"); expect(p.agentFee.bps).toBe(25);
+  expect(p.agentFee.recipient.toLowerCase()).toBe(swapDeployment.feeRecipient.toLowerCase());
+  const x = inspectSwapExecutorTransaction(p.transaction, { deployment: swapDeployment, fromAddress: p.from.address, toAddress: p.to.address, taker: p.taker, nativeIn: false, nativeOut: false });
+  expect(x.ok).toBe(true);
+  if (x.ok) {
+    expect(x.value.grossAmountIn).toBe(BigInt(p.fromAmount));
+    expect(x.value.expectedFeeAmount).toBe(BigInt(p.agentFee.amountAtomic));
+    expect(x.value.expectedFeeAmount).toBe(x.value.grossAmountIn * 25n / 10000n);
+    expect(x.value.amountOutMinimum).toBe(BigInt(p.toAmount) * BigInt(10000 - p.slippageBps) / 10000n);
+    expect(x.value.recipient.toLowerCase()).toBe(p.taker.toLowerCase());
+  }
+  expect(p.swapPathRouting).toMatchObject({ executionSimulation: "not-run-wallet-preflight-required" });
+  // With zero standing allowance the approval step must be flagged for the
+  // Swap executor itself — the spender that will pull the gross amount.
+  expect(p.needsPermit2Approval).toBe(true);
+  expect(p.permit2Spender?.toLowerCase()).toBe(swapDeployment.executor.toLowerCase());
+  expect(swapQuotePolicyError(p)).toBeNull();
+  expect(r.headers.get("Cache-Control")).toBe("no-store"); expect(m.routed).not.toHaveBeenCalled();
 });
 it.each([false, null, "true", 0])("caller cannot disable strict policy with %j", async requireMPGRFee => { expect((await POST(request({ requireMPGRFee }))).status).toBe(400); expect(m.simulate).not.toHaveBeenCalled(); });
 it("omitting the flag is still server-owned strict; legacy Agent endpoint stays fee-skipped", async () => {
   const legacy = await legacyPOST(request({ fromToken: MPGR_TOKEN_ADDRESS, toToken: BASE_USDC })); expect(legacy.status).toBe(200); expect((await legacy.json()).proposal.agentFee.status).toBe("skipped");
-  const strict = await POST(request({ fromToken: MPGR_TOKEN_ADDRESS, toToken: BASE_USDC })); expect(strict.status).toBe(422); expect(m.routed).toHaveBeenCalledTimes(1);
+  // Strictness is server-owned even without the flag: the same pair on the
+  // Swap endpoint must carry the 25bps fee — now collectable by the
+  // deployed Swap executor instead of being blocked as unregistered.
+  const strict = await POST(request({ fromToken: MPGR_TOKEN_ADDRESS, toToken: BASE_USDC })); expect(strict.status).toBe(200);
+  const p = (await strict.json()).proposal;
+  expect(p.agentFee.status).toBe("applied"); expect(p.agentFee.bps).toBe(25);
+  expect(p.transaction.to.toLowerCase()).toBe(swapDeployment.executor.toLowerCase());
+  expect(swapQuotePolicyError(p)).toBeNull();
+  expect(m.routed).toHaveBeenCalledTimes(1);
 });
 it.each([[NATIVE_ETH_SENTINEL, d.weth], [d.weth, NATIVE_ETH_SENTINEL], [BASE_USDC, BASE_USDC]])("same underlying %s → %s fails before quote", async (fromToken, toToken) => { const r = await POST(request({ fromToken, toToken })); expect(r.status).toBe(400); expect((await r.json()).code).toBe("SAME_ASSET"); expect(m.simulate).not.toHaveBeenCalled(); });
 it("invalid address fails early", async () => expect((await POST(request({ toToken: "0x123" }))).status).toBe(400));
-it("unregistered arbitrary import cannot become executable", async () => { const r = await POST(request({ toToken: "0x1234567890abcdef1234567890abcdef12345678" })); expect(r.status).toBe(422); expect(m.routed).not.toHaveBeenCalled(); });
+it("unregistered arbitrary import cannot become executable", async () => {
+  // The pair is now swap-path eligible, so it is no longer refused by the
+  // capability gate — but an import whose on-chain metadata cannot be read
+  // still fails closed (503, no proposal) before any executable quote.
+  const r = await POST(request({ toToken: "0x0000000000000000000000000000000000000bad" }));
+  expect(r.status).toBe(503); expect((await r.json()).proposal).toBeUndefined();
+  expect(m.routed).not.toHaveBeenCalled(); expect(m.simulate).not.toHaveBeenCalled();
+});
 it("wrong RPC chain cannot build executable quotes", async () => { m.chainId = 1; expect((await POST(request())).status).toBe(503); expect(m.simulate).not.toHaveBeenCalled(); });
 it("missing deployed route contracts fail before pool quote", async () => { m.routeCodeMissing = true; const r = await POST(request()); expect(r.status).toBe(422); expect((await r.json()).reason).toBe("POOL_UNVERIFIED"); expect(m.simulate).not.toHaveBeenCalled(); });
 it("changed live token decimals are not replaced with catalog guesses", async () => { m.decimalsMismatch = true; expect((await POST(request())).status).toBe(422); expect(m.simulate).not.toHaveBeenCalled(); });
@@ -113,13 +163,47 @@ it.each(["origin", "auth", "rate"])("%s gate refuses before chain/provider reads
   expect((await POST(request())).status).toBe(gate === "origin" ? 403 : gate === "auth" ? 401 : 429); expect(m.simulate).not.toHaveBeenCalled();
 });
 
-it("missing current on-chain permissions block a registered route before quoting", async () => { m.allowed = false; const r = await POST(request()); expect(r.status).toBe(422); expect((await r.json()).reason).toBe("EXECUTOR_PERMISSION_MISMATCH"); expect(m.simulate).not.toHaveBeenCalled(); });
+it("missing current on-chain permissions block the registered route; only the fixed-fee Swap executor may still quote", async () => {
+  m.allowed = false;
+  const r = await POST(request()); expect(r.status).toBe(200);
+  // The denied legacy route is never used: any executable quote must come
+  // from the independent permissionless-token Swap executor at the same
+  // exact 25bps fee — never fee-less, never through the denied executor.
+  const p = (await r.json()).proposal;
+  expect(p.transaction.to.toLowerCase()).toBe(swapDeployment.executor.toLowerCase());
+  expect(p.agentFee).toMatchObject({ status: "applied", bps: 25 });
+  expect(swapQuotePolicyError(p)).toBeNull();
+  expect(m.simulate).not.toHaveBeenCalled();
+});
 it("unknown on-chain permissions fail closed without exposing RPC diagnostics", async () => { m.permissionsFail = true; const r = await POST(request()); expect(r.status).toBe(503); expect(JSON.stringify(await r.json())).not.toContain("diagnostics"); expect(m.simulate).not.toHaveBeenCalled(); });
-it("cached proposals still require fresh permission checks", async () => { expect((await POST(request())).status).toBe(200); m.allowed = false; expect((await POST(request())).status).toBe(422); expect(m.simulate).toHaveBeenCalledTimes(1); });
+it("cached proposals still require fresh permission checks (a denied legacy route is never revived by cache)", async () => {
+  const first = await POST(request()); expect(first.status).toBe(200);
+  const firstTo = (await first.json()).proposal.transaction.to.toLowerCase();
+  m.allowed = false;
+  const second = await POST(request()); expect(second.status).toBe(200);
+  // Permissions were re-read, not memoized: the cached legacy route is NOT
+  // reused. The fresh quote comes from the independent Swap executor.
+  const p = (await second.json()).proposal;
+  expect(p.transaction.to.toLowerCase()).toBe(swapDeployment.executor.toLowerCase());
+  expect(p.transaction.to.toLowerCase()).not.toBe(firstTo);
+  expect(swapQuotePolicyError(p)).toBeNull();
+  expect(m.simulate).toHaveBeenCalledTimes(1);
+});
 
 it("a live fee-recipient change is not silently approved by Swap", async () => { m.feeRecipient = "0x9999999999999999999999999999999999999999"; const r = await POST(request()); expect(r.status).toBe(422); expect((await r.json()).reason).toBe("FEE_RECIPIENT_CHANGED"); });
 
-it("router adapter-kind drift fails closed even with allowed tokens", async () => { m.routerMismatch = true; const r = await POST(request()); expect(r.status).toBe(422); expect((await r.json()).reason).toBe("EXECUTOR_PERMISSION_MISMATCH"); expect(m.simulate).not.toHaveBeenCalled(); });
+it("router adapter-kind drift fails the registered route closed; only the fixed-fee Swap executor may still quote", async () => {
+  m.routerMismatch = true;
+  const r = await POST(request()); expect(r.status).toBe(200);
+  // Adapter-kind drift kills the legacy route even with allowed tokens; it
+  // cannot degrade into a fee-less or legacy quote. The independent
+  // Swap executor (own on-chain venue kinds, same 25bps fee) may quote.
+  const p = (await r.json()).proposal;
+  expect(p.transaction.to.toLowerCase()).toBe(swapDeployment.executor.toLowerCase());
+  expect(p.agentFee).toMatchObject({ status: "applied", bps: 25 });
+  expect(swapQuotePolicyError(p)).toBeNull();
+  expect(m.simulate).not.toHaveBeenCalled();
+});
 it("slow price-impact reads cannot return an expired executable quote", async () => {
  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-17T06:00:00Z"));
  try { m.impactExpires = true; const r = await POST(request()); expect(r.status).toBe(422); expect((await r.json()).code).toBe("QUOTE_EXPIRED"); } finally { vi.useRealTimers(); }

@@ -12,11 +12,16 @@ import { afterEach, describe, expect, it } from "vitest";
 //     only, executes the owner-pinned SHA (repo variable SWAP_DEPLOY_REF)
 //     verified BEFORE any secret is in scope, reviewer-protected environment.
 //   - Fail-closed behaviour proven OFFLINE by executing the real scripts.
-//     The committed swap gate is now the reviewed OPEN authorization for at
-//     most one deployment attempt, so the regressions below prove both halves:
-//     (a) with the gate open, every remaining guard still refuses before any
-//         RPC call - an authorization is not a deployment; and
-//     (b) the gate-CLOSED path is unchanged, exercised against a throwaway
+//     The one authorized deployment has happened (trusted workflow run
+//     39205622603; executor 0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E, block
+//     52799525) and the sealed final manifest is committed, so the
+//     regressions below prove all three halves of the consumed pipeline:
+//     (a) in the committed tree, every guard now refuses a SECOND deployment
+//         before any RPC call, and the sealed record is never mutated;
+//     (b) the pre-deployment staging/finalize guards are unchanged, exercised
+//         against a throwaway `git worktree` whose scratch copy of the final
+//         manifest is removed; and
+//     (c) the gate-CLOSED path is unchanged, exercised against a throwaway
 //         `git worktree` so no test ever writes to the committed config.
 // Runs without network, without anvil, and without secrets.
 
@@ -90,9 +95,37 @@ function withClosedGateWorktree<T>(fn: (dir: string) => T): T {
   }
 }
 
+/**
+ * Runs `fn` against a THROWAWAY detached `git worktree` of HEAD with the
+ * scratch copy of the sealed final manifest removed (the committed gate stays
+ * the reviewed OPEN authorization). The pre-deployment staging/finalize
+ * guards can only be reached in a tree without the final manifest, because in
+ * the committed tree the manifest itself refuses everything downstream. The
+ * committed manifest is never written to; the worktree is always removed.
+ */
+function withNoManifestWorktree<T>(fn: (dir: string) => T): T {
+  const base = mkdtempSync(join(tmpdir(), "swap-no-manifest-"));
+  const tree = join(base, "tree");
+  execFileSync("git", ["worktree", "add", "--detach", "--quiet", tree, "HEAD"], { stdio: "ignore" });
+  try {
+    rmSync(join(tree, FINAL), { force: true });
+    rmSync(join(tree, STAGING), { force: true });
+    return fn(tree);
+  } finally {
+    execFileSync("git", ["worktree", "remove", "--force", tree], { stdio: "ignore" });
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// The sealed deployment record is committed; its exact bytes are pinned so
+// that NO test (and no script a test executes) can ever mutate it silently.
+const SEALED_MANIFEST_BYTES = readFileSync(FINAL, "utf8");
+
 afterEach(() => {
-  // No test may ever leave deployment side effects behind.
-  expect(existsSync(FINAL), "final manifest must never exist during tests").toBe(false);
+  // No test may ever leave deployment side effects behind: the sealed final
+  // manifest must survive byte-identical and no staging record may linger.
+  expect(existsSync(FINAL), "sealed final manifest must exist during tests").toBe(true);
+  expect(readFileSync(FINAL, "utf8"), "sealed final manifest must never be mutated by tests").toBe(SEALED_MANIFEST_BYTES);
   if (existsSync(STAGING)) rmSync(STAGING);
 });
 
@@ -100,25 +133,45 @@ describe("committed production gates are exactly the reviewed state", () => {
   it("pins the reviewed swapExecutorDeployEnabled=true authorization and keeps mainnetDeployEnabled=false", () => {
     expect(deployConfig.chainId).toBe(8453);
     // Reviewed, merged owner authorization for AT MOST ONE deployment attempt.
-    // It must be the JSON boolean true (never a string/absent), and it must not
-    // relax anything else: the legacy executor gate stays closed, and the
-    // routing/manifest assertions below prove nothing has been deployed.
+    // It stays the JSON boolean true (never a string/absent) as the record of
+    // that authorization, and it must not relax anything else: the legacy
+    // executor gate stays closed. The authorization is now CONSUMED (see the
+    // routing/manifest assertions below): the committed sealed manifest makes
+    // preflight and the deploy script refuse any second attempt regardless.
     expect(deployConfig.swapExecutorDeployEnabled).toBe(true);
     expect(deployConfig.mainnetDeployEnabled).toBe(false);
   });
-  it("describes the gate as open without claiming a deployment happened", () => {
+  it("records the one consumed deployment and never implies another broadcast is authorized", () => {
     const c = String(deployConfig._swapComment);
-    expect(c).toContain("gate: OPEN");
-    expect(c).toContain("NOT DEPLOYED");
-    expect(c).toMatch(/AUTHORIZATION ONLY/i);
-    // The legacy executor record may state a past deployment; the swap comment
-    // must never claim one for MPGRSwapExecutor.
-    expect(c).not.toMatch(/\bDEPLOYED by\b/);
+    expect(c).toContain("DEPLOYED and CONSUMED");
+    expect(c).toContain("0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E");
+    expect(c).toContain("0x549a54c25a31c0fd47dff625bdfba821c27d892b5cb437473b1decc751efa4cc");
+    expect(c).toContain("52799525");
+    // The record must be explicit that the open gate can never authorize a
+    // second broadcast while the sealed manifest exists.
+    expect(c).toMatch(/can never authorize another broadcast/i);
   });
-  it("keeps swap routing deactivated in app config and has no manifest on disk", () => {
-    expect(libConfigText).toContain("export const SWAP_PATH_EXECUTOR_DEPLOYMENT: SwapPathExecutorDeployment | null = null;");
-    expect(existsSync(FINAL)).toBe(false);
+  it("pins the activated routing constant to the sealed manifest and keeps the manifest on disk", () => {
+    expect(libConfigText).toContain('executor: "0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E"');
+    expect(libConfigText).toContain('deployTx: "0x549a54c25a31c0fd47dff625bdfba821c27d892b5cb437473b1decc751efa4cc"');
+    expect(libConfigText).toContain("deployBlock: 52799525");
+    expect(libConfigText).not.toContain("export const SWAP_PATH_EXECUTOR_DEPLOYMENT: SwapPathExecutorDeployment | null = null;");
+    expect(existsSync(FINAL)).toBe(true);
     expect(existsSync(STAGING)).toBe(false);
+    const manifest = JSON.parse(SEALED_MANIFEST_BYTES) as {
+      chainId: number; executor: string; deployTx: string; deployBlock: number; owner: string; deployer: string;
+      feeBps: number; maxFeeBps: number; feeTimelockSeconds: number; venues: unknown[];
+    };
+    expect(manifest.chainId).toBe(8453);
+    expect(manifest.executor).toBe("0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E");
+    expect(manifest.deployTx).toBe("0x549a54c25a31c0fd47dff625bdfba821c27d892b5cb437473b1decc751efa4cc");
+    expect(manifest.deployBlock).toBe(52799525);
+    expect(manifest.owner).toBe("0xd9aE570767C5a15780DD5cdAdd0b1b732D98994B");
+    expect(manifest.owner.toLowerCase()).not.toBe(manifest.deployer.toLowerCase());
+    expect(manifest.feeBps).toBe(deployConfig.feeBps);
+    expect(manifest.maxFeeBps).toBe(deployConfig.maxFeeBps);
+    expect(manifest.feeTimelockSeconds).toBe(172800);
+    expect(manifest.venues).toHaveLength(5);
   });
   it("cannot emit the old placeholder and actively guards against it", () => {
     expect(deployScript).not.toContain("pending-record");
@@ -286,21 +339,41 @@ describe("fail-closed execution regressions (offline, no side effects)", () => {
     expect(out).toContain("MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED != true");
     expect(out).not.toContain("invalid.example"); // proves no RPC attempt happened
   });
+  it("preflight.sh refuses a second deployment now that the sealed manifest is committed", () => {
+    // The one authorized deployment already happened: in the committed tree
+    // the sealed-record guard is the first manifest refusal reached, before
+    // any RPC use, even with the gate open and the run-time approval set.
+    const out = runExpectFail("bash", ["scripts/swap-deploy/preflight.sh"], {
+      BASE_MAINNET_RPC_URL: UNREACHABLE_RPC,
+      BASE_MAINNET_DEPLOYER_PRIVATE_KEY: DUMMY_KEY,
+      SWAP_EXECUTOR_OWNER: DUMMY_OWNER,
+      MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true",
+    });
+    expect(out).toContain("final manifest already exists");
+    expect(out).not.toContain("invalid.example"); // duplicate guard precedes RPC
+  });
   it("preflight.sh still refuses WITH the gate open while an unfinished staging record exists", () => {
-    writeFileSync(STAGING, JSON.stringify({ executor: "0x1111111111111111111111111111111111111111" }));
-    try {
-      const out = runExpectFail("bash", ["scripts/swap-deploy/preflight.sh"], {
-        BASE_MAINNET_RPC_URL: UNREACHABLE_RPC,
-        BASE_MAINNET_DEPLOYER_PRIVATE_KEY: DUMMY_KEY,
-        SWAP_EXECUTOR_OWNER: DUMMY_OWNER,
-        MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true",
-      });
-      expect(out).toContain("staging manifest exists");
-      expect(out).not.toContain("invalid.example"); // duplicate guard precedes RPC
-      expect(existsSync(FINAL)).toBe(false);
-    } finally {
-      rmSync(STAGING, { force: true });
-    }
+    // Pre-deployment guard, unchanged code: reached only in a tree without the
+    // sealed manifest, so it is exercised in a throwaway worktree. The stub is
+    // written inside the worktree; the committed tree is never touched.
+    const out = withNoManifestWorktree(dir => {
+      writeFileSync(join(dir, STAGING), JSON.stringify({ executor: "0x1111111111111111111111111111111111111111" }));
+      const o = runExpectFail(
+        "bash",
+        ["scripts/swap-deploy/preflight.sh"],
+        {
+          BASE_MAINNET_RPC_URL: UNREACHABLE_RPC,
+          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: DUMMY_KEY,
+          SWAP_EXECUTOR_OWNER: DUMMY_OWNER,
+          MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true",
+        },
+        dir,
+      );
+      expect(existsSync(join(dir, FINAL))).toBe(false);
+      return o;
+    });
+    expect(out).toContain("staging manifest exists");
+    expect(out).not.toContain("invalid.example"); // duplicate guard precedes RPC
   });
   it("preflight.sh refuses when the dedicated deployer secret is missing", () => {
     const out = runExpectFail("bash", ["scripts/swap-deploy/preflight.sh"], {
@@ -324,21 +397,24 @@ describe("fail-closed execution regressions (offline, no side effects)", () => {
     );
     expect(out).toContain("committed deployment gate is CLOSED");
     expect(existsSync(STAGING)).toBe(false);
-    expect(existsSync(FINAL)).toBe(false);
+    // The committed sealed manifest's integrity is asserted by afterEach.
   });
   it("finalize-manifest.sh cannot seal without a staging record", () => {
     const out = runExpectFail("bash", ["scripts/swap-deploy/finalize-manifest.sh", "https://invalid.example"], {});
     expect(out).toContain("staging manifest missing");
   });
   it("finalize-manifest.sh cannot seal without a real broadcast artifact (no broadcast => no manifest)", () => {
-    writeFileSync(STAGING, JSON.stringify({ executor: "0x1111111111111111111111111111111111111111", deployer: "0x2222222222222222222222222222222222222222" }));
-    try {
-      const out = runExpectFail("bash", ["scripts/swap-deploy/finalize-manifest.sh", "https://invalid.example"], {});
-      expect(out).toContain("broadcast artifact missing");
-      expect(existsSync(FINAL)).toBe(false);
-    } finally {
-      rmSync(STAGING, { force: true });
-    }
+    // In the committed tree finalize now refuses even earlier (the sealed
+    // manifest exists), so the broadcast-artifact guard is exercised in a
+    // throwaway worktree without the final manifest; the stub is written
+    // inside the worktree only.
+    const out = withNoManifestWorktree(dir => {
+      writeFileSync(join(dir, STAGING), JSON.stringify({ executor: "0x1111111111111111111111111111111111111111", deployer: "0x2222222222222222222222222222222222222222" }));
+      const o = runExpectFail("bash", ["scripts/swap-deploy/finalize-manifest.sh", "https://invalid.example"], {}, dir);
+      expect(existsSync(join(dir, FINAL))).toBe(false);
+      return o;
+    });
+    expect(out).toContain("broadcast artifact missing");
   });
 });
 

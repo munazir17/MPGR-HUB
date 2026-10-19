@@ -27,6 +27,16 @@ export const swapPathHopKey = (h: SwapPathHop) =>
   `${h.kind}:${h.router.toLowerCase()}:${h.poolFee ?? h.tickSpacing ?? (h.stable ? "stable" : "volatile")}`;
 export const swapPathKey = (c: SwapPathCandidate) => c.hops.map(swapPathHopKey).join(">");
 
+// KNOWN LIMITATION — Pancake V3 is registered on-chain (see the sealed
+// manifest) but deliberately NOT a candidate venue: the deployed
+// executor's Pancake adapter encodes the no-deadline (Router02-shaped)
+// exactInputSingle, while the live PancakeSwap V3 SwapRouter on Base
+// (0x1b81D678…) requires the deadline-bearing struct — a different
+// function selector, so every Pancake call reverts (verified against the
+// router's verified source and by fork test, 2026-10-19). Do not add
+// Pancake candidates until governance re-registers the PANCAKE_V3 kind to
+// a no-deadline-compatible router and the fork suites are flipped back to
+// success assertions.
 function directHops(to: Address): SwapPathHop[] {
   return [
     { kind: SWAP_PATH_VENUES.uniswapV2.kind, router: SWAP_PATH_VENUES.uniswapV2.router, factory: SWAP_PATH_VENUES.uniswapV2.factory, tokenOut: to },

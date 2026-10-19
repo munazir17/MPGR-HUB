@@ -9,7 +9,7 @@ import { buildExecutorAgentFee } from "@/lib/trade/trade-agent-fee";
 import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { buildTradeProposal, tradeProposalId } from "@/lib/trade/trade-proposal";
 import { intentIdFromQuoteId } from "@/lib/executor/executor-intent";
-import type { CdpSwapQuote, TradeProposal, TradeTokenRef } from "@/lib/trade/trade-types";
+import type { CdpSwapIssues, CdpSwapQuote, TradeProposal, TradeTokenRef } from "@/lib/trade/trade-types";
 import { MPGR_SWAP_EXECUTOR_ABI } from "./swap-executor-abi";
 import { SWAP_FEE_BPS, SWAP_FEE_RECIPIENT, type SwapPathExecutorDeployment } from "./swap-executor-config";
 import { swapPathFeeFloor } from "./swap-executor-intent";
@@ -50,12 +50,23 @@ function decodePathArgs(data: string) {
   return decoded.args;
 }
 
-/** Verifies the release candidate's immutable fee terms at the pinned block. */
+/** Verifies the deployed executor's live posture (fee terms + pause state) at
+ * the pinned block before any path quote is prepared. Fail-closed: an
+ * unreadable executor is a retryable verification failure, never a quote. */
 export async function verifySwapPathFeeTerms(reader: SwapRouteReadClient, deployment: SwapPathExecutorDeployment): Promise<void> {
-  const [bps, recipient] = await Promise.all([
-    reader.readContract({ address: deployment.executor, abi: MPGR_SWAP_EXECUTOR_ABI, functionName: "feeBps" }),
-    reader.readContract({ address: deployment.executor, abi: MPGR_SWAP_EXECUTOR_ABI, functionName: "feeRecipient" }),
-  ]);
+  let bps: unknown, recipient: unknown, paused: unknown;
+  try {
+    [bps, recipient, paused] = await Promise.all([
+      reader.readContract({ address: deployment.executor, abi: MPGR_SWAP_EXECUTOR_ABI, functionName: "feeBps" }),
+      reader.readContract({ address: deployment.executor, abi: MPGR_SWAP_EXECUTOR_ABI, functionName: "feeRecipient" }),
+      reader.readContract({ address: deployment.executor, abi: MPGR_SWAP_EXECUTOR_ABI, functionName: "paused" }),
+    ]);
+  } catch {
+    throw new SwapRouteQualificationError("ROUTE_VERIFICATION_UNAVAILABLE", "The Swap executor's live fee terms could not be verified. No swap was prepared.", 503);
+  }
+  if (paused !== false) {
+    throw new SwapRouteQualificationError("EXECUTOR_PAUSED", "The Swap executor is paused on-chain. No swap was prepared.", 503);
+  }
   if (Number(bps) !== SWAP_FEE_BPS || String(recipient).toLowerCase() !== SWAP_FEE_RECIPIENT.toLowerCase()) {
     throw new SwapRouteQualificationError("FEE_RECIPIENT_CHANGED", "The Swap executor's live fee terms differ from the required 25 bps recipient. No swap was prepared.", 422);
   }
@@ -70,6 +81,37 @@ export async function searchSwapPaths(
   const candidates: SwapPathCandidate[] = swapPathCandidates(input.from.address, input.to.address);
   if (!candidates.length) return null;
   await verifySwapPathFeeTerms(client, deployment);
+  // Wallet-readiness issues, mirroring the legacy executor quote: approval
+  // is a SEPARATE transaction for the GROSS amount, granted to THIS
+  // executor (spender = deployment.executor). Read once — allowance and
+  // balance are candidate-independent. Without the real allowance issue,
+  // the execution engine would never offer the approval step and a
+  // first-time user's swap could only revert.
+  const grossIn = BigInt(input.fromAmount);
+  const nativeIn = isNativeEthSentinel(input.from.address);
+  let allowanceIssue: CdpSwapIssues["allowance"] = null;
+  if (!nativeIn) {
+    try {
+      const allowance = await client.readContract({ address: input.from.address as Address, abi: erc20Abi, functionName: "allowance", args: [input.taker, deployment.executor] });
+      if (typeof allowance !== "bigint") throw new Error("Invalid allowance read");
+      if (allowance < grossIn) allowanceIssue = { currentAllowance: allowance.toString(), spender: deployment.executor };
+    } catch {
+      // Fail closed toward showing the approval step: an unnecessary
+      // approve() is cheaper than an on-chain revert.
+      allowanceIssue = { currentAllowance: "0", spender: deployment.executor };
+    }
+  }
+  let balanceIssue: CdpSwapIssues["balance"] = null;
+  try {
+    const balance = nativeIn
+      ? await client.getBalance({ address: input.taker })
+      : await client.readContract({ address: input.from.address as Address, abi: erc20Abi, functionName: "balanceOf", args: [input.taker] });
+    if (typeof balance === "bigint" && balance < grossIn) {
+      balanceIssue = { token: input.from.address, currentBalance: balance.toString(), requiredBalance: grossIn.toString() };
+    }
+  } catch {
+    balanceIssue = null; // live re-read before signing still guards this.
+  }
   const outcomes: SwapPathOutcome[] = [];
   let winner: { proposal: TradeProposal; quotedOut: bigint } | null = null;
   const startedAt = Date.now();
@@ -85,7 +127,7 @@ export async function searchSwapPaths(
       const quotePayload: CdpSwapQuote = {
         liquidityAvailable: true, fromToken: input.from.address, toToken: input.to.address,
         fromAmount: input.fromAmount, toAmount: built.quotedOut.toString(), minToAmount: built.minOut.toString(),
-        fees: {}, issues: { allowance: null, balance: null, simulationIncomplete: true },
+        fees: {}, issues: { allowance: allowanceIssue, balance: balanceIssue, simulationIncomplete: true },
         transaction: { to: deployment.executor, data: built.data, value: built.value.toString() }, permit2: null,
       };
       const proposal = buildTradeProposal({ from: input.from, to: input.to, quote: quotePayload, slippageBps: input.slippageBps, taker: input.taker, provider: "mpgr-executor", quotedAt: new Date(), agentFee: fee.fee });

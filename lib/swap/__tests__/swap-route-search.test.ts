@@ -95,7 +95,10 @@ describe("real proposal/encoding/policy pipeline with mocked RPC — not live ex
   });
   it("zero-output pools cannot become an executable quote or a multi-hop fee-less fallback",async()=>{
     for(const r of swapRouteCandidates(from,to))outputs.set(swapRouteKey(r),0n);
-    await expect(searchSwapRoutes(client,input())).rejects.toMatchObject({status:422,message:expect.stringContaining("cannot execute multi-hop or V4")});
+    // No legacy winner: the fixed-fee path search is attempted but cannot
+    // produce a quote from this offline mock, so the direct-route diagnosis
+    // surfaces — never a quote, never a fee-less fallback.
+    await expect(searchSwapRoutes(client,input())).rejects.toMatchObject({status:422,message:expect.stringContaining("reviewed MPGR executors")});
   });
   it("never memoizes permissions across cache hits",async()=>{
     await searchSwapRoutes(client,input());denied=true;await expect(searchSwapRoutes(client,input())).rejects.toMatchObject({reason:"EXECUTOR_PERMISSION_MISMATCH"});expect(simulate).toHaveBeenCalledTimes(5);
@@ -110,8 +113,13 @@ describe("real proposal/encoding/policy pipeline with mocked RPC — not live ex
   it("slow quotes cannot extend snapshot or proposal lifetime",async()=>{
     vi.useFakeTimers();try{advance=31000;await expect(searchSwapRoutes(client,input())).rejects.toMatchObject({reason:"STALE_BLOCK"});}finally{vi.useRealTimers();}
   });
-  it("unknown metadata/import cannot enter the runtime search space",async()=>{
-    const x={...input(),to:{...input().to,address:wallet as Address}};await expect(searchSwapRoutes(client,x)).rejects.toMatchObject({reason:"FEE_ROUTE_UNREGISTERED"});expect(read).not.toHaveBeenCalled();
+  it("unknown metadata/import is discovery-only: path search attempts live executor verification and fails closed offline",async()=>{
+    // Permissionless tokens may enter the fixed-fee path SEARCH once the
+    // reviewed deployment is active, but imported metadata alone never makes
+    // a route executable: the search must first verify the deployed
+    // executor's live posture on-chain. This offline mock cannot answer that
+    // read, so the search fails closed and nothing is prepared or simulated.
+    const x={...input(),to:{...input().to,address:wallet as Address}};await expect(searchSwapRoutes(client,x)).rejects.toMatchObject({reason:"ROUTE_VERIFICATION_UNAVAILABLE",status:503});expect(simulate).not.toHaveBeenCalled();
   });
   it.each(["0","-1","1.2","1e9","399",String(2n**256n)])("rejects invalid gross atomic input %s before RPC",async fromAmount=>{
     await expect(searchSwapRoutes(client,{...input(),fromAmount})).rejects.toMatchObject({reason:"INVALID_INPUT"});expect(read).not.toHaveBeenCalled();

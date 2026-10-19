@@ -63,6 +63,7 @@ const venueFor = (hop: SwapPathHop) =>
   hop.kind === SWAP_PATH_VENUES.uniswapV2.kind ? SWAP_PATH_VENUES.uniswapV2
   : hop.kind === SWAP_PATH_VENUES.aerodromeClassic.kind ? SWAP_PATH_VENUES.aerodromeClassic
   : hop.kind === SWAP_PATH_VENUES.uniswapV3.kind ? SWAP_PATH_VENUES.uniswapV3
+  : hop.kind === SWAP_PATH_VENUES.pancakeV3.kind ? SWAP_PATH_VENUES.pancakeV3
   : SWAP_PATH_VENUES.slipstream;
 
 async function resolvePool(reader: SwapRouteReadClient, hop: SwapPathHop, tokenIn: Address): Promise<Address> {
@@ -93,6 +94,11 @@ async function quoteHop(reader: SwapRouteReadClient, hop: SwapPathHop, tokenIn: 
     return out;
   }
   if (hop.kind === SWAP_PATH_VENUES.pancakeV3.kind) {
+    // Unreachable from swapPathCandidates today (see the known-limitation
+    // note there): this simulation deliberately uses the executor's
+    // no-deadline encoding, so against the live deadline-bearing
+    // PancakeSwap V3 SwapRouter it reverts — faithfully fail-closed,
+    // exactly like the on-chain adapter.
     const simulated = await reader.simulateContract({
       address: venue.router,
       abi: PANCAKE_QUOTE_ABI,
