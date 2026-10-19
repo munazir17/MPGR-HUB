@@ -42,7 +42,13 @@ for (const p of candidates) {
     const b=await rpc('eth_getBlockByNumber',['0x'+mid.toString(16),false]);
     if (Number(b.timestamp)<timestamp) low=mid+1; else high=mid;
   }
-  const logs=await rpc('eth_getLogs',[{address:manager,fromBlock:'0x'+Math.max(0,low-100).toString(16),toBlock:'0x'+Math.min(latest,low+100).toString(16),topics:[topic,p.pairAddress]}]);
+  // Some configured RPC plans cap logs at ten blocks; honor that cap.
+  let logs=[];
+  for (const offset of [0,-10,10,-20,20,-30,30,-40,40,-50,50,-60,60,-70,70,-80,80,-90,90,-100,100]) {
+    const from=Math.max(0,low-4+offset), to=Math.min(latest,from+9);
+    logs=await rpc('eth_getLogs',[{address:manager,fromBlock:'0x'+from.toString(16),toBlock:'0x'+to.toString(16),topics:[topic,p.pairAddress]}]);
+    if (logs.length) break;
+  }
   for (const l of logs) {
     const c0='0x'+l.topics[2].slice(-40), c1='0x'+l.topics[3].slice(-40);
     if (![c0,c1].includes(mpgr)) continue;
