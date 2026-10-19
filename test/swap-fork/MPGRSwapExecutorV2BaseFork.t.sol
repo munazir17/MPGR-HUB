@@ -328,12 +328,17 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
         console2.log("NO_DIRECT_POOL_OTHER", MPGR);
     }
 
-    function testForkFeeForgeryAndTimelock() public {
+    function constructInvalidTerms(uint16 bps, address recipient) external {
+        require(msg.sender == address(this));
         E.RouterConfig[] memory empty = new E.RouterConfig[](0);
-        vm.expectRevert();
-        new E(SAFE, WETH, 0x000000000022D473030F116dDEE9F6B43aC78BA3, empty, 24, FEE);
-        vm.expectRevert();
-        new E(SAFE, WETH, 0x000000000022D473030F116dDEE9F6B43aC78BA3, empty, 25, USER);
+        new E(SAFE, WETH, 0x000000000022D473030F116dDEE9F6B43aC78BA3, empty, bps, recipient);
+    }
+
+    function testForkFeeForgeryAndTimelock() public {
+        vm.expectRevert(abi.encodeWithSelector(E.FeeMismatch.selector, uint256(24), uint256(25)));
+        this.constructInvalidTerms(24, FEE);
+        vm.expectRevert(E.InvalidFeeRecipient.selector);
+        this.constructInvalidTerms(25, USER);
         E.Hop[] memory h = new E.Hop[](1);
         h[0] = hop(USDC, WETH, UNI, E.RouterKind.UNISWAP_V3_ROUTER02, 500, 0, false);
         deal(USDC, USER, 100e6);
@@ -363,6 +368,8 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
         vm.prank(SAFE);
         ex.applyFeeChange();
         assertEq(ex.feeBps(), 100);
+        assertEq(ex.feeRecipient(), FEE);
+        console2.log("TIMELOCK_COMPLETE_OWNER_APPLIED_BPS", uint256(ex.feeBps()));
     }
 
     function testForkAllEntriesChargeFee() public {
@@ -434,7 +441,9 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
         assertGt(uniOut, 100);
         int24[6] memory spacings = [int24(1), 10, 50, 100, 200, 2000];
         for (uint256 i; i < spacings.length; i++) {
-            if (hop(AERO, WETH, SLIP, E.RouterKind.AERODROME_SLIPSTREAM, 0, spacings[i], false).pool == address(0)) continue;
+            if (hop(AERO, WETH, SLIP, E.RouterKind.AERODROME_SLIPSTREAM, 0, spacings[i], false).pool == address(0)) {
+                continue;
+            }
             try IV2ProofQuoter(sq)
                 .quoteExactInputSingle(
                     IV2ProofQuoter.SlipParams(AERO, WETH, 997500000000000000, spacings[i], 0)
