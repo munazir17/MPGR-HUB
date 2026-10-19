@@ -38,15 +38,32 @@ contract DeployPreflightTest is Test {
         d.run();
     }
 
-    function test_run_failsClosedWhileCommittedGateIsClosed() public {
+    /// @notice deployments/base-mainnet/deploy-config.json now pins the reviewed
+    ///         OPEN authorization (swapExecutorDeployEnabled=true), so run() gets
+    ///         past the committed gate. That is an authorization, NOT a
+    ///         deployment: the owner preflight must still fail closed before
+    ///         vm.startBroadcast(), so no executor is created and no staging
+    ///         manifest is ever written by this suite.
+    function test_run_failsClosedWithoutDeployedMultisigOwner() public {
         vm.chainId(8453);
         vm.setEnv("MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED", "true");
-        vm.setEnv("SWAP_EXECUTOR_OWNER", "0x0000000000000000000000000000000000005AFE");
-        // deployments/base-mainnet/deploy-config.json pins
-        // swapExecutorDeployEnabled=false, so even the approval env alone
-        // cannot reach a broadcast.
-        vm.expectRevert("gate: deploy-config.json swapExecutorDeployEnabled must be true");
+        vm.setEnv("SWAP_EXECUTOR_OWNER", "0x000000000000000000000000000000000000beef"); // codeless, never etched
+        vm.expectRevert("preflight: SWAP_EXECUTOR_OWNER must be a deployed multisig contract on Base");
         d.run();
+    }
+
+    /// @notice The committed config must be exactly the reviewed state: swap gate
+    ///         open, legacy mainnet gate closed, chain 8453, and NO deployment
+    ///         record of any kind on disk.
+    function test_committedConfigIsTheReviewedOneTimeAuthorization() public view {
+        string memory cfg = vm.readFile("./deployments/base-mainnet/deploy-config.json");
+        assertTrue(vm.parseJsonBool(cfg, ".swapExecutorDeployEnabled"), "swap gate must be the reviewed open gate");
+        assertFalse(vm.parseJsonBool(cfg, ".mainnetDeployEnabled"), "legacy mainnet gate must stay closed");
+        assertEq(vm.parseJsonUint(cfg, ".chainId"), 8453, "chain id pin");
+        assertEq(vm.parseJsonUint(cfg, ".feeBps"), 25, "fee bps pin");
+        assertEq(vm.parseJsonUint(cfg, ".maxFeeBps"), 100, "max fee bps pin");
+        assertFalse(vm.exists("./deployments/base-mainnet/mpgr-swap-executor.json"), "no deploy record may exist");
+        assertFalse(vm.exists("./deployments/base-mainnet/mpgr-swap-executor.staging.json"), "no staging record");
     }
 
     function test_preflight_rejectsUsedDeployerKey() public {

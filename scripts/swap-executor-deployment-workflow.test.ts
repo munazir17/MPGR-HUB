@@ -11,8 +11,13 @@ import { afterEach, describe, expect, it } from "vitest";
 //   - Trusted workflow (deploy-swap-executor-trusted.yml): dispatch-from-main
 //     only, executes the owner-pinned SHA (repo variable SWAP_DEPLOY_REF)
 //     verified BEFORE any secret is in scope, reviewer-protected environment.
-//   - Fail-closed behaviour proven OFFLINE by executing the real scripts: with
-//     either gate false, no broadcast and no manifest finalization can occur.
+//   - Fail-closed behaviour proven OFFLINE by executing the real scripts.
+//     The committed swap gate is now the reviewed OPEN authorization for at
+//     most one deployment attempt, so the regressions below prove both halves:
+//     (a) with the gate open, every remaining guard still refuses before any
+//         RPC call - an authorization is not a deployment; and
+//     (b) the gate-CLOSED path is unchanged, exercised against a throwaway
+//         `git worktree` so no test ever writes to the committed config.
 // Runs without network, without anvil, and without secrets.
 
 const require = createRequire(import.meta.url);
@@ -37,14 +42,19 @@ type Workflow = { on?: unknown; jobs?: Record<string, Job> };
 const prWorkflow = yaml.load(prWorkflowText) as Workflow;
 const trusted = yaml.load(trustedText) as Workflow;
 
+const CFG = "deployments/base-mainnet/deploy-config.json";
 const STAGING = "deployments/base-mainnet/mpgr-swap-executor.staging.json";
 const FINAL = "deployments/base-mainnet/mpgr-swap-executor.json";
 const SECRET = "SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY";
+// Public, well-known throwaway values: never a real key, owner or endpoint.
+const DUMMY_KEY = "0x0000000000000000000000000000000000000000000000000000000000000001";
+const DUMMY_OWNER = "0x0000000000000000000000000000000000000001";
+const UNREACHABLE_RPC = "https://invalid.example";
 
-function runExpectFail(cmd: string, args: string[], env: Record<string, string>): string {
+function runExpectFail(cmd: string, args: string[], env: Record<string, string>, cwd = process.cwd()): string {
   try {
     const out = execFileSync(cmd, args, {
-      cwd: process.cwd(),
+      cwd,
       env: { ...process.env, ...env },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -58,17 +68,52 @@ function runExpectFail(cmd: string, args: string[], env: Record<string, string>)
   }
 }
 
+/**
+ * Runs `fn` against a THROWAWAY detached `git worktree` of HEAD whose copy of
+ * deploy-config.json has the swap gate forced back to `false`. The committed,
+ * CODEOWNER-protected config is never written to, so the gate-CLOSED
+ * fail-closed paths keep their behavioural coverage now that the reviewed
+ * gate is open. The worktree is always removed, even on failure.
+ */
+function withClosedGateWorktree<T>(fn: (dir: string) => T): T {
+  const base = mkdtempSync(join(tmpdir(), "swap-closed-gate-"));
+  const tree = join(base, "tree");
+  execFileSync("git", ["worktree", "add", "--detach", "--quiet", tree, "HEAD"], { stdio: "ignore" });
+  try {
+    const cfg = JSON.parse(readFileSync(join(tree, CFG), "utf8"));
+    cfg.swapExecutorDeployEnabled = false;
+    writeFileSync(join(tree, CFG), `${JSON.stringify(cfg, null, 2)}\n`);
+    return fn(tree);
+  } finally {
+    execFileSync("git", ["worktree", "remove", "--force", tree], { stdio: "ignore" });
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
 afterEach(() => {
   // No test may ever leave deployment side effects behind.
   expect(existsSync(FINAL), "final manifest must never exist during tests").toBe(false);
   if (existsSync(STAGING)) rmSync(STAGING);
 });
 
-describe("committed production gates stay closed", () => {
-  it("pins swapExecutorDeployEnabled=false and mainnetDeployEnabled=false", () => {
+describe("committed production gates are exactly the reviewed state", () => {
+  it("pins the reviewed swapExecutorDeployEnabled=true authorization and keeps mainnetDeployEnabled=false", () => {
     expect(deployConfig.chainId).toBe(8453);
-    expect(deployConfig.swapExecutorDeployEnabled).toBe(false);
+    // Reviewed, merged owner authorization for AT MOST ONE deployment attempt.
+    // It must be the JSON boolean true (never a string/absent), and it must not
+    // relax anything else: the legacy executor gate stays closed, and the
+    // routing/manifest assertions below prove nothing has been deployed.
+    expect(deployConfig.swapExecutorDeployEnabled).toBe(true);
     expect(deployConfig.mainnetDeployEnabled).toBe(false);
+  });
+  it("describes the gate as open without claiming a deployment happened", () => {
+    const c = String(deployConfig._swapComment);
+    expect(c).toContain("gate: OPEN");
+    expect(c).toContain("NOT DEPLOYED");
+    expect(c).toMatch(/AUTHORIZATION ONLY/i);
+    // The legacy executor record may state a past deployment; the swap comment
+    // must never claim one for MPGRSwapExecutor.
+    expect(c).not.toMatch(/\bDEPLOYED by\b/);
   });
   it("keeps swap routing deactivated in app config and has no manifest on disk", () => {
     expect(libConfigText).toContain("export const SWAP_PATH_EXECUTOR_DEPLOYMENT: SwapPathExecutorDeployment | null = null;");
@@ -211,20 +256,57 @@ describe("CODEOWNERS covers every deployment-critical path", () => {
 
 describe("fail-closed execution regressions (offline, no side effects)", () => {
   it("preflight.sh refuses while the committed gate is false, before any RPC use", () => {
-    const out = runExpectFail("bash", ["scripts/swap-deploy/preflight.sh"], {
-      BASE_MAINNET_RPC_URL: "https://invalid.example", // never reached: gate check precedes RPC
-      BASE_MAINNET_DEPLOYER_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000001",
-      SWAP_EXECUTOR_OWNER: "0x0000000000000000000000000000000000000001",
-      MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true",
-    });
+    // Unchanged gate-closed code path, exercised against a throwaway worktree so
+    // the reviewed, open committed gate is never mutated by the test suite.
+    const out = withClosedGateWorktree(dir =>
+      runExpectFail(
+        "bash",
+        ["scripts/swap-deploy/preflight.sh"],
+        {
+          BASE_MAINNET_RPC_URL: UNREACHABLE_RPC, // never reached: gate check precedes RPC
+          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: DUMMY_KEY,
+          SWAP_EXECUTOR_OWNER: DUMMY_OWNER,
+          MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true",
+        },
+        dir,
+      ),
+    );
     expect(out).toContain("committed deployment gate is CLOSED");
     expect(out).not.toContain("invalid.example"); // proves no RPC attempt happened
   });
+  it("preflight.sh still refuses WITH the gate open when the run-time approval env is not true", () => {
+    // Opening the committed gate authorises an attempt; it does not make a
+    // broadcast reachable. The deploy job must still set the explicit env.
+    const out = runExpectFail("bash", ["scripts/swap-deploy/preflight.sh"], {
+      BASE_MAINNET_RPC_URL: UNREACHABLE_RPC,
+      BASE_MAINNET_DEPLOYER_PRIVATE_KEY: DUMMY_KEY,
+      SWAP_EXECUTOR_OWNER: DUMMY_OWNER,
+      MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "false",
+    });
+    expect(out).toContain("MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED != true");
+    expect(out).not.toContain("invalid.example"); // proves no RPC attempt happened
+  });
+  it("preflight.sh still refuses WITH the gate open while an unfinished staging record exists", () => {
+    writeFileSync(STAGING, JSON.stringify({ executor: "0x1111111111111111111111111111111111111111" }));
+    try {
+      const out = runExpectFail("bash", ["scripts/swap-deploy/preflight.sh"], {
+        BASE_MAINNET_RPC_URL: UNREACHABLE_RPC,
+        BASE_MAINNET_DEPLOYER_PRIVATE_KEY: DUMMY_KEY,
+        SWAP_EXECUTOR_OWNER: DUMMY_OWNER,
+        MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true",
+      });
+      expect(out).toContain("staging manifest exists");
+      expect(out).not.toContain("invalid.example"); // duplicate guard precedes RPC
+      expect(existsSync(FINAL)).toBe(false);
+    } finally {
+      rmSync(STAGING, { force: true });
+    }
+  });
   it("preflight.sh refuses when the dedicated deployer secret is missing", () => {
     const out = runExpectFail("bash", ["scripts/swap-deploy/preflight.sh"], {
-      BASE_MAINNET_RPC_URL: "https://invalid.example",
+      BASE_MAINNET_RPC_URL: UNREACHABLE_RPC,
       BASE_MAINNET_DEPLOYER_PRIVATE_KEY: "",
-      SWAP_EXECUTOR_OWNER: "0x0000000000000000000000000000000000000001",
+      SWAP_EXECUTOR_OWNER: DUMMY_OWNER,
       MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true",
     });
     expect(out).toContain(SECRET);
@@ -235,9 +317,11 @@ describe("fail-closed execution regressions (offline, no side effects)", () => {
     expect(out).toContain("SAFE-CHECK FAIL");
   }, 90_000);
   it("rehearse.sh without the working-tree override fails closed while the committed gate is false", () => {
-    const out = runExpectFail("bash", ["scripts/swap-deploy/rehearse.sh", ""], {
-      SWAP_REHEARSAL_OVERRIDE_GATE: "false",
-    });
+    // Also keeps this suite anvil-free: the gate check precedes anvil startup,
+    // and the closed-gate worktree guarantees we never enter the success path.
+    const out = withClosedGateWorktree(dir =>
+      runExpectFail("bash", ["scripts/swap-deploy/rehearse.sh", ""], { SWAP_REHEARSAL_OVERRIDE_GATE: "false" }, dir),
+    );
     expect(out).toContain("committed deployment gate is CLOSED");
     expect(existsSync(STAGING)).toBe(false);
     expect(existsSync(FINAL)).toBe(false);
