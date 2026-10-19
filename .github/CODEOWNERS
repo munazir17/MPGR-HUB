@@ -1,11 +1,29 @@
-# Financial/security-sensitive code requires explicit owner review.
-/contracts/ @munazir17
-/test/ @munazir17
-/lib/reward-allocation/ @munazir17
-/lib/reward-vault/ @munazir17
-/lib/rewards/ @munazir17
-/lib/auth/ @munazir17
-/app/api/games/mpgr-run/ @munazir17
-/app/api/auth/ @munazir17
-/app/api/xp/ @munazir17
-/app/api/referral/ @munazir17
+# Deployment-critical paths require explicit owner review.
+# Enforcement: enable "Require review from Code Owners" in branch protection
+# for `main` (owner action in repo settings; this file alone only assigns
+# reviewers). The trusted deployment workflow additionally refuses any pin
+# that is not an ancestor of main, so unreviewed code cannot reach a
+# production-secret job even if a review were bypassed.
+
+# CI/CD definitions (all workflows, incl. deployment + diagnostics)
+/.github/workflows/                @munazir17
+/.github/CODEOWNERS                @munazir17
+
+# Swap deployment pipeline (preflight, rehearsal, manifest sealing, Safe check)
+/scripts/swap-deploy/              @munazir17
+
+# Contracts and deployment scripts (swap + legacy executor)
+/contracts/swap/                   @munazir17
+/contracts/executor/               @munazir17
+/script/                           @munazir17
+
+# Deployment records, gates and manifests
+/deployments/                      @munazir17
+
+# Activation-sensitive app configuration
+/lib/swap/swap-executor-config.ts  @munazir17
+/lib/executor/executor-config.ts   @munazir17
+
+# Build configuration affecting verified contract compilation
+/foundry.toml                      @munazir17
+/remappings.txt                    @munazir17

@@ -15,7 +15,7 @@ import { NextResponse } from "next/server";
 
 import { verifyTrustedOrigin, readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
-import { isAutonomousAgentEnabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
+import { isAutonomousAgentEnabled, isAutonomousProductionEnabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { normalizePolicyInput } from "@/lib/autonomy/policy-engine";
 import {
   authorizationRef,
@@ -80,6 +80,12 @@ export async function POST(request: Request) {
   const chain = parsePolicyChainId(body.chainId);
   if (!chain.ok) {
     return json({ error: "Invalid chain.", code: "INVALID_POLICY", details: [chain.message] }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  }
+
+  // Do not leave a new spending-policy grant behind when Mainnet admission
+  // is closed. Reads/revocation and Base Sepolia remain unchanged.
+  if (chain.chainId === 8453 && !isAutonomousProductionEnabled()) {
+    return json({ error: "Base Mainnet authorization is blocked by the production safety gate. No policy was created.", code: "PRODUCTION_GATE_DISABLED" }, { status: 503, headers: { "Cache-Control": "no-store" } });
   }
 
   const now = new Date();

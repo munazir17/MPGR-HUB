@@ -1,0 +1,127 @@
+[
+  {
+    "method": "GET",
+    "path": "/api/auth/session",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/config",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/goals",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/tokens",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/policy",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/authorization",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/api/trade/quote",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/api/agent/autonomy/policy",
+    "status": 201
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/goals",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/api/agent/autonomy/goals",
+    "status": 201
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/authorization",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/api/agent/autonomy/authorization",
+    "status": 503
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/authorization",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/api/agent/autonomy/authorization",
+    "status": 201
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/config",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/goals",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/policy",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/authorization",
+    "status": 200
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/agent/autonomy/goals/goal-browser",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/config",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/goals",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/policy",
+    "status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/api/agent/autonomy/authorization",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/api/trade/quote",
+    "status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/api/trade/quote",
+    "status": 200
+  }
+]

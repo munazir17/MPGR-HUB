@@ -1,0 +1,21 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+const mocks = vi.hoisted(() => ({ auth: vi.fn(), rate: vi.fn(), resolve: vi.fn() }));
+vi.mock("@/lib/auth/session-store", () => ({ authenticateRequest: mocks.auth }));
+vi.mock("@/lib/trade/trade-rate-limit", () => ({ checkRateLimit: mocks.rate, clientIpFromRequest: () => "test-ip" }));
+vi.mock("@/lib/trade/trade-token-resolution", () => ({ resolveSwapToken: mocks.resolve }));
+import { POST } from "./route";
+const address = "0x1234567890abcdef1234567890abcdef12345678";
+const origin = "https://mpgrhub.xyz";
+const token = { address, symbol: "NEW", name: "New", decimals: 6, kind: "erc20", verified: false };
+const request = (body: unknown = { address, chainId: 8453 }, from = origin) => new Request(`${origin}/api/trade/token`, { method: "POST", headers: { Origin: from, "Content-Type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) });
+beforeEach(() => { vi.stubEnv("APP_ORIGIN", origin); vi.resetAllMocks(); mocks.auth.mockResolvedValue({ wallet: address }); mocks.rate.mockResolvedValue({ allowed: true }); mocks.resolve.mockResolvedValue({ ok: true, token }); });
+afterEach(() => vi.unstubAllEnvs());
+describe("read-only Base import trust boundary", () => {
+  it("rejects an untrusted origin before auth/rate/RPC", async () => { expect((await POST(request(undefined, "https://evil.test"))).status).toBe(403); expect(mocks.auth).not.toHaveBeenCalled(); expect(mocks.resolve).not.toHaveBeenCalled(); });
+  it("refuses anonymous users before RPC", async () => { mocks.auth.mockResolvedValue(null); const response = await POST(request()); expect(response.status).toBe(401); expect((await response.json()).code).toBe("AUTH_REQUIRED"); expect(mocks.resolve).not.toHaveBeenCalled(); });
+  it.each(["wallet", "ip"])("applies a separate %s rate gate before metadata reads", async which => { mocks.rate.mockResolvedValueOnce({ allowed: which !== "wallet" }).mockResolvedValueOnce({ allowed: false }); expect((await POST(request())).status).toBe(429); expect(mocks.resolve).not.toHaveBeenCalled(); });
+  it.each([{}, { address, chainId: 1 }, { address, chainId: "8453" }, { address: "0x123", chainId: 8453 }, { address: "USDC", chainId: 8453 }, null])("rejects malformed input or unsupported chain: %j", async body => { expect((await POST(request(body))).status).toBe(400); expect(mocks.resolve).not.toHaveBeenCalled(); });
+  it.each([["{", 400], ["x".repeat(1025), 413]])("bounds/parses JSON before lookup", async (body, status) => { expect((await POST(request(body))).status).toBe(status); expect(mocks.resolve).not.toHaveBeenCalled(); });
+  it("reuses the existing exact-contract resolver; returns metadata, not liquidity or permission", async () => { const response = await POST(request()); expect(response.status).toBe(200); expect(mocks.resolve).toHaveBeenCalledExactlyOnceWith(address); const data = await response.json(); expect(data).toMatchObject({ chainId: 8453, token }); expect(data).not.toHaveProperty("liquidityAvailable"); expect(data).not.toHaveProperty("proposal"); expect(response.headers.get("cache-control")).toBe("no-store"); expect(response.headers.get("x-request-id")).toBeTruthy(); expect(mocks.rate.mock.calls).toEqual([[`${address}:trade-token`, 30, 60000], ["test-ip:trade-token:ip", 30, 60000]]); });
+  it.each([["TOKEN_NOT_CONTRACT", 400], ["TOKEN_NOT_ERC20", 400], ["TOKEN_METADATA_UNAVAILABLE", 400], ["PROVIDER_ERROR", 503]])("returns an actionable %s failure, never imports a placeholder", async (code, status) => { mocks.resolve.mockResolvedValue({ ok: false, error: { code, message: "Safe resolver failure" } }); const response = await POST(request()); expect(response.status).toBe(status); expect(await response.json()).toMatchObject({ code, error: "Safe resolver failure" }); });
+});

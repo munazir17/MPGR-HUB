@@ -60,6 +60,34 @@ describe("autonomous trade request detection", () => {
     expect(m!.triggerPrice).toBe("");
   });
 
+  it.each([
+    "Buy AAPLc whenever price falls 1% worth 1 USDC",
+    "Buy AAPLc when price falls 1% worth 1 USDC",
+    "Buy AAPLc whenever price falls 1% worth $1",
+    "Buy AAPLc whenever price falls 1% worth 0.5 USDC",
+  ])("separates a worth amount from the percent trigger: %s", (prompt) => {
+    const match = detectAutonomousTradeRequest(prompt);
+    expect(match).toMatchObject({
+      side: "buy", targetAsset: "AAPLc", spendAsset: "USDC",
+      triggerKind: "price_below", triggerPrice: "", percentDrop: 1,
+      amountPerTrade: prompt.includes("0.5") ? "0.5" : "1",
+    });
+  });
+
+  it.each([
+    "Buy AAPLc whenever price falls 1%",
+    "Buy AAPLc when price falls 1%",
+    "Buy AAPLc when it falls 1%",
+  ])("supports recurring wording and the price prefix independently: %s", (prompt) => {
+    expect(detectAutonomousTradeRequest(prompt)).toMatchObject({ percentDrop: 1, amountPerTrade: null });
+  });
+
+  it("uses worth as an amount with an absolute trigger, but never makes a spot order conditional", () => {
+    expect(detectAutonomousTradeRequest("Buy AAPLc whenever price falls below 250 worth 1 USDC"))
+      .toMatchObject({ triggerPrice: "250", percentDrop: null, amountPerTrade: "1" });
+    expect(detectAutonomousTradeRequest("Buy AAPLc worth 1 USDC")).toBeNull();
+  });
+
   it("absolute dollar points still win and behave byte-for-byte as before", () => {
     expect(detectAutonomousTradeRequest("Buy AAPLc whenever it falls below $200, max $20 per trade")).toMatchObject({
       triggerPrice: "200",
@@ -161,5 +189,28 @@ describe("delegated allowlist gate (no new tokens or routes)", () => {
     const draft = buildGoalDraft(m, "Buy FOOc when it drops 1%", { referencePrice: "5" });
     expect(draft.supported).toBe(false);
     expect(draft.unsupportedReason).toMatch(/not available for autonomous trading/);
+  });
+});
+
+describe("advertised capabilities are live, not just registered", () => {
+  it.each(["COINc", "CRCLc", "INTCc"])("refuses not-live %s before pricing", (symbol) => {
+    expect(autonomyAllowedTargetSymbols()).not.toContain(symbol);
+    expect(checkAutonomyTarget(symbol)).toMatchObject({ ok: false, reason: expect.stringContaining("announced-not-live") });
+    const prompt = `Buy ${symbol} if it drops 2% worth 5 USDC`;
+    expect(buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt).supported).toBe(false);
+  });
+  it("keeps a dollar-first ETH request native and explains WETH as an explicit alternative", () => {
+    const prompt = "Buy $5 ETH if it drops 2%";
+    const match = detectAutonomousTradeRequest(prompt)!;
+    expect(match).toMatchObject({ targetAsset: "ETH", amountPerTrade: "5", spendAsset: "USDC", percentDrop: 2 });
+    const draft = buildGoalDraft(match, prompt);
+    expect(draft).toMatchObject({ targetAsset: "ETH", supported: false });
+    expect(draft.unsupportedReason).toContain("ETH is not WETH");
+    expect(draft.unsupportedReason).toContain("request WETH explicitly");
+  });
+  it("an explicitly requested WETH budget remains WETH", () => {
+    const prompt = "Buy $5 WETH if it drops 2%";
+    const draft = buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt, { referencePrice: "2500" });
+    expect(draft).toMatchObject({ targetAsset: "WETH", amountPerTrade: "5", triggerPrice: "2450", supported: true });
   });
 });

@@ -1,0 +1,174 @@
+{
+  "observedAt": "2026-10-18T08:09:10.379Z",
+  "chainId": 8453,
+  "scope": "Targeted source-aligned CLI checks, not authenticated Preview HTTP or a user-wallet test",
+  "signatures": false,
+  "broadcasts": false,
+  "stateOverrides": false,
+  "liveSettlementVerified": false,
+  "discovery": {
+    "AERO": {
+      "status": "list-hints-only",
+      "hints": [
+        {
+          "address": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+          "symbol": "AERO",
+          "name": "Aerodrome Finance"
+        }
+      ]
+    },
+    "VIRTUAL": {
+      "status": "list-hints-only",
+      "hints": [
+        {
+          "address": "0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b",
+          "symbol": "VIRTUAL",
+          "name": "Virtuals Protocol"
+        },
+        {
+          "address": "0x4F9Fd6Be4a90f2620860d680c0d4d5Fb53d1A825",
+          "symbol": "AIXBT",
+          "name": "aixbt by Virtuals"
+        }
+      ]
+    },
+    "ZEC": {
+      "status": "list-hints-only",
+      "hints": [
+        {
+          "address": "0xB2000000000000000000008501b13360000cb2EC",
+          "symbol": "cbZEC",
+          "name": "Coinbase Wrapped ZEC"
+        }
+      ]
+    },
+    "BNB": {
+      "status": "list-hints-only",
+      "hints": []
+    }
+  },
+  "chainProbe": "unavailable",
+  "rows": [
+    {
+      "request": {
+        "from": "ETH",
+        "to": "AAPLc",
+        "amount": "0.0001",
+        "slippageBps": 100,
+        "fromToken": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "toToken": "0xb200000000000000000000C2e324d24d7eEcd1fb"
+      },
+      "state": "rpc-unavailable",
+      "permissions": "unknown",
+      "liquidity": "unknown",
+      "quote": null,
+      "executorSimulation": "not-run"
+    },
+    {
+      "request": {
+        "from": "AAPLc",
+        "to": "ETH",
+        "amount": "0.001",
+        "slippageBps": 100,
+        "fromToken": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+        "toToken": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+      },
+      "state": "rpc-unavailable",
+      "permissions": "unknown",
+      "liquidity": "unknown",
+      "quote": null,
+      "executorSimulation": "not-run"
+    },
+    {
+      "request": {
+        "from": "USDC",
+        "to": "AAPLc",
+        "amount": "1",
+        "slippageBps": 100,
+        "fromToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "toToken": "0xb200000000000000000000C2e324d24d7eEcd1fb"
+      },
+      "state": "rpc-unavailable",
+      "permissions": "unknown",
+      "liquidity": "unknown",
+      "quote": null,
+      "executorSimulation": "not-run"
+    },
+    {
+      "request": {
+        "from": "AAPLc",
+        "to": "USDC",
+        "amount": "0.001",
+        "slippageBps": 100,
+        "fromToken": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+        "toToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      },
+      "state": "rpc-unavailable",
+      "permissions": "unknown",
+      "liquidity": "unknown",
+      "quote": null,
+      "executorSimulation": "not-run"
+    },
+    {
+      "request": {
+        "from": "MPGR",
+        "to": "USDC",
+        "amount": "1",
+        "slippageBps": 100,
+        "fromToken": "0xB2000000000000000000008d204203177a78AF01",
+        "toToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      },
+      "state": "application-blocked",
+      "reason": "FEE_ROUTE_UNREGISTERED",
+      "message": "MPGR → USDC is not supported in MPGR Swap yet. Token and route checks are still required before trading here. External liquidity has not been checked. No approval or swap was requested.",
+      "permissions": "not-read-unknown",
+      "liquidity": "not-read-unknown"
+    },
+    {
+      "request": {
+        "from": "AERO",
+        "to": "USDC",
+        "amount": "1",
+        "slippageBps": 100,
+        "fromToken": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+        "toToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      },
+      "state": "application-blocked",
+      "reason": "FEE_ROUTE_UNREGISTERED",
+      "message": "0x9401…8631 → USDC is not supported in MPGR Swap yet. Token and route checks are still required before trading here. External liquidity has not been checked. No approval or swap was requested.",
+      "permissions": "not-read-unknown",
+      "liquidity": "not-read-unknown"
+    },
+    {
+      "request": {
+        "from": "VIRTUAL",
+        "to": "USDC",
+        "amount": "1",
+        "slippageBps": 100,
+        "fromToken": "0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b",
+        "toToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      },
+      "state": "application-blocked",
+      "reason": "FEE_ROUTE_UNREGISTERED",
+      "message": "0x0b3e…7E1b → USDC is not supported in MPGR Swap yet. Token and route checks are still required before trading here. External liquidity has not been checked. No approval or swap was requested.",
+      "permissions": "not-read-unknown",
+      "liquidity": "not-read-unknown"
+    },
+    {
+      "request": {
+        "from": "ZEC",
+        "to": "USDC",
+        "amount": "1",
+        "slippageBps": 100,
+        "fromToken": "0xB2000000000000000000008501b13360000cb2EC",
+        "toToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      },
+      "state": "application-blocked",
+      "reason": "FEE_ROUTE_UNREGISTERED",
+      "message": "0xB200…b2EC → USDC is not supported in MPGR Swap yet. Token and route checks are still required before trading here. External liquidity has not been checked. No approval or swap was requested.",
+      "permissions": "not-read-unknown",
+      "liquidity": "not-read-unknown"
+    }
+  ],
+  "bnb": "No match in this published Base list. Native BNB is not a Base asset. Need an exact verified Base representation contract; no address was guessed."
+}

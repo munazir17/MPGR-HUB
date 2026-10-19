@@ -92,3 +92,11 @@ describe("tokenized stock quote — fail-closed on-chain verification", () => {
     }
   });
 });
+
+it.each(["COINc", "CRCLc", "INTCc"])("refuses not-live %s even before on-chain verification or quote generation", async (symbol) => {
+  const reads = await import("../tokenized-stocks-onchain");
+  const spy = vi.spyOn(reads, "readTokenizedStockOnchain");
+  const result = await prepareTokenizedStockSwap({ symbol, side: "BUY", amountHuman: "5", taker: "0x3333333333333333333333333333333333333333" });
+  expect(result).toMatchObject({ ok: false, error: { code: "UNSUPPORTED_ASSET", message: expect.stringContaining("announced-not-live") } });
+  expect(spy).not.toHaveBeenCalled(); spy.mockRestore();
+});

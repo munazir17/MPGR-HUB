@@ -46,9 +46,10 @@ describe("consumer trade chat", () => {
   it("does not round a very small WETH fee to zero", () => {
     expect(formatTradeReview(proposal(true))).toContain("0.00000025 WETH");
   });
-  it("omits missing-fee debug explanations", () => {
+  it("discloses a skipped fee without configuration/debug explanations", () => {
     const p = proposal(); p.agentFee = { status: "skipped", bps: null, recipient: null, amountAtomic: "0", displayAmount: null, reason: "The MPGR fee is collected inside the swap transaction by the MPGR Executor, which does not route this pair — no fee is charged." };
-    expect(formatTradeReview(p)).not.toMatch(/fee|configured/);
+    expect(formatTradeReview(p)).toContain("MPGR fee: not applied on this quoted route");
+    expect(formatTradeReview(p)).not.toMatch(/configured|does not route this pair/);
   });
   it("keeps success concise with one explorer link and no approval internals; output remains explicitly an estimate", () => {
     const text = formatTradeSuccess(proposal(), HASH);

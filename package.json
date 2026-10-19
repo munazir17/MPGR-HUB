@@ -15,7 +15,8 @@
     "postinstall": "node scripts/fix-cdp-jose-esm.cjs",
     "check": "npm run lint && npm run typecheck && npm test",
     "typecheck": "tsc --noEmit",
-    "audit:high": "node scripts/audit-high.mjs"
+    "audit:high": "node scripts/audit-high.mjs",
+    "test:mobile": "playwright test --config tests/mobile/playwright.config.ts"
   },
   "dependencies": {
     "@coinbase/agentkit": "^0.10.4",
@@ -39,6 +40,7 @@
     "wagmi": "^2.19.5"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@types/node": "^22.7.9",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
@@ -51,6 +53,7 @@
     "postcss": "^8.5.28",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
+    "vite": "8.3.0",
     "vitest": "4.1.11"
   },
   "overrides": {

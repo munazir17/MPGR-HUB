@@ -1,0 +1,14 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { importBaseToken } from "../token-import";
+import { MANUAL_SWAP_TOKENS, manualSwapInputError, requestManualSwapQuote } from "../manual-swap";
+const address = "0x1234567890abcdef1234567890abcdef12345678" as const;
+const token = { address, symbol: "NEW", name: "New", decimals: 6, kind: "erc20" as const, verified: false };
+const payload = { chainId: 8453, token };
+const input = { fromToken: MANUAL_SWAP_TOKENS.find(t => t.symbol === "USDC")!.address, toToken: address, amount: "1", slippageBps: 100 };
+afterEach(() => vi.unstubAllGlobals());
+describe("validated Base import UI metadata", () => {
+  it("only accepts exact addresses and uses the authenticated, no-store read-only endpoint", async () => { const fetch = vi.fn().mockResolvedValue(Response.json(payload)); vi.stubGlobal("fetch", fetch); await expect(importBaseToken("NEW")).rejects.toThrow("exact Base"); expect(fetch).not.toHaveBeenCalled(); expect(await importBaseToken(address)).toEqual(token); expect(fetch).toHaveBeenCalledWith("/api/trade/token", expect.objectContaining({ credentials: "include", cache: "no-store", body: JSON.stringify({ address, chainId: 8453 }) })); });
+  it.each([401, 429, 503])("surfaces HTTP %s without importing a token", async status => { vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "Token lookup unavailable" }, { status }))); await expect(importBaseToken(address)).rejects.toMatchObject({ status, message: "Token lookup unavailable" }); });
+  it.each([{ ...payload, chainId: 1 }, { ...payload, token: { ...token, address: "0x2222222222222222222222222222222222222222" } }, { ...payload, token: { ...token, decimals: -1 } }, { ...payload, token: { ...token, decimals: 1.5 } }, { ...payload, token: { ...token, symbol: '<script>' } }, { ...payload, token: { ...token, kind: "invented" } }, {}])("rejects mismatched or malformed metadata: %j", async value => { vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(value))); await expect(importBaseToken(address)).rejects.toThrow("invalid metadata"); });
+  it("allows a validated import only as UI selection; no trusted browser metadata is sent to quote", async () => { const tokens = [...MANUAL_SWAP_TOKENS, token]; expect(manualSwapInputError(input)).toContain("supported tokens"); expect(manualSwapInputError(input, tokens)).toBeNull(); const fetch = vi.fn().mockResolvedValue(Response.json({ error: "No executable route", code: "LIQUIDITY_UNAVAILABLE" }, { status: 502 })); vi.stubGlobal("fetch", fetch); await expect(requestManualSwapQuote(input, address, undefined, tokens)).rejects.toThrow("No executable route"); const sent = JSON.parse(fetch.mock.calls[0][1].body); expect(sent).toEqual(input); expect(sent).not.toHaveProperty("decimals"); expect(sent).not.toHaveProperty("verified"); });
+});

@@ -23,8 +23,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount, useSignTypedData } from "wagmi";
 import { fetchWithSession } from "@/lib/api/authenticated-fetch";
+import { readAutonomySettings, type AutonomySettingsDiagnostic } from "@/lib/api/autonomy-settings";
 import { useWalletAuth } from "@/hooks/useWalletAuth";
 import type { AutonomyGoalDraft } from "@/lib/autonomy/chat-draft";
+import { parseBaseUnits } from "@/lib/autonomy/policy-engine";
 import { findLiveSlotBoundToGoal } from "@/lib/autonomy/draft-activation";
 import {
   delegatedActionId,
@@ -130,9 +132,9 @@ export interface AutonomyTokenOption {
 const HEARTBEAT_MS = 60_000;
 const TERMINAL = new Set(["COMPLETED", "FAILED", "EXPIRED", "CANCELLED"]);
 
-/** Goal counts for the agent's autonomous-status reply — total and non-terminal. */
+/** Goal counts for status replies: drafts and paused goals are not active. */
 export function summarizeAutonomyGoals(goals: AutonomyGoalView[]): { total: number; active: number } {
-  return { total: goals.length, active: goals.filter((g) => !TERMINAL.has(g.status)).length };
+  return { total: goals.length, active: goals.filter((g) => ["ACTIVE", "WAITING", "EXECUTING"].includes(g.status)).length };
 }
 
 export interface AgentAutonomyDraftInput {
@@ -199,6 +201,7 @@ export function useAgentAutonomy() {
   const { signTypedDataAsync } = useSignTypedData();
   const { authenticated: walletAuthenticated, authenticating: walletAuthenticating, authenticate: walletAuthenticate } = useWalletAuth();
   const [config, setConfig] = useState<AutonomyConfig | null>(null);
+  const [settingsRead, setSettingsRead] = useState<AutonomySettingsDiagnostic>({ state: "loading" });
   const [goals, setGoals] = useState<AutonomyGoalView[]>([]);
   const [policies, setPolicies] = useState<AutonomyPolicyView[]>([]);
   const [slots, setSlots] = useState<DelegatedSlotView[]>([]);
@@ -208,9 +211,13 @@ export function useAgentAutonomy() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const walletKey = address?.toLowerCase();
+  // Retry the same provisional policy/goal, never another goal's permission.
+  const activationReservations = useRef(new Map<string, { policy: AutonomyPolicyView; goal?: AutonomyGoalView }>());
+  const activationInFlight = useRef(false);
   const hasPendingRef = useRef(false);
   const tokensFetchedRef = useRef(false);
   const loadedWalletRef = useRef<string | undefined>(undefined);
+  const refreshVersionRef = useRef(0);
 
   /**
    * Ensure the connected wallet has a valid server-side SIWE session before
@@ -226,7 +233,10 @@ export function useAgentAutonomy() {
   }, [walletAuthenticated, walletAuthenticate]);
 
   const refresh = useCallback(async () => {
-    if (!walletKey) return;
+    // Latest read wins, including same-wallet retries and disconnects. Checking
+    // only wallet identity cannot reject an older response for the same wallet.
+    const version = ++refreshVersionRef.current;
+    const isCurrent = () => refreshVersionRef.current === version && loadedWalletRef.current === walletKey;
     // Wallet switched (or first load): drop the previous wallet's state
     // before applying the fresh fetch so stale goals/policies never
     // flash. The reset happens in the async continuation (never
@@ -234,11 +244,9 @@ export function useAgentAutonomy() {
     // a previous wallet is discarded.
     const walletChanged = loadedWalletRef.current !== walletKey;
     loadedWalletRef.current = walletKey;
-    const [configRes, goalsRes] = await Promise.all([
-      fetchWithSession("/api/agent/autonomy/config", { method: "GET" }).then((r) => r.json()).catch(() => null),
-      fetchWithSession("/api/agent/autonomy/goals", { method: "GET" }).then((r) => r.json()).catch(() => null),
-    ]);
-    if (loadedWalletRef.current !== walletKey) return; // a newer wallet took over
+    await Promise.resolve();
+    if (!isCurrent()) return;
+    setSettingsRead({ state: "loading" });
     if (walletChanged) {
       setConfig(null);
       setGoals([]);
@@ -249,9 +257,25 @@ export function useAgentAutonomy() {
       hasPendingRef.current = false;
       setError(null);
     }
-    if (configRes && typeof configRes.enabled === "boolean") setConfig(configRes as AutonomyConfig);
+    if (!walletKey) {
+      setSettingsRead({ state: "wallet_required" });
+      return;
+    }
+    const [configRes, goalsRes] = await Promise.all([
+      readAutonomySettings().then((settings) => {
+        if (!isCurrent()) return null;
+        // Settings are public: do not hide their result behind session-scoped
+        // goals latency/failure. Clear stale config on SAME-wallet read failures.
+        setConfig(settings.config);
+        setSettingsRead(settings.diagnostic);
+        return settings.config;
+      }),
+      fetchWithSession("/api/agent/autonomy/goals", { method: "GET" }).then((r) => r.json()).catch(() => null),
+    ]);
+    if (!isCurrent()) return; // a newer wallet took over
     if (configRes?.enabled && !tokensFetchedRef.current) {
       const tokensRes = await fetchWithSession("/api/agent/autonomy/tokens", { method: "GET" }).then((r) => r.json()).catch(() => null);
+      if (!isCurrent()) return;
       if (tokensRes && Array.isArray(tokensRes.tokens)) {
         tokensFetchedRef.current = true;
         setTokens(tokensRes.tokens as AutonomyTokenOption[]);
@@ -265,6 +289,7 @@ export function useAgentAutonomy() {
         fetchWithSession("/api/agent/autonomy/policy", { method: "GET" }).then((r) => r.json()).catch(() => null),
         fetchWithSession("/api/agent/autonomy/authorization", { method: "GET" }).then((r) => r.json()).catch(() => null),
       ]);
+      if (!isCurrent()) return;
       if (policyRes && Array.isArray(policyRes.policies)) setPolicies(policyRes.policies as AutonomyPolicyView[]);
       if (slotsRes && Array.isArray(slotsRes.slots)) {
         setSlots(slotsRes.slots as DelegatedSlotView[]);
@@ -473,22 +498,17 @@ export function useAgentAutonomy() {
         return { ok: false, message: `Switch your wallet to ${chainLabel} to sign delegated slots.` };
       }
       const buyTokenDecimals = tokens.find((t) => t.address.toLowerCase() === goal.trade.buyToken.toLowerCase())?.decimals;
-      if (!buyTokenDecimals) return { ok: false, message: "Token details are still loading — try again." };
-      const cleaned = input.minAmountOutHuman.trim();
-      if (!/^\d*(\.\d*)?$/.test(cleaned) || cleaned === "" || cleaned === ".") {
-        return { ok: false, message: "Enter the minimum output per trade." };
-      }
-      const [whole = "0", frac = ""] = cleaned.split(".");
-      const fracPadded = frac.padEnd(buyTokenDecimals, "0").slice(0, buyTokenDecimals);
-      const minAmountOut = BigInt(whole + fracPadded);
-      if (minAmountOut <= 0n) return { ok: false, message: "The minimum output must be above zero." };
+      if (buyTokenDecimals === undefined) return { ok: false, message: "Token details are still loading — try again." };
+      const rawMinAmountOut = parseBaseUnits(input.minAmountOutHuman.trim(), buyTokenDecimals);
+      if (!rawMinAmountOut) return { ok: false, message: "Enter a positive minimum output within token precision." };
+      const minAmountOut = BigInt(rawMinAmountOut);
       const count = Math.max(1, Math.min(5, Math.floor(input.count)));
       const deadlineCap = Math.floor(new Date(policy.expiresAt).getTime() / 1000);
       const deadline = Math.min(Math.floor(Date.now() / 1000) + Math.floor(input.expiresInHours * 3600), deadlineCap);
       if (deadline <= Math.floor(Date.now() / 1000)) return { ok: false, message: "This policy has already expired." };
       const usedIndexes = new Set(usedSlotIndexes);
       const free = [0, 1, 2, 3, 4].filter((i) => !usedIndexes.has(i)).slice(0, count);
-      if (free.length === 0) return { ok: false, message: "No free authorization slots left for this policy — revoke one first." };
+      if (free.length === 0) return { ok: false, message: "All five nonce indexes for this goal have been used. They cannot be recycled; revocation does not create a new nonce." };
 
       setBusy(true);
       setError(null);
@@ -566,6 +586,20 @@ export function useAgentAutonomy() {
     [address, delegatedChainId, delegatedExecutor, connectedChainId, ensureSession, refresh, signTypedDataAsync, tokens],
   );
 
+  const confirmGoalActivation = useCallback(async (goalId: string): Promise<{ ok: boolean; message?: string }> => {
+    try {
+      const res = await fetchWithSession(`/api/agent/autonomy/goals/${goalId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "activate" }),
+      });
+      const body = await res.json().catch(() => null) as { goal?: AutonomyGoalView; error?: string } | null;
+      if (!res.ok || body?.goal?.status !== "ACTIVE") return { ok: false, message: body?.error ?? "Activation was not confirmed. Retry this same goal; do not create a new one." };
+      await refresh();
+      return { ok: true };
+    } catch {
+      return { ok: false, message: "Activation could not be confirmed. Reload the saved goal before retrying; do not create a duplicate." };
+    }
+  }, [refresh]);
+
   /**
    * Explicit delegated-slot signing: builds the canonical Permit2 witness
    * typed data for EXACTLY the bounded details the UI shows, asks the
@@ -579,10 +613,17 @@ export function useAgentAutonomy() {
       const policy = policies.find((p) => p.id === input.policyId);
       const goal = goals.find((g) => g.id === input.goalId);
       if (!policy || !goal) return { ok: false, message: "Pick the goal to authorize." };
-      const usedIndexes = slots.filter((s) => s.policyId === input.policyId && !s.revokedAt && !s.consumedAt).map((s) => s.slotIndex);
-      return signSlotsForPolicyGoal(policy, goal, input, usedIndexes);
+      // Consumed/revoked indexes still spent their deterministic nonce. Never
+      // present one as a fresh authorization or ask for that signature again.
+      const ownSlots = slots.filter((s) => s.policyId === input.policyId && s.goalId === input.goalId);
+      if (goal.status === "DRAFT" && findLiveSlotBoundToGoal([policy], ownSlots, { id: goal.id, ...goal.trade }, new Date())) {
+        return confirmGoalActivation(goal.id);
+      }
+      const usedIndexes = ownSlots.map((s) => s.slotIndex);
+      const result = await signSlotsForPolicyGoal(policy, goal, input, usedIndexes);
+      return result.ok && goal.status === "DRAFT" ? confirmGoalActivation(goal.id) : result;
     },
-    [policies, goals, slots, signSlotsForPolicyGoal],
+    [policies, goals, slots, signSlotsForPolicyGoal, confirmGoalActivation],
   );
 
   /** Shared goal-creation POST used by both activation paths. */
@@ -622,8 +663,9 @@ export function useAgentAutonomy() {
    * activation ALWAYS takes the ONE-SIGNATURE path: policy + goal are
    * created, then the wallet is asked for EXACTLY ONE delegated-slot
    * signature over the draft amount with the min output prefilled from the
-   * live quote (never zero). One popup, then the goal is ACTIVE and
-   * executable.
+   * live quote (never zero). The goal stays DRAFT until registration and an explicit server activation
+   * confirm its own saved permission. Each slot permits only ONE execution;
+   * recurring trades require additional goal-bound slots.
    *
    * The ONLY no-signature path is a live, unconsumed slot already bound to
    * THIS goal id (goal-bound standing delegation — checked after the goal
@@ -634,6 +676,7 @@ export function useAgentAutonomy() {
    */
   const activateDraft = useCallback(
     async (input: DraftActivationInput): Promise<DraftActivationResult> => {
+      if (activationInFlight.current) return { ok: false, message: "This goal is already awaiting authorization." };
       if (!address) return { ok: false, message: "Connect your wallet first." };
       if (!(await ensureSession())) {
         return { ok: false, message: "Sign in with your wallet to activate this goal." };
@@ -643,20 +686,8 @@ export function useAgentAutonomy() {
       if (!sellTokenInfo || !buyTokenInfo) {
         return { ok: false, message: "Token details are still loading — try again." };
       }
-      const toBaseUnits = (human: string): string | null => {
-        const cleaned = human.trim();
-        if (!/^\d*(\.\d*)?$/.test(cleaned) || cleaned === "" || cleaned === ".") return null;
-        const [whole = "0", frac = ""] = cleaned.split(".");
-        const fracPadded = frac.padEnd(sellTokenInfo.decimals, "0").slice(0, sellTokenInfo.decimals);
-        try {
-          const value = BigInt(whole + fracPadded);
-          return value > 0n ? value.toString() : null;
-        } catch {
-          return null;
-        }
-      };
-      const sellAmountRaw = toBaseUnits(input.sellAmount);
-      const maxDailyRaw = toBaseUnits(input.maxDaily);
+      const sellAmountRaw = parseBaseUnits(input.sellAmount, sellTokenInfo.decimals);
+      const maxDailyRaw = parseBaseUnits(input.maxDaily, sellTokenInfo.decimals);
       if (!sellAmountRaw || !maxDailyRaw) {
         return { ok: false, message: "Enter a positive per-trade amount and daily cap." };
       }
@@ -669,38 +700,62 @@ export function useAgentAutonomy() {
       // a DIFFERENT goal can never authorize this goal's broadcast (witness
       // actionId binding), so no cross-goal coverage is consulted here.
       const cleanedMinOut = input.minAmountOutHuman.trim();
-      if (!cleanedMinOut || !/^\d*(\.\d*)?$/.test(cleanedMinOut) || Number.parseFloat(cleanedMinOut || "0") <= 0) {
+      if (!parseBaseUnits(cleanedMinOut, buyTokenInfo.decimals)) {
         return { ok: false, message: "A live quote is needed to set the minimum output before signing. Refresh and try again." };
       }
+      if (activationInFlight.current) return { ok: false, message: "This goal is already awaiting authorization." };
+      activationInFlight.current = true;
+      const boundedInput = [input.sellToken.toLowerCase(), input.buyToken.toLowerCase(), input.condition.kind, input.condition.threshold,
+        input.sellAmount, input.maxDaily, input.maxSlippageBps, input.maxActionsPerDay, input.ttlDays, input.cooldownSeconds,
+        input.maxTrades, input.description, input.slotExpiresInHours ?? 24];
+      const reservationKey = JSON.stringify([address.toLowerCase(), chainId, boundedInput]);
       setBusy(true);
       setError(null);
       try {
-        const policyRes = await fetchWithSession("/api/agent/autonomy/policy", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sellToken: input.sellToken,
-            buyToken: input.buyToken,
-            maxPerTrade: input.sellAmount,
-            maxDaily: input.maxDaily,
-            maxSlippageBps: input.maxSlippageBps,
-            maxActionsPerDay: input.maxActionsPerDay,
-            ttlDays: input.ttlDays,
-            chainId,
-            authorized: true,
-          }),
-        });
-        const policyPayload = (await policyRes.json().catch(() => null)) as { policy?: AutonomyPolicyView; error?: string; details?: string[] } | null;
-        if (!policyRes.ok || !policyPayload?.policy) {
-          const detail = policyPayload?.details?.join(" ") ?? policyPayload?.error ?? "Authorization could not be created.";
-          setError(detail);
-          return { ok: false, message: detail };
+        let reservation = activationReservations.current.get(reservationKey);
+        if (!reservation) {
+          const policyRes = await fetchWithSession("/api/agent/autonomy/policy", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sellToken: input.sellToken,
+              buyToken: input.buyToken,
+              maxPerTrade: input.sellAmount,
+              maxDaily: input.maxDaily,
+              maxSlippageBps: input.maxSlippageBps,
+              maxActionsPerDay: input.maxActionsPerDay,
+              ttlDays: input.ttlDays,
+              chainId,
+              authorized: true,
+            }),
+          });
+          const policyPayload = (await policyRes.json().catch(() => null)) as { policy?: AutonomyPolicyView; error?: string; details?: string[] } | null;
+          if (!policyRes.ok || !policyPayload?.policy) {
+            const detail = policyPayload?.details?.join(" ") ?? policyPayload?.error ?? "Authorization could not be created.";
+            setError(detail);
+            return { ok: false, message: detail };
+          }
+          reservation = { policy: policyPayload.policy };
+          activationReservations.current.set(reservationKey, reservation);
         }
-        const goal = await createGoalOnPolicy(policyPayload.policy.id, input);
+        if (!reservation.goal) {
+          // Recover a goal whose POST response was lost before creating again.
+          const listed = await fetchWithSession("/api/agent/autonomy/goals", { method: "GET" });
+          const body = await listed.json().catch(() => null) as { goals?: AutonomyGoalView[] } | null;
+          if (!listed.ok || !Array.isArray(body?.goals)) throw new Error("Could not reconcile the pending goal. Retry; no new goal was created.");
+          reservation.goal = body.goals.find((g) => g.policyId === reservation!.policy.id);
+        }
+        const goal = reservation.goal ? { ok: true as const, goal: reservation.goal } : await createGoalOnPolicy(reservation.policy.id, input);
         if (!goal.ok) {
           setError(goal.message);
           return { ok: false, message: goal.message };
         }
+
+        reservation.goal = goal.goal;
+        const slotRead = await fetchWithSession("/api/agent/autonomy/authorization", { method: "GET" });
+        const slotBody = await slotRead.json().catch(() => null) as { slots?: DelegatedSlotView[] } | null;
+        if (!slotRead.ok || !Array.isArray(slotBody?.slots)) throw new Error("Could not reconcile authorization. Retry this same goal.");
+        const currentSlots = slotBody.slots.filter((s) => s.policyId === reservation.policy.id);
 
         // GOAL-BOUND STANDING CHECK — the only no-signature path: a live,
         // unconsumed slot ALREADY BOUND TO THIS goal id (same pair, exact
@@ -708,42 +763,48 @@ export function useAgentAutonomy() {
         // for a new draft; another goal's slot NEVER qualifies, no matter
         // how well it matches pair and amount.
         const standing = findLiveSlotBoundToGoal(
-          [...policies, policyPayload.policy],
-          slots,
+          [reservation.policy],
+          currentSlots,
           { id: goal.goal.id, sellToken: input.sellToken, buyToken: input.buyToken, sellAmountRaw },
           new Date(),
         );
         if (standing) {
-          await refresh();
-          return { ok: true, mode: "standing" };
+          const confirmed = await confirmGoalActivation(goal.goal.id);
+          return confirmed.ok ? { ok: true, mode: "standing" } : { ok: false, message: confirmed.message! };
         }
 
         // EXACTLY ONE wallet popup: one slot bound to THIS goal, amount from
         // the draft, min output from the live quote, actionId derived from
         // the goal just created.
         const signed = await signSlotsForPolicyGoal(
-          policyPayload.policy,
+          reservation.policy,
           goal.goal,
           {
-            policyId: policyPayload.policy.id,
+            policyId: reservation.policy.id,
             goalId: goal.goal.id,
             count: 1,
             minAmountOutHuman: cleanedMinOut,
             expiresInHours: Math.max(1, Math.min(168, Math.floor(input.slotExpiresInHours ?? 24))),
           },
-          [], // a brand-new goal has no used slot indexes yet
+          currentSlots.filter((s) => s.goalId === goal.goal.id).map((s) => s.slotIndex),
         );
         if (!signed.ok) {
           // The goal exists and stays watch-only; the user can sign later
           // from the panel. The reason is surfaced verbatim.
           return { ok: false, message: signed.message ?? "The slot signature did not complete.", mode: "signed" };
         }
-        return { ok: true, mode: "signed" };
+        const confirmed = await confirmGoalActivation(goal.goal.id);
+        return confirmed.ok ? { ok: true, mode: "signed" } : { ok: false, message: confirmed.message! };
+      } catch (failure) {
+        const message = failure instanceof Error ? failure.message : "Authorization failed. Retry the same pending goal.";
+        setError(message);
+        return { ok: false, message };
       } finally {
+        activationInFlight.current = false;
         setBusy(false);
       }
     },
-    [address, delegatedChainId, createGoalOnPolicy, ensureSession, policies, refresh, signSlotsForPolicyGoal, slots, tokens],
+    [address, delegatedChainId, createGoalOnPolicy, ensureSession, confirmGoalActivation, signSlotsForPolicyGoal, tokens],
   );
 
 
@@ -766,6 +827,7 @@ export function useAgentAutonomy() {
 
   return {
     config,
+    settingsRead: walletKey ? settingsRead : { state: "wallet_required" as const },
     goals,
     policies,
     tokens,

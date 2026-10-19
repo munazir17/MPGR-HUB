@@ -11,9 +11,9 @@
 // so the swap never reached the quote/prepare path. This parser reads
 // the same catalog the swap routes already trust
 // (lib/trade/trade-tokens.ts → lib/markets/base-pairs.ts +
-// lib/trade/tokenized-stocks.ts), so anything it resolves is already
-// swappable and anything else simply does not match — the model/route
-// layer still owns the final address decision.
+// lib/trade/tokenized-stocks.ts), so anything it resolves has a known identity, not guaranteed liquidity.
+// The server resolver and quote route own final contract/route validation;
+// the model never chooses a replacement address.
 //
 // Rules baked in:
 //   - a token only matches when it resolves in the existing catalog or
@@ -24,7 +24,8 @@
 //     side is USDC; otherwise the amount is left null so the agent asks
 //     instead of guessing a unit conversion
 //   - quote-only phrasing ("quote", "price", "how much") is flagged so
-//     callers can answer with a price instead of a proposal
+//     unsized price questions can remain reference-only; sized swap quotes
+//     still need an executable review proposal, never execution permission
 //   - an execution order with no size still parses (amount: null): the
 //     caller asks for the amount instead of silently treating an order as
 //     a research question
@@ -52,9 +53,15 @@ export interface BaseSwapIntent {
   amount: string | null;
   /** True when the amount was written as a $ figure. */
   amountIsDollar: boolean;
-  /** True for pure price/quote phrasing — never prepare from these. */
+  /** Quote/price wording; callers distinguish sized review quotes from unsized reference questions. */
   quoteOnly: boolean;
 }
+
+// A route request needs an executable, review-only proposal, not a reference
+// price. Normalize only its leading verb; preserve amounts/assets/chain text.
+const ROUTE_PREFIX = /^(?:show\s+(?:me\s+)?)?(?:the\s+)?(?:best\s+)?(?:available\s+)?route\s+for\s+/i;
+export function isExecutableRouteRequest(prompt: string): boolean { return ROUTE_PREFIX.test(prompt.trim()); }
+function normalizeRouteRequest(prompt: string): string { return prompt.replace(ROUTE_PREFIX, "swap "); }
 
 const SYMBOL = "[a-z][a-z0-9]{1,15}";
 const TOKEN = `("[^"\\n]{1,128}"|0x[a-z0-9]{1,64}|${SYMBOL})(?![a-z0-9])`;
@@ -235,7 +242,7 @@ export interface UnresolvedSwapOrder {
  */
 export function extractUnresolvedSwapOrder(prompt: string): UnresolvedSwapOrder | null {
   if (typeof prompt !== "string" || !prompt.trim()) return null;
-  const text = prompt.trim().replace(/\b(swap|trade|convert|exchange)\.(?=\d)/gi, "$1 ");
+  const text = normalizeRouteRequest(prompt.trim()).replace(/\b(swap|trade|convert|exchange)\.(?=\d)/gi, "$1 ");
 
   // Unsized unknown one-token conversational requests are not trade orders.
   if (!/[0-9]/.test(text) && !/\b(?:swap|sell|trade|convert|exchange)\b.*\b(?:to|for|into)\b/i.test(text) && !/^buy\s+(?!me\b)(?:"[^"\n]+"|[a-z][a-z0-9]{1,31})[.!?]?$/i.test(text)) return null;
@@ -282,7 +289,7 @@ export function extractUnresolvedSwapOrder(prompt: string): UnresolvedSwapOrder 
  */
 export function extractBaseSwapIntent(prompt: string): BaseSwapIntent | null {
   if (typeof prompt !== "string" || !prompt.trim()) return null;
-  const text = prompt.trim().replace(/\b(swap|trade|convert|exchange)\.(?=\d)/gi, "$1 ");
+  const text = normalizeRouteRequest(prompt.trim()).replace(/\b(swap|trade|convert|exchange)\.(?=\d)/gi, "$1 ");
 
   const buyWith = text.match(BUY_WITH_RE);
   if (buyWith) return buildIntent(buyWith[4], buyWith[1], buyWith[3], Boolean(buyWith[2]), text);

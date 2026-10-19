@@ -35,6 +35,10 @@ vi.mock("@/lib/trade/trade-rate-limit", () => ({
   clientIpFromRequest: () => "127.0.0.1",
 }));
 
+const activationGate = vi.hoisted(() => ({ ready: true, emergencyAllowed: true }));
+vi.mock("@/lib/autonomy", () => ({ autonomyStatus: () => ({ executionAvailable: activationGate.ready, emergencyDisabled: false, delegated: { chainId: 84532 }, productionGate: false }) }));
+vi.mock("@/lib/autonomy/emergency-switch", () => ({ readAutonomousEmergencySwitch: async () => ({ allowed: activationGate.emergencyAllowed }) }));
+import { PATCH } from "../goals/[id]/route";
 import { DELETE, GET, POST } from "./route";
 import type { AutonomySystem } from "@/lib/autonomy/index";
 
@@ -81,7 +85,7 @@ async function seedPolicyAndGoal(wallet: Address = USER, policyId = POLICY_ID, g
     policyId,
     type: "conditional_swap",
     description: "test goal",
-    status: "ACTIVE",
+    status: "DRAFT",
     condition: { kind: "price_below", threshold: "2" },
     trade: { sellToken: SELL, buyToken: BUY, sellAmountRaw: "1000000000", slippageBps: 100, sellDecimals: 6, buyDecimals: 18 },
     cooldownSeconds: 60,
@@ -152,6 +156,8 @@ beforeEach(() => {
   process.env.MPGR_AUTONOMOUS_AGENT_ENABLED = "true";
   process.env.MPGR_AUTONOMOUS_EMERGENCY_DISABLE = "false";
   delete process.env.MPGR_AUTONOMOUS_EXECUTION_ADAPTER;
+  activationGate.ready = true;
+  activationGate.emergencyAllowed = true;
   redis.reset();
   currentWallet = USER;
   return seedPolicyAndGoal();
@@ -288,4 +294,97 @@ describe("feature flag + emergency stop + failures", () => {
       spy.mockRestore();
     }
   });
+});
+
+
+async function activateGoal(action = "activate") {
+  return PATCH(new Request(`http://localhost/api/agent/autonomy/goals/${GOAL_ID}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }),
+  }), { params: Promise.resolve({ id: GOAL_ID }) });
+}
+
+describe("persisted goal-bound activation (real Redis/Lua, offline test signatures)", () => {
+  it("a live policy alone never activates a draft", async () => {
+    expect((await activateGoal()).status).toBe(409);
+    expect((await systemUnderTest.store.getGoal(GOAL_ID))?.status).toBe("DRAFT");
+  });
+  it("activates only after validated slot persistence, and same-goal retry is idempotent", async () => {
+    expect((await postSlots([signedSlot()])).status).toBe(201);
+    expect((await systemUnderTest.store.getGoal(GOAL_ID))?.status).toBe("DRAFT");
+    expect((await activateGoal()).status).toBe(200);
+    expect((await systemUnderTest.store.getGoal(GOAL_ID))?.status).toBe("ACTIVE");
+    expect((await activateGoal()).status).toBe(200);
+    expect(await systemUnderTest.store.listGoals(USER.toLowerCase())).toHaveLength(1);
+  });
+  it.each(["revoked", "consumed", "expired"])("does not activate with a %s slot", async (state) => {
+    const result = await postSlots([signedSlot()]);
+    const { slots } = await result.json();
+    const saved = await systemUnderTest.slots.getSlot(slots[0].id, USER.toLowerCase());
+    if (state === "revoked") await systemUnderTest.slots.markRevoked(slots[0].id, USER.toLowerCase(), new Date().toISOString());
+    if (state === "consumed") await systemUnderTest.slots.markConsumed(slots[0].id, USER.toLowerCase(), "0x" + "12".repeat(32), new Date().toISOString());
+    // Route uses new Date(), so expire the persisted record using test store data.
+    if (state === "expired") {
+      vi.useFakeTimers(); vi.setSystemTime((saved!.permit.deadline + 1) * 1000);
+    }
+    try { expect((await activateGoal()).status).toBe(409); }
+    finally { vi.useRealTimers(); }
+    expect((await systemUnderTest.store.getGoal(GOAL_ID))?.status).toBe("DRAFT");
+  });
+  it("refuses readiness and emergency failures even with a saved slot", async () => {
+    await postSlots([signedSlot()]);
+    activationGate.ready = false;
+    expect((await activateGoal()).status).toBe(503);
+    activationGate.ready = true; activationGate.emergencyAllowed = false;
+    expect((await activateGoal()).status).toBe(503);
+    expect((await systemUnderTest.store.getGoal(GOAL_ID))?.status).toBe("DRAFT");
+  });
+  it("a failed authorization write leaves no runnable goal", async () => {
+    const spy = vi.spyOn(systemUnderTest.slots, "saveSlots").mockRejectedValueOnce(new Error("store down"));
+    expect((await postSlots([signedSlot()])).status).toBe(503);
+    spy.mockRestore();
+    expect((await activateGoal()).status).toBe(409);
+    expect((await systemUnderTest.store.getGoal(GOAL_ID))?.status).toBe("DRAFT");
+  });
+  it("resume cannot revive a paused goal with consumed permission", async () => {
+    const res = await postSlots([signedSlot()]);
+    const { slots } = await res.json();
+    await activateGoal();
+    const goal = (await systemUnderTest.store.getGoal(GOAL_ID))!;
+    await systemUnderTest.store.transitionGoal(GOAL_ID, USER.toLowerCase(), ["ACTIVE"], goal.updatedAt, { status: "PAUSED", updatedAt: new Date().toISOString() });
+    await systemUnderTest.slots.markConsumed(slots[0].id, USER.toLowerCase(), "0x" + "12".repeat(32), new Date().toISOString());
+    expect((await activateGoal("resume")).status).toBe(409);
+    expect((await systemUnderTest.store.getGoal(GOAL_ID))?.status).toBe("PAUSED");
+  });
+});
+
+it("another goal's persisted slot cannot activate this draft", async () => {
+  await seedPolicyAndGoal(USER, POLICY_ID, "goal_other_1");
+  expect((await postSlots([signedSlot({ goalId: "goal_other_1" })])).status).toBe(201);
+  expect((await activateGoal()).status).toBe(409);
+  expect((await systemUnderTest.store.getGoal(GOAL_ID))?.status).toBe("DRAFT");
+});
+it("CAS failure after valid persistence does not report ACTIVE", async () => {
+  await postSlots([signedSlot()]);
+  const spy = vi.spyOn(systemUnderTest.store, "transitionGoal").mockResolvedValueOnce(null);
+  expect((await activateGoal()).status).toBe(409);
+  spy.mockRestore();
+  expect((await systemUnderTest.store.getGoal(GOAL_ID))?.status).toBe("DRAFT");
+});
+
+it.each([undefined, "false"])("production-gated mainnet cannot register a permission (%s)", async (flag) => {
+  if (flag === undefined) delete process.env.AUTONOMOUS_PRODUCTION_ENABLED;
+  else process.env.AUTONOMOUS_PRODUCTION_ENABLED = flag;
+  const basePolicy = await systemUnderTest.store.getPolicy(POLICY_ID);
+  await systemUnderTest.store.createPolicy({ ...basePolicy!, id: "pol_mainnet_gate", chainId: 8453 });
+  const save = vi.spyOn(systemUnderTest.slots, "saveSlots");
+  try {
+    const response = await POST(new Request("http://localhost/api/agent/autonomy/authorization", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ policyId: "pol_mainnet_gate", goalId: GOAL_ID, slots: [{}] }),
+    }));
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe("PRODUCTION_GATE_DISABLED");
+    expect(save).not.toHaveBeenCalled();
+    expect(await systemUnderTest.slots.listSlots(USER.toLowerCase())).toHaveLength(0);
+  } finally { save.mockRestore(); }
 });

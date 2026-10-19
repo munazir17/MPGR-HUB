@@ -6,6 +6,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/lib/markets/pair-reference", () => ({ refreshPairReference: vi.fn(async (detail) => detail) }));
 const getTapeSnapshot = vi.fn();
 vi.mock("@/lib/markets/tape", () => ({
   getTapeSnapshot,

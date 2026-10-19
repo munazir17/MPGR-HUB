@@ -1,0 +1,8 @@
+ ↓ lib/autonomy/__tests__/phase5-preflight.test.ts (9 tests | 9 skipped)
+ ↓ lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts (6 tests | 6 skipped)
+
+ Test Files  289 passed | 5 skipped (294)
+      Tests  3737 passed | 24 skipped (3761)
+   Start at  21:09:52
+   Duration  162.52s (transform 5.77s, setup 0ms, import 90.72s, tests 39.57s, environment 23ms)
+

@@ -1,0 +1,12 @@
+import { expect, it } from "vitest";
+import type { Address, Hash, Hex } from "viem";
+import { swapTransactionMatches } from "../swap-transaction";
+const owner = "0x1111111111111111111111111111111111111111" as Address;
+const target = "0x2222222222222222222222222222222222222222" as Address;
+const hash = `0x${"aa".repeat(32)}` as Hash;
+const p = { taker: owner, transaction: { to: target, data: "0xabcdef" as Hex, value: "123" } };
+const receipt = { transactionHash: hash, from: owner, to: target, blockHash: hash, blockNumber: 100n };
+const tx = { hash, from: owner, to: target, input: "0xabcdef" as Hex, value: 123n, blockHash: hash, blockNumber: 100n };
+it("matches the exact mined swap, not just an Executor event", () => expect(swapTransactionMatches(p, receipt, tx)).toBe(true));
+it.each([{ hash: `0x${"bb".repeat(32)}` as Hash }, { from: target }, { to: owner }, { input: "0x00" as Hex }, { value: 124n }, { blockNumber: 99n }, { blockHash: null }, { blockNumber: null }])("rejects mismatching mined field case %#", change => expect(swapTransactionMatches(p, receipt, { ...tx, ...change })).toBe(false));
+it("receipt from a different wallet is not proof", () => expect(swapTransactionMatches(p, { ...receipt, from: target }, tx)).toBe(false));

@@ -38,6 +38,7 @@
 import { isAddress, zeroAddress, type Address } from "viem";
 
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT } from "@/lib/executor/executor-config";
+import { swapPathExecutor } from "@/lib/swap/swap-executor-config";
 import { formatAtomicAmount } from "./trade-format";
 import type { TradeAgentFee, TradeProposal, TradeTokenRef } from "./trade-types";
 
@@ -267,7 +268,11 @@ export function verifyAgentFeeInSwapTransaction(proposal: TradeProposal): AgentF
   }
   const executor = recordedExecutorAddress();
   const target = proposal.transaction?.to;
-  if (typeof target !== "string" || !isAddress(target) || target.toLowerCase() !== executor.toLowerCase()) {
+  // The fixed-fee Swap executor (when a reviewed deployment exists) also
+  // collects the identical 25 bps fee atomically; legacy executor unchanged.
+  const swapPath = swapPathExecutor();
+  const isSwapPathExecutor = swapPath !== null && typeof target === "string" && target.toLowerCase() === swapPath.executor.toLowerCase();
+  if (typeof target !== "string" || !isAddress(target) || (!isSwapPathExecutor && target.toLowerCase() !== executor.toLowerCase())) {
     return { ok: false, reason: "The quoted MPGR fee is not collected by the MPGR Executor — nothing was signed." };
   }
   const gross = parsePositiveAtomic(proposal.fromAmount);

@@ -1,0 +1,18 @@
+Baseline source: 4aa22fd3c354c7242dcd01b193e7a4e4c0c87237
+Browser mocks only, no network/signing.
+
+> mpgr-hub@0.1.0 test:mobile
+> playwright test --config tests/mobile/playwright.config.ts --grep simulated wallet-rejected|select, quote, refresh
+
+[WebServer] [33m(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+[WebServer]   - ESM syntax in a file loaded as CommonJS (tests/mobile/vite.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+[WebServer] Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.[39m
+
+Running 4 tests using 1 worker
+
+  ✓  1 [mobile-360] › tests/mobile/flows.spec.ts:90:5 › Swap: select, quote, refresh, review and explicitly confirm through real controllers; simulated exact approval + Executor swap (4.0s)
+  ✓  2 [mobile-360] › tests/mobile/flows.spec.ts:202:86 › Swap: simulated wallet-rejected never reports settlement success (3.7s)
+  ✓  3 [mobile-390] › tests/mobile/flows.spec.ts:90:5 › Swap: select, quote, refresh, review and explicitly confirm through real controllers; simulated exact approval + Executor swap (4.2s)
+  ✓  4 [mobile-390] › tests/mobile/flows.spec.ts:202:86 › Swap: simulated wallet-rejected never reports settlement success (3.8s)
+
+  4 passed (21.8s)

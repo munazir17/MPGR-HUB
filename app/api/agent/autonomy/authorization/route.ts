@@ -23,7 +23,7 @@ import { recoverAddress, type Address, type Hex } from "viem";
 
 import { verifyTrustedOrigin, readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 import { checkRateLimit } from "@/lib/trade/trade-rate-limit";
-import { isAutonomousAgentEnabled, isAutonomousExecutionEmergencyDisabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
+import { isAutonomousAgentEnabled, isAutonomousExecutionEmergencyDisabled, isAutonomousProductionEnabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { delegatedExecutionConfigured, requireWallet, system } from "@/lib/autonomy/api-helpers";
 import {
   MAX_DELEGATED_SLOTS,
@@ -171,6 +171,12 @@ export async function POST(request: Request) {
     // refused here first with an honest reason.
     if (!isDelegatedChainId(policy.chainId)) {
       return respond({ error: "Delegated authorization slots require a Base (8453) or Base Sepolia (84532) policy.", code: "POLICY_CHAIN_MISMATCH" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+    }
+    // Mainnet authorization admission must agree with the review's gate.
+    // Refuse before signature recovery or persistence; GET/revocation remain
+    // available. This adds no signing/execution path and does not affect Sepolia.
+    if (policy.chainId === 8453 && !isAutonomousProductionEnabled()) {
+      return respond({ error: "Base Mainnet authorization is blocked by the production safety gate. The goal remains inactive.", code: "PRODUCTION_GATE_DISABLED" }, { status: 503, headers: { "Cache-Control": "no-store" } });
     }
     // The chain must have a PINNED delegated executor, otherwise the user would
     // be signing an authorization for a contract that does not exist. Fail

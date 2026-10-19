@@ -31,6 +31,7 @@ import {
   type Hash,
   type Hex,
   type TypedDataDomain,
+  type TransactionReceipt,
 } from "viem";
 import {
   readContract,
@@ -42,6 +43,8 @@ import {
 import { erc20Abi } from "@/lib/erc20-abi";
 import { config } from "@/lib/wagmi";
 import { inspectExecutorSwapTransaction } from "@/lib/executor/executor-intent";
+import { swapPathExecutor } from "@/lib/swap/swap-executor-config";
+import { inspectSwapExecutorTransaction } from "@/lib/swap/swap-executor-intent";
 import { verifyAgentFeeInSwapTransaction } from "./trade-agent-fee";
 import {
   MPGR_EXECUTOR_PROVIDER_ID,
@@ -96,7 +99,17 @@ function fail(code: TradeError["code"], message: string): TradeExecutionSnapshot
   };
 }
 
+/** Optional stricter consumer checks. Swap supplies these; Agent keeps its existing controller. */
+export interface TradeExecutionSafety {
+  beforeSignature: (proposal: TradeProposal, phase: "approval" | "swap") => Promise<TradeError | null>;
+  verifySettlement: (proposal: TradeProposal, receipt: TransactionReceipt) => TradeError | null | Promise<TradeError | null>;
+  onApprovalReceipt?: (hash: Hash, status: "success" | "reverted", receipt?: TransactionReceipt) => void;
+  /** Swap may require a receipt-anchored read; absent this hook legacy consumers are unchanged. */
+  readAllowance?: (proposal: TradeProposal, receipt?: TransactionReceipt) => Promise<bigint | null>;
+  onEffectiveProposal?: (proposal: TradeProposal) => void;
+}
 export interface ExecuteTradeInput {
+  safety?: TradeExecutionSafety;
   proposal: TradeProposal;
   confirmationState: TradeConfirmationState;
   currentAccount: Address | null | undefined;
@@ -332,7 +345,7 @@ export async function executeTrade(
   }
 
   const account = input.currentAccount as Address;
-  const key = `\( {account}: \){input.proposal.id}`;
+  const key = `${account.toLowerCase()}:${input.proposal.id}`;
   if (inFlight.has(key)) {
     const snapshot = fail("SEND_FAILED", "This swap is already executing.");
     onChange(snapshot);
@@ -382,6 +395,10 @@ export async function executeTrade(
         onChange(snapshot);
         return snapshot;
       }
+      if (input.safety && (fresh.agentFee?.recipient?.toLowerCase() !== proposal.agentFee?.recipient?.toLowerCase() || fresh.agentFee?.amountAtomic !== proposal.agentFee?.amountAtomic)) {
+        const snapshot = fail("QUOTE_CHANGED", "The refreshed fee differs from the reviewed fee. Request a fresh review.");
+        onChange(snapshot); return snapshot;
+      }
       if (!fresh.executionAvailable || !fresh.transaction) {
         const snapshot = fail("LIQUIDITY_UNAVAILABLE", "No executable Base route is available for this pair anymore.");
         onChange(snapshot);
@@ -415,6 +432,7 @@ export async function executeTrade(
         return snapshot;
       }
       proposal = fresh;
+      input.safety?.onEffectiveProposal?.(fresh);
     }
 
     const tx = proposal.transaction;
@@ -446,6 +464,26 @@ export async function executeTrade(
     }
     if (feeInvariant.fee) {
       const grossAmountIn = parsePositiveAmount(proposal.fromAmount);
+      const swapPathDeployment = swapPathExecutor();
+      if (swapPathDeployment !== null && tx.to.toLowerCase() === swapPathDeployment.executor.toLowerCase()) {
+        const inspectedPath = inspectSwapExecutorTransaction({ to: tx.to, data: tx.data, value: tx.value }, { deployment: swapPathDeployment, fromAddress: proposal.from.address, toAddress: proposal.to.address, taker: account, nativeIn: isNativeEthSentinel(proposal.from.address), nativeOut: isNativeEthSentinel(proposal.to.address) });
+        if (
+          proposal.permit2 !== null ||
+          !inspectedPath.ok ||
+          grossAmountIn === null ||
+          inspectedPath.value.grossAmountIn !== grossAmountIn ||
+          inspectedPath.value.expectedFeeAmount !== feeInvariant.fee.amount ||
+          inspectedPath.value.recipient.toLowerCase() !== account.toLowerCase() ||
+          BigInt(tx.value || "0") !== (isNativeEthSentinel(proposal.from.address) ? grossAmountIn : 0n)
+        ) {
+          const snapshot = fail(
+            "INVALID_INPUT",
+            "The swap transaction does not match the quoted MPGR fee collected by the Swap executor — nothing was signed.",
+          );
+          onChange(snapshot);
+          return snapshot;
+        }
+      } else {
       const inspected = inspectExecutorSwapTransaction({ to: tx.to, data: tx.data });
       const nativeSell = isNativeEthSentinel(proposal.from.address);
       const value = BigInt(tx.value || "0");
@@ -465,6 +503,7 @@ export async function executeTrade(
         onChange(snapshot);
         return snapshot;
       }
+      }
     }
 
     if (proposal.needsPermit2Approval && proposal.permit2Spender && !isNativeEthSentinel(proposal.from.address)) {
@@ -473,7 +512,7 @@ export async function executeTrade(
       // amountIn, another approve() would be a duplicate transaction and a
       // duplicate wallet prompt for the same token/spender/amount. If the
       // read fails, `null` keeps the original approve step (fail-closed).
-      const existingAllowance = await readLiveAllowance(
+      const existingAllowance = input.safety?.readAllowance ? await input.safety.readAllowance(proposal) : await readLiveAllowance(
         account,
         proposal.from.address,
         proposal.permit2Spender,
@@ -483,6 +522,8 @@ export async function executeTrade(
         existingAllowance !== null && required !== null && existingAllowance >= required;
 
       if (!alreadyApproved) {
+        const unsafe = await input.safety?.beforeSignature(proposal, "approval");
+        if (unsafe) { const snapshot = fail(unsafe.code, unsafe.message); onChange(snapshot); return snapshot; }
         onChange({
           state: "APPROVING",
           approvalHash: null,
@@ -503,21 +544,55 @@ export async function executeTrade(
             data,
             value: 0n,
           });
-          const receipt = await waitForTransactionReceipt(config, { hash: approvalHash });
+          onChange({ state: "APPROVING", approvalHash, swapHash: null, error: null, stepLabel: "Waiting for the approval receipt…" });
+          const receipt = await waitForTransactionReceipt(config, { hash: approvalHash, chainId: TRADE_CHAIN_ID });
+          if (input.safety) {
+            if (!receipt.transactionHash || receipt.from?.toLowerCase() !== account.toLowerCase() || receipt.to?.toLowerCase() !== proposal.from.address.toLowerCase()) {
+              const snapshot = { ...fail("PROVIDER_ERROR", "Approval receipt does not match the quoted wallet and token. Check status; no swap was submitted."), approvalHash };
+              onChange(snapshot); return snapshot;
+            }
+            // A repriced approval may mine under a replacement hash. Preserve
+            // the actual receipt hash, not the original pending explorer link.
+            approvalHash = receipt.transactionHash;
+          }
+          input.safety?.onApprovalReceipt?.(approvalHash, receipt.status, receipt);
           if (receipt.status !== "success") {
             const snapshot = fail("APPROVAL_FAILED", approvalFailedMessage(proposal));
             onChange({ ...snapshot, approvalHash });
             return { ...snapshot, approvalHash };
           }
+          if (input.safety) {
+            const allowance = input.safety.readAllowance ? await input.safety.readAllowance(proposal, receipt)
+              : await readLiveAllowance(account, proposal.from.address, proposal.permit2Spender);
+            if (allowance === null || allowance < BigInt(proposal.fromAmount)) {
+              const snapshot = { ...fail(allowance === null ? "PROVIDER_ERROR" : "APPROVAL_FAILED", allowance === null
+                ? "Approval confirmed, but allowance could not be verified. Retry the allowance check; do not repeat approval blindly."
+                : "Approval confirmed, but the actual allowance is still insufficient. Check the token approval and retry."), approvalHash };
+              onChange(snapshot); return snapshot;
+            }
+          }
         } catch (err) {
           const classified = classifyWalletError(err, "APPROVAL_FAILED");
-          const snapshot = fail(classified.code, classified.message);
-          onChange({ ...snapshot, approvalHash });
+          const snapshot = { ...fail(approvalHash ? "PROVIDER_ERROR" : classified.code,
+            approvalHash ? "Approval submitted, but its receipt is unavailable. Check status before requesting another approval."
+              : input.safety && classified.code === "WALLET_REJECTED" ? "Approval cancelled. No approval or swap was submitted. You can retry." : classified.message), approvalHash };
+          onChange(snapshot);
           return snapshot;
         }
       }
     }
 
+    // Approval may take longer than quote TTL. Never send expired calldata
+    // after it; the Swap consumer offers a fresh review and reuses allowance.
+    if (input.safety && !isTradeQuoteFresh(proposal)) {
+      const snapshot = { ...fail("QUOTE_EXPIRED", "Approval is retained. Refresh this expired quote before signing the swap."), approvalHash };
+      onChange(snapshot); return snapshot;
+    }
+    const unsafeSwap = await input.safety?.beforeSignature(proposal, "swap");
+    if (unsafeSwap) {
+      const snapshot = { ...fail(unsafeSwap.code, unsafeSwap.message), approvalHash };
+      onChange(snapshot); return snapshot;
+    }
     let data: Hex = tx.data;
     if (proposal.permit2?.eip712) {
       onChange({
@@ -557,7 +632,8 @@ export async function executeTrade(
       });
     } catch (err) {
       const classified = classifyWalletError(err, "SEND_FAILED");
-      const snapshot = fail(classified.code, classified.message);
+      const snapshot = fail(classified.code, input.safety && classified.code === "WALLET_REJECTED"
+        ? `Swap cancelled. No swap was submitted.${approvalHash ? " Your confirmed approval is retained." : " Request a fresh quote to retry."}` : classified.message);
       onChange({ ...snapshot, approvalHash });
       return { ...snapshot, approvalHash };
     }
@@ -570,14 +646,25 @@ export async function executeTrade(
       stepLabel: "Waiting for Base confirmation…",
     });
 
-    const receipt = await waitForTransactionReceipt(config, { hash: swapHash });
+    const receipt = await waitForTransactionReceipt(config, { hash: swapHash, chainId: TRADE_CHAIN_ID });
     if (receipt.status !== "success") {
       const snapshot = fail("SEND_FAILED", "The swap transaction failed on Base.");
       onChange({ ...snapshot, approvalHash, swapHash });
       return { ...snapshot, approvalHash, swapHash };
     }
 
-    // The swap SETTLED. The MPGR fee (0.25%) was already taken by the
+    if (input.safety && receipt.transactionHash.toLowerCase() !== swapHash.toLowerCase()) {
+      const snapshot = { ...fail("PROVIDER_ERROR", "Receipt hash does not match the submitted swap. Execution and fee collection are unverified."), approvalHash, swapHash };
+      onChange(snapshot); return snapshot;
+    }
+    const settlementError = input.safety ? await input.safety.verifySettlement(proposal, receipt) : undefined;
+    if (settlementError) {
+      const snapshot = { ...fail(settlementError.code, settlementError.message), approvalHash, swapHash };
+      onChange(snapshot); return snapshot;
+    }
+    // Receipt success is not fee proof. Swap's stricter consumer above must
+    // also verify the existing Executor event before showing collection.
+    // For a verified Executor swap the MPGR fee was taken by the
     // executor inside this very transaction — nothing else is signed,
     // broadcast or collected here. There is no post-swap fee transfer.
     const success: TradeExecutionSnapshot = {

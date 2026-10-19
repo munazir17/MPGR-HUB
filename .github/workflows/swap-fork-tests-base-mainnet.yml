@@ -1,0 +1,49 @@
+name: Swap fork tests (Base Mainnet, read-only)
+
+# Read-only Base Mainnet fork tests for contracts/swap adapters and multi-hop
+# routes. NEVER broadcasts, never deploys, never touches gates or secrets
+# beyond the optional RPC URL. Trigger: workflow_dispatch or the
+# `swap-fork-tests` label on a same-repo PR.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swap-fork-tests-base-mainnet
+  cancel-in-progress: true
+
+jobs:
+  fork:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.label.name == 'swap-fork-tests' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Install Solidity dependencies (pinned, same as CI)
+        run: |
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+      - name: Run Base Mainnet fork suites (skips are reported, not hidden)
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+        run: |
+          set -euo pipefail
+          forge test --match-path 'test/swap-fork/*' -vv --summary --json > fork-results.json 2> fork-stderr.txt || {
+            echo "::error::fork tests failed"; tail -30 fork-stderr.txt; exit 1; }
+          jq -r 'to_entries[] | (.key | split(":") | last) as $suite | [.value.test_results | to_entries[]] as $t
+            | "\($suite): \([$t[] | select(.value.status == "Success")] | length) passed, \([$t[] | select(.value.status == "Skipped")] | length) skipped, \([$t[] | select(.value.status == "Failure")] | length) failed"' fork-results.json | tee -a "$GITHUB_STEP_SUMMARY"
+          jq -e '[to_entries[] | .value.test_results | to_entries[] | select(.value.status == "Failure")] | length == 0' fork-results.json >/dev/null

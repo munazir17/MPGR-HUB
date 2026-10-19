@@ -1,0 +1,17 @@
+import { beforeEach, afterEach, expect, it, vi } from "vitest";
+const m = vi.hoisted(() => ({ auth: vi.fn(), rate: vi.fn(), search: vi.fn() }));
+vi.mock("@/lib/auth/session-store", () => ({ authenticateRequest: m.auth }));
+vi.mock("@/lib/trade/trade-rate-limit", () => ({ checkRateLimit: m.rate, clientIpFromRequest: () => "test-ip" }));
+vi.mock("@/lib/swap/swap-token-discovery", () => ({ searchSwapTokenHints: m.search }));
+import { POST } from "./route";
+const origin = "https://mpgrhub.xyz";
+const req = (body: unknown = { chainId: 8453, query: "AERO" }, from = origin) => new Request(`${origin}/api/swap/tokens`, { method: "POST", headers: { Origin: from, "Content-Type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) });
+beforeEach(() => { vi.stubEnv("APP_ORIGIN", origin); vi.resetAllMocks(); m.auth.mockResolvedValue({ wallet: "0x1111111111111111111111111111111111111111" }); m.rate.mockResolvedValue({ allowed: true }); m.search.mockResolvedValue([]); });
+afterEach(() => vi.unstubAllEnvs());
+it("untrusted origin is rejected before auth or provider", async () => { expect((await POST(req(undefined, "https://evil.invalid"))).status).toBe(403); expect(m.auth).not.toHaveBeenCalled(); expect(m.search).not.toHaveBeenCalled(); });
+it("requires wallet session before discovery", async () => { m.auth.mockResolvedValue(null); expect((await POST(req())).status).toBe(401); expect(m.search).not.toHaveBeenCalled(); });
+it.each([0, 1])("rate limits wallet/IP case %s", async index => { m.rate.mockResolvedValueOnce({ allowed: index !== 0 }).mockResolvedValueOnce({ allowed: false }); expect((await POST(req())).status).toBe(429); expect(m.search).not.toHaveBeenCalled(); });
+it.each([null, {}, [], { chainId: 1, query: "AERO" }, { chainId: 8453, query: "a" }, { chainId: 8453, query: "x".repeat(65) }])("rejects invalid search %#", async body => { expect((await POST(req(body))).status).toBe(400); expect(m.search).not.toHaveBeenCalled(); });
+it("bounds body", async () => { expect((await POST(req("x".repeat(513)))).status).toBe(413); });
+it("returns read-only list hints, never a proposal or allowance", async () => { const r = await POST(req()); expect(r.status).toBe(200); expect(await r.json()).toMatchObject({ chainId: 8453, source: "Uniswap default token list", tokens: [] }); expect(r.headers.get("cache-control")).toBe("no-store"); expect(m.search).toHaveBeenCalledExactlyOnceWith("AERO"); });
+it("sanitizes provider failure and distinguishes it from no results", async () => { m.search.mockRejectedValue(new Error("PRIVATE_RPC_KEY")); const r = await POST(req()); expect(r.status).toBe(503); const text = await r.text(); expect(text).toContain("DISCOVERY_UNAVAILABLE"); expect(text).not.toContain("PRIVATE_RPC_KEY"); });

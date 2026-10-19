@@ -1,0 +1,58 @@
+ISOLATED NEGATIVE CONTROL, not the final implementation.
+Temporarily removed the history session/snapshot correlation guard, ran the real-controller race test, then restored fixed source with an EXIT trap.
+Expected result: false success is detected (test exit 1). Fixed version passes both target sizes.
+No real wallet, network execution or settlement.
+
+
+> mpgr-hub@0.1.0 test:mobile
+> playwright test --config tests/mobile/playwright.config.ts --project=mobile-360 --grep delayed history receipt
+
+[WebServer] (!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+[WebServer]   - ESM syntax in a file loaded as CommonJS (tests/mobile/vite.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+[WebServer] Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+Running 1 test using 1 worker
+
+  ✘  1 [mobile-360] › tests/mobile/swap.spec.ts:149:5 › Swap: delayed history receipt cannot overwrite a different review as successfully settled (8.7s)
+
+
+  1) [mobile-360] › tests/mobile/swap.spec.ts:149:5 › Swap: delayed history receipt cannot overwrite a different review as successfully settled 
+
+    Error: expect(locator).toHaveCount(expected) failed
+
+    Locator:  getByTestId('swap-status')
+    Expected: 0
+    Received: 1
+    Timeout:  5000ms
+
+    Call log:
+      - Expect "toHaveCount" with timeout 5000ms
+      - waiting for getByTestId('swap-status')
+        9 × locator resolved to 1 element
+          - unexpected value "1"
+
+
+      155 |   await page.evaluate(() => { const w = window as unknown as { simulatedHistoryDelay: boolean; simulatedHistoryResolvers: (() => void)[] }; w.simulatedHistoryDelay = false; w.simulatedHistoryResolvers.splice(0).forEach(resolve => resolve()); });
+      156 |   await page.waitForFunction(() => (window as unknown as { simulatedWalletCalls: string[] }).simulatedWalletCalls.filter(c => c === "history-read-completed").length >= 2);
+    > 157 |   await expect(page.getByTestId("swap-status")).toHaveCount(0); await expect(page.getByRole("button", { name: "Confirm & Swap", exact: true })).toBeEnabled(); expect(await sends(page)).toHaveLength(2); await evidence(page, info, state.trace);
+          |                                                 ^
+      158 | });
+      159 |
+        at /home/user/MPGR-HUB/tests/mobile/swap.spec.ts:157:49
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/mobile/swap-Swap-delayed-history--92753-iew-as-successfully-settled-mobile-360/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results/mobile/swap-Swap-delayed-history--92753-iew-as-successfully-settled-mobile-360/error-context.md
+
+    attachment #3: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/mobile/swap-Swap-delayed-history--92753-iew-as-successfully-settled-mobile-360/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/mobile/swap-Swap-delayed-history--92753-iew-as-successfully-settled-mobile-360/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [mobile-360] › tests/mobile/swap.spec.ts:149:5 › Swap: delayed history receipt cannot overwrite a different review as successfully settled 

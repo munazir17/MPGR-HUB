@@ -1,3 +1,4 @@
+import { findKnownTradeToken } from "./trade-tokens";
 import { formatAtomicAmount } from "./trade-format";
 import type { TradeProposal, TradeTokenRef, CdpSwapPrice } from "./trade-types";
 
@@ -43,12 +44,21 @@ export function formatTradeReview(proposal: TradeProposal): string {
   // remains gated by the existing validator; never invent missing amounts.
   if (!proposal.from || !proposal.to) return "Review the swap details before confirming. Nothing is signed or submitted until you explicitly confirm in your wallet.";
   const fee = proposal.agentFee;
+  const cost = (value: { amount: string; token: string } | undefined) => {
+    if (!value) return "not provided — not assumed zero";
+    const token = [proposal.from, proposal.to].find(t => t.address.toLowerCase() === value.token.toLowerCase()) ?? findKnownTradeToken(value.token);
+    return token ? `${formatAtomicAmount(value.amount, token.decimals, token.decimals)} ${token.symbol}` : `${value.amount} base units (token not resolved)`;
+  };
   return [
     `Swap ${amount(proposal.fromAmount, proposal.from)} → ~${amount(proposal.toAmount, proposal.to)}`,
     `Minimum received: ${amount(proposal.minToAmount, proposal.to)}`,
     "Network: Base",
+    ...(proposal.providerLabel ? [`Route: ${proposal.provider === "mpgr-executor" ? "Fee-aware Base route" : proposal.providerLabel}`] : []),
+    "Executable alternatives were not compared.",
     `Slippage: ${proposal.slippageBps / 100}%`,
-    ...(fee?.status === "applied" ? [`MPGR fee${fee.bps !== null ? ` (${fee.bps / 100}%)` : ""}: ${amount(fee.amountAtomic, proposal.from)} (taken from the swap amount in the same transaction)`] : []),
+    ...(fee?.status === "applied" ? [`MPGR fee${fee.bps !== null ? ` (${fee.bps / 100}%)` : ""}: ${amount(fee.amountAtomic, proposal.from)} (taken from the swap amount in the same transaction)`] : ["MPGR fee: not applied on this quoted route."]),
+    `Network cost estimate: ${cost(proposal.fees?.gasFee)}`,
+    `Swap protocol cost: ${cost(proposal.fees?.protocolFee)}`,
     "Your wallet signs and sends the transaction. MPGR never controls your funds.",
     "Confirm swap?",
   ].join("\n");
@@ -57,7 +67,7 @@ export function formatTradeReview(proposal: TradeProposal): string {
 export function formatTradePrice(data: { price?: CdpSwapPrice; from?: TradeTokenRef; to?: TradeTokenRef } | undefined): string {
   if (data?.price?.liquidityAvailable === false) return NO_BASE_ROUTE;
   if (!data?.from || !data.to || !data.price?.fromAmount || !data.price.toAmount) return "The quote could not be displayed reliably. Request a fresh quote with the tokens and amount.";
-  return `Quote: ${amount(data.price.fromAmount, data.from)} → ~${amount(data.price.toAmount, data.to)}\nNetwork: Base\nQuote only. Nothing was signed or submitted.`;
+  return `Reference quote (not executable): ${amount(data.price.fromAmount, data.from)} → ~${amount(data.price.toAmount, data.to)}\nNetwork: Base\nQuote only. Nothing was signed or submitted.`;
 }
 
 export function formatTradeSuccess(proposal: TradeProposal, hash: `0x${string}`): string {

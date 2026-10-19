@@ -16,6 +16,7 @@ cache/
 .env*
 tsconfig.tsbuildinfo
 next-env.d.ts
+.forge-deps
 .forge-deps/
 
 # MPGR Executor: forge script broadcasts (uploaded as CI artifacts instead),
@@ -44,3 +45,7 @@ smoke-delegated-live.md
 # (script/smoke-delegated-executor-base-mainnet.mjs). Local state only: it records that a
 # live canary was already broadcast for a given wallet. Never commit it.
 .mpgr-delegated-smoke/
+
+# Isolated mobile browser audit artifacts
+/test-results/
+/playwright-report/

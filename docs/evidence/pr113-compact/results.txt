@@ -1,0 +1,291 @@
+PR #113 compact quote / mobile authorization — new evidence
+Baseline source a620ecbb68a7606a5441f906a00c78cc1e5b7934
+Production source 730b6bac01c38c9a946d9f3e0d8918bc4e485922
+Browser CSS-pixel measurement fix 7d04211 (no production logic change)
+All browser/API/signing fixtures are offline; none is live acceptance.
+
+
+=== BASELINE DOMAIN-PERSISTENCE REPLAY (actual archived a620 handlers) ===
+PRODUCTION_BASELINE missing {"statuses":[201,201,503],"newPolicies":1,"goals":1,"slots":0}
+PRODUCTION_BASELINE false {"statuses":[201,201,503],"newPolicies":1,"goals":1,"slots":0}
+Statuses are policy POST, goal POST, authorization POST, respectively.
+The policy count excludes one pre-seeded policy. Both refusal regressions failed as expected.
+
+
+=== ORIGINAL RED REGRESSIONS ===
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+AssertionError: expected 201 to be 503 // Object.is equality
+ Test Files  1 failed (1)
+      Tests  2 failed | 14 passed (16)
+REVIEW_BASELINE mobile-360 1601
+REVIEW_BASELINE mobile-390 1585
+      198 |   console.log("REVIEW_BASELINE", testInfo.project.name, await review.evaluate((node) => node.scrollHeight));
+      198 |   console.log("REVIEW_BASELINE", testInfo.project.name, await review.evaluate((node) => node.scrollHeight));
+  2 failed
+
+
+=== MATCHED B20 FIXTURE BEFORE MEASUREMENTS ===
+MATCHED_BASELINE cdp mobile-360 {"reviewHeight":1849,"summaryHeight":794}
+MATCHED_BASELINE executor mobile-360 {"reviewHeight":2337,"summaryHeight":1282}
+MATCHED_BASELINE cdp mobile-390 {"reviewHeight":1801,"summaryHeight":746}
+MATCHED_BASELINE executor mobile-390 {"reviewHeight":2209,"summaryHeight":1154}
+  4 passed (13.9s)
+
+=== FINAL MATCHED B20 FIXTURE AFTER MEASUREMENTS ===
+MATCHED_AFTER cdp mobile-360 {"reviewHeight":890,"summaryHeight":443.9999694824219}
+MATCHED_AFTER executor mobile-360 {"reviewHeight":933,"summaryHeight":487}
+MATCHED_AFTER cdp mobile-390 {"reviewHeight":874,"summaryHeight":444.0000305175781}
+MATCHED_AFTER executor mobile-390 {"reviewHeight":917,"summaryHeight":487}
+  4 passed (11.1s)
+
+=== EXPIRY LATCH REGRESSION — RED ===
+ign-in, then a quote, then a separate explicit authorization
+     ↓ keeps wrong-network, unavailable, and emergency states disabled even with a quote
+     ↓ blocks authorization when productionGate is false but permits a read-only quote
+     ↓ blocks authorization when executionAvailable is false but permits a read-only quote
+     ↓ shows HTTP/schema diagnostics instead of calling a stale config ready
+     ↓ separates a loaded but disabled runtime flag from the production gate
+   ↓ shows output/provider/freshness/fees/risks in review and passes one exact human floor on explicit confirmation
+   ↓ a previously enabled handler refuses a quote that expires before the click
+   ↓ quotes read-only with enabled off, without activation or signing
+   ↓ quotes read-only with productionGate off, without activation or signing
+   ↓ quotes read-only with executionAvailable off, without activation or signing
+   ↓ immediately removes old quote values on network change and waits for a fresh matching quote
+   ↓ immediately removes old quote values on disconnect change and waits for a fresh matching quote
+   ↓ immediately removes old quote values on session change and waits for a fresh matching quote
+   ↓ immediately removes old quote values on wallet change and waits for a fresh matching quote
+   × an expiry timer's latched invalid state overrides a still-fresh clock check in both UI and handler 33ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  components/features/agent/AgentAutonomyDraftReview.behavior.test.ts > an expiry timer's latched invalid state overrides a still-fresh clock check in both UI and handler
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ components/features/agent/AgentAutonomyDraftReview.behavior.test.ts:302:74
+    300|   expire!(); // reproduces timer/render/clock ordering, without moving…
+    301|   const expired = render();
+    302|   expect(find(expired, "agent-autonomy-draft-authorize").props.disable…
+       |                                                                          ^
+    303|   const html = renderToStaticMarkup(expired);
+    304|   expect(html).toContain("Quote expired");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 23 skipped (24)
+   Start at  17:41:48
+   Duration  1.02s (transform 259ms, setup 0ms, import 682ms, tests 35ms, environment 0ms)
+
+
+
+=== EXPIRY LATCH REGRESSION — GREEN ===
+
+ RUN  v4.1.11 /home/user/MPGR-HUB
+
+ ✓ components/features/agent/AgentAutonomyDraftReview.behavior.test.ts (24 tests) 186ms
+ ✓ components/features/agent/AutonomyQuoteSummary.test.ts (8 tests) 29ms
+
+ Test Files  2 passed (2)
+      Tests  32 passed (32)
+   Start at  17:42:05
+   Duration  1.73s (transform 286ms, setup 0ms, import 1.13s, tests 215ms, environment 0ms)
+
+
+=== SUBPIXEL TEST MEASUREMENT DIAGNOSIS (not a production size defect) ===
+    Expected: >= 44
+    Received:    43.99993896484375
+  63 passed (2.8m)
+7d04211 retains a 44px threshold for CSS min-height, offsetHeight and rounded visual height.
+
+
+=== FINAL FOCUSED, NO PRELOAD ===
+ ✓ components/features/agent/AgentAutonomyPanel.behavior.test.ts (9 tests) 24ms
+ ✓ components/features/agent/chat-autonomy-review.test.ts (58 tests) 19ms
+ ✓ components/features/agent/AgentTradingLauncher.behavior.test.ts (5 tests) 8ms
+
+ Test Files  12 passed (12)
+      Tests  236 passed (236)
+   Start at  17:42:16
+   Duration  8.81s (transform 1.07s, setup 0ms, import 5.29s, tests 2.01s, environment 1ms)
+
+
+=== FINAL FULL CHECK — ANALYTICS-ONLY OFFLINE QUALIFICATION ===
+ ✓ lib/autonomy/__tests__/post-executing-budget.test.ts (5 tests) 4ms
+ ↓ lib/autonomy/__tests__/daily-spend.redis.test.ts (7 tests | 7 skipped)
+ ↓ lib/autonomy/__tests__/live-delegated.execution.test.ts (1 test | 1 skipped)
+ ↓ lib/autonomy/__tests__/mainnet-canary.execution.test.ts (1 test | 1 skipped)
+ ↓ lib/autonomy/__tests__/phase5-preflight.test.ts (9 tests | 9 skipped)
+ ↓ lib/autonomy/__tests__/phase6-fork-rehearsal.test.ts (6 tests | 6 skipped)
+
+ Test Files  281 passed | 5 skipped (286)
+      Tests  3574 passed | 24 skipped (3598)
+   Start at  17:43:45
+   Duration  194.06s (transform 7.36s, setup 0ms, import 105.96s, tests 50.54s, environment 27ms)
+
+
+=== TYPES / LINT AFTER ALL TEST EDITS ===
+
+> mpgr-hub@0.1.0 typecheck
+> tsc --noEmit
+
+
+
+✖ 59 problems (0 errors, 59 warnings)
+
+
+=== LOCAL BUILD BLOCKED — NOT A PASS ===
+
+Import trace:
+  Server Component:
+    [next]/internal/font/google/inter_31011fd.module.css
+    [next]/internal/font/google/inter_31011fd.js
+    ./app/layout.tsx
+
+
+
+> Build error occurred
+Error: Turbopack build failed with 1 error:
+[next]/internal/font/google/inter_31011fd.module.css
+Error: next/font: error:
+Failed to fetch Inter from Google Fonts.
+If you are offline or behind a proxy, self-host the font with next/font/local, or set HTTP_PROXY/HTTPS_PROXY so Next.js can reach fonts.googleapis.com.
+
+Import trace:
+  Server Component:
+    [next]/internal/font/google/inter_31011fd.module.css
+    [next]/internal/font/google/inter_31011fd.js
+    ./app/layout.tsx
+
+
+    at ignore-listed frames
+
+=== BASELINE EXACT-HEAD PREVIEW: SAFE CI ANNOTATION, NOT NEW-HEAD ACCEPTANCE ===
+{"commit":"a620ecbb68a7606a5441f906a00c78cc1e5b7934","observedAt":"2026-10-16T16:52:49.239Z","settings":{"HTTP":200,"valid":true,"noStore":true,"enabled":false,"emergencyDisabled":false,"productionGate":false,"executionAvailable":false,"runtimeFlag":"disabled","productionFlag":"missing","delegatedBase":false,"delegatedChainId":null,"walletSigningSupported":true},"tokens":{"HTTP":404,"code":"AUTONOMY_DISABLED","count":null},"goals":{"HTTP":404,"code":"AUTONOMY_DISABLED"},"policy":{"HTTP":404,"code":"AUTONOMY_DISABLED"},"authorization":{"HTTP":404,"code":"AUTONOMY_DISABLED"}}
+
+=== MATCHED CAPTURE METHOD ===
+Old source: git archive a620ecb into /home/user/compact-baseline, outside the checkout.
+Same canonical fixture imported into both runs; no branch switch or source substitution.
+After capture uses the normal current Vite config with external Playwright testDir/outputDir.
+The only test-script differences are console/screenshot labels; application source/server cwd selects before versus after.
+import { test, expect } from "@playwright/test";
+// SAME canonical fixture as the final suite; ONLY the rendered source is old.
+import { reviewQuoteFixture } from "/home/user/MPGR-HUB/components/features/agent/test-fixtures/chat-review-quote";
+import { chatDraftToForm } from "../../components/features/agent/chat-autonomy-review";
+import { buildGoalDraft, detectAutonomousTradeRequest } from "../../lib/autonomy/chat-draft";
+const prompt = "Buy AAPLc whenever price falls 1% worth 1 USDC";
+const form = chatDraftToForm(buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt, { referencePrice: "347" }));
+for (const executor of [false, true]) test(`compact baseline ${executor ? 'executor' : 'cdp'}`, async ({ page }, info) => {
+  await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
+    expect(new URL(route.request().url()).pathname).toBe("/api/trade/quote");
+    await route.fulfill({ json: { proposal: reviewQuoteFixture(form, executor) } });
+  });
+  await page.goto("/"); await page.getByTestId("open-review").tap();
+  await expect(page.getByTestId("agent-autonomy-draft-authorize")).toBeEnabled();
+  console.log("MATCHED_BASELINE", executor ? 'executor' : 'cdp', info.project.name, JSON.stringify(await page.getByTestId("agent-autonomy-draft-review").evaluate((node) => ({ reviewHeight: node.scrollHeight, summaryHeight: node.querySelector('[data-testid="chat-quote-details"]')!.getBoundingClientRect().height }))));
+  await page.screenshot({ path: info.outputPath("before-top.png") });
+});
+
+
+=== OFFLINE FULL-CHECK QUALIFICATION (outside Git/application) ===
+// Offline test runner ONLY; not part of the repository or application.
+// Replace ONLY AgentKit's outbound analytics export. All application security,
+// configuration, signing, execution, wallet and network functions stay real.
+const Module = require('node:module');
+const original = Module._load;
+const target = '/home/user/MPGR-HUB/node_modules/@coinbase/agentkit/dist/analytics/sendAnalyticsEvent.js';
+Module._load = function(request, parent, isMain) {
+  const result = original.apply(this, arguments);
+  if (request.endsWith('/sendAnalyticsEvent') && Module._resolveFilename(request, parent) === target) {
+    result.sendAnalyticsEvent = async () => {};
+  }
+  return result;
+};
+
+
+=== FINAL FULL MOBILE MATRIX AFTER ALL SOURCE/TEST EDITS — NO PRELOAD ===
+
+> mpgr-hub@0.1.0 test:mobile
+> playwright test --config tests/mobile/playwright.config.ts
+
+[WebServer] (!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+[WebServer]   - ESM syntax in a file loaded as CommonJS (tests/mobile/vite.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+[WebServer] Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+Running 64 tests using 1 worker
+
+  ✓   1 [mobile-360] › tests/mobile/review.spec.ts:35:5 › parsed draft initialization, scrolling, tap feedback, retry and launcher (3.5s)
+  ✓   2 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: runtime (1.3s)
+  ✓   3 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: production (1.4s)
+  ✓   4 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: adapter (1.2s)
+  ✓   5 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: missing-executor (1.2s)
+  ✓   6 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: unsigned-wallet (1.3s)
+  ✓   7 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: delegated (1.2s)
+  ✓   8 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: emergency (1.2s)
+  ✓   9 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: settings (1.3s)
+  ✓  10 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: disconnected (1.2s)
+  ✓  11 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: network (1.1s)
+  ✓  12 [mobile-360] › tests/mobile/review.spec.ts:74:7 › fail closed: session (1.6s)
+  ✓  13 [mobile-360] › tests/mobile/review.spec.ts:85:5 › invalid form explains the block, corrected amount gets matching fresh quote (1.7s)
+  ✓  14 [mobile-360] › tests/mobile/review.spec.ts:96:5 › quote loading, failed refresh, retry and expiry stay fail closed (1.8s)
+  ✓  15 [mobile-360] › tests/mobile/review.spec.ts:120:5 › wallet account change refreshes the wallet-bound quote automatically (1.5s)
+  ✓  16 [mobile-360] › tests/mobile/review.spec.ts:126:5 › synchronous repeated taps call activation only once; close cannot discard in-flight review (1.4s)
+  ✓  17 [mobile-360] › tests/mobile/review.spec.ts:132:5 › unexpected activation rejection is visible, retryable, and not a success alert (1.8s)
+  ✓  18 [mobile-360] › tests/mobile/review.spec.ts:138:5 › confirmed activation is waiting for trigger, not labelled inactive (1.8s)
+  ✓  19 [mobile-360] › tests/mobile/review.spec.ts:144:5 › modal focuses and traps keyboard, Escape closes and restores opener (2.7s)
+  ✓  20 [mobile-360] › tests/mobile/review.spec.ts:156:5 › trigger price has its own accessible input name (1.5s)
+  ✓  21 [mobile-360] › tests/mobile/review.spec.ts:160:5 › late quote response for an old amount cannot replace the current quote (2.0s)
+  ✓  22 [mobile-360] › tests/mobile/review.spec.ts:178:5 › focused inputs and action remain reachable in a shortened keyboard-style viewport (1.7s)
+  ✓  23 [mobile-360] › tests/mobile/review.spec.ts:193:5 › viewport evidence: CTA is scrollable and not intercepted (1.7s)
+COMPACT_REVIEW mobile-360 {"reviewHeight":890,"summaryHeight":444}
+  ✓  24 [mobile-360] › tests/mobile/review.spec.ts:203:5 › compact quote has collapsed technical sections and no duplicate visible risk prose (1.5s)
+  ✓  25 [mobile-360] › tests/mobile/review.spec.ts:224:5 › actual executor fee, material approval and stock risks stay visible; technical details expand without overflow (1.8s)
+  ✓  26 [mobile-360] › tests/mobile/review.spec.ts:252:7 › old quote values disappear on network; returning requires a new quote (1.5s)
+  ✓  27 [mobile-360] › tests/mobile/review.spec.ts:252:7 › old quote values disappear on disconnected; returning requires a new quote (1.4s)
+  ✓  28 [mobile-360] › tests/mobile/review.spec.ts:252:7 › old quote values disappear on session; returning requires a new quote (1.5s)
+  ✓  29 [mobile-360] › tests/mobile/review.spec.ts:252:7 › old quote values disappear on wallet-change; returning requires a new quote (1.4s)
+  ✓  30 [mobile-360] › tests/mobile/review.spec.ts:279:5 › expiry removes apparently valid applied fee, output and provider; refresh waits for replacement (1.5s)
+  ✓  31 [mobile-360] › tests/mobile/review.spec.ts:310:5 › unknown critical and unmatched material warnings are not hidden in collapsed disclosures (1.3s)
+  ✓  32 [mobile-360] › tests/mobile/review.spec.ts:324:5 › native disclosure summaries support keyboard and remain inside the modal focus trap (2.9s)
+  ✓  33 [mobile-390] › tests/mobile/review.spec.ts:35:5 › parsed draft initialization, scrolling, tap feedback, retry and launcher (3.6s)
+  ✓  34 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: runtime (1.4s)
+  ✓  35 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: production (1.3s)
+  ✓  36 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: adapter (1.3s)
+  ✓  37 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: missing-executor (1.3s)
+  ✓  38 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: unsigned-wallet (1.3s)
+  ✓  39 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: delegated (1.3s)
+  ✓  40 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: emergency (1.4s)
+  ✓  41 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: settings (1.3s)
+  ✓  42 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: disconnected (1.3s)
+  ✓  43 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: network (1.2s)
+  ✓  44 [mobile-390] › tests/mobile/review.spec.ts:74:7 › fail closed: session (1.7s)
+  ✓  45 [mobile-390] › tests/mobile/review.spec.ts:85:5 › invalid form explains the block, corrected amount gets matching fresh quote (1.8s)
+  ✓  46 [mobile-390] › tests/mobile/review.spec.ts:96:5 › quote loading, failed refresh, retry and expiry stay fail closed (1.9s)
+  ✓  47 [mobile-390] › tests/mobile/review.spec.ts:120:5 › wallet account change refreshes the wallet-bound quote automatically (1.4s)
+  ✓  48 [mobile-390] › tests/mobile/review.spec.ts:126:5 › synchronous repeated taps call activation only once; close cannot discard in-flight review (1.3s)
+  ✓  49 [mobile-390] › tests/mobile/review.spec.ts:132:5 › unexpected activation rejection is visible, retryable, and not a success alert (1.9s)
+  ✓  50 [mobile-390] › tests/mobile/review.spec.ts:138:5 › confirmed activation is waiting for trigger, not labelled inactive (1.7s)
+  ✓  51 [mobile-390] › tests/mobile/review.spec.ts:144:5 › modal focuses and traps keyboard, Escape closes and restores opener (3.1s)
+  ✓  52 [mobile-390] › tests/mobile/review.spec.ts:156:5 › trigger price has its own accessible input name (1.6s)
+  ✓  53 [mobile-390] › tests/mobile/review.spec.ts:160:5 › late quote response for an old amount cannot replace the current quote (2.0s)
+  ✓  54 [mobile-390] › tests/mobile/review.spec.ts:178:5 › focused inputs and action remain reachable in a shortened keyboard-style viewport (1.7s)
+  ✓  55 [mobile-390] › tests/mobile/review.spec.ts:193:5 › viewport evidence: CTA is scrollable and not intercepted (1.8s)
+COMPACT_REVIEW mobile-390 {"reviewHeight":874,"summaryHeight":444.0000305175781}
+  ✓  56 [mobile-390] › tests/mobile/review.spec.ts:203:5 › compact quote has collapsed technical sections and no duplicate visible risk prose (1.6s)
+  ✓  57 [mobile-390] › tests/mobile/review.spec.ts:224:5 › actual executor fee, material approval and stock risks stay visible; technical details expand without overflow (2.0s)
+  ✓  58 [mobile-390] › tests/mobile/review.spec.ts:252:7 › old quote values disappear on network; returning requires a new quote (1.5s)
+  ✓  59 [mobile-390] › tests/mobile/review.spec.ts:252:7 › old quote values disappear on disconnected; returning requires a new quote (1.5s)
+  ✓  60 [mobile-390] › tests/mobile/review.spec.ts:252:7 › old quote values disappear on session; returning requires a new quote (1.4s)
+  ✓  61 [mobile-390] › tests/mobile/review.spec.ts:252:7 › old quote values disappear on wallet-change; returning requires a new quote (1.5s)
+  ✓  62 [mobile-390] › tests/mobile/review.spec.ts:279:5 › expiry removes apparently valid applied fee, output and provider; refresh waits for replacement (1.5s)
+  ✓  63 [mobile-390] › tests/mobile/review.spec.ts:310:5 › unknown critical and unmatched material warnings are not hidden in collapsed disclosures (1.2s)
+  ✓  64 [mobile-390] › tests/mobile/review.spec.ts:324:5 › native disclosure summaries support keyboard and remain inside the modal focus trap (3.1s)
+
+  64 passed (1.9m)
+

@@ -47,7 +47,7 @@ import { AgentErrorBoundary } from "@/components/features/agent/AgentErrorBounda
 import { AgentX402PaymentModal } from "@/components/features/agent/AgentX402PaymentModal";
 import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTradeConfirmationModal";
 import { AgentTransferConfirmationModal } from "@/components/features/agent/AgentTransferConfirmationModal";
-import { AgentAutonomyPanel } from "@/components/features/agent/AgentAutonomyPanel";
+import { AgentTradingLauncher } from "@/components/features/agent/AgentTradingLauncher";
 import { AgentAutonomyDraftReview } from "@/components/features/agent/AgentAutonomyDraftReview";
 import { useAgentAutonomy } from "@/hooks/useAgentAutonomy";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -161,6 +161,7 @@ export function AgentExperience({
   // supersedes an in-flight quote, so a slow response can never open the
   // modal for the asset the user tapped before it.
   const instantSwapRunRef = useRef(0);
+  const [instantSwapError, setInstantSwapError] = useState<string | null>(null);
   // While a swap is actually being signed/submitted, a late one-tap quote
   // must NOT replace the open proposal (that would drop the running flow
   // and any transaction it already broadcast).
@@ -192,11 +193,13 @@ export function AgentExperience({
         openConnectModal?.();
         return;
       }
+      setInstantSwapError(null);
       handleSend(buildInstantSwapPrompt(symbol));
       const runId = (instantSwapRunRef.current += 1);
       void fetchInstantSwapProposal({ symbol }).then((result) => {
         if (instantSwapRunRef.current !== runId) return;
-        if (!result.ok || tradeBusyRef.current) return;
+        if (!result.ok) { setInstantSwapError(`Prepare swap failed (${result.code}): ${result.message}`); return; }
+        if (tradeBusyRef.current) return;
         openTradeProposalRef.current(result.proposal);
       });
     },
@@ -323,7 +326,9 @@ export function AgentExperience({
 
             {/* BODY — flex-1, owns the scrolling. */}
             <div className="relative min-h-0 flex-1 overflow-y-auto">
-              {!isConnected ? (
+              {autonomy.draft ? (
+                <AgentAutonomyDraftReview autonomy={autonomy} embedded />
+              ) : !isConnected ? (
                 emptyState
               ) : !hasLoaded ? (
                 <div className="flex min-h-full items-center justify-center px-4 py-8">
@@ -359,10 +364,6 @@ export function AgentExperience({
               )}
             </AnimatePresence>
 
-            {/* Autonomous Goals (ADDITIVE) — MANUAL entry point only.
-                Chat-created drafts open AgentAutonomyDraftReview, not this panel. */}
-            {isConnected && <AgentAutonomyPanel autonomy={autonomy} />}
-
             {/* DOCK — pinned to the stage bottom (the stage, not the
                 document). Composer + State B chip row live here. */}
             <motion.div
@@ -386,6 +387,10 @@ export function AgentExperience({
               </p>
             </motion.div>
           </div>
+          {instantSwapError && <p role="alert" className="my-2 break-words text-xs text-red-300">{instantSwapError}</p>}
+          <AgentTradingLauncher autonomy={autonomy} connected={isConnected} onConnect={() => openConnectModal?.()}
+            proposals={messages.flatMap((m) => m.tradeProposal ? [m.tradeProposal] : []).slice(-5).reverse()}
+            onReviewTrade={tradeQuote.openProposal} />
         </AgentErrorBoundary>
       </main>
 
@@ -425,7 +430,6 @@ export function AgentExperience({
         stepLabel={transferQuote.stepLabel}
         onConfirmAndSend={transferQuote.confirmAndSend}
       />
-      <AgentAutonomyDraftReview autonomy={autonomy} />
     </>
   );
 }

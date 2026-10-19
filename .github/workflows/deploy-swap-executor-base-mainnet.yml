@@ -1,0 +1,113 @@
+name: Swap executor pre-deploy gates (Base Mainnet)
+
+# PR-SIDE GATES ONLY for the MPGRSwapExecutor deployment (contracts/swap).
+#
+# TRUST MODEL (see docs/PR113-DEPLOY-TRUST-REVIEW.md):
+#   This workflow runs PR-head-controlled code, therefore it NEVER has access
+#   to production credentials and NEVER deploys: no job declares `environment:`
+#   and the dedicated deployer-key secret (defined only in the protected
+#   base-mainnet environment) is not referenced anywhere in this file. Its purpose is to prove, on every labeled PR run,
+#   that the reviewed head would deploy safely:
+#     - workflow YAML validation
+#     - committed deployment-gate state report (gate stays closed until the
+#       owner opens it via a reviewed commit)
+#     - swap contract suites incl. deploy-preflight fail-closed regressions
+#     - a FULL local-anvil rehearsal of the exact forge script pipeline with
+#       GENERATED TEST-ONLY keys (fork of Base Mainnet when the RPC is
+#       reachable; labelled seeded stand-in otherwise; broadcast hits
+#       127.0.0.1 only)
+#
+#   The ACTUAL deployment lives in deploy-swap-executor-trusted.yml, which is
+#   dispatchable ONLY from the protected default branch and executes ONLY the
+#   owner-pinned commit SHA (repo variable SWAP_DEPLOY_REF) inside the
+#   reviewer-protected `base-mainnet` environment. PR head code can never run
+#   with the production deployer key.
+#
+# Trigger: add the `deploy-swap-base-mainnet` label to a same-repo PR.
+# Legacy deploy-executor-base-mainnet.yml is never reused and cannot deploy
+# this contract.
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # Head-scoped group: stale waiting/pending runs of earlier heads (which this
+  # pipeline cannot cancel without actions:write) must never queue-block the
+  # gates run of the current head. Each head gets its own lane.
+  group: swap-executor-pr-gates-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  gates:
+    if: >-
+      github.event.label.name == 'deploy-swap-base-mainnet' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: stable
+      - name: Install Solidity dependencies (pinned, same as CI)
+        run: |
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+      - name: Validate every workflow YAML parses
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = []
+          for f in sorted(glob.glob(".github/workflows/*.yml")) + sorted(glob.glob(".github/workflows/*.yaml")):
+              try:
+                  yaml.safe_load(open(f))
+                  print("YAML OK:", f)
+              except Exception as e:
+                  bad.append((f, e))
+          if bad:
+              for f, e in bad: print("YAML FAIL:", f, e)
+              sys.exit(1)
+          PY
+      - name: Report committed deployment-gate state (gate must stay closed until owner opens it)
+        run: |
+          set -euo pipefail
+          STATE="$(jq -r '.swapExecutorDeployEnabled // false' deployments/base-mainnet/deploy-config.json)"
+          echo "swapExecutorDeployEnabled (committed) = $STATE"
+          if [ "$STATE" != "true" ]; then
+            echo "::notice title=Gate closed::committed swapExecutorDeployEnabled=$STATE - the trusted deployment workflow refuses dispatch-time pin resolution while the gate is closed; no broadcast is possible until the owner opens it via a reviewed commit."
+          fi
+          test ! -f deployments/base-mainnet/mpgr-swap-executor.json || echo "::notice::final manifest exists - deployment preflight would refuse a second deployment"
+      - name: Swap contract suites (incl. deploy-preflight fail-closed regressions)
+        run: |
+          set -euo pipefail
+          forge build --force
+          forge test --match-path 'test/swap/*' --summary
+      - name: Rehearse the EXACT deployment pipeline on a local anvil fork (test-only key)
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          SWAP_REHEARSAL_OVERRIDE_GATE: "true" # working-tree only, restored by trap; proves the success path while the committed gate stays closed
+          SWAP_REHEARSAL_EVIDENCE_DIR: rehearsal-evidence
+        run: |
+          set -euo pipefail
+          bash scripts/swap-deploy/rehearse.sh "$BASE_MAINNET_RPC_URL"
+          echo "::notice title=Rehearsal passed::full preflight->simulate->broadcast->manifest-seal->pin-verify pipeline proven on local anvil with generated test-only keys"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: swap-deploy-rehearsal-evidence
+          path: rehearsal-evidence/
+          if-no-files-found: warn
+      - name: Point to the trusted deployment path
+        run: |
+          echo "::notice title=Deployment path::gates only - actual deployment requires deploy-swap-executor-trusted.yml dispatched from the default branch with owner-pinned SWAP_DEPLOY_REF, environment approval, and an open committed gate."

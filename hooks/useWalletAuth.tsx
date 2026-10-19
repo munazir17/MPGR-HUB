@@ -7,7 +7,7 @@ interface WalletAuthState {
   authenticated: boolean;
   authenticating: boolean;
   /** Resolves true once the connected wallet has a valid server session. */
-  authenticate: () => Promise<boolean>;
+  authenticate: (options?: { force?: boolean }) => Promise<boolean>;
 }
 
 // Server-authoritative auth state, shared across every component in the
@@ -80,10 +80,12 @@ export function WalletAuthProvider({ children }: { children: React.ReactNode }) 
     }
   }, [address, isConnected, signMessageAsync]);
 
-  const authenticate = useCallback(async (): Promise<boolean> => {
+  const authenticate = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
     if (!address || !isConnected) return false;
     const lower = address.toLowerCase();
-    if (authenticatedWallet === lower) return true;
+    // A server 401 may invalidate a cached session. Force is used only by an
+    // explicit retry action; it still performs the same verified SIWE flow.
+    if (authenticatedWallet === lower && !options?.force) return true;
     if (inFlightRef.current) return inFlightRef.current;
     const attempt = performSiwe().finally(() => {
       inFlightRef.current = null;

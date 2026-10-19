@@ -68,8 +68,8 @@ const systemUnderTest: AutonomySystem = {
   } as unknown as AutonomySystem["scheduler"],
 };
 
-const SELL = "0xcccccccccccccccccccccccccccccccccccccc03" as Address;
-const BUY = "0xdddddddddddddddddddddddddddddddddddddd04" as Address;
+const SELL = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Address;
+const BUY = "0xb200000000000000000000C2e324d24d7eEcd1fb" as Address;
 const POLICY_ID = "pol_sec_test_1";
 const GOAL_ID = "goal_sec_test_1";
 
@@ -229,6 +229,7 @@ describe("hardening §16: wallet scoping (cross-wallet inspect/modify/revoke)", 
 describe("hardening §16: response hygiene — no key material or internal details", () => {
   beforeEach(() => {
     flag(true);
+    vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", "true"); // isolated ready Mainnet write fixture
     vi.stubEnv("CRON_SECRET", "cron-secret-value");
     vi.stubEnv("MPGR_BROADCASTER_PRIVATE_KEY", "0x" + "11".repeat(32));
   });
@@ -316,6 +317,7 @@ describe("hardening §16: response hygiene — no key material or internal detai
 describe("hardening §15 round-2: expired SIWE, malformed bodies, duplicate creation, audit emission", () => {
   beforeEach(() => {
     flag(true);
+    vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", "true"); // isolated ready Mainnet write fixture
   });
 
   it("an EXPIRED/invalid SIWE session is indistinguishable from no session: 401 everywhere (fail-closed)", async () => {

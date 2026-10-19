@@ -15,6 +15,7 @@ import {
   findBasePair,
   OFFICIAL_LIST_SOURCES,
 } from "@/lib/markets/base-pairs";
+import { refreshPairReference } from "@/lib/markets/pair-reference";
 import { getTapeSnapshot, tapeCacheTtlSeconds } from "@/lib/markets/tape";
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 import type { TapePairDetail } from "@/lib/markets/tape-types";
@@ -89,7 +90,8 @@ export async function GET(request: Request) {
       stockEntry,
     };
 
-    return NextResponse.json(detail, { status: 200, headers: { "Cache-Control": cacheHeader } });
+    const referenced = await refreshPairReference(detail);
+    return NextResponse.json(referenced, { status: 200, headers: { "Cache-Control": cacheHeader } });
   } catch {
     return NextResponse.json(
       { error: "Pair data is temporarily unavailable.", code: "TAPE_UNAVAILABLE" },

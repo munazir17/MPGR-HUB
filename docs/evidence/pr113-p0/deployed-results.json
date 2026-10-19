@@ -1,0 +1,133 @@
+{
+  "observedAt": "2026-10-16T19:00:05.666Z",
+  "baselineSHA": "e15c3b126e5fe481bc5d4198aa966ae32b160943",
+  "currentSHA": "d086b4145d1503014b16691540101086751cfaed",
+  "deployments": [
+    {
+      "label": "baseline",
+      "commit": "e15c3b126e5fe481bc5d4198aa966ae32b160943",
+      "config": {
+        "HTTP": 200,
+        "enabled": false,
+        "productionGate": false,
+        "executionAvailable": false,
+        "environment": "preview"
+      },
+      "tokens": {
+        "HTTP": 404,
+        "disabled": true
+      },
+      "goals": {
+        "HTTP": 404,
+        "disabled": true
+      },
+      "session": {
+        "HTTP": 200,
+        "authenticated": false
+      },
+      "manualQuotes": [
+        {
+          "path": "/api/trade/quote",
+          "HTTP": 401,
+          "authRequired": true,
+          "originRejected": false,
+          "originUnconfigured": false,
+          "providerHealthVerified": false
+        },
+        {
+          "path": "/api/trade/stocks/quote",
+          "HTTP": 401,
+          "authRequired": true,
+          "originRejected": false,
+          "originUnconfigured": false,
+          "providerHealthVerified": false
+        }
+      ],
+      "mobile": [
+        {
+          "width": 360,
+          "height": 800,
+          "manualFormAvailable": false,
+          "localDraftReviewAvailable": false,
+          "authorizationButtonDisabled": null,
+          "walletConnected": false,
+          "signed": false,
+          "executed": false
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "manualFormAvailable": false,
+          "localDraftReviewAvailable": false,
+          "authorizationButtonDisabled": null,
+          "walletConnected": false,
+          "signed": false,
+          "executed": false
+        }
+      ]
+    },
+    {
+      "label": "current",
+      "commit": "d086b4145d1503014b16691540101086751cfaed",
+      "config": {
+        "HTTP": 200,
+        "enabled": false,
+        "productionGate": false,
+        "executionAvailable": false,
+        "environment": "preview"
+      },
+      "tokens": {
+        "HTTP": 404,
+        "disabled": true
+      },
+      "goals": {
+        "HTTP": 404,
+        "disabled": true
+      },
+      "session": {
+        "HTTP": 200,
+        "authenticated": false
+      },
+      "manualQuotes": [
+        {
+          "path": "/api/trade/quote",
+          "HTTP": 401,
+          "authRequired": true,
+          "originRejected": false,
+          "originUnconfigured": false,
+          "providerHealthVerified": false
+        },
+        {
+          "path": "/api/trade/stocks/quote",
+          "HTTP": 401,
+          "authRequired": true,
+          "originRejected": false,
+          "originUnconfigured": false,
+          "providerHealthVerified": false
+        }
+      ],
+      "mobile": [
+        {
+          "width": 360,
+          "height": 800,
+          "manualFormAvailable": true,
+          "localDraftReviewAvailable": true,
+          "authorizationButtonDisabled": true,
+          "walletConnected": false,
+          "signed": false,
+          "executed": false
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "manualFormAvailable": true,
+          "localDraftReviewAvailable": true,
+          "authorizationButtonDisabled": true,
+          "walletConnected": false,
+          "signed": false,
+          "executed": false
+        }
+      ]
+    }
+  ]
+}

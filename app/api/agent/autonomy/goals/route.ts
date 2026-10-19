@@ -1,3 +1,4 @@
+import { isLiveAutonomyPair } from "@/lib/autonomy/chat-draft";
 // app/api/agent/autonomy/goals/route.ts
 //
 // Autonomous goals (spec §8/§18). Session-scoped: a wallet sees and
@@ -7,14 +8,14 @@
 // POST  create a goal bound to an EXISTING authorized policy. The goal's
 //       trade pair comes from the POLICY (never from the request), the
 //       condition is normalized deterministically, and the goal starts
-//       ACTIVE only while the policy is live — otherwise DRAFT.
+//       DRAFT until goal-bound signed authorization is persisted and activation confirmed.
 
 import { NextResponse } from "next/server";
 import { getAddress } from "viem";
 
 import { verifyTrustedOrigin, readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 import { checkRateLimit } from "@/lib/trade/trade-rate-limit";
-import { isAutonomousAgentEnabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
+import { isAutonomousAgentEnabled, isAutonomousProductionEnabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { normalizeCondition, parseBaseUnits } from "@/lib/autonomy/policy-engine";
 import { executorTokenDecimals, publicActionRecord, publicGoal, publicPolicy, requireWallet, system } from "@/lib/autonomy/api-helpers";
 import { AUTONOMY_CHAIN_ID, isSupportedPolicyChainId, type AgentGoal, type AutonomyPolicy } from "@/lib/autonomy/types";
@@ -87,6 +88,13 @@ export async function POST(request: Request) {
       return json({ error: "Policy not found.", code: "POLICY_NOT_FOUND" }, { status: 404, headers: { "Cache-Control": "no-store" } });
     }
 
+    // A refused Mainnet confirmation must not persist even an inactive goal.
+    if (policy.chainId === 8453 && !isAutonomousProductionEnabled()) {
+      return json({ error: "Base Mainnet authorization is blocked by the production safety gate. No goal was created.", code: "PRODUCTION_GATE_DISABLED" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
+
+    if (policy.chainId === 8453 && !isLiveAutonomyPair(policy.sellToken, policy.buyToken)) return json({ error: "This pair is not live for autonomous goals.", code: "UNSUPPORTED_ASSET" }, { status: 400 });
+
     // Trade spec derives from the POLICY (pair), not from the request —
     // a goal can never trade a pair its authorization does not cover.
     const sellAmountRaw = parseBaseUnits(body.sellAmount, sellDecimalsFor(policy));
@@ -111,7 +119,6 @@ export async function POST(request: Request) {
       ? new Date(Math.min(requestedExpiry.getTime(), policyExpiry.getTime()))
       : defaultExpiry;
 
-    const policyLive = policy.enabled && !policy.revokedAt && policyExpiry.getTime() > now.getTime();
     const sellDecimals = tokenDecimals(policy.sellToken, policy.chainId);
     const buyDecimals = tokenDecimals(policy.buyToken, policy.chainId);
     const goal: AgentGoal = {
@@ -123,7 +130,7 @@ export async function POST(request: Request) {
         typeof body.description === "string" && body.description.trim().length > 0 && body.description.length <= 200
           ? body.description.trim()
           : `${condition.value.kind === "price_below" ? "Buy" : "Sell"} when price ${condition.value.kind === "price_below" ? "<=" : ">="} ${condition.value.threshold}`,
-      status: policyLive ? "ACTIVE" : "DRAFT",
+      status: "DRAFT",
       condition: condition.value,
       trade: {
         sellToken: policy.sellToken,

@@ -1,10 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { canonicalizeAgentKitActionName } from "../allowed-actions";
 import { listAllowedAgentKitActions } from "../invoke";
 import { createMpgrAgentKit } from "../runtime";
 
 describe("createMpgrAgentKit", () => {
+  // Real AgentKit emits fire-and-forget analytics, which is not the behavior
+  // under test. Isolate ONLY that HTTP boundary; unexpected HTTP still fails.
+  // Do not mock AgentKit, its action providers, or any allowlist assertion.
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url !== "https://cca-lite.coinbase.com/amp") throw new Error(`Unexpected test network request: ${url}`);
+      return new Response(null, { status: 204 });
+    }));
+  });
+  afterEach(() => vi.unstubAllGlobals());
   it("registers AgentKit read actions on Base and does not advertise writes through the allowlist", async () => {
     const kit = await createMpgrAgentKit();
     const names = kit.getActions().map((action) => action.name);

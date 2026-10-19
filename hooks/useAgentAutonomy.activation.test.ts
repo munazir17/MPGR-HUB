@@ -21,11 +21,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const hooks = vi.hoisted(() => {
   const states: unknown[] = [];
   let cursor = 0;
+  const refs: Array<{ current: unknown }> = [];
+  let refCursor = 0;
   let effects: Array<() => void> = [];
 
   return {
     beginRender() {
       cursor = 0;
+      refCursor = 0;
       effects = [];
     },
     flushEffects() {
@@ -35,7 +38,9 @@ const hooks = vi.hoisted(() => {
     },
     reset() {
       states.length = 0;
+      refs.length = 0;
       cursor = 0;
+      refCursor = 0;
       effects = [];
     },
     useState(initial: unknown) {
@@ -55,7 +60,9 @@ const hooks = vi.hoisted(() => {
       return compute();
     },
     useRef(initial: unknown) {
-      return { current: initial };
+      const index = refCursor++;
+      if (!refs[index]) refs[index] = { current: initial };
+      return refs[index];
     },
   };
 });
@@ -148,6 +155,8 @@ interface Fixture {
   goalPostCount: number;
   slotPostCount: number;
   quoteMinToAmount: string;
+  activationStatus?: number;
+  registrationStatus?: number;
 }
 
 let fixture: Fixture;
@@ -211,7 +220,10 @@ function installFetch() {
       const method = init?.method ?? "GET";
       if (url.includes("/api/agent/autonomy/config")) return jsonResponse(CONFIG);
       if (url.includes("/api/agent/autonomy/tokens")) return jsonResponse({ tokens: [USDC, AAPLc] });
-      if (url.includes("/api/agent/autonomy/goals") && method === "GET") return jsonResponse({ goals: [] });
+      if (url.includes("/api/agent/autonomy/goals") && method === "GET") return jsonResponse({ goals: fixture.goalResponses });
+      if (url.includes("/api/agent/autonomy/goals/") && method === "PATCH") {
+        return jsonResponse(fixture.activationStatus ? { error: "Activation not confirmed" } : { goal: { id: url.split("/").at(-1), status: "ACTIVE" } }, { status: fixture.activationStatus ?? 200 });
+      }
       if (url.includes("/api/agent/autonomy/goals") && method === "POST") {
         fixture.goalPostCount += 1;
         const body = JSON.parse(init?.body ?? "{}") as Record<string, unknown>;
@@ -219,7 +231,7 @@ function installFetch() {
           goal: {
             id: `goal_${fixture.goalPostCount}`,
             policyId: body.policyId,
-            status: "ACTIVE",
+            status: "DRAFT",
             condition: body.condition,
             trade: { sellToken: USDC.address, buyToken: AAPLc.address, sellAmountRaw: "50000000", slippageBps: 100 },
             description: "test goal",
@@ -236,7 +248,10 @@ function installFetch() {
       }
       if (url.includes("/api/agent/autonomy/authorization") && method === "POST") {
         fixture.slotPostCount += 1;
-        return jsonResponse({ slots: [] }, { status: 201 });
+        if (fixture.registrationStatus) return jsonResponse({ error: "Registration unavailable" }, { status: fixture.registrationStatus });
+        const posted = JSON.parse(init?.body ?? "{}");
+        fixture.slots = [coveringSlot({ policyId: posted.policyId, goalId: posted.goalId })];
+        return jsonResponse({ slots: fixture.slots }, { status: 201 });
       }
       if (url.includes("/api/trade/quote")) {
         return jsonResponse({ proposal: { minToAmount: fixture.quoteMinToAmount } });
@@ -315,7 +330,7 @@ describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
     // THAT id (same actionId derivation) is genuinely this goal's own
     // authorization — activating skips the signature.
     fixture.policies = [coveringPolicy()];
-    fixture.slots = [coveringSlot({ goalId: "goal_1", id: "slot_goal1_0" })];
+    fixture.slots = [coveringSlot({ policyId: "policy_new_1", goalId: "goal_1", id: "slot_goal1_0" })];
 
     const result = await callActivate();
 
@@ -327,7 +342,7 @@ describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
 
   it("a slot bound to this goal's id but with a MISMATCHED actionId still signs once", async () => {
     fixture.policies = [coveringPolicy()];
-    fixture.slots = [coveringSlot({ goalId: "goal_1", id: "slot_goal1_0", actionId: mocks.actionIdFor("goal_other") })];
+    fixture.slots = [coveringSlot({ policyId: "policy_new_1", goalId: "goal_1", id: "slot_goal1_0", actionId: mocks.actionIdFor("goal_other") })];
 
     const result = await callActivate();
 
@@ -372,9 +387,13 @@ describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
     );
     expect(posted).toBeDefined();
     const body = JSON.parse((posted![1] as { body: string }).body) as {
-      slots: Array<{ permit: { amount: string }; witness: { minAmountOut: string } }>;
+      goalId: string;
+      slots: Array<{ permit: { amount: string }; witness: { minAmountOut: string; actionId: string } }>;
     };
     expect(body.slots).toHaveLength(1);
+    expect(body.goalId).toBe("goal_1");
+    expect(body.slots[0].witness.actionId).toBe(mocks.actionIdFor("goal_1"));
+    expect(body.slots[0].witness.actionId).not.toBe(mocks.actionIdFor("goal_prev"));
     expect(body.slots[0].permit.amount).toBe("50000000");
     expect(BigInt(body.slots[0].witness.minAmountOut)).toBe(28550000n); // 0.2855 × 1e8, NOT zero
   });
@@ -410,4 +429,188 @@ describe("useAgentAutonomy.activateDraft — chat draft activation", () => {
     expect(result).toMatchObject({ ok: true, mode: "signed" });
     expect(wallet.signCalls).toHaveLength(1);
   });
+});
+
+
+describe("useAgentAutonomy settings reads never retain stale success", () => {
+  it.each([503, 401])("clears valid settings after HTTP %s on the same wallet, without signing or writing", async (status) => {
+    const api = await bootHook();
+    expect(api.config).toEqual(CONFIG);
+    expect(api.settingsRead).toMatchObject({ state: "loaded", httpStatus: 200 });
+    const calls = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe("GET");
+      if (String(input).endsWith("/config")) return jsonResponse(CONFIG, { status });
+      return jsonResponse({ code: "AUTH_REQUIRED" }, { status: 401 });
+    });
+    vi.stubGlobal("fetch", calls);
+    await (api.refresh as () => Promise<void>)();
+    const { useAgentAutonomy } = await import("@/hooks/useAgentAutonomy");
+    hooks.beginRender();
+    const next = useAgentAutonomy();
+    expect(next.config).toBeNull();
+    expect(next.settingsRead).toMatchObject({ state: "http_error", httpStatus: status });
+    expect(calls).toHaveBeenCalledTimes(2); // config + goals only, no automatic auth
+    expect(wallet.signCalls).toHaveLength(0);
+    expect(fixture.policyPostCount + fixture.goalPostCount + fixture.slotPostCount).toBe(0);
+  });
+});
+
+
+it("loads public settings independently of a stalled session-scoped goals GET", async () => {
+  const network = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    expect(init?.method).toBe("GET");
+    if (String(input).endsWith("/config")) return jsonResponse({ ...CONFIG, enabled: false });
+    return new Promise(() => {}); // session read never completes
+  });
+  vi.stubGlobal("fetch", network);
+  const api = await bootHook();
+  expect(api.config).toEqual({ ...CONFIG, enabled: false });
+  expect(api.settingsRead).toMatchObject({ state: "loaded", httpStatus: 200 });
+  expect(network).toHaveBeenCalledTimes(2);
+  expect(wallet.signCalls).toHaveLength(0);
+});
+
+describe("same-goal activation retries", () => {
+  it("signature rejection leaves a draft and retry reuses its goal and policy", async () => {
+    const api = await bootHook();
+    const activate = api.activateDraft as (input: typeof ACTIVATION_INPUT) => Promise<{ ok: boolean }>;
+    wallet.signError = "User rejected signature";
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(false);
+    expect(fixture.goalPostCount).toBe(1);
+    expect(fixture.slotPostCount).toBe(0);
+    wallet.signError = null;
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(true);
+    expect(fixture.goalPostCount).toBe(1);
+    expect(fixture.policyPostCount).toBe(1);
+  });
+  it("registration failure never confirms active; retry does not duplicate a goal", async () => {
+    const api = await bootHook();
+    const activate = api.activateDraft as (input: typeof ACTIVATION_INPUT) => Promise<{ ok: boolean }>;
+    fixture.registrationStatus = 503;
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(false);
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(false);
+    fixture.registrationStatus = undefined;
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(true);
+    expect(fixture.goalPostCount).toBe(1);
+  });
+  it("failed activation after persistence retries the saved permission without another signature", async () => {
+    const api = await bootHook();
+    const activate = api.activateDraft as (input: typeof ACTIVATION_INPUT) => Promise<{ ok: boolean }>;
+    fixture.activationStatus = 503;
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(false);
+    fixture.activationStatus = undefined;
+    expect((await activate(ACTIVATION_INPUT)).ok).toBe(true);
+    expect(fixture.goalPostCount).toBe(1);
+    expect(fixture.policyPostCount).toBe(1);
+    expect(wallet.signCalls).toHaveLength(1);
+  });
+});
+
+it("a consumed goal slot never reuses its deterministic nonce/index on retry", async () => {
+  fixture.slots = [coveringSlot({ policyId: "policy_new_1", goalId: "goal_1", slotIndex: 0, consumedAt: new Date().toISOString() })];
+  expect((await callActivate()).ok).toBe(true);
+  const posted = (fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) => String(c[0]).includes("/authorization") && c[1]?.method === "POST");
+  expect(JSON.parse(posted![1].body).slots[0].slotIndex).toBe(1);
+});
+it("same-goal retry ignores changed object property order and refreshed quote floor", async () => {
+  const api = await bootHook();
+  const activate = api.activateDraft as (input: typeof ACTIVATION_INPUT) => Promise<{ ok: boolean }>;
+  wallet.signError = "User rejected signature";
+  expect((await activate(ACTIVATION_INPUT)).ok).toBe(false);
+  wallet.signError = null;
+  const reversed = Object.fromEntries(Object.entries(ACTIVATION_INPUT).reverse()) as typeof ACTIVATION_INPUT;
+  expect((await activate({ ...reversed, minAmountOutHuman: "0.28" })).ok).toBe(true);
+  expect(fixture.goalPostCount).toBe(1); expect(fixture.policyPostCount).toBe(1);
+});
+
+it("manual pending-goal recovery uses its valid saved permission without re-entry or another signature", async () => {
+  fixture.policies = [coveringPolicy()]; fixture.slots = [coveringSlot({ goalId: "goal_1" })];
+  fixture.goalResponses = [{ id: "goal_1", policyId: "policy_cover", status: "DRAFT", trade: { sellToken: USDC.address, buyToken: AAPLc.address, sellAmountRaw: "50000000" } }];
+  const api = await bootHook();
+  const sign = api.signDelegatedSlots as (input: { policyId: string; goalId: string; count: number; minAmountOutHuman: string; expiresInHours: number }) => Promise<{ ok: boolean }>;
+  expect((await sign({ policyId: "policy_cover", goalId: "goal_1", count: 1, minAmountOutHuman: "", expiresInHours: 24 })).ok).toBe(true);
+  expect(wallet.signCalls).toHaveLength(0); expect(fixture.slotPostCount).toBe(0);
+  expect(fixture.goalPostCount).toBe(0); expect(fixture.policyPostCount).toBe(0);
+});
+
+it("exhausted single-use nonce indexes fail closed, not an instruction to recycle revoked permission", async () => {
+  fixture.slots = Array.from({ length: 5 }, (_, i) => coveringSlot({ id: `slot_${i}`, policyId: "policy_new_1", goalId: "goal_1", slotIndex: i, consumedAt: new Date().toISOString() }));
+  const result = await callActivate();
+  expect(result.ok).toBe(false); expect(result.message).toContain("cannot be recycled");
+  expect(wallet.signCalls).toHaveLength(0); expect(fixture.slotPostCount).toBe(0);
+});
+
+// Deferred GETs reproduce mobile reconnect / rapid retry ordering, with no
+// wallet provider, live session, signing or write endpoints.
+it("an older same-wallet refresh cannot overwrite newer disabled settings", async () => {
+  const api = await bootHook();
+  let resolveOld!: (response: Response) => void;
+  let count = 0;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    expect(init?.method).toBe("GET");
+    if (String(input).endsWith("/config")) {
+      if (count++ === 0) return new Promise<Response>((resolve) => { resolveOld = resolve; });
+      return jsonResponse({ ...CONFIG, enabled: false });
+    }
+    return jsonResponse({ goals: [] });
+  }));
+  const oldRead = (api.refresh as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 0));
+  await (api.refresh as () => Promise<void>)();
+  resolveOld(jsonResponse(CONFIG)); await oldRead;
+  const { useAgentAutonomy } = await import("@/hooks/useAgentAutonomy");
+  hooks.beginRender();
+  expect(useAgentAutonomy().config?.enabled).toBe(false);
+  expect(wallet.signCalls).toHaveLength(0);
+});
+
+it("late policy/slot reads from the old wallet cannot replace the new wallet state", async () => {
+  const api = await bootHook();
+  const originalWallet = wallet.address;
+  let resolveOld!: (response: Response) => void;
+  let old = true;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    expect(init?.method).toBe("GET");
+    const path = String(input);
+    if (path.endsWith("/config")) return jsonResponse(CONFIG);
+    if (path.endsWith("/tokens")) return jsonResponse({ tokens: [USDC, AAPLc] });
+    if (path.endsWith("/goals")) return jsonResponse({ goals: [] });
+    if (path.endsWith("/policy")) {
+      if (old) return new Promise<Response>((resolve) => { resolveOld = resolve; });
+      return jsonResponse({ policies: [{ id: "new_wallet_policy" }] });
+    }
+    return jsonResponse({ slots: [{ id: old ? "old_wallet_slot" : "new_wallet_slot" }], walletSigningSupported: true });
+  }));
+  const oldRead = (api.refresh as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 0));
+  old = false; wallet.address = "0x" + "cd".repeat(20);
+  try {
+    const { useAgentAutonomy } = await import("@/hooks/useAgentAutonomy");
+    hooks.beginRender(); await useAgentAutonomy().refresh();
+    resolveOld(jsonResponse({ policies: [{ id: "old_wallet_policy" }] })); await oldRead;
+    hooks.beginRender(); const next = useAgentAutonomy();
+    expect(next.policies).toEqual([{ id: "new_wallet_policy" }]);
+    expect(next.slots).toEqual([{ id: "new_wallet_slot" }]);
+    expect(wallet.signCalls).toHaveLength(0);
+  } finally { wallet.address = originalWallet; }
+});
+
+it("disconnect invalidates pending settings and clears the previous wallet view", async () => {
+  const api = await bootHook();
+  const originalWallet = wallet.address;
+  let resolveOld!: (response: Response) => void;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/config")
+    ? new Promise<Response>((resolve) => { resolveOld = resolve; }) : jsonResponse({ goals: [] })));
+  const oldRead = (api.refresh as () => Promise<void>)();
+  await new Promise((r) => setTimeout(r, 0));
+  wallet.address = "";
+  try {
+    const { useAgentAutonomy } = await import("@/hooks/useAgentAutonomy");
+    hooks.beginRender(); await useAgentAutonomy().refresh();
+    resolveOld(jsonResponse(CONFIG)); await oldRead;
+    hooks.beginRender(); const next = useAgentAutonomy();
+    expect(next.config).toBeNull();
+    expect(next.settingsRead.state).toBe("wallet_required");
+    expect(next.goals).toEqual([]); expect(next.policies).toEqual([]); expect(next.slots).toEqual([]);
+  } finally { wallet.address = originalWallet; }
 });

@@ -1,0 +1,1417 @@
+{
+  "observedAt": "2026-10-18T05:14:10.156Z",
+  "chainId": 8453,
+  "executor": "0xD982726e28275661F8aB64054E6b17a70a63505A",
+  "source": "Attempts read-only RPC with numeric block pin and hash checks; null block identity means no checks succeeded. Historical/discovered pools are not permission or execution proof.",
+  "blockNumber": null,
+  "blockHash": null,
+  "failure": "Base RPC/block identity unavailable or changed. No current permission, liquidity, execution or settlement claim.",
+  "signatures": false,
+  "broadcasts": false,
+  "stateOverrides": false,
+  "liveSettlementVerified": false,
+  "tokens": [
+    {
+      "symbol": "WETH",
+      "address": "0x4200000000000000000000000000000000000006",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "USDC",
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "MPGR",
+      "address": "0xB2000000000000000000008d204203177a78AF01",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "MPGR",
+        "token": "0xB2000000000000000000008d204203177a78AF01",
+        "pool": "0xfc151dc0278bc0b2e2ad5404e14f8e3a43e77f176537c29e25f179262ad1cc44",
+        "routeEvidence": "V4 pool ID; PoolManager/hooks/full PoolKey unverified; current ABI incompatible; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xB2000000000000000000008d204203177a78AF01 ; candidate details https://dexscreener.com/base/0xfc151dc0278bc0b2e2ad5404e14f8e3a43e77f176537c29e25f179262ad1cc44"
+      }
+    },
+    {
+      "symbol": "AAPLc",
+      "address": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "AMZNc",
+      "address": "0xb200000000000000000000d9192b6B456483C2E8",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "GOOGLc",
+      "address": "0xb2000000000000000000002D0BA3164cc74f58B7",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "METAc",
+      "address": "0xb2000000000000000000008bC8786B856E61707C",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "MSFTc",
+      "address": "0xB200000000000000000000Ab99cFa739E253872B",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "MSTRc",
+      "address": "0xb2000000000000000000004884b426556b92883d",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "NVDAc",
+      "address": "0xb20000000000000000000078ee7ce2fE4908108C",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "SNDKc",
+      "address": "0xb200000000000000000000397293Cb8cda9a10c5",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "SPCXc",
+      "address": "0xb2000000000000000000007b9fcbd005511aCBd5",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "TSLAc",
+      "address": "0xb2000000000000000000001e800a7f5189430cD0",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "AMDc",
+      "address": "0xB2000000000000000000000d8ce462E99ee7A47B",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "AMDc",
+        "token": "0xB2000000000000000000000d8ce462E99ee7A47B",
+        "pool": "0x0f9392c6C3fde1066F2e1c32b5536FB63897b64D",
+        "routeEvidence": "Slipstream CL factory/token pair/tick spacing verified from explorer; tick spacing 10; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xB2000000000000000000000d8ce462E99ee7A47B ; candidate details https://dexscreener.com/base/0x0f9392c6C3fde1066F2e1c32b5536FB63897b64D"
+      }
+    },
+    {
+      "symbol": "ASTSc",
+      "address": "0xB200000000000000000000B1a29cF17A1819288a",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "ASTSc",
+        "token": "0xB200000000000000000000B1a29cF17A1819288a",
+        "pool": "0x32E1a7f7721bE09440526E28a0bB825bcD0415C4",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xB200000000000000000000B1a29cF17A1819288a ; candidate details https://dexscreener.com/base/0x32E1a7f7721bE09440526E28a0bB825bcD0415C4"
+      }
+    },
+    {
+      "symbol": "AVGOc",
+      "address": "0xB200000000000000000000Fc737aeA6196aB5a4c",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "AVGOc",
+        "token": "0xB200000000000000000000Fc737aeA6196aB5a4c",
+        "pool": "0xBd4Dece7A36BF778f4B6bde86a39fCB7A72dEcAe",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xB200000000000000000000Fc737aeA6196aB5a4c ; candidate details https://dexscreener.com/base/0xBd4Dece7A36BF778f4B6bde86a39fCB7A72dEcAe"
+      }
+    },
+    {
+      "symbol": "BEc",
+      "address": "0xb20000000000000000000016f9dfe862feBA122b",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "BEc",
+        "token": "0xb20000000000000000000016f9dfe862feBA122b",
+        "pool": "0x7bfCF7e58EAC7199ED84e483A1FA048d25cC1B54",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb20000000000000000000016f9dfe862feBA122b ; candidate details https://dexscreener.com/base/0x7bfCF7e58EAC7199ED84e483A1FA048d25cC1B54"
+      }
+    },
+    {
+      "symbol": "CAKEc",
+      "address": "0xb200000000000000000000f215e4c890cfb7176b",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "CAKEc",
+        "token": "0xb200000000000000000000f215e4c890cfb7176b",
+        "pool": "0xbc2894c5cdcD3709eC1f2d9DbCfdc3C92Ba875d0",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb200000000000000000000f215e4c890cfb7176b ; candidate details https://dexscreener.com/base/0xbc2894c5cdcD3709eC1f2d9DbCfdc3C92Ba875d0"
+      }
+    },
+    {
+      "symbol": "DJTc",
+      "address": "0xb200000000000000000000428E3a3eebBb20692B",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "DJTc",
+        "token": "0xb200000000000000000000428E3a3eebBb20692B",
+        "pool": "0xa606A9Db777ec40Ae05A6C5DFfFA8dDe7FA89249",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb200000000000000000000428E3a3eebBb20692B ; candidate details https://dexscreener.com/base/0xa606A9Db777ec40Ae05A6C5DFfFA8dDe7FA89249"
+      }
+    },
+    {
+      "symbol": "DUOLc",
+      "address": "0xb200000000000000000000a613d12deafbbb1db7",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "DUOLc",
+        "token": "0xb200000000000000000000a613d12deafbbb1db7",
+        "pool": "0xCd6caba6Dbc490f2A4CCdB33836030E1600F46c0",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb200000000000000000000a613d12deafbbb1db7 ; candidate details https://dexscreener.com/base/0xCd6caba6Dbc490f2A4CCdB33836030E1600F46c0"
+      }
+    },
+    {
+      "symbol": "GMEc",
+      "address": "0xb2000000000000000000007790ed6E48e06eD935",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "GMEc",
+        "token": "0xb2000000000000000000007790ed6E48e06eD935",
+        "pool": "0x3E36246fD9F897B108bE0ECA0ce88df817367E79",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb2000000000000000000007790ed6E48e06eD935 ; candidate details https://dexscreener.com/base/0x3E36246fD9F897B108bE0ECA0ce88df817367E79"
+      }
+    },
+    {
+      "symbol": "HIMSc",
+      "address": "0xB20000000000000000000043a599976181Bcf336",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "HIMSc",
+        "token": "0xB20000000000000000000043a599976181Bcf336",
+        "pool": "0x11fF0240142d7F9daaD70C1da578cf0e3Fb85182",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xB20000000000000000000043a599976181Bcf336 ; candidate details https://dexscreener.com/base/0x11fF0240142d7F9daaD70C1da578cf0e3Fb85182"
+      }
+    },
+    {
+      "symbol": "HTZc",
+      "address": "0xb2000000000000000000002601C5C94F435da168",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "HTZc",
+        "token": "0xb2000000000000000000002601C5C94F435da168",
+        "pool": "0x4DFfb33A4e4059De45C7Bc82212A6d25F62c6f30",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb2000000000000000000002601C5C94F435da168 ; candidate details https://dexscreener.com/base/0x4DFfb33A4e4059De45C7Bc82212A6d25F62c6f30"
+      }
+    },
+    {
+      "symbol": "LLYc",
+      "address": "0xB200000000000000000000f1a0F91e34892E4718",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "LLYc",
+        "token": "0xB200000000000000000000f1a0F91e34892E4718",
+        "pool": "0x41bd4E64e15AC4Df8Ca7634B1705A7f044D9C639",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xB200000000000000000000f1a0F91e34892E4718 ; candidate details https://dexscreener.com/base/0x41bd4E64e15AC4Df8Ca7634B1705A7f044D9C639"
+      }
+    },
+    {
+      "symbol": "MRNAc",
+      "address": "0xB200000000000000000000e215e9B76ecBA02468",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "MRNAc",
+        "token": "0xB200000000000000000000e215e9B76ecBA02468",
+        "pool": "0x48Ce615C4fCa451BbE07DE395896307A04c97bC9",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xB200000000000000000000e215e9B76ecBA02468 ; candidate details https://dexscreener.com/base/0x48Ce615C4fCa451BbE07DE395896307A04c97bC9"
+      }
+    },
+    {
+      "symbol": "MRVLc",
+      "address": "0xB200000000000000000000eC3c4c7395Cc609813",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "MRVLc",
+        "token": "0xB200000000000000000000eC3c4c7395Cc609813",
+        "pool": "0xCc9078dad779656cE0174aC5B8BA466bE80b598a",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xB200000000000000000000eC3c4c7395Cc609813 ; candidate details https://dexscreener.com/base/0xCc9078dad779656cE0174aC5B8BA466bE80b598a"
+      }
+    },
+    {
+      "symbol": "MUc",
+      "address": "0xb200000000000000000000Fd2f87532B90095211",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "MUc",
+        "token": "0xb200000000000000000000Fd2f87532B90095211",
+        "pool": "0x17e1bEB2cD65493Da73ed4BbbC7BEcAAa0F91C73",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb200000000000000000000Fd2f87532B90095211 ; candidate details https://dexscreener.com/base/0x17e1bEB2cD65493Da73ed4BbbC7BEcAAa0F91C73"
+      }
+    },
+    {
+      "symbol": "NFLXc",
+      "address": "0xb20000000000000000000058B8c947e44011dFE6",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "NFLXc",
+        "token": "0xb20000000000000000000058B8c947e44011dFE6",
+        "pool": "0x40e8D293cA4e0ccE3221EB13A78BFF1D0d2B70a7",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb20000000000000000000058B8c947e44011dFE6 ; candidate details https://dexscreener.com/base/0x40e8D293cA4e0ccE3221EB13A78BFF1D0d2B70a7"
+      }
+    },
+    {
+      "symbol": "NVAXc",
+      "address": "0xb200000000000000000000c597c476fcf9aed3a8",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "NVAXc",
+        "token": "0xb200000000000000000000c597c476fcf9aed3a8",
+        "pool": "0x707d263E69CF72fE570aaB3E497440dd21eDC4ac",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb200000000000000000000c597c476fcf9aed3a8 ; candidate details https://dexscreener.com/base/0x707d263E69CF72fE570aaB3E497440dd21eDC4ac"
+      }
+    },
+    {
+      "symbol": "ORCLc",
+      "address": "0xb200000000000000000000347AFbA223D7B6b63C",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "ORCLc",
+        "token": "0xb200000000000000000000347AFbA223D7B6b63C",
+        "pool": "0xeaCb32CA34Df9c7Df14dFcb689A0D08A7f2706B6",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb200000000000000000000347AFbA223D7B6b63C ; candidate details https://dexscreener.com/base/0xeaCb32CA34Df9c7Df14dFcb689A0D08A7f2706B6"
+      }
+    },
+    {
+      "symbol": "PFEc",
+      "address": "0xb20000000000000000000018fe7ec7d6dfeeb528",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "PFEc",
+        "token": "0xb20000000000000000000018fe7ec7d6dfeeb528",
+        "pool": "0xfB010D54338fa37b16247Bc9Ca2E591e19e6af06",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb20000000000000000000018fe7ec7d6dfeeb528 ; candidate details https://dexscreener.com/base/0xfB010D54338fa37b16247Bc9Ca2E591e19e6af06"
+      }
+    },
+    {
+      "symbol": "PLTRc",
+      "address": "0xb2000000000000000000007d16372840dF4dAbbe",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "PLTRc",
+        "token": "0xb2000000000000000000007d16372840dF4dAbbe",
+        "pool": "0x650cc267AA248191978013d5Ae421e5Dc2A6e242",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb2000000000000000000007d16372840dF4dAbbe ; candidate details https://dexscreener.com/base/0x650cc267AA248191978013d5Ae421e5Dc2A6e242"
+      }
+    },
+    {
+      "symbol": "PMc",
+      "address": "0xb2000000000000000000008fc2a8c23cf5937b66",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "PMc",
+        "token": "0xb2000000000000000000008fc2a8c23cf5937b66",
+        "pool": "0x904800b9BeBAb0B2934640F68b9A3113fE29e938",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb2000000000000000000008fc2a8c23cf5937b66 ; candidate details https://dexscreener.com/base/0x904800b9BeBAb0B2934640F68b9A3113fE29e938"
+      }
+    },
+    {
+      "symbol": "PTONc",
+      "address": "0xb2000000000000000000009272a491812842aa84",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "PTONc",
+        "token": "0xb2000000000000000000009272a491812842aa84",
+        "pool": "0x10B3775429169386728a44bb5BC9e2458c75A72a",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb2000000000000000000009272a491812842aa84 ; candidate details https://dexscreener.com/base/0x10B3775429169386728a44bb5BC9e2458c75A72a"
+      }
+    },
+    {
+      "symbol": "PYPLc",
+      "address": "0xb200000000000000000000450ad3abe5d4846c6e",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "PYPLc",
+        "token": "0xb200000000000000000000450ad3abe5d4846c6e",
+        "pool": "0x0A63679f5F15AEE25EAeE62Ca299D6802Ff163C0",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb200000000000000000000450ad3abe5d4846c6e ; candidate details https://dexscreener.com/base/0x0A63679f5F15AEE25EAeE62Ca299D6802Ff163C0"
+      }
+    },
+    {
+      "symbol": "QUBTc",
+      "address": "0xb200000000000000000000CA425ab42e07C35bC3",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "QUBTc",
+        "token": "0xb200000000000000000000CA425ab42e07C35bC3",
+        "pool": "0x688096fEa5031BCb0367160872c0243b554Cd861",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb200000000000000000000CA425ab42e07C35bC3 ; candidate details https://dexscreener.com/base/0x688096fEa5031BCb0367160872c0243b554Cd861"
+      }
+    },
+    {
+      "symbol": "RBLXc",
+      "address": "0xB2000000000000000000005bd7AE89b9E6189Bb5",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "RBLXc",
+        "token": "0xB2000000000000000000005bd7AE89b9E6189Bb5",
+        "pool": "0x54dC3FdAeD298cA9a945771aE994f558a8f61e83",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xB2000000000000000000005bd7AE89b9E6189Bb5 ; candidate details https://dexscreener.com/base/0x54dC3FdAeD298cA9a945771aE994f558a8f61e83"
+      }
+    },
+    {
+      "symbol": "RDDTc",
+      "address": "0xb20000000000000000000066242d4067724cB7A1",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "RDDTc",
+        "token": "0xb20000000000000000000066242d4067724cB7A1",
+        "pool": "0x40FbDd107d0582763FE42d4371D059B5eb48be87",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb20000000000000000000066242d4067724cB7A1 ; candidate details https://dexscreener.com/base/0x40FbDd107d0582763FE42d4371D059B5eb48be87"
+      }
+    },
+    {
+      "symbol": "SOUNc",
+      "address": "0xb2000000000000000000002137743d4a01fe4e88",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "SOUNc",
+        "token": "0xb2000000000000000000002137743d4a01fe4e88",
+        "pool": "0x37CFE76fad9FA2D7398Cc3A5915ed93662c71C94",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb2000000000000000000002137743d4a01fe4e88 ; candidate details https://dexscreener.com/base/0x37CFE76fad9FA2D7398Cc3A5915ed93662c71C94"
+      }
+    },
+    {
+      "symbol": "TTWOc",
+      "address": "0xB200000000000000000000f720C26062Bc3067Da",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "TTWOc",
+        "token": "0xB200000000000000000000f720C26062Bc3067Da",
+        "pool": "0xB61A76509fA69FaC5b6269c34cFFc1BBD2e71E91",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xB200000000000000000000f720C26062Bc3067Da ; candidate details https://dexscreener.com/base/0xB61A76509fA69FaC5b6269c34cFFc1BBD2e71E91"
+      }
+    },
+    {
+      "symbol": "WENc",
+      "address": "0xb20000000000000000000044e3cd7a0e1028e57a",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "WENc",
+        "token": "0xb20000000000000000000044e3cd7a0e1028e57a",
+        "pool": "0x5532189374De3a831cf0C6DB6cE4090C186904B8",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xb20000000000000000000044e3cd7a0e1028e57a ; candidate details https://dexscreener.com/base/0x5532189374De3a831cf0C6DB6cE4090C186904B8"
+      }
+    },
+    {
+      "symbol": "cbBTC",
+      "address": "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "cbBTC",
+        "token": "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+        "pool": "0x7C7420DD105E2779316423Ba3E973f434315EFA9",
+        "routeEvidence": "Slipstream CL factory/token pair/tick spacing verified from explorer; tick spacing 1; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf ; candidate details https://dexscreener.com/base/0x7C7420DD105E2779316423Ba3E973f434315EFA9"
+      }
+    },
+    {
+      "symbol": "cbETH",
+      "address": "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "cbETH",
+        "token": "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22",
+        "pool": "0x47cA96Ea59C13F72745928887f84C9F52C3D7348",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22 ; candidate details https://dexscreener.com/base/0x47cA96Ea59C13F72745928887f84C9F52C3D7348"
+      }
+    },
+    {
+      "symbol": "cbDOGE",
+      "address": "0xcbD06E5A2B0C65597161de254AA074E489dEb510",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "cbDOGE",
+        "token": "0xcbD06E5A2B0C65597161de254AA074E489dEb510",
+        "pool": "0xfb338cb462c9e44cAE9f442fEb09e8E904fFed47",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xcbD06E5A2B0C65597161de254AA074E489dEb510 ; candidate details https://dexscreener.com/base/0xfb338cb462c9e44cAE9f442fEb09e8E904fFed47"
+      }
+    },
+    {
+      "symbol": "cbXRP",
+      "address": "0xcb585250f852C6c6bf90434AB21A00f02833a4af",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "cbXRP",
+        "token": "0xcb585250f852C6c6bf90434AB21A00f02833a4af",
+        "pool": "0xB90fe999Be6869AF0aFC557DCCfBE169EA3403D6",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xcb585250f852C6c6bf90434AB21A00f02833a4af ; candidate details https://dexscreener.com/base/0xB90fe999Be6869AF0aFC557DCCfBE169EA3403D6"
+      }
+    },
+    {
+      "symbol": "cbLTC",
+      "address": "0xcb17C9Db87B595717C857a08468793f5bAb6445F",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "cbLTC",
+        "token": "0xcb17C9Db87B595717C857a08468793f5bAb6445F",
+        "pool": "0x200681425b0C8D78C6a467512C5D49FA56BaC88A",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xcb17C9Db87B595717C857a08468793f5bAb6445F ; candidate details https://dexscreener.com/base/0x200681425b0C8D78C6a467512C5D49FA56BaC88A"
+      }
+    },
+    {
+      "symbol": "cbADA",
+      "address": "0xcbADA732173e39521CDBE8bf59a6Dc85A9fc7b8c",
+      "registered": false,
+      "permission": "unknown",
+      "candidate": {
+        "asset": "cbADA",
+        "token": "0xcbADA732173e39521CDBE8bf59a6Dc85A9fc7b8c",
+        "pool": "0x8782d97C8b25B4d17dBFbaa03f25dC18e51e909D",
+        "routeEvidence": "Aerodrome indexed candidate; CL versus classic, factory and tick spacing NOT verified; historical discovery ONLY, not revalidated this run",
+        "source": "https://api.dexscreener.com/token-pairs/v1/base/0xcbADA732173e39521CDBE8bf59a6Dc85A9fc7b8c ; candidate details https://dexscreener.com/base/0x8782d97C8b25B4d17dBFbaa03f25dC18e51e909D"
+      }
+    },
+    {
+      "symbol": "COINc",
+      "address": "0xb200000000000000000000c85a31389D71F3ecfb",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "CRCLc",
+      "address": "0xB20000000000000000000019f6E7C675b73C2e4D",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    },
+    {
+      "symbol": "INTCc",
+      "address": "0xB2000000000000000000004AFF16039bA04bdFBc",
+      "registered": true,
+      "permission": "unknown",
+      "candidate": null
+    }
+  ],
+  "routes": [
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0x4200000000000000000000000000000000000006",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0x4200000000000000000000000000000000000006",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x4200000000000000000000000000000000000006",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "1000000000000000",
+      "fee": "2500000000000",
+      "net": "997500000000000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x4200000000000000000000000000000000000006",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000000000000",
+      "fee": "25000000000000",
+      "net": "9975000000000000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb200000000000000000000d9192b6B456483C2E8",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb200000000000000000000d9192b6B456483C2E8",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb200000000000000000000d9192b6B456483C2E8",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb200000000000000000000d9192b6B456483C2E8",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb200000000000000000000c85a31389D71F3ecfb",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb200000000000000000000c85a31389D71F3ecfb",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb200000000000000000000c85a31389D71F3ecfb",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb200000000000000000000c85a31389D71F3ecfb",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xB20000000000000000000019f6E7C675b73C2e4D",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xB20000000000000000000019f6E7C675b73C2e4D",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xB20000000000000000000019f6E7C675b73C2e4D",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xB20000000000000000000019f6E7C675b73C2e4D",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb2000000000000000000002D0BA3164cc74f58B7",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb2000000000000000000002D0BA3164cc74f58B7",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb2000000000000000000002D0BA3164cc74f58B7",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb2000000000000000000002D0BA3164cc74f58B7",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xB2000000000000000000004AFF16039bA04bdFBc",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xB2000000000000000000004AFF16039bA04bdFBc",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xB2000000000000000000004AFF16039bA04bdFBc",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xB2000000000000000000004AFF16039bA04bdFBc",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb2000000000000000000008bC8786B856E61707C",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb2000000000000000000008bC8786B856E61707C",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb2000000000000000000008bC8786B856E61707C",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb2000000000000000000008bC8786B856E61707C",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xB200000000000000000000Ab99cFa739E253872B",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xB200000000000000000000Ab99cFa739E253872B",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xB200000000000000000000Ab99cFa739E253872B",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xB200000000000000000000Ab99cFa739E253872B",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb2000000000000000000004884b426556b92883d",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb2000000000000000000004884b426556b92883d",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb2000000000000000000004884b426556b92883d",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb2000000000000000000004884b426556b92883d",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb20000000000000000000078ee7ce2fE4908108C",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb20000000000000000000078ee7ce2fE4908108C",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb20000000000000000000078ee7ce2fE4908108C",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb20000000000000000000078ee7ce2fE4908108C",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb200000000000000000000397293Cb8cda9a10c5",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb200000000000000000000397293Cb8cda9a10c5",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb200000000000000000000397293Cb8cda9a10c5",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb200000000000000000000397293Cb8cda9a10c5",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb2000000000000000000007b9fcbd005511aCBd5",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb2000000000000000000007b9fcbd005511aCBd5",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb2000000000000000000007b9fcbd005511aCBd5",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb2000000000000000000007b9fcbd005511aCBd5",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb2000000000000000000001e800a7f5189430cD0",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xb2000000000000000000001e800a7f5189430cD0",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb2000000000000000000001e800a7f5189430cD0",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000",
+      "fee": "25000",
+      "net": "9975000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xb2000000000000000000001e800a7f5189430cD0",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "100000000",
+      "fee": "250000",
+      "net": "99750000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "1000000000000000",
+      "fee": "2500000000000",
+      "net": "997500000000000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "gross": "10000000000000000",
+      "fee": "25000000000000",
+      "net": "9975000000000000",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "gross": "100000",
+      "fee": "250",
+      "net": "99750",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    },
+    {
+      "from": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "to": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "gross": "1000000",
+      "fee": "2500",
+      "net": "997500",
+      "pool": null,
+      "qualification": "unavailable",
+      "quote": "unavailable",
+      "output": null,
+      "executorSimulation": "not_run_or_invalidated",
+      "simulationOutput": null,
+      "executionEvidenceComplete": false
+    }
+  ]
+}

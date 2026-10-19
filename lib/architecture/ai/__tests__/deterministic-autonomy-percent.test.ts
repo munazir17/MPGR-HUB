@@ -49,9 +49,9 @@ function makeRequest(
 
 function pairResult(usdFeed: number | null) {
   return toolSuccess("get_pair", {
-    pair: { symbol: "AAPLc" },
-    stock: usdFeed == null ? null : { usdFeed, usdDex: null, stale: false, feedStale: false, paused: false },
-    wrapped: null,
+    pair: { symbol: "AAPLc", address: "0xb200000000000000000000C2e324d24d7eEcd1fb", live: true, official: true },
+    stock: usdFeed == null ? null : { symbol: "AAPLc", address: "0xb200000000000000000000C2e324d24d7eEcd1fb", usdFeed, usdDex: null, stale: false, feedStale: false, paused: false, feedUpdatedAt: Math.floor(Date.now() / 1000) },
+    wrapped: null, chainId: 8453, asOf: new Date().toISOString(),
   });
 }
 
@@ -130,9 +130,9 @@ describe("DeterministicAIProvider amount-only follow-up", () => {
       autonomyGoalDraft: openDraft,
     };
 
-    const response = await new DeterministicAIProvider().generateReply(
-      makeRequest("1 USDC", [previousAssistantTurn]),
-    );
+    const next = makeRequest("1 USDC", [previousAssistantTurn]);
+    next.lastAssistantMessage = { autonomyGoalDraft: openDraft };
+    const response = await new DeterministicAIProvider().generateReply(next);
 
     // No swap prepare ran; the amount landed on the SAME draft.
     expect(runTool).not.toHaveBeenCalled();
@@ -197,4 +197,24 @@ describe("DeterministicAIProvider allowlist discipline", () => {
     expect(runTool).not.toHaveBeenCalled();
     expect(response.tradeProposal).toBeUndefined();
   });
+});
+
+it("native ETH conditional is a clear refusal, not WETH and not an immediate trade", async () => {
+  runTool.mockReset();
+  const response = await new DeterministicAIProvider().generateReply(makeRequest("Buy $5 ETH if it drops 2%"));
+  expect(response.reply).toContain("ETH is not WETH");
+  expect(response.autonomyGoalDraft).toMatchObject({ targetAsset: "ETH", supported: false });
+  expect(response.tradeProposal).toBeUndefined(); expect(runTool).not.toHaveBeenCalled();
+});
+it("explicit WETH anchors from its exact canonical DEX observation", async () => {
+  const address = "0x4200000000000000000000000000000000000006";
+  runTool.mockReset(); runTool.mockResolvedValue(toolSuccess("get_pair", {
+    pair: { symbol: "WETH", address, live: true, official: true }, stock: null,
+    wrapped: { symbol: "WETH", address, usd: 2500, stale: false, updatedAt: Math.floor(Date.now() / 1000) },
+    chainId: 8453, asOf: new Date().toISOString(),
+  }));
+  const response = await new DeterministicAIProvider().generateReply(makeRequest("Buy $5 WETH if it drops 2%"));
+  expect(response.autonomyGoalDraft).toMatchObject({ targetAsset: "WETH", amountPerTrade: "5", referencePrice: "2500", triggerPrice: "2450" });
+  expect(runTool).toHaveBeenCalledExactlyOnceWith("get_pair", { symbol: "WETH" }, expect.anything());
+  expect(response.tradeProposal).toBeUndefined();
 });

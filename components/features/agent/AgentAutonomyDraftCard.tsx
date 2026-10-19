@@ -49,7 +49,7 @@ export function AgentAutonomyDraftCard({ draft, onReview }: AgentAutonomyDraftCa
     );
   }
 
-  const verb = draft.triggerKind === "price_below" ? "Buy" : "Sell";
+  const verb = draft.side === "sell" ? "Sell" : "Buy";
   const direction = draft.triggerKind === "price_below" ? "falls below" : "rises above";
   const amount = draft.amountPerTrade ? ` · up to ${draft.amountPerTrade} ${draft.spendAsset} per trade` : "";
   const anchor =
@@ -73,7 +73,7 @@ export function AgentAutonomyDraftCard({ draft, onReview }: AgentAutonomyDraftCa
             Autonomous goal draft — inactive until you authorize it
           </span>
           <span className="block truncate text-[11px] text-muted sm:text-xs">
-            {verb} {draft.targetAsset} when the price {direction} {draft.triggerPrice} {draft.spendAsset}
+            {verb} {draft.targetAsset} when the price {direction} {draft.triggerPrice} USDC
             {amount}
           </span>
           {anchor && (
