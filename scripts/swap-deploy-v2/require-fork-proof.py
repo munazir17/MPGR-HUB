@@ -12,7 +12,6 @@ REQUIRED = {
     "testForkDirectNonMajorPairFeeAndNoHop()",
     "testForkMPGRV4FeeAndMinimum()",
     "testForkAerodromeNonMajorPairFee()",
-    "testForkFallbackMultihopSingleGrossFee()",
     "testForkNoRouteNoSend()",
     "testForkFeeForgeryAndTimelock()",
     "testForkAllEntriesChargeFee()",

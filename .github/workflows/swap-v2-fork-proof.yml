@@ -1,0 +1,61 @@
+name: Swap V2 real Base fork proof (no broadcast)
+on:
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      BASE_MAINNET_RPC_URL:
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: swap-v2-readonly-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  fork:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09
+        with:
+          version: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned Solidity dependencies
+        run: |
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+      - name: Discover MPGR pool key from real Initialize event
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+        run: node scripts/swap-deploy-v2/discover-fork-fixtures.mjs
+      - name: Real Base V2 fork suite only (no deployer secret or broadcast)
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+        run: |
+          set -euo pipefail
+          forge test --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol -vvv 2>&1 | tee v2-fork-proof.log
+          forge test --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol --json > v2-fork-proof.json
+          python3 scripts/swap-deploy-v2/require-fork-proof.py v2-fork-proof.json
+      - name: Proof summary
+        if: always()
+        run: |
+          echo "## Read-only V2 fork proof — $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo 'No mainnet transactions. No deployment key mapped.' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f v2-fork-proof.log ]; then
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            tail -180 v2-fork-proof.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: swap-v2-real-base-proof
+          path: |
+            v2-fork-proof.log
+            v2-fork-proof.json
+            deployments/.local/v2-fork-fixtures.json
