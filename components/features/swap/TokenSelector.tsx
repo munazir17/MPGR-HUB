@@ -6,7 +6,7 @@ import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { TokenImportError } from "@/lib/trade/token-import";
 import type { TradeTokenRef } from "@/lib/trade/trade-types";
 import { SwapDialog } from "./SwapDialog";
-import { swapRouteIssue, swapCapabilityStatus, swapPoolAsset } from "@/lib/swap/swap-capability";
+import { swapCapabilityStatus, swapPoolAsset } from "@/lib/swap/swap-capability";
 import { SwapLiquidityInspection } from "./SwapLiquidityInspection";
 import { TokenIcon, tokenName } from "./TokenIcon";
 import { fetchSwapTokenHints } from "@/lib/swap/swap-token-hints";
@@ -62,19 +62,18 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
     } catch (e) { if (current === run.current) { if (e instanceof TokenImportError && e.status === 401) setSessionExpired(true); setError(e instanceof Error ? e.message : "Token search unavailable."); } }
     finally { if (current === run.current) setBusy(false); }
   };
-  const issueFor = (t: TradeTokenRef) => selectingPay ? swapRouteIssue(t.address, opposite.address) : swapRouteIssue(opposite.address, t.address);
   const option = (t: TradeTokenRef) => {
-    const issue = issueFor(t);
     const status = swapCapabilityStatus(t.address, opposite.address, imported?.address.toLowerCase() === t.address.toLowerCase());
     const chip = rowStatus(status);
-    return <button key={t.address} type="button" disabled={!!issue} title={status.message} onClick={() => onSelect(t)}
+    const blocked = !status.selectable;
+    return <button key={t.address} type="button" disabled={blocked} title={status.message} onClick={() => onSelect(t)}
       className="flex min-h-[64px] w-full items-center gap-3 rounded-2xl px-3 py-2 text-left hover:bg-white/5 focus-visible:outline focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-65"
       aria-label={`Select ${t.symbol} ${t.address}`}>
       <TokenIcon token={t} />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2"><bdi className="truncate text-sm font-semibold">{t.symbol}</bdi>
           {!t.verified && <span className="shrink-0 text-[10px] text-amber-300">Unverified</span>}
-          <span data-testid={issue ? "token-route-unavailable" : "token-route-status"} className={`ml-auto shrink-0 text-[10px] ${chip.tone}`}>{chip.label}</span></span>
+          <span data-testid={blocked ? "token-route-unavailable" : "token-route-status"} className={`ml-auto shrink-0 text-[10px] ${chip.tone}`}>{chip.label}</span></span>
         <span className="block truncate text-xs text-zinc-400">{tokenName(t.name)}</span>
         <span className="block truncate font-mono text-[10px] text-zinc-500" title={t.address}>{isNativeEthSentinel(t.address) ? "Native Base asset" : shortAddress(t.address)}</span>
       </span>
@@ -88,7 +87,7 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
     {addressSearch && !exact && <p role="alert" className="text-xs text-amber-300">Invalid address. Paste 0x and 40 hexadecimal characters.</p>}
     {!addressSearch && !results.length && <p className="py-5 text-sm text-zinc-400">No results. Paste an exact Base contract to validate a token.</p>}
     {addressSearch && exact && !imported && <div className="flex items-center gap-3 rounded-2xl border border-amber-300/15 bg-amber-300/5 p-3">
-      <p className="min-w-0 flex-1 text-xs text-amber-100">Validate this Base ERC-20 by exact contract. Import does not enable swaps.</p>
+      <p className="min-w-0 flex-1 text-xs text-amber-100">Validate this Base ERC-20 by exact contract. A quote checks liquidity before any swap.</p>
       <button type="button" disabled={busy} onClick={() => void validate()} className="min-h-11 shrink-0 rounded-xl bg-white/10 px-3 text-sm font-medium">{busy ? <span className="flex items-center gap-2"><Loader2 size={16} className="animate-spin" />Validating…</span> : sessionExpired ? "Sign in and retry" : "Validate Base token"}</button>
     </div>}
     {!addressSearch && search.trim().length >= 2 && <button type="button" disabled={busy} onClick={() => void discover()} className="min-h-11 w-full rounded-xl bg-white/10 px-3 text-sm">{busy ? "Checking token list…" : sessionExpired ? "Sign in and search Base tokens" : "Search more Base tokens"}</button>}
@@ -98,11 +97,11 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
     </div>}
     {!addressSearch && searched && !hints.length && <p role="status" className="text-xs text-zinc-400">No additional matches on this list. Paste an exact Base contract to check a different token.</p>}
     {error && <p role="alert" className="break-words text-xs text-red-300">{error}</p>}
-    <div className="max-h-[46dvh] space-y-1 overflow-y-auto pr-1">{[...results].sort((a, b) => Number(!!issueFor(a)) - Number(!!issueFor(b))).map(option)}{imported && !results.some(t => t.address.toLowerCase() === imported.address.toLowerCase()) && option(imported)}</div>
+    <div className="max-h-[46dvh] space-y-1 overflow-y-auto pr-1">{[...results].sort((a, b) => Number(!swapCapabilityStatus(a.address, opposite.address).selectable) - Number(!swapCapabilityStatus(b.address, opposite.address).selectable)).map(option)}{imported && !results.some(t => t.address.toLowerCase() === imported.address.toLowerCase()) && option(imported)}</div>
     {imported && swapPoolAsset(imported.address) !== swapPoolAsset(opposite.address) && <details data-testid="import-technical-details" className="rounded-2xl border border-white/5 bg-white/[0.02] px-3 py-1">
       <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-zinc-400 hover:text-zinc-200">Technical liquidity details (read-only)<ChevronDown size={14} className="shrink-0" /></summary>
       <div className="pb-3 pt-1"><SwapLiquidityInspection from={selectingPay ? imported : opposite} to={selectingPay ? opposite : imported} authorize={authorize} /></div>
     </details>}
-    {(imported || results.some(t => !t.verified)) && <p className="rounded-xl bg-amber-300/5 p-3 text-xs text-amber-200">Import is not endorsement. Execution still requires a supported, fee-compliant route.</p>}
+    {(imported || results.some(t => !t.verified)) && <p className="rounded-xl bg-amber-300/5 p-3 text-xs text-amber-200">Import is not endorsement. A live quote still has to find liquidity, and every executed swap collects the 0.25% MPGR fee.</p>}
   </SwapDialog>;
 }

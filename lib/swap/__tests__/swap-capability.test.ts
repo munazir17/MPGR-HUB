@@ -31,12 +31,13 @@ describe("complete selectable catalog — exact-address registration, not liquid
 });
 
 import { swapCapabilityStatus } from "../swap-capability";
-it("metadata validation never promotes any of the 35 unregistered assets", () => {
+it("metadata validation lets unregistered assets be quoted without claiming liquidity", () => {
   const assets = MANUAL_SWAP_TOKENS.filter(t => !swapCounterassets(t.address).length);
   expect(assets).toHaveLength(35);
   for (const token of assets) {
-    expect(swapCapabilityStatus(token.address, BASE_USDC, true)).toMatchObject({ code: "REGISTRATION_REQUIRED", selectable: false, message: expect.stringContaining("Token details checked — trading is not supported") });
-    expect(swapCapabilityStatus(token.address, BASE_USDC)).toMatchObject({ selectable: false, message: expect.stringContaining("Token available to look up") });
+    expect(swapRouteIssue(token.address, BASE_USDC)?.code).toBe("FEE_ROUTE_UNREGISTERED");
+    expect(swapCapabilityStatus(token.address, BASE_USDC, true)).toMatchObject({ code: "QUOTE_REQUIRED", selectable: true, message: expect.stringContaining("Token details checked") });
+    expect(swapCapabilityStatus(token.address, BASE_USDC)).toMatchObject({ selectable: true, message: expect.stringContaining("0.25% MPGR fee") });
   }
 });
 it("registered selection is explicitly unquoted, not execution acceptance", () => {

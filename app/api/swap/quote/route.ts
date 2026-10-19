@@ -35,8 +35,9 @@ export async function POST(request: Request) {
   if (("refreshQuote" in body && typeof body.refreshQuote !== "boolean") || ("chainId" in body && body.chainId !== 8453)) return reply({ code: "INVALID_INPUT", error: "Use Base Mainnet (8453) and a boolean refreshQuote value." }, 400);
   if (typeof body.fromToken !== "string" || typeof body.toToken !== "string") return reply({ code: "INVALID_ADDRESS", error: "Select exact Base asset addresses." }, 400);
   const pair = swapPairIssue(body.fromToken, body.toToken); if (pair) return reply({ code: pair.code, error: pair.message }, 400);
-  // Registry-only refusal is not a claim about metadata or liquidity. Unknown
-  // imports can still be validated separately; they cannot authorize a trade.
+  // A legacy-catalog miss is not a quote veto. Same-asset and invalid addresses
+  // already failed above. Path search quotes any other pair and still enforces
+  // the atomic 25 bps fee; no pool means LIQUIDITY_UNAVAILABLE.
   const pathEligible = swapPathPairEligible(body.fromToken, body.toToken);
   const capability = swapRouteIssue(body.fromToken, body.toToken);
   if (capability && !pathEligible) return reply({ code: "EXECUTION_UNAVAILABLE", reason: capability.code, error: capability.message }, 422);

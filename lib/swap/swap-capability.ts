@@ -31,17 +31,23 @@ export function swapInputError(input: ManualSwapInput, tokens?: readonly TradeTo
   return swapPairIssue(input.fromToken, input.toToken)?.message ?? manualSwapInputError(input, tokens);
 }
 
-/** UI facts only: metadata validation never grants routing or on-chain permission. */
+/** UI facts only. A catalog miss does not block selection: the legacy executor
+ * still refuses that pair, and the fixed-fee path executor quotes it only when
+ * a pool exists. Selection never waives the 25 bps fee. */
 export function swapCapabilityStatus(from: string, to: string, metadataValidated = false) {
   const issue = swapRouteIssue(from, to);
   if (!issue) {
     const registered = findExecutorRoute(deployment, swapPoolAsset(from), swapPoolAsset(to));
     return registered ? { code: "REGISTERED_UNQUOTED", selectable: true, message: "Get a live quote to check availability. Trading is not confirmed yet." } :
-      { code: "SEARCH_REQUIRED", selectable: true, message: "Get a live quote to find a direct swap. This pair may need a multi-step route, which is not supported yet." };
+      { code: "SEARCH_REQUIRED", selectable: true, message: "Get a live quote to find a direct swap. This pair may need a multi-step route. Liquidity is not confirmed until the quote returns." };
   }
   if (issue.code === "SAME_ASSET") return { code: "SAME_ASSET", selectable: false, message: "Same underlying asset — choose a different receive token." };
-  const asset = from;
-  const others = swapCounterassets(asset);
-  if (others.length) return { code: "COUNTERASSET_REQUIRED", selectable: false, message: `This pair is not supported yet. Try a live quote with: ${others.map(label).join(", ")}. Change the other asset explicitly.` };
-  return { code: "REGISTRATION_REQUIRED", selectable: false, message: `${metadataValidated ? "Token details checked" : "Token available to look up"} — trading is not supported in MPGR Swap yet. Finding a token or pool does not make it tradable here.` };
+  if (issue.code === "INVALID_ADDRESS") return { code: "INVALID_ADDRESS", selectable: false, message: issue.message };
+  return {
+    code: "QUOTE_REQUIRED",
+    selectable: true,
+    message: metadataValidated
+      ? "Token details checked. Get a live quote to see if a pool has liquidity. The 0.25% MPGR fee is collected inside the swap."
+      : "Get a live quote to see if a pool has liquidity. Finding a token does not prove a pool. The 0.25% MPGR fee is collected inside the swap.",
+  };
 }

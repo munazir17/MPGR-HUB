@@ -76,12 +76,12 @@ test("Swap: search, exact contract validation, duplicate symbols and unsupported
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); const search = page.getByLabel("Search tokens or Base contract");
   await search.fill("No such token"); await expect(page.getByText(/No results\./)).toBeVisible(); await search.fill("0x123"); await expect(page.getByRole("alert")).toContainText("Invalid address");
   await search.fill(importedAddress); await page.getByRole("button", { name: "Validate Base token" }).tap(); await expect(page.getByText(/Import is not endorsement/)).toBeVisible();
-  await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeDisabled();
-  await expect(page.getByTestId("token-route-unavailable")).toContainText("Route not supported");
+  await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeEnabled();
+  await expect(page.getByTestId("token-route-status")).toContainText("Quote verifies route");
   await page.getByRole("button", { name: "Close Select a token" }).tap();
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("USDC");
   await expect(page.getByRole("button", { name: `Select USDC ${token("USDC")}`, exact: true })).toBeVisible(); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeVisible(); await expect(page.getByRole("dialog").locator("img")).toHaveCount(1); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).locator("img")).toHaveCount(0); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).getByTestId("token-logo-fallback")).toHaveCount(1);
-  await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeDisabled(); expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
+  await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeEnabled(); expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });
 test("Swap: failed metadata never offers selectable token", async ({ page }, info) => {
   const state = await setup(page, { importStatus: 503 }); await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill(importedAddress); await page.getByRole("button", { name: "Validate Base token" }).tap(); await expect(page.getByRole("alert")).toContainText("metadata unavailable"); await expect(page.getByRole("button", { name: `Select NEW ${importedAddress}`, exact: true })).toHaveCount(0); expect(state.quoteCount()).toBe(0); await evidence(page, info, state.trace);
@@ -322,7 +322,7 @@ test("Swap: published-list discovery checks exact Base metadata without granting
   await expect(page.getByRole("button", { name: `Select AERO ${aero}`, exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Check AERO on Base", exact: true }).tap();
   const imported = page.getByRole("button", { name: `Select AERO ${aero}`, exact: true });
-  await expect(imported).toBeDisabled(); await expect(imported).toContainText("Route not supported"); await expect(imported).toHaveAttribute("title", /trading is not supported in MPGR Swap yet/);
+  await expect(imported).toBeEnabled(); await expect(imported).toContainText("Quote verifies route"); await expect(imported).toHaveAttribute("title", /0\.25% MPGR fee/);
   expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });
 test("Swap: high price impact demands explicit acknowledgement before confirmation", async ({ page }, info) => {
