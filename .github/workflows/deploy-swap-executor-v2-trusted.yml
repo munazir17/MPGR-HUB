@@ -130,9 +130,14 @@ jobs:
       - name: Seal manifest with the real tx receipt + on-chain pin re-reads
         env:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          # Independent second endpoint for read-only cross-checks. The seal
+          # step now waits for runtime-code propagation (bounded polling) and
+          # fails closed if the two endpoints disagree on any recovered fact.
+          # Old pins that predate this hardening simply ignore the extra arg.
+          BASE_MAINNET_RPC_URL_ALT: ${{ vars.BASE_MAINNET_RPC_URL_ALT || 'https://base-rpc.publicnode.com' }}
         run: |
           set -euo pipefail
-          bash scripts/swap-deploy-v2/finalize-manifest.sh "$BASE_MAINNET_RPC_URL"
+          bash scripts/swap-deploy-v2/finalize-manifest.sh "$BASE_MAINNET_RPC_URL" "$BASE_MAINNET_RPC_URL_ALT"
           jq -r '"EXECUTOR=\(.executor)\nDEPLOY_TX=\(.deployTx)\nDEPLOY_BLOCK=\(.deployBlock)"' "$OUT_DIR/mpgr-swap-executor-v2.json" | tee -a "$GITHUB_ENV"
       - name: Independent on-chain verification of governance pins
         env:

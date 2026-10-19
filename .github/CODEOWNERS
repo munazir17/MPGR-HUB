@@ -11,6 +11,7 @@
 
 # Swap deployment pipeline (preflight, rehearsal, manifest sealing, Safe check)
 /scripts/swap-deploy/              @munazir17
+/scripts/swap-deploy-v2/           @munazir17
 
 # Contracts and deployment scripts (swap + legacy executor)
 /contracts/swap/                   @munazir17
