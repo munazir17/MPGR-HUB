@@ -1,42 +1,31 @@
-name: Deploy MPGR Swap Executor (Base Mainnet)
+name: Swap executor pre-deploy gates (Base Mainnet)
 
-# DEDICATED deployment workflow for contracts/swap/MPGRSwapExecutor.sol.
-# The legacy deploy-executor-base-mainnet.yml (contracts/executor/MPGRExecutor.sol)
-# is NEVER reused by this workflow and cannot deploy this contract.
+# PR-SIDE GATES ONLY for the MPGRSwapExecutor deployment (contracts/swap).
 #
-# Trigger: add the `deploy-swap-base-mainnet` label to a PR from THIS repository.
-# No workflow_dispatch, no push trigger. Fork PRs are rejected.
+# TRUST MODEL (see docs/PR113-DEPLOY-TRUST-REVIEW.md):
+#   This workflow runs PR-head-controlled code, therefore it NEVER has access
+#   to production credentials and NEVER deploys: no job declares `environment:`
+#   and the dedicated deployer-key secret (defined only in the protected
+#   base-mainnet environment) is not referenced anywhere in this file. Its purpose is to prove, on every labeled PR run,
+#   that the reviewed head would deploy safely:
+#     - workflow YAML validation
+#     - committed deployment-gate state report (gate stays closed until the
+#       owner opens it via a reviewed commit)
+#     - swap contract suites incl. deploy-preflight fail-closed regressions
+#     - a FULL local-anvil rehearsal of the exact forge script pipeline with
+#       GENERATED TEST-ONLY keys (fork of Base Mainnet when the RPC is
+#       reachable; labelled seeded stand-in otherwise; broadcast hits
+#       127.0.0.1 only)
 #
-# DEPLOYER KEY FLOW (one path everywhere; the key value is never printed):
-#   environment `base-mainnet` secret SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY
-#     -> step env BASE_MAINNET_DEPLOYER_PRIVATE_KEY (GitHub auto-masks secrets)
-#     -> forge script --private-key "$BASE_MAINNET_DEPLOYER_PRIVATE_KEY"
-#        and the script's vm.envUint(BASE_MAINNET_DEPLOYER_PRIVATE_KEY) -> vm.addr
-#        for preflight (nonce/owner checks). scripts/swap-deploy/*.sh enforce the
-#        same flow; the rehearsal uses ONLY generated test-only keys.
+#   The ACTUAL deployment lives in deploy-swap-executor-trusted.yml, which is
+#   dispatchable ONLY from the protected default branch and executes ONLY the
+#   owner-pinned commit SHA (repo variable SWAP_DEPLOY_REF) inside the
+#   reviewer-protected `base-mainnet` environment. PR head code can never run
+#   with the production deployer key.
 #
-# Job 1 `gates` (no production secrets): YAML validation, config-pin report,
-#   swap suites (incl. DeployPreflight fail-closed regressions), then
-#   scripts/swap-deploy/rehearse.sh replays the EXACT pipeline on a local anvil
-#   fork of Base Mainnet (pinned block; broadcast hits 127.0.0.1 only) with a
-#   generated test-only key: preflight -> simulate -> broadcast -> manifest seal
-#   (real tx hash/block from the local receipt) -> on-chain pin re-reads.
-# Job 2 `deploy` runs ONLY in GitHub environment `base-mainnet`, which carries
-#   required reviewers: the job WAITS for human approval before any step runs.
-#   After approval it re-runs scripts/swap-deploy/preflight.sh against the REAL
-#   chain (fail closed: committed gate, nonce 0, multisig owner, no manifest),
-#   broadcasts once, seals the manifest with the real receipt and re-verifies
-#   every pin on-chain. Without all of it passing, nothing is broadcast.
-#
-# Routing activation is a SEPARATE, later human step: committing the reviewed
-# final manifest into lib/swap/swap-executor-config.ts. This workflow never
-# edits app config, never merges, and never touches production gates or secrets.
-#
-# Configuration (environment `base-mainnet`, values set by the owner, not here):
-#   secret   SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY  dedicated nonce-0 key
-#   variable SWAP_EXECUTOR_OWNER                     deployed governance multisig
-# Optional: secret BASE_MAINNET_RPC_URL (defaults to https://mainnet.base.org),
-#           secret ETHERSCAN_API_KEY (Basescan verification).
+# Trigger: add the `deploy-swap-base-mainnet` label to a same-repo PR.
+# Legacy deploy-executor-base-mainnet.yml is never reused and cannot deploy
+# this contract.
 
 on:
   pull_request:
@@ -47,7 +36,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: deploy-swap-executor-base-mainnet
+  group: swap-executor-pr-gates
   cancel-in-progress: false
 
 jobs:
@@ -58,11 +47,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - uses: foundry-rs/foundry-toolchain@v1
+          persist-credentials: false
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
         with:
           version: stable
       - name: Install Solidity dependencies (pinned, same as CI)
@@ -92,9 +82,9 @@ jobs:
           STATE="$(jq -r '.swapExecutorDeployEnabled // false' deployments/base-mainnet/deploy-config.json)"
           echo "swapExecutorDeployEnabled (committed) = $STATE"
           if [ "$STATE" != "true" ]; then
-            echo "::notice title=Gate closed::committed swapExecutorDeployEnabled=$STATE - the deploy job preflight will FAIL CLOSED after environment approval; no broadcast is possible until the owner commits the open gate."
+            echo "::notice title=Gate closed::committed swapExecutorDeployEnabled=$STATE - the trusted deployment workflow refuses dispatch-time pin resolution while the gate is closed; no broadcast is possible until the owner opens it via a reviewed commit."
           fi
-          test ! -f deployments/base-mainnet/mpgr-swap-executor.json || echo "::notice::final manifest exists - deploy preflight would refuse a second deployment"
+          test ! -f deployments/base-mainnet/mpgr-swap-executor.json || echo "::notice::final manifest exists - deployment preflight would refuse a second deployment"
       - name: Swap contract suites (incl. deploy-preflight fail-closed regressions)
         run: |
           set -euo pipefail
@@ -109,118 +99,12 @@ jobs:
           set -euo pipefail
           bash scripts/swap-deploy/rehearse.sh "$BASE_MAINNET_RPC_URL"
           echo "::notice title=Rehearsal passed::full preflight->simulate->broadcast->manifest-seal->pin-verify pipeline proven on local anvil with generated test-only keys"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: swap-deploy-rehearsal-evidence
           path: rehearsal-evidence/
           if-no-files-found: warn
-
-  deploy:
-    needs: gates
-    environment: base-mainnet
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      OUT_DIR: deployments/base-mainnet
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: stable
-      - name: Install Solidity dependencies (pinned, same as CI)
+      - name: Point to the trusted deployment path
         run: |
-          mkdir -p .forge-deps
-          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
-          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
-      - name: Preflight against the REAL chain (fail closed before any broadcast)
-        env:
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
-          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
-          MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true"
-          SWAP_EXECUTOR_OWNER: ${{ vars.SWAP_EXECUTOR_OWNER }}
-        run: bash scripts/swap-deploy/preflight.sh
-      - name: Deploy (single broadcast, only after gates + human environment approval)
-        env:
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
-          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
-          MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true"
-          SWAP_EXECUTOR_OWNER: ${{ vars.SWAP_EXECUTOR_OWNER }}
-        run: |
-          set -euo pipefail
-          forge script script/DeployMPGRSwapExecutorBaseMainnet.s.sol:DeployMPGRSwapExecutorBaseMainnet \
-            --rpc-url "$BASE_MAINNET_RPC_URL" --private-key "$BASE_MAINNET_DEPLOYER_PRIVATE_KEY" \
-            --broadcast --slow -vv | tee broadcast.txt
-      - name: Seal manifest with the real tx receipt + on-chain pin re-reads
-        env:
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
-        run: |
-          set -euo pipefail
-          bash scripts/swap-deploy/finalize-manifest.sh "$BASE_MAINNET_RPC_URL"
-          jq -r '"EXECUTOR=\(.executor)\nDEPLOY_TX=\(.deployTx)\nDEPLOY_BLOCK=\(.deployBlock)"' "$OUT_DIR/mpgr-swap-executor.json" | tee -a "$GITHUB_ENV"
-      - name: Independent on-chain verification of governance pins
-        env:
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
-          SWAP_EXECUTOR_OWNER: ${{ vars.SWAP_EXECUTOR_OWNER }}
-        run: |
-          set -euo pipefail
-          retry() { local a out; for a in 1 2 3 4 5 6; do if out="$("$@")"; then printf '%s\n' "$out"; return 0; fi; sleep $((a * 2)); done; echo "::error::RPC call failed: $*" >&2; return 1; }
-          R="--rpc-url $BASE_MAINNET_RPC_URL"
-          lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
-          fail() { echo "::error title=Post-deploy check failed::$1"; exit 1; }
-          [ "$(retry cast chain-id $R)" = "8453" ] || fail "chain id"
-          [ "$(retry cast call "$EXECUTOR" 'feeBps()(uint16)' $R)" = "25" ] || fail "feeBps != 25"
-          [ "$(retry cast call "$EXECUTOR" 'MAX_FEE_BPS()(uint16)' $R)" = "100" ] || fail "cap != 100"
-          [ "$(retry cast call "$EXECUTOR" 'FEE_TIMELOCK_SECONDS()(uint48)' $R)" = "172800" ] || fail "timelock != 48h"
-          [ "$(retry cast call "$EXECUTOR" 'pendingEffectiveAt()(uint48)' $R)" = "0" ] || fail "pending change at birth"
-          [ "$(lc "$(retry cast call "$EXECUTOR" 'feeRecipient()(address)' $R)")" = "0x96f7fb5c4277bd1190fb6ef4820ebc96ba6964a4" ] || fail "recipient pin"
-          [ "$(lc "$(retry cast call "$EXECUTOR" 'owner()(address)' $R)")" = "$(lc "$SWAP_EXECUTOR_OWNER")" ] || fail "owner != governance multisig"
-          echo "::notice title=Swap executor verified on Base Mainnet::$EXECUTOR"
-      - name: Source verification (Basescan, only if key present)
-        env:
-          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
-        continue-on-error: true
-        run: |
-          [ -n "$ETHERSCAN_API_KEY" ] || { echo "::notice::ETHERSCAN_API_KEY not set - skipping source verification"; exit 0; }
-          forge verify-contract "$EXECUTOR" contracts/swap/MPGRSwapExecutor.sol:MPGRSwapExecutor --chain 8453 \
-            --verifier etherscan --etherscan-api-key "$ETHERSCAN_API_KEY" --watch || true
-      - name: Upload sealed manifest + PR comment (activation stays manual)
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          {
-            echo "<!-- mpgr-swap-executor-base-mainnet -->"
-            echo "## MPGR Swap Executor - Base Mainnet (8453)"
-            if [ -f "$OUT_DIR/mpgr-swap-executor.json" ] \
-              && jq -e '.deployTx | test("^0x[0-9a-fA-F]{64}$")' "$OUT_DIR/mpgr-swap-executor.json" >/dev/null \
-              && jq -e '.deployBlock > 0' "$OUT_DIR/mpgr-swap-executor.json" >/dev/null \
-              && ! grep -q 'pending-record' "$OUT_DIR/mpgr-swap-executor.json"; then
-              echo
-              echo "Deployed, sealed with the real receipt and pin-verified. **Routing is NOT"
-              echo "activated**: a human must review this manifest and commit it into"
-              echo "lib/swap/swap-executor-config.ts separately."
-              echo
-              echo '```json'
-              jq . "$OUT_DIR/mpgr-swap-executor.json"
-              echo '```'
-            else
-              echo
-              echo "No sealed manifest: deployment did not complete (preflight/gate failure or"
-              echo "broadcast error). Nothing is claimed; see job logs above."
-            fi
-          } > /tmp/swap-summary.md
-          cat /tmp/swap-summary.md >> "$GITHUB_STEP_SUMMARY"
-          gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --body-file /tmp/swap-summary.md || true
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mpgr-swap-executor-base-mainnet
-          path: |
-            deployments/base-mainnet/
-            broadcast/DeployMPGRSwapExecutorBaseMainnet.s.sol/8453/run-latest.json
-          if-no-files-found: warn
+          echo "::notice title=Deployment path::gates only - actual deployment requires deploy-swap-executor-trusted.yml dispatched from the default branch with owner-pinned SWAP_DEPLOY_REF, environment approval, and an open committed gate."

@@ -1,0 +1,231 @@
+name: Deploy MPGR Swap Executor (trusted pinned SHA)
+
+# THE ONLY workflow that can broadcast the MPGRSwapExecutor deployment.
+#
+# TRUST MODEL (docs/PR113-DEPLOY-TRUST-REVIEW.md):
+#   1. Dispatchable ONLY from the protected default branch (`main`) and only
+#      with the explicit confirmation input. A workflow file from any PR head
+#      can never reach these steps: GitHub uses the dispatched ref's file, and
+#      this file exists and runs only on main.
+#   2. The code that executes WITH the production deployer key is NOT the
+#      dispatched working tree: the deploy job checks out the exact
+#      owner-pinned commit SHA from repo variable SWAP_DEPLOY_REF and proves
+#      `git rev-parse HEAD == pin` in a step that has NO secret in scope,
+#      before any secret-bearing step runs.
+#   3. The pin must be an ancestor of main (owner-reviewed, merged code;
+#      CODEOWNERS covers every deployment-critical path).
+#   4. resolve-pin fails closed BEFORE the environment approval prompt when:
+#      the pin is missing/malformed/not on main, the committed gate
+#      (swapExecutorDeployEnabled) is not true AT THE PIN, required pipeline
+#      files are absent at the pin, or a deployment manifest already exists at
+#      the pin (duplicate-deployment guard).
+#   5. The deploy job runs in environment `base-mainnet` (required reviewers,
+#      admin bypass disabled, prevent self-review). Human approval is enforced
+#      by GitHub; nothing here can manufacture it.
+#   6. After approval: scripts/swap-deploy/preflight.sh (FROM THE PINNED SHA)
+#      re-checks everything against the real chain - committed gate, chain id
+#      8453, fresh deployer nonce 0, owner != deployer, and a GENUINE Safe
+#      verification of SWAP_EXECUTOR_OWNER (canonical singleton + threshold +
+#      owners; bytecode alone insufficient) - then exactly one broadcast, then
+#      finalize-manifest.sh seals the manifest from the real receipt with
+#      on-chain pin re-reads. Secrets are environment-scoped to this job only.
+#
+# Owner configuration required before this workflow can succeed (values set by
+# the owner in GitHub settings; never in chat):
+#   repo variable  SWAP_DEPLOY_REF                          exact reviewed commit SHA on main
+#   env `base-mainnet` secret   SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY (fresh nonce-0 EOA key)
+#   env `base-mainnet` variable SWAP_EXECUTOR_OWNER         (deployed governance Safe on Base)
+#   optional env secret BASE_MAINNET_RPC_URL (default https://mainnet.base.org)
+#   optional env secret ETHERSCAN_API_KEY (Basescan source verification)
+#
+# Routing activation is a SEPARATE later human step (commit the sealed manifest
+# into lib/swap/swap-executor-config.ts after review). This workflow never
+# edits app config, never merges, never opens gates.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_deployment:
+        description: Type DEPLOY_ONE_MPGR_SWAP_EXECUTOR to request one deployment attempt
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-swap-executor-trusted
+  cancel-in-progress: false
+
+jobs:
+  resolve-pin:
+    # No environment, no production secrets: this job only resolves and
+    # validates the owner-pinned trusted SHA and fails closed early.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm_deployment == 'DEPLOY_ONE_MPGR_SWAP_EXECUTOR'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.pin.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve and validate the owner-pinned trusted SHA
+        id: pin
+        env:
+          PIN: ${{ vars.SWAP_DEPLOY_REF }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error title=Trusted-pin resolution failed::$1"; exit 1; }
+          echo "$PIN" | grep -Eq '^[0-9a-f]{40}$' || fail "repo variable SWAP_DEPLOY_REF is not a full 40-hex commit SHA (owner must set it to the exact reviewed commit on main)"
+          git cat-file -e "$PIN^{commit}" || fail "pinned commit $PIN does not exist in this repository"
+          git merge-base --is-ancestor "$PIN" origin/main || fail "pinned commit $PIN is NOT an ancestor of the protected default branch - only owner-reviewed merged code may deploy"
+          for F in contracts/swap/MPGRSwapExecutor.sol script/DeployMPGRSwapExecutorBaseMainnet.s.sol scripts/swap-deploy/preflight.sh scripts/swap-deploy/finalize-manifest.sh scripts/swap-deploy/safe-check.sh deployments/base-mainnet/deploy-config.json; do
+            git cat-file -e "$PIN:$F" || fail "required file $F missing at pinned commit"
+          done
+          GATE="$(git show "$PIN:deployments/base-mainnet/deploy-config.json" | jq -r '.swapExecutorDeployEnabled')"
+          [ "$GATE" = "true" ] || fail "committed deployment gate is CLOSED at the pinned commit (swapExecutorDeployEnabled=$GATE) - the owner must open it via a reviewed commit and re-pin"
+          if git cat-file -e "$PIN:deployments/base-mainnet/mpgr-swap-executor.json" 2>/dev/null; then
+            fail "deployment manifest already exists at the pinned commit - refusing a duplicate deployment"
+          fi
+          echo "sha=$PIN" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Trusted pin resolved::$PIN (ancestor of main, gate open at pin, no manifest at pin)"
+
+  deploy:
+    needs: resolve-pin
+    environment: base-mainnet
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Job-scoped least privilege: read code; write ONLY to post the PR
+      # deployment summary comment. resolve-pin needs nothing beyond read.
+      contents: read
+      pull-requests: write
+    env:
+      PINNED_SHA: ${{ needs.resolve-pin.outputs.sha }}
+      OUT_DIR: deployments/base-mainnet
+    steps:
+      - name: Check out the EXACT owner-pinned trusted SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.resolve-pin.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify checkout equals the pin BEFORE any secret is in scope
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          echo "checked out: $HEAD_SHA"
+          echo "pinned     : $PINNED_SHA"
+          [ "$HEAD_SHA" = "$PINNED_SHA" ] || { echo "::error::checkout does not match the owner-pinned trusted SHA"; exit 1; }
+          git status --porcelain | grep -q . && { echo "::error::working tree is not clean at pinned SHA"; exit 1; } || true
+          echo "::notice title=Trusted code verified::executing deployment pipeline from reviewed commit $PINNED_SHA"
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: stable
+      - name: Install Solidity dependencies (pinned, same as CI)
+        run: |
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+      - name: Preflight against the REAL chain (fail closed; includes genuine-Safe owner verification)
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
+          MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true"
+          SWAP_EXECUTOR_OWNER: ${{ vars.SWAP_EXECUTOR_OWNER }}
+        run: bash scripts/swap-deploy/preflight.sh
+      - name: Deploy (single broadcast, only after pin verification + human environment approval + preflight)
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          BASE_MAINNET_DEPLOYER_PRIVATE_KEY: ${{ secrets.SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY }}
+          MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true"
+          SWAP_EXECUTOR_OWNER: ${{ vars.SWAP_EXECUTOR_OWNER }}
+        run: |
+          set -euo pipefail
+          forge script script/DeployMPGRSwapExecutorBaseMainnet.s.sol:DeployMPGRSwapExecutorBaseMainnet \
+            --rpc-url "$BASE_MAINNET_RPC_URL" --private-key "$BASE_MAINNET_DEPLOYER_PRIVATE_KEY" \
+            --broadcast --slow -vv | tee broadcast.txt
+      - name: Seal manifest with the real tx receipt + on-chain pin re-reads
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+        run: |
+          set -euo pipefail
+          bash scripts/swap-deploy/finalize-manifest.sh "$BASE_MAINNET_RPC_URL"
+          jq -r '"EXECUTOR=\(.executor)\nDEPLOY_TX=\(.deployTx)\nDEPLOY_BLOCK=\(.deployBlock)"' "$OUT_DIR/mpgr-swap-executor.json" | tee -a "$GITHUB_ENV"
+      - name: Independent on-chain verification of governance pins
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          SWAP_EXECUTOR_OWNER: ${{ vars.SWAP_EXECUTOR_OWNER }}
+        run: |
+          set -euo pipefail
+          retry() { local a out; for a in 1 2 3 4 5 6; do if out="$("$@" 2>/dev/null)"; then printf '%s\n' "$out"; return 0; fi; sleep $((a * 2)); done; echo "::error::RPC call failed: $*" >&2; return 1; }
+          R="--rpc-url $BASE_MAINNET_RPC_URL"
+          lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+          strip() { sed 's/ *\[.*//' | tr -d '[:space:]'; }
+          fail() { echo "::error title=Post-deploy check failed::$1"; exit 1; }
+          [ "$(retry cast chain-id $R | strip)" = "8453" ] || fail "chain id"
+          [ "$(retry cast call "$EXECUTOR" 'feeBps()(uint16)' $R | strip)" = "25" ] || fail "feeBps != 25"
+          [ "$(retry cast call "$EXECUTOR" 'MAX_FEE_BPS()(uint16)' $R | strip)" = "100" ] || fail "cap != 100"
+          [ "$(retry cast call "$EXECUTOR" 'FEE_TIMELOCK_SECONDS()(uint48)' $R | strip)" = "172800" ] || fail "timelock != 48h"
+          [ "$(retry cast call "$EXECUTOR" 'pendingEffectiveAt()(uint48)' $R | strip)" = "0" ] || fail "pending change at birth"
+          [ "$(lc "$(retry cast call "$EXECUTOR" 'feeRecipient()(address)' $R | strip)")" = "0x96f7fb5c4277bd1190fb6ef4820ebc96ba6964a4" ] || fail "recipient pin"
+          [ "$(lc "$(retry cast call "$EXECUTOR" 'owner()(address)' $R | strip)")" = "$(lc "$SWAP_EXECUTOR_OWNER")" ] || fail "owner != governance Safe"
+          bash scripts/swap-deploy/safe-check.sh "$SWAP_EXECUTOR_OWNER" "$BASE_MAINNET_RPC_URL" || fail "owner Safe re-verification failed"
+          echo "::notice title=Swap executor verified on Base Mainnet::$EXECUTOR"
+      - name: Source verification (Basescan, only if key present)
+        env:
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+        continue-on-error: true
+        run: |
+          [ -n "$ETHERSCAN_API_KEY" ] || { echo "::notice::ETHERSCAN_API_KEY not set - skipping source verification"; exit 0; }
+          forge verify-contract "$EXECUTOR" contracts/swap/MPGRSwapExecutor.sol:MPGRSwapExecutor --chain 8453 \
+            --verifier etherscan --etherscan-api-key "$ETHERSCAN_API_KEY" --watch || true
+      - name: Upload sealed manifest + report on the pin's PR (activation stays manual)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          {
+            echo "<!-- mpgr-swap-executor-base-mainnet -->"
+            echo "## MPGR Swap Executor - Base Mainnet (8453) - trusted pinned deployment"
+            echo
+            echo "Pinned trusted commit: \`$PINNED_SHA\`"
+            if [ -f "$OUT_DIR/mpgr-swap-executor.json" ] \
+              && jq -e '.deployTx | test("^0x[0-9a-fA-F]{64}$")' "$OUT_DIR/mpgr-swap-executor.json" >/dev/null \
+              && jq -e '.deployBlock > 0' "$OUT_DIR/mpgr-swap-executor.json" >/dev/null \
+              && ! grep -q 'pending-record' "$OUT_DIR/mpgr-swap-executor.json"; then
+              echo
+              echo "Deployed, sealed with the real receipt and pin-verified. **Routing is NOT"
+              echo "activated**: a human must review this manifest and commit it into"
+              echo "lib/swap/swap-executor-config.ts separately."
+              echo
+              echo '```json'
+              jq . "$OUT_DIR/mpgr-swap-executor.json"
+              echo '```'
+            else
+              echo
+              echo "No sealed manifest: deployment did not complete (pin/preflight/gate failure or"
+              echo "broadcast error). Nothing is claimed; see job logs above."
+            fi
+          } > /tmp/swap-summary.md
+          cat /tmp/swap-summary.md >> "$GITHUB_STEP_SUMMARY"
+          PR_NUMBER="$(gh api "repos/$GITHUB_REPOSITORY/commits/$PINNED_SHA/pulls" --jq '.[0].number // empty' 2>/dev/null || true)"
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/swap-summary.md || true
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: mpgr-swap-executor-base-mainnet
+          path: |
+            deployments/base-mainnet/
+            broadcast/DeployMPGRSwapExecutorBaseMainnet.s.sol/8453/run-latest.json
+          if-no-files-found: warn

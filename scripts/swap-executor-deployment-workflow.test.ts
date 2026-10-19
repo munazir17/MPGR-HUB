@@ -3,30 +3,41 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 
-// Regression suite for the DEDICATED swap-executor deployment path
-// (.github/workflows/deploy-swap-executor-base-mainnet.yml + scripts/swap-deploy/*).
-// Proves fail-closed behaviour OFFLINE: with either deployment gate false, no
-// broadcast and no manifest finalization can occur, and no side-effect files
-// are left behind. Runs without network, without anvil, and without secrets.
+// Regression suite for the TRUSTED-CODE swap-executor deployment architecture:
+//   - PR-side workflow (deploy-swap-executor-base-mainnet.yml): gates/rehearsal
+//     ONLY, structurally incapable of deployment, zero production secrets.
+//   - Trusted workflow (deploy-swap-executor-trusted.yml): dispatch-from-main
+//     only, executes the owner-pinned SHA (repo variable SWAP_DEPLOY_REF)
+//     verified BEFORE any secret is in scope, reviewer-protected environment.
+//   - Fail-closed behaviour proven OFFLINE by executing the real scripts: with
+//     either gate false, no broadcast and no manifest finalization can occur.
+// Runs without network, without anvil, and without secrets.
 
 const require = createRequire(import.meta.url);
 const yaml = require("js-yaml") as { load: (text: string) => unknown };
 
-const deployWorkflowText = readFileSync(".github/workflows/deploy-swap-executor-base-mainnet.yml", "utf8");
+const prWorkflowText = readFileSync(".github/workflows/deploy-swap-executor-base-mainnet.yml", "utf8");
+const trustedText = readFileSync(".github/workflows/deploy-swap-executor-trusted.yml", "utf8");
 const forkWorkflowText = readFileSync(".github/workflows/swap-fork-tests-base-mainnet.yml", "utf8");
 const legacyWorkflowText = readFileSync(".github/workflows/deploy-executor-base-mainnet.yml", "utf8");
 const deployConfig = JSON.parse(readFileSync("deployments/base-mainnet/deploy-config.json", "utf8"));
 const libConfigText = readFileSync("lib/swap/swap-executor-config.ts", "utf8");
+const contractText = readFileSync("contracts/swap/MPGRSwapExecutor.sol", "utf8");
 const preflightSh = readFileSync("scripts/swap-deploy/preflight.sh", "utf8");
 const rehearseSh = readFileSync("scripts/swap-deploy/rehearse.sh", "utf8");
+const safeCheckSh = readFileSync("scripts/swap-deploy/safe-check.sh", "utf8");
 const deployScript = readFileSync("script/DeployMPGRSwapExecutorBaseMainnet.s.sol", "utf8");
+const codeowners = readFileSync(".github/CODEOWNERS", "utf8");
 
-type Job = { name?: string; needs?: string | string[]; environment?: string | { name: string }; steps?: Array<{ name?: string; run?: string; env?: Record<string, string> }> };
+type Step = { name?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> };
+type Job = { if?: string; needs?: string | string[]; environment?: string | { name: string }; outputs?: Record<string, string>; steps?: Step[] };
 type Workflow = { on?: unknown; jobs?: Record<string, Job> };
-const deployWorkflow = yaml.load(deployWorkflowText) as Workflow;
+const prWorkflow = yaml.load(prWorkflowText) as Workflow;
+const trusted = yaml.load(trustedText) as Workflow;
 
 const STAGING = "deployments/base-mainnet/mpgr-swap-executor.staging.json";
 const FINAL = "deployments/base-mainnet/mpgr-swap-executor.json";
+const SECRET = "SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY";
 
 function runExpectFail(cmd: string, args: string[], env: Record<string, string>): string {
   try {
@@ -35,7 +46,7 @@ function runExpectFail(cmd: string, args: string[], env: Record<string, string>)
       env: { ...process.env, ...env },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: 120_000,
+      timeout: 180_000,
     });
     throw new Error(`expected failure but command succeeded: ${out.slice(0, 200)}`);
   } catch (e) {
@@ -62,52 +73,129 @@ describe("committed production gates stay closed", () => {
     expect(existsSync(FINAL)).toBe(false);
     expect(existsSync(STAGING)).toBe(false);
   });
-  it("cannot emit the old 'pending-record' placeholder and actively guards against it", () => {
-    // The deploy script (which WRITES the staging manifest) must not contain the
-    // placeholder at all; the sealing/verification layers must carry the guard.
+  it("cannot emit the old placeholder and actively guards against it", () => {
     expect(deployScript).not.toContain("pending-record");
     expect(preflightSh).not.toContain("pending-record");
     const finalizeSh = readFileSync("scripts/swap-deploy/finalize-manifest.sh", "utf8");
     expect(finalizeSh).toContain("grep -q 'pending-record'");
     expect(rehearseSh).toContain("grep -q 'pending-record'");
-    expect(deployWorkflowText).toContain("grep -q 'pending-record'");
   });
 });
 
-describe("deployment workflow structure", () => {
+describe("fee policy pins are consistent across config, lib and contract", () => {
+  it("25 bps initial, 100 bps cap, 48h timelock, pinned treasury recipient", () => {
+    expect(deployConfig.feeBps).toBe(25);
+    expect(deployConfig.maxFeeBps).toBe(100);
+    const recipient = "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4";
+    expect(deployConfig.feeRecipient).toBe(recipient);
+    expect(libConfigText).toContain(`export const SWAP_FEE_RECIPIENT: Address = "${recipient}";`);
+    expect(deployScript).toContain(`address internal constant FEE_RECIPIENT_PIN = ${recipient};`);
+    expect(deployScript).toContain("uint16 internal constant INITIAL_FEE_BPS = 25;");
+    expect(contractText).toContain("uint16 public constant MAX_FEE_BPS = 100;");
+    expect(contractText).toContain("uint48 public constant FEE_TIMELOCK_SECONDS = 48 hours;");
+  });
+});
+
+describe("PR-side workflow is gates-only and structurally incapable of deployment", () => {
   it("triggers only on the dedicated label from the same repository", () => {
-    const on = deployWorkflow.on as Record<string, unknown>;
+    const on = (prWorkflow.on ?? (prWorkflow as Record<string, unknown>).true) as Record<string, unknown>;
     expect(Object.keys(on)).toEqual(["pull_request"]);
-    expect(deployWorkflowText).toContain("deploy-swap-base-mainnet");
-    expect(deployWorkflowText).toContain("head.repo.full_name == github.repository");
+    expect(prWorkflowText).toContain("deploy-swap-base-mainnet");
+    expect(prWorkflowText).toContain("head.repo.full_name == github.repository");
   });
-  it("gives the protected environment ONLY to the deploy job and production secrets to no other job", () => {
-    const jobs = deployWorkflow.jobs!;
-    expect(jobs.deploy.needs).toBe("gates");
-    expect(typeof jobs.deploy.environment === "string" ? jobs.deploy.environment : jobs.deploy.environment?.name).toBe("base-mainnet");
-    expect(jobs.gates.environment).toBeUndefined();
-    const gatesText = JSON.stringify(jobs.gates);
-    expect(gatesText).not.toContain("SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY");
-    // The dedicated secret name appears in exactly one workflow file overall.
-    expect(deployWorkflowText).toContain("SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY");
-    expect(forkWorkflowText).not.toContain("SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY");
-    expect(legacyWorkflowText).not.toContain("SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY");
+  it("has NO environment and NO production secret anywhere in the file", () => {
+    for (const [name, job] of Object.entries(prWorkflow.jobs!)) {
+      expect(job.environment, `job ${name} must not declare an environment`).toBeUndefined();
+    }
+    expect(prWorkflowText).not.toContain(SECRET);
+    expect(prWorkflowText).not.toContain("--broadcast"); // rehearsal broadcasts via rehearse.sh to local anvil only
+    expect(prWorkflowText).toContain("rehearse.sh");
+  });
+  it("keeps the fork-tests workflow read-only and the legacy workflow quarantined", () => {
+    expect(forkWorkflowText).not.toContain("--broadcast");
+    expect(forkWorkflowText).not.toContain("PRIVATE_KEY");
+    expect(legacyWorkflowText).not.toContain(SECRET);
     expect(legacyWorkflowText).not.toContain("contracts/swap");
-    expect(deployWorkflowText).not.toContain("DeployMPGRExecutorBaseMainnet.s.sol");
+    expect(prWorkflowText).not.toContain("DeployMPGRExecutorBaseMainnet.s.sol");
+    expect(trustedText).not.toContain("DeployMPGRExecutorBaseMainnet.s.sol");
   });
-  it("runs preflight strictly before the broadcast step, and finalize before any manifest claim", () => {
-    const steps = deployWorkflow.jobs!.deploy.steps!;
+});
+
+describe("trusted deployment workflow executes only owner-pinned, protected-branch code", () => {
+  const jobs = trusted.jobs!;
+  const resolve = jobs["resolve-pin"];
+  const deploy = jobs["deploy"];
+
+  it("is dispatch-only, guarded to the default branch and an explicit confirmation input", () => {
+    const on = (trusted.on ?? (trusted as Record<string, unknown>).true) as Record<string, unknown>;
+    expect(Object.keys(on)).toEqual(["workflow_dispatch"]);
+    expect(resolve.if).toContain("github.ref == 'refs/heads/main'");
+    expect(resolve.if).toContain("DEPLOY_ONE_MPGR_SWAP_EXECUTOR");
+  });
+  it("resolve-pin runs with no environment and no production secret, and validates the pin", () => {
+    expect(resolve.environment).toBeUndefined();
+    expect(JSON.stringify(resolve)).not.toContain(SECRET);
+    expect(JSON.stringify(resolve)).toContain("vars.SWAP_DEPLOY_REF");
+    const run = resolve.steps!.map(s => s.run ?? "").join("\n");
+    expect(run).toContain("merge-base --is-ancestor"); // pin must be reviewed code on main
+    expect(run).toContain("swapExecutorDeployEnabled"); // gate must be open AT the pin
+    expect(run).toContain("mpgr-swap-executor.json"); // duplicate-deployment guard at the pin
+  });
+  it("deploy job is environment-protected, needs resolve-pin, and checks out the pin", () => {
+    const env = typeof deploy.environment === "string" ? deploy.environment : deploy.environment?.name;
+    expect(env).toBe("base-mainnet");
+    expect(deploy.needs).toBe("resolve-pin");
+    expect(String(deploy.steps![0].with?.ref)).toBe("${{ needs.resolve-pin.outputs.sha }}");
+  });
+  it("verifies HEAD == pin in a secret-free step BEFORE any secret enters scope", () => {
+    const steps = deploy.steps!;
+    const verifyIdx = steps.findIndex(s => (s.name ?? "").startsWith("Verify checkout equals"));
+    expect(verifyIdx).toBe(1);
+    expect(JSON.stringify(steps[verifyIdx].env ?? {})).not.toContain(SECRET);
+    expect(steps[verifyIdx].run).toContain("git rev-parse HEAD");
+    const firstSecretIdx = steps.findIndex(s => JSON.stringify(s.env ?? {}).includes(SECRET));
+    expect(firstSecretIdx).toBeGreaterThan(verifyIdx);
     const names = steps.map(s => s.name ?? "");
     const pre = names.findIndex(n => n.startsWith("Preflight"));
     const bc = names.findIndex(n => n.startsWith("Deploy (single broadcast"));
     const seal = names.findIndex(n => n.startsWith("Seal manifest"));
-    expect(pre).toBeGreaterThanOrEqual(0);
-    expect(bc).toBeGreaterThan(pre);
-    expect(seal).toBeGreaterThan(bc);
+    expect(verifyIdx).toBeLessThan(pre);
+    expect(pre).toBeLessThan(bc);
+    expect(bc).toBeLessThan(seal);
   });
-  it("keeps the fork-tests workflow read-only (no broadcast, no deploy secrets)", () => {
-    expect(forkWorkflowText).not.toContain("--broadcast");
-    expect(forkWorkflowText).not.toContain("PRIVATE_KEY");
+  it("pins every action to a full immutable SHA in both swap deployment workflows", () => {
+    for (const text of [prWorkflowText, trustedText]) {
+      const uses = [...text.matchAll(/uses:\s*(\S+)/g)].map(m => m[1]);
+      expect(uses.length).toBeGreaterThan(0);
+      for (const u of uses) expect(u, `unpinned action ${u}`).toMatch(/@[0-9a-f]{40}$/);
+    }
+  });
+  it("requires a genuine Safe owner verification inside preflight before broadcast", () => {
+    expect(preflightSh).toContain("safe-check.sh");
+    expect(safeCheckSh).toContain("getThreshold()(uint256)");
+    expect(safeCheckSh).toContain("getOwners()(address[])");
+    expect(safeCheckSh).toContain("VERSION()(string)");
+    // canonical Base Safe singletons (1.3.0, 1.3.0 L2, 1.4.1, 1.4.1 L2)
+    expect(safeCheckSh).toContain("0xd9db270c1b5e3bd161e8c8503c55ceabee709552");
+    expect(safeCheckSh).toContain("0x29fcb43b46531bca003ddc8fcb67ffe91900c762");
+    expect(trustedText).toContain("preflight.sh");
+  });
+});
+
+describe("CODEOWNERS covers every deployment-critical path", () => {
+  it("assigns the owner to workflows, pipeline scripts, contracts, manifests and activation config", () => {
+    for (const path of [
+      "/.github/workflows/",
+      "/scripts/swap-deploy/",
+      "/contracts/swap/",
+      "/script/",
+      "/deployments/",
+      "/lib/swap/swap-executor-config.ts",
+      "/foundry.toml",
+    ]) {
+      expect(codeowners, path).toContain(path);
+    }
+    expect(codeowners).toContain("@munazir17");
   });
 });
 
@@ -129,8 +217,13 @@ describe("fail-closed execution regressions (offline, no side effects)", () => {
       SWAP_EXECUTOR_OWNER: "0x0000000000000000000000000000000000000001",
       MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED: "true",
     });
-    expect(out).toContain("SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY");
+    expect(out).toContain(SECRET);
   });
+  it("safe-check.sh fails closed when the chain cannot be read", () => {
+    // The script retries the RPC 5x with backoff (~30s) before failing closed.
+    const out = runExpectFail("bash", ["scripts/swap-deploy/safe-check.sh", "0x0000000000000000000000000000000000000001", "https://invalid.example"], {});
+    expect(out).toContain("SAFE-CHECK FAIL");
+  }, 90_000);
   it("rehearse.sh without the working-tree override fails closed while the committed gate is false", () => {
     const out = runExpectFail("bash", ["scripts/swap-deploy/rehearse.sh", ""], {
       SWAP_REHEARSAL_OVERRIDE_GATE: "false",
@@ -155,9 +248,9 @@ describe("fail-closed execution regressions (offline, no side effects)", () => {
   });
 });
 
-describe("solidity preflight enforcement (source-level pins; behavioural tests in test/swap/DeployPreflight.t.sol)", () => {
+describe("solidity preflight enforcement (behavioural tests in test/swap/DeployPreflight.t.sol)", () => {
   it("requires nonce 0, multisig-contract owner and owner != deployer before broadcast", () => {
-    expect(deployScript).toContain('require(vm.getNonce(deployer) == 0');
+    expect(deployScript).toContain("require(vm.getNonce(deployer) == 0");
     expect(deployScript).toContain("preflight: owner must be the governance multisig, not the ephemeral deployer");
     expect(deployScript).toContain("preflight: SWAP_EXECUTOR_OWNER must be a deployed multisig contract on Base");
     const broadcastAt = deployScript.indexOf("vm.startBroadcast()");

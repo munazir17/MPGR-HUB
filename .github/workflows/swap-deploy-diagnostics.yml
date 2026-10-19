@@ -54,11 +54,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       BASE_RPC: https://mainnet.base.org
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
         with:
           version: stable
 
@@ -90,7 +90,13 @@ jobs:
             || { echo "::error::SWAP_PATH_EXECUTOR_DEPLOYMENT is not null"; exit 1; }
           test ! -f deployments/base-mainnet/mpgr-swap-executor.json || { echo "::error::final swap manifest exists unexpectedly"; exit 1; }
           test ! -f deployments/base-mainnet/mpgr-swap-executor.staging.json || { echo "::error::staging swap manifest exists unexpectedly"; exit 1; }
-          echo "::notice title=Gates::both deployment gates false, routing null, no manifests on disk"
+          FEE_REC="$(jq -r '.feeRecipient' deployments/base-mainnet/deploy-config.json)"
+          [ "$(echo "$FEE_REC" | tr 'A-Z' 'a-z')" = "0x96f7fb5c4277bd1190fb6ef4820ebc96ba6964a4" ] || { echo "::error::fee recipient pin drifted: $FEE_REC"; exit 1; }
+          [ "$(jq -r '.feeBps' deployments/base-mainnet/deploy-config.json)" = "25" ] || { echo "::error::feeBps pin drifted"; exit 1; }
+          [ "$(jq -r '.maxFeeBps' deployments/base-mainnet/deploy-config.json)" = "100" ] || { echo "::error::maxFeeBps pin drifted"; exit 1; }
+          grep -q 'export const SWAP_FEE_RECIPIENT: Address = "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4";' lib/swap/swap-executor-config.ts || { echo "::error::lib fee recipient pin drifted"; exit 1; }
+          grep -q 'address internal constant FEE_RECIPIENT_PIN = 0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4;' script/DeployMPGRSwapExecutorBaseMainnet.s.sol || { echo "::error::deploy-script fee recipient pin drifted"; exit 1; }
+          echo "::notice title=Gates::both deployment gates false, routing null, no manifests on disk, fee policy pins consistent (25bps init / 100bps cap / 0x96F7...64A4)"
 
       - name: Environment protection rules (API read; no environment access)
         run: |
@@ -145,22 +151,46 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, sys, yaml
-          wf = yaml.safe_load(open(".github/workflows/deploy-swap-executor-base-mainnet.yml"))
-          jobs = wf["jobs"]
+          import json, re, sys, yaml
           errs = []
-          if "environment" in jobs.get("gates", {}): errs.append("gates job must NOT have an environment")
-          env = jobs.get("deploy", {}).get("environment")
-          env_name = env if isinstance(env, str) else (env or {}).get("name")
-          if env_name != "base-mainnet": errs.append("deploy job must use environment base-mainnet")
-          if jobs.get("deploy", {}).get("needs") != "gates": errs.append("deploy must need gates")
-          gates_txt = json.dumps(jobs["gates"])
-          if "SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY" in gates_txt: errs.append("production secret referenced in gates job")
-          names = [s.get("name", "") for s in jobs["deploy"]["steps"]]
-          pre = next((i for i, n in enumerate(names) if n.startswith("Preflight")), -1)
-          bc = next((i for i, n in enumerate(names) if n.startswith("Deploy (single broadcast")), -1)
-          seal = next((i for i, n in enumerate(names) if n.startswith("Seal manifest")), -1)
-          if not (0 <= pre < bc < seal): errs.append("step order must be preflight < broadcast < seal")
+          pr_wf = yaml.safe_load(open(".github/workflows/deploy-swap-executor-base-mainnet.yml"))
+          pr_txt = open(".github/workflows/deploy-swap-executor-base-mainnet.yml").read()
+          # PR-side workflow: gates only, no environment, no production secrets.
+          for jname, job in (pr_wf.get("jobs") or {}).items():
+              if "environment" in job: errs.append(f"PR-side job {jname} must NOT declare an environment")
+          if "SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY" in pr_txt: errs.append("production secret referenced in PR-side workflow")
+          if "pull_request" not in (pr_wf.get("on") or pr_wf.get(True) or {}): errs.append("PR-side workflow must stay label-triggered")
+
+          t_wf = yaml.safe_load(open(".github/workflows/deploy-swap-executor-trusted.yml"))
+          t_txt = open(".github/workflows/deploy-swap-executor-trusted.yml").read()
+          on = t_wf.get("on") or t_wf.get(True) or {}
+          if list(on.keys()) != ["workflow_dispatch"]: errs.append("trusted workflow must be dispatch-only")
+          jobs = t_wf["jobs"]
+          rp, dj = jobs.get("resolve-pin"), jobs.get("deploy")
+          if not rp or not dj: errs.append("trusted workflow must have resolve-pin and deploy jobs")
+          else:
+              if "environment" in rp: errs.append("resolve-pin must NOT have an environment")
+              if "SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY" in json.dumps(rp): errs.append("resolve-pin must not see the deployer secret")
+              env = dj.get("environment"); env_name = env if isinstance(env, str) else (env or {}).get("name")
+              if env_name != "base-mainnet": errs.append("deploy job must use environment base-mainnet")
+              if dj.get("needs") != "resolve-pin": errs.append("deploy must need resolve-pin")
+              co = dj["steps"][0]
+              if str(co.get("with", {}).get("ref", "")) != "$" + "{{ needs.resolve-pin.outputs.sha }}"  # concat defeats Actions template expansion in this run block: errs.append("deploy must check out the owner-pinned SHA")
+              names = [st.get("name", "") for st in dj["steps"]]
+              v = next((i for i, n in enumerate(names) if n.startswith("Verify checkout equals")), -1)
+              pre = next((i for i, n in enumerate(names) if n.startswith("Preflight")), -1)
+              bc = next((i for i, n in enumerate(names) if n.startswith("Deploy (single broadcast")), -1)
+              seal = next((i for i, n in enumerate(names) if n.startswith("Seal manifest")), -1)
+              if not (0 <= v < pre < bc < seal): errs.append("step order must be verify-pin < preflight < broadcast < seal")
+              first_secret = next((i for i, st in enumerate(dj["steps"]) if "SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY" in json.dumps(st.get("env") or {})), 99)
+              if first_secret <= v: errs.append("a secret is in scope before the pin-verification step")
+          # main-ref + confirmation guards on the trusted workflow
+          if "refs/heads/main" not in t_txt: errs.append("trusted workflow must guard on the default branch")
+          if "DEPLOY_ONE_MPGR_SWAP_EXECUTOR" not in t_txt: errs.append("trusted workflow must require the explicit confirmation input")
+          # actions pinned to full SHAs in both swap deployment workflows
+          for f in (".github/workflows/deploy-swap-executor-base-mainnet.yml", ".github/workflows/deploy-swap-executor-trusted.yml"):
+              for m in re.finditer(r"uses:\s*(\S+)", open(f).read()):
+                  if not re.search(r"@[0-9a-f]{40}$", m.group(1)): errs.append(f"unpinned action {m.group(1)} in {f}")
           fork = open(".github/workflows/swap-fork-tests-base-mainnet.yml").read()
           if "--broadcast" in fork or "PRIVATE_KEY" in fork: errs.append("fork-tests workflow must stay read-only")
           legacy = open(".github/workflows/deploy-executor-base-mainnet.yml").read()
@@ -168,7 +198,7 @@ jobs:
           if errs:
               for e in errs: print("::error::", e)
               sys.exit(1)
-          print("::notice title=Trust structure::environment only on deploy job; gates secret-free; preflight<broadcast<seal; fork workflow read-only; legacy quarantined")
+          print("::notice title=Trust structure::PR-side workflow is gates-only and secret-free; trusted workflow is dispatch-from-main only, executes the owner-pinned SHA verified before any secret is in scope, environment-protected; actions SHA-pinned; fork read-only; legacy quarantined")
           PY
 
       - name: Owner Safe/multisig verification (only with explicit address input)
@@ -178,39 +208,10 @@ jobs:
           set -euo pipefail
           OWNER="$OWNER_ADDRESS"
           if [ -z "$OWNER" ]; then
-            echo "::notice title=Owner check skipped::re-run this workflow with owner_address set to the public SWAP_EXECUTOR_OWNER value to verify it is a genuine Safe (the variable itself is not readable by this token)"
+            echo "::notice title=Owner check skipped::re-run this workflow with owner_address set to the public SWAP_EXECUTOR_OWNER value; the binding verification also runs inside the trusted deployment preflight (scripts/swap-deploy/safe-check.sh) against the real configured owner"
             exit 0
           fi
-          echo "$OWNER" | grep -Eq '^0x[0-9a-fA-F]{40}$' || { echo "::error::owner_address is not a valid address"; exit 1; }
-          SIZE="$(cast codesize "$OWNER" --rpc-url "$BASE_RPC")"
-          [ "$SIZE" -gt 0 ] || { echo "::error::$OWNER has no bytecode on Base - not a multisig"; exit 1; }
-          # Safe proxies keep the implementation (singleton) address in storage slot 0.
-          SLOT0="$(cast storage "$OWNER" 0 --rpc-url "$BASE_RPC")"
-          SINGLETON="0x${SLOT0: -40}"
-          THRESHOLD="$(cast call "$OWNER" 'getThreshold()(uint256)' --rpc-url "$BASE_RPC" 2>/dev/null || echo FAIL)"
-          OWNERS="$(cast call "$OWNER" 'getOwners()(address[])' --rpc-url "$BASE_RPC" 2>/dev/null || echo FAIL)"
-          VERSION="$(cast call "$OWNER" 'VERSION()(string)' --rpc-url "$BASE_RPC" 2>/dev/null || echo FAIL)"
-          echo "singleton=$SINGLETON threshold=$THRESHOLD version=$VERSION"
-          echo "owners=$OWNERS"
-          case "$(echo "$SINGLETON" | tr 'A-Z' 'a-z')" in
-            0xd9db270c1b5e3bd161e8c8503c55ceabee709552) IMPL="GnosisSafe 1.3.0" ;;
-            0x3e5c63644e683549055b9be8653de26e0b4cd36e) IMPL="GnosisSafeL2 1.3.0" ;;
-            0x41675c099f32341bf84bfc5382af534df5c7461a) IMPL="Safe 1.4.1" ;;
-            0x29fcb43b46531bca003ddc8fcb67ffe91900c762) IMPL="SafeL2 1.4.1" ;;
-            *) IMPL="" ;;
-          esac
-          FAILED=0
-          [ -n "$IMPL" ] || { echo "::error::$OWNER is NOT a recognised Safe proxy (singleton $SINGLETON not a canonical Base Safe implementation) - bytecode presence alone is insufficient"; FAILED=1; }
-          [ "$THRESHOLD" != "FAIL" ] || { echo "::error::getThreshold() failed - not a functioning Safe"; FAILED=1; }
-          [ "$OWNERS" != "FAIL" ] || { echo "::error::getOwners() failed - not a functioning Safe"; FAILED=1; }
-          if [ "$FAILED" = "0" ]; then
-            echo "::notice title=Owner verified::$OWNER is a genuine $IMPL (VERSION=$VERSION) with threshold=$THRESHOLD"
-            if [ "$THRESHOLD" != "FAIL" ] && [ "$THRESHOLD" -lt 2 ] 2>/dev/null; then
-              echo "::notice title=Owner advisory::threshold is $THRESHOLD - consider >= 2 signers for governance ownership"
-            fi
-          else
-            exit 1
-          fi
+          bash scripts/swap-deploy/safe-check.sh "$OWNER" "$BASE_RPC"
 
       - name: Summary
         if: always()
