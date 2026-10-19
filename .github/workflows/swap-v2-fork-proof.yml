@@ -14,6 +14,7 @@ on:
         required: false
 permissions:
   contents: read
+  pull-requests: write
 concurrency:
   group: swap-v2-readonly-${{ github.ref }}
   cancel-in-progress: false
@@ -40,17 +41,22 @@ jobs:
       - name: Discover MPGR pool key from real Initialize event
         env:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
-        run: node scripts/swap-deploy-v2/discover-fork-fixtures.mjs
+        run: |
+          set -euo pipefail
+          node scripts/swap-deploy-v2/discover-fork-fixtures.mjs 2>&1 | tee v2-discovery.log
       - name: Real Base V2 fork suite only (no deployer secret or broadcast)
         env:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
         run: |
           set -euo pipefail
-          forge test --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol -vvv 2>&1 | tee v2-fork-proof.log
+          forge test --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol -vvv 2>&1 | node scripts/swap-deploy-v2/sanitize-log.mjs | tee v2-fork-proof.log
           forge test --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol --json > v2-fork-proof.json
           python3 scripts/swap-deploy-v2/require-fork-proof.py v2-fork-proof.json
       - name: Proof summary
         if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           echo "## Read-only V2 fork proof — $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
           echo 'No mainnet transactions. No deployment key mapped.' >> "$GITHUB_STEP_SUMMARY"
@@ -59,11 +65,21 @@ jobs:
             tail -180 v2-fork-proof.log >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
+          for f in v2-discovery.log v2-fork-proof.log; do
+            if [ -f "$f" ]; then
+              tail -200 "$f" | while IFS= read -r line; do echo "::notice::$line"; done
+            fi
+          done
+          if [ -n "$PR_NUMBER" ]; then
+            { echo "Read-only V2 fork proof: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"; echo; echo '```text'; cat v2-discovery.log v2-fork-proof.log 2>/dev/null | tail -240; echo '```'; } > /tmp/v2-proof-comment.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/v2-proof-comment.md
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: swap-v2-real-base-proof
           path: |
+            v2-discovery.log
             v2-fork-proof.log
             v2-fork-proof.json
             deployments/.local/v2-fork-fixtures.json

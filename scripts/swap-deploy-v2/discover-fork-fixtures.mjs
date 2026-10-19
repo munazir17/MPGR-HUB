@@ -4,6 +4,13 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 const rpcUrl = process.env.BASE_MAINNET_RPC_URL;
+function fatal(error) {
+  const message = String(error?.message ?? error).replaceAll(rpcUrl ?? 'UNSET_RPC', '[RPC]').replace(/[\r\n]/g, ' ');
+  console.error('::error::V2 real-pool discovery failed: '+message);
+  process.exit(1);
+}
+process.on('uncaughtException',fatal);
+process.on('unhandledRejection',fatal);
 const manager = '0x498581ff718922c3f8e6a244956af099b2652b2b';
 const mpgr = '0xb2000000000000000000008d204203177a78af01';
 const cast = (...args) => execFileSync('cast', args, {encoding:'utf8'}).trim();
