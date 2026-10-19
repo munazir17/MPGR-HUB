@@ -30,6 +30,7 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
     E ex;
     string fixtures;
     function setUp() public {
+        if(bytes(vm.envOr("BASE_MAINNET_RPC_URL",string(""))).length==0) { vm.skip(true); return; }
         fixtures=vm.readFile("deployments/.local/v2-fork-fixtures.json");
         vm.createSelectFork(vm.envString("BASE_MAINNET_RPC_URL"),vm.parseJsonUint(fixtures,".block"));
         assertEq(block.chainid,8453); assertGt(SAFE.code.length,0,"Safe absent on Base");
@@ -64,7 +65,15 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
     /// quote on restored live state. No fabricated rate or min-out of one.
     function execute(address input,uint256 gross,E.Hop[] memory h) external returns(uint256 out) {
         require(msg.sender==address(this));
-        deal(input,USER,gross);
+        if(input==MPGR) {
+            // B20 is a Base-native stateful precompile, not EVM bytecode.
+            // Acquire real MPGR from its live v4 pool, never etch/mock its code
+            // or guess its storage layout using stdStorage/deal.
+            E.Hop[] memory buy=new E.Hop[](1);buy[0]=mpgrHop();buy[0].tokenOut=MPGR;
+            vm.deal(USER,1 ether);
+            vm.prank(USER);ex.swapExactInput{value:1e14}(params(WETH,MPGR,1e14,MANAGER,1),buy,auth());
+            assertGe(IERC20(MPGR).balanceOf(USER),gross,"live funding buy yielded insufficient MPGR");
+        } else deal(input,USER,gross);
         vm.prank(USER); IERC20(input).approve(address(ex),gross);
         uint256 snap=vm.snapshotState();
         E.SwapParams memory p=params(input,h[h.length-1].tokenOut,gross,h[0].router,1);
@@ -122,6 +131,10 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
     }
     function testForkAerodromeNonMajorPairFee() public {
         assertTrue(direct(AERO,WETH,true),"No liquid Aerodrome AERO/WETH pool; NOT a pass");
+    }
+    function mpgrHop() internal view returns(E.Hop memory h) {
+        h.router=MANAGER;h.kind=E.RouterKind.UNISWAP_V4;h.pool=MANAGER;h.tokenOut=WETH;
+        h.v4Key=V4.PoolKey(vm.parseJsonAddress(fixtures,".mpgr.currency0"),vm.parseJsonAddress(fixtures,".mpgr.currency1"),uint24(vm.parseJsonUint(fixtures,".mpgr.fee")),int24(int256(vm.parseJsonUint(fixtures,".mpgr.tickSpacing"))),vm.parseJsonAddress(fixtures,".mpgr.hooks"));
     }
     function testForkMPGRV4FeeAndMinimum() public {
         V4.PoolKey memory key=V4.PoolKey(vm.parseJsonAddress(fixtures,".mpgr.currency0"),vm.parseJsonAddress(fixtures,".mpgr.currency1"),uint24(vm.parseJsonUint(fixtures,".mpgr.fee")),int24(int256(vm.parseJsonUint(fixtures,".mpgr.tickSpacing"))),vm.parseJsonAddress(fixtures,".mpgr.hooks"));
