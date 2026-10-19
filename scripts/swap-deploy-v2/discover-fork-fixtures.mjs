@@ -26,6 +26,7 @@ async function rpc(method, params) {
 const chain = await rpc('eth_chainId',[]); if (Number(chain)!==8453) throw Error('Not Base');
 if ((await rpc('eth_getCode',[manager,'latest']))==='0x') throw Error('PoolManager has no code');
 const latest = Number(await rpc('eth_blockNumber',[]));
+console.log('MPGR code prefix:', (await rpc('eth_getCode',[mpgr,'latest'])).slice(0,64));
 const hints = await fetch(`https://api.dexscreener.com/token-pairs/v1/base/${mpgr}`).then(r=>r.json());
 if (!Array.isArray(hints)) throw Error('Pool discovery hints unavailable');
 const candidates = hints.filter(p=>p.dexId==='uniswap' && /^0x[\da-f]{64}$/i.test(p.pairAddress));

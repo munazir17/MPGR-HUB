@@ -49,8 +49,8 @@ jobs:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
         run: |
           set -euo pipefail
-          forge test --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol -vvv 2>&1 | node scripts/swap-deploy-v2/sanitize-log.mjs | tee v2-fork-proof.log
-          forge test --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol --json > v2-fork-proof.json
+          forge test --evm-version prague --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol -vvv 2>&1 | node scripts/swap-deploy-v2/sanitize-log.mjs | tee v2-fork-proof.log
+          forge test --evm-version prague --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol --json > v2-fork-proof.json
           python3 scripts/swap-deploy-v2/require-fork-proof.py v2-fork-proof.json
       - name: Proof summary
         if: always()
