@@ -94,7 +94,8 @@ a main-ancestor SHA subsumes it). What now exists in this branch:
      fail-closed `preflight.sh` (fresh nonce-0 deployer, deployer ≠ owner,
      committed gate open, no duplicate manifest, chain 8453, and a genuine-Safe
      check of `SWAP_EXECUTOR_OWNER` via `safe-check.sh` — proxy code present,
-     canonical Safe singleton in storage slot 0, working
+     canonical Safe singleton in storage slot 0 whose runtime code hash matches
+     the safe-deployments registry for Base Mainnet, working
      `getThreshold`/`getOwners`/`VERSION`), one `--broadcast`, `finalize-manifest.sh`
      sealing only a real broadcast receipt, an independent on-chain re-verification
      (pins + safe-check re-run), Basescan source verification, a PR-comment
@@ -129,7 +130,11 @@ public `owner_address` input:
 1. bytecode present on Base;
 2. storage slot 0 (SafeProxy singleton) equals a canonical Safe implementation
    on Base (GnosisSafe 1.3.0 `0xd9Db…9552`, GnosisSafeL2 1.3.0 `0x3E5c…D36E`,
-   Safe 1.4.1 `0x4167…461a`, SafeL2 1.4.1 `0x29fc…C762`);
+   Safe 1.4.1 `0x4167…461a`, SafeL2 1.4.1 `0x29fc…C762`, Safe 1.5.0
+   `0xFf51…a44b`, SafeL2 1.5.0 `0xEdd1…7C7e`), and that address's runtime
+   bytecode hashes to the `codeHash` published for it in
+   `safe-global/safe-deployments` (the same check that registry runs against
+   every listed deployment);
 3. `getThreshold()` / `getOwners()` / `VERSION()` respond correctly;
 4. threshold ≥ 1 to pass, advisory notice recommending ≥ 2 signers; owners list
    printed (public data) for human review against the intended governance set.

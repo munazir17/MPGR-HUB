@@ -10,8 +10,8 @@ name: Swap deployment diagnostics (read-only)
 # prevent-self-review on, reviewers), offline fail-closed regressions of
 # scripts/swap-deploy/*, deployment-workflow trust structure, and (optional
 # input) whether a given owner address is a GENUINE, correctly configured
-# Safe/multisig on Base (singleton identity + owners + threshold — bytecode
-# presence alone is explicitly NOT sufficient).
+# Safe/multisig on Base (singleton identity + runtime code hash + owners + threshold —
+# bytecode presence alone is explicitly NOT sufficient).
 #
 # Secret/variable PRESENCE cannot be read by GITHUB_TOKEN (403 by design);
 # this workflow reports that honestly instead of guessing. Presence is proven

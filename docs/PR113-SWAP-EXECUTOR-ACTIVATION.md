@@ -54,7 +54,9 @@ that risk class for Swap paths by making fee terms compile-time constants.
    existing final/staging manifest; and a **genuine-Safe check**
    (`scripts/swap-deploy/safe-check.sh`) of `SWAP_EXECUTOR_OWNER` — proxy code
    present, a canonical Safe singleton in storage slot 0
-   (1.3.0/1.4.1, standard or L2 variant), and working
+   (1.3.0/1.4.1/1.5.0, standard or L2 variant) whose runtime bytecode hashes to
+   the code hash published for Base Mainnet in `safe-global/safe-deployments`,
+   and working
    `getThreshold()`/`getOwners()`/`VERSION()`. Bytecode alone is explicitly not
    accepted. Any failure aborts before signing.
 6. **Exactly one broadcast**, then `finalize-manifest.sh` seals

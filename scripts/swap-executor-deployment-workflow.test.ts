@@ -182,9 +182,12 @@ describe("trusted deployment workflow executes only owner-pinned, protected-bran
     expect(safeCheckSh).toContain("getThreshold()(uint256)");
     expect(safeCheckSh).toContain("getOwners()(address[])");
     expect(safeCheckSh).toContain("VERSION()(string)");
-    // canonical Base Safe singletons (1.3.0, 1.3.0 L2, 1.4.1, 1.4.1 L2)
+    // canonical Base Safe singletons (1.3.0, 1.3.0 L2, 1.4.1, 1.4.1 L2, 1.5.0, 1.5.0 L2)
     expect(safeCheckSh).toContain("0xd9db270c1b5e3bd161e8c8503c55ceabee709552");
     expect(safeCheckSh).toContain("0x29fcb43b46531bca003ddc8fcb67ffe91900c762");
+    expect(safeCheckSh).toContain("0xedd160febbd92e350d4d398fb636302fccd67c7e");
+    // safe-deployments runtime code hash for canonical SafeL2 1.5.0 on Base
+    expect(safeCheckSh).toContain("0x180193227186ccb85316c94db1f0d156ed932b14712cfaac78901899178572dc");
     expect(trustedText).toContain("preflight.sh");
   });
 });
@@ -285,12 +288,17 @@ const OWNER_B = "0x2222222222222222222222222222222222222222";
 const OWNER_C = "0x3333333333333333333333333333333333333333";
 const OWNER_MIXED = "0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd";
 const SLOT0 = (singleton: string) => `0x000000000000000000000000${singleton.slice(2)}`;
-const SINGLETONS: ReadonlyArray<[string, string]> = [
-  ["0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552", "GnosisSafe 1.3.0"],
-  ["0x3E5c63644E683549055b9Be8653de26E0B4CD36E", "GnosisSafeL2 1.3.0"],
-  ["0x41675C099F32341bf84BFc5382aF534df5C7461a", "Safe 1.4.1"],
-  ["0x29fcB43b46531BcA003ddC8FCB67FFE91900C762", "SafeL2 1.4.1"],
+// Canonical Base Mainnet Safe singletons: address, label, runtime code hash
+// published by safe-global/safe-deployments. All data is public.
+const SINGLETONS: ReadonlyArray<[string, string, string]> = [
+  ["0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552", "GnosisSafe 1.3.0", "0xbba688fbdb21ad2bb58bc320638b43d94e7d100f6f3ebaab0a4e4de6304b1c2e"],
+  ["0x3E5c63644E683549055b9Be8653de26E0B4CD36E", "GnosisSafeL2 1.3.0", "0x21842597390c4c6e3c1239e434a682b054bd9548eee5e9b1d6a4482731023c0f"],
+  ["0x41675C099F32341bf84BFc5382aF534df5C7461a", "Safe 1.4.1", "0x1fe2df852ba3299d6534ef416eefa406e56ced995bca886ab7a553e6d0c5e1c4"],
+  ["0x29fcB43b46531BcA003ddC8FCB67FFE91900C762", "SafeL2 1.4.1", "0xb1f926978a0f44a2c0ec8fe822418ae969bd8c3f18d61e5103100339894f81ff"],
+  ["0xFf51A5898e281Db6DfC7855790607438dF2ca44b", "Safe 1.5.0", "0xdda019cbd7c867a533a2a86e5c53434fdc50b13122b5a5ddb4a8df61b31c20f2"],
+  ["0xEdd160fEBBD92E350D4D398fb636302fccd67C7e", "SafeL2 1.5.0", "0x180193227186ccb85316c94db1f0d156ed932b14712cfaac78901899178572dc"],
 ];
+const DEFAULT_CODE = "0x6001600155";
 
 function runSafeCheckFake(opts: {
   failAll?: boolean;
@@ -298,6 +306,9 @@ function runSafeCheckFake(opts: {
   slot0?: string;
   threshold?: string;
   ownersLines?: string[];
+  singletonCode?: string;
+  singletonCodeHash?: string;
+  singletonCodeFails?: boolean;
   env?: Record<string, string>;
 }): { ok: boolean; out: string } {
   const dir = mkdtempSync(join(tmpdir(), "safecheck-fake-"));
@@ -310,6 +321,10 @@ function runSafeCheckFake(opts: {
       'case "$*" in',
       `  *codesize*) printf '%s\\n' ${q(opts.codesize ?? "324")}; exit 0 ;;`,
       `  *storage*) printf '%s\\n' ${q(opts.slot0 ?? SLOT0(SINGLETONS[0][0]))}; exit 0 ;;`,
+      ...(opts.singletonCodeFails
+        ? []
+        : [`  *code*) printf '%s\\n' ${q(opts.singletonCode ?? DEFAULT_CODE)}; exit 0 ;;`]),
+      `  *keccak*) printf '%s\\n' ${q(opts.singletonCodeHash ?? SINGLETONS[0][2])}; exit 0 ;;`,
       `  *getThreshold*) printf '%s\\n' ${q(opts.threshold ?? "2")}; exit 0 ;;`,
       `  *getOwners*) printf '%s\\n' ${owners}; exit 0 ;;`,
       `  *VERSION*) printf '%s\\n' ${q('"1.3.0"')}; exit 0 ;;`,
@@ -406,12 +421,67 @@ describe("safe-check.sh getOwners() parsing (D1 regression, deterministic fake c
     expect(r.ok).toBe(false);
     expect(r.out).toContain("NOT a recognised Safe proxy");
   });
-  it("recognises all four canonical Base Safe singletons", () => {
-    for (const [singleton, impl] of SINGLETONS) {
-      const r = runSafeCheckFake({ slot0: SLOT0(singleton) });
+  it("recognises every canonical Base Safe singleton by address AND runtime code hash", () => {
+    for (const [singleton, impl, codeHash] of SINGLETONS) {
+      const r = runSafeCheckFake({ slot0: SLOT0(singleton), singletonCodeHash: codeHash });
       expect(r.ok, `expected pass for ${impl}`).toBe(true);
       expect(r.out).toContain(`genuine ${impl}`);
+      expect(r.out).toContain(`singleton_codehash=${codeHash}`);
     }
+  });
+  it("accepts the reported SafeL2 1.5.0 singleton (Base canonical deployment)", () => {
+    const [, impl, codeHash] = SINGLETONS[5];
+    const r = runSafeCheckFake({ slot0: SLOT0(SINGLETONS[5][0]), singletonCodeHash: codeHash, threshold: "2" });
+    expect(r.ok).toBe(true);
+    expect(r.out).toContain(`genuine ${impl}`);
+    expect(r.out).toContain("threshold=2");
+  });
+  it("rejects a canonical singleton address whose runtime code hash differs (impersonating bytecode)", () => {
+    // Slot 0 names SafeL2 1.5.0, but the code at that address is arbitrary:
+    // this is exactly the case address-only allowlisting would let through.
+    const r = runSafeCheckFake({
+      slot0: SLOT0("0xEdd160fEBBD92E350D4D398fb636302fccd67C7e"),
+      singletonCode: "0xdeadbeef",
+      singletonCodeHash: `0x${"de".repeat(32)}`,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("pinned implementation (SafeL2 1.5.0)");
+    expect(r.out).toContain("runtime code hash");
+  });
+  it("fails closed when the singleton bytecode cannot be read", () => {
+    const r = runSafeCheckFake({ singletonCodeFails: true });
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("cannot read singleton");
+  });
+  it("requires an explicit code hash for owner-allowlisted extra singletons", () => {
+    const extra = "0x00000000000000000000000000000000DeAdBeEf";
+    const hash = `0x${"ab".repeat(32)}`;
+    const withHash = runSafeCheckFake({
+      slot0: SLOT0(extra),
+      singletonCodeHash: hash,
+      env: { SWAP_SAFE_EXTRA_SINGLETONS: `${extra}:${hash}` },
+    });
+    expect(withHash.ok).toBe(true);
+    expect(withHash.out).toContain("owner-allowlisted singleton");
+    // An override naming a known address cannot bypass the bytecode pin: the
+    // on-chain code hash must still equal the supplied canonical hash.
+    const wrongHash = runSafeCheckFake({
+      slot0: SLOT0(extra),
+      singletonCode: "0xdeadbeef",
+      singletonCodeHash: `0x${"cd".repeat(32)}`,
+      env: { SWAP_SAFE_EXTRA_SINGLETONS: `${extra}:${hash}` },
+    });
+    expect(wrongHash.ok).toBe(false);
+    expect(wrongHash.out).toContain("runtime code hash");
+    const shortHash = runSafeCheckFake({
+      slot0: SLOT0(extra),
+      env: { SWAP_SAFE_EXTRA_SINGLETONS: `${extra}:0xabcd` },
+    });
+    expect(shortHash.ok).toBe(false);
+    expect(shortHash.out).toContain("invalid expected runtime code hash");
+    const withoutHash = runSafeCheckFake({ slot0: SLOT0(extra), env: { SWAP_SAFE_EXTRA_SINGLETONS: extra } });
+    expect(withoutHash.ok).toBe(false);
+    expect(withoutHash.out).toContain("must be address:codehash");
   });
   it("enforces SWAP_SAFE_MIN_THRESHOLD without weakening the owners check", () => {
     const r = runSafeCheckFake({ threshold: "2", env: { SWAP_SAFE_MIN_THRESHOLD: "3" } });
