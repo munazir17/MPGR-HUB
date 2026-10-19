@@ -175,7 +175,7 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
         }
         console2.log("TOKEN_IN", input);
         console2.log("GROSS", gross);
-        console2.log("FEE_BPS", 25);
+        console2.log("FEE_BPS", uint256(25));
         console2.log("FEE_AMOUNT", gross * 25 / 10000);
         console2.log("MPGR_FEE_RECIPIENT", FEE);
         console2.log("QUOTED_MINIMUM", p.amountOutMinimum);
