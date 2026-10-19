@@ -337,7 +337,7 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
     function testForkFeeForgeryAndTimelock() public {
         vm.expectRevert(abi.encodeWithSelector(E.FeeMismatch.selector, uint256(24), uint256(25)));
         this.constructInvalidTerms(24, FEE);
-        vm.expectRevert(E.InvalidFeeRecipient.selector);
+        vm.expectRevert(abi.encodeWithSelector(E.InvalidFeeRecipient.selector, USER));
         this.constructInvalidTerms(25, USER);
         E.Hop[] memory h = new E.Hop[](1);
         h[0] = hop(USDC, WETH, UNI, E.RouterKind.UNISWAP_V3_ROUTER02, 500, 0, false);
