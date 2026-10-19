@@ -36,7 +36,10 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: swap-executor-pr-gates
+  # Head-scoped group: stale waiting/pending runs of earlier heads (which this
+  # pipeline cannot cancel without actions:write) must never queue-block the
+  # gates run of the current head. Each head gets its own lane.
+  group: swap-executor-pr-gates-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: false
 
 jobs:

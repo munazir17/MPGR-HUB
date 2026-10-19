@@ -103,6 +103,11 @@ describe("PR-side workflow is gates-only and structurally incapable of deploymen
     expect(prWorkflowText).toContain("deploy-swap-base-mainnet");
     expect(prWorkflowText).toContain("head.repo.full_name == github.repository");
   });
+  it("scopes concurrency to the PR head so stale runs can never block a new head", () => {
+    const group = String((prWorkflow.concurrency as { group?: string } | undefined)?.group ?? "");
+    expect(group).toContain("github.event.pull_request.head.sha");
+    expect(prWorkflowText).toContain("cancel-in-progress: false");
+  });
   it("has NO environment and NO production secret anywhere in the file", () => {
     for (const [name, job] of Object.entries(prWorkflow.jobs!)) {
       expect(job.environment, `job ${name} must not declare an environment`).toBeUndefined();
