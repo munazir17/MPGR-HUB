@@ -84,7 +84,7 @@ export async function searchSwapRoutes(client: SwapRouteReadClient, input: Execu
       const pathResult = await searchSwapPaths(client, { ...input, taker: input.taker as Address }, pathDeployment, { number: blockNumber, hash });
       if (pathResult) return { proposal: pathResult.proposal as SwapRoutedProposal, qualified: { blockNumber: pathResult.blockNumber, blockHash: pathResult.blockHash } as unknown as Awaited<ReturnType<typeof qualifySwapRouteCandidate>> };
     }
-    throw new SwapRouteQualificationError("FEE_ROUTE_UNREGISTERED", "Exact token registration and Executor allowlist verification are required. Imported metadata cannot authorize execution.");
+    throw new SwapRouteQualificationError(pathEligible ? "LIQUIDITY_UNAVAILABLE" : "FEE_ROUTE_UNREGISTERED", pathEligible ? "No factory-verified pool quoted this pair for this amount. No swap was prepared." : "Exact token registration and Executor allowlist verification are required. Imported metadata cannot authorize execution.");
   }
   const reader = requestReader(client);
   const outcomes: SwapRouteOutcome[] = [];
