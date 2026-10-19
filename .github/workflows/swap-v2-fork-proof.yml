@@ -5,6 +5,8 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - "contracts/swap/**"
+      - "lib/swap/v2/**"
+      - "app/api/swap/v2/**"
       - "test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol"
       - "scripts/swap-deploy-v2/**"
       - ".github/workflows/swap-v2-fork-proof.yml"

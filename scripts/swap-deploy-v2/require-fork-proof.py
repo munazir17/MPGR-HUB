@@ -12,10 +12,13 @@ REQUIRED = {
     "testForkDirectNonMajorPairFeeAndNoHop()",
     "testForkMPGRV4FeeAndMinimum()",
     "testForkAerodromeNonMajorPairFee()",
-    "testForkNoRouteNoSend()",
+    "testForkNoPoolNoSend()",
     "testForkFeeForgeryAndTimelock()",
     "testForkAllEntriesChargeFee()",
     "testForkUnprovenVenuesDisabled()",
+    "testForkUniswapV2FeeAndMinimum()",
+    "testForkSlipstreamFeeAndMinimum()",
+    "testForkMultihopSingleGrossFee()",
 }
 SUITE = "test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol:MPGRSwapExecutorV2BaseForkTest"
 
