@@ -32,6 +32,12 @@ inspect the diff, and gates rehearse the same head before approval. But a
 reviewer cannot realistically audit every line of each run, so this remains the
 single largest structural risk in the pipeline.
 
+**RESOLVED (this PR):** the risk above no longer exists in the pipeline. The
+PR-head workflow was rewritten to gates-only (no environment, no production
+secret, no broadcast step — it structurally cannot deploy anything), and a
+separate dispatch-only trusted workflow deploys exclusively from
+owner-pinned, main-ancestor code (see §3 status below).
+
 ## 3. Recommended safer design: deploy only trusted (protected-ref) code
 
 **Recommendation A (target state): deploy from the protected branch, not the PR head.**
@@ -63,8 +69,55 @@ repo-level (broader exposure); `workflow_dispatch` without environment.
 matches the intended sequence anyway (code review → deploy config → deployment →
 routing activation are separate approvals).
 
-Status: **not implemented** — changing the deployment trust design requires the
-owner's explicit approval; this document is the recommendation only.
+Status: **IMPLEMENTED in this PR** (pending merge + owner pin). Recommendation A
+was chosen and built; the interim hash-pinning option is superseded (pinning to
+a main-ancestor SHA subsumes it). What now exists in this branch:
+
+1. **PR-side workflow — gates only** (`.github/workflows/deploy-swap-executor-base-mainnet.yml`):
+   label-triggered, same-repo-only. Runs lint/type/tests, the committed-gate
+   report, all forge swap suites, and the full fork/seeded rehearsal
+   (`SWAP_REHEARSAL_OVERRIDE_GATE=true`, test-only keys, local anvil). It has
+   **no `environment:`, no access to `SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY`,
+   and no `--broadcast` to any public RPC** — approving or compromising this
+   workflow cannot produce a mainnet deployment.
+2. **Trusted deployment workflow** (`.github/workflows/deploy-swap-executor-trusted.yml`):
+   `workflow_dispatch` only, only from `refs/heads/main`, only with the literal
+   confirmation input `DEPLOY_ONE_MPGR_SWAP_EXECUTOR`.
+   - `resolve-pin` job (no environment, no secrets): validates the repo
+     **variable `SWAP_DEPLOY_REF`** — 40-hex, exists, is an ancestor of
+     `origin/main`, has `swapExecutorDeployEnabled=true` committed at the pin,
+     contains all required deploy files at the pin, and has no existing final
+     manifest at the pin.
+   - `deploy` job (`environment: base-mainnet`, `needs: resolve-pin`): checks
+     out exactly the pinned SHA, then **step 1 verifies `HEAD == pin` and a
+     clean tree before any step that can see the deployer secret**. Then:
+     fail-closed `preflight.sh` (fresh nonce-0 deployer, deployer ≠ owner,
+     committed gate open, no duplicate manifest, chain 8453, and a genuine-Safe
+     check of `SWAP_EXECUTOR_OWNER` via `safe-check.sh` — proxy code present,
+     canonical Safe singleton in storage slot 0, working
+     `getThreshold`/`getOwners`/`VERSION`), one `--broadcast`, `finalize-manifest.sh`
+     sealing only a real broadcast receipt, an independent on-chain re-verification
+     (pins + safe-check re-run), Basescan source verification, a PR-comment
+     evidence summary, and uploaded artifacts.
+3. **`.github/CODEOWNERS`**: `@munazir17` required for `.github/workflows/**`,
+   `scripts/swap-deploy/**`, `contracts/**`, `script/**`, `deployments/**`,
+   activation-relevant config and `foundry.toml`. (Enforcement requires the
+   owner to enable "Require review from Code Owners" in branch protection.)
+4. **All actions SHA-pinned** in both swap workflows and the diagnostics
+   workflow; `zizmor --offline` reports zero unsuppressed findings on all three.
+5. **Automated regression proof**: `scripts/swap-executor-deployment-workflow.test.ts`
+   (22 tests) asserts gates closed, fee-pin consistency, PR-side secret-free,
+   trusted-workflow step ordering / pin validation / environment scope,
+   SHA-pinned actions, CODEOWNERS coverage, and offline fail-closed behaviour of
+   `preflight.sh`, `safe-check.sh`, `rehearse.sh` and `finalize-manifest.sh`.
+   Diagnostics step 8 machine-checks the same trust structure on every run.
+
+Remaining owner-only steps (cannot be done from this branch): merge to `main`,
+enable CODEOWNERS enforcement, set the `base-mainnet` environment variable
+`SWAP_EXECUTOR_OWNER` (the governance Safe) and repo variable `SWAP_DEPLOY_REF`
+(the merged SHA to deploy), resolve the `prevent_self_review` deadlock (second
+required reviewer, or have someone other than the approver trigger), and
+dispatch. Until then every gate stays closed and no deployment can occur.
 
 ## 4. Owner multisig verification standard
 
