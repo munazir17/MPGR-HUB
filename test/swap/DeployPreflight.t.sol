@@ -38,32 +38,50 @@ contract DeployPreflightTest is Test {
         d.run();
     }
 
-    /// @notice deployments/base-mainnet/deploy-config.json now pins the reviewed
-    ///         OPEN authorization (swapExecutorDeployEnabled=true), so run() gets
-    ///         past the committed gate. That is an authorization, NOT a
-    ///         deployment: the owner preflight must still fail closed before
-    ///         vm.startBroadcast(), so no executor is created and no staging
-    ///         manifest is ever written by this suite.
-    function test_run_failsClosedWithoutDeployedMultisigOwner() public {
+    /// @notice DEPLOYED STATE: the one authorized deployment happened via the
+    ///         trusted pinned-SHA workflow and the sealed final manifest is
+    ///         committed, so run() must now refuse a second deployment at the
+    ///         manifest gate — before the owner preflight and long before
+    ///         vm.startBroadcast(). (Pre-deployment, this same call proved the
+    ///         owner preflight failed closed; that guard remains covered
+    ///         directly by the test_preflight_* cases below.)
+    function test_run_refusesSecondDeploymentWhileManifestExists() public {
         vm.chainId(8453);
         vm.setEnv("MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED", "true");
         vm.setEnv("SWAP_EXECUTOR_OWNER", "0x000000000000000000000000000000000000beef"); // codeless, never etched
-        vm.expectRevert("preflight: SWAP_EXECUTOR_OWNER must be a deployed multisig contract on Base");
+        vm.expectRevert("gate: manifest already exists");
         d.run();
     }
 
-    /// @notice The committed config must be exactly the reviewed state: swap gate
-    ///         open, legacy mainnet gate closed, chain 8453, and NO deployment
-    ///         record of any kind on disk.
-    function test_committedConfigIsTheReviewedOneTimeAuthorization() public view {
+    /// @notice The committed state must be exactly the reviewed post-deployment
+    ///         record: gate values unchanged, chain/fee pins intact, the sealed
+    ///         final manifest present with the independently verified Base
+    ///         Mainnet deployment facts, and no staging record left behind.
+    function test_committedStateIsTheReviewedDeploymentRecord() public view {
         string memory cfg = vm.readFile("./deployments/base-mainnet/deploy-config.json");
         assertTrue(vm.parseJsonBool(cfg, ".swapExecutorDeployEnabled"), "swap gate must be the reviewed open gate");
         assertFalse(vm.parseJsonBool(cfg, ".mainnetDeployEnabled"), "legacy mainnet gate must stay closed");
         assertEq(vm.parseJsonUint(cfg, ".chainId"), 8453, "chain id pin");
         assertEq(vm.parseJsonUint(cfg, ".feeBps"), 25, "fee bps pin");
         assertEq(vm.parseJsonUint(cfg, ".maxFeeBps"), 100, "max fee bps pin");
-        assertFalse(vm.exists("./deployments/base-mainnet/mpgr-swap-executor.json"), "no deploy record may exist");
+        assertTrue(vm.exists("./deployments/base-mainnet/mpgr-swap-executor.json"), "sealed deploy record must exist");
         assertFalse(vm.exists("./deployments/base-mainnet/mpgr-swap-executor.staging.json"), "no staging record");
+        string memory m = vm.readFile("./deployments/base-mainnet/mpgr-swap-executor.json");
+        assertEq(vm.parseJsonUint(m, ".chainId"), 8453, "manifest chain id");
+        assertEq(
+            vm.parseJsonAddress(m, ".executor"), 0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E, "manifest executor pin"
+        );
+        assertEq(vm.parseJsonAddress(m, ".owner"), 0xd9aE570767C5a15780DD5cdAdd0b1b732D98994B, "manifest owner pin");
+        assertTrue(
+            vm.parseJsonAddress(m, ".owner") != vm.parseJsonAddress(m, ".deployer"), "owner is never the deployer"
+        );
+        assertEq(vm.parseJsonUint(m, ".deployBlock"), 52799525, "manifest deploy block");
+        assertEq(vm.parseJsonUint(m, ".feeBps"), 25, "manifest fee pin");
+        assertEq(
+            vm.parseJsonString(m, ".deployTx"),
+            "0x549a54c25a31c0fd47dff625bdfba821c27d892b5cb437473b1decc751efa4cc",
+            "manifest deploy tx pin"
+        );
     }
 
     function test_preflight_rejectsUsedDeployerKey() public {

@@ -4,12 +4,13 @@ const m = vi.hoisted(() => ({ block: vi.fn(), tx: vi.fn(), read: vi.fn() }));
 vi.mock("wagmi/actions", () => ({ getBlock: m.block, getTransaction: m.tx, readContract: m.read }));
 vi.mock("@/lib/wagmi", () => ({ config: {} }));
 import { readSwapAllowance, type ApprovalReceipt } from "../swap-allowance";
+import { SWAP_PATH_EXECUTOR_DEPLOYMENT } from "../swap-executor-config";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as d } from "@/lib/executor/executor-config";
 import { erc20Abi } from "@/lib/erc20-abi";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 const owner = "0x1111111111111111111111111111111111111111" as const;
 const hash = `0x${"ab".repeat(32)}` as const;
-const p = { chainId: 8453, taker: owner, from: { address: d.tokens[0].address, decimals: 6, symbol: "USDC", name: "USD Coin", kind: "erc20", verified: true }, fromAmount: "1000000", permit2Spender: d.executor } satisfies Pick<TradeProposal, "chainId" | "taker" | "from" | "fromAmount" | "permit2Spender">;
+const p = { chainId: 8453, taker: owner, from: { address: d.tokens[0].address, decimals: 6, symbol: "USDC", name: "USD Coin", kind: "erc20", verified: true }, fromAmount: "1000000", permit2Spender: d.executor, transaction: { to: d.executor, data: "0x", value: "0" } } satisfies Pick<TradeProposal, "chainId" | "taker" | "from" | "fromAmount" | "permit2Spender" | "transaction">;
 const receipt: ApprovalReceipt = { status: "success", from: owner, to: p.from.address, transactionHash: hash, blockNumber: 100n, blockHash: hash };
 const approval = () => ({ hash, from: owner as Address, to: p.from.address, value: 0n, input: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [d.executor, BigInt(p.fromAmount)] }) });
 beforeEach(() => {
@@ -48,3 +49,26 @@ it("reorged receipt is unknown", async () => { m.block.mockResolvedValue({ numbe
 it("head changes during read is unknown", async () => { m.block.mockResolvedValueOnce({ number: 100n, hash }).mockResolvedValueOnce({ number: 101n, hash }).mockResolvedValueOnce({ number: 101n, hash: `0x${"cd".repeat(32)}` }); expect(await readSwapAllowance(p, receipt)).toBeNull(); });
 it("failed/invalid RPC allowance is unknown", async () => { m.read.mockRejectedValue(new Error("RPC failure")); expect(await readSwapAllowance(p, receipt)).toBeNull(); });
 it("already-approved proposals without a spender hint still read the actual Executor allowance", async () => { expect(await readSwapAllowance({ ...p, permit2Spender: null })).toBe(1000000n); });
+
+// Swap-path proposals (deployed fixed-fee Swap executor): the spender is
+// resolved from the transaction TARGET, never assumed to be the legacy
+// Agent executor.
+const swapExecutor = SWAP_PATH_EXECUTOR_DEPLOYMENT!.executor;
+const pathP = { ...p, permit2Spender: swapExecutor, transaction: { to: swapExecutor, data: "0x", value: "0" } } satisfies Pick<TradeProposal, "chainId" | "taker" | "from" | "fromAmount" | "permit2Spender" | "transaction">;
+const pathApproval = () => ({ hash, from: owner as Address, to: p.from.address, value: 0n, input: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [swapExecutor, BigInt(p.fromAmount)] }) });
+it("path proposals read allowance for the Swap executor and accept only its mined approval", async () => {
+  m.tx.mockResolvedValue(pathApproval());
+  expect(await readSwapAllowance(pathP, receipt)).toBe(1000000n);
+  expect(m.read).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ blockNumber: 101n, address: p.from.address, args: [owner, swapExecutor] }));
+});
+it("a mined approval to the legacy executor is not proof for a path proposal", async () => {
+  expect(await readSwapAllowance(pathP, receipt)).toBeNull(); expect(m.read).not.toHaveBeenCalled();
+});
+it("a spender hint that disagrees with the transaction target is unknown, never guessed", async () => {
+  m.tx.mockResolvedValue(pathApproval());
+  expect(await readSwapAllowance({ ...pathP, permit2Spender: d.executor }, receipt)).toBeNull(); expect(m.read).not.toHaveBeenCalled();
+});
+it("path proposals without a spender hint still read the Swap executor allowance", async () => {
+  expect(await readSwapAllowance({ ...pathP, permit2Spender: null })).toBe(1000000n);
+  expect(m.read).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ args: [owner, swapExecutor] }));
+});

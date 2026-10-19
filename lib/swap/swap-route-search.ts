@@ -140,13 +140,21 @@ export async function searchSwapRoutes(client: SwapRouteReadClient, input: Execu
   }
   if (!winner) {
     if (pathEligible && pathDeployment) {
-      const pathResult = await searchSwapPaths(client, { ...input, taker: input.taker as Address }, pathDeployment, { number: blockNumber, hash });
-      if (pathResult) return { proposal: pathResult.proposal as SwapRoutedProposal, qualified: { blockNumber: pathResult.blockNumber, blockHash: pathResult.blockHash } as unknown as Awaited<ReturnType<typeof qualifySwapRouteCandidate>> };
+      try {
+        const pathResult = await searchSwapPaths(client, { ...input, taker: input.taker as Address }, pathDeployment, { number: blockNumber, hash });
+        if (pathResult) return { proposal: pathResult.proposal as SwapRoutedProposal, qualified: { blockNumber: pathResult.blockNumber, blockHash: pathResult.blockHash } as unknown as Awaited<ReturnType<typeof qualifySwapRouteCandidate>> };
+      } catch (error) {
+        // Opportunistic fallback: its failure must not mask the direct-route
+        // diagnosis below — except live fee-posture drift on the Swap
+        // executor, which is a global block and always surfaces. No quote is
+        // ever returned from a failed fallback (fail-closed).
+        if (error instanceof SwapRouteQualificationError && error.reason === "FEE_RECIPIENT_CHANGED") throw error;
+      }
     }
     // Do not relabel provider failure as illiquidity. Show an actionable contract limit too.
     const unavailable = outcomes.some(o => o.state === "unavailable");
     const pathNote = swapPathCandidatesFor(input.from.address, input.to.address).length && !pathDeployment ? ` ${SWAP_PATH_EXECUTOR_NOT_DEPLOYED_MESSAGE}` : "";
-    throw new SwapRouteQualificationError(unavailable ? "ROUTE_VERIFICATION_UNAVAILABLE" : firstFailure?.reason ?? "NO_QUALIFIED_DIRECT_ROUTE", `${unavailable ? "Some direct-pool evidence is unavailable; retry the quote." : firstFailure?.message ?? "No qualified direct pool was found for this amount."} The current Executor cannot execute multi-hop or V4 routes; these require separately approved contract/adapter work.${pathNote}`, unavailable ? 503 : 422);
+    throw new SwapRouteQualificationError(unavailable ? "ROUTE_VERIFICATION_UNAVAILABLE" : firstFailure?.reason ?? "NO_QUALIFIED_DIRECT_ROUTE", `${unavailable ? "Some direct-pool evidence is unavailable; retry the quote." : firstFailure?.message ?? "No qualified direct pool was found for this amount."} No route through the reviewed MPGR executors could be prepared for this pair and amount.${pathNote}`, unavailable ? 503 : 422);
   }
   await verifyQualifiedSwapBlock(client, winner.qualified);
   const p = winner.proposal;

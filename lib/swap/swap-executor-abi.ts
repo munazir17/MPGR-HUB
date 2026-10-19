@@ -23,6 +23,7 @@ export const MPGR_SWAP_EXECUTOR_ABI = [
     outputs: [{ name: "fee", type: "uint256" }, { name: "swapAmount", type: "uint256" }] },
   { type: "function", name: "feeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
   { type: "function", name: "feeRecipient", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "paused", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
   { type: "function", name: "routerKind", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint8" }] },
   { type: "function", name: "routerFactory", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "address" }] },
   { type: "function", name: "feeGovernance", stateMutability: "view", inputs: [],

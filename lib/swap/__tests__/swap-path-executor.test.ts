@@ -94,7 +94,11 @@ describe("calldata intent inspection", () => {
 });
 
 describe("deployment gating", () => {
-  it("keeps every path route non-executable while undeployed", () => {
+  // The production manifest is LIVE (see swap-executor-manifest.test.ts);
+  // this suite pins the DORMANT state, forced by an explicit null injection,
+  // which is also the emergency-rollback behavior: with no reviewed
+  // deployment every path route must stay non-executable.
+  it("keeps every path route non-executable while dormant (explicit null)", () => {
     expect(swapPathExecutor()).toBeNull();
     expect(swapPathPairEligible(TOKEN_A, TOKEN_B)).toBe(false);
     expect(swapPathPairEligible(TOKEN_A, TOKEN_B, deployment)).toBe(true);

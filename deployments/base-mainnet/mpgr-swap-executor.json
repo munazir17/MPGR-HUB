@@ -1,0 +1,63 @@
+{
+  "manifestSchema": "mpgr-swap-executor/v1",
+  "chainId": 8453,
+  "executor": "0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E",
+  "deployer": "0xfDCb6e78217cAf882189e48331a4B42A06309ACA",
+  "owner": "0xd9aE570767C5a15780DD5cdAdd0b1b732D98994B",
+  "weth": "0x4200000000000000000000000000000000000006",
+  "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+  "feeBps": 25,
+  "maxFeeBps": 100,
+  "feeTimelockSeconds": 172800,
+  "feeRecipient": "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4",
+  "explorerUrl": "https://basescan.org",
+  "deployTx": "0x549a54c25a31c0fd47dff625bdfba821c27d892b5cb437473b1decc751efa4cc",
+  "deployBlock": 52799525,
+  "venues": [
+    {
+      "name": "uniswapV3",
+      "kind": 2,
+      "router": "0x2626664c2603336E57B271c5C0b26F421741e481",
+      "factory": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+      "quoter": "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a"
+    },
+    {
+      "name": "slipstream",
+      "kind": 1,
+      "router": "0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F",
+      "factory": "0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef",
+      "quoter": "0x514c8B5f54112481E28028F1166Bd78501089259"
+    },
+    {
+      "name": "uniswapV2",
+      "kind": 3,
+      "router": "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24",
+      "factory": "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6",
+      "quoter": null
+    },
+    {
+      "name": "aerodromeClassic",
+      "kind": 4,
+      "router": "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43",
+      "factory": "0x420DD381b31aEf6683db6B902084cB0FFECe40Da",
+      "quoter": null
+    },
+    {
+      "name": "pancakeV3",
+      "kind": 5,
+      "router": "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
+      "factory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+      "quoter": null
+    }
+  ],
+  "aggregator": {
+    "zeroxSettlerDeployer": "0x00000000000004533Fe15556B1E086BB1A72cEae",
+    "zeroxAllowanceHolder": "0x0000000000001fF3684f28c67538d4D072C22734"
+  },
+  "deployReceipt": {
+    "status": "0x1",
+    "from": "0xfDCb6e78217cAf882189e48331a4B42A06309ACA",
+    "gasUsed": "0x47b5b9",
+    "blockHash": "0x9c7d6168d4767dce7f1a890a94a5be1877b82a7071072c3229ae1c5ade5b01ea"
+  }
+}

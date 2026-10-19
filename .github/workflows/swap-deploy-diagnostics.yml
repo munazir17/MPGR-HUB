@@ -10,7 +10,10 @@ name: Swap deployment diagnostics (read-only)
 #     ends and proven absent by a final `git diff --exit-code -- deployments/`
 # It verifies: PR head SHA, committed gate values (the swap gate must be the
 # REVIEWED OPEN authorization `true`; the legacy mainnet gate must stay false),
-# routing-activation null, environment protection rules (admin bypass off,
+# the sealed deployment record (MPGRSwapExecutor was deployed ONCE via the
+# trusted pinned-SHA workflow; the committed final manifest and the routing
+# activation constant must pin exactly that deployment), environment
+# protection rules (admin bypass off,
 # prevent-self-review on, reviewers), offline fail-closed regressions of
 # scripts/swap-deploy/*, deployment-workflow trust structure, and (optional
 # input) whether a given owner address is a GENUINE, correctly configured
@@ -97,25 +100,38 @@ jobs:
           fi
           echo "::notice title=Diagnostics::PR #113 head $PR_HEAD, state $PR_STATE"
 
-      - name: Committed gates must match the REVIEWED state and routing INACTIVE
+      - name: Committed state must match the REVIEWED DEPLOYED record (routing ACTIVE)
         run: |
           set -euo pipefail
           CFG=deployments/base-mainnet/deploy-config.json
+          MAN=deployments/base-mainnet/mpgr-swap-executor.json
           SWAP_GATE="$(jq -r '.swapExecutorDeployEnabled' "$CFG")"
           LEGACY_GATE="$(jq -r '.mainnetDeployEnabled' "$CFG")"
           echo "swapExecutorDeployEnabled=$SWAP_GATE mainnetDeployEnabled=$LEGACY_GATE"
-          # The swap gate is the owner's reviewed, merged AUTHORIZATION for at most one
-          # deployment attempt - not a deployment. It must be exactly the boolean `true`
-          # (never absent, null or a string), and opening it may not relax anything else:
-          # the legacy executor gate stays closed, routing stays null, no manifest may
-          # exist, and every fee/chain pin must be byte-identical to the reviewed values.
+          # The one authorized deployment already happened (trusted pinned-SHA
+          # workflow): the swap gate stays as reviewed, the legacy gate stays
+          # closed, and the ONLY acceptable deployment state is the sealed
+          # final manifest pinned to that executor/tx/block, with the routing
+          # constant activated for exactly the same executor. Any drift in
+          # either artifact, or a leftover staging record, fails closed here.
           [ "$SWAP_GATE" = "true" ] || { echo "::error::swapExecutorDeployEnabled is not true (expected the reviewed gate-open authorization)"; exit 1; }
           jq -e '.swapExecutorDeployEnabled == true' "$CFG" >/dev/null || { echo "::error::swapExecutorDeployEnabled is not a JSON boolean true"; exit 1; }
           [ "$LEGACY_GATE" = "false" ] || { echo "::error::mainnetDeployEnabled is not false"; exit 1; }
           [ "$(jq -r '.chainId' "$CFG")" = "8453" ] || { echo "::error::chainId pin drifted"; exit 1; }
-          grep -q 'export const SWAP_PATH_EXECUTOR_DEPLOYMENT: SwapPathExecutorDeployment | null = null;' lib/swap/swap-executor-config.ts \
-            || { echo "::error::SWAP_PATH_EXECUTOR_DEPLOYMENT is not null"; exit 1; }
-          test ! -f deployments/base-mainnet/mpgr-swap-executor.json || { echo "::error::final swap manifest exists unexpectedly"; exit 1; }
+          test -f "$MAN" || { echo "::error::sealed final swap manifest is missing"; exit 1; }
+          jq -e '.chainId == 8453 and (.venues | length) == 5 and .deployBlock == 52799525
+            and (.deployTx | test("^0x[0-9a-fA-F]{64}$")) and (.executor | ascii_downcase) == "0xbc4de809b4b72bce8f61c87dac6be12e3f7c6b3e"
+            and (.deployTx | ascii_downcase) == "0x549a54c25a31c0fd47dff625bdfba821c27d892b5cb437473b1decc751efa4cc"
+            and .feeBps == 25 and .maxFeeBps == 100 and .feeTimelockSeconds == 172800
+            and (.feeRecipient | ascii_downcase) == "0x96f7fb5c4277bd1190fb6ef4820ebc96ba6964a4"
+            and (.owner | ascii_downcase) == "0xd9ae570767c5a15780dd5cdadd0b1b732d98994b"
+            and (.owner | ascii_downcase) != (.deployer | ascii_downcase)' "$MAN" >/dev/null \
+            || { echo "::error::final manifest does not pin the reviewed Base Mainnet deployment"; exit 1; }
+          grep -q 'executor: "0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E"' lib/swap/swap-executor-config.ts \
+            || { echo "::error::routing constant does not pin the deployed Swap executor"; exit 1; }
+          if grep -q 'export const SWAP_PATH_EXECUTOR_DEPLOYMENT: SwapPathExecutorDeployment | null = null;' lib/swap/swap-executor-config.ts; then
+            echo "::error::routing is dormant (null) but the sealed manifest exists - state drift"; exit 1
+          fi
           test ! -f deployments/base-mainnet/mpgr-swap-executor.staging.json || { echo "::error::staging swap manifest exists unexpectedly"; exit 1; }
           FEE_REC="$(jq -r '.feeRecipient' "$CFG")"
           [ "$(echo "$FEE_REC" | tr 'A-Z' 'a-z')" = "0x96f7fb5c4277bd1190fb6ef4820ebc96ba6964a4" ] || { echo "::error::fee recipient pin drifted: $FEE_REC"; exit 1; }
@@ -123,7 +139,7 @@ jobs:
           [ "$(jq -r '.maxFeeBps' "$CFG")" = "100" ] || { echo "::error::maxFeeBps pin drifted"; exit 1; }
           grep -q 'export const SWAP_FEE_RECIPIENT: Address = "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4";' lib/swap/swap-executor-config.ts || { echo "::error::lib fee recipient pin drifted"; exit 1; }
           grep -q 'address internal constant FEE_RECIPIENT_PIN = 0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4;' script/DeployMPGRSwapExecutorBaseMainnet.s.sol || { echo "::error::deploy-script fee recipient pin drifted"; exit 1; }
-          echo "::notice title=Gates::swap gate OPEN (reviewed one-time authorization; NOT a deployment), legacy gate false, chain 8453, routing null, no manifests on disk, fee policy pins consistent (25bps init / 100bps cap / 0x96F7...64A4)"
+          echo "::notice title=Gates::swap gate OPEN (reviewed one-time authorization, now consumed), legacy gate false, chain 8453, routing ACTIVE on the sealed manifest executor 0xBC4d...6b3E (block 52799525), no staging record, fee policy pins consistent (25bps init / 100bps cap / 0x96F7...64A4)"
 
       - name: Environment protection rules (API read; no environment access)
         run: |
@@ -183,18 +199,27 @@ jobs:
             env -C "$GATE_TREE" SWAP_REHEARSAL_OVERRIDE_GATE=false bash scripts/swap-deploy/rehearse.sh ""
           git worktree remove --force "$GATE_TREE"; rm -rf "$GATE_TMP"
 
-          # (c) Manifest-sealing and duplicate/unfinished-run guards.
+          # (c) Manifest-sealing and duplicate/unfinished-run guards. The committed
+          #     final manifest now legitimately exists (and by itself refuses any
+          #     second deployment), so the staging-stub negatives run in a SECOND
+          #     throwaway worktree whose scratch copy of the final manifest is
+          #     removed; the committed tree is never written to by this workflow.
           neg "finalize cannot seal without staging record" "staging manifest missing" \
             bash scripts/swap-deploy/finalize-manifest.sh https://invalid.example
-          echo '{"executor":"0x1111111111111111111111111111111111111111","deployer":"0x2222222222222222222222222222222222222222"}' > deployments/base-mainnet/mpgr-swap-executor.staging.json
-          neg "preflight refuses while an unfinished staging record exists" "staging manifest exists" \
+          neg "preflight refuses a second deployment (sealed manifest committed)" "final manifest already exists" \
             env BASE_MAINNET_RPC_URL=https://invalid.example BASE_MAINNET_DEPLOYER_PRIVATE_KEY=$KEY SWAP_EXECUTOR_OWNER=$OWNER MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=true bash scripts/swap-deploy/preflight.sh
+          MAN_TMP="$(mktemp -d)"; MAN_TREE="$MAN_TMP/manifest-guards"
+          git worktree add --detach --quiet "$MAN_TREE" HEAD
+          rm -f "$MAN_TREE/deployments/base-mainnet/mpgr-swap-executor.json"
+          echo '{"executor":"0x1111111111111111111111111111111111111111","deployer":"0x2222222222222222222222222222222222222222"}' > "$MAN_TREE/deployments/base-mainnet/mpgr-swap-executor.staging.json"
+          neg "preflight refuses while an unfinished staging record exists" "staging manifest exists" \
+            env -C "$MAN_TREE" BASE_MAINNET_RPC_URL=https://invalid.example BASE_MAINNET_DEPLOYER_PRIVATE_KEY=$KEY SWAP_EXECUTOR_OWNER=$OWNER MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=true bash scripts/swap-deploy/preflight.sh
           neg "finalize cannot seal without a real broadcast artifact" "broadcast artifact missing" \
-            bash scripts/swap-deploy/finalize-manifest.sh https://invalid.example
-          rm -f deployments/base-mainnet/mpgr-swap-executor.staging.json deployments/base-mainnet/mpgr-swap-executor.json
+            env -C "$MAN_TREE" bash scripts/swap-deploy/finalize-manifest.sh https://invalid.example
+          git worktree remove --force "$MAN_TREE"; rm -rf "$MAN_TMP"
           git diff --exit-code -- deployments/ >/dev/null || { echo "SIDE EFFECT: deployments/ mutated"; FAILED=1; }
           [ $FAILED -eq 0 ] || { echo "::error::fail-closed regressions failed"; exit 1; }
-          echo "::notice title=Fail-closed::all 7 negative regressions passed with zero side effects (no broadcast, no manifest, committed gate untouched)"
+          echo "::notice title=Fail-closed::all 8 negative regressions passed with zero side effects (no broadcast, committed manifest and gate untouched)"
 
       - name: Deployment-workflow trust structure
         run: |
@@ -270,6 +295,6 @@ jobs:
             echo
             echo "- Commit checked out: $(git rev-parse HEAD)"
             echo "- No protected environment was accessed; no production secret was available to this job."
-            echo "- Swap gate asserted OPEN as the reviewed one-time authorization (legacy gate false); routing asserted null; no manifest on disk, so nothing is deployed."
+            echo "- Swap gate asserted OPEN as the reviewed one-time authorization (legacy gate false); the sealed final manifest asserted pinned to the one deployed executor 0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E (tx 0x549a...fa4cc, block 52799525) with routing ACTIVE on it; preflight asserted to refuse any second deployment."
             echo "- Fail-closed regressions and trust-structure checks above; the committed deploy-config.json was never written to."
           } >> "$GITHUB_STEP_SUMMARY"
