@@ -4,8 +4,12 @@ name: Swap deployment diagnostics (read-only)
 # environment and NEVER receive production secrets:
 #   - no job declares `environment:`
 #   - SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY is not referenced anywhere here
-#   - nothing broadcasts; no gate may be opened; no file is mutated
-# It verifies: PR head SHA, committed gate values (both must be false),
+#   - nothing broadcasts; no gate is ever opened or closed in the committed
+#     tree; the only writes are scratch files inside the runner workspace
+#     (a throwaway `git worktree` and a staging stub), removed before the step
+#     ends and proven absent by a final `git diff --exit-code -- deployments/`
+# It verifies: PR head SHA, committed gate values (the swap gate must be the
+# REVIEWED OPEN authorization `true`; the legacy mainnet gate must stay false),
 # routing-activation null, environment protection rules (admin bypass off,
 # prevent-self-review on, reviewers), offline fail-closed regressions of
 # scripts/swap-deploy/*, deployment-workflow trust structure, and (optional
@@ -93,25 +97,33 @@ jobs:
           fi
           echo "::notice title=Diagnostics::PR #113 head $PR_HEAD, state $PR_STATE"
 
-      - name: Committed gates must be CLOSED and routing INACTIVE
+      - name: Committed gates must match the REVIEWED state and routing INACTIVE
         run: |
           set -euo pipefail
-          SWAP_GATE="$(jq -r '.swapExecutorDeployEnabled' deployments/base-mainnet/deploy-config.json)"
-          LEGACY_GATE="$(jq -r '.mainnetDeployEnabled' deployments/base-mainnet/deploy-config.json)"
+          CFG=deployments/base-mainnet/deploy-config.json
+          SWAP_GATE="$(jq -r '.swapExecutorDeployEnabled' "$CFG")"
+          LEGACY_GATE="$(jq -r '.mainnetDeployEnabled' "$CFG")"
           echo "swapExecutorDeployEnabled=$SWAP_GATE mainnetDeployEnabled=$LEGACY_GATE"
-          [ "$SWAP_GATE" = "false" ] || { echo "::error::swapExecutorDeployEnabled is not false"; exit 1; }
+          # The swap gate is the owner's reviewed, merged AUTHORIZATION for at most one
+          # deployment attempt - not a deployment. It must be exactly the boolean `true`
+          # (never absent, null or a string), and opening it may not relax anything else:
+          # the legacy executor gate stays closed, routing stays null, no manifest may
+          # exist, and every fee/chain pin must be byte-identical to the reviewed values.
+          [ "$SWAP_GATE" = "true" ] || { echo "::error::swapExecutorDeployEnabled is not true (expected the reviewed gate-open authorization)"; exit 1; }
+          jq -e '.swapExecutorDeployEnabled == true' "$CFG" >/dev/null || { echo "::error::swapExecutorDeployEnabled is not a JSON boolean true"; exit 1; }
           [ "$LEGACY_GATE" = "false" ] || { echo "::error::mainnetDeployEnabled is not false"; exit 1; }
+          [ "$(jq -r '.chainId' "$CFG")" = "8453" ] || { echo "::error::chainId pin drifted"; exit 1; }
           grep -q 'export const SWAP_PATH_EXECUTOR_DEPLOYMENT: SwapPathExecutorDeployment | null = null;' lib/swap/swap-executor-config.ts \
             || { echo "::error::SWAP_PATH_EXECUTOR_DEPLOYMENT is not null"; exit 1; }
           test ! -f deployments/base-mainnet/mpgr-swap-executor.json || { echo "::error::final swap manifest exists unexpectedly"; exit 1; }
           test ! -f deployments/base-mainnet/mpgr-swap-executor.staging.json || { echo "::error::staging swap manifest exists unexpectedly"; exit 1; }
-          FEE_REC="$(jq -r '.feeRecipient' deployments/base-mainnet/deploy-config.json)"
+          FEE_REC="$(jq -r '.feeRecipient' "$CFG")"
           [ "$(echo "$FEE_REC" | tr 'A-Z' 'a-z')" = "0x96f7fb5c4277bd1190fb6ef4820ebc96ba6964a4" ] || { echo "::error::fee recipient pin drifted: $FEE_REC"; exit 1; }
-          [ "$(jq -r '.feeBps' deployments/base-mainnet/deploy-config.json)" = "25" ] || { echo "::error::feeBps pin drifted"; exit 1; }
-          [ "$(jq -r '.maxFeeBps' deployments/base-mainnet/deploy-config.json)" = "100" ] || { echo "::error::maxFeeBps pin drifted"; exit 1; }
+          [ "$(jq -r '.feeBps' "$CFG")" = "25" ] || { echo "::error::feeBps pin drifted"; exit 1; }
+          [ "$(jq -r '.maxFeeBps' "$CFG")" = "100" ] || { echo "::error::maxFeeBps pin drifted"; exit 1; }
           grep -q 'export const SWAP_FEE_RECIPIENT: Address = "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4";' lib/swap/swap-executor-config.ts || { echo "::error::lib fee recipient pin drifted"; exit 1; }
           grep -q 'address internal constant FEE_RECIPIENT_PIN = 0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4;' script/DeployMPGRSwapExecutorBaseMainnet.s.sol || { echo "::error::deploy-script fee recipient pin drifted"; exit 1; }
-          echo "::notice title=Gates::both deployment gates false, routing null, no manifests on disk, fee policy pins consistent (25bps init / 100bps cap / 0x96F7...64A4)"
+          echo "::notice title=Gates::swap gate OPEN (reviewed one-time authorization; NOT a deployment), legacy gate false, chain 8453, routing null, no manifests on disk, fee policy pins consistent (25bps init / 100bps cap / 0x96F7...64A4)"
 
       - name: Environment protection rules (API read; no environment access)
         run: |
@@ -146,21 +158,43 @@ jobs:
             if ! grep -q "$want" <<<"$out"; then echo "WRONG-REASON: $name (missing '$want')"; echo "$out" | head -3; FAILED=1; return; fi
             echo "PASS fail-closed: $name"
           }
-          neg "preflight refuses while committed gate closed" "committed deployment gate is CLOSED" \
-            env BASE_MAINNET_RPC_URL=https://invalid.example BASE_MAINNET_DEPLOYER_PRIVATE_KEY=0x0000000000000000000000000000000000000000000000000000000000000001 SWAP_EXECUTOR_OWNER=0x0000000000000000000000000000000000000001 MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=true bash scripts/swap-deploy/preflight.sh
+          KEY=0x0000000000000000000000000000000000000000000000000000000000000001
+          OWNER=0x0000000000000000000000000000000000000001
+
+          # (a) WITH the reviewed gate OPEN, every remaining guard must still refuse,
+          #     offline, before the first RPC call. Opening the gate authorises an
+          #     attempt; it does not make a broadcast reachable.
+          neg "preflight refuses without the explicit run-time approval env" "MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED != true" \
+            env BASE_MAINNET_RPC_URL=https://invalid.example BASE_MAINNET_DEPLOYER_PRIVATE_KEY=$KEY SWAP_EXECUTOR_OWNER=$OWNER MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=false bash scripts/swap-deploy/preflight.sh
           neg "preflight refuses without the dedicated deployer secret" "SWAP_BASE_MAINNET_DEPLOYER_PRIVATE_KEY" \
-            env BASE_MAINNET_RPC_URL=https://invalid.example BASE_MAINNET_DEPLOYER_PRIVATE_KEY= SWAP_EXECUTOR_OWNER=0x0000000000000000000000000000000000000001 MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=true bash scripts/swap-deploy/preflight.sh
+            env BASE_MAINNET_RPC_URL=https://invalid.example BASE_MAINNET_DEPLOYER_PRIVATE_KEY= SWAP_EXECUTOR_OWNER=$OWNER MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=true bash scripts/swap-deploy/preflight.sh
+
+          # (b) The gate-CLOSED fail-closed path is unchanged code and stays covered.
+          #     It is exercised in a THROWAWAY `git worktree` whose copy of
+          #     deploy-config.json is forced back to false, so the committed,
+          #     CODEOWNER-protected config is never written to by this workflow.
+          GATE_TMP="$(mktemp -d)"; GATE_TREE="$GATE_TMP/closed-gate"
+          git worktree add --detach --quiet "$GATE_TREE" HEAD
+          jq '.swapExecutorDeployEnabled = false' "$GATE_TREE/deployments/base-mainnet/deploy-config.json" > "$GATE_TMP/cfg.json"
+          mv "$GATE_TMP/cfg.json" "$GATE_TREE/deployments/base-mainnet/deploy-config.json"
+          neg "preflight refuses while committed gate closed" "committed deployment gate is CLOSED" \
+            env -C "$GATE_TREE" BASE_MAINNET_RPC_URL=https://invalid.example BASE_MAINNET_DEPLOYER_PRIVATE_KEY=$KEY SWAP_EXECUTOR_OWNER=$OWNER MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=true bash scripts/swap-deploy/preflight.sh
           neg "rehearsal without override fails closed on closed gate" "committed deployment gate is CLOSED" \
-            env SWAP_REHEARSAL_OVERRIDE_GATE=false bash scripts/swap-deploy/rehearse.sh ""
+            env -C "$GATE_TREE" SWAP_REHEARSAL_OVERRIDE_GATE=false bash scripts/swap-deploy/rehearse.sh ""
+          git worktree remove --force "$GATE_TREE"; rm -rf "$GATE_TMP"
+
+          # (c) Manifest-sealing and duplicate/unfinished-run guards.
           neg "finalize cannot seal without staging record" "staging manifest missing" \
             bash scripts/swap-deploy/finalize-manifest.sh https://invalid.example
           echo '{"executor":"0x1111111111111111111111111111111111111111","deployer":"0x2222222222222222222222222222222222222222"}' > deployments/base-mainnet/mpgr-swap-executor.staging.json
+          neg "preflight refuses while an unfinished staging record exists" "staging manifest exists" \
+            env BASE_MAINNET_RPC_URL=https://invalid.example BASE_MAINNET_DEPLOYER_PRIVATE_KEY=$KEY SWAP_EXECUTOR_OWNER=$OWNER MPGR_SWAP_EXECUTOR_DEPLOY_ENABLED=true bash scripts/swap-deploy/preflight.sh
           neg "finalize cannot seal without a real broadcast artifact" "broadcast artifact missing" \
             bash scripts/swap-deploy/finalize-manifest.sh https://invalid.example
           rm -f deployments/base-mainnet/mpgr-swap-executor.staging.json deployments/base-mainnet/mpgr-swap-executor.json
           git diff --exit-code -- deployments/ >/dev/null || { echo "SIDE EFFECT: deployments/ mutated"; FAILED=1; }
           [ $FAILED -eq 0 ] || { echo "::error::fail-closed regressions failed"; exit 1; }
-          echo "::notice title=Fail-closed::all 5 negative regressions passed with zero side effects (no broadcast, no manifest)"
+          echo "::notice title=Fail-closed::all 7 negative regressions passed with zero side effects (no broadcast, no manifest, committed gate untouched)"
 
       - name: Deployment-workflow trust structure
         run: |
@@ -236,5 +270,6 @@ jobs:
             echo
             echo "- Commit checked out: $(git rev-parse HEAD)"
             echo "- No protected environment was accessed; no production secret was available to this job."
-            echo "- Gates asserted closed; routing asserted null; fail-closed regressions and trust-structure checks above."
+            echo "- Swap gate asserted OPEN as the reviewed one-time authorization (legacy gate false); routing asserted null; no manifest on disk, so nothing is deployed."
+            echo "- Fail-closed regressions and trust-structure checks above; the committed deploy-config.json was never written to."
           } >> "$GITHUB_STEP_SUMMARY"
