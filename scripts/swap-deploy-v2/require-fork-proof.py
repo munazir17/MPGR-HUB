@@ -19,6 +19,8 @@ REQUIRED = {
     "testForkUniswapV2FeeAndMinimum()",
     "testForkSlipstreamFeeAndMinimum()",
     "testForkMultihopSingleGrossFee()",
+    "testForkV4QuoteAdapterABI()",
+    "testForkV3QuoteAdapterABIs()",
 }
 SUITE = "test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol:MPGRSwapExecutorV2BaseForkTest"
 

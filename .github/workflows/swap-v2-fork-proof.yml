@@ -73,7 +73,7 @@ jobs:
             fi
           done
           if [ -n "$PR_NUMBER" ]; then
-            { echo "Read-only V2 fork proof: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"; echo; echo '```text'; cat v2-discovery.log v2-fork-proof.log 2>/dev/null | tail -240; echo '```'; } > /tmp/v2-proof-comment.md
+            { echo "Read-only V2 fork proof: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"; echo; echo '```text'; cat v2-discovery.log v2-fork-proof.log 2>/dev/null | tail -400; echo '```'; } > /tmp/v2-proof-comment.md
             gh pr comment "$PR_NUMBER" --body-file /tmp/v2-proof-comment.md
           fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

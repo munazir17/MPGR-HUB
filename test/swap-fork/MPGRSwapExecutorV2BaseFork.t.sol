@@ -6,6 +6,34 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MPGRSwapExecutorV2 as E} from "../../contracts/swap/MPGRSwapExecutorV2.sol";
 import {IMPGRV4PoolManager as V4} from "../../contracts/swap/interfaces/IMPGRV4PoolManager.sol";
 
+interface IV2ProofQuoter {
+    struct UniParams {
+        address tokenIn;
+        address tokenOut;
+        uint256 amountIn;
+        uint24 fee;
+        uint160 sqrtPriceLimitX96;
+    }
+
+    struct SlipParams {
+        address tokenIn;
+        address tokenOut;
+        uint256 amountIn;
+        int24 tickSpacing;
+        uint160 sqrtPriceLimitX96;
+    }
+
+    struct V4Params {
+        V4.PoolKey poolKey;
+        bool zeroForOne;
+        uint128 exactAmount;
+        bytes hookData;
+    }
+    function quoteExactInputSingle(UniParams calldata p) external returns (uint256, uint160, uint32, uint256);
+    function quoteExactInputSingle(SlipParams calldata p) external returns (uint256, uint160, uint32, uint256);
+    function quoteExactInputSingle(V4Params calldata p) external returns (uint256, uint256);
+}
+
 /// @notice No mocks, no skips, no sends: deploys the candidate only on a Base fork.
 contract MPGRSwapExecutorV2BaseForkTest is Test {
     address constant SAFE = 0xd9aE570767C5a15780DD5cdAdd0b1b732D98994B;
@@ -147,6 +175,10 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
         }
         console2.log("TOKEN_IN", input);
         console2.log("GROSS", gross);
+        console2.log("FEE_BPS", 25);
+        console2.log("FEE_AMOUNT", gross * 25 / 10000);
+        console2.log("MPGR_FEE_RECIPIENT", FEE);
+        console2.log("QUOTED_MINIMUM", p.amountOutMinimum);
         console2.log("NET_OUTPUT", out);
         console2.log("HOPS", h.length);
     }
@@ -182,33 +214,37 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
         E.Hop[] memory h = new E.Hop[](1);
         for (uint256 i; i < 2; i++) {
             h[0] = hop(input, output, CLASSIC, E.RouterKind.AERODROME_CLASSIC, 0, 0, i == 1);
-            if (h[0].pool != address(0)) try this.execute(input, 1e18, h) returns (uint256) {
-                return true;
+            if (h[0].pool != address(0)) {
+                try this.execute(input, 1e18, h) returns (uint256) {
+                    return true;
+                } catch {}
             }
-                catch {}
         }
         int24[6] memory spacings = [int24(1), 10, 50, 100, 200, 2000];
         for (uint256 i; i < spacings.length; i++) {
             h[0] = hop(input, output, SLIP, E.RouterKind.AERODROME_SLIPSTREAM, 0, spacings[i], false);
-            if (h[0].pool != address(0)) try this.execute(input, 1e18, h) returns (uint256) {
-                return true;
+            if (h[0].pool != address(0)) {
+                try this.execute(input, 1e18, h) returns (uint256) {
+                    return true;
+                } catch {}
             }
-                catch {}
         }
         if (aeroOnly) return false;
         uint24[4] memory fees = [uint24(100), 500, 3000, 10000];
         for (uint256 i; i < fees.length; i++) {
             h[0] = hop(input, output, UNI, E.RouterKind.UNISWAP_V3_ROUTER02, fees[i], 0, false);
-            if (h[0].pool != address(0)) try this.execute(input, 1e18, h) returns (uint256) {
-                return true;
+            if (h[0].pool != address(0)) {
+                try this.execute(input, 1e18, h) returns (uint256) {
+                    return true;
+                } catch {}
             }
-                catch {}
         }
         h[0] = hop(input, output, V2, E.RouterKind.UNISWAP_V2_ROUTER02, 0, 0, false);
-        if (h[0].pool != address(0)) try this.execute(input, 1e18, h) returns (uint256) {
-            return true;
+        if (h[0].pool != address(0)) {
+            try this.execute(input, 1e18, h) returns (uint256) {
+                return true;
+            } catch {}
         }
-            catch {}
         return false;
     }
 
@@ -362,10 +398,11 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
         int24[6] memory spacings = [int24(1), 10, 50, 100, 200, 2000];
         for (uint256 i; i < spacings.length; i++) {
             h[0] = hop(AERO, WETH, SLIP, E.RouterKind.AERODROME_SLIPSTREAM, 0, spacings[i], false);
-            if (h[0].pool != address(0)) try this.execute(AERO, 1e18, h) returns (uint256) {
-                return;
+            if (h[0].pool != address(0)) {
+                try this.execute(AERO, 1e18, h) returns (uint256) {
+                    return;
+                } catch {}
             }
-                catch {}
         }
         revert("No liquid Slipstream AERO/WETH pool; NOT a pass");
     }
@@ -377,6 +414,41 @@ contract MPGRSwapExecutorV2BaseForkTest is Test {
         this.execute(USDC, 100e6, h);
         // This proves on-chain multihop accounting, NOT that this pair lacks
         // direct pools. Direct-first selection is separately tested in app policy.
+    }
+
+    function testForkV4QuoteAdapterABI() public {
+        address quoter = 0x0d5e0F971ED27FBfF6c2837bf31316121532048D;
+        assertGt(quoter.code.length, 0, "v4 quoter absent");
+        (uint256 out,) = IV2ProofQuoter(quoter)
+            .quoteExactInputSingle(IV2ProofQuoter.V4Params(mpgrHop().v4Key, false, uint128(997500000000000000), ""));
+        assertGt(out, 100, "real MPGR v4 quoter returned no liquidity");
+        console2.log("V4_QUOTER", quoter);
+        console2.log("V4_QUOTED_NET_OUTPUT", out);
+    }
+
+    function testForkV3QuoteAdapterABIs() public {
+        address uq = 0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a;
+        address sq = 0x514c8B5f54112481E28028F1166Bd78501089259;
+        (uint256 uniOut,,,) =
+            IV2ProofQuoter(uq).quoteExactInputSingle(IV2ProofQuoter.UniParams(USDC, WETH, 99750000, 500, 0));
+        assertGt(uniOut, 100);
+        int24[6] memory spacings = [int24(1), 10, 50, 100, 200, 2000];
+        for (uint256 i; i < spacings.length; i++) {
+            if (hop(AERO, WETH, SLIP, E.RouterKind.AERODROME_SLIPSTREAM, 0, spacings[i], false).pool == address(0)) continue;
+            try IV2ProofQuoter(sq)
+                .quoteExactInputSingle(
+                    IV2ProofQuoter.SlipParams(AERO, WETH, 997500000000000000, spacings[i], 0)
+                ) returns (
+                uint256 out, uint160, uint32, uint256
+            ) {
+                if (out > 100) {
+                    console2.log("SLIPSTREAM_QUOTER", sq);
+                    console2.log("SLIPSTREAM_QUOTED_NET_OUTPUT", out);
+                    return;
+                }
+            } catch {}
+        }
+        revert("Slipstream five-field quote adapter did not quote a real AERO/WETH pool");
     }
 
     function testForkUnprovenVenuesDisabled() public {
