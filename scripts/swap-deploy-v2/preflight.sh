@@ -33,15 +33,21 @@ if int(os.environ['BALANCE']) < required:
 PY
 # Every typed venue and factory must have code. Factory identity for router adapters
 # is checked independently; v4 is a PoolManager, not a v3 factory.
-while read -r ROUTER FACTORY; do
+# Each row: router, expected factory, and the router's own factory getter signature.
+# Aerodrome Classic (0xcF77...) exposes defaultFactory() and has no factory() selector.
+while read -r ROUTER FACTORY GETTER; do
   [ "$(cast codesize "$ROUTER" --rpc-url "$BASE_MAINNET_RPC_URL")" -gt 0 ] || fail 'router has no code'
   [ "$(cast codesize "$FACTORY" --rpc-url "$BASE_MAINNET_RPC_URL")" -gt 0 ] || fail 'factory has no code'
-  [ "$(cast call "$ROUTER" 'factory()(address)' --rpc-url "$BASE_MAINNET_RPC_URL" | lc)" = "$(printf '%s' "$FACTORY" | lc)" ] || fail 'router factory mismatch'
+  # A failed read must fail closed with its own message, never fall through to a comparison.
+  ACTUAL=$(cast call "$ROUTER" "$GETTER" --rpc-url "$BASE_MAINNET_RPC_URL") \
+    || fail "router factory read failed: router=$ROUTER getter=$GETTER expected=$FACTORY (call reverted or RPC error)"
+  [ "$(printf '%s' "$ACTUAL" | lc)" = "$(printf '%s' "$FACTORY" | lc)" ] \
+    || fail "router factory mismatch: router=$ROUTER getter=$GETTER expected=$FACTORY actual=$ACTUAL"
 done <<'VENUES'
-0x2626664c2603336E57B271c5C0b26F421741e481 0x33128a8fC17869897dcE68Ed026d694621f6FDfD
-0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F 0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef
-0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24 0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6
-0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43 0x420DD381b31aEf6683db6B902084cB0FFECe40Da
+0x2626664c2603336E57B271c5C0b26F421741e481 0x33128a8fC17869897dcE68Ed026d694621f6FDfD factory()(address)
+0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F 0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef factory()(address)
+0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24 0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6 factory()(address)
+0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43 0x420DD381b31aEf6683db6B902084cB0FFECe40Da defaultFactory()(address)
 VENUES
 [ "$(cast codesize 0x498581fF718922c3f8e6A244956aF099B2652b2b --rpc-url "$BASE_MAINNET_RPC_URL")" -gt 0 ] || fail 'v4 manager has no code'
 echo 'V2 preflight passed (not a fork-proof attestation)'
