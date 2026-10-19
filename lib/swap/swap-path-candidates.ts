@@ -18,7 +18,7 @@ export interface SwapPathHop {
   tokenOut: Address;
 }
 export interface SwapPathCandidate { hops: readonly SwapPathHop[] }
-export const MAX_SWAP_PATH_CANDIDATES = 14;
+export const MAX_SWAP_PATH_CANDIDATES = 20;
 export const SWAP_PATH_BRIDGES: readonly Address[] = [BASE_WETH, BASE_USDC];
 
 export const swapPathAsset = (address: string): Address =>
@@ -37,12 +37,31 @@ export const swapPathKey = (c: SwapPathCandidate) => c.hops.map(swapPathHopKey).
 // Pancake candidates until governance re-registers the PANCAKE_V3 kind to
 // a no-deadline-compatible router and the fork suites are flipped back to
 // success assertions.
+/**
+ * Direct-hop discovery across every tier/spacing the executor can factory
+ * verify, ordered deepest-liquidity-first on Base (Slipstream spacing 100
+ * and UniV3 0.05% dominate WETH/USDC volume; spacing 10 hosts the B20 token
+ * pools). Non-existent pools are rejected by on-chain factory resolution,
+ * so widening the key space can only add routes, never fake them.
+ */
 function directHops(to: Address): SwapPathHop[] {
+  const v3 = (poolFee: number): SwapPathHop => ({ kind: SWAP_PATH_VENUES.uniswapV3.kind, router: SWAP_PATH_VENUES.uniswapV3.router, factory: SWAP_PATH_VENUES.uniswapV3.factory, poolFee, tokenOut: to });
+  const slip = (tickSpacing: number): SwapPathHop => ({ kind: SWAP_PATH_VENUES.slipstream.kind, router: SWAP_PATH_VENUES.slipstream.router, factory: SWAP_PATH_VENUES.slipstream.factory, tickSpacing, tokenOut: to });
+  const classic = (stable: boolean): SwapPathHop => ({ kind: SWAP_PATH_VENUES.aerodromeClassic.kind, router: SWAP_PATH_VENUES.aerodromeClassic.router, factory: SWAP_PATH_VENUES.aerodromeClassic.factory, stable, tokenOut: to });
   return [
+    slip(100),
+    v3(500),
+    slip(10),
+    v3(3000),
     { kind: SWAP_PATH_VENUES.uniswapV2.kind, router: SWAP_PATH_VENUES.uniswapV2.router, factory: SWAP_PATH_VENUES.uniswapV2.factory, tokenOut: to },
-    { kind: SWAP_PATH_VENUES.aerodromeClassic.kind, router: SWAP_PATH_VENUES.aerodromeClassic.router, factory: SWAP_PATH_VENUES.aerodromeClassic.factory, stable: false, tokenOut: to },
-    { kind: SWAP_PATH_VENUES.uniswapV3.kind, router: SWAP_PATH_VENUES.uniswapV3.router, factory: SWAP_PATH_VENUES.uniswapV3.factory, poolFee: 3000, tokenOut: to },
-    { kind: SWAP_PATH_VENUES.slipstream.kind, router: SWAP_PATH_VENUES.slipstream.router, factory: SWAP_PATH_VENUES.slipstream.factory, tickSpacing: 10, tokenOut: to },
+    classic(false),
+    slip(200),
+    slip(50),
+    v3(100),
+    classic(true),
+    slip(2000),
+    v3(10000),
+    slip(1),
   ];
 }
 
@@ -57,11 +76,11 @@ export function swapPathCandidates(from: string, to: string): SwapPathCandidate[
   for (const bridge of SWAP_PATH_BRIDGES.map(x => x.toLowerCase())) {
     if (bridge === a || bridge === b) continue;
     const BR = swapPathAsset(bridge);
-    // Prefer cheap, liquid first legs: V2, Classic volatile, V3 0.30%, Slip 10.
+    // Bridge legs trade against WETH/USDC majors: try the dominant deep keys.
     const leg = (tokenOut: Address): SwapPathHop[] => [
+      { kind: SWAP_PATH_VENUES.slipstream.kind, router: SWAP_PATH_VENUES.slipstream.router, factory: SWAP_PATH_VENUES.slipstream.factory, tickSpacing: 100, tokenOut },
+      { kind: SWAP_PATH_VENUES.uniswapV3.kind, router: SWAP_PATH_VENUES.uniswapV3.router, factory: SWAP_PATH_VENUES.uniswapV3.factory, poolFee: 500, tokenOut },
       { kind: SWAP_PATH_VENUES.uniswapV2.kind, router: SWAP_PATH_VENUES.uniswapV2.router, factory: SWAP_PATH_VENUES.uniswapV2.factory, tokenOut },
-      { kind: SWAP_PATH_VENUES.uniswapV3.kind, router: SWAP_PATH_VENUES.uniswapV3.router, factory: SWAP_PATH_VENUES.uniswapV3.factory, poolFee: 3000, tokenOut },
-      { kind: SWAP_PATH_VENUES.slipstream.kind, router: SWAP_PATH_VENUES.slipstream.router, factory: SWAP_PATH_VENUES.slipstream.factory, tickSpacing: 10, tokenOut },
     ];
     const combos: [number, number][] = [[0, 0], [1, 1], [2, 2]];
     const firstLegs = leg(BR), secondLegs = leg(B);

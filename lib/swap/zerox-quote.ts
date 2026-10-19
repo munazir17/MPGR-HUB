@@ -1,10 +1,25 @@
 // lib/swap/zerox-quote.ts
-// 0x Swap API v2 (Base) quote client — QUOTES ONLY.
-// The API key (env ZEROX_API_KEY) is optional: without it the aggregator venue
-// is reported unavailable instead of silently degraded. Nothing from the API
-// is executed raw: execution happens only through MPGRSwapExecutor's
-// authenticated-settler path (on-chain Settler check, zero value, exact
-// single-use AllowanceHolder approval, measured min-out, atomic fee).
+// 0x Swap API v2 (Base) quote client — QUOTES ONLY, no execution consumer.
+//
+// DO NOT wire this into Swap execution against the currently deployed
+// MPGRSwapExecutor: its swapViaAggregator leg cannot settle any genuine 0x
+// payload (fork-proven 2026-10-19, see
+// test/swap-fork/MPGRSwapExecutorDeployedBaseFork.t.sol). The executor
+// calls the registry-authenticated Settler directly, but a Settler can
+// only collect the sell token inside an AllowanceHolder.exec(...) call
+// (ephemeral-allowance ceremony) or via a Permit2 signature from the payer
+// — neither is reachable from that direct call, so every real payload
+// reverts atomically in the payment step. Execution support requires a
+// NEW executor deployment whose aggregator leg routes through
+// AllowanceHolder.exec with the operator authenticated against the 0x
+// deployer registry (see docs/SWAP-ROUTING-AUDIT.md). Until then this
+// client stays dormant: quotes must never be rendered as executable.
+//
+// Also note the API's allowance-holder `transaction.to` is the
+// AllowanceHolder itself, not the Settler (the Settler is the `operator`
+// inside the exec calldata) — `quote.target` below therefore names the
+// holder, and authenticateZeroxSettler() only becomes meaningful once a
+// caller extracts the operator from the payload.
 import { isAddress, type Address, type Hex } from "viem";
 import { ZEROX_ALLOWANCE_HOLDER, ZEROX_API_BASE, ZEROX_SETTLER_DEPLOYER, ZEROX_TAKER_FEATURE_ID } from "./swap-executor-config";
 

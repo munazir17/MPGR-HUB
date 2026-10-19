@@ -106,9 +106,11 @@ export const SWAP_CHAIN_REGISTRY = {
   },
 } as const;
 
-/** 0x Swap API v2 (Base): quote source only. Execution goes through the
- * executor's authenticated-settler path, never raw API calldata in the UI. */
-export const ZEROX_API_BASE = "https://base.api.0x.org";
+/** 0x Swap API v2: quote source only. Execution goes through the executor's
+ * authenticated-settler path, never raw API calldata in the UI. v2 serves
+ * all chains from api.0x.org with a chainId parameter (same host the
+ * production Agent 0x client uses) — the legacy per-chain host is v1-only. */
+export const ZEROX_API_BASE = "https://api.0x.org";
 export const ZEROX_ALLOWANCE_HOLDER: Address = "0x0000000000001fF3684f28c67538d4D072C22734";
 export const ZEROX_SETTLER_DEPLOYER: Address = "0x00000000000004533Fe15556B1E086BB1A72cEae";
 export const ZEROX_TAKER_FEATURE_ID = 2n;

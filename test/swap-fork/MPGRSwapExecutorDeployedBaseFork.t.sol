@@ -13,6 +13,48 @@ interface IPoolLiquidityFork {
     function liquidity() external view returns (uint128);
 }
 
+// Minimal 0x Settler / AllowanceHolder surface (0x-settler ISettlerActions,
+// ISettlerBase, IAllowanceHolder) used to hand-encode one genuine payload.
+struct TokenPermissionsFork {
+    address token;
+    uint256 amount;
+}
+
+struct PermitTransferFromFork {
+    TokenPermissionsFork permitted;
+    uint256 nonce;
+    uint256 deadline;
+}
+
+interface ISettlerActionsFork {
+    function TRANSFER_FROM(address recipient, PermitTransferFromFork memory permit, bytes memory sig) external;
+    function UNISWAPV3(address recipient, uint256 ppm, bytes memory path, uint256 amountOutMin) external;
+}
+
+interface ISettlerFork {
+    struct AllowedSlippage {
+        address recipient;
+        address buyToken;
+        uint256 minAmountOut;
+    }
+
+    function execute(AllowedSlippage calldata slippage, bytes[] calldata actions, bytes32 zid)
+        external
+        payable
+        returns (bool);
+}
+
+interface IAllowanceHolderFork {
+    function exec(address operator, address token, uint256 amount, address payable target, bytes calldata data)
+        external
+        payable
+        returns (bytes memory);
+}
+
+interface IERC721OwnerOfFork {
+    function ownerOf(uint256 tokenId) external view returns (address);
+}
+
 /// @notice Fork verification of the DEPLOYED Base Mainnet MPGRSwapExecutor
 ///         (deployments/base-mainnet/mpgr-swap-executor.json): the tests call
 ///         the live contract at the pinned address on forked mainnet state —
@@ -361,5 +403,123 @@ contract MPGRSwapExecutorDeployedBaseForkTest is Test {
         assertGt(usdcOut, 0, "measured USDC output on sell-back");
         assertEq(IERC20(USDC).balanceOf(taker) - usdcBefore, usdcOut, "taker receives measured USDC");
         assertEq(IERC20(MPGR).balanceOf(FEE) - feeMpgrBefore, sellFee, "sell fee delivered in MPGR");
+    }
+
+    // ---- Aggregator (0x Settler) leg — known-inoperable tripwires ----
+    //
+    // The deployed swapViaAggregator authenticates agg.target against the
+    // 0x registry (ownerOf(2) = taker-submitted Settler) and calls it
+    // DIRECTLY with agg.data, after exact-approving (G - fee) to
+    // AllowanceHolder. A genuine 0x payload, however, only moves funds when
+    // routed through AllowanceHolder.exec(...): the holder records an
+    // ephemeral (transient) allowance that the Settler later debits via
+    // holder.transferFrom. Called directly, the Settler has no ephemeral
+    // allowance to debit (the ERC-20 approval alone is inert), and the
+    // Permit2 fallback needs a signature from the payer — the executor —
+    // which cannot sign. So no genuine payload can settle through
+    // swapViaAggregator as deployed; any attempt reverts atomically and no
+    // funds move. The control test proves the payload itself is genuine.
+
+    address constant HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;
+    address constant SETTLER_DEPLOYER = 0x00000000000004533Fe15556B1E086BB1A72cEae;
+
+    function liveSettler() internal view returns (address settler) {
+        try IERC721OwnerOfFork(SETTLER_DEPLOYER).ownerOf(2) returns (address s) {
+            settler = s;
+        } catch {}
+    }
+
+    /// @dev One genuine 0x payload (the 0x-settler AllowanceHolderPairTest
+    ///      pattern): TRANSFER_FROM into the Settler, then a single-hop
+    ///      UniV3 (forkId 0) USDC->WETH 500-tier swap paying the taker.
+    function settlerExecuteData(address settler, uint256 amount) internal view returns (bytes memory) {
+        bytes memory v3Path = abi.encodePacked(
+            USDC, uint8(0), uint24(500), uint160(1461446703485210103287273052203988822378723970341), WETH
+        );
+        bytes[] memory actions = new bytes[](2);
+        actions[0] = abi.encodeCall(
+            ISettlerActionsFork.TRANSFER_FROM,
+            (settler, PermitTransferFromFork(TokenPermissionsFork(USDC, amount), 0, block.timestamp + 300), bytes(""))
+        );
+        actions[1] = abi.encodeCall(ISettlerActionsFork.UNISWAPV3, (taker, 1_000_000, v3Path, uint256(0)));
+        return abi.encodeCall(
+            ISettlerFork.execute, (ISettlerFork.AllowedSlippage(address(0), address(0), 0), actions, bytes32(0))
+        );
+    }
+
+    function settlerFixtures() internal view returns (address settler, bool ready) {
+        settler = liveSettler();
+        address pool = poolOf(UNI_V3_FACTORY, bytes4(keccak256("getPool(address,address,uint24)")), USDC, WETH, 500, false);
+        ready = settler != address(0) && pool != address(0) && pool.code.length > 0 && hasLiquidity(pool);
+    }
+
+    /// @notice CONTROL: the hand-encoded payload is genuine — it settles end
+    ///         to end when submitted the way 0x designs it (through
+    ///         AllowanceHolder.exec by the taker directly).
+    function testFork_Deployed_SettlerControlSettlesDirectly() public {
+        if (!live()) {
+            vm.skip(true);
+            return;
+        }
+        (address settler, bool ready) = settlerFixtures();
+        if (!ready) {
+            vm.skip(true);
+            return;
+        }
+        uint256 amount = 100e6;
+        bytes memory executeData = settlerExecuteData(settler, amount);
+        vm.startPrank(taker, taker);
+        IERC20(USDC).approve(HOLDER, amount);
+        uint256 wethBefore = IERC20(WETH).balanceOf(taker);
+        IAllowanceHolderFork(HOLDER).exec(settler, USDC, amount, payable(settler), executeData);
+        vm.stopPrank();
+        assertGt(IERC20(WETH).balanceOf(taker) - wethBefore, 0, "genuine payload settles via holder.exec");
+    }
+
+    /// @notice KNOWN LIMITATION (tripwire): neither feedable payload shape
+    ///         can settle through the deployed swapViaAggregator — (1) the
+    ///         API shape (target = AllowanceHolder, data = exec(...)) fails
+    ///         the executor's own registry authentication, and (2) the
+    ///         executor's shape (target = Settler, data = execute(...))
+    ///         authenticates but reverts in the Settler payment step. Both
+    ///         revert atomically with no funds moved. If a future executor
+    ///         fixes the mechanics, this test must flip to success
+    ///         assertions in the same reviewed change.
+    function testFork_Deployed_AggregatorShapesRevertKnown() public {
+        if (!live()) {
+            vm.skip(true);
+            return;
+        }
+        (address settler, bool ready) = settlerFixtures();
+        if (!ready) {
+            vm.skip(true);
+            return;
+        }
+        uint256 gross = 100e6;
+        uint256 net = gross - gross * 25 / 10000;
+        bytes memory executeData = settlerExecuteData(settler, net);
+        uint256 usdcBefore = IERC20(USDC).balanceOf(taker);
+        uint256 feeBefore = IERC20(USDC).balanceOf(FEE);
+
+        // (1) API shape: rejected by the executor's registry check.
+        bytes memory execData = abi.encodeCall(IAllowanceHolderFork.exec, (settler, USDC, net, payable(settler), executeData));
+        E.SwapParams memory p1 =
+            E.SwapParams(HOLDER, USDC, WETH, gross, gross * 25 / 10000, 1, taker, block.timestamp + 300, bytes32("deployed"), false);
+        E.AggregatorCall memory agg1 = E.AggregatorCall(HOLDER, execData, block.timestamp + 300);
+        vm.expectRevert();
+        vm.prank(taker);
+        ex.swapViaAggregator(p1, agg1, auth());
+
+        // (2) Executor shape: authenticates, then the Settler reverts.
+        E.SwapParams memory p2 =
+            E.SwapParams(settler, USDC, WETH, gross, gross * 25 / 10000, 1, taker, block.timestamp + 300, bytes32("deployed"), false);
+        E.AggregatorCall memory agg2 = E.AggregatorCall(settler, executeData, block.timestamp + 300);
+        vm.expectRevert();
+        vm.prank(taker);
+        ex.swapViaAggregator(p2, agg2, auth());
+
+        // Atomic: no funds moved and no fee collected in either failed shape.
+        assertEq(IERC20(USDC).balanceOf(taker), usdcBefore, "reverted aggregator shapes move no taker funds");
+        assertEq(IERC20(USDC).balanceOf(FEE), feeBefore, "reverted aggregator shapes collect no fee");
     }
 }
