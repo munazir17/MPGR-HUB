@@ -1,7 +1,7 @@
 {
   "chainId": 8453,
-  "swapExecutorV2DeployEnabled": false,
+  "swapExecutorV2DeployEnabled": true,
   "consumed": false,
-  "deployerNonce": null,
-  "status": "UNQUALIFIED: no Base fork proof or on-chain address verification; must not broadcast"
+  "deployerNonce": 2,
+  "status": "QUALIFIED, AUTHORIZATION PROPOSED (not deployed): fork proof run 39261269154 green (fork block 52813757). Reviewed deployer nonce 2 for 0xfDCb6e78217cAf882189e48331a4B42A06309ACA from read-only Blockscout+Basescan check 2026-10-19 (balance then 167099440784 wei, below the 0.003 ETH preflight floor - fund before dispatch; funding does not change nonce). Takes effect only if merged to main and pinned via SWAP_V2_DEPLOY_REF; main dispatch + base-mainnet approval still required; live preflight re-verifies nonce, balance and Safe and fails closed. Any further deployer transaction invalidates nonce 2 - re-read and re-pin via a new reviewed PR, never edit the nonce blind."
 }

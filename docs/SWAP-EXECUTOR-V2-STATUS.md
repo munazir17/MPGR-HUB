@@ -4,8 +4,16 @@
 
 - **No deployment or mainnet transaction in this pass.** No V2 address, deployment
   receipt, sealed manifest, or app activation has been fabricated.
-- `swapExecutorV2DeployEnabled` remains **false** and its deployer nonce remains
-  unset. The V2 deployment workflow has **not** been dispatched.
+- A separate deployment-authorization PR proposes `swapExecutorV2DeployEnabled: true`
+  with reviewed deployer nonce **2** for `0xfDCb6e78217cAf882189e48331a4B42A06309ACA`
+  (read-only Blockscout + Basescan check, 2026-10-19; outgoing nonces 0–1 consumed by
+  the V1 deploy `0x549a54c2…fa4cc` and transfer `0xb5d56bc2…aa68`). Authorization takes
+  effect only if that PR merges to `main` and the owner pins the merged SHA in
+  `SWAP_V2_DEPLOY_REF`. The deployer balance at check time (167099440784 wei) is below
+  the 0.003 ETH preflight floor and must be funded before dispatch. The V2 deployment
+  workflow has **not** been dispatched; preflight re-verifies nonce, balance and the
+  Safe owner on live RPC and fails closed, and any further deployer transaction
+  invalidates the nonce pin.
 - The live `0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E` executor, V1 manifest,
   consumed gate, V1 script/preflight, and active app deployment constant are unchanged.
 - PR #119 was already an ancestor; permissionless token selection is preserved.
