@@ -49,6 +49,11 @@ on:
         required: true
         type: string
         default: "da73b567cdb052ff2bc05456f0a73d9e37ca8299"
+      alt_rpc:
+        description: Optional comma-separated independent RPC list for read-only cross-checks (leave empty for the public defaults)
+        required: false
+        type: string
+        default: ""
   pull_request:
     types: [labeled]
 
@@ -77,7 +82,10 @@ jobs:
       # No secret is mapped into this job; keyed URLs are never needed for
       # read-only verification and could never leak into evidence.
       PRIMARY_RPC: https://mainnet.base.org
-      ALT_RPC: https://base-rpc.publicnode.com
+      # Comma-separated independent endpoints; the seal uses the first one that
+      # answers the bounded probe, hard-fails on any disagreement with it, and
+      # fails closed if none answer (no cross-check = no seal).
+      ALT_RPC: ${{ inputs.alt_rpc || 'https://base-rpc.publicnode.com,https://base.llamarpc.com,https://base.drpc.org' }}
       # The same incident values are the defaults for both trigger paths.
       SOURCE_RUN_ID: ${{ inputs.source_run_id || '39294717599' }}
       EXPECTED_TX: ${{ inputs.expected_tx || '0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b' }}

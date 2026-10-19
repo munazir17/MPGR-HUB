@@ -113,6 +113,14 @@ describe("finalize hardening markers (bounded, fail-closed, cross-checked)", () 
     expect(finalizeText).toContain("crossCheckedWithSecondRpc");
   });
 
+  it("tries several independent endpoints and refuses to seal when none answer", () => {
+    expect(finalizeText).toContain("ALT_CANDIDATES");
+    expect(finalizeText).toContain("did not answer the cross-check probe");
+    expect(finalizeText).toContain("refusing to seal without an independent cross-check");
+    // Disagreement must NOT be treated as unavailability (no silent fallback).
+    expect(finalizeText).toContain("RPC DISAGREEMENT");
+  });
+
   it("requires an exact CREATE receipt (contractAddress, from, tx hash) instead of tolerating a missing one", () => {
     expect(finalizeText).toContain("has no contractAddress");
     expect(finalizeText).toContain("receipt contractAddress");
@@ -192,6 +200,12 @@ describe("recovery workflow is dispatch-gated and structurally read-only", () =>
     // greps for such strings; an invocation would start with the command).
     expect(runs).not.toMatch(/^\s*(forge\s+(script|create)|cast\s+send)/m);
     expect(recoveryWorkflowText).toContain("no sealed V2 manifest on main");
+  });
+
+  it("ships several independent public endpoints for the cross-check by default", () => {
+    expect(recoveryWorkflowText).toContain("base-rpc.publicnode.com");
+    expect(recoveryWorkflowText).toContain("base.llamarpc.com");
+    expect(recoveryWorkflowText).toContain("base.drpc.org");
   });
 
   it("asserts V1 and V2 routing stay untouched and requires owners to activate manually", () => {

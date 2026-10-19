@@ -191,6 +191,27 @@ awk -F'\t' 'BEGIN{OFS="\t"} { if ($1 ~ /routerkind\(address\)\(uint8\)\|0xcf77/)
 run_finalize "$ALT_URL"
 check "fails closed when a router registration disagrees" "$(grep -q 'RPC DISAGREEMENT on routerKind' <<<"$OUT" && echo 0 || echo 1)"
 
+echo "# independent-endpoint candidate list (unavailable candidates are skipped, disagreement never is)"
+new_case alt_fallback
+run_finalize "http://unavailable.stub.invalid,$ALT_URL"
+check "skips an unresponsive independent endpoint and seals against the next" "$([ "$RC" -eq 0 ] && echo 0 || echo 1)"
+check "logs the skipped candidate by host only" "$(grep -q 'independent endpoint unavailable.stub.invalid did not answer the cross-check probe' <<<"$OUT" && echo 0 || echo 1)"
+check "records the endpoint that actually answered" "$(
+  [ "$(jq -r '.verification.rpcHosts.secondary' "$CASE_REPO/$FINAL_REL")" = "alt.stub.invalid" ] && echo 0 || echo 1)"
+
+new_case alt_all_down
+run_finalize "http://down-a.stub.invalid,http://down-b.stub.invalid"
+check "fails closed when NO independent endpoint answers" "$([ "$RC" -ne 0 ] && echo 0 || echo 1)"
+check "names the missing cross-check instead of sealing on one endpoint" "$(grep -q 'refusing to seal without an independent cross-check' <<<"$OUT" && echo 0 || echo 1)"
+check "seals nothing without a cross-check" "$(! sealed && echo 0 || echo 1)"
+
+new_case alt_disagree_no_fallback
+write_pins "$STUB_DIR/pins-alt.tsv" 26
+run_finalize "$ALT_URL,http://down.stub.invalid"
+check "a responsive but disagreeing endpoint hard-fails (no silent fallback)" "$([ "$RC" -ne 0 ] && echo 0 || echo 1)"
+check "reports the disagreement" "$(grep -q 'RPC DISAGREEMENT on feeBps' <<<"$OUT" && echo 0 || echo 1)"
+check "does not fall through to the next candidate after a disagreement" "$(! grep -q 'independent endpoint down.stub.invalid did not answer' <<<"$OUT" && echo 0 || echo 1)"
+
 echo "# CREATE derivation and transaction shape"
 new_case computed_wrong
 printf 'Address: 0x000000000000000000000000000000000000dEaD\n' >"$STUB_DIR/computed-address"

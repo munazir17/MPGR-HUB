@@ -75,8 +75,9 @@ The job refuses to proceed unless the named run actually is the trusted V2
 workflow at that pin, its **deploy step succeeded** and its **seal step
 failed**. It then downloads the run's artifact, validates the recorded `CREATE`
 against `expected_tx`/`expected_executor` (exact match, case-insensitive), and
-seals only after every on-chain re-read below agrees on **both** independent
-public RPCs (`mainnet.base.org` and `base-rpc.publicnode.com`).
+seals only after every on-chain re-read below agrees on **both** `mainnet.base.org`
+and an independent endpoint (defaults: `base-rpc.publicnode.com`,
+`base.llamarpc.com`, `base.drpc.org` — override with the `alt_rpc` input).
 
 On success: the sealed manifest is uploaded in the
 `mpgr-swap-executor-v2-seal-recovery` artifact and posted as a PR comment; on
@@ -116,7 +117,9 @@ the consumed gate. Any re-run refuses to reseal (final manifest present).
 5. **Independent second RPC** — receipt, tx, nonce, `to`, initcode, codesize,
    runtime `codeHash` (`eth_getProof`, when served), every pin and every router
    kind must be identical on both endpoints; any disagreement or empty read
-   fails closed.
+   fails closed. Several endpoints may be configured: one that cannot answer a
+   bounded probe is skipped, but an endpoint that answers and disagrees is a
+   hard failure and no further candidate is tried.
 6. **Governance pins** — `feeBps() == 25`, `MAX_FEE_BPS() == 100`,
    `FEE_TIMELOCK_SECONDS() == 172800`, `pendingEffectiveAt() == 0`,
    `feeRecipient() == 0x96F7…64A4`,

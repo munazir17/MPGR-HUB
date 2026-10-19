@@ -14,17 +14,21 @@
 #   1. preceded by a BOUNDED runtime-code propagation poll (codesize > 0)
 #      before any eth_call is attempted, and
 #   2. wrapped in bounded retries with capped linear backoff.
-# If an independent second RPC (arg 2 or BASE_MAINNET_RPC_URL_ALT) is given, the
-# receipt, the CREATE tx, chain id, runtime code hash, codesize, every pin and
-# every router registration are read from BOTH endpoints and must agree exactly;
-# any disagreement fails closed with both values reported. Retry exhaustion also
-# fails closed: nothing is sealed from unavailable, unverified or contradictory
-# reads, and the staging manifest + evidence are preserved for investigation.
+# If independent second RPCs (arg 2 / BASE_MAINNET_RPC_URL_ALT, comma- or
+# space-separated) are given, the receipt, the CREATE tx, chain id, runtime code
+# hash, codesize, every pin and every router registration are read from BOTH
+# endpoints and must agree exactly; any disagreement fails closed with both
+# values reported. A candidate that is merely UNAVAILABLE (after a bounded
+# probe) is skipped for the next independent candidate; if no candidate
+# completes the cross-check, the seal fails closed (no cross-check = no seal).
+# Retry exhaustion also fails closed: nothing is sealed from unavailable,
+# unverified or contradictory reads, and the staging manifest + evidence are
+# preserved for investigation.
 # This script is strictly READ-ONLY on-chain: it never broadcasts and never
 # takes a private key. It can also seal the ONE existing deployment after the
 # fact via scripts/swap-deploy-v2/recover-finalize.sh (no re-deployment).
 #
-# Usage: scripts/swap-deploy-v2/finalize-manifest.sh <rpc-url> [alt-rpc-url]
+# Usage: scripts/swap-deploy-v2/finalize-manifest.sh <rpc-url> [alt-rpc-url[,alt-rpc-url...]]
 # Tunables (env): FINALIZE_RPC_ATTEMPTS (default 8),
 #   FINALIZE_RPC_BACKOFF_SECONDS (default 3, linear), FINALIZE_RPC_BACKOFF_CAP_SECONDS (15),
 #   FINALIZE_CODE_WAIT_ATTEMPTS (default 36), FINALIZE_CODE_WAIT_INTERVAL_SECONDS (5),
@@ -32,8 +36,15 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-RPC="${1:?usage: finalize-manifest.sh <rpc-url> [alt-rpc-url]}"
-ALT_RPC="${2:-${BASE_MAINNET_RPC_URL_ALT:-}}"
+RPC="${1:?usage: finalize-manifest.sh <rpc-url> [alt-rpc-url[,alt-rpc-url...]]}"
+ALT_RPC_RAW="${2:-${BASE_MAINNET_RPC_URL_ALT:-}}"
+ALT_CANDIDATES=()
+if [ -n "$ALT_RPC_RAW" ]; then
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] && ALT_CANDIDATES+=("$candidate")
+  done < <(printf '%s\n' "$ALT_RPC_RAW" | tr ',' '\n')
+fi
+ALT_RPC=""   # the independent endpoint actually used for cross-checks
 STAGING=deployments/base-mainnet/mpgr-swap-executor-v2.staging.json
 FINAL=deployments/base-mainnet/mpgr-swap-executor-v2.json
 RUN_JSON="broadcast/DeployMPGRSwapExecutorV2BaseMainnet.s.sol/8453/run-latest.json"
@@ -64,9 +75,11 @@ for knob in RPC_ATTEMPTS RPC_BACKOFF RPC_BACKOFF_CAP CODE_POLLS CODE_POLL_WAIT; 
 done
 [ "$RPC_ATTEMPTS" -ge 1 ] || fail "FINALIZE_RPC_ATTEMPTS must be >= 1"
 [ "$CODE_POLLS" -ge 1 ] || fail "FINALIZE_CODE_WAIT_ATTEMPTS must be >= 1"
-if [ -n "$ALT_RPC" ] && [ "$(host_label "$ALT_RPC")" = "$(host_label "$RPC")" ]; then
-  fail "second RPC ($(host_label "$ALT_RPC")) is not independent of the primary ($(host_label "$RPC")); refusing a self-cross-check"
-fi
+for candidate in ${ALT_CANDIDATES[@]+"${ALT_CANDIDATES[@]}"}; do
+  if [ "$(host_label "$candidate")" = "$(host_label "$RPC")" ]; then
+    fail "second RPC ($(host_label "$candidate")) is not independent of the primary ($(host_label "$RPC")); refusing a self-cross-check"
+  fi
+done
 
 [ -f "$STAGING" ] || fail "staging manifest missing ($STAGING)"
 [ ! -f "$FINAL" ] || fail "final manifest already exists"
@@ -158,6 +171,30 @@ code_hash() { # $1 = rpc url
   done
 }
 
+# Short bounded probes used ONLY to pick a responsive independent endpoint.
+# Unavailability is not a disagreement: a candidate that cannot answer the
+# probe is skipped, while a candidate that answers and disagrees hard-fails
+# below. If no candidate answers, the seal fails closed (no cross-check).
+probe_read() { # $1 = rpc url; rest = cast args
+  local url="$1"; shift
+  local attempt out
+  for attempt in 1 2 3; do
+    if out="$(cast "$@" --rpc-url "$url" 2>>"$ERRLOG")"; then printf '%s\n' "$out"; return 0; fi
+    sleep 2
+  done
+  return 1
+}
+probe_code() { # $1 = rpc url
+  local attempt sz
+  for attempt in 1 2 3; do
+    sz="$(cast codesize "$EXEC" --rpc-url "$1" 2>>"$ERRLOG" || true)"
+    sz="${sz//[!0-9]/}"
+    if [ -n "$sz" ] && [ "$sz" -gt 0 ]; then return 0; fi
+    sleep 2
+  done
+  return 1
+}
+
 # --- chain identity + propagation gate on the primary RPC --------------------
 CHAIN_NOW="$(rpc_read "$RPC" chain-id)" || fail "chain id unreadable on primary RPC ($(host_label "$RPC"))"
 [ "$CHAIN_NOW" = "8453" ] || fail "chain id drifted: $CHAIN_NOW"
@@ -213,7 +250,26 @@ if [ "$CODE_HASH_P" = "$ZERO_HASH" ]; then
 fi
 
 # --- second-RPC cross-checks of every recovered fact (fail closed) -----------
-if [ -n "$ALT_RPC" ]; then
+if [ "${#ALT_CANDIDATES[@]}" -gt 0 ]; then
+  for candidate in "${ALT_CANDIDATES[@]}"; do
+    if candidate_chain="$(probe_read "$candidate" chain-id)" \
+      && [ "$candidate_chain" = "8453" ] \
+      && probe_code "$candidate" \
+      && candidate_receipt="$(probe_read "$candidate" receipt "$TX" --json)" \
+      && [ -n "$candidate_receipt" ]; then
+      ALT_RPC="$candidate"
+      break
+    fi
+    echo "finalize: independent endpoint $(host_label "$candidate") did not answer the cross-check probe (chain id + runtime code + receipt); trying the next configured endpoint" >&2
+  done
+  if [ -z "$ALT_RPC" ]; then
+    TRIED_HOSTS=""
+    for candidate in "${ALT_CANDIDATES[@]}"; do
+      TRIED_HOSTS="$TRIED_HOSTS$(host_label "$candidate") "
+    done
+    fail "no configured independent second RPC (${TRIED_HOSTS% }) completed the cross-check probe; refusing to seal without an independent cross-check"
+  fi
+  echo "finalize: cross-checking against independent endpoint $(host_label "$ALT_RPC")" >&2
   ALT_CHAIN="$(rpc_read "$ALT_RPC" chain-id)" || fail "chain id unreadable on second RPC ($(host_label "$ALT_RPC"))"
   [ "$ALT_CHAIN" = "8453" ] || fail "second RPC reports chain id $ALT_CHAIN != 8453"
   wait_for_code "$ALT_RPC"
