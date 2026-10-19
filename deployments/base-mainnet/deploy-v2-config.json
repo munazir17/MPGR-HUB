@@ -1,0 +1,7 @@
+{
+  "chainId": 8453,
+  "swapExecutorV2DeployEnabled": false,
+  "consumed": false,
+  "deployerNonce": null,
+  "status": "UNQUALIFIED: no Base fork proof or on-chain address verification; must not broadcast"
+}

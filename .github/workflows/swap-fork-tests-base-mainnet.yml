@@ -1,85 +1,10 @@
 name: Swap fork tests (Base Mainnet, read-only)
-
-# Read-only Base Mainnet fork tests for contracts/swap adapters and multi-hop
-# routes. NEVER broadcasts, never deploys, never touches gates or secrets
-# beyond the optional RPC URL. Trigger: workflow_dispatch or the
-# `swap-fork-tests` label on a same-repo PR.
 on:
   workflow_dispatch:
-  pull_request:
-    types: [labeled]
-
 permissions:
   contents: read
-
-concurrency:
-  group: swap-fork-tests-base-mainnet
-  cancel-in-progress: true
-
 jobs:
-  fork:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.label.name == 'swap-fork-tests' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: stable
-      - name: Install Solidity dependencies (pinned, same as CI)
-        run: |
-          mkdir -p .forge-deps
-          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
-          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
-      - name: Run Base Mainnet fork suites (skips are reported, not hidden)
-        env:
-          # Optional secret for a dedicated RPC; falls back to a deep-state
-          # public endpoint. mainnet.base.org rate-limits shared CI egress
-          # (HTTP 429) and serves only minutes of recent state (pruned
-          # blocks 404), so — exactly as in ci.yml contracts-fork — the
-          # public fallback is base-rpc.publicnode.com.
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
-        run: |
-          set +e -uo pipefail
-          # Drop stale cross-run FORK caches (restored by the foundry
-          # toolchain cache): short-window public endpoints prune the
-          # captured block within minutes ("block not found"). Only
-          # chain-cache subdirs are removed — the compile cache is kept.
-          rm -rf cache/base cache/8453
-          report() {
-            # Honest per-suite tallies (passed/failed/skipped) in the summary.
-            grep -aE "^Ran [0-9]+ test suite|Suite result" fork.log 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY"
-            # Per-test outcomes as notices so pass/skip attribution is
-            # visible in the API even on green runs (a skip is a coverage
-            # statement, never silently a pass).
-            grep -aE "^\[(PASS|SKIP)" fork.log 2>/dev/null | head -30 | while IFS= read -r l; do echo "::notice::${l:0:300}"; done
-            # Failure details as annotations (greppable without raw logs) —
-            # the same surfacing pattern ci.yml uses for its contracts job.
-            grep -aE "\[FAIL" fork.log 2>/dev/null | head -15 | while IFS= read -r l; do echo "::error::${l:0:500}"; done
-            grep -aA2 "Failing tests:" fork.log 2>/dev/null | head -25 | while IFS= read -r l; do echo "::error::SUMMARY ${l:0:400}"; done
-            tail -5 fork.log 2>/dev/null | while IFS= read -r l; do echo "::error::TAIL ${l:0:400}"; done
-          }
-          forge test --match-path 'test/swap-fork/*' -vv 2>&1 | tee fork.log
-          STATUS=$?
-          if [ "$STATUS" != "0" ]; then
-            # Public Base RPCs rate-limit shared CI egress (HTTP 429) under
-            # fork load. One settle-and-retry absorbs transient storms; a
-            # real, deterministic failure fails both attempts (same policy
-            # as ci.yml contracts-fork).
-            echo "::warning title=swap fork suite failed once::retrying after 60s (public Base RPC 429s are transient)"
-            report
-            sleep 60
-            forge test --match-path 'test/swap-fork/*' -vv 2>&1 | tee fork.log
-            STATUS=$?
-          fi
-          report
-          if [ "$STATUS" != "0" ]; then
-            echo "::error::swap fork tests failed"
-            exit 1
-          fi
+  v2-proof:
+    uses: ./.github/workflows/swap-v2-fork-proof.yml
+    secrets:
+      BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
