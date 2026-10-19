@@ -41,4 +41,9 @@ NONCE="$(cast nonce "$ADDR" --rpc-url "$RPC")"
 SIZE="$(cast codesize "$OWNER" --rpc-url "$RPC")"
 [ "$SIZE" -gt 0 ] || fail "SWAP_EXECUTOR_OWNER $OWNER has no code on Base - governance multisig must be a deployed contract"
 
-echo "PREFLIGHT PASS: chain=8453 deployer=$ADDR nonce=0 owner=$OWNER (contract, codesize=$SIZE) gates=committed-open"
+# Bytecode alone is insufficient: verify a GENUINE Safe (canonical singleton in
+# storage slot 0 + functioning getThreshold/getOwners/VERSION). Public data only.
+SAFE_OUT="$(bash "$(dirname "$0")/safe-check.sh" "$OWNER" "$RPC")" || fail "SWAP_EXECUTOR_OWNER is not a verified genuine Safe/multisig"
+SAFE_LINE="$(grep '^SAFE-CHECK PASS:' <<<"$SAFE_OUT")"
+
+echo "PREFLIGHT PASS: chain=8453 deployer=$ADDR nonce=0 gates=committed-open; $SAFE_LINE"
