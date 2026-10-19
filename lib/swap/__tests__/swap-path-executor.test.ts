@@ -8,8 +8,8 @@ import {
   SWAP_FEE_RECIPIENT, SWAP_PATH_VENUES, __setSwapPathExecutorForTests, swapPathExecutor, type SwapPathExecutorDeployment,
 } from "../swap-executor-config";
 import { inspectSwapExecutorTransaction, swapPathFeeFloor, verifySwapPathSettlement } from "../swap-executor-intent";
-import { swapPathCandidates, swapPathKey } from "../swap-path-candidates";
-import { swapPathRoutingEvidenceValid, type SwapPathRoutingEvidence } from "../swap-path-evidence";
+import { MAX_SWAP_PATH_CANDIDATES, swapPathCandidates, swapPathKey } from "../swap-path-candidates";
+import { swapPathRoutingEvidenceValid, type SwapPathOutcome, type SwapPathRoutingEvidence } from "../swap-path-evidence";
 import { swapPathPairEligible } from "../swap-path-quote";
 import { swapQuotePolicyError } from "../swap-policy";
 
@@ -46,9 +46,23 @@ describe("path candidates", () => {
   it("bounds and de-duplicates the typed search space", () => {
     const candidates = swapPathCandidates(TOKEN_A, TOKEN_B);
     expect(candidates.length).toBeGreaterThan(0);
-    expect(candidates.length).toBeLessThanOrEqual(8);
+    expect(candidates.length).toBeLessThanOrEqual(MAX_SWAP_PATH_CANDIDATES);
     expect(new Set(candidates.map(swapPathKey)).size).toBe(candidates.length);
     expect(candidates.every(c => c.hops.length >= 1 && c.hops.length <= 3)).toBe(true);
+  });
+  it("discovers the deep pool tiers and never offers the inoperable Pancake venue", () => {
+    const hops = swapPathCandidates(BASE_USDC, BASE_WETH).flatMap(c => [...c.hops]);
+    // Deepest Base keys: Slipstream spacing 100 and UniV3 0.05%, plus the
+    // long-tail tiers (0.01% / 1% / stable) for non-major pairs.
+    expect(hops.some(h => h.tickSpacing === 100)).toBe(true);
+    expect(hops.some(h => h.poolFee === 500)).toBe(true);
+    expect(hops.some(h => h.poolFee === 100)).toBe(true);
+    expect(hops.some(h => h.poolFee === 10000)).toBe(true);
+    expect(hops.some(h => h.stable === true)).toBe(true);
+    expect(hops.some(h => h.tickSpacing === 1 || h.tickSpacing === 2000)).toBe(true);
+    // Registered-but-inoperable (adapter ABI mismatch): never candidated.
+    expect(SWAP_PATH_VENUES.pancakeV3).toBeDefined();
+    expect(hops.every(h => h.router.toLowerCase() !== SWAP_PATH_VENUES.pancakeV3.router.toLowerCase())).toBe(true);
   });
   it("rejects same-underlying and invalid pairs", () => {
     expect(swapPathCandidates(BASE_WETH, NATIVE_ETH_SENTINEL)).toEqual([]);
@@ -181,6 +195,13 @@ describe("policy and settlement", () => {
     expect(swapPathRoutingEvidenceValid(p, evidence(tx))).toBe(true);
     expect(swapPathRoutingEvidenceValid(p, { ...evidence(tx), calldataHash: keccak256("0x99") })).toBe(false);
     expect(swapPathRoutingEvidenceValid(p, { ...evidence(tx), pools: [] })).toBe(false);
+    // Outcome bound follows the candidate bound, not the old fixed cap of 8
+    // (which made every >8-candidate search — i.e. token<->token pairs —
+    // unquotable). MAX outcomes valid, MAX+1 invalid.
+    const outcomes = (n: number): SwapPathOutcome[] =>
+      Array.from({ length: n }, (_, i) => ({ key: `k${i}`, state: "rejected" as const, reason: "POOL_UNAVAILABLE", output: null }));
+    expect(swapPathRoutingEvidenceValid(p, { ...evidence(tx), outcomes: outcomes(MAX_SWAP_PATH_CANDIDATES) })).toBe(true);
+    expect(swapPathRoutingEvidenceValid(p, { ...evidence(tx), outcomes: outcomes(MAX_SWAP_PATH_CANDIDATES + 1) })).toBe(false);
     __setSwapPathExecutorForTests(null);
     expect(swapPathRoutingEvidenceValid(p, evidence(tx))).toBe(false);
   });

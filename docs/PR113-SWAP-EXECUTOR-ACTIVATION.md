@@ -27,8 +27,8 @@ executed; rollback (step 10) remains accurate.
 Deployed-address fork suite (`MPGRSwapExecutorDeployedBaseFork.t.sol`,
 `swap-fork-tests` workflow): posture pins, USDC↔WETH in both directions and
 native ETH in/out **pass against the deployed contract** (measured outputs,
-exact 25 bps fee to the treasury). Two limitations were established by the
-same verification and are guarded by explicit tripwire tests:
+exact 25 bps fee to the treasury). These limitations were established by
+the same verification and are guarded by explicit tripwire tests:
 
 1. **Pancake V3 venue is inoperable as deployed.** The executor's Pancake
    adapter encodes the no-deadline (Router02-shaped) `exactInputSingle`,
@@ -55,6 +55,24 @@ same verification and are guarded by explicit tripwire tests:
    covered offline, and the fork test self-activates the moment a
    supported-venue pool (e.g. Aerodrome Slipstream USDC/MPGR) is seeded —
    an operator funds decision outside this activation.
+3. **The 0x Settler aggregator leg (`swapViaAggregator`) is inoperable as
+   deployed** (established in the Phase-2 routing audit, 2026-10-19; see
+   `docs/SWAP-ROUTING-AUDIT.md`). The executor calls the
+   registry-authenticated Settler directly, but a Settler can only collect
+   the sell token inside an `AllowanceHolder.exec(...)` call (ephemeral
+   allowance ceremony) or via a Permit2 signature from the payer — neither
+   reachable from the deployed direct-call wiring — so every genuine 0x
+   payload reverts atomically in the payment step. Proven on a Base fork
+   against the deployed contract: a hand-encoded genuine payload settles
+   through `AllowanceHolder.exec` (control
+   `testFork_Deployed_SettlerControlSettlesDirectly`) while both shapes
+   feedable to the executor revert with no funds moved
+   (`testFork_Deployed_AggregatorShapesRevertKnown`). The app therefore
+   keeps the 0x client strictly quotes-only and never renders an
+   aggregator quote as executable. Remediation requires a **new executor
+   deployment** whose aggregator leg routes through `AllowanceHolder.exec`
+   with registry-authenticated operator (plan in the routing audit);
+   governance re-registration cannot fix this one.
 
 ## What exists today
 
