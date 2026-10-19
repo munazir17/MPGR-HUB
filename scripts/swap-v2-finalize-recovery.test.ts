@@ -129,13 +129,23 @@ describe("finalize hardening markers (bounded, fail-closed, cross-checked)", () 
 });
 
 describe("recovery workflow is dispatch-gated and structurally read-only", () => {
-  it("is dispatch-only and requires the explicit confirmation string", () => {
+  it("runs only via a confirmed dispatch or a same-repo PR label (never on a plain push)", () => {
     const triggers = recoveryWorkflow.on as Record<string, unknown>;
-    expect(Object.keys(triggers)).toEqual(["workflow_dispatch"]);
+    expect(Object.keys(triggers).sort()).toEqual(["pull_request", "workflow_dispatch"]);
+    // Dispatch path: explicit confirmation string required.
     expect(recoveryWorkflowText).toContain("RECOVER_SEAL_ONE_MPGR_SWAP_EXECUTOR_V2");
     expect(recoveryWorkflowText).toContain(
       "inputs.confirm_recovery == 'RECOVER_SEAL_ONE_MPGR_SWAP_EXECUTOR_V2'",
     );
+    // PR path: only the dedicated label, only from a same-repository head.
+    const prTrigger = (triggers as { pull_request?: { types?: string[] } }).pull_request;
+    expect(prTrigger?.types).toEqual(["labeled"]);
+    expect(recoveryWorkflowText).toContain("github.event.label.name == 'recover-swap-v2-finalize'");
+    expect(recoveryWorkflowText).toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    expect(recoveryWorkflowText).toContain("Event gate (defense in depth");
+    expect(recoveryWorkflowText).not.toMatch(/^\s*push:/m);
   });
 
   it("declares no environment and no production secret anywhere", () => {

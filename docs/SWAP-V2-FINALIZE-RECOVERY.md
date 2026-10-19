@@ -51,17 +51,25 @@ for a read-only replay.
 
 ### A. GitHub Actions (recommended, no local setup)
 
-Dispatch **“Recover MPGR Swap Executor V2 finalization (read-only)”**
-(`.github/workflows/recover-swap-executor-v2-finalize.yml`) from `main` (or from
-a reviewed branch before the merge, while the manifest is not yet on `main`):
+Two gated, read-only triggers exist:
 
-| Input | Value |
-| --- | --- |
-| `confirm_recovery` | `RECOVER_SEAL_ONE_MPGR_SWAP_EXECUTOR_V2` |
-| `source_run_id` | `39294717599` |
-| `expected_tx` | `0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b` |
-| `expected_executor` | `0x4be1154440b26145d76608D41d403a33e76b9d0A` |
-| `trusted_pin` | `da73b567cdb052ff2bc05456f0a73d9e37ca8299` |
+* **PR label** — on a same-repository PR that contains this workflow, apply the
+  label **`recover-swap-v2-finalize`**. This is the reviewer-gated pattern used
+  by `swap-deploy-diagnostics.yml` and is how the recovery runs before the
+  workflow exists on `main`. Fork PRs are rejected; the label path never
+  receives a secret.
+* **workflow_dispatch** — from `main` (or any reviewed branch) once merged,
+  requiring the confirmation string below.
+
+Both use the same expected values (dispatch inputs override the defaults):
+
+| Value | Dispatch input | Default |
+| --- | --- | --- |
+| confirmation | `confirm_recovery` = `RECOVER_SEAL_ONE_MPGR_SWAP_EXECUTOR_V2` | (label path needs none) |
+| source run | `source_run_id` | `39294717599` |
+| create tx | `expected_tx` | `0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b` |
+| executor | `expected_executor` | `0x4be1154440b26145d76608D41d403a33e76b9d0A` |
+| trusted pin | `trusted_pin` | `da73b567cdb052ff2bc05456f0a73d9e37ca8299` |
 
 The job refuses to proceed unless the named run actually is the trusted V2
 workflow at that pin, its **deploy step succeeded** and its **seal step

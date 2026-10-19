@@ -14,6 +14,14 @@ name: Recover MPGR Swap Executor V2 finalization (read-only)
 # It does NOT touch V1 (asserted with git diff) and does NOT activate V2
 # routing: lib/swap config and lib/swap/v2/discovery.ts stay untouched;
 # activation remains a separate, explicit, human-reviewed step.
+#
+# Two gated triggers, both read-only:
+#   1. workflow_dispatch from any branch, requiring the confirmation string;
+#   2. a `pull_request: labeled` event with the label
+#      `recover-swap-v2-finalize` from a SAME-REPOSITORY PR head - the same
+#      reviewer-gated pattern as swap-deploy-diagnostics.yml, used when the
+#      workflow does not exist on the default branch yet. Fork PRs are
+#      rejected and the PR-label path never receives a secret either.
 on:
   workflow_dispatch:
     inputs:
@@ -41,6 +49,8 @@ on:
         required: true
         type: string
         default: "da73b567cdb052ff2bc05456f0a73d9e37ca8299"
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
@@ -54,8 +64,11 @@ concurrency:
 jobs:
   recover-finalize:
     if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.confirm_recovery == 'RECOVER_SEAL_ONE_MPGR_SWAP_EXECUTOR_V2'
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.confirm_recovery == 'RECOVER_SEAL_ONE_MPGR_SWAP_EXECUTOR_V2') ||
+      (github.event_name == 'pull_request' &&
+       github.event.label.name == 'recover-swap-v2-finalize' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -65,17 +78,37 @@ jobs:
       # read-only verification and could never leak into evidence.
       PRIMARY_RPC: https://mainnet.base.org
       ALT_RPC: https://base-rpc.publicnode.com
-      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-      EXPECTED_TX: ${{ inputs.expected_tx }}
-      EXPECTED_EXECUTOR: ${{ inputs.expected_executor }}
-      RECOVERY_EXPECTED_PIN: ${{ inputs.trusted_pin }}
+      # The same incident values are the defaults for both trigger paths.
+      SOURCE_RUN_ID: ${{ inputs.source_run_id || '39294717599' }}
+      EXPECTED_TX: ${{ inputs.expected_tx || '0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b' }}
+      EXPECTED_EXECUTOR: ${{ inputs.expected_executor || '0x4be1154440b26145d76608D41d403a33e76b9d0A' }}
+      RECOVERY_EXPECTED_PIN: ${{ inputs.trusted_pin || 'da73b567cdb052ff2bc05456f0a73d9e37ca8299' }}
+      PR_NUMBER_HINT: ${{ github.event.pull_request.number || '' }}
+      CONFIRM_RECOVERY: ${{ inputs.confirm_recovery }}
+      EVENT_LABEL: ${{ github.event.label.name }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
         with:
           version: v1.8.5
+
+      - name: Event gate (defense in depth; the job-level `if` already enforces it)
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              [ "${CONFIRM_RECOVERY:-}" = "RECOVER_SEAL_ONE_MPGR_SWAP_EXECUTOR_V2" ] \
+                || { echo "::error title=Event gate::confirmation string missing"; exit 1; } ;;
+            pull_request)
+              [ "${EVENT_LABEL:-}" = "recover-swap-v2-finalize" ] \
+                || { echo "::error title=Event gate::unexpected label"; exit 1; } ;;
+            *)
+              echo "::error title=Event gate::unsupported event $GITHUB_EVENT_NAME"; exit 1 ;;
+          esac
+          echo "::notice title=Event gate::$GITHUB_EVENT_NAME accepted; read-only recovery proceeds"
 
       - name: Assert the recovery path is structurally incapable of broadcasting
         run: |
@@ -184,7 +217,10 @@ jobs:
           else
             echo "::error title=V2 seal recovery FAILED CLOSED::see recovery-evidence in the artifact; no verification claimed"
           fi
-          PR_NUMBER="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          PR_NUMBER="${PR_NUMBER_HINT:-}"
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          fi
           if [ -n "$PR_NUMBER" ]; then
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/recovery-summary.md || true
           fi
