@@ -175,7 +175,7 @@ jobs:
               if env_name != "base-mainnet": errs.append("deploy job must use environment base-mainnet")
               if dj.get("needs") != "resolve-pin": errs.append("deploy must need resolve-pin")
               co = dj["steps"][0]
-              if str(co.get("with", {}).get("ref", "")) != "$" + "{{ needs.resolve-pin.outputs.sha }}"  # concat defeats Actions template expansion in this run block: errs.append("deploy must check out the owner-pinned SHA")
+              if str(co.get("with", {}).get("ref", "")) != "$" + "{{ needs.resolve-pin.outputs.sha }}": errs.append("deploy must check out the owner-pinned SHA")  # "$"+concat defeats Actions template expansion inside this run block
               names = [st.get("name", "") for st in dj["steps"]]
               v = next((i for i, n in enumerate(names) if n.startswith("Verify checkout equals")), -1)
               pre = next((i for i, n in enumerate(names) if n.startswith("Preflight")), -1)

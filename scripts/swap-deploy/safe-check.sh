@@ -13,6 +13,10 @@
 #                               accepted.
 #   SWAP_SAFE_MIN_THRESHOLD     minimum required threshold (default 1; a
 #                               notice recommends >= 2 for governance).
+#   SWAP_SAFE_RETRY_BASE_SLEEP  test seam: scales the RPC retry backoff
+#                               (sleep = attempt * 2 * base seconds, default
+#                               base 1). The attempt count (5) is fixed and
+#                               production callers never set this.
 set -euo pipefail
 OWNER="${1:?usage: safe-check.sh <owner-address> <rpc-url>}"
 RPC="${2:?usage: safe-check.sh <owner-address> <rpc-url>}"
@@ -29,11 +33,12 @@ note() { [ -n "${GITHUB_ACTIONS:-}" ] && echo "::notice title=Safe verification:
 
 echo "$OWNER" | grep -Eq '^0x[0-9a-fA-F]{40}$' || fail "owner is not a valid address"
 
+RETRY_BASE_SLEEP="${SWAP_SAFE_RETRY_BASE_SLEEP:-1}"
 rpc() { # retrying cast wrapper; fail closed when the chain cannot be read
   local a out
   for a in 1 2 3 4 5; do
     if out="$("$@" 2>/dev/null)"; then printf '%s\n' "$out"; return 0; fi
-    sleep $((a * 2))
+    sleep $((a * 2 * RETRY_BASE_SLEEP))
   done
   return 1
 }
@@ -61,7 +66,28 @@ fi
 THRESHOLD="$(rpc cast call "$OWNER" 'getThreshold()(uint256)' --rpc-url "$RPC" | strip)" || fail "getThreshold() did not respond - not a functioning Safe"
 OWNERS="$(rpc cast call "$OWNER" 'getOwners()(address[])' --rpc-url "$RPC")" || fail "getOwners() did not respond - not a functioning Safe"
 VERSION="$(rpc cast call "$OWNER" 'VERSION()(string)' --rpc-url "$RPC" | tr -d '"')" || fail "VERSION() did not respond - not a functioning Safe"
-OWNER_COUNT="$(grep -Ec '^0x[0-9a-fA-F]{40}' <<<"$OWNERS" || true)"
+# Parse getOwners() robustly across every layout emitted by supported Foundry
+# versions: one bracketed comma-separated line ([0x.., 0x.., ..]), one address
+# per line, or bulleted lines (- 0x..). Normalise to one token per line, then
+# STRICTLY validate each token as exactly a 20-byte address. Malformed output,
+# empty arrays and duplicate owners fail closed - a count is never silently
+# derived from data that does not parse. Address case is irrelevant here; the
+# threshold comparison below is unchanged.
+OWNERS_NORM="$(tr ',[]' '\n\n\n' <<<"$OWNERS" | sed 's/^[[:space:]-]*//; s/[[:space:]]*$//' | grep -v '^$' || true)"
+OWNER_COUNT=0
+SEEN_OWNERS=""
+if [ -n "$OWNERS_NORM" ]; then
+  while IFS= read -r ENTRY; do
+    grep -Eq '^0x[0-9a-fA-F]{40}$' <<<"$ENTRY" || fail "malformed getOwners() output: entry '$ENTRY' is not a 20-byte address"
+    ENTRY_LC="$(lc "$ENTRY")"
+    case " $SEEN_OWNERS " in
+      *" $ENTRY_LC "*) fail "malformed getOwners() output: duplicate owner $ENTRY_LC (a genuine Safe never lists one owner twice)" ;;
+    esac
+    SEEN_OWNERS="$SEEN_OWNERS $ENTRY_LC"
+    OWNER_COUNT=$((OWNER_COUNT + 1))
+  done <<<"$OWNERS_NORM"
+fi
+[ "$OWNER_COUNT" -ge 1 ] || fail "getOwners() returned an empty owner list - not a functioning Safe"
 
 [ "$THRESHOLD" -ge 1 ] 2>/dev/null || fail "threshold '$THRESHOLD' invalid"
 [ "$THRESHOLD" -ge "$MIN_THRESHOLD" ] || fail "threshold $THRESHOLD below required minimum $MIN_THRESHOLD"

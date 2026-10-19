@@ -1,6 +1,8 @@
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdtempSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 // Regression suite for the TRUSTED-CODE swap-executor deployment architecture:
@@ -266,5 +268,159 @@ describe("solidity preflight enforcement (behavioural tests in test/swap/DeployP
   it("writes only a staging manifest; the final name is reserved for finalize-manifest.sh", () => {
     expect(deployScript).toContain("vm.writeFile(STAGING_MANIFEST");
     expect(deployScript).not.toContain("vm.writeFile(FINAL_MANIFEST");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D1 regression: safe-check.sh getOwners() parsing against every layout that
+// supported Foundry versions emit (single bracketed line [0x.., 0x..], one
+// address per line, bulleted "- 0x.."), using a deterministic fake `cast`.
+// Malformed, empty and duplicate output must fail closed; a count is never
+// silently derived from data that does not strictly parse.
+// ---------------------------------------------------------------------------
+
+const FAKE_SAFE = "0x9999999999999999999999999999999999999999";
+const OWNER_A = "0x1111111111111111111111111111111111111111";
+const OWNER_B = "0x2222222222222222222222222222222222222222";
+const OWNER_C = "0x3333333333333333333333333333333333333333";
+const OWNER_MIXED = "0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd";
+const SLOT0 = (singleton: string) => `0x000000000000000000000000${singleton.slice(2)}`;
+const SINGLETONS: ReadonlyArray<[string, string]> = [
+  ["0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552", "GnosisSafe 1.3.0"],
+  ["0x3E5c63644E683549055b9Be8653de26E0B4CD36E", "GnosisSafeL2 1.3.0"],
+  ["0x41675C099F32341bf84BFc5382aF534df5C7461a", "Safe 1.4.1"],
+  ["0x29fcB43b46531BcA003ddC8FCB67FFE91900C762", "SafeL2 1.4.1"],
+];
+
+function runSafeCheckFake(opts: {
+  failAll?: boolean;
+  codesize?: string;
+  slot0?: string;
+  threshold?: string;
+  ownersLines?: string[];
+  env?: Record<string, string>;
+}): { ok: boolean; out: string } {
+  const dir = mkdtempSync(join(tmpdir(), "safecheck-fake-"));
+  try {
+    const q = (s: string) => `'${s}'`;
+    const owners = (opts.ownersLines ?? [`[${OWNER_A}, ${OWNER_B}, ${OWNER_C}]`]).map(q).join(" ");
+    const script = [
+      "#!/usr/bin/env bash",
+      ...(opts.failAll ? ["exit 1"] : []),
+      'case "$*" in',
+      `  *codesize*) printf '%s\\n' ${q(opts.codesize ?? "324")}; exit 0 ;;`,
+      `  *storage*) printf '%s\\n' ${q(opts.slot0 ?? SLOT0(SINGLETONS[0][0]))}; exit 0 ;;`,
+      `  *getThreshold*) printf '%s\\n' ${q(opts.threshold ?? "2")}; exit 0 ;;`,
+      `  *getOwners*) printf '%s\\n' ${owners}; exit 0 ;;`,
+      `  *VERSION*) printf '%s\\n' ${q('"1.3.0"')}; exit 0 ;;`,
+      "esac",
+      "exit 1",
+      "",
+    ].join("\n");
+    const fake = join(dir, "cast");
+    writeFileSync(fake, script);
+    chmodSync(fake, 0o755);
+    try {
+      const out = execFileSync("bash", ["scripts/swap-deploy/safe-check.sh", FAKE_SAFE, "http://fake.rpc"], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: `${dir}:${process.env.PATH ?? ""}`,
+          GITHUB_ACTIONS: "",
+          // Test seam: scales the retry backoff to zero; the 5-attempt count
+          // and every assertion are unchanged from production behaviour.
+          SWAP_SAFE_RETRY_BASE_SLEEP: "0",
+          ...(opts.env ?? {}),
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 60_000,
+      });
+      return { ok: true, out };
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string };
+      return { ok: false, out: `${err.stdout ?? ""}${err.stderr ?? ""}` };
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("safe-check.sh getOwners() parsing (D1 regression, deterministic fake cast)", () => {
+  it("parses the single-line bracketed array modern cast emits ([0x.., 0x..])", () => {
+    const r = runSafeCheckFake({ ownersLines: [`[${OWNER_A}, ${OWNER_B}, ${OWNER_C}]`], threshold: "2" });
+    expect(r.ok).toBe(true);
+    expect(r.out).toContain("SAFE-CHECK PASS");
+    expect(r.out).toContain("threshold=2 owners=3");
+  });
+  it("parses one-address-per-line output", () => {
+    const r = runSafeCheckFake({ ownersLines: [OWNER_A, OWNER_B, OWNER_C], threshold: "3" });
+    expect(r.ok).toBe(true);
+    expect(r.out).toContain("threshold=3 owners=3");
+  });
+  it("parses bulleted ('- 0x..') multiline output", () => {
+    const r = runSafeCheckFake({ ownersLines: [`- ${OWNER_A}`, `- ${OWNER_B}`], threshold: "2" });
+    expect(r.ok).toBe(true);
+    expect(r.out).toContain("owners=2");
+  });
+  it("accepts mixed-case addresses (case-insensitive validity, exact count)", () => {
+    const r = runSafeCheckFake({ ownersLines: [`[${OWNER_MIXED}, ${OWNER_B}]`], threshold: "2" });
+    expect(r.ok).toBe(true);
+    expect(r.out).toContain("owners=2");
+  });
+  it("fails when the threshold exceeds the valid owner count", () => {
+    const r = runSafeCheckFake({ ownersLines: [`[${OWNER_A}, ${OWNER_B}]`], threshold: "3" });
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("fewer than threshold");
+  });
+  it("fails closed on an empty owner array", () => {
+    const r = runSafeCheckFake({ ownersLines: ["[]"], threshold: "1" });
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("empty owner list");
+  });
+  it("fails closed on malformed entries instead of silently counting", () => {
+    const bad: string[][] = [
+      [`[0x123, ${OWNER_B}]`],        // far too short
+      [`0x${"4".repeat(41)}`],        // 41 hex chars: not 20 bytes
+      [`0x${"5".repeat(64)}`],        // 32-byte word: never counted as an address
+      ["[not-an-address]"],           // garbage token
+    ];
+    for (const lines of bad) {
+      const r = runSafeCheckFake({ ownersLines: lines, threshold: "1" });
+      expect(r.ok, `expected failure for ${lines[0].slice(0, 24)}...`).toBe(false);
+      expect(r.out).toContain("not a 20-byte address");
+    }
+  });
+  it("fails closed on duplicate owners (case-insensitive)", () => {
+    const r = runSafeCheckFake({ ownersLines: [`[${OWNER_MIXED}, ${OWNER_MIXED.toLowerCase()}]`], threshold: "1" });
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("duplicate owner");
+  });
+  it("fails closed for a codeless (non-Safe) address", () => {
+    const r = runSafeCheckFake({ codesize: "0" });
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("no bytecode");
+  });
+  it("fails closed on an unrecognised slot-0 singleton", () => {
+    const r = runSafeCheckFake({ slot0: SLOT0("0x00000000000000000000000000000000DeAdBeEf") });
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("NOT a recognised Safe proxy");
+  });
+  it("recognises all four canonical Base Safe singletons", () => {
+    for (const [singleton, impl] of SINGLETONS) {
+      const r = runSafeCheckFake({ slot0: SLOT0(singleton) });
+      expect(r.ok, `expected pass for ${impl}`).toBe(true);
+      expect(r.out).toContain(`genuine ${impl}`);
+    }
+  });
+  it("enforces SWAP_SAFE_MIN_THRESHOLD without weakening the owners check", () => {
+    const r = runSafeCheckFake({ threshold: "2", env: { SWAP_SAFE_MIN_THRESHOLD: "3" } });
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("below required minimum");
+  });
+  it("fails closed when every RPC call fails", () => {
+    const r = runSafeCheckFake({ failAll: true });
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("RPC unavailable");
   });
 });
