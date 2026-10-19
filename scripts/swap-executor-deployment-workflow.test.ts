@@ -104,7 +104,7 @@ describe("PR-side workflow is gates-only and structurally incapable of deploymen
     expect(prWorkflowText).toContain("head.repo.full_name == github.repository");
   });
   it("scopes concurrency to the PR head so stale runs can never block a new head", () => {
-    const group = String((prWorkflow.concurrency as { group?: string } | undefined)?.group ?? "");
+    const group = String((prWorkflow as unknown as { concurrency?: { group?: string } }).concurrency?.group ?? "");
     expect(group).toContain("github.event.pull_request.head.sha");
     expect(prWorkflowText).toContain("cancel-in-progress: false");
   });
