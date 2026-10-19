@@ -1,6 +1,13 @@
 name: Swap V2 real Base fork proof (no broadcast)
 on:
   workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "contracts/swap/**"
+      - "test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol"
+      - "scripts/swap-deploy-v2/**"
+      - ".github/workflows/swap-v2-fork-proof.yml"
   workflow_call:
     secrets:
       BASE_MAINNET_RPC_URL:
@@ -12,6 +19,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   fork:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
