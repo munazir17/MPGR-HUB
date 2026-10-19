@@ -57,6 +57,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
         with:
@@ -65,14 +66,28 @@ jobs:
       - name: Head SHA & PR state
         env:
           EXPECTED_HEAD: ${{ inputs.expected_head }}
+          TRIGGER_PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           LOCAL="$(git rev-parse HEAD)"
-          PR_HEAD="$(gh pr view 113 --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
-          PR_STATE="$(gh pr view 113 --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
+          PR_JSON="$(gh pr view 113 --repo "$GITHUB_REPOSITORY" --json headRefOid,state,mergeCommit)"
+          PR_HEAD="$(jq -r '.headRefOid' <<<"$PR_JSON")"
+          PR_STATE="$(jq -r '.state' <<<"$PR_JSON")"
           echo "checkout HEAD : $LOCAL"
           echo "PR #113 head  : $PR_HEAD ($PR_STATE)"
-          [ "$PR_STATE" = "OPEN" ] || { echo "::error::PR #113 is not open"; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            [ "$GITHUB_REF" = "refs/heads/main" ] || { echo "::error::workflow_dispatch must run from refs/heads/main"; exit 1; }
+            [ "$PR_STATE" = "MERGED" ] || { echo "::error::PR #113 is not merged"; exit 1; }
+            MERGE_COMMIT="$(jq -r '.mergeCommit.oid // empty' <<<"$PR_JSON")"
+            [ -n "$MERGE_COMMIT" ] || { echo "::error::PR #113 merge commit is unavailable"; exit 1; }
+            git merge-base --is-ancestor "$MERGE_COMMIT" "$LOCAL" || { echo "::error::PR #113 merge commit is not an ancestor of the checkout"; exit 1; }
+          elif [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            [ "$PR_STATE" = "OPEN" ] || { echo "::error::PR #113 is not open"; exit 1; }
+            [ "$LOCAL" = "$TRIGGER_PR_HEAD" ] || { echo "::error::checkout does not match triggering PR head SHA $TRIGGER_PR_HEAD"; exit 1; }
+          else
+            echo "::error::unsupported event $GITHUB_EVENT_NAME"
+            exit 1
+          fi
           if [ -n "$EXPECTED_HEAD" ]; then
             [ "$PR_HEAD" = "$EXPECTED_HEAD" ] || { echo "::error::PR head does not match expected $EXPECTED_HEAD"; exit 1; }
           fi
