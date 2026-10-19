@@ -461,9 +461,16 @@ contract MPGRSwapExecutorV2 is Ownable2Step, Pausable, ReentrancyGuard {
     /// @dev Deliberately not nonReentrant: the outer swap holds the lock. No external
     /// caller can choose settlement data or invoke a second trade from the callback.
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
-        if (msg.sender != V4_POOL_MANAGER || activeUnlock == bytes32(0) || keccak256(data) != activeUnlock) {
+        if (
+            msg.sender != V4_POOL_MANAGER || !_reentrancyGuardEntered() || activeUnlock == bytes32(0)
+                || keccak256(data) != activeUnlock
+        ) {
             revert InvalidUnlock();
         }
+        // Consume the one-use capability BEFORE any external interaction,
+        // including hook execution in swap(). No callback state is written
+        // after swap/settle/take, and a canonical-manager replay sees zero.
+        activeUnlock = bytes32(0);
         (
             IMPGRV4PoolManager.PoolKey memory key,
             bytes memory hookData,
@@ -471,8 +478,6 @@ contract MPGRSwapExecutorV2 is Ownable2Step, Pausable, ReentrancyGuard {
             uint256 amount,
             address receiver
         ) = abi.decode(data, (IMPGRV4PoolManager.PoolKey, bytes, bool, uint256, address));
-        // Prevent replay/reentrant callback; receive() still needs the commitment for native take.
-        activeUnlock = bytes32(uint256(1));
         IMPGRV4PoolManager manager = IMPGRV4PoolManager(V4_POOL_MANAGER);
         int256 delta = manager.swap(
             key,
@@ -505,7 +510,6 @@ contract MPGRSwapExecutorV2 is Ownable2Step, Pausable, ReentrancyGuard {
         } else {
             manager.take(buyCurrency, receiver, output);
         }
-        activeUnlock = bytes32(0);
         return abi.encode(output);
     }
 
@@ -687,9 +691,11 @@ contract MPGRSwapExecutorV2 is Ownable2Step, Pausable, ReentrancyGuard {
         revert RenounceDisabled();
     }
 
-    /// @dev Only WETH may send ETH (during unwrap). Anything else reverts.
+    /// @dev Native v4 take is accepted only from the canonical manager while
+    /// an outer nonReentrant swap is active. Callback authorization is already
+    /// consumed at this point; accepting ETH does not authorize any callback.
     receive() external payable {
-        if (msg.sender != address(WETH) && !(msg.sender == V4_POOL_MANAGER && activeUnlock != bytes32(0))) {
+        if (msg.sender != address(WETH) && !(msg.sender == V4_POOL_MANAGER && _reentrancyGuardEntered())) {
             revert UnexpectedNativeSender(msg.sender);
         }
     }
