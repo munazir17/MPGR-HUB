@@ -159,11 +159,11 @@ Base fork. Last known green: run `39261269154`, 13 passed / 0 failed / 0 skipped
 change, so it is not evidence that the app-side encoding matches the deployed contract at a
 current block.
 
-> **This branch has NOT produced a fork proof — two attempts, both failed identically.**
-> Runs `39396256493` (commit `3660dbf`) and `39397504180` (commit `436a078`) both failed at the
-> "Discover MPGR pool key from real Initialize event" step, so the forge suite was **skipped**
-> both times and no fork evidence exists for this change. The script failed closed and claimed
-> nothing:
+> **This branch has NOT produced a fork proof — three attempts, all failed identically.**
+> Runs `39396256493` (`3660dbf`), `39397504180` (`436a078`) and `39398352775` (`7330bdc`) all
+> failed at the "Discover MPGR pool key from real Initialize event" step, so the forge suite was
+> **skipped** every time and no fork evidence exists for this change. The script failed closed
+> and claimed nothing:
 >
 > ```text
 > MPGR code prefix: 0xef
@@ -172,9 +172,10 @@ current block.
 > found; no proof claimed
 > ```
 >
-> **This is reproducible, not a flake** — the same step, same output, ~35 minutes apart on two
-> different commits. Diagnosis: the cause is a **third-party hint API**, not this change.
-> - `MPGR code prefix: 0xef` printed both times, so the Base RPC was healthy (`eth_chainId`,
+> **This is reproducible, not a flake** — the same step, the same `hint count: 0`, the same error
+> text, on three consecutive commits spanning ~1.5 hours. Diagnosis: the cause is a
+> **third-party hint API**, not this change.
+> - `MPGR code prefix: 0xef` printed every time, so the Base RPC was healthy (`eth_chainId`,
 >   `eth_getCode`, `eth_blockNumber` all succeeded).
 > - `hint count: 0` means `api.dexscreener.com/token-pairs/v1/base/<mpgr>` returned an array
 >   (otherwise the script throws "Pool discovery hints unavailable") containing **no** entry with
@@ -201,8 +202,11 @@ current block.
 > corroborated by Actions evidence — but at 2026-10-19T18:38Z, **not** against this branch.
 > The hint source therefore degraded somewhere between 2026-10-19T18:38Z and 2026-10-20T08:50Z.
 >
-> **Do not loop on re-pushes.** Further pushes to a trigger path will keep failing identically
-> until the external hint source recovers or the discovery step gains an on-chain fallback.
+> **Do not loop on re-pushes.** Note that `paths:` filtering on a `pull_request` event is
+> evaluated against the PR's **cumulative** diff versus base, not the last commit — so even a
+> docs-only push re-runs this workflow, which is exactly how run `39398352775` happened. Every
+> further push to this PR will produce the same failure until the external hint source recovers
+> or the discovery step gains an on-chain fallback; do not push again merely to retry the proof.
 > Re-triggering by other means is blocked here: `gh run rerun --failed` was refused ("cannot be
 > rerun") and `workflow_dispatch` returned HTTP 403 (`Resource not accessible by integration` — the
 > token lacks `actions: write`). A maintainer with sufficient permissions can dispatch it
