@@ -20,8 +20,8 @@ jobs:
     timeout-minutes: 20
     env:
       PINNED_SOURCE_SHA: da73b567cdb052ff2bc05456f0a73d9e37ca8299
-      EXECUTOR: 0x4be1154440b26145d76608D41d403a33e76b9d0A
-      DEPLOY_TX: 0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b
+      EXECUTOR: "0x4be1154440b26145d76608D41d403a33e76b9d0A"
+      DEPLOY_TX: "0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b"
     steps:
       - name: Checkout the exact deployment source (never the PR checkout)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
