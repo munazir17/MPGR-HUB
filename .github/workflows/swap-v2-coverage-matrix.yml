@@ -41,6 +41,9 @@ jobs:
       - name: Measure V2 coverage against real Base (read-only)
         env:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          # Opt-in gate: without this the coverage test skips, so the ordinary
+          # `npm test` run in CI is never slowed down by the live matrix.
+          MPGR_V2_COVERAGE: "1"
         run: |
           set -euo pipefail
           npx vitest run scripts/swap-v2-coverage-matrix.test.ts 2>&1 | tee v2-coverage.log

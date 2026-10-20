@@ -23,13 +23,27 @@ import { classifyPairOutcome, classifyTokenSupport, renderCoverageMarkdown, summ
 import { erc20Abi } from "@/lib/erc20-abi";
 
 const RPC_URL = process.env.BASE_MAINNET_RPC_URL ?? "https://mainnet.base.org";
+// OPT-IN. This filename matches vitest's test-file glob, so without a gate the
+// ordinary `npm test` run would attempt the full live matrix — which is exactly
+// what cancelled CI's quality job on the first attempt. The dedicated coverage
+// workflow sets MPGR_V2_COVERAGE=1; everywhere else this skips immediately.
+const ENABLED = process.env.MPGR_V2_COVERAGE === "1" || process.env.MPGR_V2_COVERAGE === "true";
+/** Wall-clock budget per pair, so one slow pair cannot consume the whole run. A
+ * timeout is recorded as UNMEASURED — never as missing liquidity. */
+const PER_PAIR_TIMEOUT_MS = Number(process.env.MPGR_V2_COVERAGE_PAIR_TIMEOUT_MS ?? 45_000);
 const MPGR = "0xb2000000000000000000008d204203177a78af01" as Address;
 const WETH = "0x4200000000000000000000000000000000000006" as Address;
 const USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" as Address;
 const OUT_DIR = "deployments/.local";
 /** Bound the probe set so the run stays inside CI time limits. This is a SAMPLE;
  * it is never presented as the whole Base token universe. */
-const MAX_TOKEN_TOKEN_PAIRS = 40;
+const MAX_TOKEN_TOKEN_PAIRS = Number(process.env.MPGR_V2_COVERAGE_MAX_PAIRS ?? 12);
+/** Hard caps so the run always finishes and always emits a matrix. Pairs that the
+ * budget does not reach are recorded UNMEASURED, never silently dropped. */
+const MAX_TOTAL_PAIRS = Number(process.env.MPGR_V2_COVERAGE_TOTAL_PAIRS ?? 30);
+// Kept below vitest's 900s test timeout so the matrix is written before any
+// timeout could discard it.
+const TOTAL_BUDGET_MS = Number(process.env.MPGR_V2_COVERAGE_BUDGET_MS ?? 600_000);
 const PROBE_AMOUNT = 1_000_000n;
 
 async function reachable(): Promise<{ ok: true; client: ReturnType<typeof buildClient> } | { ok: false; reason: string }> {
@@ -113,6 +127,10 @@ describe("V2 live coverage matrix", () => {
   it(
     "classifies real Base pairs and refuses to claim unmeasured coverage",
     async (ctx) => {
+      if (!ENABLED) {
+        console.warn("::notice::V2 coverage matrix skipped — set MPGR_V2_COVERAGE=1 to measure it. Not measured, not claimed.");
+        return ctx.skip();
+      }
       const probe = await reachable();
       if (!probe.ok) {
         // A SKIP, not a pass. Printed loudly so no report can mistake it for
@@ -129,19 +147,38 @@ describe("V2 live coverage matrix", () => {
       const facts = new Map<string, TokenSupportFacts>();
       for (const t of tokens) facts.set(t.address.toLowerCase(), await tokenFacts(client, t.address, blockNumber));
 
+      const plan = pairs.slice(0, MAX_TOTAL_PAIRS);
+      const deferred = pairs.slice(MAX_TOTAL_PAIRS);
+      const startedAt = Date.now();
       const rows: PairCoverageRow[] = [];
-      for (const { from, to } of pairs) {
+      for (const { from, to } of plan) {
+        if (Date.now() - startedAt > TOTAL_BUDGET_MS) {
+          // Out of budget: record what is left as UNMEASURED and stop. Reporting
+          // fewer pairs honestly beats timing out and reporting none.
+          rows.push({ from, to, category: "UNMEASURED_PROVIDER_FAILURE", measured: false, reason: "Probe budget exhausted before this pair was measured." });
+          continue;
+        }
         const source = new RpcV2LiquiditySource(client as never, blockNumber);
         let outcome: Parameters<typeof classifyPairOutcome>[2];
         try {
-          const quote = await discoverV2Quote(source, from, to, PROBE_AMOUNT);
+          const quote = await Promise.race([
+            discoverV2Quote(source, from, to, PROBE_AMOUNT),
+            new Promise<never>((_resolve, reject) =>
+              setTimeout(() => reject(new Error(`discovery exceeded ${PER_PAIR_TIMEOUT_MS}ms`)), PER_PAIR_TIMEOUT_MS)),
+          ]);
           outcome = { ok: true, quote };
         } catch (error) {
+          // A timeout or transport failure is UNMEASURED by construction: the
+          // classifier maps any non-V2QuoteError to UNMEASURED_PROVIDER_FAILURE.
           outcome = { ok: false, error };
         }
         rows.push(classifyPairOutcome(from, to, outcome, {
           from: facts.get(from.toLowerCase()), to: facts.get(to.toLowerCase()),
         }));
+      }
+
+      for (const { from, to } of deferred) {
+        rows.push({ from, to, category: "UNMEASURED_PROVIDER_FAILURE", measured: false, reason: `Pair beyond the ${MAX_TOTAL_PAIRS}-pair probe cap; not measured.` });
       }
 
       const summary = summarizeCoverage(rows);
