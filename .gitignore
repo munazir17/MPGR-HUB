@@ -25,6 +25,10 @@ broadcast/
 deployments/.local/
 .uniswap-artifacts/
 
+# Read-only V2 finalization recovery evidence (downloaded failed-run artifact,
+# RPC cross-check logs). Uploaded as a CI artifact; never a committed record.
+recovery-evidence/
+
 # Local/CI dry-run output of the mainnet deploy script tests (never a real deployment record)
 deployments/base-mainnet/.fork-dry-run*.json
 rehearse-sim.txt

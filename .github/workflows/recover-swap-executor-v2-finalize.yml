@@ -1,0 +1,246 @@
+name: Recover MPGR Swap Executor V2 finalization (read-only)
+
+# READ-ONLY recovery of the FAILED SEAL STEP of the one existing trusted V2
+# deployment (run 39294717599: deploy broadcast succeeded, sealing died on a
+# lagging public-RPC replica with "contract ... does not have any code").
+# This workflow NEVER deploys and NEVER broadcasts:
+#   - no job declares `environment:` and NO production secret is referenced
+#     anywhere in this file (the deployer key is structurally out of scope);
+#   - the recovery scripts are asserted broadcast-free before they run and the
+#     recovery refuses to execute with any deployer key in its environment;
+#   - it only re-reads the failed run's own artifact + the live chain through
+#     two independent public RPCs, and seals the manifest ONLY if every
+#     recovered fact and every governance pin agrees on both endpoints.
+# It does NOT touch V1 (asserted with git diff) and does NOT activate V2
+# routing: lib/swap config and lib/swap/v2/discovery.ts stay untouched;
+# activation remains a separate, explicit, human-reviewed step.
+#
+# Two gated triggers, both read-only:
+#   1. workflow_dispatch from any branch, requiring the confirmation string;
+#   2. a `pull_request: labeled` event with the label
+#      `recover-swap-v2-finalize` from a SAME-REPOSITORY PR head - the same
+#      reviewer-gated pattern as swap-deploy-diagnostics.yml, used when the
+#      workflow does not exist on the default branch yet. Fork PRs are
+#      rejected and the PR-label path never receives a secret either.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_recovery:
+        description: Type RECOVER_SEAL_ONE_MPGR_SWAP_EXECUTOR_V2 to run the read-only finalization recovery
+        required: true
+        type: string
+      source_run_id:
+        description: Workflow run ID of the failed trusted deployment run (artifact source)
+        required: true
+        type: string
+        default: "39294717599"
+      expected_tx:
+        description: Exact CREATE tx hash recorded by that run's broadcast artifact
+        required: true
+        type: string
+        default: "0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b"
+      expected_executor:
+        description: Exact executor address created by that transaction
+        required: true
+        type: string
+        default: "0x4be1154440b26145d76608D41d403a33e76b9d0A"
+      trusted_pin:
+        description: Owner-pinned trusted commit the failed run executed
+        required: true
+        type: string
+        default: "da73b567cdb052ff2bc05456f0a73d9e37ca8299"
+      alt_rpc:
+        description: Optional comma-separated independent RPC list for read-only cross-checks (leave empty for the public defaults)
+        required: false
+        type: string
+        default: ""
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+concurrency:
+  group: recover-swap-executor-v2-finalize
+  cancel-in-progress: false
+
+jobs:
+  recover-finalize:
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.confirm_recovery == 'RECOVER_SEAL_ONE_MPGR_SWAP_EXECUTOR_V2') ||
+      (github.event_name == 'pull_request' &&
+       github.event.label.name == 'recover-swap-v2-finalize' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Two INDEPENDENT public Base Mainnet endpoints (different operators).
+      # No secret is mapped into this job; keyed URLs are never needed for
+      # read-only verification and could never leak into evidence.
+      PRIMARY_RPC: https://mainnet.base.org
+      # Comma-separated independent endpoints; the seal uses the first one that
+      # answers the bounded probe, hard-fails on any disagreement with it, and
+      # fails closed if none answer (no cross-check = no seal).
+      ALT_RPC: ${{ inputs.alt_rpc || 'https://base-rpc.publicnode.com,https://base.llamarpc.com,https://base.drpc.org' }}
+      # The same incident values are the defaults for both trigger paths.
+      SOURCE_RUN_ID: ${{ inputs.source_run_id || '39294717599' }}
+      EXPECTED_TX: ${{ inputs.expected_tx || '0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b' }}
+      EXPECTED_EXECUTOR: ${{ inputs.expected_executor || '0x4be1154440b26145d76608D41d403a33e76b9d0A' }}
+      RECOVERY_EXPECTED_PIN: ${{ inputs.trusted_pin || 'da73b567cdb052ff2bc05456f0a73d9e37ca8299' }}
+      PR_NUMBER_HINT: ${{ github.event.pull_request.number || '' }}
+      CONFIRM_RECOVERY: ${{ inputs.confirm_recovery }}
+      EVENT_LABEL: ${{ github.event.label.name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.8.5
+
+      - name: Event gate (defense in depth; the job-level `if` already enforces it)
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              [ "${CONFIRM_RECOVERY:-}" = "RECOVER_SEAL_ONE_MPGR_SWAP_EXECUTOR_V2" ] \
+                || { echo "::error title=Event gate::confirmation string missing"; exit 1; } ;;
+            pull_request)
+              [ "${EVENT_LABEL:-}" = "recover-swap-v2-finalize" ] \
+                || { echo "::error title=Event gate::unexpected label"; exit 1; } ;;
+            *)
+              echo "::error title=Event gate::unsupported event $GITHUB_EVENT_NAME"; exit 1 ;;
+          esac
+          echo "::notice title=Event gate::$GITHUB_EVENT_NAME accepted; read-only recovery proceeds"
+
+      - name: Assert the recovery path is structurally incapable of broadcasting
+        run: |
+          set -euo pipefail
+          fail() { echo "::error title=Recovery guard::$1"; exit 1; }
+          # The deployer secret is intentionally NOT mapped into this job.
+          [ -z "${BASE_MAINNET_DEPLOYER_PRIVATE_KEY:-}" ] || fail "deployer key unexpectedly in scope"
+          for f in scripts/swap-deploy-v2/recover-finalize.sh scripts/swap-deploy-v2/finalize-manifest.sh; do
+            [ -f "$f" ] || fail "$f missing at this checkout"
+            if grep -qE -- '--broadcast|--private-key|--sender|forge script|cast send' "$f"; then
+              fail "$f must stay broadcast-free (read-only recovery)"
+            fi
+          done
+          grep -q 'must NOT be in scope' scripts/swap-deploy-v2/recover-finalize.sh || fail "keyless guard missing from recover-finalize.sh"
+          echo "::notice title=Recovery guard::read-only scripts verified broadcast-free; no deployer key in scope"
+
+      - name: Refuse if V2 is already sealed on main (no double-seal)
+        run: |
+          set -euo pipefail
+          # API read only: the checkout has no persisted git credentials, so the
+          # guard must not depend on an authenticated `git fetch`.
+          if gh api "repos/$GITHUB_REPOSITORY/contents/deployments/base-mainnet/mpgr-swap-executor-v2.json?ref=main" >/dev/null 2>&1; then
+            echo "::error title=Recovery guard::a sealed V2 manifest already exists on main - nothing to recover"
+            exit 1
+          fi
+          echo "::notice title=Recovery guard::no sealed V2 manifest on main"
+
+      - name: Recover, cross-verify and seal from the EXISTING deployment data (no broadcast)
+        run: |
+          set -euo pipefail
+          mkdir -p recovery-evidence
+          bash scripts/swap-deploy-v2/recover-finalize.sh \
+            "$SOURCE_RUN_ID" "$EXPECTED_TX" "$EXPECTED_EXECUTOR" "$PRIMARY_RPC" "$ALT_RPC" \
+            2>&1 | tee recovery-evidence/recovery.log
+
+      - name: V1 untouched audit (deployment record, gate, scripts, routing constant)
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- \
+            deployments/base-mainnet/mpgr-swap-executor.json \
+            deployments/base-mainnet/deploy-config.json \
+            scripts/swap-deploy/ \
+            contracts/swap/MPGRSwapExecutor.sol \
+            script/DeployMPGRSwapExecutorBaseMainnet.s.sol \
+            lib/swap/swap-executor-config.ts \
+            lib/swap/v2/ \
+            || { echo "::error title=V1 guard::recovery mutated V1/routing files"; exit 1; }
+          grep -q 'executor: "0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E"' lib/swap/swap-executor-config.ts \
+            || { echo "::error title=V1 guard::active V1 routing constant drifted"; exit 1; }
+          grep -q 'export const V2_DEPLOYMENT = null;' lib/swap/v2/discovery.ts \
+            || { echo "::error title=V2 routing guard::V2_DEPLOYMENT must stay null (activation is a separate manual approval)"; exit 1; }
+          echo "::notice title=V1 guard::V1 record/gate/scripts/routing unchanged; V2 routing NOT activated"
+
+      - name: Independent Safe re-verification of the sealed owner (only after a successful seal)
+        run: |
+          set -euo pipefail
+          FINAL=deployments/base-mainnet/mpgr-swap-executor-v2.json
+          OWNER="$(jq -r '.owner' "$FINAL")"
+          bash scripts/swap-deploy/safe-check.sh "$OWNER" "$PRIMARY_RPC"
+
+      - name: Report the sealed manifest or the preserved failure evidence (never both claims)
+        if: always()
+        run: |
+          set -uo pipefail
+          FINAL=deployments/base-mainnet/mpgr-swap-executor-v2.json
+          SEALED=0
+          if [ -f "$FINAL" ] \
+            && jq -e '.deployTx | test("^0x[0-9a-fA-F]{64}$")' "$FINAL" >/dev/null \
+            && jq -e '.deployBlock > 0' "$FINAL" >/dev/null \
+            && jq -e '(.venues | length) == 5' "$FINAL" >/dev/null \
+            && ! grep -q 'pending-record' "$FINAL"; then
+            SEALED=1
+          fi
+          {
+            echo "<!-- mpgr-swap-executor-v2-seal-recovery -->"
+            echo "## MPGR Swap Executor V2 - finalization recovery (read-only)"
+            echo
+            echo "Source run: [$SOURCE_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID) (trusted pin \`$RECOVERY_EXPECTED_PIN\`)"
+            echo "Expected CREATE tx: \`$EXPECTED_TX\`"
+            echo "Expected executor: \`$EXPECTED_EXECUTOR\`"
+            echo
+            if [ "$SEALED" = "1" ]; then
+              echo "Seal recovery PASSED: the manifest was sealed from the existing deployment data after"
+              echo "bounded-polling reads agreed on BOTH independent RPCs (\`mainnet.base.org\` and"
+              echo "\`base-rpc.publicnode.com\`). No transaction was broadcast; V1 and V2 routing are untouched."
+              echo "Activation of V2 routing remains a separate explicit human approval."
+              echo
+              echo '```json'
+              jq . "$FINAL"
+              echo '```'
+            else
+              echo "Seal recovery FAILED CLOSED: **no manifest was sealed and no deployment verification is"
+              echo "claimed.** The exact mismatch and all recovered evidence are preserved in the"
+              echo "\`mpgr-swap-executor-v2-seal-recovery\` artifact (recovery-evidence/)."
+              echo
+              echo '```text'
+              tail -40 recovery-evidence/recovery.log 2>/dev/null
+              tail -10 recovery-evidence/failure.txt 2>/dev/null
+              tail -10 recovery-evidence/finalize-failures.txt 2>/dev/null
+              echo '```'
+            fi
+          } > /tmp/recovery-summary.md
+          cat /tmp/recovery-summary.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SEALED" = "1" ]; then
+            echo "::notice title=V2 seal recovery PASSED::executor=$(jq -r .executor "$FINAL") tx=$(jq -r .deployTx "$FINAL") block=$(jq -r .deployBlock "$FINAL") gasUsed=$(jq -r .deployReceipt.gasUsed "$FINAL") codeHash=$(jq -r '.verification.runtimeCodeHash // "unavailable"' "$FINAL") crossChecked=$(jq -r .verification.crossCheckedWithSecondRpc "$FINAL") routing NOT activated"
+          else
+            echo "::error title=V2 seal recovery FAILED CLOSED::see recovery-evidence in the artifact; no verification claimed"
+          fi
+          PR_NUMBER="${PR_NUMBER_HINT:-}"
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          fi
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/recovery-summary.md || true
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: mpgr-swap-executor-v2-seal-recovery
+          path: |
+            deployments/base-mainnet/mpgr-swap-executor-v2.json
+            deployments/base-mainnet/mpgr-swap-executor-v2.staging.json
+            deployments/base-mainnet/deploy-v2-config.json
+            broadcast/DeployMPGRSwapExecutorV2BaseMainnet.s.sol/8453/run-latest.json
+            recovery-evidence/
+          if-no-files-found: warn

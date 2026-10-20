@@ -1,22 +1,44 @@
-# MPGR Swap V2 — fork-proven, not deployed
+# MPGR Swap V2 — deployed and sealed, routing NOT activated
 
-## Production state (unchanged)
+## Production state
 
-- **No deployment or mainnet transaction in this pass.** No V2 address, deployment
-  receipt, sealed manifest, or app activation has been fabricated.
-- A separate deployment-authorization PR proposes `swapExecutorV2DeployEnabled: true`
-  with reviewed deployer nonce **2** for `0xfDCb6e78217cAf882189e48331a4B42A06309ACA`
-  (read-only Blockscout + Basescan check, 2026-10-19; outgoing nonces 0–1 consumed by
-  the V1 deploy `0x549a54c2…fa4cc` and transfer `0xb5d56bc2…aa68`). Authorization takes
-  effect only if that PR merges to `main` and the owner pins the merged SHA in
-  `SWAP_V2_DEPLOY_REF`. The deployer balance at check time (167099440784 wei) is below
-  the 0.003 ETH preflight floor and must be funded before dispatch. The V2 deployment
-  workflow has **not** been dispatched; preflight re-verifies nonce, balance and the
-  Safe owner on live RPC and fails closed, and any further deployer transaction
-  invalidates the nonce pin.
-- The live `0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E` executor, V1 manifest,
-  consumed gate, V1 script/preflight, and active app deployment constant are unchanged.
-- PR #119 was already an ancestor; permissionless token selection is preserved.
+- **Deployed exactly once.** Trusted pinned run
+  [39294717599](https://github.com/munazir17/MPGR-HUB/actions/runs/39294717599)
+  (pin `da73b567cdb052ff2bc05456f0a73d9e37ca8299`) broadcast exactly one `CREATE`:
+  tx `0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b`,
+  deployer `0xfDCb6e78217cAf882189e48331a4B42A06309ACA` nonce **2**, executor
+  `0x4be1154440b26145d76608D41d403a33e76b9d0A`, block **52820895**. The run's seal
+  step failed on public-RPC replica lag ("contract … does not have any code"); the
+  manifest was sealed **read-only** from that same run's artifact by run
+  [39303633727](https://github.com/munazir17/MPGR-HUB/actions/runs/39303633727)
+  with **no new transaction** (see [SWAP-V2-FINALIZE-RECOVERY.md](SWAP-V2-FINALIZE-RECOVERY.md)).
+  The sealed record is `deployments/base-mainnet/mpgr-swap-executor-v2.json` and the
+  one-shot gate `deployments/base-mainnet/deploy-v2-config.json` is **consumed**
+  (`swapExecutorV2DeployEnabled: false`, `consumed: true`) — never re-deploy.
+- **On-chain facts verified at the seal (both RPCs agreed):** chain id **8453**;
+  runtime code **21963 bytes**, code hash
+  `0x53896cc37145121436fb4372c6814deb98345261b8ea6e0a6343234dd55e3e39`; receipt status
+  `0x1`, gas used `0x4f0591`; CREATE address derived from `(deployer, nonce 2)` equals
+  the executor; owner = governance SafeL2 1.5.0 `0xd9aE570767C5a15780DD5cdAdd0b1b732D98994B`
+  (threshold **2**, 2 owners); fee recipient `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4`;
+  `feeBps` **25**; `MAX_FEE_BPS` **100**; `FEE_TIMELOCK_SECONDS` **172800 (48 h)**;
+  `pendingEffectiveAt` **0**; all five router registrations (Uniswap V3 = 2, Slipstream = 1,
+  Uniswap V2 = 3, Aerodrome Classic = 4, Uniswap V4 = 7). Primary endpoint
+  `mainnet.base.org`, independent cross-check `base.drpc.org` (candidate list in the
+  recovery workflow).
+- **Routing is NOT activated.** `lib/swap/v2/discovery.ts` keeps
+  `V2_DEPLOYMENT = null`, so `/api/swap/v2/quote` still returns
+  `preview: true, executable: false, transaction: null`. Activation is a separate,
+  explicit, human-reviewed step that flips `V2_DEPLOYMENT` to the sealed manifest and
+  must pass the existing V2 activation checks; it is not part of the deployment or the
+  recovery.
+- **V1 is untouched and still active:** executor `0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E`,
+  its sealed manifest, consumed gate, deployment scripts and the active
+  `SWAP_PATH_EXECUTOR_DEPLOYMENT` constant are byte-identical to before this change
+  (asserted with `git diff --exit-code` in the recovery workflow).
+- Historical note: the deployment was authorized by the reviewed V2 gate (merged to
+  `main`, owner-pinned via `SWAP_V2_DEPLOY_REF`) plus a human `base-mainnet`
+  environment approval. That one-shot authorization is now consumed.
 
 ## Read-only GitHub proof
 
@@ -117,6 +139,23 @@ The existing active quote endpoint and app deployment config are unchanged.
 - ESLint on the new TS/API/runner scripts: passed.
 - Workflow YAML parsing: passed.
 
-A green fork workflow is a prerequisite for review readiness, **not deployment
-approval**. Deployment, gas/key preflight, sealed receipt/constructor pins,
-source verification and app activation require the user's next instruction.
+## Finalization recovery evidence (2026-10-19)
+
+- Recovery run [39303633727](https://github.com/munazir17/MPGR-HUB/actions/runs/39303633727):
+  event gate, broadcast-free assertion, no-double-seal guard, recovery + seal, V1
+  untouched audit, Safe re-verification, report and artifact upload — **all green**.
+- Seal output: `executor=0x4be1154440b26145d76608D41d403a33e76b9d0A`
+  `tx=0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b`
+  `block=52820895` `gasUsed=0x4f0591`
+  `codeHash=0x53896cc37145121436fb4372c6814deb98345261b8ea6e0a6343234dd55e3e39`
+  `crossChecked=true` — routing NOT activated.
+- A first recovery attempt (run 39302687541) failed **closed** because
+  `base-rpc.publicnode.com` returned `-32603 no state found for block 52822572` for the
+  receipt; the cross-check refused a one-sided verification and nothing was sealed.
+  That is the intended behaviour, and the reason the recovery now walks an ordered
+  list of independent endpoints.
+- Offline regression suites (no RPC, key or tx): `finalize-manifest.test.sh` **57/57**,
+  `recover-finalize.test.sh` **35/35**, `swap-v2-finalize-recovery.test.ts` **20/20**.
+
+Activation of V2 routing remains a separate, explicit decision. Nothing in the
+deployment, the recovery or this record enables it.

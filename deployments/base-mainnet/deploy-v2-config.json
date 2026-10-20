@@ -1,7 +1,7 @@
 {
   "chainId": 8453,
-  "swapExecutorV2DeployEnabled": true,
-  "consumed": false,
+  "swapExecutorV2DeployEnabled": false,
+  "consumed": true,
   "deployerNonce": 2,
-  "status": "QUALIFIED, AUTHORIZATION PROPOSED (not deployed): fork proof run 39261269154 green (fork block 52813757). Reviewed deployer nonce 2 for 0xfDCb6e78217cAf882189e48331a4B42A06309ACA from read-only Blockscout+Basescan check 2026-10-19 (balance then 167099440784 wei, below the 0.003 ETH preflight floor - fund before dispatch; funding does not change nonce). Takes effect only if merged to main and pinned via SWAP_V2_DEPLOY_REF; main dispatch + base-mainnet approval still required; live preflight re-verifies nonce, balance and Safe and fails closed. Any further deployer transaction invalidates nonce 2 - re-read and re-pin via a new reviewed PR, never edit the nonce blind."
+  "status": "CONSUMED: deployed exactly once and sealed read-only. Trusted run 39294717599 (pin da73b567cdb052ff2bc05456f0a73d9e37ca8299) broadcast tx 0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b (deployer nonce 2), creating executor 0x4be1154440b26145d76608D41d403a33e76b9d0A at block 52820895. That run's seal step failed on public-RPC replica lag (cast reported that the contract did not have any code); finalization was recovered READ-ONLY from the same run's artifact by run 39303633727 with no new transaction, cross-checked on mainnet.base.org and base.drpc.org (runtime codeHash 0x53896cc37145121436fb4372c6814deb98345261b8ea6e0a6343234dd55e3e39), owner Safe and all five router registrations re-verified on-chain. Routing is NOT activated: lib/swap/v2/discovery.ts keeps V2_DEPLOYMENT = null and activation requires a separate explicit approval. Never re-deploy: any further deployer transaction invalidates this record."
 }
