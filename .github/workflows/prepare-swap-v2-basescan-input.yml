@@ -1,0 +1,137 @@
+name: Prepare MPGR Swap V2 BaseScan input (read-only)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/prepare-swap-v2-basescan-input.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-swap-v2-basescan-input
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Generate exact compiler input
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PINNED_SOURCE_SHA: da73b567cdb052ff2bc05456f0a73d9e37ca8299
+      EXECUTOR: 0x4be1154440b26145d76608D41d403a33e76b9d0A
+      DEPLOY_TX: 0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b
+    steps:
+      - name: Checkout the exact deployment source (never the PR checkout)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.PINNED_SOURCE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert source pin and V2 source exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PINNED_SOURCE_SHA"
+          test -f contracts/swap/MPGRSwapExecutorV2.sol
+          test -f contracts/swap/interfaces/IMPGRV4PoolManager.sol
+          test -f contracts/executor/interfaces/IMPGRExecutorRouters.sol
+          test -f contracts/executor/drafts/IMPGRSwapV2RouterDraft.sol
+          if grep -q 'export const V2_DEPLOYMENT = null;' lib/swap/v2/discovery.ts; then
+            echo "Confirmed: V2 routing remains disabled in the pinned source."
+          else
+            echo "::error::Unexpected V2 routing state at the pinned source."
+            exit 1
+          fi
+
+      - name: Install pinned Solidity dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .forge-deps
+          git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
+          git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
+
+      - name: Install pinned Foundry toolchain
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.8.5
+
+      - name: Build with the configured compiler and check settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p verification-artifacts/swap-v2-basescan
+          forge build --force contracts/swap/MPGRSwapExecutorV2.sol
+          solc --version | tee verification-artifacts/swap-v2-basescan/compiler-version.txt
+          grep -q 'Version: 0.8.24+commit.e11b9ed9' verification-artifacts/swap-v2-basescan/compiler-version.txt
+          forge config --json > verification-artifacts/swap-v2-basescan/foundry-config.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          cfg = json.loads(Path("verification-artifacts/swap-v2-basescan/foundry-config.json").read_text())
+          profile = cfg.get("profile", cfg)
+          optimizer = profile.get("optimizer")
+          runs = profile.get("optimizer_runs", profile.get("optimizerRuns"))
+          solc_version = profile.get("solc", profile.get("solc_version", profile.get("solcVersion")))
+          if optimizer is not True:
+              raise SystemExit(f"Expected optimizer enabled; got {optimizer!r}")
+          if runs != 200:
+              raise SystemExit(f"Expected optimizer_runs=200; got {runs!r}")
+          if solc_version not in ("0.8.24", "0.8.24+commit.e11b9ed9"):
+              raise SystemExit(f"Unexpected configured compiler: {solc_version!r}")
+          print(f"Compiler config confirmed: {solc_version}; optimizer=true; runs=200")
+          PY
+
+      - name: Generate and validate Standard JSON Input (no API key, no RPC, no broadcast)
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=verification-artifacts/swap-v2-basescan/MPGRSwapExecutorV2-standard-input.json
+          forge verify-contract "$EXECUTOR" contracts/swap/MPGRSwapExecutorV2.sol:MPGRSwapExecutorV2 \
+            --chain 8453 --show-standard-json-input > "$OUT"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("verification-artifacts/swap-v2-basescan/MPGRSwapExecutorV2-standard-input.json")
+          d = json.loads(p.read_text())
+          if d.get("language") != "Solidity":
+              raise SystemExit("Standard JSON language is not Solidity")
+          sources = d.get("sources", {})
+          if not any(name.endswith("contracts/swap/MPGRSwapExecutorV2.sol") for name in sources):
+              raise SystemExit("V2 entrypoint missing from Standard JSON sources")
+          settings = d.get("settings", {})
+          optimizer = settings.get("optimizer", {})
+          if optimizer.get("enabled") is not True or optimizer.get("runs") != 200:
+              raise SystemExit(f"Unexpected JSON optimizer settings: {optimizer!r}")
+          if not settings.get("remappings"):
+              raise SystemExit("Expected Foundry remappings are missing")
+          print(f"Valid Standard JSON: {len(sources)} source files; optimizer enabled, 200 runs.")
+          PY
+          sha256sum "$OUT" > verification-artifacts/swap-v2-basescan/SHA256SUMS.txt
+          git show "$PINNED_SOURCE_SHA:contracts/swap/MPGRSwapExecutorV2.sol" | sha256sum > verification-artifacts/swap-v2-basescan/pinned-entrypoint-source.sha256
+          cat > verification-artifacts/swap-v2-basescan/README.txt <<EOF
+          MPGR Swap Executor V2 — BaseScan Standard JSON input
+          Chain: Base Mainnet (8453)
+          Executor: $EXECUTOR
+          Deployment transaction: $DEPLOY_TX
+          Pinned source commit: $PINNED_SOURCE_SHA
+          Compiler: Solidity 0.8.24 (verified by workflow)
+          Optimizer: enabled, 200 runs
+          
+          This artifact is source-verification input only. It does not deploy,
+          broadcast, activate V2 routing, or submit anything to BaseScan.
+          Constructor arguments are not inferred here; use the verified deployment
+          transaction/receipt and BaseScan's creation-input data when required.
+          Review the compiler version and settings in BaseScan before submitting.
+          EOF
+
+      - name: Upload verification input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mpgr-swap-v2-basescan-standard-input
+          path: verification-artifacts/swap-v2-basescan/
+          if-no-files-found: error
+          retention-days: 30
