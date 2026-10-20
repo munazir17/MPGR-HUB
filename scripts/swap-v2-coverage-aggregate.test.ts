@@ -66,9 +66,17 @@ describe("V2 coverage matrix aggregation", () => {
     }
     const artifacts = readShards();
     if (artifacts.length === 0) {
-      // A SKIP, not a pass: nothing was measured anywhere, so there is no matrix.
-      console.warn(`::warning::NO coverage shard reported from ${OUT_DIR}. Coverage was NOT measured — this is not evidence of missing liquidity or of universal support.`);
-      return ctx.skip();
+      // A FAILURE, not a skip. The gate is only set once the shard jobs have run, so
+      // finding nothing here means the pipeline broke between them and this job —
+      // and a GREEN aggregate job that merged nothing is the most dangerous outcome
+      // available, because it reads as "every planned pair was attempted" when none
+      // was. (A skip stays correct for the ungated case above, e.g. `npm test`.)
+      const message = `MPGR_V2_COVERAGE_AGGREGATE=1 but ${OUT_DIR} held no coverage shard artifact.`
+        + ` Nothing was merged, so nothing is measured: this is NOT evidence of missing liquidity and NOT evidence of universal support.`
+        + ` Check that each shard job uploaded swap-v2-coverage-shard-<n>.json and that the collect step copied it here.`;
+      console.warn(`::error::${message}`);
+      expect.fail(message);
+      return;
     }
 
     const tokens = coverageProbeTokens();

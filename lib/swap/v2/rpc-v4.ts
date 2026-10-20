@@ -111,6 +111,10 @@ export interface V4SearchResult {
   /** Candidate logs that were read but rejected, with the reason. Diagnostics
    * only — a rejected candidate is never turned into a pool. */
   rejected: readonly { reason: string; block: bigint | null }[];
+  /** The log range this provider PROVED it can serve, once the probe got that far.
+   * A property of the provider, not of the token, so a run reuses it (see
+   * `probeLadder`); null whenever no range was ever accepted. */
+  spanServed?: bigint | null;
   note: string;
 }
 
@@ -146,6 +150,8 @@ const pairKey = (a: string, b: string): string => {
 export class V4DiscoveryCache {
   private floors = new Map<string, Promise<DeploymentFloor>>();
   private searches = new Map<string, Promise<V4SearchResult>>();
+  /** Measured provider log span, keyed by the pinned head block. */
+  private spans = new Map<bigint, bigint>();
   readonly totals = { getCode: 0, getLogs: 0 };
 
   floor(
@@ -188,7 +194,9 @@ export class V4DiscoveryCache {
           note: `Deployment floor for ${token} could not be derived: ${floor.reason}`,
         };
       }
-      return scanInitializeLogs(client, token, floor.block, head, limits, budget, this.totals);
+      const result = await scanInitializeLogs(client, token, floor.block, head, limits, budget, this.totals, this.spans.get(head) ?? null);
+      if (result.spanServed) this.spans.set(head, result.spanServed);
+      return result;
     })();
     this.searches.set(key, run);
     // A rejected search must not be cached as a verdict for later callers.
@@ -256,9 +264,28 @@ export async function findTokenDeploymentBlock(
  * before `head` reports `capped`, so the caller can never present it as proof
  * that no v4 pool exists.
  */
+/**
+ * The order in which candidate log ranges are offered to the provider.
+ *
+ * `total` is always first: a capable RPC answers the entire floor..head range in
+ * one request and the search is then complete rather than windowed. A span already
+ * measured on this provider comes next, because the accepted range is a property of
+ * the PROVIDER and not of the token — on a free-tier endpoint that caps
+ * `eth_getLogs` at ten blocks, re-probing six refused ranges per token is pure
+ * budget burn. A hint that is refused simply falls through to the full ladder, so a
+ * stale hint costs at most one extra call and can never change what gets scanned.
+ */
+export function probeLadder(total: bigint, hint: bigint | null | undefined, spans: readonly bigint[]): bigint[] {
+  const ladder: bigint[] = [];
+  for (const candidate of [total, ...(hint && hint > 0n ? [hint] : []), ...spans]) {
+    if (candidate > 0n && !ladder.some((existing) => existing === candidate)) ladder.push(candidate);
+  }
+  return ladder;
+}
+
 export async function scanInitializeLogs(
   client: V4Client, token: Address, floor: bigint, head: bigint, limits: V4SearchLimits,
-  budget: () => void, totals?: { getLogs: number },
+  budget: () => void, totals?: { getLogs: number }, spanHint?: bigint | null,
 ): Promise<V4SearchResult> {
   const rejected: { reason: string; block: bigint | null }[] = [];
   const pools = new Map<string, Pool>();
@@ -303,7 +330,7 @@ export async function scanInitializeLogs(
   // 1. Discover what this provider will actually serve. Cheapest and most
   //    complete first: a capable RPC answers the whole range in one request.
   let span: bigint | null = null;
-  for (const candidate of [total, ...limits.probeSpans]) {
+  for (const candidate of probeLadder(total, spanHint, limits.probeSpans)) {
     if (candidate <= 0n || (span !== null && candidate >= span)) continue;
     const to = floor + candidate - 1n > head ? head : floor + candidate - 1n;
     try {
@@ -373,7 +400,7 @@ export async function scanInitializeLogs(
       + `; ${pools.size} canonical pool(s), ${rejected.length} rejected candidate(s).`;
   }
 
-  return { pools: [...pools.values()], state, floor, scannedTo, head, logCalls, codeCalls: 0, rejected, note };
+  return { pools: [...pools.values()], state, floor, scannedTo, head, logCalls, codeCalls: 0, rejected, spanServed: span, note };
 
   /** Verifies one candidate log and, only if it is canonical, records the pool. */
   function accept(log: RawInitializeLog): void {

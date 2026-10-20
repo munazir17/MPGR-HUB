@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, encodeAbiParameters, encodeFunctionData, parseAbi, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
 import { V4_MANAGER, discoverV2Quote, V2QuoteError, type V4Key } from "./discovery";
 import { RpcV2LiquiditySource } from "./rpc-source";
-import { V4DiscoveryCache, discoverV4Pools, findTokenDeploymentBlock, scanInitializeLogs, v4PoolKeyId, V4_SEARCH_LIMITS } from "./rpc-v4";
+import { probeLadder, V4DiscoveryCache, discoverV4Pools, findTokenDeploymentBlock, scanInitializeLogs, v4PoolKeyId, V4_SEARCH_LIMITS } from "./rpc-v4";
 import { buildV2Transaction } from "./transaction";
 import { SWAP_V2_ABI } from "./abi";
 import { NATIVE_ETH_SENTINEL } from "@/lib/trade/trade-config";
@@ -556,5 +556,82 @@ describe("v4 discovery: bounds and honest failure", () => {
     expect(result.state).toBe("complete");
     expect(result.pools).toEqual([]);
     expect(c.calls.getLogs).toBe(0);
+  });
+});
+
+describe("provider log-span reuse", () => {
+  // The span a provider will serve is a property of the PROVIDER, not of the token.
+  // Re-measuring it per token is pure budget burn on a capped endpoint, but a stale
+  // hint must never change what gets scanned — only how fast the scan starts.
+  const budget = () => {};
+  const twoPools = (): FabricatedPool[] => [
+    { block: MPGR_DEPLOYED + 1n, key: nativeMpgrKey },
+    { block: OTHER_DEPLOYED + 1n, key: { currency0: zeroAddress, currency1: OTHER, fee: 500, tickSpacing: 10, hooks: zeroAddress } },
+  ];
+  const codeMap = () => ({ [MPGR.toLowerCase()]: MPGR_DEPLOYED, [OTHER.toLowerCase()]: OTHER_DEPLOYED });
+  /** Refusals are queries the provider rejected; `served` records only real work. */
+  const refused = (c: MockChain) => c.calls.getLogs - c.served.length;
+
+  it("offers the whole range first, then a measured span, then the ladder, deduplicated", () => {
+    expect(probeLadder(500n, 10n, [1_000_000n, 10n, 5n])).toEqual([500n, 10n, 1_000_000n, 5n]);
+    expect(probeLadder(10n, null, [10n, 5n])).toEqual([10n, 5n]);
+    expect(probeLadder(0n, 0n, [10n])).toEqual([10n]);
+    expect(probeLadder(900n, undefined, V4_SEARCH_LIMITS.probeSpans)[0]).toBe(900n);
+  });
+
+  it("reuses one measured span for the next token instead of re-probing refused ranges", async () => {
+    const c = chain({ code: codeMap(), pools: twoPools(), logRangeCap: 10n });
+    const cache = new V4DiscoveryCache();
+    const first = await cache.search(c.client, MPGR, HEAD, V4_SEARCH_LIMITS, budget);
+    expect(first.spanServed).toBe(10n);
+    expect(first.pools.length).toBeGreaterThan(0);
+    const firstCalls = c.calls.getLogs;
+    const firstRefusals = refused(c);
+    expect(firstRefusals).toBe(6); // total + 1e6/1e5/1e4/1e3/100 all refused before 10 worked
+
+    const before = c.calls.getLogs;
+    const second = await cache.search(c.client, OTHER, HEAD, V4_SEARCH_LIMITS, budget);
+    expect(second.spanServed).toBe(10n);
+    // The hint cannot invent a pool: OTHER's own pool is still found and verified.
+    expect(second.pools.map((p) => p.v4Key!.currency1.toLowerCase())).toContain(OTHER.toLowerCase());
+    expect(refused(c) - firstRefusals).toBe(1); // only `total` refused; the hint was accepted
+    // Same shape of scan, five fewer wasted probes: reuse buys budget, it does not
+    // change what is scanned.
+    expect(c.calls.getLogs - before).toBeLessThan(firstCalls);
+  });
+
+  it("falls back to the full ladder when a cached span is no longer served", async () => {
+    const options: ChainOptions = { code: codeMap(), pools: twoPools(), logRangeCap: 100_000n };
+    const c = chain(options);
+    const cache = new V4DiscoveryCache();
+    const first = await cache.search(c.client, MPGR, HEAD, V4_SEARCH_LIMITS, budget);
+    expect(first.spanServed).toBe(100_000n);
+
+    options.logRangeCap = 10n; // the provider got stricter between tokens
+    const second = await cache.search(c.client, OTHER, HEAD, V4_SEARCH_LIMITS, budget);
+    expect(second.spanServed).toBe(10n);
+    expect(second.pools.map((p) => p.v4Key!.currency1.toLowerCase())).toContain(OTHER.toLowerCase());
+    expect(second.state).not.toBe("unavailable");
+  });
+
+  it("never caches a span the provider refused, so a dead provider is not remembered as capable", async () => {
+    const c = chain({ code: codeMap(), pools: twoPools(), refuseAllLogs: true });
+    const cache = new V4DiscoveryCache();
+    const first = await cache.search(c.client, MPGR, HEAD, V4_SEARCH_LIMITS, budget);
+    expect(first.state).toBe("unavailable");
+    expect(first.spanServed ?? null).toBeNull();
+    expect(first.pools).toEqual([]);
+    const before = refused(c);
+    const second = await cache.search(c.client, OTHER, HEAD, V4_SEARCH_LIMITS, budget);
+    expect(second.state).toBe("unavailable");
+    // No hint was stored, so the second token probes the whole ladder again.
+    expect(refused(c) - before).toBe(7);
+  });
+
+  it("reports the served span through discoverV4Pools so a run can show what it could scan", async () => {
+    const c = chain({ code: codeMap(), pools: twoPools(), logRangeCap: 10n });
+    const result = await discoverV4Pools(c.client, MPGR, WETH, HEAD, { cache: new V4DiscoveryCache() }, budget);
+    expect(result.spanServed).toBe(10n);
+    expect(result.searched?.toLowerCase()).toBe(MPGR.toLowerCase());
   });
 });

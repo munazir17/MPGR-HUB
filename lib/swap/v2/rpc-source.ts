@@ -128,13 +128,14 @@ export class RpcV2LiquiditySource implements LiquiditySource {
     try {
     for (const v of venues) {
       if (v.kind === 7) continue; // handled by the bounded v4 search above
-      const filters: Record<string, Address>[] = [];
-      const names = ["token0", "token1"];
-      for (const a of [input]) {
-        if (output) for (const b of [output]) {
-          const [x, y] = BigInt(a) < BigInt(b) ? [a, b] : [b, a]; filters.push({ [names[0]]: x, [names[1]]: y });
-        } else filters.push({ [names[0]]: a }, { [names[1]]: a });
-      }
+      // Creation events index token0/token1 in sorted order, so one filter names
+      // the pair. With no `output` this is neighbour enumeration instead: either
+      // indexed position of the single token.
+      const filters: Record<string, Address>[] = !output
+        ? [{ token0: input }, { token1: input }]
+        : BigInt(input) < BigInt(output)
+          ? [{ token0: input, token1: output }]
+          : [{ token0: output, token1: input }];
       for (const args of filters) {
         const scan = async (fromBlock: bigint, toBlock: bigint): Promise<void> => {
           if (++this.sweepCalls > this.maxSweepCalls) {

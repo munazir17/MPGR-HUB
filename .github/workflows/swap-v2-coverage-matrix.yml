@@ -92,6 +92,12 @@ jobs:
               grep -E "::warning::|NOT MEASURED" "v2-coverage-shard-${{ matrix.shard }}.log" || true
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+          # Annotations are capped and step logs are not readable from every client,
+          # so the shard states plainly, in a durable channel, which files it is
+          # handing to the aggregate job and how big they are. An empty or tiny
+          # listing here is what makes a silent aggregation gap diagnosable.
+          listing=$(find deployments/.local -maxdepth 1 -type f -printf '%f=%s ' 2>/dev/null | sort | tr -d '\n')
+          echo "::notice::shard ${{ matrix.shard }}/${{ env.COVERAGE_SHARDS }} handoff files: ${listing:-NONE — this shard wrote nothing}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -124,18 +130,26 @@ jobs:
           pattern: swap-v2-coverage-shard-*
           path: shard-input
           merge-multiple: true
-          if-no-artifact-found: warn
       - name: Collect shard artifacts
         run: |
           set -euo pipefail
           mkdir -p deployments/.local
+          echo "downloaded artifact tree:"
+          find shard-input -type f -printf '  %p (%s bytes)\n' 2>/dev/null | sort || echo "  (shard-input does not exist)"
           # Do not depend on how download-artifact nested the paths: find the shard
           # matrices wherever they landed and put them where the merger reads them.
           find shard-input -name 'swap-v2-coverage-shard-*.json' -exec cp {} deployments/.local/ \; 2>/dev/null || true
           find shard-input -name 'swap-v2-coverage-matrix*.md' -exec cp {} deployments/.local/ \; 2>/dev/null || true
           find shard-input -name 'v2-coverage-shard-*.log' -exec cp {} . \; 2>/dev/null || true
-          echo "shard artifacts collected:"
-          ls -1 deployments/.local || true
+          echo "collected into deployments/.local:"
+          ls -la deployments/.local || true
+          collected=$(find deployments/.local -maxdepth 1 -name 'swap-v2-coverage-shard-*.json' | wc -l | tr -d ' ')
+          echo "shard JSON artifacts collected: $collected of ${{ env.COVERAGE_SHARDS }}"
+          echo "::notice::aggregate collected $collected of ${{ env.COVERAGE_SHARDS }} shard JSON artifact(s)"
+          if [ "$collected" -eq 0 ]; then
+            echo "::error::No coverage shard JSON reached the aggregate job even though the shard jobs reported success. The artifact handoff is broken, so there is nothing to merge and NO coverage may be published from this run."
+            exit 1
+          fi
       - name: Merge shards and prove every planned pair was attempted
         env:
           # No BASE_MAINNET_RPC_URL here on purpose: aggregation is offline. If it
@@ -162,19 +176,39 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           grep -E "::warning::|::notice::|NOT MEASURED" v2-coverage-shard-*.log v2-coverage-aggregate.log 2>/dev/null | head -200 || true
-          if [ -n "$PR_NUMBER" ] && [ -f deployments/.local/swap-v2-coverage-matrix.md ]; then
+          md=deployments/.local/swap-v2-coverage-matrix.md
+          if [ -n "$PR_NUMBER" ] && [ -f "$md" ]; then
             {
               echo "Read-only V2 coverage matrix (merged from ${{ env.COVERAGE_SHARDS }} shards): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
               echo
-              head -80 deployments/.local/swap-v2-coverage-matrix.md
-              echo
-              echo "<details><summary>Full merged matrix</summary>"
-              echo
-              echo '```text'
-              tail -n +7 deployments/.local/swap-v2-coverage-matrix.md | head -400
-              echo '```'
-              echo "</details>"
+              total=$(wc -c < "$md")
+              if [ "$total" -le 56000 ]; then
+                cat "$md"
+              else
+                # A PR comment is capped at 65536 characters and a full matrix is
+                # larger. Publish the analysis in full, then the rows that decide
+                # whether MPGR itself is tradable, and say plainly what was left out
+                # and where the complete table lives. Never truncate silently: a
+                # shortened report that looks complete is how a gap gets read as a
+                # result.
+                sed -n '1,/^## Every probed pair/p' "$md"
+                echo
+                echo "### Every pair involving MPGR"
+                echo
+                echo "| From | To | Dir | Category | Hops | Legs | Venues | Reason |"
+                echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
+                awk '/^## Every probed pair/{f=1} f' "$md" | grep -F 'MPGR' || echo "| (no MPGR row in the plan) | | | | | | | |"
+                echo
+                echo "> **Truncated for this comment.** The merged matrix is $total bytes; GitHub caps a comment at 65536 characters. The complete per-pair table is in this job's summary and in the \`swap-v2-coverage-matrix\` artifact of this run."
+              fi
             } > /tmp/v2-coverage-comment.md
+            # Belt and braces: whatever the sections above grew to, a comment that
+            # GitHub would reject is worse than one that says it was trimmed.
+            if [ "$(wc -c < /tmp/v2-coverage-comment.md)" -gt 60000 ]; then
+              head -c 59000 /tmp/v2-coverage-comment.md > /tmp/v2-coverage-comment-trim.md
+              printf '\n\n> **Trimmed to fit the 65536-character comment limit.** The complete matrix is in this job summary and the `swap-v2-coverage-matrix` artifact.\n' >> /tmp/v2-coverage-comment-trim.md
+              mv /tmp/v2-coverage-comment-trim.md /tmp/v2-coverage-comment.md
+            fi
             gh pr comment "$PR_NUMBER" --body-file /tmp/v2-coverage-comment.md
           fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
