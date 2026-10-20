@@ -30,7 +30,7 @@ const RPC_URL = process.env.BASE_MAINNET_RPC_URL ?? "https://mainnet.base.org";
 const ENABLED = process.env.MPGR_V2_COVERAGE === "1" || process.env.MPGR_V2_COVERAGE === "true";
 /** Wall-clock budget per pair, so one slow pair cannot consume the whole run. A
  * timeout is recorded as UNMEASURED — never as missing liquidity. */
-const PER_PAIR_TIMEOUT_MS = Number(process.env.MPGR_V2_COVERAGE_PAIR_TIMEOUT_MS ?? 20_000);
+const PER_PAIR_TIMEOUT_MS = Number(process.env.MPGR_V2_COVERAGE_PAIR_TIMEOUT_MS ?? 60_000);
 const MPGR = "0xb2000000000000000000008d204203177a78af01" as Address;
 const WETH = "0x4200000000000000000000000000000000000006" as Address;
 const USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" as Address;
@@ -158,7 +158,10 @@ describe("V2 live coverage matrix", () => {
           rows.push({ from, to, category: "UNMEASURED_PROVIDER_FAILURE", measured: false, reason: "Probe budget exhausted before this pair was measured." });
           continue;
         }
-        const source = new RpcV2LiquiditySource(client as never, blockNumber);
+        // maxSweepCalls: 0 — rely on the bounded factory index. The universal
+        // block-0 sweep cannot be served by a range-capped provider and previously
+        // made most pairs time out before they were measured at all.
+        const source = new RpcV2LiquiditySource(client as never, blockNumber, 4096, 0);
         let outcome: Parameters<typeof classifyPairOutcome>[2];
         try {
           const quote = await Promise.race([

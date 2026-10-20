@@ -40,7 +40,16 @@ export class RpcV2LiquiditySource implements LiquiditySource {
   private lastDiagnostics: { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable" } =
     { factoryIndex: null, historyScan: "not-run" };
   diagnostics(): { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable" } { return this.lastDiagnostics; }
-  constructor(private client: Pick<PublicClient, "getLogs" | "getCode" | "call"> & {getBlock(args: {blockNumber: bigint}): Promise<{timestamp: bigint}>}, readonly blockNumber: bigint, private maxReads = 4096) {}
+  /**
+   * @param maxSweepCalls Cap on `eth_getLogs` calls in the universal canonical-event
+   * sweep. The sweep scans from block 0, which a range-capped provider cannot serve,
+   * and it dominated per-pair latency: 96 of 212 coverage probes timed out and 148
+   * never ran. Set it to 0 to rely on the bounded factory index alone — every pair
+   * then resolves in a handful of `eth_call`s. A capped sweep is recorded as
+   * UNAVAILABLE, so a negative verdict is never reported as missing liquidity.
+   */
+  constructor(private client: Pick<PublicClient, "getLogs" | "getCode" | "call"> & {getBlock(args: {blockNumber: bigint}): Promise<{timestamp: bigint}>}, readonly blockNumber: bigint, private maxReads = 4096, private maxSweepCalls = 2000) {}
+  private sweepCalls = 0;
   private budget() { if (++this.reads > this.maxReads) throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "RPC pool discovery budget exceeded; use a complete liquidity index"); }
   async hints(input: Address, output: Address): Promise<readonly Pool[]> {
     try { return await directRpcHints(this.client, input, output, this.blockNumber); }
@@ -84,6 +93,9 @@ export class RpcV2LiquiditySource implements LiquiditySource {
       }
       for (const args of filters) {
         const scan = async (fromBlock: bigint, toBlock: bigint): Promise<void> => {
+          if (++this.sweepCalls > this.maxSweepCalls) {
+            throw new V2QuoteError("DISCOVERY_UNAVAILABLE", `Canonical pool log sweep exceeded its ${this.maxSweepCalls}-call budget`);
+          }
           this.budget();
           try {
             const logs = await this.client.getLogs({ address: v.factory, event: v.event, args: args as never, fromBlock, toBlock, strict: true });
