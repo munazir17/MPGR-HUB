@@ -14,7 +14,7 @@ function request(extra={}) {return new Request("https://mpgr.test/api/swap/v2/qu
 beforeEach(()=>{
   vi.clearAllMocks();
   mocks.parse.mockResolvedValue({ok:true,value:{from:{address:A},to:{address:B},fromAmount:"10000"}});
-  mocks.client.getChainId.mockResolvedValue(8453);mocks.client.getBlock.mockResolvedValue({number:500n,hash:"0x1234"});
+  mocks.client.getChainId.mockResolvedValue(8453);mocks.client.getBlock.mockResolvedValue({number:500n,hash:("0x"+"12".repeat(32))});
   mocks.quote.mockResolvedValue({tokenIn:A,tokenOut:B,gross:10000n,fee:25n,net:9975n,feeBps:25,amountOut:1000n});
 });
 describe("unreleased V2 quote HTTP boundary",()=>{
