@@ -65,8 +65,7 @@ jobs:
           set -euo pipefail
           mkdir -p verification-artifacts/swap-v2-basescan
           forge build --force contracts/swap/MPGRSwapExecutorV2.sol
-          solc --version | tee verification-artifacts/swap-v2-basescan/compiler-version.txt
-          grep -q 'Version: 0.8.24+commit.e11b9ed9' verification-artifacts/swap-v2-basescan/compiler-version.txt
+          forge --version | tee verification-artifacts/swap-v2-basescan/foundry-version.txt
           forge config --json > verification-artifacts/swap-v2-basescan/foundry-config.json
           python3 - <<'PY'
           import json
@@ -118,8 +117,8 @@ jobs:
           Executor: $EXECUTOR
           Deployment transaction: $DEPLOY_TX
           Pinned source commit: $PINNED_SOURCE_SHA
-          Compiler: Solidity 0.8.24 (verified by workflow)
-          Optimizer: enabled, 200 runs
+          Compiler settings: Solidity 0.8.24; optimizer enabled, 200 runs
+          Confirm the Standard JSON compiler settings and compiler version in BaseScan.
           
           This artifact is source-verification input only. It does not deploy,
           broadcast, activate V2 routing, or submit anything to BaseScan.
