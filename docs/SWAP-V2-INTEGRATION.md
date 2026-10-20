@@ -38,6 +38,35 @@ This adds the missing execution half — still gated off:
 `lib/swap/v2/abi.ts` is a generated artifact and was **not** hand-edited. Additions live in
 `posture-abi.ts` and are pinned against the deployed source by `abi-parity.test.ts`.
 
+### Journey wiring (added after the execution surface)
+
+Producing an executable transaction was not enough: **seven dispatchers keyed off the
+transaction target recognised only the V1 swap-path executor and the legacy Agent executor**, so
+a V2 swap was rejected by the fee rule, mispriced at quote expiry, approved against the wrong
+spender, and never verified at settlement. One shared client-safe discriminant
+(`lib/swap/v2/v2-target.ts`, mirroring V1's `swapPathTarget`) now feeds a V2 branch in each:
+
+| Dispatcher | What V2 needed |
+| --- | --- |
+| `lib/trade/trade-agent-fee.ts` | accept the V2 executor as a legitimate 25 bps collector |
+| `lib/swap/swap-lifecycle.ts` | read the deadline from V2 calldata (it decoded as 0, so a V2 quote was never "fresh") |
+| `lib/swap/swap-policy.ts` | fee admission, and receipt settlement via the V2 intent and events |
+| `lib/swap/swap-allowance.ts` | approval spender = the V2 executor the transaction targets |
+| `lib/swap/swap-wallet.ts` | fee terms read with the V2 ABI, an on-chain `paused` check before the wallet prompt, and gas estimated for an approval to the correct spender |
+| `lib/trade/trade-execution.ts` | the pre-signature calldata gate re-derives the V2 intent |
+
+Plus the client and API surface: `v2-proposal.ts` (adapt to the shared `TradeProposal` so the
+existing engine works unchanged), `v2-evidence.ts` (optional `swapV2Routing` binding, mirroring
+V1's `swapPathRouting`), `v2-quote-client.ts` (V2 primary when activated, V1 fallback otherwise),
+`v2-settlement-client.ts` with `app/api/swap/v2/settlement` (the client sends only a hash; the
+server re-fetches the receipt, reads live posture at the mined block, and requires the sender and
+output recipient to be the signed-in wallet), `app/api/swap/v2/status` (public activation probe),
+and `coverage.ts` with `scripts/swap-v2-coverage-matrix.test.ts`.
+
+`intent.ts` and `settlement.ts` dropped their `server-only` marker: both are pure (viem decoding
+plus local constants, no I/O, no secrets), and V1 already inspects calldata in the browser via
+`swap-executor-intent.ts`. Every module that performs RPC stays server-only.
+
 ## 2. The executor being wired
 
 Sealed manifest: `deployments/base-mainnet/mpgr-swap-executor-v2.json`.
@@ -145,77 +174,85 @@ transaction. Nothing is fabricated or silently substituted.
 
 ## 5. Evidence tiers: what is actually proven
 
-**Tier 1 — unit-simulated (this change).** 116 tests across 9 files exercise the whole
-activated path against *fabricated* read-only readers: arbitrary imported pairs, split routes,
-genuine three-hop routes through non-major intermediates, v4 PoolKey routes, native-ETH sells,
-deterministic intent ids, fee arithmetic, and every fail-closed drift case above.
-`app/api/swap/v2/quote/route.activation.test.ts` proves the HTTP boundary in both states.
-These are **not** fork tests and **not** live tests. No RPC was contacted.
+**Tier 1 — unit-simulated (this change): 187 tests across 15 files, plus the full
+suite at 4525 passed / 25 skipped (339 files).** All of it runs against *fabricated*
+read-only readers and encoded fixtures — no RPC was contacted, so these are **not** fork
+tests and **not** live tests.
 
-**Tier 2 — fork-tested (pre-existing, contract-level).** GitHub Actions
-`swap-v2-fork-proof.yml` runs `test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol` against a real
-Base fork. Last known green: run `39261269154`, 13 passed / 0 failed / 0 skipped at fork block
-52813757. That proves **contract** behaviour. It does not execute the TypeScript in this
-change, so it is not evidence that the app-side encoding matches the deployed contract at a
-current block.
+They cover: arbitrary imported pairs, split routes, genuine three-hop routes through
+non-major intermediates, v4 PoolKey routes, native-ETH sells, deterministic intent ids, fee
+arithmetic, and every fail-closed posture-drift case above; the quote and settlement HTTP
+boundaries in both gate states (`route.activation.test.ts`, `settlement/route.test.ts`);
+the client dispatch that keeps the dormant path byte-identical to V1
+(`quote-client.test.ts`); and the end-to-end wiring of a real V2 quote through proposal
+adaptation, fee policy, quote freshness/expiry, evidence binding, spender selection, the
+agent-fee target rule and receipt settlement for **both a SELL and a BUY**
+(`wiring.test.ts`). The discovery fallback has its own offline tests
+(`fork-fixture-discovery.test.ts`), which feed synthetic pool ids and assert they come back
+out — proving nothing is hardcoded.
 
-> **This branch has NOT produced a fork proof — three attempts, all failed identically.**
-> Runs `39396256493` (`3660dbf`), `39397504180` (`436a078`) and `39398352775` (`7330bdc`) all
-> failed at the "Discover MPGR pool key from real Initialize event" step, so the forge suite was
-> **skipped** every time and no fork evidence exists for this change. The script failed closed
-> and claimed nothing:
->
-> ```text
-> MPGR code prefix: 0xef
-> MPGR v4 hint count: 0
-> ::error::V2 real-pool discovery failed: MPGR/ETH or MPGR/WETH real v4 Initialize event not
-> found; no proof claimed
-> ```
->
-> **This is reproducible, not a flake** — the same step, the same `hint count: 0`, the same error
-> text, on three consecutive commits spanning ~1.5 hours. Diagnosis: the cause is a
-> **third-party hint API**, not this change.
-> - `MPGR code prefix: 0xef` printed every time, so the Base RPC was healthy (`eth_chainId`,
->   `eth_getCode`, `eth_blockNumber` all succeeded).
-> - `hint count: 0` means `api.dexscreener.com/token-pairs/v1/base/<mpgr>` returned an array
->   (otherwise the script throws "Pool discovery hints unavailable") containing **no** entry with
->   `dexId === "uniswap"` and a 64-hex `pairAddress`. Discovery therefore never reached
->   `eth_getLogs` or forge. The exact API response could not be inspected from the dev sandbox
->   (that host is not reachable there), so its precise shape is **UNVERIFIED**.
-> - This change touches only `lib/swap/v2/**`, `app/api/swap/v2/**` and `docs/**` — never
->   `scripts/swap-deploy-v2/**`, `contracts/**` or `test/swap-fork/**`.
->
-> **Bounded regression window.** The last green runs were PR #123 (branch
-> `arena/5e28bc30-mpgr-hub`), runs `39302375665`/`39302603928`/`39303607931`/`39304185332`,
-> 2026-10-19T18:25–18:38Z. Each logged `hint count: 1`, independently verified the real on-chain
-> Initialize event, and reported `Suite result: ok. 13 passed; 0 failed; 0 skipped`:
->
-> ```text
-> poolId        0xfc151dc0278bc0b2e2ad5404e14f8e3a43e77f176537c29e25f179262ad1cc44
-> currency0     0x0000000000000000000000000000000000000000 (native)
-> currency1     0xb2000000000000000000008d204203177a78af01 (MPGR)
-> fee 0   tickSpacing 200   hooks 0x985c14baa2a18316ffda0aefb3a632fadfca2acc
-> initializeBlock 48631199   initializeTx 0x4403d04d2136576c65c60581c8bdf34b592bf00d7ea2564f2c78c5e35d2f7abc
-> ```
->
-> That matches `docs/SWAP-EXECUTOR-V2-STATUS.md` exactly, so the MPGR v4 pool facts are
-> corroborated by Actions evidence — but at 2026-10-19T18:38Z, **not** against this branch.
-> The hint source therefore degraded somewhere between 2026-10-19T18:38Z and 2026-10-20T08:50Z.
->
-> **Do not loop on re-pushes.** Note that `paths:` filtering on a `pull_request` event is
-> evaluated against the PR's **cumulative** diff versus base, not the last commit — so even a
-> docs-only push re-runs this workflow, which is exactly how run `39398352775` happened. Every
-> further push to this PR will produce the same failure until the external hint source recovers
-> or the discovery step gains an on-chain fallback; do not push again merely to retry the proof.
-> Re-triggering by other means is blocked here: `gh run rerun --failed` was refused ("cannot be
-> rerun") and `workflow_dispatch` returned HTTP 403 (`Resource not accessible by integration` — the
-> token lacks `actions: write`). A maintainer with sufficient permissions can dispatch it
-> manually, or set/verify `secrets.BASE_MAINNET_RPC_URL`.
->
-> **The discovery script was deliberately NOT modified to force a pass.** Making the fork proof
-> green by hardcoding the known pool id or block would manufacture evidence and defeat the
-> script's stated design ("Dexscreener supplies search hints only: the Initialize event and pool
-> ID are independently verified on chain"). The honest state is: no fork proof for this branch.
+**Tier 2 — fork-tested (GitHub Actions, contract-level): GREEN on this branch.**
+`.github/workflows/swap-v2-fork-proof.yml` runs
+`test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol` against a real Base fork.
+
+| Run | Commit | Result |
+| --- | --- | --- |
+| `39411451593` | `90c3343` | **ok. 13 passed; 0 failed; 0 skipped** at fork block 52852228 |
+| `39414446575` | `4b54093` | **ok. 13 passed; 0 failed; 0 skipped** at fork block 52852998 |
+
+Both runs recovered the pool **without any third-party hint**. Dexscreener again
+returned `MPGR v4 hint count: 0`, and the new hint-free on-chain search took over:
+
+```text
+[discovery] no fixture from hints; searching on chain by indexed currency
+[discovery] MPGR runtime code first present at block 48631199; scanning forward to 52852998
+[discovery] wide-range query refused (Free tier caps eth_getLogs at a 10 block range);
+            falling back to windowed scan
+[discovery] windowed currency search matched at blocks 48631199-48631208 after 2 window(s)
+[discovery] on-chain currency search: verified Initialize at block 48631199
+poolId 0xfc151dc0278bc0b2e2ad5404e14f8e3a43e77f176537c29e25f179262ad1cc44
+```
+
+That `poolId` is identical to the value recorded from the hint-driven runs of
+2026-10-19, but this time it was derived **entirely from Base chain data**: a
+binary search on `eth_getCode` for the token's deployment block, then an
+`eth_getLogs` query filtered on the `Initialize` event's *indexed currencies*. No
+pool id, PoolKey, block or transaction hash is hardcoded anywhere in the
+discovery path, and the Foundry suite still verifies the pool independently.
+
+**History, recorded because it explains the design.** Four earlier runs
+(`39396256493`, `39397504180`, `39398352775`, `39398810617`) all failed at the
+discovery step with `hint count: 0`, so the forge suite was skipped and this branch
+had no fork proof at all. A third-party search API had become a single point of
+failure for our fork evidence. That is the problem the fallback removes. Note that
+`paths:` filtering on a `pull_request` event matches the PR's **cumulative** diff,
+so any push to this PR re-runs the proof.
+
+**Tier 2b — coverage matrix (GitHub Actions, discovery-level): BUILT, but NOT MEASURED.**
+`.github/workflows/swap-v2-coverage-matrix.yml` runs the app's real discovery stack
+(`RpcV2LiquiditySource` + `discoverV2Quote`) against Base and classifies each pair.
+Run `39414446827` (commit `4b54093`) completed successfully at block 52853024 using
+`secrets.BASE_MAINNET_RPC_URL`, and reported:
+
+```text
+Pairs probed: 212 · measured: 0 · unmeasured: 212
+EXECUTABLE_ROUTE 0 | MISSING_LIQUIDITY 0 | UNSUPPORTED_TOKEN_INFRASTRUCTURE 0
+UNSUPPORTED_VENUE 0 | INVALID_REQUEST 2 | FEE_INVARIANT_DEFECT 0
+UNMEASURED_PROVIDER_FAILURE 212
+```
+
+Every pair failed with `Canonical pool log query unavailable`,
+`Venue quote unavailable`, or the 45 s per-pair timeout. **This is an RPC
+capability limit, not a liquidity finding** — and the classifier correctly refused
+to record any of it as `MISSING_LIQUIDITY`. The two `INVALID_REQUEST` rows are the
+ETH↔WETH pair, which discovery rightly rejects as one asset.
+
+So: the matrix machinery works and is honest, but **no token-coverage evidence
+exists yet**. Broad historical `eth_getLogs` scanning is what discovery needs and
+what the available RPC will not serve; the fork proof needs only a narrow targeted
+query near a known block, which is why it succeeds on the same RPC. Closing this
+needs either an RPC/archive tier with a wide log range or a pool index.
+
 
 **Tier 3 — live-verified.** **None.** No transaction has been broadcast, simulated against
 live state, or settled. No claim in this document is live-verified.
@@ -229,32 +266,36 @@ live state, or settled. No claim in this document is live-verified.
 
 1. **No live verification** of executor posture or bytecode (Tier 3 empty; sandbox has no
    chain access).
-2. **No fork proof for this branch — blocking for merge.** Runs `39396256493` and `39397504180`
-   both failed identically at the Dexscreener-dependent discovery step (see Tier 2 above), so the
-   contract-level fork suite never ran for this change. It must be re-triggered successfully
-   before merge, once the external hint source recovers or the step gains an on-chain fallback.
-   That fallback should preserve independent verification rather than hardcode a pool id or
-   block. This is the single largest gap in the evidence for this PR.
-3. **No end-to-end app-level fork test.** Even when green, the Foundry suite covers the
-   *contract* only. A vitest fork harness that drives `prepareV2Execution` against a real Base
-   archive node would close the remaining gap between Tier 1 (fabricated readers) and Tier 2.
-4. **Settlement verification is not wired into a route.** `settlement.ts` is complete and
-   tested, but no API endpoint calls it yet; receipt verification after broadcast still needs a
-   surface.
-5. **Front-end not wired.** `components/features/swap/SwapForm.tsx` still calls the V1
-   endpoint and hardcodes `sellSideQuoted: null` (line 47). Activation without front-end work
-   would expose the V2 API but not the V2 UX.
-6. **Coverage matrix not produced.** No measurement exists of which Base pairs actually have
-   compatible liquidity, so "code restriction" vs "no liquidity" cannot yet be distinguished
-   per token. MPGR itself still has only the Uniswap V4 MPGR/native-ETH pool, so USDC↔MPGR
-   depends on a multi-hop route existing through it.
-7. **V1 defects deliberately left alone** (deferred by instruction): `swapPathHopKey` omits
+2. **Token-coverage evidence does not exist yet — the largest remaining gap.** The matrix
+   machinery is built, runs in CI, and classified 212 real pairs at block 52853024, but **0 were
+   measurable**: every pair hit `Canonical pool log query unavailable`, `Venue quote
+   unavailable`, or the 45 s per-pair timeout on the configured RPC. The classifier correctly
+   recorded all of it as `UNMEASURED_PROVIDER_FAILURE` and never as missing liquidity. Discovery
+   needs broad historical `eth_getLogs`; the fork proof needs only a narrow query near a known
+   block, which is why one succeeds and the other cannot. Closing this needs an RPC/archive tier
+   with a wide log range, or a pool index. **Until then, no claim about which Base tokens are
+   tradeable is supported by evidence.**
+3. **No end-to-end app-level fork test.** The Foundry suite proves the *contract*. Nothing yet
+   drives `prepareV2Execution` or the new wiring against a real Base archive node, so the gap
+   between fabricated readers (Tier 1) and contract behaviour (Tier 2) is still closed only by
+   reasoning plus ABI-parity assertions. The same RPC log-range limit in item 2 currently blocks
+   building it.
+4. **Settlement is wired but unexercised against a real receipt.** `/api/swap/v2/settlement` and
+   `v2-settlement-client.ts` are complete and tested against encoded fixtures, and
+   `useSwapExecution` now calls the server route for V2 receipts. No real V2 transaction has ever
+   been broadcast, so that path has never run end-to-end in production.
+5. **Front-end is wired but dormant.** `SwapForm` and `useSwapExecution` now dispatch through
+   `requestSwapQuoteWithV2`, and all seven V1-only dispatchers recognise V2. While
+   `V2_DEPLOYMENT` is null none of it can execute: the status probe reports `activated:false`, so
+   the live surface is today's V1 path with one extra cached GET per minute. This has not been
+   exercised in a real browser session against an activated backend.
+6. **V1 defects deliberately left alone** (deferred by instruction): `swapPathHopKey` omits
    `tokenOut`, so WETH- and USDC-bridge two-hop candidates collide and the WETH bridge is
    dropped (observed 16 candidates instead of 19); V1 generates only 1–2 hops despite
    `SWAP_MAX_PATH_HOPS = 3`; V1 has no v4 adapter. **Do not** add `tokenOut` to that key
    without updating `lib/swap/swap-path-token-pairs.test.ts`, whose regexes
    (`/:100($|>)/`, `/:500($|>)/`) encode the current format.
-8. **Pancake V3 and 0x Settler stay disabled.** Neither has a passing fork proof. Settler must
+7. **Pancake V3 and 0x Settler stay disabled.** Neither has a passing fork proof. Settler must
    never be called directly.
 
 ## 7. Activation plan
@@ -279,7 +320,7 @@ Requires separate explicit approval. Do not perform these steps as part of this 
      literal `export const V2_DEPLOYMENT = null;`
    Leave `scripts/swap-v2-finalize-recovery.test.ts:213` alone: it asserts the *recovery
    workflow text*, not `discovery.ts`.
-5. **Wire the front end** (limitation 5) and a **settlement route** (limitation 4) before
+5. **Exercise the wired front end and settlement path against an activated backend** (limitations 4 and 5) before
    exposing V2 to users.
 6. **Ship behind a reversible flag or canary** if possible; monitor `feeRecipient` balance
    deltas to confirm the 25 bps fee lands once per swap.
