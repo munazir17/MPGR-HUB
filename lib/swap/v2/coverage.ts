@@ -59,25 +59,40 @@ export interface PairCoverageRow {
 
 /** Classifies a token's on-chain infrastructure. An unreadable token is
  * UNMEASURED, never "unsupported": a rate-limited RPC is not a verdict. */
-export function classifyTokenSupport(token: TokenSupportFacts): { supported: boolean; category: CoverageCategory | "UNMEASURED_PROVIDER_FAILURE"; reason: string } {
+export interface TokenSupportVerdict {
+  supported: boolean;
+  category: CoverageCategory | "UNMEASURED_PROVIDER_FAILURE";
+  reason: string;
+  /** False when the token is routable but its ERC-20 metadata could not be read,
+   * which matters for UI amount sizing — not for whether a route exists. */
+  metadataComplete: boolean;
+}
+
+export function classifyTokenSupport(token: TokenSupportFacts): TokenSupportVerdict {
   // The native ETH sentinel is a pseudo-address, not a contract, so it has no
   // runtime code BY DESIGN. Discovery normalizes it to canonical WETH, which means
   // it is routable. Classifying it as "unsupported infrastructure" was a false
   // verdict that then contradicted a real ETH route — caught by the matrix's own
   // cross-check between token facts and pair verdicts.
   if (isNativeEthSentinel(token.address)) {
-    return { supported: true, category: "UNSUPPORTED_TOKEN_INFRASTRUCTURE", reason: "" };
+    return { supported: true, category: "UNSUPPORTED_TOKEN_INFRASTRUCTURE", metadataComplete: true, reason: "" };
   }
   if (!token.readable) {
-    return { supported: false, category: "UNMEASURED_PROVIDER_FAILURE", reason: `Token metadata for ${token.address} could not be read; coverage is unmeasured, not absent.` };
+    return { supported: false, category: "UNMEASURED_PROVIDER_FAILURE", metadataComplete: false, reason: `Token metadata for ${token.address} could not be read; coverage is unmeasured, not absent.` };
   }
+  // The only DEFINITIVE routability fact is whether the address is a contract.
+  // Discovery and execution never read decimals(), so a failed decimals/symbol
+  // read is a metadata gap (it affects UI amount sizing), not proof that no venue
+  // can route the token. Treating it as unsupported produced a verdict that
+  // contradicted a real route — the matrix's own cross-check caught it.
   if (!token.hasCode) {
-    return { supported: false, category: "UNSUPPORTED_TOKEN_INFRASTRUCTURE", reason: `${token.address} has no runtime code on Base; it is not a contract, so no venue can route it.` };
+    return { supported: false, category: "UNSUPPORTED_TOKEN_INFRASTRUCTURE", metadataComplete: false, reason: `${token.address} has no runtime code on Base; it is not a contract, so no venue can route it.` };
   }
-  if (token.decimals === null || !Number.isInteger(token.decimals) || token.decimals < 0 || token.decimals > 255) {
-    return { supported: false, category: "UNSUPPORTED_TOKEN_INFRASTRUCTURE", reason: `${token.address} exposes no usable ERC-20 decimals(); it cannot be sized or routed.` };
-  }
-  return { supported: true, category: "UNSUPPORTED_TOKEN_INFRASTRUCTURE", reason: "" };
+  const decimalsUsable = token.decimals !== null && Number.isInteger(token.decimals) && token.decimals >= 0 && token.decimals <= 255;
+  return {
+    supported: true, category: "UNSUPPORTED_TOKEN_INFRASTRUCTURE", metadataComplete: decimalsUsable && typeof token.symbol === "string",
+    reason: decimalsUsable ? "" : `${token.address} is a contract but exposes no usable ERC-20 decimals(); it can be routed but not safely sized in the UI.`,
+  };
 }
 
 /** Maps a discovery outcome to a coverage category. */

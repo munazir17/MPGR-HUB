@@ -46,10 +46,17 @@ describe("classifyTokenSupport", () => {
     expect(r.category).not.toBe("UNMEASURED_PROVIDER_FAILURE");
   });
 
-  it("reports missing decimals as unsupported infrastructure", () => {
-    expect(classifyTokenSupport(facts({ decimals: null })).supported).toBe(false);
-    expect(classifyTokenSupport(facts({ decimals: 300 })).supported).toBe(false);
-    expect(classifyTokenSupport(facts({ decimals: 6 })).supported).toBe(true);
+  it("treats missing decimals as a metadata gap, not as unroutable", () => {
+    // Discovery and execution never read decimals(), so a failed decimals read
+    // cannot prove the token has no route. It is flagged for UI sizing instead.
+    expect(classifyTokenSupport(facts({ decimals: null }))).toMatchObject({ supported: true, metadataComplete: false });
+    expect(classifyTokenSupport(facts({ decimals: 300 }))).toMatchObject({ supported: true, metadataComplete: false });
+    expect(classifyTokenSupport(facts({ decimals: 6, symbol: "TKA" }))).toMatchObject({ supported: true, metadataComplete: true });
+    expect(classifyTokenSupport(facts({ decimals: null })).reason).toMatch(/routed but not safely sized/i);
+  });
+
+  it("reports a non-contract as definitively unsupported", () => {
+    expect(classifyTokenSupport(facts({ hasCode: false }))).toMatchObject({ supported: false, category: "UNSUPPORTED_TOKEN_INFRASTRUCTURE", metadataComplete: false });
   });
 });
 
