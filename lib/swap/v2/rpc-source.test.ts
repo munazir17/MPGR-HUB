@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { decodeFunctionData, encodeAbiParameters, parseAbi, type Address, type PublicClient } from "viem";
+import { decodeFunctionData, encodeAbiParameters, parseAbi, zeroAddress, type Address, type PublicClient } from "viem";
 import { RpcV2LiquiditySource } from "./rpc-source";
 import { SWAP_PATH_VENUES } from "../swap-executor-config";
 import { V4_MANAGER } from "./discovery";
+import { v4PoolKeyId } from "./rpc-v4";
 const V4_QUOTER="0x0d5e0F971ED27FBfF6c2837bf31316121532048D";
 const A="0x0000000000000000000000000000000000000101" as Address;
 const B="0x0000000000000000000000000000000000000102" as Address;
@@ -52,9 +53,16 @@ describe("V2 canonical RPC pool discovery and venue ABIs (unit fixtures)",()=>{
     expect(quoterCall(r,abi,SWAP_PATH_VENUES.slipstream.quoter!).args[0].tickSpacing).toBe(17);
   });
   it("uses v4 PoolKeys and native currency, never v3 getPool for v4",async()=>{
-    const r=reader(a=>a===V4_MANAGER?[{args:{currency0:"0x0000000000000000000000000000000000000000",currency1:B,fee:0,tickSpacing:200,hooks:A,id:"0x1234"}}]:[]);
+    // The pool id is DERIVED here, not typed as a placeholder. The PoolManager
+    // computes it as keccak256(abi.encode(PoolKey)), and v4 discovery now rejects
+    // any `Initialize` log whose indexed id disagrees with the re-derived hash —
+    // so a non-canonical id would (correctly) produce no pool at all.
+    const v4Key={currency0:zeroAddress,currency1:B,fee:0,tickSpacing:200,hooks:A};
+    const r=reader(a=>a===V4_MANAGER?[{args:{...v4Key,id:v4PoolKeyId(v4Key)}}]:[]);
     const source=new RpcV2LiquiditySource(client(r),500n);const pools=await source.pools(weth,B);
+    expect(pools).toHaveLength(1); // four topic positions matched one pool: no duplicate route
     expect(pools[0].token0).toBe(weth);expect(pools[0].v4Key?.fee).toBe(0);
+    expect(pools[0].id).toContain(v4PoolKeyId(v4Key).toLowerCase());
     r.call.mockResolvedValue({data:encodeAbiParameters([{type:"uint256"},{type:"uint256"}],[1000n,40000n])});
     expect(await source.quote(pools[0],weth,9975n)).toBe(1000n);
     const abi=parseAbi(["function quoteExactInputSingle(((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 exactAmount,bytes hookData) params) returns(uint256,uint256)"]);

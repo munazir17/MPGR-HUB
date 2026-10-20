@@ -1,15 +1,20 @@
 import "server-only";
 import { directRpcHints } from "./rpc-hints";
 import { factoryIndexPools, PARTIAL_INDEX_VENUE_KINDS, type FactoryIndexResult } from "./rpc-index";
+import { discoverV4Pools, V4_INITIALIZE_EVENT, V4DiscoveryCache, type V4DiscoveryOptions, type V4SearchResult } from "./rpc-v4";
 import { decodeFunctionResult, encodeFunctionData, parseAbi, parseAbiItem, zeroAddress, type Address, type PublicClient } from "viem";
 import { SWAP_PATH_VENUES } from "../swap-executor-config";
-import { asset, V4_MANAGER, V2QuoteError, type LiquiditySource, type Pool, type V4Key } from "./discovery";
+import { asset, V4_MANAGER, V2QuoteError, type LiquiditySource, type Pool } from "./discovery";
 const events = {
   v2: parseAbiItem("event PairCreated(address indexed token0, address indexed token1, address pair, uint256)"),
   v3: parseAbiItem("event PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)"),
   slip: parseAbiItem("event PoolCreated(address indexed token0, address indexed token1, int24 indexed tickSpacing, address pool)"),
   classic: parseAbiItem("event PoolCreated(address indexed token0, address indexed token1, bool indexed stable, address pool, uint256)"),
-  v4: parseAbiItem("event Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)"),
+  // Uniswap v4 is NOT swept with the other venues: a PoolKey cannot be enumerated
+  // from a factory getter and a block-0 log scan cannot be served by a
+  // range-capped provider. It is discovered by rpc-v4.ts from canonical
+  // `Initialize` logs, floored at a chain-derived deployment block.
+  v4: V4_INITIALIZE_EVENT,
 };
 const venues = [
   { ...SWAP_PATH_VENUES.uniswapV2, event: events.v2 },
@@ -37,9 +42,9 @@ export class RpcV2LiquiditySource implements LiquiditySource {
   /** What the last `pools(input, output)` load could actually establish. Lets a
    * caller tell "no compatible pool exists" apart from "we could not finish
    * looking" — the distinction the coverage matrix must never blur. */
-  private lastDiagnostics: { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable" } =
-    { factoryIndex: null, historyScan: "not-run" };
-  diagnostics(): { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable" } { return this.lastDiagnostics; }
+  private lastDiagnostics: { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable"; v4: V4SearchResult | null } =
+    { factoryIndex: null, historyScan: "not-run", v4: null };
+  diagnostics(): { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable"; v4: V4SearchResult | null } { return this.lastDiagnostics; }
   /**
    * @param maxSweepCalls Cap on `eth_getLogs` calls in the universal canonical-event
    * sweep. The sweep scans from block 0, which a range-capped provider cannot serve,
@@ -48,7 +53,17 @@ export class RpcV2LiquiditySource implements LiquiditySource {
    * then resolves in a handful of `eth_call`s. A capped sweep is recorded as
    * UNAVAILABLE, so a negative verdict is never reported as missing liquidity.
    */
-  constructor(private client: Pick<PublicClient, "getLogs" | "getCode" | "call"> & {getBlock(args: {blockNumber: bigint}): Promise<{timestamp: bigint}>}, readonly blockNumber: bigint, private maxReads = 4096, private maxSweepCalls = 2000) {}
+  constructor(
+    private client: Pick<PublicClient, "getLogs" | "getCode" | "call"> & {getBlock(args: {blockNumber: bigint}): Promise<{timestamp: bigint}>},
+    readonly blockNumber: bigint,
+    private maxReads = 4096,
+    private maxSweepCalls = 2000,
+    /** Bounded Uniswap v4 discovery. Pass a shared `cache` when the same pinned
+     * block is probed for many pairs (the coverage matrix does): a token's
+     * deployment floor and its `Initialize` scan are then paid for once per run
+     * instead of once per pair. */
+    private v4Options: V4DiscoveryOptions = { cache: new V4DiscoveryCache() },
+  ) {}
   private sweepCalls = 0;
   private budget() { if (++this.reads > this.maxReads) throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "RPC pool discovery budget exceeded; use a complete liquidity index"); }
   async hints(input: Address, output: Address): Promise<readonly Pool[]> {
@@ -62,7 +77,18 @@ export class RpcV2LiquiditySource implements LiquiditySource {
   }
   private async load(input: Address, output?: Address): Promise<readonly Pool[]> {
     const result = new Map<string, Pool>();
-    this.lastDiagnostics = { factoryIndex: null, historyScan: "not-run" };
+    this.lastDiagnostics = { factoryIndex: null, historyScan: "not-run", v4: null };
+    // 0. Multi-hop neighbour enumeration (no `output`) can only be answered by the
+    //    canonical event sweep: the factory index is pair-shaped, and v4 has no
+    //    enumerable getter for "every pool this token is in" other than its own
+    //    Initialize logs. Without a usable log range that enumeration cannot
+    //    complete, so fail fast instead of spending a whole budget to reach the
+    //    same verdict. A PARTIAL neighbour set is worse than none here, because
+    //    discoverV2Quote would convert it into a false "no liquidity".
+    if (!output && this.maxSweepCalls <= 0) {
+      throw new V2QuoteError("DISCOVERY_UNAVAILABLE",
+        "Liquidity-neighbour enumeration needs a historical log range, and the canonical sweep is disabled (maxSweepCalls=0); multi-hop discovery for this token is unmeasured, not absent.");
+    }
     // 1. Bounded factory index: one eth_call per candidate, no log range needed,
     //    so it works on any provider including a range-capped public RPC.
     if (output) {
@@ -77,17 +103,35 @@ export class RpcV2LiquiditySource implements LiquiditySource {
         this.lastDiagnostics.factoryIndex = null;
       }
     }
-    // 2. Universal canonical-event sweep. Needs a real historical log range; when
-    //    the provider cannot serve it, record that instead of aborting, because
-    //    step 1 may already have produced an authoritative answer.
+    // 2. Bounded Uniswap v4 discovery. No factory getter can enumerate a PoolKey
+    //    (hooks is an arbitrary address), so v4 comes from canonical `Initialize`
+    //    logs — searched by INDEXED CURRENCY from a chain-derived deployment floor,
+    //    never from block 0 and never from a third-party hint. Every accepted
+    //    PoolKey is re-derived and must equal the log's own indexed pool id.
+    try {
+      const v4 = await discoverV4Pools(this.client, input, output, this.blockNumber, this.v4Options, () => this.budget());
+      this.lastDiagnostics.v4 = v4;
+      for (const p of v4.pools) result.set(p.id, p);
+    } catch (error) {
+      // A search that could not run is "we could not look", never "no v4 pool".
+      if (!(error instanceof V2QuoteError)) throw error;
+      this.lastDiagnostics.v4 = {
+        pools: [], state: "unavailable", floor: null, scannedTo: null, head: this.blockNumber,
+        logCalls: 0, codeCalls: 0, rejected: [], note: error.message,
+      };
+    }
+    // 3. Universal canonical-event sweep over the four getter-backed venues. Needs
+    //    a real historical log range; when the provider cannot serve it, record
+    //    that instead of aborting, because steps 1-2 may already have produced an
+    //    authoritative answer.
     let historyScan: "complete" | "unavailable" = "complete";
     try {
     for (const v of venues) {
-      const variants = (a: Address) => v.kind === 7 && a.toLowerCase() === weth ? [a, zeroAddress] : [a];
+      if (v.kind === 7) continue; // handled by the bounded v4 search above
       const filters: Record<string, Address>[] = [];
-      const names = v.kind === 7 ? ["currency0", "currency1"] : ["token0", "token1"];
-      for (const a of variants(input)) {
-        if (output) for (const b of variants(output)) {
+      const names = ["token0", "token1"];
+      for (const a of [input]) {
+        if (output) for (const b of [output]) {
           const [x, y] = BigInt(a) < BigInt(b) ? [a, b] : [b, a]; filters.push({ [names[0]]: x, [names[1]]: y });
         } else filters.push({ [names[0]]: a }, { [names[1]]: a });
       }
@@ -101,11 +145,10 @@ export class RpcV2LiquiditySource implements LiquiditySource {
             const logs = await this.client.getLogs({ address: v.factory, event: v.event, args: args as never, fromBlock, toBlock, strict: true });
             for (const log of logs) {
               const a = log.args as Record<string, Address | number | bigint | boolean>;
-              const c0 = (a.token0 ?? a.currency0) as Address, c1 = (a.token1 ?? a.currency1) as Address;
-              const key: V4Key | undefined = v.kind === 7 ? { currency0: c0, currency1: c1, fee: Number(a.fee), tickSpacing: Number(a.tickSpacing), hooks: a.hooks as Address } : undefined;
-              const pool = (v.kind === 7 ? V4_MANAGER : a.pool ?? a.pair) as Address;
-              const id = `${v.factory.toLowerCase()}:${String(a.id ?? pool).toLowerCase()}`;
-              result.set(id, { id, pool, router: v.router, factory: v.factory, kind: v.kind, token0: normalize(c0), token1: normalize(c1), poolFee: v.kind === 2 ? Number(a.fee) : 0, tickSpacing: v.kind === 1 ? Number(a.tickSpacing) : 0, stable: a.stable === true, v4Key: key });
+              const c0 = a.token0 as Address, c1 = a.token1 as Address;
+              const pool = (a.pool ?? a.pair) as Address;
+              const id = `${v.factory.toLowerCase()}:${pool.toLowerCase()}`;
+              result.set(id, { id, pool, router: v.router, factory: v.factory, kind: v.kind, token0: normalize(c0), token1: normalize(c1), poolFee: v.kind === 2 ? Number(a.fee) : 0, tickSpacing: v.kind === 1 ? Number(a.tickSpacing) : 0, stable: a.stable === true });
             }
           } catch (error) {
             if (error instanceof V2QuoteError) throw error;
@@ -124,19 +167,30 @@ export class RpcV2LiquiditySource implements LiquiditySource {
       else throw error;
     }
     this.lastDiagnostics.historyScan = historyScan;
-    // Honesty rule: if the universal sweep could not complete AND the factory
-    // index did not produce an authoritative negative, then nothing is known about
-    // this pair. That is DISCOVERY_UNAVAILABLE, never LIQUIDITY_UNAVAILABLE.
-    // Venues whose enumeration is partial (see PARTIAL_INDEX_VENUE_KINDS) and v4
-    // are only fully covered by the sweep, so their absence is not a verdict.
+    // HONESTY RULE, in two halves, because the two directions are not symmetric.
+    //
+    // A POSITIVE is always safe to return. Every pool in `result` was verified
+    // against a canonical source: factory equality plus the pool's own metadata
+    // (index), the factory's own creation event (sweep), or a re-derived v4 pool
+    // id equal to the indexed id in the PoolManager's `Initialize` log. An
+    // incomplete search can cost route QUALITY; it cannot invent a pool.
+    if (result.size > 0) return [...result.values()];
+    //
+    // A NEGATIVE is the claim that no compatible pool exists, and it is only made
+    // when every venue family was actually enumerated to completion for this pair:
+    // the getter-backed venues by a completed sweep, and v4 by a scan that reached
+    // the pinned block. Slipstream's index is partial by construction (see
+    // PARTIAL_INDEX_VENUE_KINDS), so an index-only negative is never sufficient.
+    // Anything less is DISCOVERY_UNAVAILABLE, never LIQUIDITY_UNAVAILABLE.
     const index = this.lastDiagnostics.factoryIndex;
-    const authoritativeNegative = historyScan === "complete" ||
-      (!!index && index.complete && result.size > 0);
-    if (!authoritativeNegative) {
+    const v4 = this.lastDiagnostics.v4;
+    if (!(historyScan === "complete" && !!v4 && v4.state === "complete")) {
       throw new V2QuoteError("DISCOVERY_UNAVAILABLE",
-        `Canonical pool log query unavailable and no authoritative factory answer (index failed venues: ${index ? index.failedKinds.join("/") || "none" : "not-run"}; partial kinds: ${PARTIAL_INDEX_VENUE_KINDS.join("/")})`);
+        `No compatible pool could be established for this pair: canonical sweep ${historyScan}`
+        + ` (index failed venues: ${index ? index.failedKinds.join("/") || "none" : "not-run"}; partial kinds: ${PARTIAL_INDEX_VENUE_KINDS.join("/")})`
+        + `; v4 search ${v4 ? `${v4.state} — ${v4.note}` : "did not run"}`);
     }
-    return [...result.values()];
+    return [];
   }
   async quote(p: Pool, input: Address, amount: bigint): Promise<bigint> {
     this.budget();
