@@ -9,7 +9,9 @@ import { formatAtomicAmount, parseHumanTokenAmount } from "@/lib/trade/trade-for
 import { useSwapBalances, type SwapBalance } from "@/hooks/useSwapBalances";
 import { swapQuoteFresh, swapQuoteNeedsRefresh } from "@/lib/swap/swap-lifecycle";
 import { swapInputError as manualSwapInputError } from "@/lib/swap/swap-capability";
-import { requestSwapQuote } from "@/lib/swap/swap-quote";
+import { requestSwapQuoteWithV2, fetchSwapV2Status } from "@/lib/swap/v2/v2-quote-client";
+import { swapV2RoutingEvidence } from "@/lib/swap/v2/v2-evidence";
+import { inspectSwapLiquidity } from "@/lib/swap/swap-inspection-client";
 import { estimateSwapGas } from "@/lib/swap/swap-wallet";
 import { parseSlippagePercent, safeMaximum, slippagePercent } from "@/lib/swap/swap-policy";
 import { assessSwapRisk, RISK_DISCLAIMER, riskAckRequired } from "@/lib/swap/token-risk";
@@ -44,7 +46,31 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
   const [proposal, setProposal] = useState<TradeProposal | null>(null);
   const [riskAcked, setRiskAcked] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
-  const riskWarnings = useMemo(() => (proposal ? assessSwapRisk({ chainId: 8453, receiveAddress: receive.address, receiveVerified: receive.verified, receiveImported: !receive.verified, priceImpactBps: proposal.priceImpactBps ?? null, sellSideQuoted: null }) : []), [proposal, receive]);
+  // BUY/SELL symmetry. While V2 routing is activated, probe the REVERSE direction
+  // with the existing read-only liquidity inspection so the risk panel can say
+  // whether this token can be sold again. Unknown stays unknown: a partial or
+  // failed probe is never reported as "no reverse route", because that would
+  // invent a risk signal. While V2 is dormant no probe runs at all, so live V1
+  // behaviour and its risk warnings are bit-identical to before.
+  const [v2Activated, setV2Activated] = useState(false);
+  // The probe result is stored WITH the pair it describes, and the value actually
+  // used is derived during render. A result for a different pair is simply
+  // ignored, so no synchronous setState is needed to "reset" it between quotes.
+  const [sellSideProbe, setSellSideProbe] = useState<{ key: string; value: boolean | null } | null>(null);
+  const sellSideKey = proposal ? `${proposal.from.address.toLowerCase()}->${proposal.to.address.toLowerCase()}:${proposal.id}` : "";
+  const sellSideQuoted = sellSideProbe && sellSideProbe.key === sellSideKey ? sellSideProbe.value : null;
+  useEffect(() => { let cancelled = false; void fetchSwapV2Status().then(s => { if (!cancelled) setV2Activated(s.activated); }).catch(() => {}); return () => { cancelled = true; }; }, []);
+  useEffect(() => {
+    if (!v2Activated || !proposal) return;
+    const key = sellSideKey;
+    const controller = new AbortController(); let cancelled = false;
+    // setState only ever runs in the async callback, never in the effect body.
+    inspectSwapLiquidity(proposal.to.address, proposal.from.address, controller.signal)
+      .then(r => { if (!cancelled) setSellSideProbe({ key, value: r.partial ? null : r.paths.length > 0 }); })
+      .catch(() => { if (!cancelled) setSellSideProbe({ key, value: null }); });
+    return () => { cancelled = true; controller.abort(); };
+  }, [v2Activated, proposal, sellSideKey]);
+  const riskWarnings = useMemo(() => (proposal ? assessSwapRisk({ chainId: 8453, receiveAddress: receive.address, receiveVerified: receive.verified, receiveImported: !receive.verified, priceImpactBps: proposal.priceImpactBps ?? null, sellSideQuoted }) : []), [proposal, receive, sellSideQuoted]);
   const riskAckNeeded = riskAckRequired(riskWarnings);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +108,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     busyRef.current = true; setBusy(true); setError(null); setProposal(null);
     try {
       if (!(await authorize()) || version.current !== run) return;
-      const next = await requestSwapQuote(input, address!, controller.signal, tokens, { fresh: freshReview });
+      const next = await requestSwapQuoteWithV2(input, address!, controller.signal, tokens, { fresh: freshReview });
       if (version.current === run) { setNow(Date.now()); setProposal(next); setRiskAcked(false); if (freshReview) setNotice("Quote updated — review new output."); }
     } catch (cause) {
       if (version.current === run) { if (cause instanceof ManualSwapQuoteError && cause.status === 401) setSessionExpired(true); setError(cause instanceof Error ? cause.message : "Quote unavailable. Retry."); }
@@ -114,7 +140,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     try {
       if (!(await authorize()) || version.current !== run) return;
       if (balances.pay.value <= 1n) throw new Error("Not enough ETH to reserve gas.");
-      const candidate = await requestSwapQuote({ ...input, amount: formatUnits(balances.pay.value / 2n, balances.pay.decimals) }, address!, controller.signal, tokens);
+      const candidate = await requestSwapQuoteWithV2({ ...input, amount: formatUnits(balances.pay.value / 2n, balances.pay.decimals) }, address!, controller.signal, tokens);
       const gas = await estimateSwapGas(candidate);
       if (version.current !== run) return;
       const value = safeMaximum(balances.pay.value, true, gas);
@@ -152,6 +178,8 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
       {!token.verified && <p className="text-xs text-amber-300">Unverified token. Import is not endorsement; it may be unsafe or unsellable.<span className="mt-1 block break-all font-mono text-[10px]">{token.address}</span></p>}
     </div>;
   };
+  // V2 route evidence, when this proposal came from the activated V2 engine.
+  const v2Evidence = fresh && proposal ? swapV2RoutingEvidence(proposal) : undefined;
   let rate = "";
   if (fresh && proposal) {
     const atomic = BigInt(proposal.toAmount) * 10n ** BigInt(proposal.from.decimals) / BigInt(proposal.fromAmount);
@@ -191,6 +219,13 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     {!reviewOpen && swapPoolAsset(pay.address) !== swapPoolAsset(receive.address) && <details data-testid="swap-technical-details" className="rounded-2xl border border-white/5 bg-white/[0.02] px-3 py-1">
       <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-zinc-400 hover:text-zinc-200">Technical route details (read-only)<ChevronDown size={14} className="shrink-0" /></summary>
       <div className="space-y-2 pb-3 pt-1">
+        {v2Evidence && <div data-testid="swap-v2-route-evidence" className="space-y-1 text-[11px] text-zinc-400">
+          <p>MPGR Executor V2 · {v2Evidence.entry === "swapExactInputSplit" ? `${v2Evidence.legs}-way split` : `${v2Evidence.hops}-hop`} · pools verified at block {v2Evidence.blockNumber}</p>
+          <p>Execution simulation: {v2Evidence.executionSimulation}</p>
+          <p className="break-all font-mono text-[10px]">intent: {v2Evidence.intentId}</p>
+          {v2Evidence.pools.map((poolAddress, i) => <p key={`${poolAddress}:${i}`} className="break-all font-mono text-[10px]">pool {i + 1}: {poolAddress}</p>)}
+          <p>{v2Evidence.settlementNote}</p>
+        </div>}
         {fresh && proposal && (swapRoutingEvidence(proposal) || swapPathRoutingEvidence(proposal)) && <div data-testid="swap-route-evidence" className="space-y-1 text-[11px] text-zinc-400">
           <p>Hops: {swapPathRoutingEvidence(proposal)?.hops ?? swapRoutingEvidence(proposal)!.hops} · pools verified at block {swapPathRoutingEvidence(proposal)?.blockNumber ?? swapRoutingEvidence(proposal)!.blockNumber}</p>
           <p>Execution simulation: {swapPathRoutingEvidence(proposal)?.executionSimulation ?? swapRoutingEvidence(proposal)!.executionSimulation}</p>

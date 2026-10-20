@@ -9,7 +9,10 @@
 //
 // Parsing is split from verification so the economic rules can be tested
 // deterministically without fabricating receipt encodings.
-import "server-only";
+// Isomorphic on purpose: pure receipt/event decoding and arithmetic, no I/O and no
+// secrets, so the client can verify settlement from a receipt it already holds.
+// The server-side settlement route independently re-fetches the receipt, so a
+// client-side result is never the only proof.
 import { parseEventLogs, type Address, type Hex } from "viem";
 import { SWAP_V2_ABI } from "./abi";
 import { SWAP_V2_POSTURE_ABI } from "./posture-abi";

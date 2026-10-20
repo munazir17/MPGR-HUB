@@ -13,7 +13,10 @@
 // Every rule below is copied from contracts/swap/MPGRSwapExecutorV2.sol
 // (swapExactInput, swapExactInputSplit, _validatePath, _validateHop, _begin,
 // _validate) so the app can never build calldata the executor would revert on.
-import "server-only";
+// Isomorphic on purpose: this module is pure (viem decoding + local constants,
+// no I/O, no secrets) so the browser can re-validate the exact calldata a wallet
+// is about to sign, mirroring V1's client-safe swap-executor-intent.ts. Anything
+// that performs RPC stays server-only (execution.ts, preflight.ts, rpc-source.ts).
 import { decodeFunctionData, type Address, type Hex } from "viem";
 import { SWAP_V2_ABI } from "./abi";
 import {

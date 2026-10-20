@@ -8,17 +8,23 @@ import { erc20Abi } from "@/lib/erc20-abi";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment } from "@/lib/executor/executor-config";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 import { swapPathExecutor } from "./swap-executor-config";
+import { swapV2Target } from "@/lib/swap/v2/v2-target";
 
 export type ApprovalReceipt = Pick<TransactionReceipt, "status" | "from" | "to" | "transactionHash" | "blockNumber" | "blockHash">;
 export async function readSwapAllowance(p: Pick<TradeProposal, "chainId" | "taker" | "from" | "fromAmount" | "permit2Spender" | "transaction">, receipt?: ApprovalReceipt): Promise<bigint | null> {
   try {
-    // The spender is the executor the swap transaction actually targets:
-    // the deployed fixed-fee Swap executor for path swaps, the legacy
-    // Agent executor otherwise (the same target discriminator swap-policy
-    // uses). Reading or demanding an allowance for the wrong spender
-    // would strand path swaps before signing.
+    // The spender is the executor the swap transaction actually targets: the
+    // deployed V2 executor for V2 swaps, the fixed-fee Swap executor for path
+    // swaps, the legacy Agent executor otherwise (the same target discriminator
+    // swap-policy uses). Reading or demanding an allowance for the wrong spender
+    // would strand the swap before signing. V2 is tested first because its
+    // calldata is undecodable by the other two ABIs; swapV2Target() is null while
+    // the V2 gate is dormant, so the resolution below is unchanged today.
+    const v2Deployment = swapV2Target(p);
     const swapDeployment = swapPathExecutor();
-    const spender = swapDeployment && p.transaction && p.transaction.to.toLowerCase() === swapDeployment.executor.toLowerCase()
+    const spender = v2Deployment
+      ? v2Deployment.executor
+      : swapDeployment && p.transaction && p.transaction.to.toLowerCase() === swapDeployment.executor.toLowerCase()
       ? swapDeployment.executor
       : deployment.executor;
     if (p.chainId !== 8453 || (p.permit2Spender != null && p.permit2Spender.toLowerCase() !== spender.toLowerCase())) return null;

@@ -2,6 +2,7 @@ import { isNativeEthSentinel, TRADE_QUOTE_MAX_AGE_MS } from "@/lib/trade/trade-c
 import { inspectExecutorSwapTransaction } from "@/lib/executor/executor-intent";
 import { swapPathExecutor } from "./swap-executor-config";
 import { inspectSwapExecutorTransaction } from "./swap-executor-intent";
+import { inspectSwapV2Proposal } from "@/lib/swap/v2/v2-inspect";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 
 // Preserve the response timestamps. Never renew a quote by changing its clock.
@@ -17,6 +18,16 @@ export function swapQuoteExpiry(p: TradeProposal): number {
   let end = Math.min(expires, created + TRADE_QUOTE_MAX_AGE_MS);
   if (p.provider === "mpgr-executor") {
     if (!p.transaction) return 0;
+    // V2 calldata is undecodable by the V1 and legacy ABIs, so it must be
+    // recognised first; otherwise its deadline reads as 0 and the quote can
+    // never be confirmed. Null while the V2 gate is dormant, leaving the two
+    // branches below exactly as they were.
+    const v2 = inspectSwapV2Proposal(p);
+    if (v2 !== null) {
+      if (!v2.ok) return 0;
+      end = Math.min(end, Number(v2.value.deadline) * 1000);
+      return end;
+    }
     const swapPathDeployment = swapPathExecutor();
     if (swapPathDeployment && p.transaction.to.toLowerCase() === swapPathDeployment.executor.toLowerCase()) {
       const path = inspectSwapExecutorTransaction(p.transaction, { deployment: swapPathDeployment, fromAddress: p.from.address, toAddress: p.to.address, taker: p.taker, nativeIn: isNativeEthSentinel(p.from.address), nativeOut: isNativeEthSentinel(p.to.address) });

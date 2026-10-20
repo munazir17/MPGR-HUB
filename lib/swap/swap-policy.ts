@@ -1,9 +1,13 @@
 // Swap-only policy. Never manufactures or modifies provider calldata.
-import { type Address } from "viem";
+import { type Address, type Hex } from "viem";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment, findExecutorRoute, RouterKind } from "@/lib/executor/executor-config";
 import { swapRoutingEvidence, swapRoutingEvidenceValid } from "./swap-route-candidates";
 import { swapPathExecutor } from "./swap-executor-config";
 import { inspectSwapExecutorTransaction, verifySwapPathSettlement } from "./swap-executor-intent";
+import { inspectSwapV2Proposal } from "@/lib/swap/v2/v2-inspect";
+import { swapV2Target } from "@/lib/swap/v2/v2-target";
+import { swapV2RoutingEvidence, swapV2RoutingEvidenceValid } from "@/lib/swap/v2/v2-evidence";
+import { verifyV2Receipt } from "@/lib/swap/v2/settlement";
 import { swapPathRoutingEvidence, swapPathRoutingEvidenceValid } from "./swap-path-evidence";
 import { inspectExecutorSwapTransaction, type ExecutorSwapIntent } from "@/lib/executor/executor-intent";
 import { verifyExecutorReceipt, type ReceiptLike } from "@/lib/executor/executor-verify";
@@ -32,6 +36,29 @@ export function swapFeePolicyError(p: TradeProposal): string | null {
     if (!fee.ok || !fee.fee) return fee.ok ? SWAP_FEE_BLOCK : fee.reason;
     if (p.agentFee.recipient?.toLowerCase() !== deployment.feeRecipient.toLowerCase()) return SWAP_FEE_BLOCK;
     if (!p.transaction || p.permit2 || p.chainId !== 8453) return "Invalid Base Executor proposal.";
+    // V2 branch. Recognised before V1/legacy because V2 calldata is undecodable
+    // by both of their ABIs; null while the V2 gate is dormant, so the branches
+    // below are untouched in production today.
+    const v2 = inspectSwapV2Proposal(p);
+    if (v2 !== null) {
+      if (!v2.ok) return v2.reason;
+      const y = v2.value;
+      const v2Evidence = swapV2RoutingEvidence(p);
+      if (v2Evidence !== undefined && !swapV2RoutingEvidenceValid(p, v2Evidence)) return "The V2 route search evidence does not match this transaction. Request a fresh quote.";
+      if (y.grossAmountIn !== BigInt(p.fromAmount) || y.expectedFeeAmount !== fee.fee.amount ||
+          y.amountOutMinimum !== BigInt(p.minToAmount) || y.amountOutMinimum <= 0n || y.amountOutMinimum > BigInt(p.toAmount) ||
+          y.recipient.toLowerCase() !== p.taker.toLowerCase() || y.unwrapNativeOut !== isNativeEthSentinel(p.to.address) ||
+          BigInt(p.transaction.value) !== (isNativeEthSentinel(p.from.address) ? BigInt(p.fromAmount) : 0n) ||
+          // The fee lands at the pinned treasury and the approval spender is the
+          // very contract receiving this calldata, so BUY and SELL agree.
+          y.feeRecipient.toLowerCase() !== deployment.feeRecipient.toLowerCase() ||
+          y.spender.toLowerCase() !== p.transaction.to.toLowerCase() ||
+          (p.needsPermit2Approval && p.permit2Spender?.toLowerCase() !== p.transaction.to.toLowerCase()) ||
+          y.hops < 1 || y.paths.length < 1 || y.paths.some(leg => leg.length < 1 || leg.some(h => BigInt(h.pool) === 0n))) {
+        return "The executable V2 transaction does not match the reviewed tokens, amounts, recipient, minimum or route.";
+      }
+      return null;
+    }
     const swapPathDeployment = swapPathExecutor();
     if (swapPathDeployment && p.transaction.to.toLowerCase() === swapPathDeployment.executor.toLowerCase()) {
       const pathIntent = inspectSwapExecutorTransaction(p.transaction, { deployment: swapPathDeployment, fromAddress: p.from.address, toAddress: p.to.address, taker: p.taker, nativeIn: isNativeEthSentinel(p.from.address), nativeOut: isNativeEthSentinel(p.to.address) });
@@ -85,6 +112,21 @@ export function verifySwapSettlement(p: TradeProposal, receipt: ReceiptLike): Sw
   try {
     const invalid = swapFeePolicyError(p);
     if (invalid || !p.transaction) return unknown(invalid ?? "Missing transaction.");
+    // V2 settlement: re-derive the intent from the reviewed calldata, then verify
+    // the receipt's own events against it. Null while the V2 gate is dormant.
+    const v2Intent = inspectSwapV2Proposal(p);
+    if (v2Intent !== null) {
+      const v2Deployment = swapV2Target(p)!;
+      if (!v2Intent.ok) return unknown(v2Intent.reason);
+      const proof = verifyV2Receipt(v2Intent.value, {
+        status: receipt.status,
+        transactionHash: receipt.transactionHash,
+        logs: receipt.logs.map(l => ({ address: l.address, topics: l.topics as readonly Hex[], data: l.data })),
+      }, v2Deployment);
+      return proof.verified
+        ? { verified: true, amountIn: proof.amountIn, amountOut: proof.amountOut, feeAmount: proof.feeAmount, feeRecipient: proof.feeRecipient, reason: null }
+        : unknown(proof.reason ?? "Swap settlement unverified.");
+    }
     const swapPathDeployment = swapPathExecutor();
     if (swapPathDeployment && p.transaction.to.toLowerCase() === swapPathDeployment.executor.toLowerCase()) {
       const proof = verifySwapPathSettlement(p, swapPathDeployment, receipt);

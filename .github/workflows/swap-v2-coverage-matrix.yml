@@ -1,0 +1,85 @@
+name: Swap V2 coverage matrix (read-only)
+
+# Produces the real token/pair coverage evidence for MPGR Swap V2 by running the
+# app's own discovery stack against Base. READ-ONLY: no deployer key is mapped,
+# nothing is signed, nothing is broadcast, and no contract state is touched.
+#
+# This is deliberately a SEPARATE workflow from swap-v2-fork-proof.yml so that a
+# coverage run can never affect, or be confused with, the fork proof.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "lib/swap/v2/**"
+      - "scripts/swap-v2-coverage-matrix.test.ts"
+      - ".github/workflows/swap-v2-coverage-matrix.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: swap-v2-coverage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  coverage:
+    # Secrets are not available to fork PRs; skip rather than run without an RPC.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci
+      - name: Measure V2 coverage against real Base (read-only)
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+        run: |
+          set -euo pipefail
+          npx vitest run scripts/swap-v2-coverage-matrix.test.ts 2>&1 | tee v2-coverage.log
+      - name: Coverage summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          echo "## MPGR Swap V2 coverage matrix — $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Read-only discovery against Base. No signature, no broadcast, no deployment key.' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f deployments/.local/swap-v2-coverage-matrix.md ]; then
+            cat deployments/.local/swap-v2-coverage-matrix.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '**Coverage was NOT measured.** Base was unreachable from the runner, so the matrix does not exist. A skipped measurement is not evidence of missing liquidity or of universal support.' >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::V2 coverage matrix was not produced; see v2-coverage.log"
+            grep -E "::warning::|NOT MEASURED" v2-coverage.log || true
+          fi
+          if [ -n "$PR_NUMBER" ] && [ -f deployments/.local/swap-v2-coverage-matrix.md ]; then
+            {
+              echo "Read-only V2 coverage matrix: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+              echo
+              head -60 deployments/.local/swap-v2-coverage-matrix.md
+              echo
+              echo "<details><summary>Full matrix</summary>"
+              echo
+              echo '```text'
+              tail -n +7 deployments/.local/swap-v2-coverage-matrix.md | head -300
+              echo '```'
+              echo "</details>"
+            } > /tmp/v2-coverage-comment.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/v2-coverage-comment.md
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: swap-v2-coverage-matrix
+          path: |
+            deployments/.local/swap-v2-coverage-matrix.json
+            deployments/.local/swap-v2-coverage-matrix.md
+            v2-coverage.log
+          if-no-files-found: warn

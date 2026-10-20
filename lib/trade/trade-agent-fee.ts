@@ -39,6 +39,7 @@ import { isAddress, zeroAddress, type Address } from "viem";
 
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT } from "@/lib/executor/executor-config";
 import { swapPathExecutor } from "@/lib/swap/swap-executor-config";
+import { swapV2Target } from "@/lib/swap/v2/v2-target";
 import { formatAtomicAmount } from "./trade-format";
 import type { TradeAgentFee, TradeProposal, TradeTokenRef } from "./trade-types";
 
@@ -272,7 +273,11 @@ export function verifyAgentFeeInSwapTransaction(proposal: TradeProposal): AgentF
   // collects the identical 25 bps fee atomically; legacy executor unchanged.
   const swapPath = swapPathExecutor();
   const isSwapPathExecutor = swapPath !== null && typeof target === "string" && target.toLowerCase() === swapPath.executor.toLowerCase();
-  if (typeof target !== "string" || !isAddress(target) || (!isSwapPathExecutor && target.toLowerCase() !== executor.toLowerCase())) {
+  // The V2 executor collects the same 25 bps on gross inside the same swap, and
+  // is a legitimate target only once its gate is flipped. While dormant this is
+  // always false, so the V1/legacy rule below is unchanged.
+  const isSwapV2Executor = swapV2Target(proposal) !== null;
+  if (typeof target !== "string" || !isAddress(target) || (!isSwapV2Executor && !isSwapPathExecutor && target.toLowerCase() !== executor.toLowerCase())) {
     return { ok: false, reason: "The quoted MPGR fee is not collected by the MPGR Executor — nothing was signed." };
   }
   const gross = parsePositiveAtomic(proposal.fromAmount);
