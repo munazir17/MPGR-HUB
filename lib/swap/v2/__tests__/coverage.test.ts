@@ -37,6 +37,15 @@ describe("classifyTokenSupport", () => {
     expect(r.reason).toMatch(/no runtime code/i);
   });
 
+  it("treats the native ETH sentinel as supported even though it has no code", () => {
+    // The sentinel is a pseudo-address normalized to WETH, so "no runtime code"
+    // must not become an unsupported-infrastructure verdict.
+    const r = classifyTokenSupport(facts({ address: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", hasCode: false, decimals: null, symbol: null, readable: true }));
+    expect(r.supported).toBe(true);
+    // And it must not be reported as unmeasured either.
+    expect(r.category).not.toBe("UNMEASURED_PROVIDER_FAILURE");
+  });
+
   it("reports missing decimals as unsupported infrastructure", () => {
     expect(classifyTokenSupport(facts({ decimals: null })).supported).toBe(false);
     expect(classifyTokenSupport(facts({ decimals: 300 })).supported).toBe(false);

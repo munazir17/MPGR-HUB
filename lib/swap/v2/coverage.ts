@@ -13,6 +13,7 @@
 //
 // Pure and offline: it classifies outcomes it is given. Running real discovery
 // over Base lives in scripts/swap-v2-coverage-matrix.test.ts, which needs an RPC.
+import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { V2QuoteError } from "./discovery";
 
 export const COVERAGE_CATEGORIES = [
@@ -59,6 +60,14 @@ export interface PairCoverageRow {
 /** Classifies a token's on-chain infrastructure. An unreadable token is
  * UNMEASURED, never "unsupported": a rate-limited RPC is not a verdict. */
 export function classifyTokenSupport(token: TokenSupportFacts): { supported: boolean; category: CoverageCategory | "UNMEASURED_PROVIDER_FAILURE"; reason: string } {
+  // The native ETH sentinel is a pseudo-address, not a contract, so it has no
+  // runtime code BY DESIGN. Discovery normalizes it to canonical WETH, which means
+  // it is routable. Classifying it as "unsupported infrastructure" was a false
+  // verdict that then contradicted a real ETH route — caught by the matrix's own
+  // cross-check between token facts and pair verdicts.
+  if (isNativeEthSentinel(token.address)) {
+    return { supported: true, category: "UNSUPPORTED_TOKEN_INFRASTRUCTURE", reason: "" };
+  }
   if (!token.readable) {
     return { supported: false, category: "UNMEASURED_PROVIDER_FAILURE", reason: `Token metadata for ${token.address} could not be read; coverage is unmeasured, not absent.` };
   }
