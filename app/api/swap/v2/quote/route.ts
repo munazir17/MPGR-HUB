@@ -14,7 +14,7 @@ import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { discoverV2Quote, V2QuoteError, V2_FEE_RECIPIENT } from "@/lib/swap/v2/discovery";
 import { RpcV2LiquiditySource } from "@/lib/swap/v2/rpc-source";
 import { swapV2Executor } from "@/lib/swap/v2/deployment";
-import { prepareV2Execution, type V2ExecutionReader } from "@/lib/swap/v2/execution";
+import { prepareV2Execution, serializeV2Swap, type V2ExecutionReader } from "@/lib/swap/v2/execution";
 import { V2PreflightError } from "@/lib/swap/v2/preflight";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,18 +73,7 @@ export async function POST(request: Request) {
     }
     // The block must still be the one the simulation was pinned to.
     if ((await client.getBlock({ blockNumber: block.number })).hash !== block.hash) return reply({ code: "QUOTE_CHANGED" }, 409);
-    return reply(stringify({
-      quote: q, blockNumber: swap.blockNumber, blockHash: swap.blockHash,
-      preview: false, executable: true, executionSimulation: swap.executionSimulation,
-      transaction: { to: swap.transaction.to, data: swap.transaction.data, value: swap.transaction.value },
-      executor: swap.executor, spender: swap.spender, chainId: swap.chainId,
-      intentId: swap.intentId, entry: swap.entry,
-      minToAmount: swap.minimum, toAmount: swap.quotedOut,
-      fee: swap.fee, feeBps: swap.feeBps, feeRecipient: swap.feeRecipient,
-      slippageBps: p.slippageBps, deadline: swap.intent.deadline,
-      nativeIn, nativeOut, hops: swap.intent.hops,
-      settlementNote: "Simulation is not a settlement proof. The receipt is verified against the committed minimum and the actual fee event after the wallet broadcasts.",
-    }));
+    return reply(serializeV2Swap(swap, q, { slippageBps: p.slippageBps, nativeIn, nativeOut }));
   } catch (error) {
     if (error instanceof V2QuoteError) return reply({ code: error.code, error: error.message }, error.code === "DISCOVERY_UNAVAILABLE" ? 503 : 422);
     return reply({ code: "PROVIDER_ERROR", error: "V2 preview discovery is unavailable; no transaction prepared" }, 503);

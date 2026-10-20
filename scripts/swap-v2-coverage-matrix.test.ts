@@ -30,7 +30,7 @@ const RPC_URL = process.env.BASE_MAINNET_RPC_URL ?? "https://mainnet.base.org";
 const ENABLED = process.env.MPGR_V2_COVERAGE === "1" || process.env.MPGR_V2_COVERAGE === "true";
 /** Wall-clock budget per pair, so one slow pair cannot consume the whole run. A
  * timeout is recorded as UNMEASURED — never as missing liquidity. */
-const PER_PAIR_TIMEOUT_MS = Number(process.env.MPGR_V2_COVERAGE_PAIR_TIMEOUT_MS ?? 45_000);
+const PER_PAIR_TIMEOUT_MS = Number(process.env.MPGR_V2_COVERAGE_PAIR_TIMEOUT_MS ?? 20_000);
 const MPGR = "0xb2000000000000000000008d204203177a78af01" as Address;
 const WETH = "0x4200000000000000000000000000000000000006" as Address;
 const USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" as Address;
@@ -40,10 +40,10 @@ const OUT_DIR = "deployments/.local";
 const MAX_TOKEN_TOKEN_PAIRS = Number(process.env.MPGR_V2_COVERAGE_MAX_PAIRS ?? 12);
 /** Hard caps so the run always finishes and always emits a matrix. Pairs that the
  * budget does not reach are recorded UNMEASURED, never silently dropped. */
-const MAX_TOTAL_PAIRS = Number(process.env.MPGR_V2_COVERAGE_TOTAL_PAIRS ?? 30);
+const MAX_TOTAL_PAIRS = Number(process.env.MPGR_V2_COVERAGE_TOTAL_PAIRS ?? 250);
 // Kept below vitest's 900s test timeout so the matrix is written before any
 // timeout could discard it.
-const TOTAL_BUDGET_MS = Number(process.env.MPGR_V2_COVERAGE_BUDGET_MS ?? 600_000);
+const TOTAL_BUDGET_MS = Number(process.env.MPGR_V2_COVERAGE_BUDGET_MS ?? 1_200_000);
 const PROBE_AMOUNT = 1_000_000n;
 
 async function reachable(): Promise<{ ok: true; client: ReturnType<typeof buildClient> } | { ok: false; reason: string }> {
@@ -172,9 +172,15 @@ describe("V2 live coverage matrix", () => {
           // classifier maps any non-V2QuoteError to UNMEASURED_PROVIDER_FAILURE.
           outcome = { ok: false, error };
         }
-        rows.push(classifyPairOutcome(from, to, outcome, {
+        const row = classifyPairOutcome(from, to, outcome, {
           from: facts.get(from.toLowerCase()), to: facts.get(to.toLowerCase()),
-        }));
+        });
+        // A liquidity verdict is only as strong as the sweep behind it. Record what
+        // discovery could actually establish for this pair.
+        const diag = source.diagnostics();
+        const diagNote = diag.historyScan === "complete" ? "canonical event sweep completed"
+          : `canonical event sweep UNAVAILABLE (factory index ${diag.factoryIndex ? (diag.factoryIndex.complete ? "complete" : `partial; failed kinds ${diag.factoryIndex.failedKinds.join("/") || "none"}`) : "did not run"})`;
+        rows.push(row.category === "MISSING_LIQUIDITY" ? { ...row, reason: `${row.reason} Evidence scope: ${diagNote}.` } : row);
       }
 
       for (const { from, to } of deferred) {
@@ -223,6 +229,6 @@ describe("V2 live coverage matrix", () => {
       expect(rows.filter(r => r.category === "MISSING_LIQUIDITY").every(r => r.measured)).toBe(true);
       expect(V2QuoteError).toBeTypeOf("function");
     },
-    900_000,
+    1_500_000,
   );
 });

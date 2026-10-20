@@ -1,5 +1,6 @@
 import "server-only";
 import { directRpcHints } from "./rpc-hints";
+import { factoryIndexPools, PARTIAL_INDEX_VENUE_KINDS, type FactoryIndexResult } from "./rpc-index";
 import { decodeFunctionResult, encodeFunctionData, parseAbi, parseAbiItem, zeroAddress, type Address, type PublicClient } from "viem";
 import { SWAP_PATH_VENUES } from "../swap-executor-config";
 import { asset, V4_MANAGER, V2QuoteError, type LiquiditySource, type Pool, type V4Key } from "./discovery";
@@ -33,6 +34,12 @@ const normalize = (a: Address) => a.toLowerCase() === zeroAddress ? asset(weth) 
 export class RpcV2LiquiditySource implements LiquiditySource {
   private cache = new Map<string, Promise<readonly Pool[]>>();
   private reads = 0;
+  /** What the last `pools(input, output)` load could actually establish. Lets a
+   * caller tell "no compatible pool exists" apart from "we could not finish
+   * looking" — the distinction the coverage matrix must never blur. */
+  private lastDiagnostics: { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable" } =
+    { factoryIndex: null, historyScan: "not-run" };
+  diagnostics(): { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable" } { return this.lastDiagnostics; }
   constructor(private client: Pick<PublicClient, "getLogs" | "getCode" | "call"> & {getBlock(args: {blockNumber: bigint}): Promise<{timestamp: bigint}>}, readonly blockNumber: bigint, private maxReads = 4096) {}
   private budget() { if (++this.reads > this.maxReads) throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "RPC pool discovery budget exceeded; use a complete liquidity index"); }
   async hints(input: Address, output: Address): Promise<readonly Pool[]> {
@@ -46,6 +53,26 @@ export class RpcV2LiquiditySource implements LiquiditySource {
   }
   private async load(input: Address, output?: Address): Promise<readonly Pool[]> {
     const result = new Map<string, Pool>();
+    this.lastDiagnostics = { factoryIndex: null, historyScan: "not-run" };
+    // 1. Bounded factory index: one eth_call per candidate, no log range needed,
+    //    so it works on any provider including a range-capped public RPC.
+    if (output) {
+      try {
+        const index = await factoryIndexPools(this.client, input, output, this.blockNumber, () => this.budget());
+        this.lastDiagnostics.factoryIndex = index;
+        for (const p of index.pools) result.set(p.id, p);
+      } catch (error) {
+        // An index that could not run leaves us with the sweep below; it is not a
+        // verdict of "no liquidity".
+        if (!(error instanceof V2QuoteError)) throw error;
+        this.lastDiagnostics.factoryIndex = null;
+      }
+    }
+    // 2. Universal canonical-event sweep. Needs a real historical log range; when
+    //    the provider cannot serve it, record that instead of aborting, because
+    //    step 1 may already have produced an authoritative answer.
+    let historyScan: "complete" | "unavailable" = "complete";
+    try {
     for (const v of venues) {
       const variants = (a: Address) => v.kind === 7 && a.toLowerCase() === weth ? [a, zeroAddress] : [a];
       const filters: Record<string, Address>[] = [];
@@ -79,6 +106,23 @@ export class RpcV2LiquiditySource implements LiquiditySource {
         };
         await scan(0n, this.blockNumber);
       }
+    }
+    } catch (error) {
+      if (error instanceof V2QuoteError && error.code === "DISCOVERY_UNAVAILABLE") historyScan = "unavailable";
+      else throw error;
+    }
+    this.lastDiagnostics.historyScan = historyScan;
+    // Honesty rule: if the universal sweep could not complete AND the factory
+    // index did not produce an authoritative negative, then nothing is known about
+    // this pair. That is DISCOVERY_UNAVAILABLE, never LIQUIDITY_UNAVAILABLE.
+    // Venues whose enumeration is partial (see PARTIAL_INDEX_VENUE_KINDS) and v4
+    // are only fully covered by the sweep, so their absence is not a verdict.
+    const index = this.lastDiagnostics.factoryIndex;
+    const authoritativeNegative = historyScan === "complete" ||
+      (!!index && index.complete && result.size > 0);
+    if (!authoritativeNegative) {
+      throw new V2QuoteError("DISCOVERY_UNAVAILABLE",
+        `Canonical pool log query unavailable and no authoritative factory answer (index failed venues: ${index ? index.failedKinds.join("/") || "none" : "not-run"}; partial kinds: ${PARTIAL_INDEX_VENUE_KINDS.join("/")})`);
     }
     return [...result.values()];
   }

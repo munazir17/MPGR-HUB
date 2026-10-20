@@ -133,3 +133,36 @@ export async function prepareV2Execution(
     entry: inspected.value.entry,
   };
 }
+
+/**
+ * The exact JSON-safe wire shape of an activated V2 execution.
+ *
+ * Extracted so the route and the integration tests share ONE definition: a field
+ * the server forgets to serialize, or serializes with the wrong type, is exactly
+ * the kind of drift that makes a client-side validator reject a perfectly good
+ * quote. Bigints become decimal strings; nothing else is transformed.
+ */
+/** The honest scope of an eth_call simulation, stated on every activated response. */
+export const SWAP_V2_SETTLEMENT_NOTE =
+  "Simulation is not a settlement proof. The receipt is verified against the committed minimum and the actual fee event after the wallet broadcasts.";
+
+export function serializeV2Swap(
+  swap: V2ExecutableSwap,
+  quote: V2Quote,
+  opts: { slippageBps: number; nativeIn: boolean; nativeOut: boolean },
+): Record<string, unknown> {
+  // Same JSON round-trip the route used inline: every bigint becomes a decimal
+  // string, including the nested quote legs. Nothing else is transformed.
+  return JSON.parse(JSON.stringify({
+    quote, blockNumber: swap.blockNumber, blockHash: swap.blockHash,
+    preview: false, executable: true, executionSimulation: swap.executionSimulation,
+    transaction: { to: swap.transaction.to, data: swap.transaction.data, value: swap.transaction.value },
+    executor: swap.executor, spender: swap.spender, chainId: swap.chainId,
+    intentId: swap.intentId, entry: swap.entry,
+    minToAmount: swap.minimum, toAmount: swap.quotedOut,
+    fee: swap.fee, feeBps: swap.feeBps, feeRecipient: swap.feeRecipient,
+    slippageBps: opts.slippageBps, deadline: swap.intent.deadline,
+    nativeIn: opts.nativeIn, nativeOut: opts.nativeOut, hops: swap.intent.hops,
+    settlementNote: SWAP_V2_SETTLEMENT_NOTE,
+  }, (_key, value) => (typeof value === "bigint" ? value.toString() : value))) as Record<string, unknown>;
+}
