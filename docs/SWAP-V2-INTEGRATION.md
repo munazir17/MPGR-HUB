@@ -159,9 +159,11 @@ Base fork. Last known green: run `39261269154`, 13 passed / 0 failed / 0 skipped
 change, so it is not evidence that the app-side encoding matches the deployed contract at a
 current block.
 
-> **This branch has NOT produced a fork proof.** Run `39396256493` (PR #126) **failed at the
-> "Discover MPGR pool key from real Initialize event" step**, so the forge suite was skipped and
-> no fork evidence exists for this change. The script failed closed and claimed nothing:
+> **This branch has NOT produced a fork proof — two attempts, both failed identically.**
+> Runs `39396256493` (commit `3660dbf`) and `39397504180` (commit `436a078`) both failed at the
+> "Discover MPGR pool key from real Initialize event" step, so the forge suite was **skipped**
+> both times and no fork evidence exists for this change. The script failed closed and claimed
+> nothing:
 >
 > ```text
 > MPGR code prefix: 0xef
@@ -170,21 +172,46 @@ current block.
 > found; no proof claimed
 > ```
 >
-> Diagnosis — the cause is a **third-party hint API**, not this change:
-> - `MPGR code prefix: 0xef` printed, so the Base RPC was healthy (`eth_chainId`,
+> **This is reproducible, not a flake** — the same step, same output, ~35 minutes apart on two
+> different commits. Diagnosis: the cause is a **third-party hint API**, not this change.
+> - `MPGR code prefix: 0xef` printed both times, so the Base RPC was healthy (`eth_chainId`,
 >   `eth_getCode`, `eth_blockNumber` all succeeded).
-> - `hint count: 0` means `api.dexscreener.com` returned an array (otherwise the script throws
->   "Pool discovery hints unavailable") containing **no** entry with `dexId === "uniswap"` and a
->   64-hex `pairAddress`. Discovery therefore never reached `eth_getLogs` or forge.
+> - `hint count: 0` means `api.dexscreener.com/token-pairs/v1/base/<mpgr>` returned an array
+>   (otherwise the script throws "Pool discovery hints unavailable") containing **no** entry with
+>   `dexId === "uniswap"` and a 64-hex `pairAddress`. Discovery therefore never reached
+>   `eth_getLogs` or forge. The exact API response could not be inspected from the dev sandbox
+>   (that host is not reachable there), so its precise shape is **UNVERIFIED**.
 > - This change touches only `lib/swap/v2/**`, `app/api/swap/v2/**` and `docs/**` — never
 >   `scripts/swap-deploy-v2/**`, `contracts/**` or `test/swap-fork/**`.
-> - 12 of the previous 14 runs of this workflow succeeded, the most recent ~14 h earlier, with
->   `hint count: 1`. Two earlier failures were at the *forge* step, a different mode.
 >
-> Re-triggering is constrained: `gh run rerun --failed` was refused ("cannot be rerun") and
-> `workflow_dispatch` returned HTTP 403 (`Resource not accessible by integration` — the token lacks
-> `actions: write`). The workflow only re-runs on a push touching one of its trigger paths, or on
-> a manual dispatch by someone with sufficient permissions.
+> **Bounded regression window.** The last green runs were PR #123 (branch
+> `arena/5e28bc30-mpgr-hub`), runs `39302375665`/`39302603928`/`39303607931`/`39304185332`,
+> 2026-10-19T18:25–18:38Z. Each logged `hint count: 1`, independently verified the real on-chain
+> Initialize event, and reported `Suite result: ok. 13 passed; 0 failed; 0 skipped`:
+>
+> ```text
+> poolId        0xfc151dc0278bc0b2e2ad5404e14f8e3a43e77f176537c29e25f179262ad1cc44
+> currency0     0x0000000000000000000000000000000000000000 (native)
+> currency1     0xb2000000000000000000008d204203177a78af01 (MPGR)
+> fee 0   tickSpacing 200   hooks 0x985c14baa2a18316ffda0aefb3a632fadfca2acc
+> initializeBlock 48631199   initializeTx 0x4403d04d2136576c65c60581c8bdf34b592bf00d7ea2564f2c78c5e35d2f7abc
+> ```
+>
+> That matches `docs/SWAP-EXECUTOR-V2-STATUS.md` exactly, so the MPGR v4 pool facts are
+> corroborated by Actions evidence — but at 2026-10-19T18:38Z, **not** against this branch.
+> The hint source therefore degraded somewhere between 2026-10-19T18:38Z and 2026-10-20T08:50Z.
+>
+> **Do not loop on re-pushes.** Further pushes to a trigger path will keep failing identically
+> until the external hint source recovers or the discovery step gains an on-chain fallback.
+> Re-triggering by other means is blocked here: `gh run rerun --failed` was refused ("cannot be
+> rerun") and `workflow_dispatch` returned HTTP 403 (`Resource not accessible by integration` — the
+> token lacks `actions: write`). A maintainer with sufficient permissions can dispatch it
+> manually, or set/verify `secrets.BASE_MAINNET_RPC_URL`.
+>
+> **The discovery script was deliberately NOT modified to force a pass.** Making the fork proof
+> green by hardcoding the known pool id or block would manufacture evidence and defeat the
+> script's stated design ("Dexscreener supplies search hints only: the Initialize event and pool
+> ID are independently verified on chain"). The honest state is: no fork proof for this branch.
 
 **Tier 3 — live-verified.** **None.** No transaction has been broadcast, simulated against
 live state, or settled. No claim in this document is live-verified.
@@ -198,31 +225,32 @@ live state, or settled. No claim in this document is live-verified.
 
 1. **No live verification** of executor posture or bytecode (Tier 3 empty; sandbox has no
    chain access).
-2. **No fork proof for this branch, and no end-to-end app-level fork test.** Run `39396256493`
-   failed at the Dexscreener-dependent discovery step (see Tier 2 above), so the contract-level
-   fork suite never ran for this change and must be re-triggered before merge. Separately, the
-   Foundry suite covers the contract only: a vitest fork harness that drives
-   `prepareV2Execution` against a real Base archive node would close the largest remaining gap
-   between Tier 1 and Tier 2. The discovery step's dependence on a third-party search API for a
-   *hint* is a pre-existing fragility worth removing — with an on-chain fallback that preserves
-   independent verification rather than a hardcoded pool id.
-3. **Settlement verification is not wired into a route.** `settlement.ts` is complete and
+2. **No fork proof for this branch — blocking for merge.** Runs `39396256493` and `39397504180`
+   both failed identically at the Dexscreener-dependent discovery step (see Tier 2 above), so the
+   contract-level fork suite never ran for this change. It must be re-triggered successfully
+   before merge, once the external hint source recovers or the step gains an on-chain fallback.
+   That fallback should preserve independent verification rather than hardcode a pool id or
+   block. This is the single largest gap in the evidence for this PR.
+3. **No end-to-end app-level fork test.** Even when green, the Foundry suite covers the
+   *contract* only. A vitest fork harness that drives `prepareV2Execution` against a real Base
+   archive node would close the remaining gap between Tier 1 (fabricated readers) and Tier 2.
+4. **Settlement verification is not wired into a route.** `settlement.ts` is complete and
    tested, but no API endpoint calls it yet; receipt verification after broadcast still needs a
    surface.
-4. **Front-end not wired.** `components/features/swap/SwapForm.tsx` still calls the V1
+5. **Front-end not wired.** `components/features/swap/SwapForm.tsx` still calls the V1
    endpoint and hardcodes `sellSideQuoted: null` (line 47). Activation without front-end work
    would expose the V2 API but not the V2 UX.
-5. **Coverage matrix not produced.** No measurement exists of which Base pairs actually have
+6. **Coverage matrix not produced.** No measurement exists of which Base pairs actually have
    compatible liquidity, so "code restriction" vs "no liquidity" cannot yet be distinguished
    per token. MPGR itself still has only the Uniswap V4 MPGR/native-ETH pool, so USDC↔MPGR
    depends on a multi-hop route existing through it.
-6. **V1 defects deliberately left alone** (deferred by instruction): `swapPathHopKey` omits
+7. **V1 defects deliberately left alone** (deferred by instruction): `swapPathHopKey` omits
    `tokenOut`, so WETH- and USDC-bridge two-hop candidates collide and the WETH bridge is
    dropped (observed 16 candidates instead of 19); V1 generates only 1–2 hops despite
    `SWAP_MAX_PATH_HOPS = 3`; V1 has no v4 adapter. **Do not** add `tokenOut` to that key
    without updating `lib/swap/swap-path-token-pairs.test.ts`, whose regexes
    (`/:100($|>)/`, `/:500($|>)/`) encode the current format.
-7. **Pancake V3 and 0x Settler stay disabled.** Neither has a passing fork proof. Settler must
+8. **Pancake V3 and 0x Settler stay disabled.** Neither has a passing fork proof. Settler must
    never be called directly.
 
 ## 7. Activation plan
@@ -247,7 +275,7 @@ Requires separate explicit approval. Do not perform these steps as part of this 
      literal `export const V2_DEPLOYMENT = null;`
    Leave `scripts/swap-v2-finalize-recovery.test.ts:213` alone: it asserts the *recovery
    workflow text*, not `discovery.ts`.
-5. **Wire the front end** (limitation 4) and a **settlement route** (limitation 3) before
+5. **Wire the front end** (limitation 5) and a **settlement route** (limitation 4) before
    exposing V2 to users.
 6. **Ship behind a reversible flag or canary** if possible; monitor `feeRecipient` balance
    deltas to confirm the 25 bps fee lands once per swap.
