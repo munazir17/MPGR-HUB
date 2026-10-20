@@ -44,6 +44,18 @@ export interface TokenSupportFacts {
   readable: boolean;
 }
 
+/** Venue kinds the deployed V2 executor has registered, for readable reports. A
+ * kind missing from this map is reported by number rather than given an invented
+ * name. */
+export const VENUE_KIND_NAMES: Readonly<Record<number, string>> = {
+  1: "Aerodrome Slipstream",
+  2: "Uniswap v3",
+  3: "Uniswap v2",
+  4: "Aerodrome Classic",
+  7: "Uniswap v4",
+};
+export const venueKindName = (kind: number): string => VENUE_KIND_NAMES[kind] ?? `kind ${kind}`;
+
 export interface PairCoverageRow {
   from: string;
   to: string;
@@ -55,6 +67,106 @@ export interface PairCoverageRow {
   venueKinds?: readonly number[];
   amountOut?: string;
   measured: boolean;
+  /** Stable position in the probe plan, so shards can be merged back in order. */
+  index?: number;
+  /** Which shard measured this pair; absent when the plan was not sharded. */
+  shard?: number;
+  /** The token this probe is about, and which way it was probed. Set by the
+   * matrix from the plan; the rollups degrade gracefully when it is missing. */
+  subjectSymbol?: string;
+  direction?: "SELL" | "BUY" | "TOKEN_PAIR";
+  /** Human-readable sides, so a report does not have to be read as hex. */
+  fromSymbol?: string;
+  toSymbol?: string;
+  /** What discovery could actually establish for this pair (sweep/index/v4 scope).
+   * Kept separate from `reason` so a report can show WHY a verdict is weak. */
+  evidenceScope?: string;
+}
+
+/** Buckets an unmeasured reason, so a report shows the DOMINANT cause instead of
+ * 158 unique strings. Bucketing never changes a category: an unmeasured pair stays
+ * unmeasured, it just becomes legible. */
+export function unmeasuredReasonBucket(reason: string): string {
+  const text = reason.toLowerCase();
+  if (/did not report|no shard|shard \d+ (failed|produced|is missing)/.test(text)) return "A shard did not report this pair";
+  if (/probe budget exhausted|pair probe cap/.test(text)) return "Probe budget exhausted before this pair was measured";
+  if (/exceeded \d+ms|per-pair timeout/.test(text)) return "Per-pair wall-clock timeout";
+  if (/v4 initialize search .*exceeded|canonical pool log sweep exceeded|call budget/.test(text)) return "Discovery call budget exhausted mid-search";
+  if (/refused every v4 log range|log query unavailable/.test(text)) return "Provider refused the log ranges discovery needs";
+  if (/floor could not be derived|archive/.test(text)) return "No historical state access (deployment floor underivable)";
+  if (/venue quote rpc unavailable|quote adapter has no base code/.test(text)) return "Venue quote RPC unavailable";
+  if (/no compatible pool could be established/.test(text)) return "Discovery incomplete: sweep and/or v4 scan did not finish";
+  if (/unreachable|not base/.test(text)) return "Base RPC unreachable";
+  return reason.length > 90 ? `${reason.slice(0, 90)}...` : reason;
+}
+
+export interface VenueRollupRow {
+  kind: number;
+  venue: string;
+  executable: number;
+  /** Routes that used this venue together with at least one other venue. */
+  mixedVenue: number;
+  pairs: readonly string[];
+}
+
+/** Executable routes grouped by the venue kind(s) that actually served them. This
+ * is the answer to "which venues are proven to route", as distinct from "which
+ * venues are merely registered on the executor". */
+export function summarizeByVenue(rows: readonly PairCoverageRow[]): VenueRollupRow[] {
+  const executable = rows.filter((r) => r.category === "EXECUTABLE_ROUTE");
+  const byKind = new Map<number, { mixed: number; pairs: string[] }>();
+  for (const row of executable) {
+    const kinds = [...new Set(row.venueKinds ?? [])].sort((a, b) => a - b);
+    for (const kind of kinds) {
+      const entry = byKind.get(kind) ?? { mixed: 0, pairs: [] };
+      if (kinds.length > 1) entry.mixed++;
+      entry.pairs.push(`${row.from.slice(0, 8)}->${row.to.slice(0, 8)}`);
+      byKind.set(kind, entry);
+    }
+  }
+  return [...byKind.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([kind, entry]) => ({ kind, venue: venueKindName(kind), executable: entry.pairs.length, mixedVenue: entry.mixed, pairs: entry.pairs }));
+}
+
+export interface DirectionRollupRow {
+  subject: string;
+  direction: "SELL" | "BUY" | "TOKEN_PAIR";
+  total: number;
+  executable: number;
+  missingLiquidity: number;
+  unsupported: number;
+  unmeasured: number;
+}
+
+/** Per token and per direction, because BUY and SELL are separate measurements:
+ * an asset that only routes one way is not a tradeable asset. */
+export function summarizeByDirection(rows: readonly PairCoverageRow[]): DirectionRollupRow[] {
+  const byKey = new Map<string, DirectionRollupRow>();
+  for (const row of rows) {
+    const subject = row.subjectSymbol ?? row.from.slice(0, 10);
+    const direction = row.direction ?? "TOKEN_PAIR";
+    const key = `${subject}|${direction}`;
+    const entry = byKey.get(key) ?? { subject, direction, total: 0, executable: 0, missingLiquidity: 0, unsupported: 0, unmeasured: 0 };
+    entry.total++;
+    if (row.category === "EXECUTABLE_ROUTE") entry.executable++;
+    else if (row.category === "MISSING_LIQUIDITY") entry.missingLiquidity++;
+    else if (row.category === "UNSUPPORTED_TOKEN_INFRASTRUCTURE") entry.unsupported++;
+    else if (!row.measured) entry.unmeasured++;
+    byKey.set(key, entry);
+  }
+  const order = { SELL: 0, BUY: 1, TOKEN_PAIR: 2 } as const;
+  return [...byKey.values()].sort((a, b) => a.subject.localeCompare(b.subject) || order[a.direction] - order[b.direction]);
+}
+
+/** Unmeasured pairs grouped by dominant cause. */
+export function summarizeUnmeasuredReasons(rows: readonly PairCoverageRow[]): { reason: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const row of rows.filter((r) => !r.measured)) {
+    const bucket = unmeasuredReasonBucket(row.reason);
+    counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
 }
 
 /** Classifies a token's on-chain infrastructure. An unreadable token is
@@ -186,14 +298,36 @@ export function summarizeCoverage(rows: readonly PairCoverageRow[]): CoverageSum
 
 /** Renders the matrix as markdown. States plainly when coverage is incomplete,
  * so the report can never be read as a universal-support claim. */
-export function renderCoverageMarkdown(rows: readonly PairCoverageRow[], meta: { chainId: number; blockNumber?: string; rpcLabel: string }): string {
+export function renderCoverageMarkdown(
+  rows: readonly PairCoverageRow[],
+  meta: {
+    chainId: number; blockNumber?: string; rpcLabel: string;
+    /** Present when the plan was sharded across CI jobs. A missing shard is a
+     * reporting gap and is stated as one, never smoothed into the totals. */
+    shards?: { reported: number; expected: number };
+    planSize?: number;
+  },
+): string {
   const summary = summarizeCoverage(rows);
   const lines: string[] = [];
   lines.push(`# MPGR Swap V2 coverage matrix (chain ${meta.chainId}${meta.blockNumber ? `, block ${meta.blockNumber}` : ""})`);
   lines.push("");
   lines.push(`RPC: ${meta.rpcLabel}`);
+  if (meta.shards) {
+    const { reported, expected } = meta.shards;
+    lines.push("");
+    lines.push(`Shards reported: **${reported} of ${expected}**${reported < expected ? " \u2014 **INCOMPLETE RUN**. Pairs owned by a shard that did not report are listed as UNMEASURED, never as missing liquidity." : ""}`);
+  }
+  if (meta.planSize !== undefined && meta.planSize !== summary.pairs) {
+    lines.push("");
+    lines.push(`> The probe plan has ${meta.planSize} pairs but this matrix reports ${summary.pairs}. The difference is a reporting gap, not a coverage fact.`);
+  }
   lines.push("");
   lines.push(`Pairs probed: **${summary.pairs}** · measured: **${summary.measured}** · unmeasured: **${summary.unmeasured}**`);
+  lines.push("");
+  lines.push(summary.measured === 0
+    ? "**Nothing was measured in this run.** No coverage, no venue support and no universal-trading claim is made or implied."
+    : `Of the ${summary.measured} measured pair(s), **${summary.executable}** produced an executable route.`);
   lines.push("");
   lines.push("| Category | Count | Meaning |");
   lines.push("| --- | --- | --- |");
@@ -209,10 +343,54 @@ export function renderCoverageMarkdown(rows: readonly PairCoverageRow[], meta: {
     lines.push(`> **Coverage is INCOMPLETE.** ${summary.unmeasured} pair(s) could not be measured. No universal-support claim is made or implied.`);
     lines.push("");
   }
-  lines.push("| From | To | Category | Hops | Legs | Venues | Reason |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- |");
+  const byVenue = summarizeByVenue(rows);
+  lines.push("## Executable routes by venue");
+  lines.push("");
+  if (byVenue.length > 0) {
+    lines.push("Venues that actually quoted a route here, as distinct from venues merely registered on the executor.");
+    lines.push("");
+    lines.push("| Venue kind | Venue | Executable routes | Of which mixed-venue |");
+    lines.push("| --- | --- | --- | --- |");
+    for (const v of byVenue) lines.push(`| ${v.kind} | ${v.venue} | ${v.executable} | ${v.mixedVenue} |`);
+  } else {
+    lines.push("**No pair produced an executable route in this run.** No venue is claimed as working.");
+  }
+  lines.push("");
+
+  const byDirection = summarizeByDirection(rows);
+  if (byDirection.length > 0) {
+    lines.push("## Measured results by token and direction");
+    lines.push("");
+    lines.push("BUY and SELL are separate measurements: an asset that only routes one way is not tradeable.");
+    lines.push("");
+    lines.push("| Token | Direction | Pairs | Executable | Missing liquidity | Unsupported | Unmeasured |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- |");
+    for (const d of byDirection) {
+      lines.push(`| ${d.subject} | ${d.direction} | ${d.total} | ${d.executable} | ${d.missingLiquidity} | ${d.unsupported} | ${d.unmeasured} |`);
+    }
+    lines.push("");
+  }
+
+  const unmeasuredReasons = summarizeUnmeasuredReasons(rows);
+  if (unmeasuredReasons.length > 0) {
+    lines.push("## Why pairs are unmeasured");
+    lines.push("");
+    lines.push("An unmeasured pair is **not** evidence of missing liquidity. Dominant causes:");
+    lines.push("");
+    lines.push("| Cause | Pairs |");
+    lines.push("| --- | --- |");
+    for (const u of unmeasuredReasons) lines.push(`| ${u.reason.replace(/\|/g, "/")} | ${u.count} |`);
+    lines.push("");
+  }
+
+  lines.push("## Every probed pair");
+  lines.push("");
+  lines.push("| From | To | Dir | Category | Hops | Legs | Venues | Reason |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  const side = (symbol: string | undefined, address: string): string =>
+    (symbol ? `${symbol} \`${address}\`` : `\`${address}\``);
   for (const row of rows) {
-    lines.push(`| \`${row.from}\` | \`${row.to}\` | ${row.category} | ${row.hops ?? ""} | ${row.legs ?? ""} | ${row.venueKinds?.join("/") ?? ""} | ${row.reason.replace(/\|/g, "/")} |`);
+    lines.push(`| ${side(row.fromSymbol, row.from)} | ${side(row.toSymbol, row.to)} | ${row.direction ?? ""} | ${row.category} | ${row.hops ?? ""} | ${row.legs ?? ""} | ${row.venueKinds?.join("/") ?? ""} | ${row.reason.replace(/\|/g, "/")} |`);
   }
   lines.push("");
   lines.push("A quoted route is discovery evidence, not proof of executable settlement. Execution is proven separately by simulation, the fork suite and receipt verification.");

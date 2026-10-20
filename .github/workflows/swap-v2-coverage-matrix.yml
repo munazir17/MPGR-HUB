@@ -4,6 +4,15 @@ name: Swap V2 coverage matrix (read-only)
 # app's own discovery stack against Base. READ-ONLY: no deployer key is mapped,
 # nothing is signed, nothing is broadcast, and no contract state is touched.
 #
+# SHARDED ON PURPOSE. One job with one global wall-clock budget could only attempt
+# part of the plan: run 39431366188 measured 54 of 212 pairs and recorded 158
+# UNMEASURED, most of them purely "probe budget exhausted" — a scheduling artefact,
+# not a coverage fact. The probe plan is pure and deterministic
+# (lib/swap/v2/coverage-plan.ts), so it is split round-robin into disjoint batches,
+# each with its own budget, and an offline `aggregate` job merges them and PROVES
+# that every planned pair was attempted. A shard that does not report turns the
+# aggregate job red rather than quietly shrinking the matrix.
+#
 # This is deliberately a SEPARATE workflow from swap-v2-fork-proof.yml so that a
 # coverage run can never affect, or be confused with, the fork proof.
 on:
@@ -13,6 +22,7 @@ on:
     paths:
       - "lib/swap/v2/**"
       - "scripts/swap-v2-coverage-matrix.test.ts"
+      - "scripts/swap-v2-coverage-aggregate.test.ts"
       - ".github/workflows/swap-v2-coverage-matrix.yml"
 
 permissions:
@@ -23,12 +33,28 @@ concurrency:
   group: swap-v2-coverage-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # Number of parallel batches. The matrix below must list exactly 1..N.
+  COVERAGE_SHARDS: "4"
+  # The probe plan is shared by the shards and by the offline aggregator: if the two
+  # jobs saw different values, the aggregator would rebuild a different plan and
+  # report every pair as unattempted. Defining them here, at workflow level, is what
+  # makes that impossible rather than merely unlikely.
+  MPGR_V2_COVERAGE_MAX_PAIRS: "12"
+  MPGR_V2_COVERAGE_TOTAL_PAIRS: "250"
+
 jobs:
   coverage:
     # Secrets are not available to fork PRs; skip rather than run without an RPC.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      # One shard failing must not cancel the others: a partial matrix that reports
+      # its own gaps is more honest than no matrix at all.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -38,40 +64,114 @@ jobs:
           node-version: 22
       - name: Install dependencies
         run: npm ci
-      - name: Measure V2 coverage against real Base (read-only)
+      - name: Measure this shard of V2 coverage against real Base (read-only)
         env:
           BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
           # Opt-in gate: without this the coverage test skips, so the ordinary
           # `npm test` run in CI is never slowed down by the live matrix.
           MPGR_V2_COVERAGE: "1"
+          MPGR_V2_COVERAGE_SHARDS: ${{ env.COVERAGE_SHARDS }}
+          MPGR_V2_COVERAGE_SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
-          npx vitest run scripts/swap-v2-coverage-matrix.test.ts 2>&1 | tee v2-coverage.log
+          npx vitest run scripts/swap-v2-coverage-matrix.test.ts 2>&1 | tee "v2-coverage-shard-${{ matrix.shard }}.log"
+      - name: Shard summary
+        if: always()
+        run: |
+          {
+            echo "## MPGR Swap V2 coverage — shard ${{ matrix.shard }}/${{ env.COVERAGE_SHARDS }} — $GITHUB_SHA"
+            echo
+            echo 'Read-only discovery against Base. No signature, no broadcast, no deployment key.'
+            echo
+            if [ -f "deployments/.local/swap-v2-coverage-matrix.shard-${{ matrix.shard }}-of-${{ env.COVERAGE_SHARDS }}.md" ]; then
+              cat "deployments/.local/swap-v2-coverage-matrix.shard-${{ matrix.shard }}-of-${{ env.COVERAGE_SHARDS }}.md"
+            elif [ -f deployments/.local/swap-v2-coverage-matrix.md ]; then
+              cat deployments/.local/swap-v2-coverage-matrix.md
+            else
+              echo '**This shard was NOT measured.** Base was unreachable from the runner, so no shard matrix exists. A skipped measurement is not evidence of missing liquidity or of universal support.'
+              grep -E "::warning::|NOT MEASURED" "v2-coverage-shard-${{ matrix.shard }}.log" || true
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: swap-v2-coverage-shard-${{ matrix.shard }}
+          path: |
+            deployments/.local/swap-v2-coverage-shard-*.json
+            deployments/.local/swap-v2-coverage-matrix*.json
+            deployments/.local/swap-v2-coverage-matrix*.md
+            v2-coverage-shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+
+  aggregate:
+    # Runs even when shards fail, so the merged report states exactly which pairs
+    # no shard attempted instead of silently shrinking.
+    needs: coverage
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: swap-v2-coverage-shard-*
+          path: shard-input
+          merge-multiple: true
+          if-no-artifact-found: warn
+      - name: Collect shard artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p deployments/.local
+          # Do not depend on how download-artifact nested the paths: find the shard
+          # matrices wherever they landed and put them where the merger reads them.
+          find shard-input -name 'swap-v2-coverage-shard-*.json' -exec cp {} deployments/.local/ \; 2>/dev/null || true
+          find shard-input -name 'swap-v2-coverage-matrix*.md' -exec cp {} deployments/.local/ \; 2>/dev/null || true
+          find shard-input -name 'v2-coverage-shard-*.log' -exec cp {} . \; 2>/dev/null || true
+          echo "shard artifacts collected:"
+          ls -1 deployments/.local || true
+      - name: Merge shards and prove every planned pair was attempted
+        env:
+          # No BASE_MAINNET_RPC_URL here on purpose: aggregation is offline. If it
+          # ever needed an RPC it would no longer be an independent check.
+          MPGR_V2_COVERAGE_AGGREGATE: "1"
+          MPGR_V2_COVERAGE_SHARDS: ${{ env.COVERAGE_SHARDS }}
+        run: |
+          set -euo pipefail
+          npx vitest run scripts/swap-v2-coverage-aggregate.test.ts 2>&1 | tee v2-coverage-aggregate.log
       - name: Coverage summary
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          echo "## MPGR Swap V2 coverage matrix — $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
-          echo 'Read-only discovery against Base. No signature, no broadcast, no deployment key.' >> "$GITHUB_STEP_SUMMARY"
-          if [ -f deployments/.local/swap-v2-coverage-matrix.md ]; then
-            cat deployments/.local/swap-v2-coverage-matrix.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '**Coverage was NOT measured.** Base was unreachable from the runner, so the matrix does not exist. A skipped measurement is not evidence of missing liquidity or of universal support.' >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning::V2 coverage matrix was not produced; see v2-coverage.log"
-            grep -E "::warning::|NOT MEASURED" v2-coverage.log || true
-          fi
+          {
+            echo "## MPGR Swap V2 coverage matrix (merged) — $GITHUB_SHA"
+            echo 'Read-only discovery against Base. No signature, no broadcast, no deployment key.'
+            echo
+            if [ -f deployments/.local/swap-v2-coverage-matrix.md ]; then
+              cat deployments/.local/swap-v2-coverage-matrix.md
+            else
+              echo '**Coverage was NOT measured.** No shard produced a matrix, so nothing is claimed. A skipped measurement is not evidence of missing liquidity or of universal support.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -E "::warning::|::notice::|NOT MEASURED" v2-coverage-shard-*.log v2-coverage-aggregate.log 2>/dev/null | head -200 || true
           if [ -n "$PR_NUMBER" ] && [ -f deployments/.local/swap-v2-coverage-matrix.md ]; then
             {
-              echo "Read-only V2 coverage matrix: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+              echo "Read-only V2 coverage matrix (merged from ${{ env.COVERAGE_SHARDS }} shards): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
               echo
-              head -60 deployments/.local/swap-v2-coverage-matrix.md
+              head -80 deployments/.local/swap-v2-coverage-matrix.md
               echo
-              echo "<details><summary>Full matrix</summary>"
+              echo "<details><summary>Full merged matrix</summary>"
               echo
               echo '```text'
-              tail -n +7 deployments/.local/swap-v2-coverage-matrix.md | head -300
+              tail -n +7 deployments/.local/swap-v2-coverage-matrix.md | head -400
               echo '```'
               echo "</details>"
             } > /tmp/v2-coverage-comment.md
@@ -84,5 +184,7 @@ jobs:
           path: |
             deployments/.local/swap-v2-coverage-matrix.json
             deployments/.local/swap-v2-coverage-matrix.md
-            v2-coverage.log
+            deployments/.local/swap-v2-coverage-matrix.shard-*.md
+            v2-coverage-shard-*.log
+            v2-coverage-aggregate.log
           if-no-files-found: warn
