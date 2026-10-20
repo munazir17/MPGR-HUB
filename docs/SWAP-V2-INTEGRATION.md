@@ -157,7 +157,34 @@ These are **not** fork tests and **not** live tests. No RPC was contacted.
 Base fork. Last known green: run `39261269154`, 13 passed / 0 failed / 0 skipped at fork block
 52813757. That proves **contract** behaviour. It does not execute the TypeScript in this
 change, so it is not evidence that the app-side encoding matches the deployed contract at a
-current block. Opening a PR for this branch re-triggers it.
+current block.
+
+> **This branch has NOT produced a fork proof.** Run `39396256493` (PR #126) **failed at the
+> "Discover MPGR pool key from real Initialize event" step**, so the forge suite was skipped and
+> no fork evidence exists for this change. The script failed closed and claimed nothing:
+>
+> ```text
+> MPGR code prefix: 0xef
+> MPGR v4 hint count: 0
+> ::error::V2 real-pool discovery failed: MPGR/ETH or MPGR/WETH real v4 Initialize event not
+> found; no proof claimed
+> ```
+>
+> Diagnosis — the cause is a **third-party hint API**, not this change:
+> - `MPGR code prefix: 0xef` printed, so the Base RPC was healthy (`eth_chainId`,
+>   `eth_getCode`, `eth_blockNumber` all succeeded).
+> - `hint count: 0` means `api.dexscreener.com` returned an array (otherwise the script throws
+>   "Pool discovery hints unavailable") containing **no** entry with `dexId === "uniswap"` and a
+>   64-hex `pairAddress`. Discovery therefore never reached `eth_getLogs` or forge.
+> - This change touches only `lib/swap/v2/**`, `app/api/swap/v2/**` and `docs/**` — never
+>   `scripts/swap-deploy-v2/**`, `contracts/**` or `test/swap-fork/**`.
+> - 12 of the previous 14 runs of this workflow succeeded, the most recent ~14 h earlier, with
+>   `hint count: 1`. Two earlier failures were at the *forge* step, a different mode.
+>
+> Re-triggering is constrained: `gh run rerun --failed` was refused ("cannot be rerun") and
+> `workflow_dispatch` returned HTTP 403 (`Resource not accessible by integration` — the token lacks
+> `actions: write`). The workflow only re-runs on a push touching one of its trigger paths, or on
+> a manual dispatch by someone with sufficient permissions.
 
 **Tier 3 — live-verified.** **None.** No transaction has been broadcast, simulated against
 live state, or settled. No claim in this document is live-verified.
@@ -171,9 +198,14 @@ live state, or settled. No claim in this document is live-verified.
 
 1. **No live verification** of executor posture or bytecode (Tier 3 empty; sandbox has no
    chain access).
-2. **No end-to-end app-level fork test.** The Foundry fork suite covers the contract only. A
-   vitest fork harness that drives `prepareV2Execution` against a real Base archive node would
-   close the largest remaining gap between Tier 1 and Tier 2.
+2. **No fork proof for this branch, and no end-to-end app-level fork test.** Run `39396256493`
+   failed at the Dexscreener-dependent discovery step (see Tier 2 above), so the contract-level
+   fork suite never ran for this change and must be re-triggered before merge. Separately, the
+   Foundry suite covers the contract only: a vitest fork harness that drives
+   `prepareV2Execution` against a real Base archive node would close the largest remaining gap
+   between Tier 1 and Tier 2. The discovery step's dependence on a third-party search API for a
+   *hint* is a pre-existing fragility worth removing — with an on-chain fallback that preserves
+   independent verification rather than a hardcoded pool id.
 3. **Settlement verification is not wired into a route.** `settlement.ts` is complete and
    tested, but no API endpoint calls it yet; receipt verification after broadcast still needs a
    surface.

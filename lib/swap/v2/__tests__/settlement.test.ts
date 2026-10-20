@@ -123,7 +123,10 @@ describe("v2 settlement — rejected", () => {
   });
 
   it("refuses to attribute settlement without a sealed deployment", () => {
-    const s = verifyV2Settlement(intent(), events([executed(1000n)]), ok, { deployment: undefined as never });
+    // Both shapes must degrade honestly: options omitted entirely, and an
+    // explicit null. Neither may fabricate a verification.
+    expect(verifyV2Settlement(intent(), events([executed(1000n)]), ok).verified).toBe(false);
+    const s = verifyV2Settlement(intent(), events([executed(1000n)]), ok, { deployment: null });
     expect(s.verified).toBe(false);
     expect(s.reason).toMatch(/no sealed v2 deployment/i);
   });

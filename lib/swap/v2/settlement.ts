@@ -92,7 +92,9 @@ export function verifyV2Settlement(
   intent: V2SwapIntent,
   events: V2SettlementEvents,
   receipt: Pick<V2ReceiptLike, "status">,
-  options: { deployment: SwapV2ExecutorDeployment; feeRecipientDelta?: bigint | null } = { deployment: undefined as never },
+  // `deployment` is optional so a caller with no sealed manifest gets an honest
+  // "cannot attribute" result rather than a fabricated one — no unsafe cast.
+  options: { deployment?: SwapV2ExecutorDeployment | null; feeRecipientDelta?: bigint | null } = {},
 ): V2Settlement {
   const deployment = options.deployment;
   if (!deployment) return unknown("No sealed V2 deployment; settlement cannot be attributed to a known executor.");
