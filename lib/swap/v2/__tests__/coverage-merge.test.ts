@@ -35,7 +35,47 @@ const allShards = (): CoverageShardArtifact[] => Array.from({ length: SHARDS }, 
 
 describe("shardPartitionDefects", () => {
   it("reports no defect for the real plan", () => {
-    expect(shardPartitionDefects(plan, SHARDS)).toEqual({ duplicated: [], missing: [] });
+    expect(shardPartitionDefects(plan, SHARDS)).toMatchObject({ duplicated: [], missing: [] });
+  });
+
+  it("derives ownership from coverageShard itself, pair by pair", () => {
+    // THE FALSIFIABLE FORM. The old implementation re-derived ownership with an inline
+    // round-robin loop, so it agreed with itself and could never fail; this asserts
+    // agreement with the function the shards actually run. Subject-grouped sharding
+    // assigns a token's pairs to ONE shard, which round-robin does not, so this test
+    // fails loudly if the check ever stops calling coverageShard again.
+    for (const shards of [1, 2, 3, 4, 6, 7]) {
+      const { ownerOf, duplicated, missing } = shardPartitionDefects(plan, shards);
+      expect(duplicated, `shards=${shards}`).toEqual([]);
+      expect(missing, `shards=${shards}`).toEqual([]);
+      expect(ownerOf.size).toBe(plan.length);
+      for (let shard = 1; shard <= shards; shard++) {
+        for (const pair of coverageShard(plan, shard, shards)) {
+          expect(ownerOf.get(pair.index), `pair ${pair.index} at shards=${shards}`).toBe(shard);
+        }
+      }
+    }
+  });
+
+  it("is not round-robin, because round-robin is what made the old check vacuous", () => {
+    const { ownerOf } = shardPartitionDefects(plan, SHARDS);
+    const roundRobin = new Map<number, number>();
+    for (let shard = 1; shard <= SHARDS; shard++) {
+      for (let i = shard - 1; i < plan.length; i += SHARDS) roundRobin.set(plan[i].index, shard);
+    }
+    // If these agreed, the regression above would be untestable: the two assignments
+    // must actually differ for the fix to mean anything.
+    const disagreements = plan.filter((p) => ownerOf.get(p.index) !== roundRobin.get(p.index));
+    expect(disagreements.length).toBeGreaterThan(0);
+    // And the difference is exactly the point: every pair about one token lands in one
+    // shard, so a shard pays that token's discovery cost once instead of per pair.
+    const bySubject = new Map<string, Set<number>>();
+    for (const pair of plan) {
+      const owners = bySubject.get(pair.subject.toLowerCase()) ?? new Set<number>();
+      owners.add(ownerOf.get(pair.index)!);
+      bySubject.set(pair.subject.toLowerCase(), owners);
+    }
+    for (const owners of bySubject.values()) expect(owners.size).toBe(1);
   });
 
   it("reports a pair no shard would attempt when a shard is dropped from the count", () => {

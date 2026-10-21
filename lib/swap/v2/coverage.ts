@@ -14,6 +14,7 @@
 // Pure and offline: it classifies outcomes it is given. Running real discovery
 // over Base lives in scripts/swap-v2-coverage-matrix.test.ts, which needs an RPC.
 import { isNativeEthSentinel } from "@/lib/trade/trade-config";
+import { formatProbeAmount } from "./coverage-probe";
 import { V2QuoteError, type RouteFailureAttribution } from "./discovery";
 
 export const COVERAGE_CATEGORIES = [
@@ -85,6 +86,14 @@ export interface PairCoverageRow {
    * Optional: harness-level gaps (a pair never attempted, a wall-clock timeout) are
    * not routing failures and carry no attribution. */
   attribution?: RouteFailureAttribution;
+  /** The exact raw amount this verdict was measured at, as a decimal string. A quoted
+   * route is only meaningful next to the size it was quoted for, so every row carries
+   * it: a probe that is too small floors to zero and a probe that is too large distorts
+   * the rate, and a reader must be able to tell which size produced the number. */
+  probeGross?: string;
+  /** How that amount was chosen (decimals read or assumed) and, if the ladder was
+   * escalated, what each rung answered. */
+  probeNote?: string;
 }
 
 /** Buckets an unmeasured reason, so a report shows the DOMINANT cause instead of
@@ -347,6 +356,9 @@ export function renderCoverageMarkdown(
      * reporting gap and is stated as one, never smoothed into the totals. */
     shards?: { reported: number; expected: number };
     planSize?: number;
+    /** How probe amounts were chosen. Stated up front because every verdict in the
+     * table is only interpretable next to the size it was measured at. */
+    probePolicy?: string;
   },
 ): string {
   const summary = summarizeCoverage(rows);
@@ -354,6 +366,10 @@ export function renderCoverageMarkdown(
   lines.push(`# MPGR Swap V2 coverage matrix (chain ${meta.chainId}${meta.blockNumber ? `, block ${meta.blockNumber}` : ""})`);
   lines.push("");
   lines.push(`RPC: ${meta.rpcLabel}`);
+  if (meta.probePolicy) {
+    lines.push("");
+    lines.push(meta.probePolicy);
+  }
   if (meta.shards) {
     const { reported, expected } = meta.shards;
     lines.push("");
@@ -426,12 +442,12 @@ export function renderCoverageMarkdown(
 
   lines.push("## Every probed pair");
   lines.push("");
-  lines.push("| From | To | Dir | Category | Hops | Legs | Venues | Reason |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| From | To | Dir | Category | Hops | Legs | Venues | Probe | Reason |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   const side = (symbol: string | undefined, address: string): string =>
     (symbol ? `${symbol} \`${address}\`` : `\`${address}\``);
   for (const row of rows) {
-    lines.push(`| ${side(row.fromSymbol, row.from)} | ${side(row.toSymbol, row.to)} | ${row.direction ?? ""} | ${row.category} | ${row.hops ?? ""} | ${row.legs ?? ""} | ${row.venueKinds?.join("/") ?? ""} | ${row.reason.replace(/\|/g, "/")} |`);
+    lines.push(`| ${side(row.fromSymbol, row.from)} | ${side(row.toSymbol, row.to)} | ${row.direction ?? ""} | ${row.category} | ${row.hops ?? ""} | ${row.legs ?? ""} | ${row.venueKinds?.join("/") ?? ""} | ${row.probeGross ? formatProbeAmount(BigInt(row.probeGross)) : ""} | ${row.reason.replace(/\|/g, "/")} |`);
   }
   lines.push("");
   lines.push("A quoted route is discovery evidence, not proof of executable settlement. Execution is proven separately by simulation, the fork suite and receipt verification.");

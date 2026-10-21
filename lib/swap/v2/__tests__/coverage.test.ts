@@ -164,6 +164,46 @@ describe("renderCoverageMarkdown", () => {
     );
     expect(md).toMatch(/not proof of executable settlement/i);
   });
+
+  it("shows the exact amount each verdict was measured at, in its own column", () => {
+    const md = renderCoverageMarkdown(
+      [
+        { from: A, to: B, category: "EXECUTABLE_ROUTE", reason: "1 leg", measured: true, probeGross: "1000000000000" },
+        { from: B, to: A, category: "UNMEASURED_PROVIDER_FAILURE", reason: "zero output", measured: false, probeGross: "100000000000000" },
+      ],
+      { chainId: 8453, rpcLabel: "[RPC]" },
+    );
+    expect(md).toMatch(/\| Probe \| Reason \|/);
+    expect(md).toMatch(/\| 1e12 \| 1 leg \|/);
+    expect(md).toMatch(/\| 1e14 \| zero output \|/);
+    // A verdict and the size it was measured at stay on the same row: a quoted route at
+    // 1e-6 of a unit must not be readable as a quote at one whole unit.
+    expect(md).not.toMatch(/\| 1e12 \| zero output \|/);
+  });
+
+  it("leaves the probe cell empty for rows measured before sizing existed", () => {
+    const md = renderCoverageMarkdown(
+      [{ from: A, to: B, category: "EXECUTABLE_ROUTE", reason: "1 leg", measured: true }],
+      { chainId: 8453, rpcLabel: "[RPC]" },
+    );
+    expect(md).toMatch(/\|  \| 1 leg \|/);
+  });
+
+  it("states the probe policy up front when the run supplies one", () => {
+    const policy = "Probe sizing: derived from on-chain decimals";
+    const withPolicy = renderCoverageMarkdown(
+      [{ from: A, to: B, category: "EXECUTABLE_ROUTE", reason: "", measured: true }],
+      { chainId: 8453, rpcLabel: "[RPC]", probePolicy: policy },
+    );
+    expect(withPolicy).toContain(policy);
+    // It belongs before the table, so a reader meets it before any verdict.
+    expect(withPolicy.indexOf(policy)).toBeLessThan(withPolicy.indexOf("## Every probed pair"));
+    const without = renderCoverageMarkdown(
+      [{ from: A, to: B, category: "EXECUTABLE_ROUTE", reason: "", measured: true }],
+      { chainId: 8453, rpcLabel: "[RPC]" },
+    );
+    expect(without).not.toContain(policy);
+  });
 });
 
 const C = "0xc333333333333333333333333333333333333333";

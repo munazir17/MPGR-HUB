@@ -23,6 +23,7 @@ import {
   type PairCoverageRow,
 } from "@/lib/swap/v2/coverage";
 import { mergeCoverageShards, shardPartitionDefects, type CoverageShardArtifact } from "@/lib/swap/v2/coverage-merge";
+import { describeProbePolicy } from "@/lib/swap/v2/coverage-probe";
 // `planSize` is written by the shard so the aggregator can prove both jobs used the
 // SAME plan; it is optional here only because an unsharded run may predate it.
 type ShardWithPlanSize = CoverageShardArtifact & { planSize?: number };
@@ -105,6 +106,9 @@ describe("V2 coverage matrix aggregation", () => {
     const markdown = renderCoverageMarkdown(rows, {
       chainId: 8453, blockNumber: merged.blockLabel, rpcLabel: merged.rpcLabel,
       shards: { reported: merged.reportedShards.length, expected: expectedShards }, planSize: plan.length,
+      // The merged report must state how amounts were sized too: a verdict without the
+      // size it was measured at is not interpretable.
+      probePolicy: describeProbePolicy(),
     });
 
     mkdirSync(REPORT_DIR, { recursive: true });

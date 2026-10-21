@@ -17,7 +17,7 @@ import "server-only";
 import {
   summarizeCoverage, type CoverageSummary, type PairCoverageRow, type TokenSupportFacts,
 } from "./coverage";
-import { coveragePairId, type CoveragePair } from "./coverage-plan";
+import { coveragePairId, coverageShard, type CoveragePair } from "./coverage-plan";
 
 export interface CoverageShardArtifact {
   shard: number;
@@ -50,20 +50,35 @@ export interface MergedCoverage {
   measuredByShard: { shard: number; measured: number; executable: number; unmeasured: number; budgetExhausted: boolean }[];
 }
 
-/** Proves the sharding function partitions the plan: disjoint, and complete. Both
- * properties are checked against the PLAN, not against what shards claim. */
-export function shardPartitionDefects(plan: readonly CoveragePair[], shards: number): { duplicated: number[]; missing: number[] } {
-  const seen = new Map<number, number>();
+/**
+ * Proves the sharding function partitions the plan: disjoint, and complete. Both
+ * properties are checked against the PLAN, not against what shards claim.
+ *
+ * Ownership is derived by calling `coverageShard` — the function the shards themselves
+ * run. It used to be an inline round-robin loop here, which made the whole check
+ * vacuous: it validated its own loop, so it reported a perfect partition no matter how
+ * pairs were actually assigned. That went unnoticed until sharding became
+ * SUBJECT-GROUPED (a token's pairs all land in one shard, because the expensive work is
+ * per token), at which point round-robin and reality disagreed on essentially every
+ * pair while this function still returned `{ duplicated: [], missing: [] }`. A green
+ * check that cannot fail is worse than no check, because it is read as a proof.
+ *
+ * `ownerOf` is returned so a test can assert agreement with `coverageShard` pair by
+ * pair, which is the falsifiable form of the same claim.
+ */
+export function shardPartitionDefects(
+  plan: readonly CoveragePair[], shards: number,
+): { duplicated: number[]; missing: number[]; ownerOf: Map<number, number> } {
+  const ownerOf = new Map<number, number>();
   const duplicated: number[] = [];
   for (let shard = 1; shard <= shards; shard++) {
-    for (let i = shard - 1; i < plan.length; i += shards) {
-      const index = plan[i].index;
-      if (seen.has(index)) duplicated.push(index);
-      seen.set(index, shard);
+    for (const pair of coverageShard(plan, shard, shards)) {
+      if (ownerOf.has(pair.index)) duplicated.push(pair.index);
+      ownerOf.set(pair.index, shard);
     }
   }
-  const missing = plan.filter((p) => !seen.has(p.index)).map((p) => p.index);
-  return { duplicated, missing };
+  const missing = plan.filter((p) => !ownerOf.has(p.index)).map((p) => p.index);
+  return { duplicated, missing, ownerOf };
 }
 
 export function mergeCoverageShards(

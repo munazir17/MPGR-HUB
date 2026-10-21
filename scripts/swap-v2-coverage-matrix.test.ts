@@ -35,6 +35,7 @@ import {
   COVERAGE_MPGR, coveragePairPlan, coverageProbeTokens, coverageShard,
   type CoveragePair, type CoverageToken,
 } from "@/lib/swap/v2/coverage-plan";
+import { describeProbePolicy, probePair } from "@/lib/swap/v2/coverage-probe";
 import { erc20Abi } from "@/lib/erc20-abi";
 
 const RPC_URL = process.env.BASE_MAINNET_RPC_URL ?? "https://mainnet.base.org";
@@ -77,7 +78,16 @@ const MAX_READS = Number(process.env.MPGR_V2_COVERAGE_MAX_READS ?? 24_576);
 /** Cap on eth_getLogs calls per token's v4 Initialize search. Bounded on purpose:
  * an unbounded scan is how the previous run timed out before measuring anything. */
 const V4_MAX_LOG_CALLS = Number(process.env.MPGR_V2_COVERAGE_V4_LOG_CALLS ?? 64);
-const PROBE_AMOUNT = 1_000_000n;
+/**
+ * Probe amounts are no longer a constant. A fixed 1_000_000 raw units is 1.00 USDC at
+ * 6 decimals but 10^-12 of any 18-decimal token, so a venue could answer zero purely
+ * because integer arithmetic has no unit smaller than 1 wei — and the matrix reported
+ * that rounding artefact as a routing fact. Run 39580750408 proved it for MPGR: the
+ * SELL leg asked about 997_500 wei, worth 0.00598 wei of WETH at the fork-measured
+ * rate, which floors to zero. Sizes now come from each token's on-chain `decimals()`
+ * via `coverage-probe.ts`, which also owns the escalation policy.
+ */
+const PROBE_POLICY = describeProbePolicy();
 
 function buildClient() {
   return createPublicClient({
@@ -187,19 +197,25 @@ describe("V2 live coverage matrix", () => {
           client as never, blockNumber, MAX_READS, 0,
           { cache: v4Cache, maxLogCalls: V4_MAX_LOG_CALLS },
         );
-        let outcome: Parameters<typeof classifyPairOutcome>[2];
-        try {
-          const quote = await Promise.race([
-            discoverV2Quote(source, from, to, PROBE_AMOUNT),
-            new Promise<never>((_resolve, reject) =>
-              setTimeout(() => reject(new Error(`discovery exceeded ${PER_PAIR_TIMEOUT_MS}ms`)), PER_PAIR_TIMEOUT_MS)),
-          ]);
-          outcome = { ok: true, quote };
-        } catch (error) {
-          // A timeout or transport failure is UNMEASURED by construction: the
-          // classifier maps any non-V2QuoteError to UNMEASURED_PROVIDER_FAILURE.
-          outcome = { ok: false, error };
-        }
+        // One rung of the ladder is one `discoverV2Quote` call under the per-pair
+        // timeout. The timer is cleared on every rung: with up to three rungs per pair
+        // an uncleared 120s timer per attempt would accumulate across a whole shard.
+        const quoteWithTimeout = (gross: bigint) => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          return Promise.race([
+            discoverV2Quote(source, from, to, gross),
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error(`discovery exceeded ${PER_PAIR_TIMEOUT_MS}ms`)), PER_PAIR_TIMEOUT_MS);
+            }),
+          ]).finally(() => { if (timer) clearTimeout(timer); });
+        };
+        // Sized from the token being SOLD, so each direction of a pair is measured at
+        // its own integer resolution. `decimals` came from chain state above; when it
+        // could not be read the ladder assumes 18 and marks the row as assumed.
+        const probe = await probePair(quoteWithTimeout, facts.get(from.toLowerCase())?.decimals ?? null);
+        // A timeout or transport failure is UNMEASURED by construction: the classifier
+        // maps any non-V2QuoteError to UNMEASURED_PROVIDER_FAILURE.
+        const outcome: Parameters<typeof classifyPairOutcome>[2] = probe.outcome;
         const row = classifyPairOutcome(from, to, outcome, {
           from: facts.get(from.toLowerCase()), to: facts.get(to.toLowerCase()),
         });
@@ -213,14 +229,21 @@ describe("V2 live coverage matrix", () => {
           `factory index ${diag.factoryIndex ? (diag.factoryIndex.complete ? "complete" : `partial (failed kinds ${diag.factoryIndex.failedKinds.join("/") || "none"})`) : "did not run"}`,
           `v4 ${diag.v4 ? `${diag.v4.state}${diag.v4.state === "complete" ? "" : ` — ${diag.v4.note.slice(0, 160)}`}` : "did not run"}`,
         ].join("; ");
-        rows.push({ ...meta, ...row, fromSymbol, toSymbol, evidenceScope });
+        rows.push({
+          ...meta, ...row, fromSymbol, toSymbol,
+          // Both scopes matter: what the search could establish, and what the routing
+          // attempt did with what it found. Neither replaces the other.
+          evidenceScope: [evidenceScope, row.evidenceScope].filter(Boolean).join(" | "),
+          probeGross: probe.rung.gross.toString(),
+          probeNote: probe.note,
+        });
       }
 
       const summary = summarizeCoverage(rows);
       const rpcLabel = process.env.BASE_MAINNET_RPC_URL ? "secrets.BASE_MAINNET_RPC_URL" : "https://mainnet.base.org (public)";
       const markdown = renderCoverageMarkdown(rows, {
         chainId: 8453, blockNumber: blockNumber.toString(), rpcLabel,
-        shards: { reported: 1, expected: SHARDS }, planSize: plan.length,
+        shards: { reported: 1, expected: SHARDS }, planSize: plan.length, probePolicy: PROBE_POLICY,
       });
 
       mkdirSync(OUT_DIR, { recursive: true });
