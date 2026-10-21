@@ -82,16 +82,23 @@ env:
   #   run 39616446107,  96 calls at 2 in flight : 75 of 210 measured, 54 rows "discovery
   #     could not finish", 18 timeouts, 55 never attempted, and all FIVE venue kinds
   #     measured with MPGR executable in both directions.
+  #   run 39621664624, 128 calls at 2 in flight : 68 of 210 measured, 53 rows "discovery
+  #     could not finish", 25 timeouts, 56 never attempted, all five venue kinds again.
   #
-  # The three points trace one trade-off: reach costs attempts, because a shard has 21
-  # minutes and an unmatched token spends its whole budget scanning. 128 calls at 2 in
-  # flight is chosen to match the best-measured configuration's COST — ~64 round trips per
-  # token, the same as 64 sequential calls — while spending them at BOTH ends of the range
-  # (~640 blocks forward and ~640 backward) instead of 640 at one end. Concurrency stays
-  # at 2 because 4 demonstrably throttled the shared endpoint. Both numbers stay bounded,
+  # Those five runs refute the cost model this was tuned on. Concurrency does NOT buy back
+  # what a bigger call budget spends: per-pair timeouts rise with TOTAL CALL COUNT and
+  # essentially ignore parallelism (11 at 64 calls, 18 at 96, 25 at 128, 41 at 256), which
+  # is what a rate-limited endpoint looks like when it queues requests server-side. So the
+  # only lever that actually costs a shard its 21 minutes is how many calls a token's scan
+  # makes, and the cheapest configuration measured the most pairs.
+  #
+  # 64 calls is therefore kept — the total that produced the best result (97 of 210) — and
+  # now buys coverage at BOTH ends of the range (~320 blocks forward from a token's
+  # deployment floor and ~320 backward from the pinned block) instead of ~640 at one end.
+  # Concurrency stays at 2: mild, and not what the data blames. Both numbers remain bounded,
   # and an unfinished search still reports `capped` and names the blocks it never reached,
   # so it can never support "this token has no pool".
-  MPGR_V2_COVERAGE_V4_LOG_CALLS: "128"
+  MPGR_V2_COVERAGE_V4_LOG_CALLS: "64"
   # Kept low on purpose: six shards share one rate-limited endpoint, and a 429 costs more
   # of the shard budget than the parallelism ever returns.
   MPGR_V2_COVERAGE_V4_CONCURRENCY: "2"
