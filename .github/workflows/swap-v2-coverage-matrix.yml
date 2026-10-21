@@ -79,13 +79,19 @@ env:
   #     pairs never attempted. Shards 3, 4 and 6 measured 1-2 pairs each, and the run
   #     logged "HTTP request failed": six shards x four in-flight calls throttled the one
   #     shared endpoint, and every retry costs a second of a 21-minute shard budget.
+  #   run 39616446107,  96 calls at 2 in flight : 75 of 210 measured, 54 rows "discovery
+  #     could not finish", 18 timeouts, 55 never attempted, and all FIVE venue kinds
+  #     measured with MPGR executable in both directions.
   #
-  # 96 calls at 2 in flight sits between the two: ~48 round trips per token, cheaper than
-  # the 64 sequential calls that measured 97 pairs, while covering ~480 blocks at EACH end
-  # of the range instead of 640 at one end. Both numbers stay bounded, and an unfinished
-  # search still reports `capped` and names the blocks it never reached, so it can never
-  # support "this token has no pool".
-  MPGR_V2_COVERAGE_V4_LOG_CALLS: "96"
+  # The three points trace one trade-off: reach costs attempts, because a shard has 21
+  # minutes and an unmatched token spends its whole budget scanning. 128 calls at 2 in
+  # flight is chosen to match the best-measured configuration's COST — ~64 round trips per
+  # token, the same as 64 sequential calls — while spending them at BOTH ends of the range
+  # (~640 blocks forward and ~640 backward) instead of 640 at one end. Concurrency stays
+  # at 2 because 4 demonstrably throttled the shared endpoint. Both numbers stay bounded,
+  # and an unfinished search still reports `capped` and names the blocks it never reached,
+  # so it can never support "this token has no pool".
+  MPGR_V2_COVERAGE_V4_LOG_CALLS: "128"
   # Kept low on purpose: six shards share one rate-limited endpoint, and a 429 costs more
   # of the shard budget than the parallelism ever returns.
   MPGR_V2_COVERAGE_V4_CONCURRENCY: "2"
