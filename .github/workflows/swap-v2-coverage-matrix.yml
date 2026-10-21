@@ -67,18 +67,28 @@ env:
   # alone is ~26 sequential eth_getCode round-trips. The wall clock and the v4 log cap
   # remain the real bounds.
   MPGR_V2_COVERAGE_MAX_READS: "24576"
-  # eth_getLogs calls per token's v4 Initialize search. The provider behind this secret
-  # serves only a ten-block range, so 64 calls reached ~640 blocks of a ~4.2M-block gap
-  # and 34-57 pairs per run reported "discovery could not finish". The scan is now
-  # two-sided (forward from a token's deployment floor, backward from the pinned block)
-  # and issues windows concurrently, so the same wall clock buys several times the reach:
-  # 256 calls at 4 in flight is ~2560 blocks, split across both ends of the range.
-  # Still bounded, still honest — an unfinished search reports `capped` and names the
-  # blocks it never reached, so it can never support "this token has no pool".
-  MPGR_V2_COVERAGE_V4_LOG_CALLS: "256"
-  # Concurrent eth_getLogs calls per scan. Deliberately modest: six shards share one
-  # rate-limited endpoint, and a 429 costs more than the parallelism gains.
-  MPGR_V2_COVERAGE_V4_CONCURRENCY: "4"
+  # eth_getLogs calls per token's v4 Initialize search, and how many may be in flight.
+  # The provider behind this secret serves only a ten-block range, so the scan is
+  # two-sided — forward from a token's deployment floor, backward from the pinned block —
+  # and both numbers were chosen from MEASURED runs, not from reasoning:
+  #
+  #   run 39607488924,  64 calls at 1 in flight : 97 of 210 pairs measured, 64 rows
+  #     "discovery could not finish", 11 timeouts, 32 pairs never attempted.
+  #   run 39610667933, 256 calls at 4 in flight : 34 of 210 measured, only 26 rows
+  #     "discovery could not finish" — the extra reach worked — but 41 timeouts and 102
+  #     pairs never attempted. Shards 3, 4 and 6 measured 1-2 pairs each, and the run
+  #     logged "HTTP request failed": six shards x four in-flight calls throttled the one
+  #     shared endpoint, and every retry costs a second of a 21-minute shard budget.
+  #
+  # 96 calls at 2 in flight sits between the two: ~48 round trips per token, cheaper than
+  # the 64 sequential calls that measured 97 pairs, while covering ~480 blocks at EACH end
+  # of the range instead of 640 at one end. Both numbers stay bounded, and an unfinished
+  # search still reports `capped` and names the blocks it never reached, so it can never
+  # support "this token has no pool".
+  MPGR_V2_COVERAGE_V4_LOG_CALLS: "96"
+  # Kept low on purpose: six shards share one rate-limited endpoint, and a 429 costs more
+  # of the shard budget than the parallelism ever returns.
+  MPGR_V2_COVERAGE_V4_CONCURRENCY: "2"
 
 jobs:
   coverage:
