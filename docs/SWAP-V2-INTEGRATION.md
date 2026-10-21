@@ -378,7 +378,19 @@ string does not distinguish "no pool found" from "pool found but the quote rever
 attribution gap is the single most useful next diagnostic** — it is the difference between a hook
 that refuses sells and a search that never reached the pool.
 
-**Where the 141 gaps come from**, exactly as the merged report records them:
+**It reproduced.** The docs-only commit `2f0eb69` re-triggered the same pipeline as run
+`39565200296` at blocks 52889955–52889972: 6 of 6 shards again, 210 planned pairs, **65 measured
+and again every one an `EXECUTABLE_ROUTE`**, 145 UNMEASURED, venue kinds 1 (53), 7 (11), 4 (2) and
+2 (1). `WETH → MPGR BUY` came back `EXECUTABLE_ROUTE`, 1 hop, 1 leg, venue kind 7, with the same
+evidence string, at a different block — so that row is a property of the chain and not of one
+lucky run. The measured total moved 69 → 65 and the timeout bucket 16 → 19: **run-to-run variance
+is real and is reported as such**, because five of six shards still exhaust their 21-minute budget
+and which pairs they reach depends on provider latency that day. Any coverage number quoted from
+this branch must be quoted with its run id.
+
+**Where the 141 gaps come from**, exactly as the merged report records them (the reproduction run
+differed only in the split: 69 never attempted, 43 capped searches, 19 timeouts, 10 multi-hop,
+2 incomplete, 2 correct rejections):
 
 | Cause | Pairs | Whose fault |
 | --- | --- | --- |
