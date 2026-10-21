@@ -146,7 +146,23 @@ describe("V2 coverage matrix aggregation", () => {
       expect(row.legs!).toBeLessThanOrEqual(4);
       for (const kind of row.venueKinds!) expect(SWAP_V2_ENABLED_KINDS as readonly number[]).toContain(kind);
     }
-    for (const row of rows.filter((r) => !r.measured)) expect(row.category).toBe("UNMEASURED_PROVIDER_FAILURE");
+    // An unmeasured row may only say "we could not look" (UNMEASURED_PROVIDER_FAILURE)
+    // or "this is not a pair" (INVALID_REQUEST — the ETH sentinel and WETH are one
+    // asset). It may never carry a verdict ABOUT THE CHAIN: MISSING_LIQUIDITY,
+    // UNSUPPORTED_VENUE, UNSUPPORTED_TOKEN_INFRASTRUCTURE and EXECUTABLE_ROUTE each
+    // claim knowledge only a completed measurement can support.
+    //
+    // Run 39556393443 is what proved the stricter form of this check wrong. It demanded
+    // UNMEASURED_PROVIDER_FAILURE for every unmeasured row, so two CORRECT ETH≡WETH
+    // rejections turned a complete 4-of-4 merge red. Fabricated fixtures could not catch
+    // that: they only ever exercised the two categories the author expected.
+    const HONEST_UNMEASURED = new Set(["UNMEASURED_PROVIDER_FAILURE", "INVALID_REQUEST"]);
+    for (const row of rows.filter((r) => !r.measured)) {
+      expect(
+        HONEST_UNMEASURED.has(row.category),
+        `unmeasured row ${row.from}->${row.to} carries a verdict it cannot support: ${row.category} (${row.reason})`,
+      ).toBe(true);
+    }
     // A liquidity verdict requires a measurement; a discovery outage does not.
     expect(rows.filter((r) => r.category === "MISSING_LIQUIDITY").every((r) => r.measured)).toBe(true);
     // Token facts must agree with the pair verdicts across the whole matrix.

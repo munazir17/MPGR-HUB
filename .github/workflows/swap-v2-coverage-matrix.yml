@@ -37,7 +37,20 @@ concurrency:
 
 env:
   # Number of parallel batches. The matrix below must list exactly 1..N.
-  COVERAGE_SHARDS: "4"
+  #
+  # Six, not four, because run 39556393443 showed what four costs: shards 1, 2 and 4
+  # exhausted the wall clock and 55 planned pairs were never attempted at all. Shards
+  # are grouped by subject token, so more shards means fewer tokens per shard, and the
+  # per-token v4 scan — the single most expensive thing here — is paid fewer times per
+  # job. The limit is the provider, not the runner: six concurrent jobs already share
+  # one rate-limited RPC.
+  COVERAGE_SHARDS: "6"
+  # Per-pair wall clock. The first pair to touch a token pays that token's whole v4
+  # Initialize scan (~64 sequential ten-block eth_getLogs calls, 40-60 s on this
+  # provider) and every later pair reuses the cached result. At 60 s that first pair
+  # reliably timed out — 39 pairs did in run 39556393443 — so the scan cost was paid
+  # and thrown away. 120 s lets the pair that pays for the cache also keep its verdict.
+  MPGR_V2_COVERAGE_PAIR_TIMEOUT_MS: "120000"
   # Handoff directory between the shard jobs and the aggregate job. NOT
   # deployments/.local: that path is dot-prefixed and git-ignored, and run
   # 39454971188 proved the consequence — all four shards wrote their matrices, the
@@ -66,7 +79,7 @@ jobs:
       # its own gaps is more honest than no matrix at all.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
