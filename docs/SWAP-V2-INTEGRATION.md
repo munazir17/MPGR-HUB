@@ -531,41 +531,149 @@ the honest verdict is `DISCOVERY_UNAVAILABLE`, which the classifier records as U
 where a row says `EXECUTABLE_ROUTE`.** The two `INVALID_REQUEST` rows in every run are ETH↔WETH,
 which discovery correctly rejects as one asset.
 
+### Probe sizing: the artefact, fixed
+
+Run `39607488924` (commit `9022a80`, blocks 52899840–52899851) is the first with decimals-derived
+probe amounts, and it answered the question the attribution pass raised:
+
+```text
+Pairs probed: 210 · measured: 97 · unmeasured: 113
+EXECUTABLE_ROUTE 97 | MISSING_LIQUIDITY 0 | UNSUPPORTED_* 0 | INVALID_REQUEST 2
+FEE_INVARIANT_DEFECT 0 | UNMEASURED_PROVIDER_FAILURE 113
+Executable routes by venue kind: 1 → 64 · 7 → 13 · 2 → 9 · 4 → 8 · 3 → 4
+```
+
+- **`MPGR → WETH SELL` measured `EXECUTABLE_ROUTE`** — 1 hop, 1 leg, venue kind 7, at a probe of
+  `1e12` raw units (1e-6 of one 18-decimal token). `WETH → MPGR BUY` measured executable at the same
+  size. Both directions of the same native-side v4 pool, in one run, with the amount each verdict was
+  measured at printed beside it.
+- **The `QUOTE_ZERO_OUTPUT` bucket went to zero matrix-wide.** Every "the venue answered zero" row in
+  earlier runs was a dust-rounding artefact of the fixed probe. The class did not shrink, it
+  disappeared — which is the strongest confirmation available that the diagnosis was right.
+- **All five enabled venue kinds measured for the first time**, including Uniswap v2 (kind 3), which
+  no previous run had quoted a single route through.
+- **Direction symmetry improved**: tokens executable in *both* directions 32 → **37**; tokens
+  executable in *neither* 10 → **4**; and MPGR left the "one direction only" list.
+
+How sizing works now (`lib/swap/v2/coverage-probe.ts`, harness-only — production always quotes the
+amount the user actually asked for): the ladder is `1e-6 → 1e-4 → 1e-2` of one unit of the token
+being **sold**, as exact powers of ten derived from that token's on-chain `decimals()`, never floats.
+Every rung is clamped into `[400, 1e24]` raw units — 400 is the smallest gross whose 25 bps fee is a
+whole wei, below which `discoverV2Quote` rejects the probe before any venue is asked, and `1e24`
+keeps a probe inside `uint128`, away from overflow, and far below any size where the quoted rate
+would stop meaning anything. Rungs that clamp to the same amount collapse, so a 6-decimal token is
+not asked one question three times. When `decimals()` is unreadable the ladder assumes 18 — the
+common Base case and, of the plausible choices, the one yielding the *largest* raw amounts, which is
+the safe direction — and marks every such row as assumed.
+
+Escalation is deliberately narrow: a larger probe is tried **only** when the failure is a resolution
+failure (the venue answered zero, or reverted the way a venue reverts when its computed output rounds
+below its own minimum). A provider failure, an exhausted budget, a pool the executor could not
+address, or "no pool discovered" are not sizing problems, and escalating those would spend a shard's
+remaining budget dressing an honest UNMEASURED up as something it is not. A healthy pair still costs
+exactly one quote.
+
+The caveat that comes with the improvement: the residual one-direction-only list changed *membership*
+between runs (`AVGOc`, `MSTRc`, `RDDTc`, `cbBTC` resolved; `MRNAc`, `NVAXc`, `NVDAc`, `PMc`, `TTWOc`,
+`cbETH` appeared). Most remaining asymmetry is therefore **which pairs a shard reached before its
+budget ran out**, not a routing fact about the token. With 32–102 pairs never attempted per run, an
+asymmetric row is not yet evidence of an asymmetric route.
+
+### Two-sided v4 search: a measured tuning curve
+
+The ten-block `eth_getLogs` cap is the largest single cause of unmeasured pairs. The scan now runs
+**forward from a token's chain-derived deployment floor and backward from the pinned block**,
+alternating window by window, and issues windows with bounded parallelism. Nothing is skipped: each
+side's windows tile its own range exactly, a window is committed to its side's edge only once *all*
+of its topic positions have been read, `state` is `complete` only when the two contiguous sides
+actually met, and every incomplete path names the blocks it never reached — including the
+budget-exhausted path, which previously described only what it *had* reached.
+
+The budget was then tuned from measurements rather than from reasoning, and the measurements
+refuted the reasoning:
+
+| Run | Commit | Scan budget | Measured | Discovery could not finish | Timeouts | Never attempted |
+| --- | --- | --- | --- | --- | --- | --- |
+| `39580750408` | `9b3a107` | 64 calls, forward only, sequential | 81 | 57 | 13 | 42 |
+| `39607488924` | `9022a80` | 64 calls, forward only, sequential + probe fix | **97** | 64 | **11** | **32** |
+| `39610667933` | `0caae3e` | 256 calls, two-sided, 4 in flight | 34 | **26** | 41 | 102 |
+| `39616446107` | `c0bf291` | 96 calls, two-sided, 2 in flight | 75 | 54 | 18 | 55 |
+| `39621664624` | `777067b` | 128 calls, two-sided, 2 in flight | 68 | 53 | 25 | 56 |
+| **`39626429104`** | **`809387d`** | **64 calls, two-sided, 2 in flight — shipped** | **85** | 60 | **14** | 43 |
+
+Two conclusions, both contrary to the model the first two tunings assumed:
+
+1. **Concurrency does not buy back what a bigger call budget spends.** Per-pair timeouts track
+   *total call count* and essentially ignore parallelism — 11 at 64 calls, 18 at 96, 25 at 128, 41 at
+   256 — which is what a rate-limited endpoint looks like when it queues requests server-side. The
+   256/4 run also logged `HTTP request failed` and left shards 3, 4 and 6 measuring 1–2 pairs each.
+2. **Reach costs attempts.** A shard has 21 minutes, and a token with no discoverable pool spends its
+   whole budget scanning. The extra reach *worked* — "discovery could not finish" fell from 64 rows
+   to 26 — and it was paid for in pairs never attempted, which rose from 32 to 102.
+
+So the budget is back to **64 calls**, the total that measured best, now spent at *both* ends of the
+range (~320 blocks forward and ~320 backward) instead of ~640 at one end, with concurrency left at 2
+because that is not what the data blames. Run `39626429104` (commit `809387d`, blocks
+52903683–52903700) is that configuration and is the state this branch ships: **6 of 6 shards, 85 of
+210 pairs measured and every one an `EXECUTABLE_ROUTE`, all five venue kinds on the board
+(Slipstream 60, v4 12, v3 7, Aerodrome Classic 4, Uniswap v2 3), 125 UNMEASURED, and MPGR executable
+in both directions against WETH at a recorded probe of `1e12`.**
+
+Two honest readings of that last row, because the numbers invite an over-claim in either direction:
+
+- **Splitting a fixed budget across two ends did not measurably cost throughput.** At 64 calls the
+  forward-only runs measured 41, 65, 69, 81 and 97 pairs across five attempts; the two-sided run
+  measured 85, inside that spread. What the data does say is that *raising* the budget to 256 cost
+  dearly (34 measured, 41 timeouts), and that the 256-call run's reach gain was real — 26 rows of
+  "discovery could not finish", the lowest of any run.
+- **The backward side has not yet earned its keep on chain.** It is proven by test to find a pool a
+  forward-only scan cannot reach, and no run so far has measured a pair *because* of it — every pool
+  found has still been near its token's deployment floor. Its value is insurance against a pool
+  created long after launch, not a measured coverage gain. If measured count is what matters most,
+  the next tuning to try is weighting the budget toward the forward side rather than splitting it
+  evenly; that is a knob, not a redesign, and it is deliberately not guessed at here.
+
+**What the two-sided scan is still not:** a way to cross 4.2 M blocks on a ten-block provider. That
+is 420 000 calls and remains infeasible, so a token whose only v4 pool was initialized in the middle
+of that range is still out of reach, and still reported as `capped` with the uncovered blocks named.
+The real remedy for the middle of the range is a wider-log-range RPC, not a cleverer scan.
+
 **Tier 3 — live-verified.** **None.** No transaction has been broadcast, simulated against
 live state, or settled. No claim in this document is live-verified.
 
 > **Universal trading is NOT proven.** What is proven is that the app-side surface is
 > internally consistent with the deployed contract's ABI and invariants, and fails closed when
 > live state disagrees. Token coverage on Base is a liquidity fact, not a code fact, and it is
-> only **partially** measured: run `39561249672` measured **69 of 210 planned pairs**, every one
-> of them an `EXECUTABLE_ROUTE`, across 35 tokens and four venue kinds — including
-> `BUY WETH → MPGR` through a canonically re-derived v4 PoolKey. The other 141 are
-> `UNMEASURED_PROVIDER_FAILURE`, and **no pair at all has been proven to *lack* liquidity**.
-> Two thirds of the plan unmeasured is not universal coverage, and an unmeasured row is not a
-> negative.
+> only **partially** measured: run `39607488924` measured **97 of 210 planned pairs**, every one of
+> them an `EXECUTABLE_ROUTE`, across **all five enabled venue kinds** — including **both** directions
+> of MPGR against WETH through a canonically re-derived native-side v4 PoolKey, each verdict printed
+> beside the exact probe amount that produced it. The other 113 are `UNMEASURED_PROVIDER_FAILURE`,
+> and **no pair at all has been proven to *lack* liquidity**. Roughly half the plan unmeasured is not
+> universal coverage, an unmeasured row is not a negative, and a token/token pair has still never been
+> measured in any run.
 
 ## 6. Remaining limitations and blockers
 
 1. **No live verification** of executor posture or bytecode (Tier 3 empty; sandbox has no
    chain access).
-2. **Token coverage is only partially measured — still the largest remaining gap.** The matrix
-   runs in CI as four parallel shards plus an offline aggregate job, and it now produces real
-   verdicts: run `39431366188` measured 54 of 212 pairs across venue kinds 1, 4 and 7 including
-   multi-hop and mixed-venue routes, and run `39454971188` measured `BUY WETH → MPGR` as an
-   `EXECUTABLE_ROUTE` through a canonically re-derived v4 PoolKey. Run `39561249672` is the first
-   green end-to-end merged matrix: 6 of 6 shards, 210 planned pairs, **69 measured and every one
-   of them an executable route**, 141 UNMEASURED, across 35 distinct tokens and four venue kinds
-   (Slipstream 55, v4 15, Aerodrome Classic 2, v3 1, including 8 mixed-venue multi-hop routes).
-   **That is 33% of the plan, and it is not universal coverage.** Every one of the 141 gaps is
-   harness- or provider-side: 64 pairs were never attempted because a shard's wall clock ran out,
-   45 died on a ten-block `eth_getLogs` range that cannot cover 4.2 M blocks, 16 timed out, 11
-   needed the multi-hop sweep that `maxSweepCalls = 0` disables, and 1 hit an HTTP 429. None is a
-   liquidity finding. All 69 executable routes are token↔WETH or token↔USDC; **not one
-   token/token pair was measured**, and MPGR is measured in one direction only (BUY from WETH).
-   Closing this needs an RPC tier whose `eth_getLogs` range is wider than ten blocks — the fork
-   proof succeeds on the same RPC only because it needs a narrow query near a known block — plus
-   more shards or more minutes. **Until then, no claim about which Base tokens are tradeable is
-   supported beyond the 69 measured rows.**
+2. **Token coverage is only partially measured — still the largest remaining gap.** The matrix runs
+   in CI as six parallel shards plus an offline aggregate job, and it now produces real verdicts.
+   The shipped configuration's run is `39626429104` (commit `809387d`, blocks 52903683–52903700):
+   6 of 6 shards, 210 planned pairs, **85 measured and every one of them an executable route**, 125
+   UNMEASURED, across **all five enabled venue kinds** (Slipstream 60, v4 12, v3 7, Aerodrome
+   Classic 4, Uniswap v2 3) and including **both** directions of MPGR against WETH at a recorded
+   probe of `1e12` raw units. The best single run observed was `39607488924` at 97 of 210. **Even
+   that is 46% of the plan, and it is not universal coverage.** Every gap is harness- or provider-side: 32 pairs were never
+   attempted because a shard's wall clock ran out, 64 died on a ten-block `eth_getLogs` range that
+   cannot cover 4.2 M blocks, 11 timed out, 3 were venue rejections and 1 a provider error. None is
+   a liquidity finding. All 85 executable routes are still token↔WETH or token↔USDC; **not one
+   token/token pair has been measured in any run**, because the shard that owns those probes has
+   never reached them. Measured counts across the six most recent green runs were 81, 97, 34, 75, 68
+   and 85 — a spread driven by provider latency, rate limiting and scan budget, not by chain state,
+   so **any coverage number quoted from this branch must be quoted with its run id**. Closing the rest needs an RPC tier
+   whose `eth_getLogs` range is wider than ten blocks (the fork proof succeeds on the same RPC only
+   because it needs a narrow query near a known block), plus more shards or more minutes. **Until
+   then no claim about which Base tokens are tradeable is supported beyond the measured rows.**
 3. **Discovery completeness is bounded, and a bounded search cannot prove absence.** Three
    concrete limits, all recorded in code rather than papered over:
    - *Slipstream (venue kind 1) is enumerated partially.* Only tick spacing 10 is probed, because
@@ -618,17 +726,29 @@ live state, or settled. No claim in this document is live-verified.
    `scripts/audit-high.mjs`'s allowlist — adding an allowlist entry for a new high-severity
    advisory is the dependency equivalent of excluding a Slither detector. Both fixes belong in a
    separate, reviewable dependency PR.
-10. **The coverage probe amount is not sized per token, which makes one-directional results
-    untrustworthy.** `scripts/swap-v2-coverage-matrix.test.ts` probes every pair with a fixed
-    `PROBE_AMOUNT = 1_000_000` raw units. That is `1.00 USDC` at 6 decimals but `10^-12` of any
-    18-decimal token, so a venue can answer zero purely by rounding. Attribution proved it for MPGR:
-    the SELL leg asked about 997 500 wei, and at the fork-measured rate that is `0.00598` wei of
-    WETH, which floors to zero — while the BUY leg at the same probe size expects `~1.66e14` wei and
-    quotes fine. **The fix is one line, scaling the probe by the token's decimals, and it is the
-    highest-value next change to the matrix**: until it lands, every "executable in one direction
-    only" row (`AVGOc`, `CAKEc`, `LLYc`, `MRVLc`, `MUc`, `cbDOGE` among them) may be a rounding
-    artefact rather than a routing fact. Deliberately not made in this pass, which was scoped to
-    attribution.
+10. **RESOLVED — probe sizing, and what it changed.** The fixed `PROBE_AMOUNT = 1_000_000` is gone;
+    `lib/swap/v2/coverage-probe.ts` now sizes each probe from the sold token's on-chain `decimals()`
+    as exact powers of ten (`1e-6 → 1e-4 → 1e-2` of one unit, clamped to `[400, 1e24]`), sizes each
+    direction independently, escalates only on a resolution failure, and records the exact amount
+    behind every verdict in a `Probe` column. Run `39607488924` measured **97 of 210** pairs against
+    81 before the change, took tokens executable in *both* directions from 32 to **37**, took tokens
+    executable in *neither* from 10 to **4**, put all five venue kinds on the board for the first
+    time, and turned **`MPGR → WETH SELL` into a measured `EXECUTABLE_ROUTE`** — with the
+    `QUOTE_ZERO_OUTPUT` bucket going to zero matrix-wide, which is the diagnosis confirming itself.
+11. **A residual asymmetry in the matrix is an attempt-order artefact, not a routing fact.** The
+    "executable in one direction only" list changed *membership* between runs (`AVGOc`, `MSTRc`,
+    `RDDTc`, `cbBTC` resolved; `MRNAc`, `NVAXc`, `NVDAc`, `PMc`, `TTWOc`, `cbETH` appeared) because
+    32–102 pairs per run are never attempted at all. No one-directional row should be read as
+    evidence of a one-directional route until the shard budget stops being the binding constraint.
+12. **The v4 search budget is tuned from a measured curve, and the curve refuted the model.** Five
+    runs are tabulated in §5: per-pair timeouts track *total `eth_getLogs` call count* and essentially
+    ignore concurrency (11 at 64 calls, 18 at 96, 25 at 128, 41 at 256), so parallelism does not buy
+    back what a larger budget spends, and reach costs attempts — the 256-call run cut "discovery could
+    not finish" from 64 rows to 26 and paid for it with pairs never attempted rising from 32 to 102.
+    The budget is therefore 64 calls, spent at both ends of the range. **Still infeasible:** crossing
+    4.2 M blocks at ten blocks per call is 420 000 calls, so a token whose only v4 pool was
+    initialized in the middle of that range stays out of reach and stays reported as `capped` with the
+    uncovered blocks named. Only a wider-log-range RPC changes that.
 
 ## 7. Activation plan
 
@@ -701,3 +821,19 @@ Activation is a single constant, so rollback is a revert:
 - **The coverage plan owns the denominator.** Shards report verdicts; they do not get to redefine
   which pairs existed. A pair no shard reported is an explicit gap in the merged matrix, and an
   aggregation that is switched on with nothing to merge is a failure, not a pass.
+- **A refusal is not a fact about liquidity.** A venue that reverts, a provider that errors and a
+  budget that runs out all leave a pair UNMEASURED. Only a venue that *answers* — with zero — has
+  said something about liquidity, and then only when the search was complete enough to prove a
+  negative. That ordering is `attributeRouteFailure`'s priority list, and it is tested as policy.
+- **A verdict carries the amount it was measured at.** A quoted route means nothing without the size
+  it was quoted for: too small and integer arithmetic floors the answer to zero, too large and the
+  rate stops being meaningful. Every coverage row records its probe, and a probe is sized from the
+  sold token's on-chain decimals — never from a constant that happens to suit one token.
+- **A bounded scan names the blocks it never reached.** Every incomplete path says which range was
+  not scanned; an unnamed gap is how a bounded search starts to read as an exhaustive one, and a
+  search that reads as exhaustive is how "we found nothing" becomes "there is nothing".
+- **A check must exercise the code it claims to verify.** `shardPartitionDefects` used to re-derive
+  ownership with its own round-robin loop instead of calling `coverageShard`, so it agreed with
+  itself and returned "no defects" for any assignment whatsoever — including after sharding became
+  subject-grouped and the two disagreed on nearly every pair. A green check that cannot fail is
+  worse than no check, because it gets read as a proof.
