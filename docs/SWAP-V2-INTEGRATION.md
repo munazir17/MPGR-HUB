@@ -795,31 +795,48 @@ live state, or settled. No claim in this document is live-verified.
 
 ## 7. Activation plan
 
-Requires separate explicit approval. Do not perform these steps as part of this change.
+Requires separate explicit approval. **None of this has been done.** The exact diff exists, is
+committed inert, and was verified — see [`activation/V2-ACTIVATION-RUNBOOK.md`](activation/V2-ACTIVATION-RUNBOOK.md)
+and [`activation/v2-activation.patch`](activation/v2-activation.patch).
 
-1. **Independently verify the executor against a real Base RPC** (outside this sandbox):
-   chain id, `getCode` hash == `0x53896cc3…` and size 21963, `owner()` == the Safe,
-   `feeBps()` == 25, `MAX_FEE_BPS()` == 100, `feeRecipient()` == `PINNED_FEE_RECIPIENT()` ==
-   `0x96F7fb5C…`, `paused()` == false, `FEE_TIMELOCK_SECONDS()` == 172800,
-   `V4_POOL_MANAGER()` == `0x498581fF…`, and `routerKind`/`routerFactory` for all five enabled
-   venues. Record block numbers.
-2. **Re-run the fork proof** (`swap-v2-fork-proof.yml`) and confirm green at a current block.
-3. **Flip the gate**: set `V2_DEPLOYMENT` in `lib/swap/v2/discovery.ts` to the sealed manifest
-   (typed via `deployment.ts`).
-4. **Update the four dormant assertions that legitimately must change** — this is expected, and
-   reviewing that diff is part of reviewing the activation:
-   - `lib/swap/v2/discovery.test.ts:13` — `expect(V2_DEPLOYMENT).toBeNull()`
-   - `lib/swap/v2/__tests__/deployment.test.ts:20-23` — dormancy + literal-source assertion
-   - `app/api/swap/v2/quote/route.activation.test.ts:112-113` — dormant HTTP shape
-   - `scripts/swap-v2-finalize-recovery.test.ts:251` — asserts `discovery.ts` contains the
-     literal `export const V2_DEPLOYMENT = null;`
-   Leave `scripts/swap-v2-finalize-recovery.test.ts:213` alone: it asserts the *recovery
-   workflow text*, not `discovery.ts`.
-5. **Exercise the wired front end and settlement path against an activated backend** (limitations 4 and 5) before
-   exposing V2 to users.
-6. **Ship behind a reversible flag or canary** if possible; monitor `feeRecipient` balance
-   deltas to confirm the 25 bps fee lands once per swap.
-7. **Full `npm run check`** (lint + typecheck + tests) plus CI green before merge.
+1. **Run the private canary and verify both receipts.** `scripts/swap-v2-canary.test.ts` is
+   read-only until `MPGR_V2_CANARY=1`, builds the two swaps without signing or sending when
+   additionally given `CANARY=1 CANARY_WALLET=<public address>`, and verifies a receipt the
+   operator already broadcast when given `CANARY_VERIFY_TX=<hash>`. The two swaps are
+   `1.00 USDC → WETH` and `1 MPGR → native ETH` (the same size the fork proof executes). Both
+   receipts must show `status success`, `to` equal to the sealed executor, exactly one
+   `SwapExecuted` with `feeBps 25` and `feeAmount == grossAmountIn * 25 / 10000` to
+   `0x96F7fb5C…64A4`, plus a `SwapPathExecuted` for any multi-leg route. **If a verification
+   fails, stop; do not broadcast a second time.** The harness holds no key and its first test
+   audits its own source to prove it.
+2. **Independently verify the executor against a real Base RPC** (outside this sandbox): chain
+   id, `getCode` hash == `0x53896cc3…` and size 21963, `owner()` == the Safe, `feeBps()` == 25,
+   `MAX_FEE_BPS()` == 100, `feeRecipient()` == `PINNED_FEE_RECIPIENT()` == `0x96F7fb5C…`,
+   `paused()` == false, `FEE_TIMELOCK_SECONDS()` == 172800, `V4_POOL_MANAGER()` == `0x498581fF…`,
+   and `routerKind`/`routerFactory` for all five enabled venues. Record block numbers. The
+   canary's posture step already does this through the production `verifyV2Posture` /
+   `verifyV2Venues`, so a human should confirm the printed values rather than trust a green tick.
+3. **Re-run the fork proof** (`swap-v2-fork-proof.yml`) and confirm green at a current block.
+4. **Apply the patch**: `git apply docs/activation/v2-activation.patch`. Nine files change —
+   **one** is behaviour (`V2_DEPLOYMENT` becomes `SWAP_V2_SEALED_MANIFEST`, imported from
+   `./sealed-manifest`) and **eight** are assertions that were written to pin the dormant state:
+   `discovery.test.ts`, `__tests__/deployment.test.ts`, `__tests__/wiring.test.ts`,
+   `quote/route.test.ts`, `quote/route.activation.test.ts`, `settlement/route.test.ts`,
+   `scripts/swap-v2-finalize-recovery.test.ts` and `scripts/swap-v2-canary.test.ts`. An earlier
+   revision of this plan said four; applying the flip and running the suite is what produced the
+   real list, and the dormant-shape tests are kept — injected through
+   `__setSwapV2ExecutorForTests(null)` — because the dormant shape *is* the rollback shape and
+   must stay covered after activation. Leave `swap-v2-finalize-recovery.test.ts:213` alone: it
+   asserts the recovery workflow's text, not `discovery.ts`.
+5. **`npm run check`**, then commit the activation on its own with both canary receipt hashes in
+   the message, and review it there. Verified before this document was written: with the patch
+   applied the full suite is **4692 passed / 32 skipped across 348 files**, `tsc --noEmit` clean,
+   `eslint .` 0 errors.
+6. **Exercise the wired front end and settlement path against an activated backend** (limitations
+   5 and 6) before exposing V2 to users, and monitor `feeRecipient` balance deltas to confirm the
+   25 bps fee lands exactly once per swap.
+7. **Nothing is deployed at any point.** The executor is sealed and its one-shot gate is
+   consumed; activation reads that deployment and never recreates it.
 
 ## 8. Rollback plan
 
