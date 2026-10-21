@@ -216,7 +216,7 @@ out — proving nothing is hardcoded.
 `.github/workflows/swap-v2-fork-proof.yml` runs
 `test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol` against a real Base fork.
 
-Green on **eight consecutive commits** of this branch, most recently:
+Green on **ten consecutive commits** of this branch, most recently:
 
 | Run | Commit | Result |
 | --- | --- | --- |
@@ -226,6 +226,8 @@ Green on **eight consecutive commits** of this branch, most recently:
 | `39431366193` | `d11bed8` | **ok. 13 passed; 0 failed; 0 skipped** |
 | `39447617381` | `d5bed71` | **ok. 13 passed; 0 failed; 0 skipped** at fork block 52860173 |
 | `39454970912` | `4f4c3a4` | **ok. 13 passed; 0 failed; 0 skipped** at fork block 52861625 |
+| `39556393561` | `9947ee0` | **ok. 13 passed; 0 failed; 0 skipped** |
+| `39561249441` | `fe005ee` | **ok. 13 passed; 0 failed; 0 skipped** |
 
 The runs on `90c3343` and `4b54093` recovered the pool **without any third-party
 hint**. Dexscreener returned `MPGR v4 hint count: 0`, and the hint-free on-chain search
@@ -293,6 +295,8 @@ than by reasoning:
 | `39431366188` | `d11bed8` | + routability split from metadata | 212 probed · **54 measured** · 158 UNMEASURED · venue kinds 1, 4 and 7 all produced executable routes, including two-leg and mixed-venue multi-hop |
 | `39447617536` | `d5bed71` | 4 shards + hint-free v4 | all 4 shards green, **first MPGR route ever measured** — but the aggregate job merged nothing and still reported success |
 | `39454971188` | `4f4c3a4` | + loud aggregation | all 4 shards green with proven handoff files · **aggregate RED: collected 0 of 4 shard artifacts** |
+| `39556393443` | `9947ee0` | handoff moved to `coverage-out/` | **collected 4 of 4**, merged 210 pairs, 58 measured · aggregate RED on my own over-strict assertion (two correct ETH≡WETH rejections) |
+| **`39561249672`** | **`fe005ee`** | **6 shards, 120 s per pair** | **GREEN end to end. 6 of 6 shards reported · 210 planned pairs · 69 measured, all `EXECUTABLE_ROUTE` · 141 UNMEASURED · merged matrix published** |
 
 **Defect 1 — a green aggregate job that had merged nothing.** Run `39447617536` reported
 `aggregate: success` while producing no merged matrix and no PR comment: the shard matrices
@@ -322,22 +326,76 @@ only evidence from that run, since its aggregate job (correctly) refused to publ
 | 3 | JSON 41 792 B, MD 16 506 B | 11 timeouts · 4 read-budget · 4 neighbour | `SELL MPGR→WETH` UNMEASURED, 3 token-pairs UNMEASURED |
 | 4 | JSON 38 542 B, MD 15 444 B | 25 never attempted · 14 timeouts | **`BUY WETH→MPGR` EXECUTABLE_ROUTE**, 3 token-pairs UNMEASURED |
 
-Summed across shards that is roughly 50 measured and 160 UNMEASURED of 210 — and GitHub caps
-annotations per job, so the buckets above are a floor, not a complete census. Two conclusions
-are safe anyway. **`BUY WETH → MPGR` is an EXECUTABLE_ROUTE, measured against real Base state
-by the app's own discovery path** — the first MPGR route this matrix has ever produced, and it
-came from hint-free v4 discovery: floor derived from `eth_getCode`, `Initialize` matched by
-indexed currency, PoolKey re-derived and equal to the log's own pool id. And the failures are
-harness-side, not chain-side: 48 pairs died on a 4096-read discovery cap sized for a single
-quote rather than a batch, 55 were never attempted because a shard's wall clock ran out, and 39
-hit the 60 s per-pair timeout. Both are now addressed — the read cap is a workflow variable set
-to 24 576, and shards are grouped by subject so each token's discovery is paid **once** instead
-of once per shard (13 subjects per shard instead of ~50).
+**The merged result — run `39561249672`, commit `fe005ee`, blocks 52888960–52888969, RPC
+`secrets.BASE_MAINNET_RPC_URL`, 6 of 6 shards reported.** This is the first complete merged
+matrix this branch has produced, and it is the only coverage table in this document that may be
+quoted as measured:
 
-`SELL MPGR → WETH` and the USDC directions were UNMEASURED in that run while the reverse WETH
-direction measured executable through the *same pool*. That asymmetry is budget and provider
-capacity, not liquidity, and it is reported as `UNMEASURED_PROVIDER_FAILURE` for exactly that
-reason. **Neither direction may be claimed as measured until a merged matrix says so.**
+```text
+Pairs probed: 210 · measured: 69 · unmeasured: 141
+EXECUTABLE_ROUTE 69 | MISSING_LIQUIDITY 0 | UNSUPPORTED_TOKEN_INFRASTRUCTURE 0
+UNSUPPORTED_VENUE 0 | INVALID_REQUEST 2 | FEE_INVARIANT_DEFECT 0
+UNMEASURED_PROVIDER_FAILURE 141
+Per shard: #1 16 measured/32 unmeasured (budget exhausted) · #2 13/21 (exhausted)
+           #3 8/24 (exhausted) · #4 7/25 (exhausted) · #5 19/13 · #6 6/26 (exhausted)
+```
+
+**By venue** — venues that actually quoted a route, as distinct from venues merely registered on
+the executor:
+
+| Kind | Venue | Executable routes | Of which mixed-venue |
+| --- | --- | --- | --- |
+| 1 | Aerodrome Slipstream | 55 | 4 |
+| 7 | Uniswap v4 | 15 | 4 |
+| 4 | Aerodrome Classic | 2 | 0 |
+| 2 | Uniswap v3 | 1 | 0 |
+
+(The columns sum to more than 69 because a multi-hop route is counted under each venue it uses;
+8 routes used two venues.) **By token and direction**, 35 distinct tokens produced at least one
+executable route, and every one of the 69 was a token↔WETH or token↔USDC pair: none of the 12
+sampled token/token pairs was reached, because the shard that owns them ran out of wall clock
+first. Direction is measured separately and is often asymmetric — `AAPLc` sells executable in
+both quote assets but buys in one, `AVGOc`/`CAKEc`/`LLYc`/`MRVLc`/`MUc`/`cbDOGE` executable in
+one direction only.
+
+**MPGR specifically:**
+
+| Pair | Direction | Verdict | Evidence |
+| --- | --- | --- | --- |
+| WETH → MPGR | BUY | **EXECUTABLE_ROUTE** | 1 hop, 1 leg, venue kind 7 — quoted through a canonically re-derived v4 PoolKey |
+| MPGR → WETH | SELL | UNMEASURED_PROVIDER_FAILURE | `Liquidity-neighbour enumeration needs a historical log range, and the canonical sweep is disabled (maxSweepCalls=0); multi-hop discovery for this token is unmeasured, not absent` |
+| MPGR → USDC | SELL | UNMEASURED_PROVIDER_FAILURE | `v4 search capped — Matched 1 v4 pool(s) for 0xb200…af01 by block 48631238; stopped after a 3-window tail, so blocks 48631239-52888968 were not scanned` |
+| USDC → MPGR | BUY | UNMEASURED_PROVIDER_FAILURE | same as above |
+| MPGR ↔ 12 B20 tokens | TOKEN_PAIR | UNMEASURED_PROVIDER_FAILURE | `Probe budget exhausted before this pair was measured (shard 1/6, 1260000ms)` |
+
+So **MPGR is tradeable in one measured direction** — buying MPGR with WETH through its native-side
+v4 pool — and that is the first time this matrix has measured an MPGR route at all. The three
+unmeasured MPGR quote-asset rows are instructive rather than discouraging: the v4 search *did*
+match a pool for MPGR at block 48631238 in the USDC rows, and the verdict stayed UNMEASURED
+because a scan that stops before the pinned block cannot support a negative. The SELL row failed
+later, in multi-hop, after the direct attempt produced nothing quotable; **the current reason
+string does not distinguish "no pool found" from "pool found but the quote reverted", and that
+attribution gap is the single most useful next diagnostic** — it is the difference between a hook
+that refuses sells and a search that never reached the pool.
+
+**Where the 141 gaps come from**, exactly as the merged report records them:
+
+| Cause | Pairs | Whose fault |
+| --- | --- | --- |
+| Probe budget exhausted before this pair was measured | 64 | harness wall clock — never attempted |
+| Discovery call budget exhausted mid-search | 45 | provider: ten blocks per `eth_getLogs` cannot cover 4.2 M blocks |
+| Per-pair wall-clock timeout | 16 | provider latency (was 39 at 60 s; the 120 s timeout recovered 23) |
+| Liquidity-neighbour enumeration needs a historical log range | 11 | harness: `maxSweepCalls = 0` disables the multi-hop sweep |
+| Discovery incomplete: sweep and/or v4 scan did not finish | 2 | provider |
+| ETH and WETH are the same asset | 2 | correct rejection (`INVALID_REQUEST`) |
+| HTTP 429 from the RPC | 1 | provider rate limit, six shards on one endpoint |
+
+Not one of the 141 is a liquidity finding. Raising the per-pair timeout from 60 s to 120 s and
+going from four shards to six moved measured pairs from 58 to 69 and timeouts from 39 to 16,
+which is the expected direction but not the end of it: five of six shards still exhausted their
+21-minute budget, so the next levers are more shards or more minutes, and an RPC tier whose
+`eth_getLogs` range is wider than ten blocks — that single limit accounts for 45 gaps on its own
+and cannot be scheduled away.
 
 **`MISSING_LIQUIDITY` is still 0, and legitimately so.** A definitive negative requires the
 getter-backed sweep to complete *and* the v4 scan to reach the pinned block. With
@@ -353,11 +411,12 @@ live state, or settled. No claim in this document is live-verified.
 > **Universal trading is NOT proven.** What is proven is that the app-side surface is
 > internally consistent with the deployed contract's ABI and invariants, and fails closed when
 > live state disagrees. Token coverage on Base is a liquidity fact, not a code fact, and it is
-> only **partially** measured: individual pairs — including `BUY WETH → MPGR` through a
-> canonically re-derived v4 PoolKey — carry real `EXECUTABLE_ROUTE` verdicts, while the majority
-> of the 210-pair plan is still `UNMEASURED_PROVIDER_FAILURE` and no pair at all has been proven
-> to *lack* liquidity. A handful of measured rows is not universal coverage, and an unmeasured
-> row is not a negative.
+> only **partially** measured: run `39561249672` measured **69 of 210 planned pairs**, every one
+> of them an `EXECUTABLE_ROUTE`, across 35 tokens and four venue kinds — including
+> `BUY WETH → MPGR` through a canonically re-derived v4 PoolKey. The other 141 are
+> `UNMEASURED_PROVIDER_FAILURE`, and **no pair at all has been proven to *lack* liquidity**.
+> Two thirds of the plan unmeasured is not universal coverage, and an unmeasured row is not a
+> negative.
 
 ## 6. Remaining limitations and blockers
 
@@ -367,18 +426,20 @@ live state, or settled. No claim in this document is live-verified.
    runs in CI as four parallel shards plus an offline aggregate job, and it now produces real
    verdicts: run `39431366188` measured 54 of 212 pairs across venue kinds 1, 4 and 7 including
    multi-hop and mixed-venue routes, and run `39454971188` measured `BUY WETH → MPGR` as an
-   `EXECUTABLE_ROUTE` through a canonically re-derived v4 PoolKey. Everything else in those runs
-   is `UNMEASURED_PROVIDER_FAILURE`, and the causes are harness- and provider-side: a discovery
-   read cap sized for one quote rather than a batch, per-shard wall clock running out before a
-   pair was attempted, 60 s per-pair timeouts, and a provider that serves ten blocks per
-   `eth_getLogs`. Two of those are fixed on this branch (read cap raised to a workflow variable,
-   shards grouped by subject so each token's floor search is paid once). **No merged matrix has
-   yet been published from a green aggregate job**, so no per-venue, per-pair, per-direction
-   coverage table can be quoted as complete. Closing this needs either an RPC tier with a wide
-   `eth_getLogs` range — the fork proof succeeds on the same RPC only because it needs a narrow
-   query near a known block — or more shards and more minutes. **Until a merged matrix exists,
-   no claim about which Base tokens are tradeable is supported by evidence beyond the individual
-   `EXECUTABLE_ROUTE` rows above.**
+   `EXECUTABLE_ROUTE` through a canonically re-derived v4 PoolKey. Run `39561249672` is the first
+   green end-to-end merged matrix: 6 of 6 shards, 210 planned pairs, **69 measured and every one
+   of them an executable route**, 141 UNMEASURED, across 35 distinct tokens and four venue kinds
+   (Slipstream 55, v4 15, Aerodrome Classic 2, v3 1, including 8 mixed-venue multi-hop routes).
+   **That is 33% of the plan, and it is not universal coverage.** Every one of the 141 gaps is
+   harness- or provider-side: 64 pairs were never attempted because a shard's wall clock ran out,
+   45 died on a ten-block `eth_getLogs` range that cannot cover 4.2 M blocks, 16 timed out, 11
+   needed the multi-hop sweep that `maxSweepCalls = 0` disables, and 1 hit an HTTP 429. None is a
+   liquidity finding. All 69 executable routes are token↔WETH or token↔USDC; **not one
+   token/token pair was measured**, and MPGR is measured in one direction only (BUY from WETH).
+   Closing this needs an RPC tier whose `eth_getLogs` range is wider than ten blocks — the fork
+   proof succeeds on the same RPC only because it needs a narrow query near a known block — plus
+   more shards or more minutes. **Until then, no claim about which Base tokens are tradeable is
+   supported beyond the 69 measured rows.**
 3. **Discovery completeness is bounded, and a bounded search cannot prove absence.** Three
    concrete limits, all recorded in code rather than papered over:
    - *Slipstream (venue kind 1) is enumerated partially.* Only tick spacing 10 is probed, because
@@ -414,6 +475,23 @@ live state, or settled. No claim in this document is live-verified.
    (`/:100($|>)/`, `/:500($|>)/`) encode the current format.
 8. **Pancake V3 and 0x Settler stay disabled.** Neither has a passing fork proof. Settler must
    never be called directly.
+9. **CI's `quality` job is red on `npm run audit:high`, and this branch did not cause it.** Lint,
+   typecheck and the full test suite all pass in that job; only the security gate fails, on two
+   findings published upstream after the last green run on `main`:
+   - `vite` — a **direct devDependency pinned at exactly `8.3.0`**, inside the affected range
+     `8.3.0 - 8.3.2`. `8.3.5` is published and `vitest@4.1.11` accepts `^8.0.0`, so the fix is a
+     one-line bump.
+   - `follow-redirects` — transitive via `axios@^1.20.0` (which requires `^1.16.0`); `1.16.0` is
+     installed and affected, `1.16.1` is published and satisfies the same range, so the fix is a
+     lockfile update with no override needed.
+
+   `git diff 05e7fbc HEAD -- package.json package-lock.json scripts/audit-high.mjs` is **empty**:
+   this branch adds no dependencies and does not touch the gate. The same lockfile passed CI on
+   `main` at `05e7fbc`, so the failure is date-dependent and applies to `main` equally. It is
+   deliberately **not** fixed here, and deliberately **not** silenced by adding either package to
+   `scripts/audit-high.mjs`'s allowlist — adding an allowlist entry for a new high-severity
+   advisory is the dependency equivalent of excluding a Slither detector. Both fixes belong in a
+   separate, reviewable dependency PR.
 
 ## 7. Activation plan
 
