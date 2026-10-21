@@ -319,15 +319,24 @@ describe("MPGR -> WETH SELL: the same pool, attributed instead of guessed", () =
     // Attributed to the search being cut short — which is the truth — and NOT to the
     // pair lacking a pool, which nobody established.
     expect(error!.attribution).toBe("BUDGET_EXHAUSTED");
-    expect(error!.message).toMatch(/No compatible pool could be established/i);
-    expect(error!.message).toMatch(/v4 search capped/);
-    // The search says exactly where it stopped, which is the evidence that this is a
-    // bounded-search failure rather than a statement about the pair.
-    // The scan says what BOTH of its sides reached before the budget ran out, so the
-    // uncovered middle is named rather than implied.
-    expect(error!.message).toMatch(/stopped at \d+-\d+ forward and \d+-\d+ backward of \d+/);
-    expect(error!.message).toMatch(/exceeded its \d+-call budget/);
+    expect(error!.message).toMatch(/could not finish/i);
     const trace = traceOf(error);
+    // Staged discovery reports this through the trace's notes instead of the union gate,
+    // and the notes carry strictly more: what each stage could establish, including what
+    // BOTH sides of the v4 scan reached before the budget ran out, so the uncovered
+    // middle is named rather than implied.
+    const notes = trace.notes.join(" ");
+    expect(notes).toMatch(/v4 Initialize search capped/);
+    expect(notes).toMatch(/stopped at \d+-\d+ forward and \d+-\d+ backward of \d+/);
+    expect(notes).toMatch(/exceeded its \d+-call budget/);
+    expect(notes).toMatch(/canonical event sweep unavailable/);
+    // The stages that ran, in order, are part of the evidence: getters first, v4 second,
+    // and no whole-chain sweep because this source has it disabled.
+    expect(trace.stages.map((stage) => stage.name)).toEqual(["factory-index", "v4-canonical-logs", "canonical-sweep"]);
+    expect(trace.stages.every((stage) => stage.complete === false)).toBe(true);
+    // Multi-hop could not rescue it either, and that is recorded rather than masking the
+    // direct attempt.
+    expect(trace.multihop.note).toMatch(/neighbour enumeration|historical log range/i);
     expect(trace.candidates).toHaveLength(0);
     expect(trace.negativeProvable).toBe(false);
     expect(classifyPairOutcome(TOKEN, WETH, { ok: false, error: error! }).category).toBe("UNMEASURED_PROVIDER_FAILURE");
@@ -463,7 +472,7 @@ describe("fee invariant on a split route", () => {
 describe("attributeRouteFailure: the priority order is itself the policy", () => {
   const base: RouteAttemptTrace = {
     tokenIn: TOKEN, tokenOut: WETH, gross: GROSS, net: GROSS - GROSS * 25n / 10_000n,
-    poolsReturned: 1, rejected: [], candidates: [], negativeProvable: false, notes: [],
+    poolsReturned: 1, rejected: [], candidates: [], negativeProvable: false, notes: [], stages: [],
     multihop: { attempted: false, candidates: 0, note: null },
   };
   const candidate = (outcome: CandidateOutcome, over: Partial<RouteAttemptTrace["candidates"][number]> = {}) =>

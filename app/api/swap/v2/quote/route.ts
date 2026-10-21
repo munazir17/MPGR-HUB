@@ -12,7 +12,7 @@ import { parseTradeSwapRequest } from "@/lib/trade/trade-request";
 import { getTradePublicClient } from "@/lib/trade/trade-public-client";
 import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { discoverV2Quote, V2QuoteError, V2_FEE_RECIPIENT } from "@/lib/swap/v2/discovery";
-import { RpcV2LiquiditySource } from "@/lib/swap/v2/rpc-source";
+import { swapV2QuoteSource } from "@/lib/swap/v2/rpc-source";
 import { swapV2Executor } from "@/lib/swap/v2/deployment";
 import { prepareV2Execution, serializeV2Swap, type V2ExecutionReader } from "@/lib/swap/v2/execution";
 import { V2PreflightError } from "@/lib/swap/v2/preflight";
@@ -45,7 +45,11 @@ export async function POST(request: Request) {
     // as an opaque ABI encoding failure. Fail closed: no transaction is built.
     if (!/^0x[0-9a-fA-F]{64}$/.test(block.hash)) return reply({ code: "PROVIDER_ERROR", error: "The provider returned a malformed block hash; the quote could not be pinned." }, 503);
     const p = parsed.value;
-    const q = await discoverV2Quote(new RpcV2LiquiditySource(client, block.number), p.from.address, p.to.address, BigInt(p.fromAmount));
+    // Staged discovery, configured for a real paste: factory getters first, a bounded v4
+    // `Initialize` search only if they cannot answer, and no whole-chain eth_getLogs sweep.
+    // A capped search reports DISCOVERY_UNAVAILABLE rather than pretending the pool is
+    // missing. See swapV2QuoteSource for why each bound is what it is.
+    const q = await discoverV2Quote(swapV2QuoteSource(client, block.number), p.from.address, p.to.address, BigInt(p.fromAmount));
     if ((await client.getBlock({ blockNumber: block.number })).hash !== block.hash) return reply({ code: "QUOTE_CHANGED" }, 409);
 
     // ---- Activation gate. `null` = dormant: the historical preview shape. ----

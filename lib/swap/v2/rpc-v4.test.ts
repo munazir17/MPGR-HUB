@@ -491,7 +491,9 @@ describe("v4 discovery: bounds and honest failure", () => {
     const c = mpgrChain({ pools: [{ block: MPGR_DEPLOYED + 5_000n, key: nativeMpgrKey }] });
     const source = new RpcV2LiquiditySource(c.client, HEAD, 4096, 0, { cache: new V4DiscoveryCache() });
     await expect(discoverV2Quote(source, WETH, MPGR, 1_000_000n)).rejects.toMatchObject({ code: "DISCOVERY_UNAVAILABLE" });
-    const diag = source.diagnostics();
+    // Per pair, not "whichever pair was touched last": the attempt ends by asking for
+    // multi-hop neighbours, which fails fast and would otherwise leave an empty record.
+    const diag = source.diagnosticsFor(WETH, MPGR);
     expect(diag.v4?.state).toBe("capped");
     expect(diag.v4?.note).toMatch(/exceeded its 64-call budget/);
     expect(diag.factoryIndex?.pools).toEqual([]);

@@ -37,8 +37,10 @@ interface ReaderOptions {
   simulated?: bigint | null;
 }
 
-function fakeReader(options: ReaderOptions = {}): V2ExecutionReader & { calls: number } {
-  const state = { calls: 0 };
+interface SimCall { account: Address; to: Address; data: Hex; value: bigint; blockNumber: bigint }
+
+function fakeReader(options: ReaderOptions = {}): V2ExecutionReader & { calls: number; callArgs: SimCall[] } {
+  const state = { calls: 0, callArgs: [] as SimCall[] };
   const o = {
     chainId: 8453, code: "0x6080" as Hex, feeBps: 25, maxFeeBps: 100,
     feeRecipient: V2_FEE_RECIPIENT, owner: SWAP_V2_SEALED_MANIFEST.owner, paused: false,
@@ -74,8 +76,13 @@ function fakeReader(options: ReaderOptions = {}): V2ExecutionReader & { calls: n
         default: throw new Error(`unexpected posture read: ${args.functionName}`);
       }
     },
-    async call() { return { data: o.simulated === null ? null : u256(o.simulated) }; },
-  } as unknown as V2ExecutionReader & { calls: number };
+    async call(args: SimCall) {
+      // Recorded so a test can assert WHO the simulation ran as, against WHICH contract,
+      // and at WHICH block — none of which a returned value can show.
+      state.callArgs.push(args);
+      return { data: o.simulated === null ? null : u256(o.simulated) };
+    },
+  } as unknown as V2ExecutionReader & { calls: number; callArgs: SimCall[] };
 }
 
 const request = (quote: V2Quote, extra: Partial<Parameters<typeof prepareV2Execution>[2]> = {}) => ({
@@ -143,6 +150,42 @@ describe("prepareV2Execution — activated shape", () => {
     const swap = await prepareV2Execution(fakeReader({ simulated: 900n }), deployment, request(threeHopQuote()), BLOCK);
     expect(swap.intent.hops).toBe(3);
     expect(swap.intent.paths[0].map((h) => h.tokenOut.toLowerCase())).toEqual([TOKEN_C, TOKEN_D, TOKEN_B]);
+  });
+
+  it("simulates as the taker, against only the sealed executor, at the pinned block", async () => {
+    const reader = fakeReader();
+    await prepareV2Execution(reader, deployment, request(directQuote()), BLOCK);
+    expect(reader.callArgs).toHaveLength(1);
+    const sim = reader.callArgs[0];
+    // As the TAKER: a simulation from any other address proves nothing about this swap,
+    // because allowances, balances and the fee path are all taker-specific.
+    expect(sim.account.toLowerCase()).toBe(TAKER.toLowerCase());
+    expect(sim.account.toLowerCase()).not.toBe(deployment.executor.toLowerCase());
+    // Against ONLY the sealed executor — the address the calldata will actually target.
+    expect(sim.to.toLowerCase()).toBe("0x4be1154440b26145d76608d41d403a33e76b9d0a");
+    expect(sim.to.toLowerCase()).toBe(deployment.executor.toLowerCase());
+    // At the pinned block, so the answer cannot drift between quote and simulation.
+    expect(sim.blockNumber).toBe(BLOCK.number);
+    expect(sim.value).toBe(0n);
+  });
+
+  it("targets only the executor even when the route addresses a different contract", async () => {
+    // A v4 hop's pool, router and factory are all the PoolManager, and the calldata
+    // encodes that PoolKey — but the transaction is still sent to the executor and
+    // nowhere else. The executor is the only contract this path ever calls.
+    const gross = 1_000_000n, fee = 2500n, net = gross - fee;
+    const quote: V2Quote = {
+      tokenIn: TOKEN_A, tokenOut: TOKEN_B, gross, feeBps: 25, feeRecipient: V2_FEE_RECIPIENT, fee, net, amountOut: 1000n,
+      legs: [{ pools: [v4Pool(TOKEN_A, TOKEN_B, 3000, 60, HOOKS)], tokens: [TOKEN_A, TOKEN_B], amountIn: net, amountOut: 1000n }],
+    };
+    const reader = fakeReader();
+    const swap = await prepareV2Execution(reader, deployment, request(quote), BLOCK);
+    expect(swap.transaction.to.toLowerCase()).toBe("0x4be1154440b26145d76608d41d403a33e76b9d0a");
+    expect(reader.callArgs[0].to.toLowerCase()).toBe("0x4be1154440b26145d76608d41d403a33e76b9d0a");
+    // The hop still addresses the PoolManager inside the calldata, which is the point:
+    // routing target and transaction target are deliberately different things.
+    expect(swap.intent.paths[0][0].pool.toLowerCase()).toBe("0x498581ff718922c3f8e6a244956af099b2652b2b");
+    expect(swap.transaction.to.toLowerCase()).not.toBe(swap.intent.paths[0][0].pool.toLowerCase());
   });
 
   it("builds a v4 route through the canonical PoolManager", async () => {

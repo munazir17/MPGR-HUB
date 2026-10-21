@@ -5,7 +5,7 @@ vi.mock("@/lib/api/request-guard",()=>({verifyTrustedOrigin:()=>null,readJsonBod
 vi.mock("@/lib/trade/trade-rate-limit",()=>({checkRateLimit:async()=>({allowed:true}),clientIpFromRequest:()=>"test"}));
 vi.mock("@/lib/trade/trade-request",()=>({parseTradeSwapRequest:mocks.parse}));
 vi.mock("@/lib/trade/trade-public-client",()=>({getTradePublicClient:()=>mocks.client}));
-vi.mock("@/lib/swap/v2/rpc-source",()=>({RpcV2LiquiditySource:class {}}));
+vi.mock("@/lib/swap/v2/rpc-source",()=>({RpcV2LiquiditySource:class {},swapV2QuoteSource:()=>({})}));
 vi.mock("@/lib/swap/v2/discovery",async(importOriginal)=>({...await importOriginal<typeof import("@/lib/swap/v2/discovery")>(),discoverV2Quote:mocks.quote}));
 import { POST } from "./route";
 import { V2QuoteError } from "@/lib/swap/v2/discovery";

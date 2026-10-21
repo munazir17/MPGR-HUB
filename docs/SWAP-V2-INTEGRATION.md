@@ -236,6 +236,49 @@ made-up hooks address, a made-up deployment block — so no real pool id, hook, 
 block number is encoded as an expected result anywhere. Discovery has to derive the PoolKey from
 the fabricated `Initialize` log, exactly as it does on chain.
 
+### The user-facing quote path: ordered discovery
+
+A pasted address has to produce an answer, not a multi-minute log scan. Discovery is therefore
+**staged**, and `discoverV2Quote` stops at the first stage that produces a quotable direct pool:
+
+| Stage | Venues | Cost | Complete? |
+| --- | --- | --- | --- |
+| 1. `factory-index` | Uniswap v2, Uniswap v3 (all four canonical fee tiers), Aerodrome Classic (both `stable` values), Aerodrome Slipstream | one `eth_call` per candidate, **no `eth_getLogs` at all** | v2 and Classic yes; v3 yes over the pinned tier set; **Slipstream PARTIAL** — only the tick spacing this repo pins, because the factory's spacing set was never verified from its ABI and is not invented |
+| 2. `v4-canonical-logs` | Uniswap v4 via the PoolManager `0x498581fF718922c3f8e6A244956aF099B2652b2b` | bounded `Initialize` search from a chain-derived deployment floor, two-sided, capped at `MPGR_SWAP_V2_V4_LOG_CALLS` | only when the scan reached the pinned block |
+| 3. `canonical-sweep` | the four getter-backed venues from block 0 | up to `maxSweepCalls` `eth_getLogs`, bisecting under a range cap | **disabled by default on the quote path** |
+
+The consequences, all of them deliberate:
+
+- A pair that a factory getter can answer is quoted with **zero `eth_getLogs` calls**. Every provider
+  refuses wide ranges, so this is the difference between a quote a user can wait for and one they
+  cannot. Asserted in `lib/swap/v2/__tests__/staged-quote-path.test.ts`, and asserted *falsifiably*:
+  removing `directStages` turns 10 of those 24 tests red.
+- **v4 is searched only after the getters fail.** MPGR↔ETH still quotes, because no getter knows that
+  pair and stage 2 finds the native-side PoolKey. The trade is route *quality*, not route *truth*: a
+  better-priced v4 pool is not compared against a getter pool that already quoted.
+- **The whole-chain sweep does not run on the quote path** (`MPGR_SWAP_V2_MAX_SWEEP_CALLS`, default 0).
+  It cannot be served by a range-capped provider and it is not needed to quote a direct pool. The
+  consequence is honest and load-bearing: a pair with no pool anywhere is reported as
+  `DISCOVERY_UNAVAILABLE`, **never** `LIQUIDITY_UNAVAILABLE`, because absence is not provable without
+  a complete enumeration. An operator whose RPC serves a wide log range can raise the variable and
+  negatives become provable again — there is a test for exactly that transition.
+- Multi-hop (max 3 hops) is attempted only when no direct pool quotes, and neighbour enumeration is
+  still the sweep's job, so with the sweep disabled it fails fast and says so instead of spending a
+  budget to reach the same verdict.
+- The fee is unchanged and unskippable: 25 bps on **gross**, computed once, to
+  `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4`. `validateV2Quote` rejects a quote that skips it, and
+  an amount too small for the fee to exist is rejected before any venue is asked.
+- Calldata targets only the executor `0x4be1154440b26145d76608D41d403a33e76b9d0A`, and the route is
+  simulated **as the taker** at the pinned block before any transaction is returned; a simulation that
+  misses the committed minimum returns no transaction at all. A v4 hop's `pool`, `router` and
+  `factory` are all the PoolManager inside the calldata, while `transaction.to` is still only the
+  executor — routing target and transaction target are deliberately different things, and both are
+  asserted.
+
+`swapV2QuoteSource(client, blockNumber)` is the single place that configuration lives, so the quote
+path cannot drift from it. Its v4 cache is per quote, because the cache is keyed by `token@block` and
+a shared one would grow without bound in a long-lived server while every quote pins a fresh block.
+
 ## 5. Evidence tiers: what is actually proven
 
 **Tier 1 — unit-simulated (this change): 268 tests across 20 files on the V2 surface,

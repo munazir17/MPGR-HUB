@@ -53,6 +53,8 @@ export interface RouteAttemptTrace {
   negativeProvable: boolean;
   /** Discovery-side notes: v4 search state, sweep state, index failures. */
   notes: string[];
+  /** Every discovery stage that ran, in order, and what each cost and produced. */
+  stages: StageTrace[];
   multihop: { attempted: boolean; candidates: number; note: string | null };
 }
 
@@ -63,8 +65,43 @@ export type RouteFailureAttribution =
   | "HOOK_OR_TOKEN_INCOMPATIBLE" | "QUOTE_ZERO_OUTPUT" | "QUOTE_RPC_FAILED"
   | "BUDGET_EXHAUSTED" | "MULTIHOP_ENUMERATION_UNAVAILABLE";
 
+/** Which ordered discovery step a pool came from. Named for attribution and for the
+ * report, because "we found a pool" without "which family answered" hides the cost. */
+export type DiscoveryStageName = "hints" | "factory-index" | "v4-canonical-logs" | "canonical-sweep";
+
+/**
+ * One ordered step of direct-pair discovery, cheapest first.
+ *
+ * A source that can answer from an earlier stage never pays for a later one. That is
+ * what makes a pasted address quotable in one round trip: the getter-backed venues are
+ * a handful of `eth_call`s, while the v4 `Initialize` search and the whole-history
+ * canonical sweep are each hundreds of `eth_getLogs` calls on a range-capped provider.
+ */
+export interface DiscoveryStage {
+  name: DiscoveryStageName;
+  pools(): Promise<readonly Pool[]>;
+  /** Whether this stage enumerated its venue family to completion for this pair. A
+   * stage that is not complete can still produce a POSITIVE; it can never support a
+   * claim that no pool exists. */
+  complete(): boolean;
+}
+
+export interface StageTrace {
+  name: DiscoveryStageName;
+  poolsReturned: number;
+  /** Pools that passed executor validation and actually connect the pair. */
+  quotable: number;
+  complete: boolean;
+  /** Set when the stage could not run; the reason, verbatim. */
+  note?: string;
+}
+
 export interface LiquiditySource {
   hints?(input: Address, output: Address): Promise<readonly Pool[]>;
+  /** Ordered direct-pair discovery. Absent means the source is single-stage and
+   * `pools(input, output)` is the whole answer, which is what every simple source and
+   * test double does. */
+  directStages?(input: Address, output: Address): readonly DiscoveryStage[];
   pools(input: Address, output?: Address): Promise<readonly Pool[]>;
   quote(pool: Pool, input: Address, amount: bigint): Promise<bigint>;
   /** Richer than `quote`: says WHY a venue did not answer, instead of collapsing a
@@ -294,16 +331,14 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     tokenIn, tokenOut, gross, net, poolsReturned: 0, rejected: [], candidates: [],
     // Filled in after discovery actually runs: a source reports what IT could
     // establish for this pair, and asking before the call would read stale state.
-    negativeProvable: true, notes: [],
+    negativeProvable: true, notes: [], stages: [],
     multihop: { attempted: false, candidates: 0, note: null },
   };
-  /** Splits what discovery returned into dropped-by-validation, dropped-because-it-
-   * does-not-connect-this-pair, and actually quotable. Keeping all three is the whole
-   * point: it is what separates "no pool discovered" from "pool discovered but the
-   * executor could not address it" from "pool discovered but the venue refused". */
+  /** Splits what one discovery stage returned into dropped-by-validation,
+   * dropped-because-it-does-not-connect-this-pair, and actually quotable. Keeping all
+   * three is what separates "no pool discovered" from "pool discovered but the executor
+   * could not address it" from "pool discovered but the venue refused". */
   const partition = (pools: readonly Pool[]): Pool[] => {
-    trace.poolsReturned = pools.length;
-    trace.rejected = [];
     const quotable: Pool[] = [];
     for (const pool of pools) {
       const rejection = poolRejection(pool);
@@ -317,64 +352,104 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
       }
       quotable.push(pool);
     }
+    trace.poolsReturned += pools.length;
     return quotable;
   };
   const recordDiscoveryState = (): void => {
     trace.negativeProvable = source.negativeProvable?.(tokenIn, tokenOut) !== false;
     trace.notes = [...(source.discoveryNotes?.(tokenIn, tokenOut) ?? [])];
   };
-  /**
-   * Discovery can fail before it ever produces a candidate list — a bounded source
-   * throws rather than claim a negative it cannot prove. That error must still carry
-   * an attribution, or the pair shows up in a coverage report as an unclassified
-   * provider failure, which is the exact ambiguity this file exists to remove.
-   */
-  const discoverDirect = async (): Promise<readonly Pool[]> => {
-    try {
-      return await (source.hints ? source.hints(tokenIn, tokenOut) : source.pools(tokenIn, tokenOut));
-    } catch (error) {
-      if (error instanceof V2QuoteError && !error.attribution) {
-        error.attribution = /budget|exceeded|capped|refused|unavailable|could not be established/i.test(error.message)
-          ? "BUDGET_EXHAUSTED" : "POOL_NOT_DISCOVERED";
-        error.trace = {
-          tokenIn, tokenOut, gross, net, poolsReturned: 0, rejected: [], candidates: [],
-          negativeProvable: false, notes: [error.message],
-          multihop: { attempted: false, candidates: 0, note: null },
-        };
-      }
-      throw error;
+  /** A bounded source throws rather than claim a negative it cannot prove. That error
+   * must still carry an attribution, or the pair shows up in a coverage report as an
+   * unclassified provider failure — the exact ambiguity attribution exists to remove. */
+  const attributeDiscoveryThrow = (error: unknown): unknown => {
+    if (error instanceof V2QuoteError && !error.attribution) {
+      error.attribution = /budget|exceeded|capped|refused|unavailable|could not be established/i.test(error.message)
+        ? "BUDGET_EXHAUSTED" : "POOL_NOT_DISCOVERED";
+      error.trace = {
+        tokenIn, tokenOut, gross, net, poolsReturned: 0, rejected: [], candidates: [],
+        negativeProvable: false, notes: [error.message], stages: [...trace.stages],
+        multihop: { attempted: false, candidates: 0, note: null },
+      };
     }
+    return error;
+  };
+  /** Validates and quotes one pool set, recording every candidate's outcome. */
+  const attemptPoolSet = async (pools: readonly Pool[]): Promise<{ quotable: Pool[]; legs: Leg[] }> => {
+    const quotable = partition(pools);
+    const attempts = await Promise.all(quotable.map(pool => attemptCandidate(source, pool, tokenIn, tokenOut, net)));
+    for (let i = 0; i < quotable.length; i++) {
+      trace.candidates.push({
+        poolId: quotable[i].id, kind: quotable[i].kind,
+        hooks: quotable[i].kind === 7 ? quotable[i].v4Key?.hooks ?? null : null,
+        outcome: attempts[i].outcome,
+      });
+    }
+    return { quotable, legs: attempts.map(a => a.leg).filter((l): l is Leg => l !== null) };
   };
 
-  let direct = partition(await (source.hints ? source.hints(tokenIn, tokenOut) : discoverDirect()));
-  recordDiscoveryState();
-  let attempts = await Promise.all(direct.map(pool => attemptCandidate(source, pool, tokenIn, tokenOut, net)));
-  if (source.hints && !attempts.some(a => a.leg)) {
-    // Hints cannot prove absence. Complete canonical discovery is mandatory
-    // before allowing multi-hop or returning LIQUIDITY_UNAVAILABLE.
-    direct = partition(await source.pools(tokenIn, tokenOut).catch((error: unknown) => {
-      // The second, canonical pass is the one whose failure decides the verdict, so it
-      // gets the same treatment as the first.
-      if (error instanceof V2QuoteError && !error.attribution) {
-        error.attribution = /budget|exceeded|capped|refused|unavailable|could not be established/i.test(error.message)
-          ? "BUDGET_EXHAUSTED" : "POOL_NOT_DISCOVERED";
-        error.trace = {
-          tokenIn, tokenOut, gross, net, poolsReturned: 0, rejected: [], candidates: [],
-          negativeProvable: false, notes: [error.message],
-          multihop: { attempted: false, candidates: 0, note: null },
-        };
+  let direct: Pool[] = [];
+  let quoted: Leg[] = [];
+  let stageFailure: unknown = null;
+  const stages = source.directStages?.(tokenIn, tokenOut);
+  if (stages && stages.length > 0) {
+    // ORDERED, AND THE FIRST STAGE THAT QUOTES WINS. Getter-backed venues are a handful
+    // of eth_calls; the v4 Initialize search and the whole-history canonical sweep are
+    // hundreds of eth_getLogs on a range-capped provider. A pair that a factory getter
+    // can answer must never pay for either, which is the difference between a quote a
+    // user can wait for and one they cannot. The cost is route QUALITY, not route truth:
+    // a better-priced v4 pool is not compared against a getter pool that already quoted.
+    for (const stage of stages) {
+      let pools: readonly Pool[];
+      let complete = false;
+      try {
+        pools = await stage.pools();
+        complete = stage.complete();
+      } catch (error) {
+        // A stage that cannot run is recorded and the search continues: a later stage may
+        // still answer. If none does, attribution names every stage that failed.
+        trace.stages.push({
+          name: stage.name, poolsReturned: 0, quotable: 0, complete: false,
+          note: error instanceof Error ? error.message : String(error),
+        });
+        if (!(error instanceof V2QuoteError)) throw error;
+        if (stageFailure === null) stageFailure = error;
+        continue;
       }
-      throw error;
-    }));
-    recordDiscoveryState();
-    attempts = await Promise.all(direct.map(pool => attemptCandidate(source, pool, tokenIn, tokenOut, net)));
+      const attempted = await attemptPoolSet(pools);
+      trace.stages.push({ name: stage.name, poolsReturned: pools.length, quotable: attempted.quotable.length, complete });
+      direct = attempted.quotable;
+      quoted = attempted.legs;
+      recordDiscoveryState();
+      if (quoted.length) break;
+    }
+    // Nothing quotable and a stage could not finish: that failure decides the verdict,
+    // because it is why "no pool" cannot be proven.
+    if (!quoted.length && stageFailure !== null && trace.candidates.length === 0) throw attributeDiscoveryThrow(stageFailure);
+  } else {
+    // Single-stage source: hints if offered, then the complete canonical answer.
+    if (source.hints) {
+      const hinted = await attemptPoolSet(await source.hints(tokenIn, tokenOut));
+      trace.stages.push({ name: "hints", poolsReturned: trace.poolsReturned, quotable: hinted.quotable.length, complete: false });
+      direct = hinted.quotable;
+      quoted = hinted.legs;
+      recordDiscoveryState();
+    }
+    if (!quoted.length) {
+      // Hints cannot prove absence. Complete canonical discovery is mandatory before
+      // allowing multi-hop or returning LIQUIDITY_UNAVAILABLE.
+      let pools: readonly Pool[];
+      try {
+        pools = await source.pools(tokenIn, tokenOut);
+      } catch (error) {
+        throw attributeDiscoveryThrow(error);
+      }
+      const attempted = await attemptPoolSet(pools);
+      direct = attempted.quotable;
+      quoted = attempted.legs;
+      recordDiscoveryState();
+    }
   }
-  trace.candidates = direct.map((pool, i) => ({
-    poolId: pool.id, kind: pool.kind,
-    hooks: pool.kind === 7 ? pool.v4Key?.hooks ?? null : null,
-    outcome: attempts[i].outcome,
-  }));
-  let quoted = attempts.map(a => a.leg).filter((l): l is Leg => l !== null);
   let legs: readonly Leg[] = [];
   if (quoted.length) {
     const best = quoted.reduce((a, b) => b.amountOut > a.amountOut ? b : a);
