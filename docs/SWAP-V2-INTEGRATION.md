@@ -344,7 +344,9 @@ than by reasoning:
 | `39447617536` | `d5bed71` | 4 shards + hint-free v4 | all 4 shards green, **first MPGR route ever measured** — but the aggregate job merged nothing and still reported success |
 | `39454971188` | `4f4c3a4` | + loud aggregation | all 4 shards green with proven handoff files · **aggregate RED: collected 0 of 4 shard artifacts** |
 | `39556393443` | `9947ee0` | handoff moved to `coverage-out/` | **collected 4 of 4**, merged 210 pairs, 58 measured · aggregate RED on my own over-strict assertion (two correct ETH≡WETH rejections) |
-| **`39561249672`** | **`fe005ee`** | **6 shards, 120 s per pair** | **GREEN end to end. 6 of 6 shards reported · 210 planned pairs · 69 measured, all `EXECUTABLE_ROUTE` · 141 UNMEASURED · merged matrix published** |
+| `39561249672` | `fe005ee` | 6 shards, 120 s per pair | **GREEN end to end.** 6 of 6 shards · 210 planned pairs · 69 measured, all `EXECUTABLE_ROUTE` · 141 UNMEASURED · merged matrix published |
+| `39565200296` | `2f0eb69` | docs-only re-trigger | **GREEN, reproduced.** 6 of 6 shards · 65 measured, all executable · 145 UNMEASURED · `BUY WETH→MPGR` executable again at a different block |
+| **`39575818040`** | **`4562b23`** | **+ routing failure attribution** | **GREEN. 6 of 6 shards · 41 measured, all executable · 169 UNMEASURED · MPGR → WETH SELL resolved to `QUOTE_ZERO_OUTPUT`** |
 
 **Defect 1 — a green aggregate job that had merged nothing.** Run `39447617536` reported
 `aggregate: success` while producing no merged matrix and no PR comment: the shard matrices
@@ -411,7 +413,7 @@ one direction only.
 | Pair | Direction | Verdict | Evidence |
 | --- | --- | --- | --- |
 | WETH → MPGR | BUY | **EXECUTABLE_ROUTE** | 1 hop, 1 leg, venue kind 7 — quoted through a canonically re-derived v4 PoolKey |
-| MPGR → WETH | SELL | UNMEASURED_PROVIDER_FAILURE | `Liquidity-neighbour enumeration needs a historical log range, and the canonical sweep is disabled (maxSweepCalls=0); multi-hop discovery for this token is unmeasured, not absent` |
+| MPGR → WETH | SELL | UNMEASURED_PROVIDER_FAILURE — **now attributed** | `Pools exist for this pair but none quoted a positive output … Direct candidates: 0x498581ff…2b2b:0xfc151dc0…1cc44 (Uniswap v4, hooks 0x985C…2AcC) answered zero output` → class `QUOTE_ZERO_OUTPUT` |
 | MPGR → USDC | SELL | UNMEASURED_PROVIDER_FAILURE | `v4 search capped — Matched 1 v4 pool(s) for 0xb200…af01 by block 48631238; stopped after a 3-window tail, so blocks 48631239-52888968 were not scanned` |
 | USDC → MPGR | BUY | UNMEASURED_PROVIDER_FAILURE | same as above |
 | MPGR ↔ 12 B20 tokens | TOKEN_PAIR | UNMEASURED_PROVIDER_FAILURE | `Probe budget exhausted before this pair was measured (shard 1/6, 1260000ms)` |
@@ -420,11 +422,63 @@ So **MPGR is tradeable in one measured direction** — buying MPGR with WETH thr
 v4 pool — and that is the first time this matrix has measured an MPGR route at all. The three
 unmeasured MPGR quote-asset rows are instructive rather than discouraging: the v4 search *did*
 match a pool for MPGR at block 48631238 in the USDC rows, and the verdict stayed UNMEASURED
-because a scan that stops before the pinned block cannot support a negative. The SELL row failed
-later, in multi-hop, after the direct attempt produced nothing quotable; **the current reason
-string does not distinguish "no pool found" from "pool found but the quote reverted", and that
-attribution gap is the single most useful next diagnostic** — it is the difference between a hook
-that refuses sells and a search that never reached the pool.
+because a scan that stops before the pinned block cannot support a negative.
+
+### MPGR → WETH SELL: resolved, and it was never a liquidity problem
+
+Run `39575818040` (commit `4562b23`, blocks 52892489–52892497) is the first with routing
+attribution, and it settled the SELL direction outright. The row no longer says "provider
+failure"; it says exactly what happened:
+
+```text
+Pools exist for this pair but none quoted a positive output, and discovery was not complete
+enough to prove no better pool exists. Direct candidates:
+  0x498581ff718922c3f8e6a244956af099b2652b2b:0xfc151dc0278bc0b2e2ad5404e14f8e3a43e77f176537c29e25f179262ad1cc44
+  (Uniswap v4, hooks 0x985C14BAa2a18316ffdA0aeFB3a632fAdfcA2AcC) answered zero output.
+Discovery could not finish: canonical event sweep unavailable / factory index complete for every
+venue with a getter (partial by construction for kind(s) 1) / v4 Initialize search capped:
+Matched 1 v4 pool(s) … by block 48631238; stopped after a 3-window tail …
+Multi-hop was also unavailable: … This is UNMEASURED, not missing liquidity.
+```
+
+Four things follow, and each is checkable:
+
+1. **The pool WAS discovered.** Its id in that message was derived on chain by `rpc-v4.ts` and is
+   byte-identical to the `poolId` the fork suite independently verifies with
+   `assertEq(keccak256(abi.encode(key)), fixtures.mpgr.poolId)`. Nothing is hardcoded.
+2. **The venue answered zero — it did not revert.** So the class is `QUOTE_ZERO_OUTPUT`, not
+   `HOOK_OR_TOKEN_INCOMPATIBLE`. The hooks contract `0x985C…2AcC` is named in the evidence and is
+   *not* the cause; had the pool reverted, the attribution would have said so and blamed the hook
+   or the token's transfer rules.
+3. **The zero is the probe amount, arithmetically.** The matrix probes every pair with a fixed
+   `PROBE_AMOUNT = 1_000_000` raw units regardless of decimals, so the SELL leg asked the quoter
+   about `997_500` wei of MPGR (gross less 25 bps). The fork proof measured the same direction at
+   the same block height — `testForkMPGRV4FeeAndMinimum`, fork block **52892463**, 26 blocks
+   before the coverage run pinned its block — and got `GROSS 1e18`, `FEE_AMOUNT 2500000000000000`
+   (exactly 25 bps), `NET_OUTPUT 5997618925` wei of WETH, `HOPS 1`, PASS. That is a rate of
+   `5.9976e-9` wei WETH per wei MPGR, so the probe's expected output is
+   `997_500 × 5.9976e-9 = 0.00598` wei — **which floors to zero**. The BUY direction at the same
+   probe size expects `997_500 / 5.9976e-9 ≈ 1.66e14` wei of MPGR, comfortably positive, which is
+   precisely why BUY measured executable and SELL did not.
+4. **The verdict stays UNMEASURED, correctly.** A zero answer is only a liquidity fact when the
+   search was complete enough to prove a negative, and here the v4 scan was capped and the sweep
+   unavailable — so `negativeProvable` was false and the classifier refused to record
+   `MISSING_LIQUIDITY`.
+
+**SELL verdict, tiers kept separate.** At the **fork tier** MPGR → WETH executes: one hop through
+the canonical PoolManager and the real PoolKey, 25 bps charged once on gross to
+`0x96F7…64A4`, positive output, green on thirteen consecutive commits. At the **coverage tier** it
+is UNMEASURED, for a harness reason that is now identified and quantified rather than guessed. It
+is **not** missing liquidity, **not** a hook rejection, **not** unsupported token infrastructure,
+and **not** an executor-validation rejection. Nothing has been broadcast, so there is still no
+live-verified tier.
+
+The consequence reaches beyond MPGR: a fixed 1e6-raw-unit probe is `1.00 USDC` (6 decimals) but
+`10^-12` of any 18-decimal token, so **every one-directional result in this matrix is suspect until
+the probe is sized per token**. That is very likely why `AVGOc`, `CAKEc`, `LLYc`, `MRVLc`, `MUc`
+and `cbDOGE` measured executable in one direction only. It is a one-line harness change and it is
+deliberately **not** made here, because this pass was scoped to attribution; it is the highest-value
+next change to the matrix.
 
 **It reproduced.** The docs-only commit `2f0eb69` re-triggered the same pipeline as run
 `39565200296` at blocks 52889955–52889972: 6 of 6 shards again, 210 planned pairs, **65 measured
@@ -449,6 +503,18 @@ differed only in the split: 69 never attempted, 43 capped searches, 19 timeouts,
 | Discovery incomplete: sweep and/or v4 scan did not finish | 2 | provider |
 | ETH and WETH are the same asset | 2 | correct rejection (`INVALID_REQUEST`) |
 | HTTP 429 from the RPC | 1 | provider rate limit, six shards on one endpoint |
+
+The attributed run `39575818040` reports the same 210 pairs as 41 measured and 169 UNMEASURED, and
+its gap table is the first that says *where* each measurement stopped rather than only that it
+stopped: 93 never attempted (wall clock), 34 `Discovery could not finish: a budget, log-range cap or
+provider refusal`, 34 per-pair timeouts, **4 `Pool discovered and valid, but the venue rejected the
+swap`**, 2 `Pool discovered and valid, but it quoted zero output` (one of them MPGR → WETH SELL) and
+2 correct ETH≡WETH rejections. Those last two classes were not reportable categories before this
+pass: a reverted venue and a zero answer were both invisible inside one "provider failure" bucket.
+Measured counts across the three green runs were 69, 65 and 41 — **the variance is provider latency
+and rate limiting, not chain state**, and all six shards reported budget exhaustion in the last run,
+so these numbers are a floor on what the matrix managed to attempt, not a ceiling on what Base
+offers.
 
 Not one of the 141 is a liquidity finding. Raising the per-pair timeout from 60 s to 120 s and
 going from four shards to six moved measured pairs from 58 to 69 and timeouts from 39 to 16,
@@ -552,6 +618,17 @@ live state, or settled. No claim in this document is live-verified.
    `scripts/audit-high.mjs`'s allowlist — adding an allowlist entry for a new high-severity
    advisory is the dependency equivalent of excluding a Slither detector. Both fixes belong in a
    separate, reviewable dependency PR.
+10. **The coverage probe amount is not sized per token, which makes one-directional results
+    untrustworthy.** `scripts/swap-v2-coverage-matrix.test.ts` probes every pair with a fixed
+    `PROBE_AMOUNT = 1_000_000` raw units. That is `1.00 USDC` at 6 decimals but `10^-12` of any
+    18-decimal token, so a venue can answer zero purely by rounding. Attribution proved it for MPGR:
+    the SELL leg asked about 997 500 wei, and at the fork-measured rate that is `0.00598` wei of
+    WETH, which floors to zero — while the BUY leg at the same probe size expects `~1.66e14` wei and
+    quotes fine. **The fix is one line, scaling the probe by the token's decimals, and it is the
+    highest-value next change to the matrix**: until it lands, every "executable in one direction
+    only" row (`AVGOc`, `CAKEc`, `LLYc`, `MRVLc`, `MUc`, `cbDOGE` among them) may be a rounding
+    artefact rather than a routing fact. Deliberately not made in this pass, which was scoped to
+    attribution.
 
 ## 7. Activation plan
 
