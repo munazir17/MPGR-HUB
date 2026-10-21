@@ -14,7 +14,7 @@
 // Pure and offline: it classifies outcomes it is given. Running real discovery
 // over Base lives in scripts/swap-v2-coverage-matrix.test.ts, which needs an RPC.
 import { isNativeEthSentinel } from "@/lib/trade/trade-config";
-import { V2QuoteError } from "./discovery";
+import { V2QuoteError, type RouteFailureAttribution } from "./discovery";
 
 export const COVERAGE_CATEGORIES = [
   "EXECUTABLE_ROUTE",
@@ -81,11 +81,29 @@ export interface PairCoverageRow {
   /** What discovery could actually establish for this pair (sweep/index/v4 scope).
    * Kept separate from `reason` so a report can show WHY a verdict is weak. */
   evidenceScope?: string;
+  /** Which of the five failure classes this row is, when routing produced a trace.
+   * Optional: harness-level gaps (a pair never attempted, a wall-clock timeout) are
+   * not routing failures and carry no attribution. */
+  attribution?: RouteFailureAttribution;
 }
 
 /** Buckets an unmeasured reason, so a report shows the DOMINANT cause instead of
  * 158 unique strings. Bucketing never changes a category: an unmeasured pair stays
  * unmeasured, it just becomes legible. */
+/** Stable, human-readable label per attribution class. Grouping a whole matrix by
+ * these is what turns 141 identical-looking "provider failure" rows into an answer
+ * about WHERE the measurement stopped. */
+export const ATTRIBUTION_LABELS: Record<RouteFailureAttribution, string> = {
+  POOL_NOT_DISCOVERED: "No compatible pool was discovered, and the search did not finish",
+  EXECUTOR_VALIDATION_REJECTED: "Pool discovered, but the deployed executor could not address it",
+  VENUE_REJECTED_SWAP: "Pool discovered and valid, but the venue rejected the swap",
+  HOOK_OR_TOKEN_INCOMPATIBLE: "Pool discovered and valid, but a v4 hook or token transfer rule rejected the swap",
+  QUOTE_ZERO_OUTPUT: "Pool discovered and valid, but it quoted zero output",
+  QUOTE_RPC_FAILED: "Pool discovered and valid, but the quote call failed at the provider",
+  BUDGET_EXHAUSTED: "Discovery could not finish: a budget, log-range cap or provider refusal",
+  MULTIHOP_ENUMERATION_UNAVAILABLE: "Multi-hop neighbour enumeration was unavailable",
+};
+
 export function unmeasuredReasonBucket(reason: string): string {
   const text = reason.toLowerCase();
   if (/did not report|no shard|shard \d+ (failed|produced|is missing)/.test(text)) return "A shard did not report this pair";
@@ -163,7 +181,9 @@ export function summarizeByDirection(rows: readonly PairCoverageRow[]): Directio
 export function summarizeUnmeasuredReasons(rows: readonly PairCoverageRow[]): { reason: string; count: number }[] {
   const counts = new Map<string, number>();
   for (const row of rows.filter((r) => !r.measured)) {
-    const bucket = unmeasuredReasonBucket(row.reason);
+    // A routing trace is more precise than sniffing the reason text, so it wins when
+    // one exists. Rows without it (never attempted, timed out) keep the text bucket.
+    const bucket = row.attribution ? ATTRIBUTION_LABELS[row.attribution] : unmeasuredReasonBucket(row.reason);
     counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
   }
   return [...counts.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
@@ -208,6 +228,17 @@ export function classifyTokenSupport(token: TokenSupportFacts): TokenSupportVerd
 }
 
 /** Maps a discovery outcome to a coverage category. */
+/** Compresses a routing trace into the one line a report can show: how many pools
+ * discovery returned, how many were quotable candidates, what each did, and whether a
+ * negative was provable. This is the evidence that separates "we never found the pool"
+ * from "we found it and the venue refused". */
+function traceScope(trace: import("./discovery").RouteAttemptTrace): string {
+  const outcomes = trace.candidates.map((c) => c.outcome.cause).join("/") || "none";
+  return `discovery returned ${trace.poolsReturned} pool(s); ${trace.rejected.length} rejected before quoting;`
+    + ` ${trace.candidates.length} quotable candidate(s) [${outcomes}];`
+    + ` negative provable: ${trace.negativeProvable}; multi-hop ${trace.multihop.attempted ? `attempted, ${trace.multihop.candidates} candidate(s)` : "not attempted"}`;
+}
+
 export function classifyPairOutcome(
   from: string,
   to: string,
@@ -231,7 +262,12 @@ export function classifyPairOutcome(
   // A provider or index failure is UNMEASURED. Reporting it as missing liquidity
   // would claim a negative we never established.
   if (error instanceof V2QuoteError && error.code === "DISCOVERY_UNAVAILABLE") {
-    return { ...base, category: "UNMEASURED_PROVIDER_FAILURE", measured: false, reason: `Discovery was unavailable: ${error.message}` };
+    return {
+      ...base, category: "UNMEASURED_PROVIDER_FAILURE", measured: false,
+      reason: `Discovery was unavailable: ${error.message}`,
+      ...(error.attribution ? { attribution: error.attribution } : {}),
+      ...(error.trace ? { evidenceScope: traceScope(error.trace) } : {}),
+    };
   }
   if (!(error instanceof V2QuoteError)) {
     return { ...base, category: "UNMEASURED_PROVIDER_FAILURE", measured: false, reason: `Discovery raised an unexpected error: ${error instanceof Error ? error.message : String(error)}` };
@@ -248,7 +284,12 @@ export function classifyPairOutcome(
           return { ...base, category: "UNSUPPORTED_TOKEN_INFRASTRUCTURE", measured: true, reason: classified.reason };
         }
       }
-      return { ...base, category: "MISSING_LIQUIDITY", measured: true, reason: `${error.message} The tokens are valid Base assets; no compatible pool quoted this pair.` };
+      return {
+        ...base, category: "MISSING_LIQUIDITY", measured: true,
+        reason: `${error.message} The tokens are valid Base assets; no compatible pool quoted this pair.`,
+        ...(error.attribution ? { attribution: error.attribution } : {}),
+        ...(error.trace ? { evidenceScope: traceScope(error.trace) } : {}),
+      };
     }
     case "INVALID_PAIR":
       return { ...base, category: "INVALID_REQUEST", measured: false, reason: error.message };

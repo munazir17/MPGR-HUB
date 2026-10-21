@@ -188,6 +188,54 @@ transaction. Nothing is fabricated or silently substituted.
 | Malformed provider block hash | `PROVIDER_ERROR` | 503 |
 | Pinned block moved | `QUOTE_CHANGED` | 409 |
 
+### Routing failure attribution
+
+The table above is about the execution path. Discovery failures used to have no equivalent: a
+revert, a zero answer, an RPC outage, an exhausted budget and "no pool was ever found" all
+collapsed into the same silent `null` from `quoteLeg`, so a pair was reported as an
+undifferentiated provider failure whichever of them happened. That is why `SELL MPGR → WETH`
+could only be described as a provider failure while `BUY WETH → MPGR` measured executable through
+the *same* pool.
+
+`discoverV2Quote` now records a `RouteAttemptTrace` — how many pools discovery returned, which
+were dropped by executor validation and why, and what every quotable candidate actually did — and
+`attributeRouteFailure()` turns it into one of these classes. The trace rides on the thrown
+`V2QuoteError`, and `classifyPairOutcome` copies the class and a one-line evidence scope onto the
+coverage row, so a whole matrix can be grouped by *where the measurement stopped*.
+
+| Class | Meaning | Verdict |
+| --- | --- | --- |
+| `BUDGET_EXHAUSTED` | A read/log/wall-clock cap was hit, or the bounded search could not finish, so the venue was never asked | `DISCOVERY_UNAVAILABLE` — unmeasured |
+| `QUOTE_RPC_FAILED` | A pool **was** discovered and validated, but the quote call failed at the provider | `DISCOVERY_UNAVAILABLE` — unmeasured |
+| `HOOK_OR_TOKEN_INCOMPATIBLE` | A pool was discovered and validated, but a **Uniswap v4 pool with a hooks contract in its call path** reverted. The refusal is attributable to that hook or to the token's own transfer rules, and is not isolated further without a state trace | `DISCOVERY_UNAVAILABLE` — unmeasured |
+| `VENUE_REJECTED_SWAP` | Same, on a pool with no hooks contract to blame | `DISCOVERY_UNAVAILABLE` — unmeasured |
+| `QUOTE_ZERO_OUTPUT` | A pool was discovered and validated and the venue **answered zero** | `LIQUIDITY_UNAVAILABLE` if the search was complete, otherwise `DISCOVERY_UNAVAILABLE` |
+| `EXECUTOR_VALIDATION_REJECTED` | Discovery returned pools the deployed executor could not address (disabled venue kind, a v4 pool whose tokens disagree with its own PoolKey, currencies out of order, tick spacing out of range) | as above, per completeness |
+| `POOL_NOT_DISCOVERED` | Nothing connecting this pair was found | as above, per completeness |
+
+**The governing rule is that a refusal is not a fact about liquidity.** A venue that reverts, a
+provider that errors and a budget that runs out all leave the pair UNMEASURED. Only a venue that
+*answers* — with zero — has said something about liquidity, and even then only when discovery was
+complete enough to prove a negative, which `RpcV2LiquiditySource.negativeProvable(input, output)`
+now reports **per pair** (a single mutable diagnostics field was not enough: the coverage matrix
+probes pairs concurrently, so one pair's attribution would otherwise read whichever load finished
+last).
+
+Two further consequences worth knowing when reading a report:
+
+- Candidate quotes are attempted independently. The old `Promise.all` let one venue's outage reject
+  the whole batch and erase another venue's good quote; every candidate's outcome is now recorded,
+  and a route is built from whichever venues answered.
+- Multi-hop failing no longer masks the direct attempt. For a token whose only pool is a
+  native-side v4 pool, the direct attribution is the answer and the multi-hop outage is recorded as
+  context on the same trace.
+
+`lib/swap/v2/__tests__/mpgr-direction-attribution.test.ts` (23 tests, SIMULATED tier) pins all of
+this down for an MPGR-shaped pair with a **fabricated** PoolKey — fee 3000, tick spacing 60, a
+made-up hooks address, a made-up deployment block — so no real pool id, hook, fee, tick spacing or
+block number is encoded as an expected result anywhere. Discovery has to derive the PoolKey from
+the fabricated `Initialize` log, exactly as it does on chain.
+
 ## 5. Evidence tiers: what is actually proven
 
 **Tier 1 — unit-simulated (this change): 268 tests across 20 files on the V2 surface,

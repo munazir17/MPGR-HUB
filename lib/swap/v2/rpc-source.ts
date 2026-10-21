@@ -4,7 +4,7 @@ import { factoryIndexPools, PARTIAL_INDEX_VENUE_KINDS, type FactoryIndexResult }
 import { discoverV4Pools, V4_INITIALIZE_EVENT, V4DiscoveryCache, type V4DiscoveryOptions, type V4SearchResult } from "./rpc-v4";
 import { decodeFunctionResult, encodeFunctionData, parseAbi, parseAbiItem, zeroAddress, type Address, type PublicClient } from "viem";
 import { SWAP_PATH_VENUES } from "../swap-executor-config";
-import { asset, V4_MANAGER, V2QuoteError, type LiquiditySource, type Pool } from "./discovery";
+import { asset, V4_MANAGER, V2QuoteError, type CandidateOutcome, type LiquiditySource, type Pool } from "./discovery";
 const events = {
   v2: parseAbiItem("event PairCreated(address indexed token0, address indexed token1, address pair, uint256)"),
   v3: parseAbiItem("event PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)"),
@@ -30,21 +30,81 @@ const slipAbi = parseAbi(["function quoteExactInputSingle((address tokenIn,addre
 const v4Abi = parseAbi(["function quoteExactInputSingle(((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 exactAmount,bytes hookData) params) returns(uint256 amountOut,uint256 gasEstimate)"]);
 const weth = "0x4200000000000000000000000000000000000006";
 const normalize = (a: Address) => a.toLowerCase() === zeroAddress ? asset(weth) : asset(a);
+/** Bounded, because this text ends up in a coverage report row. */
+const clip = (value: string): string => (value.length > 240 ? `${value.slice(0, 240)}...` : value);
+const text = (error: unknown): string => {
+  if (!(error instanceof Error)) return clip(String(error));
+  const rich = error as Error & { shortMessage?: string; details?: string; data?: unknown };
+  const base = rich.shortMessage || rich.message;
+  const extra = [rich.details, typeof rich.data === "string" ? rich.data : undefined].filter(Boolean).join(" | ");
+  return clip(extra ? `${base} (${extra})` : base);
+};
+/**
+ * Classifies a failed venue call.
+ *
+ * A revert means the venue REFUSED to answer — for a Uniswap v4 pool that refusal
+ * happens inside the pool's hooks contract or the token's own transfer rules, and it
+ * is evidence about that pool, not about the pair's liquidity. A budget means we
+ * stopped asking. Anything else is the provider's fault. All three are UNMEASURED;
+ * none of them may be reported as missing liquidity.
+ */
+function classifyCallFailure(error: unknown): CandidateOutcome {
+  const detail = text(error);
+  if (/revert/i.test(detail)) return { cause: "reverted", detail };
+  if (/budget exceeded|exceeded its \d+-call budget|exceeded \d+/i.test(detail)) return { cause: "budget", detail };
+  return { cause: "rpc-error", detail };
+}
 
 /** Request-scoped canonical-event index. Production deployments can replace this
  * with a persistent index implementing the same LiquiditySource contract.
  * No fee tier, tick spacing, pool key, token catalog or bridge list is assumed.
  * Range-limited providers are partitioned; exceeding the work budget fails as
  * DISCOVERY_UNAVAILABLE rather than pretending a token has no liquidity. */
+type Diagnostics = { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable"; v4: V4SearchResult | null };
+
 export class RpcV2LiquiditySource implements LiquiditySource {
   private cache = new Map<string, Promise<readonly Pool[]>>();
+  /** Diagnostics PER PAIR. A single mutable field is not enough: `pools()` runs
+   * concurrently (the coverage matrix probes many pairs at once), so attribution for
+   * one pair would otherwise read whichever load happened to finish last. */
+  private diagByKey = new Map<string, Diagnostics>();
   private reads = 0;
   /** What the last `pools(input, output)` load could actually establish. Lets a
    * caller tell "no compatible pool exists" apart from "we could not finish
    * looking" — the distinction the coverage matrix must never blur. */
-  private lastDiagnostics: { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable"; v4: V4SearchResult | null } =
-    { factoryIndex: null, historyScan: "not-run", v4: null };
-  diagnostics(): { factoryIndex: FactoryIndexResult | null; historyScan: "not-run" | "complete" | "unavailable"; v4: V4SearchResult | null } { return this.lastDiagnostics; }
+  private lastDiagnostics: Diagnostics = { factoryIndex: null, historyScan: "not-run", v4: null };
+  diagnostics(): Diagnostics { return this.lastDiagnostics; }
+  private static key(input: Address, output?: Address): string { return `${input.toLowerCase()}:${output?.toLowerCase() ?? "*"}`; }
+  /**
+   * Whether "no compatible pool exists for this pair" is currently provable.
+   *
+   * It is not enough for discovery to have returned pools: if the canonical sweep
+   * could not run, or the v4 `Initialize` scan stopped before the pinned block, or a
+   * factory index failed for some venue, then a pool that quotes zero may simply be
+   * the only pool we managed to find. Reporting that as missing liquidity would be a
+   * fabricated negative, so this stays false and the pair stays UNMEASURED.
+   */
+  negativeProvable(input: Address, output?: Address): boolean {
+    const diag = this.diagByKey.get(RpcV2LiquiditySource.key(input, output));
+    if (!diag) return false; // never loaded: nothing was established either way
+    if (diag.historyScan !== "complete") return false;
+    if (!diag.v4 || diag.v4.state !== "complete") return false;
+    if (diag.factoryIndex && diag.factoryIndex.failedKinds.length > 0) return false;
+    return true;
+  }
+  /** What discovery could and could not establish for this pair, verbatim. */
+  discoveryNotes(input: Address, output?: Address): string[] {
+    const diag = this.diagByKey.get(RpcV2LiquiditySource.key(input, output));
+    if (!diag) return ["discovery was never run for this pair"];
+    const notes: string[] = [`canonical event sweep ${diag.historyScan}`];
+    if (diag.factoryIndex) {
+      notes.push(`factory index ${diag.factoryIndex.failedKinds.length ? `failed for venue kind(s) ${diag.factoryIndex.failedKinds.join("/")}` : "complete for every venue with a getter"}`
+        + ` (partial by construction for kind(s) ${PARTIAL_INDEX_VENUE_KINDS.join("/")})`);
+    } else notes.push("factory index did not run");
+    if (diag.v4) notes.push(`v4 Initialize search ${diag.v4.state}: ${diag.v4.note}`);
+    else notes.push("v4 Initialize search did not run");
+    return notes;
+  }
   /**
    * @param maxSweepCalls Cap on `eth_getLogs` calls in the universal canonical-event
    * sweep. The sweep scans from block 0, which a range-capped provider cannot serve,
@@ -71,13 +131,23 @@ export class RpcV2LiquiditySource implements LiquiditySource {
     catch { return []; } // Never treat missing hints as no liquidity.
   }
   pools(input: Address, output?: Address): Promise<readonly Pool[]> {
-    const key = `${input.toLowerCase()}:${output?.toLowerCase() ?? "*"}`;
-    if (!this.cache.has(key)) this.cache.set(key, this.load(input, output));
+    const key = RpcV2LiquiditySource.key(input, output);
+    if (!this.cache.has(key)) this.cache.set(key, this.load(key, input, output));
     return this.cache.get(key)!;
   }
-  private async load(input: Address, output?: Address): Promise<readonly Pool[]> {
+  private async load(key: string, input: Address, output?: Address): Promise<readonly Pool[]> {
+    const diag: Diagnostics = { factoryIndex: null, historyScan: "not-run", v4: null };
+    try {
+      return await this.loadInner(diag, input, output);
+    } finally {
+      // Recorded on the way out whether the load returned pools or threw, so a pair
+      // that failed the honesty gate can still explain what it managed to establish.
+      this.lastDiagnostics = diag;
+      this.diagByKey.set(key, diag);
+    }
+  }
+  private async loadInner(diag: Diagnostics, input: Address, output?: Address): Promise<readonly Pool[]> {
     const result = new Map<string, Pool>();
-    this.lastDiagnostics = { factoryIndex: null, historyScan: "not-run", v4: null };
     // 0. Multi-hop neighbour enumeration (no `output`) can only be answered by the
     //    canonical event sweep: the factory index is pair-shaped, and v4 has no
     //    enumerable getter for "every pool this token is in" other than its own
@@ -94,13 +164,13 @@ export class RpcV2LiquiditySource implements LiquiditySource {
     if (output) {
       try {
         const index = await factoryIndexPools(this.client, input, output, this.blockNumber, () => this.budget());
-        this.lastDiagnostics.factoryIndex = index;
+        diag.factoryIndex = index;
         for (const p of index.pools) result.set(p.id, p);
       } catch (error) {
         // An index that could not run leaves us with the sweep below; it is not a
         // verdict of "no liquidity".
         if (!(error instanceof V2QuoteError)) throw error;
-        this.lastDiagnostics.factoryIndex = null;
+        diag.factoryIndex = null;
       }
     }
     // 2. Bounded Uniswap v4 discovery. No factory getter can enumerate a PoolKey
@@ -110,12 +180,12 @@ export class RpcV2LiquiditySource implements LiquiditySource {
     //    PoolKey is re-derived and must equal the log's own indexed pool id.
     try {
       const v4 = await discoverV4Pools(this.client, input, output, this.blockNumber, this.v4Options, () => this.budget());
-      this.lastDiagnostics.v4 = v4;
+      diag.v4 = v4;
       for (const p of v4.pools) result.set(p.id, p);
     } catch (error) {
       // A search that could not run is "we could not look", never "no v4 pool".
       if (!(error instanceof V2QuoteError)) throw error;
-      this.lastDiagnostics.v4 = {
+      diag.v4 = {
         pools: [], state: "unavailable", floor: null, scannedTo: null, head: this.blockNumber,
         logCalls: 0, codeCalls: 0, rejected: [], note: error.message,
       };
@@ -167,7 +237,7 @@ export class RpcV2LiquiditySource implements LiquiditySource {
       if (error instanceof V2QuoteError && error.code === "DISCOVERY_UNAVAILABLE") historyScan = "unavailable";
       else throw error;
     }
-    this.lastDiagnostics.historyScan = historyScan;
+    diag.historyScan = historyScan;
     // HONESTY RULE, in two halves, because the two directions are not symmetric.
     //
     // A POSITIVE is always safe to return. Every pool in `result` was verified
@@ -183,8 +253,8 @@ export class RpcV2LiquiditySource implements LiquiditySource {
     // the pinned block. Slipstream's index is partial by construction (see
     // PARTIAL_INDEX_VENUE_KINDS), so an index-only negative is never sufficient.
     // Anything less is DISCOVERY_UNAVAILABLE, never LIQUIDITY_UNAVAILABLE.
-    const index = this.lastDiagnostics.factoryIndex;
-    const v4 = this.lastDiagnostics.v4;
+    const index = diag.factoryIndex;
+    const v4 = diag.v4;
     if (!(historyScan === "complete" && !!v4 && v4.state === "complete")) {
       throw new V2QuoteError("DISCOVERY_UNAVAILABLE",
         `No compatible pool could be established for this pair: canonical sweep ${historyScan}`
@@ -193,34 +263,64 @@ export class RpcV2LiquiditySource implements LiquiditySource {
     }
     return [];
   }
-  async quote(p: Pool, input: Address, amount: bigint): Promise<bigint> {
-    this.budget();
+  /**
+   * Why a venue did not answer, instead of a bare number.
+   *
+   * This is the method that makes MPGR's two directions distinguishable. Both sides of
+   * the pair discover the SAME native-currency v4 pool; before this existed, a revert
+   * and a zero answer both came back as `0n` and were indistinguishable from "no pool
+   * was ever found", so the SELL direction could only be reported as an undifferentiated
+   * provider failure.
+   */
+  async quoteAttempt(p: Pool, input: Address, amount: bigint): Promise<CandidateOutcome> {
+    try { this.budget(); } catch (error) { return { cause: "budget", detail: text(error) }; }
     const output = p.token0.toLowerCase() === input.toLowerCase() ? p.token1 : p.token0;
     const v = venues.find(v => v.kind === p.kind)!;
-    if (p.router.toLowerCase() !== v.router.toLowerCase() || p.factory.toLowerCase() !== v.factory.toLowerCase()) throw new V2QuoteError("FEE_POLICY_INVALID", "Noncanonical venue");
-    const target = p.kind === 3 || p.kind === 4 ? p.router : v.quoter!;
-    const code = await this.client.getCode({ address: target, blockNumber: this.blockNumber });
-    if (!code || code === "0x") throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "Quote adapter has no Base code");
-    let data: `0x${string}`;
-    if (p.kind === 3) data = encodeFunctionData({ abi: v2Abi, functionName: "getAmountsOut", args: [amount, [input, output]] });
-    else if (p.kind === 4) data = encodeFunctionData({ abi: classicAbi, functionName: "getAmountsOut", args: [amount, [{ from: input, to: output, stable: p.stable, factory: p.factory }]] });
-    else if (p.kind === 2) data = encodeFunctionData({ abi: uniAbi, functionName: "quoteExactInputSingle", args: [{ tokenIn: input, tokenOut: output, amountIn: amount, fee: p.poolFee, sqrtPriceLimitX96: 0n }] });
-    else if (p.kind === 1) data = encodeFunctionData({ abi: slipAbi, functionName: "quoteExactInputSingle", args: [{ tokenIn: input, tokenOut: output, amountIn: amount, tickSpacing: p.tickSpacing, sqrtPriceLimitX96: 0n }] });
-    else {
-      if (!p.v4Key) throw new V2QuoteError("FEE_POLICY_INVALID", "Missing v4 PoolKey");
-      data = encodeFunctionData({ abi: v4Abi, functionName: "quoteExactInputSingle", args: [{ poolKey: p.v4Key, zeroForOne: normalize(p.v4Key.currency0).toLowerCase() === input.toLowerCase(), exactAmount: amount, hookData: "0x" }] });
+    if (p.router.toLowerCase() !== v.router.toLowerCase() || p.factory.toLowerCase() !== v.factory.toLowerCase()) {
+      return { cause: "venue-error", code: "FEE_POLICY_INVALID", detail: "Noncanonical venue" };
     }
+    if (p.kind === 7 && !p.v4Key) return { cause: "venue-error", code: "FEE_POLICY_INVALID", detail: "Missing v4 PoolKey" };
+    const target = p.kind === 3 || p.kind === 4 ? p.router : v.quoter!;
+    let data: `0x${string}`;
+    try {
+      const code = await this.client.getCode({ address: target, blockNumber: this.blockNumber });
+      if (!code || code === "0x") return { cause: "venue-error", code: "DISCOVERY_UNAVAILABLE", detail: "Quote adapter has no Base code" };
+      if (p.kind === 3) data = encodeFunctionData({ abi: v2Abi, functionName: "getAmountsOut", args: [amount, [input, output]] });
+      else if (p.kind === 4) data = encodeFunctionData({ abi: classicAbi, functionName: "getAmountsOut", args: [amount, [{ from: input, to: output, stable: p.stable, factory: p.factory }]] });
+      else if (p.kind === 2) data = encodeFunctionData({ abi: uniAbi, functionName: "quoteExactInputSingle", args: [{ tokenIn: input, tokenOut: output, amountIn: amount, fee: p.poolFee, sqrtPriceLimitX96: 0n }] });
+      else if (p.kind === 1) data = encodeFunctionData({ abi: slipAbi, functionName: "quoteExactInputSingle", args: [{ tokenIn: input, tokenOut: output, amountIn: amount, tickSpacing: p.tickSpacing, sqrtPriceLimitX96: 0n }] });
+      // zeroForOne is decided by the PoolKey's OWN currency order, with the native side
+      // read as canonical WETH: for a pool whose currency0 is the zero address, selling
+      // the token is currency1 -> currency0, and buying it is currency0 -> currency1.
+      else data = encodeFunctionData({ abi: v4Abi, functionName: "quoteExactInputSingle", args: [{ poolKey: p.v4Key!, zeroForOne: normalize(p.v4Key!.currency0).toLowerCase() === input.toLowerCase(), exactAmount: amount, hookData: "0x" }] });
+    } catch (error) { return classifyCallFailure(error); }
     try {
       const result = await this.client.call({ to: target, data, blockNumber: this.blockNumber });
-      if (!result.data) return 0n;
-      if (p.kind === 3) return decodeFunctionResult({ abi: v2Abi, functionName: "getAmountsOut", data: result.data })[1];
-      if (p.kind === 4) return decodeFunctionResult({ abi: classicAbi, functionName: "getAmountsOut", data: result.data })[1];
-      if (p.kind === 2) return decodeFunctionResult({ abi: uniAbi, functionName: "quoteExactInputSingle", data: result.data })[0];
-      if (p.kind === 1) return decodeFunctionResult({ abi: slipAbi, functionName: "quoteExactInputSingle", data: result.data })[0];
-      return decodeFunctionResult({ abi: v4Abi, functionName: "quoteExactInputSingle", data: result.data })[0];
-    } catch (error) {
-      if (error instanceof Error && /revert/i.test(error.message)) return 0n;
-      throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "Venue quote RPC unavailable");
+      // An empty response is treated as a zero answer, exactly as before: the venue was
+      // reached and returned nothing to decode.
+      if (!result.data) return { cause: "zero-output" };
+      const amountOut: bigint =
+        p.kind === 3 ? decodeFunctionResult({ abi: v2Abi, functionName: "getAmountsOut", data: result.data })[1]
+        : p.kind === 4 ? decodeFunctionResult({ abi: classicAbi, functionName: "getAmountsOut", data: result.data })[1]
+        : p.kind === 2 ? decodeFunctionResult({ abi: uniAbi, functionName: "quoteExactInputSingle", data: result.data })[0]
+        : p.kind === 1 ? decodeFunctionResult({ abi: slipAbi, functionName: "quoteExactInputSingle", data: result.data })[0]
+        : decodeFunctionResult({ abi: v4Abi, functionName: "quoteExactInputSingle", data: result.data })[0];
+      return amountOut > 0n ? { cause: "quoted", amountOut } : { cause: "zero-output" };
+    } catch (error) { return classifyCallFailure(error); }
+  }
+  /**
+   * The legacy single-number contract, now derived from `quoteAttempt` so the two can
+   * never disagree: a revert and a zero both still return 0n here, and only the richer
+   * method knows which of the two happened.
+   */
+  async quote(p: Pool, input: Address, amount: bigint): Promise<bigint> {
+    const outcome = await this.quoteAttempt(p, input, amount);
+    switch (outcome.cause) {
+      case "quoted": return outcome.amountOut;
+      case "zero-output": case "reverted": return 0n;
+      case "venue-error": throw new V2QuoteError(outcome.code, outcome.detail);
+      case "budget": throw new V2QuoteError("DISCOVERY_UNAVAILABLE", outcome.detail);
+      case "rpc-error": throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "Venue quote RPC unavailable");
     }
   }
 }

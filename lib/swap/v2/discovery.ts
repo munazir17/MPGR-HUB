@@ -13,10 +13,70 @@ export interface Pool {
   token0: Address; token1: Address; poolFee: number; tickSpacing: number; stable: boolean;
   v4Key?: V4Key;
 }
+/**
+ * Why one discovered candidate pool did not become a leg.
+ *
+ * Exactly one of these is recorded per candidate. Before this existed, every one of
+ * them collapsed into the same silent `null` from `quoteLeg`, so "the venue refused
+ * the swap" and "no pool was ever found" produced an identical error — which is why
+ * MPGR's SELL direction could only be reported as an undifferentiated provider
+ * failure while its BUY direction measured executable through the very same pool.
+ */
+export type CandidateOutcome =
+  /** The venue answered with a positive output. */
+  | { cause: "quoted"; amountOut: bigint }
+  /** The venue answered zero. That is a liquidity statement, not an outage. */
+  | { cause: "zero-output" }
+  /** The venue reverted. It refused to answer, so nothing was learned. */
+  | { cause: "reverted"; detail: string }
+  /** The provider failed the call. Unmeasured, never a verdict. */
+  | { cause: "rpc-error"; detail: string }
+  /** A read/log/wall-clock cap was hit before the venue could answer. */
+  | { cause: "budget"; detail: string }
+  /** The venue adapter itself refused to try (noncanonical venue, dead quoter). */
+  | { cause: "venue-error"; code: "FEE_POLICY_INVALID" | "DISCOVERY_UNAVAILABLE"; detail: string };
+
+/** Why a discovered pool was dropped before it was ever quoted. */
+export type PoolRejectionCause =
+  | "venue-kind-not-enabled" | "same-token-pool" | "v4-key-missing" | "v4-not-pool-manager"
+  | "v4-currency-order" | "v4-tick-spacing" | "v4-key-mismatch" | "does-not-connect-pair";
+
+export interface RouteAttemptTrace {
+  tokenIn: Address; tokenOut: Address; gross: bigint; net: bigint;
+  /** Pools discovery returned for the direct pair, before any validation. */
+  poolsReturned: number;
+  /** Pools dropped before quoting, each with the reason it was dropped. */
+  rejected: { poolId: string; kind: number; cause: PoolRejectionCause; detail: string }[];
+  /** Pools that passed validation and connect tokenIn→tokenOut, and what each did. */
+  candidates: { poolId: string; kind: number; hooks: Address | null; outcome: CandidateOutcome }[];
+  /** False when discovery could not finish, so "no route" is not a provable negative. */
+  negativeProvable: boolean;
+  /** Discovery-side notes: v4 search state, sweep state, index failures. */
+  notes: string[];
+  multihop: { attempted: boolean; candidates: number; note: string | null };
+}
+
+/** The single label a failed pair is reported under. Coarser than the trace, and
+ * stable enough to group a whole coverage matrix by. */
+export type RouteFailureAttribution =
+  | "POOL_NOT_DISCOVERED" | "EXECUTOR_VALIDATION_REJECTED" | "VENUE_REJECTED_SWAP"
+  | "HOOK_OR_TOKEN_INCOMPATIBLE" | "QUOTE_ZERO_OUTPUT" | "QUOTE_RPC_FAILED"
+  | "BUDGET_EXHAUSTED" | "MULTIHOP_ENUMERATION_UNAVAILABLE";
+
 export interface LiquiditySource {
   hints?(input: Address, output: Address): Promise<readonly Pool[]>;
   pools(input: Address, output?: Address): Promise<readonly Pool[]>;
   quote(pool: Pool, input: Address, amount: bigint): Promise<bigint>;
+  /** Richer than `quote`: says WHY a venue did not answer, instead of collapsing a
+   * revert, a zero and an outage into one number. Optional, so every existing source
+   * and test double keeps working unchanged. */
+  quoteAttempt?(pool: Pool, input: Address, amount: bigint): Promise<CandidateOutcome>;
+  /** Whether "no compatible pool exists" is provable for this pair right now.
+   * Absent means the source claims to have enumerated completely, which is the
+   * pre-existing contract; a bounded source must say so explicitly. */
+  negativeProvable?(input: Address, output?: Address): boolean;
+  /** Discovery-side notes for the pair, used verbatim in failure attribution. */
+  discoveryNotes?(input: Address, output?: Address): string[];
 }
 export interface Leg { pools: readonly Pool[]; tokens: readonly Address[]; amountIn: bigint; amountOut: bigint }
 export interface V2Quote {
@@ -24,6 +84,10 @@ export interface V2Quote {
   fee: bigint; net: bigint; amountOut: bigint; legs: readonly Leg[];
 }
 export class V2QuoteError extends Error {
+  /** Present on routing failures: what was discovered, what each candidate did, and
+   * therefore which of the five failure classes this actually is. */
+  trace?: RouteAttemptTrace;
+  attribution?: RouteFailureAttribution;
   constructor(public code: "INVALID_PAIR" | "INVALID_AMOUNT" | "LIQUIDITY_UNAVAILABLE" | "DISCOVERY_UNAVAILABLE" | "FEE_POLICY_INVALID", message: string) { super(message); }
 }
 export function asset(value: string): Address {
@@ -32,16 +96,34 @@ export function asset(value: string): Address {
 }
 const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const other = (p: Pool, token: Address): Address | null => eq(p.token0, token) ? p.token1 : eq(p.token1, token) ? p.token0 : null;
-function validPool(p: Pool): boolean {
-  if (![1, 2, 3, 4, 7].includes(p.kind) || eq(p.token0, p.token1)) return false;
-  if (p.kind === 7) {
-    const key = p.v4Key;
-    if (!key || !eq(p.pool, V4_MANAGER) || !eq(p.router, V4_MANAGER) || !eq(p.factory, V4_MANAGER) || BigInt(key.currency0) >= BigInt(key.currency1) || key.tickSpacing <= 0 || key.tickSpacing > 32767) return false;
-    const token0 = key.currency0 === "0x0000000000000000000000000000000000000000" ? BASE_WETH : key.currency0;
-    return eq(token0, p.token0) && eq(key.currency1, p.token1);
+/**
+ * The executor-shape check, returning WHY a pool is unusable instead of a boolean.
+ *
+ * The v4 branch is the one that matters for a native-side pool: `currency0` is the
+ * zero address for a pool against native ETH, which sorts below every ERC-20, and the
+ * pool's `token0` must read as canonical WETH — the same normalisation the deployed
+ * executor relies on when it settles such a hop into WETH. A pool that fails any of
+ * this could never be addressed by the deployed contract, so it is dropped before any
+ * quote is attempted and the reason is kept.
+ */
+export function poolRejection(p: Pool): { cause: PoolRejectionCause; detail: string } | null {
+  if (![1, 2, 3, 4, 7].includes(p.kind)) return { cause: "venue-kind-not-enabled", detail: `venue kind ${p.kind} is not enabled on the deployed executor` };
+  if (eq(p.token0, p.token1)) return { cause: "same-token-pool", detail: "pool has the same token on both sides" };
+  if (p.kind !== 7) return null;
+  const key = p.v4Key;
+  if (!key) return { cause: "v4-key-missing", detail: "v4 pool without a PoolKey" };
+  if (!eq(p.pool, V4_MANAGER) || !eq(p.router, V4_MANAGER) || !eq(p.factory, V4_MANAGER)) {
+    return { cause: "v4-not-pool-manager", detail: `v4 hop must address the PoolManager (${V4_MANAGER}) as pool, router and factory` };
   }
-  return true;
+  if (BigInt(key.currency0) >= BigInt(key.currency1)) return { cause: "v4-currency-order", detail: "PoolKey currencies are not in ascending order" };
+  if (key.tickSpacing <= 0 || key.tickSpacing > 32767) return { cause: "v4-tick-spacing", detail: `tickSpacing ${key.tickSpacing} outside [1,32767]` };
+  const token0 = key.currency0 === "0x0000000000000000000000000000000000000000" ? BASE_WETH : key.currency0;
+  if (!eq(token0, p.token0) || !eq(key.currency1, p.token1)) {
+    return { cause: "v4-key-mismatch", detail: "pool tokens do not match its own PoolKey currencies" };
+  }
+  return null;
 }
+function validPool(p: Pool): boolean { return poolRejection(p) === null; }
 async function quoteLeg(source: LiquiditySource, pools: readonly Pool[], tokens: readonly Address[], amountIn: bigint): Promise<Leg | null> {
   let amount = amountIn;
   for (let i = 0; i < pools.length; i++) {
@@ -62,6 +144,145 @@ export function validateV2Quote(q: V2Quote): void {
     throw new V2QuoteError("FEE_POLICY_INVALID", "Invalid gross-input fee, allocation, or typed path");
   }
 }
+const legOf = (pool: Pool, tokenIn: Address, tokenOut: Address, net: bigint, amountOut: bigint): Leg =>
+  ({ pools: [pool], tokens: [tokenIn, tokenOut], amountIn: net, amountOut });
+
+/**
+ * Quotes one direct candidate and records WHY it did or did not become a leg.
+ *
+ * Deliberately never throws. A candidate that fails is evidence about that venue, and
+ * the old `Promise.all(direct.map(quoteLeg))` let one venue's outage reject the whole
+ * batch — erasing another venue's good quote and reporting the pair as an
+ * undifferentiated provider failure.
+ */
+async function attemptCandidate(
+  source: LiquiditySource, pool: Pool, tokenIn: Address, tokenOut: Address, net: bigint,
+): Promise<{ leg: Leg | null; outcome: CandidateOutcome }> {
+  try {
+    if (source.quoteAttempt) {
+      const outcome = await source.quoteAttempt(pool, tokenIn, net);
+      return { leg: outcome.cause === "quoted" ? legOf(pool, tokenIn, tokenOut, net, outcome.amountOut) : null, outcome };
+    }
+    // A source that only implements `quote` gets the same vocabulary derived from its
+    // single number: positive means quoted, anything else means the venue answered
+    // zero. It cannot distinguish a revert from an outage, and says so by omission.
+    const amountOut = await source.quote(pool, tokenIn, net);
+    const outcome: CandidateOutcome = amountOut > 0n ? { cause: "quoted", amountOut } : { cause: "zero-output" };
+    return { leg: outcome.cause === "quoted" ? legOf(pool, tokenIn, tokenOut, net, amountOut) : null, outcome };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const outcome: CandidateOutcome = !(error instanceof V2QuoteError)
+      ? { cause: "rpc-error", detail }
+      : error.code === "FEE_POLICY_INVALID"
+        ? { cause: "venue-error", code: "FEE_POLICY_INVALID", detail }
+        : /budget|exceeded|cap/i.test(detail)
+          ? { cause: "budget", detail }
+          : { cause: "rpc-error", detail };
+    return { leg: null, outcome };
+  }
+}
+
+const describe = (t: RouteAttemptTrace): string => {
+  const venueName = (kind: number) => ({ 1: "Aerodrome Slipstream", 2: "Uniswap v3", 3: "Uniswap v2", 4: "Aerodrome Classic", 7: "Uniswap v4" }[kind] ?? `kind ${kind}`);
+  const candidate = (c: RouteAttemptTrace["candidates"][number]): string => {
+    const shape = `${c.poolId} (${venueName(c.kind)}${c.hooks && c.hooks.toLowerCase() !== "0x0000000000000000000000000000000000000000" ? `, hooks ${c.hooks}` : ""})`;
+    switch (c.outcome.cause) {
+      case "quoted": return `${shape} quoted ${c.outcome.amountOut}`;
+      case "zero-output": return `${shape} answered zero output`;
+      case "reverted": return `${shape} REVERTED: ${c.outcome.detail}`;
+      case "rpc-error": return `${shape} could not be quoted (provider failure): ${c.outcome.detail}`;
+      case "budget": return `${shape} was never quoted (budget exhausted): ${c.outcome.detail}`;
+      case "venue-error": return `${shape} was refused by its own venue adapter: ${c.outcome.detail}`;
+    }
+  };
+  return t.candidates.map(candidate).join("; ");
+};
+
+/**
+ * Turns a trace into the error a caller should see: the right `code`, and a message
+ * that names WHICH of the failure classes actually happened.
+ *
+ * The governing rule is that a refusal is not a fact about liquidity. A venue that
+ * reverts, a provider that errors and a budget that runs out all leave the pair
+ * UNMEASURED (`DISCOVERY_UNAVAILABLE`). Only a venue that *answers* — with zero — has
+ * said something about liquidity, and even then only when discovery was complete
+ * enough to prove a negative.
+ */
+export function attributeRouteFailure(t: RouteAttemptTrace): V2QuoteError {
+  const finish = (code: V2QuoteError["code"], attribution: RouteFailureAttribution, message: string): V2QuoteError => {
+    const error = new V2QuoteError(code, message);
+    error.trace = t; error.attribution = attribution;
+    return error;
+  };
+  const evidence = describe(t);
+  const notes = t.notes.length ? ` Discovery could not finish: ${t.notes.join(" | ")}` : "";
+  const multihop = t.multihop.note ? ` Multi-hop was also unavailable: ${t.multihop.note}` : "";
+  const notProvable = " This is UNMEASURED, not missing liquidity.";
+
+  // 1. A candidate was never quoted because a cap was hit. Nothing downstream was
+  //    asked, so nothing was learned.
+  const budgeted = t.candidates.find((c) => c.outcome.cause === "budget");
+  if (budgeted) {
+    return finish("DISCOVERY_UNAVAILABLE", "BUDGET_EXHAUSTED",
+      `Route discovery ran out of budget before this pair could be measured. Direct candidates: ${evidence}.${notes}${multihop}`);
+  }
+  // 2. The provider failed the quote call itself.
+  const rpc = t.candidates.find((c) => c.outcome.cause === "rpc-error");
+  if (rpc) {
+    return finish("DISCOVERY_UNAVAILABLE", "QUOTE_RPC_FAILED",
+      `A pool WAS discovered for this pair but the venue quote could not be read. Direct candidates: ${evidence}.${notes}${multihop}${notProvable}`);
+  }
+  // 3. The venue adapter refused to try at all (noncanonical venue, dead quoter).
+  const adapter = t.candidates.find((c) => c.outcome.cause === "venue-error");
+  if (adapter && adapter.outcome.cause === "venue-error") {
+    return finish(adapter.outcome.code, "EXECUTOR_VALIDATION_REJECTED",
+      `A pool WAS discovered but its venue adapter refused the call. Direct candidates: ${evidence}.${notes}${multihop}`);
+  }
+  // 4. The venue reverted. A hook contract sits in the call path of a v4 swap, so a
+  //    reverting v4 pool with non-zero hooks is attributed to the hook or to the
+  //    token's own transfer rules — which is as far as the evidence goes. Isolating
+  //    it further needs a state-trace of the revert, not a guess.
+  const reverted = t.candidates.filter((c) => c.outcome.cause === "reverted");
+  if (reverted.length) {
+    const hooked = reverted.some((c) => c.kind === 7 && !!c.hooks && c.hooks.toLowerCase() !== "0x0000000000000000000000000000000000000000");
+    return finish("DISCOVERY_UNAVAILABLE", hooked ? "HOOK_OR_TOKEN_INCOMPATIBLE" : "VENUE_REJECTED_SWAP",
+      `A pool WAS discovered and passed executor validation, but the venue refused the swap. Direct candidates: ${evidence}.`
+      + (hooked ? " The reverting pool is a Uniswap v4 pool with a hooks contract in its call path, so the refusal is attributable to that hook or to the token's own transfer rules; it was not isolated further." : "")
+      + `${notes}${multihop}${notProvable}`);
+  }
+  // 5. No candidate was ever quoted, so from here the discovery notes are the only
+  //    evidence. A search that was cut short is a budget fact, not a pool fact.
+  if (!t.candidates.length && t.notes.some((n) => /budget|exceeded|capped|refused every|unavailable|could not be established/i.test(n))) {
+    return finish("DISCOVERY_UNAVAILABLE", "BUDGET_EXHAUSTED",
+      `Route discovery could not finish, so this pair was never measured.${notes}${multihop}`);
+  }
+  const validationRejected = t.rejected.filter((r) => r.cause !== "does-not-connect-pair");
+  // 6. Pools were found for this pair but none could be quoted: the venue answered
+  //    zero. That is a liquidity statement — but only if the search was complete.
+  if (t.candidates.length) {
+    return t.negativeProvable
+      ? finish("LIQUIDITY_UNAVAILABLE", "QUOTE_ZERO_OUTPUT",
+          `Pools exist for this pair but none quoted a positive output. Direct candidates: ${evidence}.${multihop}`)
+      : finish("DISCOVERY_UNAVAILABLE", "QUOTE_ZERO_OUTPUT",
+          `Pools exist for this pair but none quoted a positive output, and discovery was not complete enough to prove no better pool exists. Direct candidates: ${evidence}.${notes}${multihop}${notProvable}`);
+  }
+  // 7. Nothing quotable was discovered at all: either dropped by executor validation,
+  //    or no pool for this pair was ever found.
+  if (validationRejected.length) {
+    const detail = validationRejected.map((r) => `${r.poolId} (${r.cause}: ${r.detail})`).join("; ");
+    return t.negativeProvable
+      ? finish("LIQUIDITY_UNAVAILABLE", "EXECUTOR_VALIDATION_REJECTED",
+          `Discovery returned pool(s) the deployed executor could not address, so no route was quotable: ${detail}.${multihop}`)
+      : finish("DISCOVERY_UNAVAILABLE", "EXECUTOR_VALIDATION_REJECTED",
+          `Discovery returned pool(s) the deployed executor could not address, and discovery was incomplete besides: ${detail}.${notes}${multihop}${notProvable}`);
+  }
+  return t.negativeProvable
+    ? finish("LIQUIDITY_UNAVAILABLE", "POOL_NOT_DISCOVERED",
+        `No compatible pool was discovered for this pair and discovery was complete, so no liquid direct or up-to-three-hop route exists.${t.poolsReturned ? ` ${t.poolsReturned} pool(s) were returned but none connects ${t.tokenIn} to ${t.tokenOut}.` : ""}${multihop}`)
+    : finish("DISCOVERY_UNAVAILABLE", "POOL_NOT_DISCOVERED",
+        `No compatible pool was discovered for this pair, and the search did not finish, so absence is not proven.${t.poolsReturned ? ` ${t.poolsReturned} pool(s) were returned but none connects ${t.tokenIn} to ${t.tokenOut}.` : ""}${notes}${multihop}${notProvable}`);
+}
+
 /** Direct quotes always win over multihop, regardless of hypothetical hop output.
  * Multi-hop discovers neighbors from actual pools, never a fixed bridge list. */
 export async function discoverV2Quote(source: LiquiditySource, from: string, to: string, gross: bigint): Promise<V2Quote> {
@@ -69,14 +290,91 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
   if (eq(tokenIn, tokenOut)) throw new V2QuoteError("INVALID_PAIR", "ETH and WETH are the same asset; select distinct assets");
   const fee = gross * 25n / 10000n, net = gross - fee;
   if (gross <= 0n || fee <= 0n) throw new V2QuoteError("INVALID_AMOUNT", "Sell amount is too small for the mandatory fee");
-  let direct = (await (source.hints ? source.hints(tokenIn, tokenOut) : source.pools(tokenIn, tokenOut))).filter(p => validPool(p) && eq(other(p, tokenIn) ?? "", tokenOut));
-  let quoted = (await Promise.all(direct.map(p => quoteLeg(source, [p], [tokenIn, tokenOut], net)))).filter((l): l is Leg => l !== null);
-  if (source.hints && !quoted.length) {
+  const trace: RouteAttemptTrace = {
+    tokenIn, tokenOut, gross, net, poolsReturned: 0, rejected: [], candidates: [],
+    // Filled in after discovery actually runs: a source reports what IT could
+    // establish for this pair, and asking before the call would read stale state.
+    negativeProvable: true, notes: [],
+    multihop: { attempted: false, candidates: 0, note: null },
+  };
+  /** Splits what discovery returned into dropped-by-validation, dropped-because-it-
+   * does-not-connect-this-pair, and actually quotable. Keeping all three is the whole
+   * point: it is what separates "no pool discovered" from "pool discovered but the
+   * executor could not address it" from "pool discovered but the venue refused". */
+  const partition = (pools: readonly Pool[]): Pool[] => {
+    trace.poolsReturned = pools.length;
+    trace.rejected = [];
+    const quotable: Pool[] = [];
+    for (const pool of pools) {
+      const rejection = poolRejection(pool);
+      if (rejection) { trace.rejected.push({ poolId: pool.id, kind: pool.kind, ...rejection }); continue; }
+      if (!eq(other(pool, tokenIn) ?? "", tokenOut)) {
+        trace.rejected.push({
+          poolId: pool.id, kind: pool.kind, cause: "does-not-connect-pair",
+          detail: `pool is ${pool.token0}/${pool.token1}, which does not connect ${tokenIn} to ${tokenOut}`,
+        });
+        continue;
+      }
+      quotable.push(pool);
+    }
+    return quotable;
+  };
+  const recordDiscoveryState = (): void => {
+    trace.negativeProvable = source.negativeProvable?.(tokenIn, tokenOut) !== false;
+    trace.notes = [...(source.discoveryNotes?.(tokenIn, tokenOut) ?? [])];
+  };
+  /**
+   * Discovery can fail before it ever produces a candidate list — a bounded source
+   * throws rather than claim a negative it cannot prove. That error must still carry
+   * an attribution, or the pair shows up in a coverage report as an unclassified
+   * provider failure, which is the exact ambiguity this file exists to remove.
+   */
+  const discoverDirect = async (): Promise<readonly Pool[]> => {
+    try {
+      return await (source.hints ? source.hints(tokenIn, tokenOut) : source.pools(tokenIn, tokenOut));
+    } catch (error) {
+      if (error instanceof V2QuoteError && !error.attribution) {
+        error.attribution = /budget|exceeded|capped|refused|unavailable|could not be established/i.test(error.message)
+          ? "BUDGET_EXHAUSTED" : "POOL_NOT_DISCOVERED";
+        error.trace = {
+          tokenIn, tokenOut, gross, net, poolsReturned: 0, rejected: [], candidates: [],
+          negativeProvable: false, notes: [error.message],
+          multihop: { attempted: false, candidates: 0, note: null },
+        };
+      }
+      throw error;
+    }
+  };
+
+  let direct = partition(await (source.hints ? source.hints(tokenIn, tokenOut) : discoverDirect()));
+  recordDiscoveryState();
+  let attempts = await Promise.all(direct.map(pool => attemptCandidate(source, pool, tokenIn, tokenOut, net)));
+  if (source.hints && !attempts.some(a => a.leg)) {
     // Hints cannot prove absence. Complete canonical discovery is mandatory
     // before allowing multi-hop or returning LIQUIDITY_UNAVAILABLE.
-    direct = (await source.pools(tokenIn, tokenOut)).filter(p => validPool(p) && eq(other(p, tokenIn) ?? "", tokenOut));
-    quoted = (await Promise.all(direct.map(p => quoteLeg(source, [p], [tokenIn, tokenOut], net)))).filter((l): l is Leg => l !== null);
+    direct = partition(await source.pools(tokenIn, tokenOut).catch((error: unknown) => {
+      // The second, canonical pass is the one whose failure decides the verdict, so it
+      // gets the same treatment as the first.
+      if (error instanceof V2QuoteError && !error.attribution) {
+        error.attribution = /budget|exceeded|capped|refused|unavailable|could not be established/i.test(error.message)
+          ? "BUDGET_EXHAUSTED" : "POOL_NOT_DISCOVERED";
+        error.trace = {
+          tokenIn, tokenOut, gross, net, poolsReturned: 0, rejected: [], candidates: [],
+          negativeProvable: false, notes: [error.message],
+          multihop: { attempted: false, candidates: 0, note: null },
+        };
+      }
+      throw error;
+    }));
+    recordDiscoveryState();
+    attempts = await Promise.all(direct.map(pool => attemptCandidate(source, pool, tokenIn, tokenOut, net)));
   }
+  trace.candidates = direct.map((pool, i) => ({
+    poolId: pool.id, kind: pool.kind,
+    hooks: pool.kind === 7 ? pool.v4Key?.hooks ?? null : null,
+    outcome: attempts[i].outcome,
+  }));
+  let quoted = attempts.map(a => a.leg).filter((l): l is Leg => l !== null);
   let legs: readonly Leg[] = [];
   if (quoted.length) {
     const best = quoted.reduce((a, b) => b.amountOut > a.amountOut ? b : a);
@@ -95,6 +393,8 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     }
   } else {
     const candidates: Leg[] = [];
+    trace.multihop.attempted = true;
+    try {
     // Meet in the middle: enumerate liquidity neighbors of the requested
     // endpoints only. Never enumerate every WETH/USDC pool as a bridge catalog.
     const first = (await source.pools(tokenIn)).filter(validPool);
@@ -119,8 +419,17 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     }
     candidates.sort((a, b) => a.amountOut === b.amountOut ? a.pools.length - b.pools.length : a.amountOut > b.amountOut ? -1 : 1);
     if (candidates.length) legs = [candidates[0]];
+    trace.multihop.candidates = candidates.length;
+    } catch (error) {
+      // Multi-hop failing must not mask what the DIRECT attempt learned: for a pair
+      // whose only pool is a native-side v4 pool, the direct attribution is the answer
+      // and the multi-hop outage is context. Anything that is not a routing error is
+      // still unexpected and is not swallowed.
+      if (!(error instanceof V2QuoteError)) throw error;
+      trace.multihop.note = error.message;
+    }
   }
-  if (!legs.length) throw new V2QuoteError("LIQUIDITY_UNAVAILABLE", "No liquid direct or up-to-three-hop route quotes for this Base pair");
+  if (!legs.length) throw attributeRouteFailure(trace);
   const result: V2Quote = { tokenIn, tokenOut, gross, feeBps: 25, feeRecipient: V2_FEE_RECIPIENT, fee, net, amountOut: legs.reduce((s, l) => s + l.amountOut, 0n), legs };
   validateV2Quote(result); return result;
 }
