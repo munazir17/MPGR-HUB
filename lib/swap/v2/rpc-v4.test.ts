@@ -75,6 +75,9 @@ interface MockChain {
    * so assertions about where the search looked are about real work. */
   served: { address: string; from: bigint; to: bigint; args: Record<string, string> }[];
   callArgs: { to: string; data: Hex }[];
+  /** Peak simultaneous `eth_getLogs` calls. A real provider overlaps them; the mock
+   * yields so a scan that issues calls in parallel is actually measured as parallel. */
+  concurrency: { live: number; max: number };
 }
 
 const matches = (key: V4Key, args: Record<string, string | undefined>): boolean =>
@@ -90,6 +93,7 @@ function chain(options: ChainOptions = {}): MockChain {
   const calls = { getLogs: 0, getCode: 0, call: 0 };
   const served: MockChain["served"] = [];
   const callArgs: MockChain["callArgs"] = [];
+  const concurrency = { live: 0, max: 0 };
 
   const reader = {
     async getLogs(query: { address?: string; args?: Record<string, string>; fromBlock: bigint; toBlock: bigint }) {
@@ -102,6 +106,11 @@ function chain(options: ChainOptions = {}): MockChain {
         address: String(query.address).toLowerCase(), from: query.fromBlock, to: query.toBlock,
         args: Object.fromEntries(Object.entries(query.args ?? {}).map(([k, v]) => [k, String(v).toLowerCase()])),
       });
+      concurrency.live++;
+      if (concurrency.live > concurrency.max) concurrency.max = concurrency.live;
+      // Yield so genuinely concurrent calls overlap the way they would on a network.
+      await Promise.resolve();
+      concurrency.live--;
       if (String(query.address).toLowerCase() !== V4_MANAGER.toLowerCase()) return [];
       const inRange = (p: FabricatedPool) => p.block >= query.fromBlock && p.block <= query.toBlock;
       return [
@@ -141,7 +150,7 @@ function chain(options: ChainOptions = {}): MockChain {
       return { data: encodeAbiParameters([{ type: "address" }], [zeroAddress]) };
     },
   };
-  return { client: reader as unknown as PublicClient, calls, served, callArgs };
+  return { client: reader as unknown as PublicClient, calls, served, callArgs, concurrency };
 }
 
 interface QuoterParams { poolKey: V4Key; zeroForOne: boolean; exactAmount: bigint; hookData: Hex }
@@ -633,5 +642,157 @@ describe("provider log-span reuse", () => {
     const result = await discoverV4Pools(c.client, MPGR, WETH, HEAD, { cache: new V4DiscoveryCache() }, budget);
     expect(result.spanServed).toBe(10n);
     expect(result.searched?.toLowerCase()).toBe(MPGR.toLowerCase());
+  });
+});
+
+describe("v4 discovery: two-sided bounded scan", () => {
+  /** Unique block ranges the provider actually served, for the PoolManager only. */
+  const rangesOf = (c: MockChain) => {
+    const seen = new Map<string, { from: bigint; to: bigint }>();
+    for (const served of c.served.filter((s) => s.address === V4_MANAGER.toLowerCase())) {
+      seen.set(`${served.from}-${served.to}`, { from: served.from, to: served.to });
+    }
+    return [...seen.values()];
+  };
+  /** Greedily walks the served ranges outward from each end. Anything that belongs to
+   * neither contiguous chain is a skipped block, which is the thing this suite must
+   * never allow a bounded scan to do silently. */
+  const chains = (c: MockChain, floor: bigint, head: bigint) => {
+    const remaining = rangesOf(c);
+    const forward: { from: bigint; to: bigint }[] = [];
+    const backward: { from: bigint; to: bigint }[] = [];
+    let top = floor - 1n;
+    let bottom = head + 1n;
+    for (;;) {
+      const at = remaining.findIndex((r) => r.from === top + 1n);
+      if (at < 0) break;
+      const range = remaining.splice(at, 1)[0];
+      forward.push(range); top = range.to;
+    }
+    for (;;) {
+      const at = remaining.findIndex((r) => r.to === bottom - 1n);
+      if (at < 0) break;
+      const range = remaining.splice(at, 1)[0];
+      backward.push(range); bottom = range.from;
+    }
+    return { forward, backward, unassigned: remaining, top, bottom };
+  };
+
+  it("finds a pool initialized long AFTER the token's deployment, which a forward-only scan cannot reach", async () => {
+    // The gap between MPGR's deployment block and the pinned head is ~4.2M blocks. On a
+    // ten-block provider a forward-only scan covers a few hundred of them and reports
+    // nothing, so a pool created recently was simply invisible. This is the case the
+    // backward side exists for.
+    const lateBlock = HEAD - 25n;
+    const c = chain({
+      code: { [MPGR.toLowerCase()]: MPGR_DEPLOYED },
+      pools: [{ block: lateBlock, key: nativeMpgrKey }],
+      logRangeCap: 10n,
+    });
+    const result = await discoverV4Pools(c.client, MPGR, WETH, HEAD, {}, budget);
+    expect(result.pools).toHaveLength(1);
+    expect(result.pools[0].id).toBe(`${V4_MANAGER.toLowerCase()}:${v4PoolKeyId(nativeMpgrKey).toLowerCase()}`);
+    expect(result.pools[0].v4Key).toMatchObject({ currency0: zeroAddress, currency1: MPGR, fee: 0, tickSpacing: 200, hooks: HOOKS });
+    // The BACKWARD side reached it; the forward side never got close.
+    expect(result.scannedFrom).not.toBeNull();
+    expect(result.scannedFrom!).toBeLessThanOrEqual(lateBlock);
+    expect(result.scannedTo!).toBeLessThan(lateBlock);
+    // Finding a pool is a positive. Claiming the search was exhaustive is not, and the
+    // uncovered middle is named rather than left to the reader's imagination.
+    expect(result.state).toBe("capped");
+    expect(result.note).toMatch(/were NOT scanned/);
+    expect(result.note).toMatch(/no absence of liquidity can be inferred/);
+  });
+
+  it("still finds a pool at the deployment floor, and reports both sides in the note", async () => {
+    const c = mpgrChain();
+    const result = await discoverV4Pools(c.client, MPGR, WETH, HEAD, {}, budget);
+    expect(result.pools).toHaveLength(1);
+    expect(result.floor).toBe(MPGR_DEPLOYED);
+    expect(result.scannedTo!).toBeGreaterThanOrEqual(MPGR_DEPLOYED + 1n);
+    expect(result.note).toMatch(/from both ends/);
+  });
+
+  it("reports complete ONLY when the two sides actually met", async () => {
+    // No range cap: one window spans floor..head, so the forward side reaches head and
+    // the search is genuinely exhaustive.
+    const complete = await discoverV4Pools(
+      chain({ code: { [MPGR.toLowerCase()]: MPGR_DEPLOYED }, pools: [{ block: MPGR_DEPLOYED + 1n, key: nativeMpgrKey }] }).client,
+      MPGR, WETH, HEAD, {}, budget);
+    expect(complete.state).toBe("complete");
+    expect(complete.scannedTo).toBe(HEAD);
+    expect(complete.note).not.toMatch(/were NOT scanned/);
+    expect(complete.note).toMatch(/covered blocks \d+-\d+/);
+
+    // A ten-block cap cannot cross the gap, so the same search must not claim complete.
+    const capped = await discoverV4Pools(mpgrChain().client, MPGR, WETH, HEAD, {}, budget);
+    expect(capped.state).toBe("capped");
+    expect(capped.scannedTo!).toBeLessThan(HEAD);
+  });
+
+  it("never skips a block inside either side, and never lets the sides overlap", async () => {
+    // No pool at all: both sides run until the call budget stops them, which is the
+    // worst case for contiguity.
+    const c = chain({ code: { [MPGR.toLowerCase()]: MPGR_DEPLOYED }, logRangeCap: 10n });
+    const result = await discoverV4Pools(c.client, MPGR, WETH, HEAD, { maxLogCalls: 40 }, budget);
+    expect(result.pools).toEqual([]);
+    expect(result.state).toBe("capped");
+    const { forward, backward, unassigned, top, bottom } = chains(c, MPGR_DEPLOYED, HEAD);
+    // Every served range belongs to one contiguous chain: nothing was sampled, and no
+    // block inside a side was jumped over.
+    expect(unassigned).toEqual([]);
+    expect(forward.length).toBeGreaterThan(0);
+    expect(backward.length).toBeGreaterThan(0);
+    expect(forward[0].from).toBe(MPGR_DEPLOYED);
+    expect(backward[0].to).toBe(HEAD);
+    for (let i = 1; i < forward.length; i++) expect(forward[i].from).toBe(forward[i - 1].to + 1n);
+    for (let i = 1; i < backward.length; i++) expect(backward[i].to).toBe(backward[i - 1].from - 1n);
+    // The sides stop before overlapping, so no block is scanned twice either.
+    expect(top).toBeLessThan(bottom);
+    // The committed edge never claims more than was served. It may claim up to one
+    // window LESS, when the budget dies between the two topic queries of one window: a
+    // half-read window is deliberately not reported as covered. Understating reach is
+    // conservative; overstating it would be a lie about completeness.
+    expect(result.scannedTo!).toBeLessThanOrEqual(top);
+    expect(top - result.scannedTo!).toBeLessThanOrEqual(10n);
+    expect(result.scannedFrom!).toBeGreaterThanOrEqual(bottom);
+    expect(result.scannedFrom! - bottom).toBeLessThanOrEqual(10n);
+    // And the note names exactly the blocks between the committed edges.
+    expect(result.note).toContain(`Blocks ${result.scannedTo! + 1n}-${result.scannedFrom! - 1n} were NOT scanned`);
+  });
+
+  it("runs windows concurrently without overshooting the call cap", async () => {
+    const c = chain({ code: { [MPGR.toLowerCase()]: MPGR_DEPLOYED }, logRangeCap: 10n });
+    const result = await discoverV4Pools(c.client, MPGR, WETH, HEAD, { maxLogCalls: 40, maxConcurrentLogCalls: 4 }, budget);
+    // The cap is on calls ISSUED, so it holds under concurrency too. A diagnostic that
+    // overstates a bound is itself a lie, and so is one that quietly exceeds it.
+    expect(result.logCalls).toBeLessThanOrEqual(40);
+    expect(c.concurrency.max).toBeGreaterThan(1);
+    expect(c.concurrency.max).toBeLessThanOrEqual(4);
+    expect(c.concurrency.live).toBe(0); // nothing left in flight
+    expect(result.note).toMatch(/exceeded its 40-call budget|were NOT scanned/);
+  });
+
+  it("still works, and stays sequential, when concurrency is set to one", async () => {
+    const c = chain({ code: { [MPGR.toLowerCase()]: MPGR_DEPLOYED }, pools: [{ block: MPGR_DEPLOYED + 1n, key: nativeMpgrKey }], logRangeCap: 10n });
+    const result = await discoverV4Pools(c.client, MPGR, WETH, HEAD, { maxConcurrentLogCalls: 1 }, budget);
+    expect(c.concurrency.max).toBe(1);
+    expect(result.pools).toHaveLength(1);
+    expect(result.pools[0].id).toBe(`${V4_MANAGER.toLowerCase()}:${v4PoolKeyId(nativeMpgrKey).toLowerCase()}`);
+  });
+
+  it("reaches further for the same wall clock than a sequential scan of the same budget", async () => {
+    // Same call budget, same provider, same token: concurrency must not cost coverage.
+    const sequential = chain({ code: { [MPGR.toLowerCase()]: MPGR_DEPLOYED }, logRangeCap: 10n });
+    const parallel = chain({ code: { [MPGR.toLowerCase()]: MPGR_DEPLOYED }, logRangeCap: 10n });
+    const a = await discoverV4Pools(sequential.client, MPGR, WETH, HEAD, { maxLogCalls: 40, maxConcurrentLogCalls: 1 }, budget);
+    const b = await discoverV4Pools(parallel.client, MPGR, WETH, HEAD, { maxLogCalls: 40, maxConcurrentLogCalls: 4 }, budget);
+    expect(a.logCalls).toBe(b.logCalls);
+    // Identical reach: parallelism buys wall clock, never a different answer.
+    expect(a.scannedTo).toBe(b.scannedTo);
+    expect(a.scannedFrom).toBe(b.scannedFrom);
+    expect(a.state).toBe(b.state);
+    expect(sequential.concurrency.max).toBe(1);
+    expect(parallel.concurrency.max).toBeGreaterThan(1);
   });
 });

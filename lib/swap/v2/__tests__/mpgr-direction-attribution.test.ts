@@ -323,7 +323,9 @@ describe("MPGR -> WETH SELL: the same pool, attributed instead of guessed", () =
     expect(error!.message).toMatch(/v4 search capped/);
     // The search says exactly where it stopped, which is the evidence that this is a
     // bounded-search failure rather than a statement about the pair.
-    expect(error!.message).toMatch(/stopped at block \d+ of \d+/);
+    // The scan says what BOTH of its sides reached before the budget ran out, so the
+    // uncovered middle is named rather than implied.
+    expect(error!.message).toMatch(/stopped at \d+-\d+ forward and \d+-\d+ backward of \d+/);
     expect(error!.message).toMatch(/exceeded its \d+-call budget/);
     const trace = traceOf(error);
     expect(trace.candidates).toHaveLength(0);

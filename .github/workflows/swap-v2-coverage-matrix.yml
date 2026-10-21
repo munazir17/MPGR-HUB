@@ -67,6 +67,18 @@ env:
   # alone is ~26 sequential eth_getCode round-trips. The wall clock and the v4 log cap
   # remain the real bounds.
   MPGR_V2_COVERAGE_MAX_READS: "24576"
+  # eth_getLogs calls per token's v4 Initialize search. The provider behind this secret
+  # serves only a ten-block range, so 64 calls reached ~640 blocks of a ~4.2M-block gap
+  # and 34-57 pairs per run reported "discovery could not finish". The scan is now
+  # two-sided (forward from a token's deployment floor, backward from the pinned block)
+  # and issues windows concurrently, so the same wall clock buys several times the reach:
+  # 256 calls at 4 in flight is ~2560 blocks, split across both ends of the range.
+  # Still bounded, still honest — an unfinished search reports `capped` and names the
+  # blocks it never reached, so it can never support "this token has no pool".
+  MPGR_V2_COVERAGE_V4_LOG_CALLS: "256"
+  # Concurrent eth_getLogs calls per scan. Deliberately modest: six shards share one
+  # rate-limited endpoint, and a 429 costs more than the parallelism gains.
+  MPGR_V2_COVERAGE_V4_CONCURRENCY: "4"
 
 jobs:
   coverage:

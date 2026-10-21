@@ -60,6 +60,16 @@ export function v4PoolKeyId(key: V4Key): Hex {
 
 /** Only explicit range/size refusals justify shrinking a window and retrying.
  * Network, authorization and rate-limit failures must not fan out requests. */
+/** Which blocks each side actually covered, for a note that must not overstate reach. */
+function describeSides(
+  sides: { forward: { edge: bigint | null }; backward: { edge: bigint | null } },
+  floor: bigint, head: bigint,
+): string {
+  const forward = sides.forward.edge === null ? "nothing" : `${floor}-${sides.forward.edge} forward`;
+  const backward = sides.backward.edge === null ? "nothing" : `${sides.backward.edge}-${head} backward`;
+  return `${forward} and ${backward}`;
+}
+
 export function isLogRangeError(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error ?? "");
   return /range|too many|more than|response size|limit.*block|block.*limit|exceed/i.test(text);
@@ -78,6 +88,11 @@ export interface V4SearchLimits {
   /** Extra windows scanned after the first match, so sibling pools (same pair,
    * different fee or hooks) initialized nearby are not missed. */
   tailWindowsAfterMatch: number;
+  /** How many `eth_getLogs` calls may be in flight at once. The provider's cap is on
+   * the RANGE of one call, not on concurrency, so sequential windows spent the per-pair
+   * wall clock on latency instead of coverage. Kept small on purpose: several shards
+   * share one rate-limited endpoint, and a 429 costs more than the parallelism gains. */
+  maxConcurrentLogCalls: number;
 }
 
 export const V4_SEARCH_LIMITS: V4SearchLimits = {
@@ -85,6 +100,7 @@ export const V4_SEARCH_LIMITS: V4SearchLimits = {
   maxCodeSteps: 64,
   probeSpans: [1_000_000n, 100_000n, 10_000n, 1_000n, 100n, 10n],
   tailWindowsAfterMatch: 3,
+  maxConcurrentLogCalls: 4,
 };
 
 export interface V4DiscoveryOptions extends Partial<V4SearchLimits> {
@@ -103,8 +119,13 @@ export interface V4SearchResult {
   state: V4SearchState;
   /** Chain-derived first block at which the searched token had runtime code. */
   floor: bigint | null;
-  /** Highest block the scan actually covered; null when it never ran. */
+  /** Highest block the FORWARD side covered contiguously from the floor; null when it
+   * never ran. Read together with `scannedFrom`: the two sides tile the range they
+   * reached, and whatever lies between them was never scanned. */
   scannedTo: bigint | null;
+  /** Lowest block the BACKWARD side covered contiguously down to the pinned head; null
+   * when it never ran. */
+  scannedFrom?: bigint | null;
   head: bigint;
   logCalls: number;
   codeCalls: number;
@@ -355,52 +376,154 @@ export async function scanInitializeLogs(
     };
   }
 
-  // 2. Windowed scan with the span the provider just proved it can serve.
+  // 2. Two-sided windowed scan over the span this provider just proved it can serve.
+  //
+  //    Forward from the deployment floor, because a token's first pool is normally
+  //    initialized within a few blocks of its own deployment; backward from the pinned
+  //    head, because a pool may equally have been added at any later point. On a
+  //    provider that serves only a ten-block range, neither side can cross millions of
+  //    blocks, so the achievable goal is REACH rather than exhaustiveness: find pools at
+  //    either end, and state exactly which blocks were never scanned. Sides alternate
+  //    window by window, so a budget cut short leaves both ends partly covered instead
+  //    of one end covered and the other untouched.
+  //
+  //    Windows are issued concurrently because the cap is on the range of ONE call, not
+  //    on how many calls may be in flight. Nothing is skipped: each side's windows tile
+  //    its own range exactly, and the search reports `capped` — never `complete` — unless
+  //    the two sides actually met, so an unscanned middle can never support a negative.
   const window = span > total ? total : span;
-  let scannedTo: bigint | null = null;
-  let matched = false;
-  let tail = 0;
+  const inFlight = Math.max(1, limits.maxConcurrentLogCalls);
+  // One round fills exactly one wave of `inFlight` calls: two sides, `positions.length`
+  // topic queries per window. Overfilling a round would not add concurrency — the worker
+  // pool is the bound — it would only decide windows before the last results were in.
+  const windowsPerRound = Math.max(1, Math.ceil(inFlight / (positions.length * 2)));
+  const sides = {
+    forward: { next: floor, edge: null as bigint | null, tail: 0, done: false, tailStopped: false },
+    backward: { next: head, edge: null as bigint | null, tail: 0, done: false, tailStopped: false },
+  };
+  /** Full coverage means the two contiguous sides touch: forward reached
+   * `forwardEdge`, backward reached `backwardEdge`, and nothing lies between. */
+  const covered = (): boolean => {
+    const forward = sides.forward.edge, backward = sides.backward.edge;
+    if (forward !== null && forward >= head) return true;
+    if (backward !== null && backward <= floor) return true;
+    return forward !== null && backward !== null && forward + 1n >= backward;
+  };
+  const nextWindow = (side: "forward" | "backward"): { from: bigint; to: bigint } | null => {
+    const s = sides[side];
+    if (s.done || covered()) return null;
+    if (side === "forward") {
+      // Never re-scan ground the backward side already covered.
+      const limit = sides.backward.edge !== null ? sides.backward.edge - 1n : head;
+      if (s.next > limit) return null;
+      const from = s.next;
+      const to = from + window - 1n > limit ? limit : from + window - 1n;
+      s.next = to + 1n;
+      return { from, to };
+    }
+    const limit = sides.forward.edge !== null ? sides.forward.edge + 1n : floor;
+    if (s.next < limit) return null;
+    const to = s.next;
+    const from = to - window + 1n < limit ? limit : to - window + 1n;
+    s.next = from - 1n;
+    return { from, to };
+  };
+  /** Runs one round's queries with bounded concurrency. `cursor` advances
+   * synchronously, so two workers can never take the same task, and `query`'s own budget
+   * check is synchronous too, so concurrent callers cannot overshoot `maxLogCalls`. */
+  /** Records a fully-read window against its side, and applies the post-match tail
+   * rule. Committing per window rather than per round keeps the reported edge honest in
+   * both directions: it never lags behind ground that was actually scanned, and it never
+   * claims a window whose second topic position was refused by the budget, because a
+   * half-read window is not coverage. */
+  const commit = (w: { side: "forward" | "backward"; from: bigint; to: bigint }): void => {
+    const side = sides[w.side];
+    if (w.side === "forward") { if (side.edge === null || w.to > side.edge) side.edge = w.to; }
+    else if (side.edge === null || w.from < side.edge) side.edge = w.from;
+    // Once a real route exists, do not pay for the rest of history on that side:
+    // sibling pools for the same pair initialize in the same or a neighbouring block.
+    if (pools.size > 0 && ++side.tail > limits.tailWindowsAfterMatch) { side.done = true; side.tailStopped = true; }
+  };
+  const drain = async (batch: { side: "forward" | "backward"; from: bigint; to: bigint }[]): Promise<void> => {
+    const tasks = batch.flatMap((w) => positions.map((position) => ({ position, w })));
+    const readPositions = new Map<{ from: bigint; to: bigint }, number>();
+    let cursor = 0;
+    let failure: unknown = null;
+    const worker = async (): Promise<void> => {
+      while (failure === null) {
+        const at = cursor;
+        cursor += 1; // synchronous, so two workers can never take the same task
+        if (at >= tasks.length) return;
+        const task = tasks[at];
+        try {
+          for (const log of await query(task.position, task.w.from, task.w.to)) accept(log);
+          const done = (readPositions.get(task.w) ?? 0) + 1;
+          readPositions.set(task.w, done);
+          if (done === positions.length) commit(task.w);
+        } catch (error) {
+          if (failure === null) failure = error;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(inFlight, tasks.length) }, () => worker()));
+    if (failure !== null) throw failure;
+  };
+
   let state: V4SearchState = "complete";
   let note = "";
   try {
-    for (let from = floor; from <= head; from += window) {
-      const to = from + window - 1n > head ? head : from + window - 1n;
-      for (const position of positions) {
-        for (const log of await query(position, from, to)) accept(log);
-      }
-      scannedTo = to;
-      if (pools.size > 0) {
-        matched = true;
-        // Sibling pools for the same pair are initialized in the same block or a
-        // neighbouring one; scan a bounded tail and stop rather than paying for
-        // the whole history now that a real route exists.
-        if (++tail > limits.tailWindowsAfterMatch) {
-          state = "capped";
-          note = `Matched ${pools.size} v4 pool(s) for ${token} by block ${to}; stopped after a ${limits.tailWindowsAfterMatch}-window tail, so blocks ${to + 1n}-${head} were not scanned.`;
-          break;
+    for (;;) {
+      const batch: { side: "forward" | "backward"; from: bigint; to: bigint }[] = [];
+      for (let i = 0; i < windowsPerRound; i++) {
+        for (const side of ["forward", "backward"] as const) {
+          const w = nextWindow(side);
+          if (w) batch.push({ side, ...w });
         }
       }
-      if (to >= head) break;
+      if (batch.length === 0) break;
+      await drain(batch);
     }
   } catch (error) {
     if (!(error instanceof V2QuoteError)) throw error;
-    // Budget exhausted mid-scan. Whatever was verified is still usable as a
-    // POSITIVE, but the absence of further pools is not a verdict.
+    // Budget exhausted mid-scan. Whatever was verified is still usable as a POSITIVE,
+    // but the absence of further pools is not a verdict.
     state = "capped";
-    note = `v4 Initialize scan for ${token} stopped at block ${scannedTo ?? floor} of ${head}: ${error.message}`;
+    note = `v4 Initialize scan for ${token} stopped at ${describeSides(sides, floor, head)} of ${head}: ${error.message}.${gapSentence()}`;
   }
-  if (state === "complete" && scannedTo !== null && scannedTo < head) {
-    // Defensive: the loop must not end before head without saying so.
+  if (!covered()) {
     state = "capped";
-    note = `v4 Initialize scan for ${token} stopped at block ${scannedTo} of ${head} without reaching the pinned block.`;
+    if (!note) {
+      const tail = sides.forward.tailStopped || sides.backward.tailStopped
+        ? ` Matched ${pools.size} v4 pool(s) for ${token} and stopped after a ${limits.tailWindowsAfterMatch}-window tail on the side that matched,`
+        : "";
+      note = `v4 Initialize scan for ${token} covered ${describeSides(sides, floor, head)} in ${window}-block window(s) from both ends;${tail}${gapSentence()}`;
+    }
   }
   if (state === "complete") {
-    note = `v4 Initialize scan for ${token} covered blocks ${floor}-${head} in ${window}-block window(s)`
-      + ` (span probed, ${rangeRefusals} range refusal(s), ${logCalls} log call(s))`
+    note = `v4 Initialize scan for ${token} covered blocks ${floor}-${head} in ${window}-block window(s) from both ends`
+      + ` at up to ${inFlight} concurrent call(s) (span probed, ${rangeRefusals} range refusal(s), ${logCalls} log call(s))`
       + `; ${pools.size} canonical pool(s), ${rejected.length} rejected candidate(s).`;
   }
 
-  return { pools: [...pools.values()], state, floor, scannedTo, head, logCalls, codeCalls: 0, rejected, spanServed: span, note };
+  return {
+    pools: [...pools.values()], state, floor, scannedTo: sides.forward.edge, scannedFrom: sides.backward.edge,
+    head, logCalls, codeCalls: 0, rejected, spanServed: span, note,
+  };
+
+  /**
+   * The blocks neither side reached, named explicitly on EVERY incomplete path.
+   *
+   * An unnamed gap is how a bounded search starts to look like an exhaustive one, and a
+   * search that looks exhaustive is how "we found nothing" becomes "there is nothing".
+   * Empty only when the two sides met, which is the sole case allowed to report
+   * `complete`.
+   */
+  function gapSentence(): string {
+    const gapFrom = sides.forward.edge !== null ? sides.forward.edge + 1n : floor;
+    const gapTo = sides.backward.edge !== null ? sides.backward.edge - 1n : head;
+    if (gapFrom > gapTo) return "";
+    return ` Blocks ${gapFrom}-${gapTo} were NOT scanned, so no absence of liquidity can be inferred from this search.`;
+  }
 
   /** Verifies one candidate log and, only if it is canonical, records the pool. */
   function accept(log: RawInitializeLog): void {
@@ -477,6 +600,7 @@ export async function discoverV4Pools(
     ...(options.maxCodeSteps === undefined ? {} : { maxCodeSteps: options.maxCodeSteps }),
     ...(options.probeSpans === undefined ? {} : { probeSpans: options.probeSpans }),
     ...(options.tailWindowsAfterMatch === undefined ? {} : { tailWindowsAfterMatch: options.tailWindowsAfterMatch }),
+    ...(options.maxConcurrentLogCalls === undefined ? {} : { maxConcurrentLogCalls: options.maxConcurrentLogCalls }),
   };
   const cache = options.cache ?? new V4DiscoveryCache();
   const sides = output ? [input, output] : [input];

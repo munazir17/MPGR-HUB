@@ -78,6 +78,10 @@ const MAX_READS = Number(process.env.MPGR_V2_COVERAGE_MAX_READS ?? 24_576);
 /** Cap on eth_getLogs calls per token's v4 Initialize search. Bounded on purpose:
  * an unbounded scan is how the previous run timed out before measuring anything. */
 const V4_MAX_LOG_CALLS = Number(process.env.MPGR_V2_COVERAGE_V4_LOG_CALLS ?? 64);
+/** Concurrent `eth_getLogs` calls inside one token's v4 scan. The provider's cap is on
+ * the RANGE of a single call, not on how many may be in flight, so this converts wall
+ * clock into reach. Kept low: every shard shares one rate-limited endpoint. */
+const V4_LOG_CONCURRENCY = Number(process.env.MPGR_V2_COVERAGE_V4_CONCURRENCY ?? 4);
 /**
  * Probe amounts are no longer a constant. A fixed 1_000_000 raw units is 1.00 USDC at
  * 6 decimals but 10^-12 of any 18-decimal token, so a venue could answer zero purely
@@ -195,7 +199,7 @@ describe("V2 live coverage matrix", () => {
         // provider and previously made most pairs time out before measurement.
         const source = new RpcV2LiquiditySource(
           client as never, blockNumber, MAX_READS, 0,
-          { cache: v4Cache, maxLogCalls: V4_MAX_LOG_CALLS },
+          { cache: v4Cache, maxLogCalls: V4_MAX_LOG_CALLS, maxConcurrentLogCalls: V4_LOG_CONCURRENCY },
         );
         // One rung of the ladder is one `discoverV2Quote` call under the per-pair
         // timeout. The timer is cleared on every rung: with up to three rungs per pair
