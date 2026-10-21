@@ -46,7 +46,13 @@ const ENABLED = process.env.MPGR_V2_COVERAGE === "1" || process.env.MPGR_V2_COVE
 /** Wall-clock budget per pair, so one slow pair cannot consume the whole shard. A
  * timeout is recorded as UNMEASURED — never as missing liquidity. */
 const PER_PAIR_TIMEOUT_MS = Number(process.env.MPGR_V2_COVERAGE_PAIR_TIMEOUT_MS ?? 60_000);
-const OUT_DIR = "deployments/.local";
+/** Where this shard writes its handoff files. The workflow points both jobs at a
+ * plain, tracked-by-nobody directory (`coverage-out`) on purpose: run 39454971188
+ * produced all four shard matrices and still aggregated nothing, because the default
+ * `deployments/.local/` is both dot-prefixed and git-ignored, and the uploaded
+ * artifacts arrived empty of them. A handoff that depends on an ignored path is a
+ * handoff that can fail silently. */
+const OUT_DIR = process.env.MPGR_V2_COVERAGE_DIR ?? "deployments/.local";
 /** Bound the arbitrary token/token sample so the run stays inside CI time limits.
  * This is a SAMPLE; it is never presented as the whole Base token universe. */
 const MAX_TOKEN_TOKEN_PAIRS = Number(process.env.MPGR_V2_COVERAGE_MAX_PAIRS ?? 12);
@@ -62,6 +68,12 @@ const SHARD = Math.min(SHARDS, Math.max(1, Number(process.env.MPGR_V2_COVERAGE_S
  * vitest timeout below, so the shard's matrix is always written before any timeout
  * could discard it. */
 const SHARD_BUDGET_MS = Number(process.env.MPGR_V2_COVERAGE_BUDGET_MS ?? 1_260_000);
+/** Reads per pair. The production default (4096) is sized for answering ONE quote and
+ * starves a batch: a single token's deployment floor is a ~26-step eth_getCode binary
+ * search. Run 39454971188 recorded 24 pairs in shard 1 as "Discovery call budget
+ * exhausted mid-search", which is the harness running out, not the chain answering. The
+ * wall clock below and the per-token v4 log cap are what actually bound a shard. */
+const MAX_READS = Number(process.env.MPGR_V2_COVERAGE_MAX_READS ?? 24_576);
 /** Cap on eth_getLogs calls per token's v4 Initialize search. Bounded on purpose:
  * an unbounded scan is how the previous run timed out before measuring anything. */
 const V4_MAX_LOG_CALLS = Number(process.env.MPGR_V2_COVERAGE_V4_LOG_CALLS ?? 64);
@@ -172,7 +184,7 @@ describe("V2 live coverage matrix", () => {
         // search. The universal block-0 sweep cannot be served by a range-capped
         // provider and previously made most pairs time out before measurement.
         const source = new RpcV2LiquiditySource(
-          client as never, blockNumber, 4096, 0,
+          client as never, blockNumber, MAX_READS, 0,
           { cache: v4Cache, maxLogCalls: V4_MAX_LOG_CALLS },
         );
         let outcome: Parameters<typeof classifyPairOutcome>[2];
@@ -214,7 +226,7 @@ describe("V2 live coverage matrix", () => {
       mkdirSync(OUT_DIR, { recursive: true });
       const artifact = {
         chainId: 8453, blockNumber: blockNumber.toString(), rpcLabel, summary, rows,
-        shard: SHARD, shards: SHARDS, planSize: plan.length,
+        shard: SHARD, shards: SHARDS, planSize: plan.length, maxReads: MAX_READS,
         ownedIndices: shard.map((p) => p.index),
         budgetExhaustedAt,
         shardBudgetMs: SHARD_BUDGET_MS,

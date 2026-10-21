@@ -104,26 +104,39 @@ describe("coverageShard", () => {
     });
   }
 
-  it("is round-robin, so no shard owns all of one token's pairs", () => {
+  it("keeps every subject in exactly one shard, so its discovery cost is paid once", () => {
     const shards = 4;
+    const ownerOf = new Map<string, number>();
     for (let shard = 1; shard <= shards; shard++) {
       const slice = coverageShard(plan, shard, shards);
-      expect(slice.every((p, i) => p.index % shards === shard - 1 && (i === 0 || slice[i - 1].index < p.index))).toBe(true);
-      // Every shard should see a mix of subjects, which is also what makes the
-      // per-token v4 discovery cache pay off evenly across shards.
-      expect(new Set(slice.map((p) => lc(p.subject))).size).toBeGreaterThan(3);
+      expect(slice.every((p, i) => i === 0 || slice[i - 1].index < p.index)).toBe(true); // plan order preserved
+      for (const pair of slice) {
+        const key = lc(pair.subject);
+        const seen = ownerOf.get(key);
+        expect(seen === undefined || seen === shard).toBe(true);
+        ownerOf.set(key, shard);
+      }
     }
+    expect(ownerOf.size).toBe(new Set(plan.map((p) => lc(p.subject))).size);
   });
 
-  it("MPGR is probed by more than one shard, in both directions overall", () => {
+  it("deals subjects evenly, so no shard is idle and none is swamped", () => {
+    const shards = 4;
+    const counts = [1, 2, 3, 4].map((shard) => new Set(coverageShard(plan, shard, shards).map((p) => lc(p.subject))).size);
+    expect(counts.every((count) => count > 0)).toBe(true);
+    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
+  });
+
+  it("gives one shard all of MPGR's probes, in both directions", () => {
     const shards = 4;
     const owners = new Map<number, string[]>();
     for (let shard = 1; shard <= shards; shard++) {
       const mpgr = coverageShard(plan, shard, shards).filter((p) => lc(p.subject) === lc(COVERAGE_MPGR) && p.direction !== "TOKEN_PAIR");
       if (mpgr.length > 0) owners.set(shard, mpgr.map((p) => p.direction));
     }
-    expect(owners.size).toBeGreaterThan(1);
-    expect(owners.size).toBe(4); // one MPGR quote-asset probe per shard
+    // Grouping by subject deliberately concentrates a token's evidence in one shard;
+    // the aggregate job is what makes losing that shard visible instead of silent.
+    expect(owners.size).toBe(1);
     expect([...owners.values()].flat().sort()).toEqual(["BUY", "BUY", "SELL", "SELL"]);
   });
 

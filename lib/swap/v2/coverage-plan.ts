@@ -111,15 +111,42 @@ export function coveragePairPlan(tokens: readonly CoverageToken[], maxTokenToken
 }
 
 /**
- * Round-robin shard selection. Deterministic and disjoint: every index belongs to
- * exactly one shard, and the union of all shards is the whole plan. Round-robin
- * (rather than contiguous blocks) matters because the plan is ordered by token, so
- * contiguous shards would give one shard all of a token's pairs and another none —
- * and the v4 discovery cache is per token, so a contiguous split would also
- * distribute cost very unevenly.
+ * Shard selection, grouped by SUBJECT TOKEN.
+ *
+ * Deterministic and disjoint: every pair belongs to exactly one shard, and the union
+ * of all shards is the whole plan. Subjects are dealt round-robin in plan order, so
+ * subject counts differ by at most one between shards.
+ *
+ * WHY NOT ROUND-ROBIN BY PAIR INDEX. The plan is ordered by token, so dealing pairs
+ * round-robin spread every token across every shard. That looks balanced — equal pair
+ * counts — but the expensive part of measuring a pair is per TOKEN, not per pair:
+ * deriving a token's deployment floor is a ~26-step `eth_getCode` binary search, and
+ * its v4 `Initialize` scan is up to `maxLogCalls` sequential `eth_getLogs` round-trips
+ * against a provider that serves ten blocks at a time. Both are cached per token, so a
+ * shard that sees the whole catalogue pays the whole catalogue's discovery cost. Run
+ * `39454971188` measured the price of that: shard 4 left 25 of its 53 pairs unattempted
+ * and shard 1 left 13, purely because the wall clock ran out first — a scheduling
+ * artefact that the report can only classify as UNMEASURED.
+ *
+ * THE TRADE IS EXPLICIT. A token's rows now live in one shard, so a shard that dies
+ * takes that token's evidence with it instead of leaving three partial copies. That is
+ * survivable only because the aggregate job fails loudly when fewer shards report than
+ * the plan expects, and renders every lost pair as an explicit gap rather than quietly
+ * shrinking the matrix.
  */
 export function coverageShard(pairs: readonly CoveragePair[], shard: number, shards: number): CoveragePair[] {
   if (!Number.isInteger(shards) || shards < 1) throw new Error(`shards must be a positive integer, got ${shards}`);
   if (!Number.isInteger(shard) || shard < 1 || shard > shards) throw new Error(`shard ${shard} is outside 1..${shards}`);
-  return pairs.filter((_pair, index) => index % shards === shard - 1);
+  const owner = new Map<string, number>();
+  const owned: CoveragePair[] = [];
+  for (const pair of pairs) {
+    const key = pair.subject.toLowerCase();
+    let slot = owner.get(key);
+    if (slot === undefined) {
+      slot = owner.size % shards;
+      owner.set(key, slot);
+    }
+    if (slot === shard - 1) owned.push(pair);
+  }
+  return owned;
 }

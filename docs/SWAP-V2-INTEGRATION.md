@@ -63,6 +63,22 @@ server re-fetches the receipt, reads live posture at the mined block, and requir
 output recipient to be the signed-in wallet), `app/api/swap/v2/status` (public activation probe),
 and `coverage.ts` with `scripts/swap-v2-coverage-matrix.test.ts`.
 
+### Universal discovery and coverage measurement (added after the journey wiring)
+
+Wiring an executable transaction is worthless if discovery cannot find the pool. Four modules
+close that gap, and they are the reason this document can talk about *measured* coverage at all:
+
+| Module | Responsibility |
+| --- | --- |
+| `lib/swap/v2/rpc-index.ts` | Bounded per-venue factory enumeration (`getPair` / `getPool` / `poolByPair` shapes) for the venues that expose a getter. `PARTIAL_INDEX_VENUE_KINDS = [1]` records that Slipstream is only probed at tick spacing 10, because no ABI-verified spacing-set getter exists — a partial index may add routes, never justify a negative. |
+| `lib/swap/v2/rpc-v4.ts` | Bounded, **hint-free** Uniswap v4 discovery from canonical `Initialize` logs. Derives a sound search floor by binary-searching `eth_getCode` for the token's first block with runtime code, probes the log span the provider will actually serve, then windows the scan. Every accepted PoolKey is re-derived and must equal the log's own indexed pool id. No pool id, hook, fee, tick spacing or block number is hardcoded as a result. |
+| `lib/swap/v2/coverage-plan.ts` | The pure, deterministic probe plan: which tokens, which pairs, which direction, which shard. Shared by the shard jobs and by the offline aggregator, so the two cannot disagree about what was supposed to be attempted. |
+| `lib/swap/v2/coverage-merge.ts` | Merges shard artifacts into exactly one row per planned pair. A pair no shard reported becomes an explicit `UNMEASURED_PROVIDER_FAILURE` gap rather than silently disappearing, and a shard may never overwrite another's measurement with a gap. |
+
+`scripts/swap-v2-coverage-matrix.test.ts` measures one shard; `scripts/swap-v2-coverage-aggregate.test.ts`
+merges them offline and fails if fewer shards reported than the plan expects. Both are env-gated
+(`MPGR_V2_COVERAGE=1`, `MPGR_V2_COVERAGE_AGGREGATE=1`) so `npm test` never contacts Base.
+
 `intent.ts` and `settlement.ts` dropped their `server-only` marker: both are pure (viem decoding
 plus local constants, no I/O, no secrets), and V1 already inspects calldata in the browser via
 `swap-executor-intent.ts`. Every module that performs RPC stays server-only.
@@ -174,17 +190,22 @@ transaction. Nothing is fabricated or silently substituted.
 
 ## 5. Evidence tiers: what is actually proven
 
-**Tier 1 — unit-simulated (this change): 187 tests across 15 files, plus the full
-suite at 4525 passed / 25 skipped (339 files).** All of it runs against *fabricated*
-read-only readers and encoded fixtures — no RPC was contacted, so these are **not** fork
-tests and **not** live tests.
+**Tier 1 — unit-simulated (this change): 268 tests across 20 files on the V2 surface,
+plus the full suite at 4606 passed / 26 skipped (344 files).** All of it runs against
+*fabricated* read-only readers and encoded fixtures — no RPC was contacted, so these are
+**not** fork tests and **not** live tests. The two skipped files are the live coverage
+matrix and its aggregator, which stay gated behind their env flags by design.
 
 They cover: arbitrary imported pairs, split routes, genuine three-hop routes through
 non-major intermediates, v4 PoolKey routes, native-ETH sells, deterministic intent ids, fee
 arithmetic, and every fail-closed posture-drift case above; the quote and settlement HTTP
 boundaries in both gate states (`route.activation.test.ts`, `settlement/route.test.ts`);
 the client dispatch that keeps the dormant path byte-identical to V1
-(`quote-client.test.ts`); and the end-to-end wiring of a real V2 quote through proposal
+(`quote-client.test.ts`); v4 discovery itself — invalid logs, missing pools, RPC caps,
+duplicate candidates, provider-span reuse, and a discovered PoolKey carried all the way
+through quoting into a signable transaction (`rpc-v4.test.ts`, `rpc-source.test.ts`); the
+coverage plan and merge contracts (`coverage-plan.test.ts`, `coverage-merge.test.ts`,
+`coverage.test.ts`); and the end-to-end wiring of a real V2 quote through proposal
 adaptation, fee policy, quote freshness/expiry, evidence binding, spender selection, the
 agent-fee target rule and receipt settlement for **both a SELL and a BUY**
 (`wiring.test.ts`). The discovery fallback has its own offline tests
@@ -195,13 +216,20 @@ out — proving nothing is hardcoded.
 `.github/workflows/swap-v2-fork-proof.yml` runs
 `test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol` against a real Base fork.
 
+Green on **eight consecutive commits** of this branch, most recently:
+
 | Run | Commit | Result |
 | --- | --- | --- |
 | `39411451593` | `90c3343` | **ok. 13 passed; 0 failed; 0 skipped** at fork block 52852228 |
 | `39414446575` | `4b54093` | **ok. 13 passed; 0 failed; 0 skipped** at fork block 52852998 |
+| `39416407672` | `5d1f587` | **ok. 13 passed; 0 failed; 0 skipped** |
+| `39431366193` | `d11bed8` | **ok. 13 passed; 0 failed; 0 skipped** |
+| `39447617381` | `d5bed71` | **ok. 13 passed; 0 failed; 0 skipped** at fork block 52860173 |
+| `39454970912` | `4f4c3a4` | **ok. 13 passed; 0 failed; 0 skipped** at fork block 52861625 |
 
-Both runs recovered the pool **without any third-party hint**. Dexscreener again
-returned `MPGR v4 hint count: 0`, and the new hint-free on-chain search took over:
+The runs on `90c3343` and `4b54093` recovered the pool **without any third-party
+hint**. Dexscreener returned `MPGR v4 hint count: 0`, and the hint-free on-chain search
+took over:
 
 ```text
 [discovery] no fixture from hints; searching on chain by indexed currency
@@ -220,6 +248,23 @@ binary search on `eth_getCode` for the token's deployment block, then an
 pool id, PoolKey, block or transaction hash is hardcoded anywhere in the
 discovery path, and the Foundry suite still verifies the pool independently.
 
+Later runs (`39447617381`, `39454970912`) got `MPGR v4 hint count: 1` — Dexscreener
+answered again — and the hint path verified the **same** PoolKey:
+`currency0 0x0000…0000` (native), `currency1 0xb2000000000000000000008d204203177a78af01`,
+`fee 0`, `tickSpacing 200`, `hooks 0x985c14baa2a18316ffda0aefb3a632fadfca2acc`,
+`poolId 0xfc151dc0…1cc44`, `initializeBlock 48631199`. Both discovery routes agreeing on
+one canonical answer, on different commits and different fork blocks, is the point: the
+hint is an optimisation, never a source of truth.
+
+`testForkMPGRV4FeeAndMinimum` is the load-bearing test here. It swaps **MPGR → WETH**
+through that pool in a single hop and passes on a real fork, which proves two things the
+app-side discovery has to match: the deployed executor accepts a v4 PoolKey whose
+`currency0` is the zero address, and it settles that hop into WETH (`h[0].tokenOut = WETH`).
+`lib/swap/v2/rpc-v4.ts` therefore normalises a pool's native side to canonical WETH exactly
+as `discovery.ts`, `rpc-index.ts` and the sweep in `rpc-source.ts` already did — a v4 pool
+against native ETH *is* a WETH route, and treating it as anything else makes real liquidity
+invisible.
+
 **History, recorded because it explains the design.** Four earlier runs
 (`39396256493`, `39397504180`, `39398352775`, `39398810617`) all failed at the
 discovery step with `hint count: 0`, so the forge suite was skipped and this branch
@@ -228,74 +273,146 @@ failure for our fork evidence. That is the problem the fallback removes. Note th
 `paths:` filtering on a `pull_request` event matches the PR's **cumulative** diff,
 so any push to this PR re-runs the proof.
 
-**Tier 2b — coverage matrix (GitHub Actions, discovery-level): BUILT, but NOT MEASURED.**
+**Tier 2b — coverage matrix (GitHub Actions, discovery-level): PARTIALLY MEASURED.**
 `.github/workflows/swap-v2-coverage-matrix.yml` runs the app's real discovery stack
 (`RpcV2LiquiditySource` + `discoverV2Quote`) against Base and classifies each pair.
-Run `39414446827` (commit `4b54093`) completed successfully at block 52853024 using
-`secrets.BASE_MAINNET_RPC_URL`, and reported:
+It is sharded: `coverage-plan.ts` produces one deterministic plan of 210 pairs, the plan
+is split into disjoint batches **grouped by subject token**, each shard measures its own
+batch inside its own wall-clock budget and uploads a shard artifact, and an offline
+`aggregate` job merges them into exactly one row per planned pair — failing loudly if
+fewer shards report than the plan expects.
 
-```text
-Pairs probed: 212 · measured: 0 · unmeasured: 212
-EXECUTABLE_ROUTE 0 | MISSING_LIQUIDITY 0 | UNSUPPORTED_TOKEN_INFRASTRUCTURE 0
-UNSUPPORTED_VENUE 0 | INVALID_REQUEST 2 | FEE_INVARIANT_DEFECT 0
-UNMEASURED_PROVIDER_FAILURE 212
-```
+The progression matters, because each row is a defect that was found by measuring rather
+than by reasoning:
 
-Every pair failed with `Canonical pool log query unavailable`,
-`Venue quote unavailable`, or the 45 s per-pair timeout. **This is an RPC
-capability limit, not a liquidity finding** — and the classifier correctly refused
-to record any of it as `MISSING_LIQUIDITY`. The two `INVALID_REQUEST` rows are the
-ETH↔WETH pair, which discovery rightly rejects as one asset.
+| Run | Commit | Shape | Result |
+| --- | --- | --- | --- |
+| `39414446827` | `4b54093` | one job, block-0 sweep | 212 probed · **0 measured** — every pair hit `Canonical pool log query unavailable` or the 45 s timeout |
+| `39421479108` | `f9d77dc` | + bounded factory index | 212 probed · **1 measured** |
+| `39424722053` | `3aca0f1` | + sweep-call bound | **RED** — `ETH routed despite unsupported infrastructure` (a real classifier bug, fixed) |
+| `39431366188` | `d11bed8` | + routability split from metadata | 212 probed · **54 measured** · 158 UNMEASURED · venue kinds 1, 4 and 7 all produced executable routes, including two-leg and mixed-venue multi-hop |
+| `39447617536` | `d5bed71` | 4 shards + hint-free v4 | all 4 shards green, **first MPGR route ever measured** — but the aggregate job merged nothing and still reported success |
+| `39454971188` | `4f4c3a4` | + loud aggregation | all 4 shards green with proven handoff files · **aggregate RED: collected 0 of 4 shard artifacts** |
 
-So: the matrix machinery works and is honest, but **no token-coverage evidence
-exists yet**. Broad historical `eth_getLogs` scanning is what discovery needs and
-what the available RPC will not serve; the fork proof needs only a narrow targeted
-query near a known block, which is why it succeeds on the same RPC. Closing this
-needs either an RPC/archive tier with a wide log range or a pool index.
+**Defect 1 — a green aggregate job that had merged nothing.** Run `39447617536` reported
+`aggregate: success` while producing no merged matrix and no PR comment: the shard matrices
+were written into `deployments/.local/`, which is both dot-prefixed and git-ignored, and the
+uploaded artifacts arrived without them. The aggregation test treated "no shards found" as a
+*skip*, and vitest discards console output from a skipped test, so nothing surfaced anywhere.
+A silent green here is the worst available outcome — it reads as "every planned pair was
+attempted" when none was. Aggregation that is switched on with nothing to merge now **fails**,
+the collect step fails if fewer shard artifacts arrive than the plan expects and prints the
+downloaded tree in the error, each shard publishes the files it is handing over with their byte
+sizes as a notice, and the handoff directory is a plain `coverage-out/` rather than an ignored
+path. Verified offline before pushing: four shard fixtures → collected 4 of 4 → merged 210
+planned pairs → a 52 KB report that fits inside GitHub's 65 536-character comment limit.
 
+**Defect 2 — round-robin sharding multiplied the expensive work by four.** Dealing pairs
+round-robin gives every shard an equal *pair* count and every shard the *whole token
+catalogue*. But the costly part of a measurement is per token, not per pair: a deployment floor
+is a ~26-step `eth_getCode` binary search and a v4 `Initialize` scan is up to 64 sequential
+ten-block `eth_getLogs` round-trips. Run `39454971188` paid that four times over, and the
+shard annotations show where the budget went — the buckets below are per shard and are the
+only evidence from that run, since its aggregate job (correctly) refused to publish a matrix:
+
+| Shard | Handoff written | Visible UNMEASURED buckets | MPGR rows in that shard |
+| --- | --- | --- | --- |
+| 1 | JSON 48 928 B, MD 24 076 B | 24 read-budget exhausted · 13 never attempted · 9 timeouts · 1 neighbour · 1 incomplete · 1 ETH≡WETH | `SELL MPGR→USDC` UNMEASURED, 3 token-pairs UNMEASURED |
+| 2 | JSON 49 012 B, MD 24 637 B | 24 read-budget exhausted · 17 never attempted · 5 timeouts · 5 neighbour · 1 incomplete · 1 ETH≡WETH | `BUY USDC→MPGR` UNMEASURED, 3 token-pairs UNMEASURED |
+| 3 | JSON 41 792 B, MD 16 506 B | 11 timeouts · 4 read-budget · 4 neighbour | `SELL MPGR→WETH` UNMEASURED, 3 token-pairs UNMEASURED |
+| 4 | JSON 38 542 B, MD 15 444 B | 25 never attempted · 14 timeouts | **`BUY WETH→MPGR` EXECUTABLE_ROUTE**, 3 token-pairs UNMEASURED |
+
+Summed across shards that is roughly 50 measured and 160 UNMEASURED of 210 — and GitHub caps
+annotations per job, so the buckets above are a floor, not a complete census. Two conclusions
+are safe anyway. **`BUY WETH → MPGR` is an EXECUTABLE_ROUTE, measured against real Base state
+by the app's own discovery path** — the first MPGR route this matrix has ever produced, and it
+came from hint-free v4 discovery: floor derived from `eth_getCode`, `Initialize` matched by
+indexed currency, PoolKey re-derived and equal to the log's own pool id. And the failures are
+harness-side, not chain-side: 48 pairs died on a 4096-read discovery cap sized for a single
+quote rather than a batch, 55 were never attempted because a shard's wall clock ran out, and 39
+hit the 60 s per-pair timeout. Both are now addressed — the read cap is a workflow variable set
+to 24 576, and shards are grouped by subject so each token's discovery is paid **once** instead
+of once per shard (13 subjects per shard instead of ~50).
+
+`SELL MPGR → WETH` and the USDC directions were UNMEASURED in that run while the reverse WETH
+direction measured executable through the *same pool*. That asymmetry is budget and provider
+capacity, not liquidity, and it is reported as `UNMEASURED_PROVIDER_FAILURE` for exactly that
+reason. **Neither direction may be claimed as measured until a merged matrix says so.**
+
+**`MISSING_LIQUIDITY` is still 0, and legitimately so.** A definitive negative requires the
+getter-backed sweep to complete *and* the v4 scan to reach the pinned block. With
+`maxSweepCalls: 0` and a provider that serves ten blocks per `eth_getLogs`, neither happens, so
+the honest verdict is `DISCOVERY_UNAVAILABLE`, which the classifier records as UNMEASURED.
+**No Base pair has been proven to lack liquidity, and none has been proven to have it, except
+where a row says `EXECUTABLE_ROUTE`.** The two `INVALID_REQUEST` rows in every run are ETH↔WETH,
+which discovery correctly rejects as one asset.
 
 **Tier 3 — live-verified.** **None.** No transaction has been broadcast, simulated against
 live state, or settled. No claim in this document is live-verified.
 
 > **Universal trading is NOT proven.** What is proven is that the app-side surface is
 > internally consistent with the deployed contract's ABI and invariants, and fails closed when
-> live state disagrees. Token coverage on Base is a liquidity fact, not a code fact, and has
-> not been measured.
+> live state disagrees. Token coverage on Base is a liquidity fact, not a code fact, and it is
+> only **partially** measured: individual pairs — including `BUY WETH → MPGR` through a
+> canonically re-derived v4 PoolKey — carry real `EXECUTABLE_ROUTE` verdicts, while the majority
+> of the 210-pair plan is still `UNMEASURED_PROVIDER_FAILURE` and no pair at all has been proven
+> to *lack* liquidity. A handful of measured rows is not universal coverage, and an unmeasured
+> row is not a negative.
 
 ## 6. Remaining limitations and blockers
 
 1. **No live verification** of executor posture or bytecode (Tier 3 empty; sandbox has no
    chain access).
-2. **Token-coverage evidence does not exist yet — the largest remaining gap.** The matrix
-   machinery is built, runs in CI, and classified 212 real pairs at block 52853024, but **0 were
-   measurable**: every pair hit `Canonical pool log query unavailable`, `Venue quote
-   unavailable`, or the 45 s per-pair timeout on the configured RPC. The classifier correctly
-   recorded all of it as `UNMEASURED_PROVIDER_FAILURE` and never as missing liquidity. Discovery
-   needs broad historical `eth_getLogs`; the fork proof needs only a narrow query near a known
-   block, which is why one succeeds and the other cannot. Closing this needs an RPC/archive tier
-   with a wide log range, or a pool index. **Until then, no claim about which Base tokens are
-   tradeable is supported by evidence.**
-3. **No end-to-end app-level fork test.** The Foundry suite proves the *contract*. Nothing yet
+2. **Token coverage is only partially measured — still the largest remaining gap.** The matrix
+   runs in CI as four parallel shards plus an offline aggregate job, and it now produces real
+   verdicts: run `39431366188` measured 54 of 212 pairs across venue kinds 1, 4 and 7 including
+   multi-hop and mixed-venue routes, and run `39454971188` measured `BUY WETH → MPGR` as an
+   `EXECUTABLE_ROUTE` through a canonically re-derived v4 PoolKey. Everything else in those runs
+   is `UNMEASURED_PROVIDER_FAILURE`, and the causes are harness- and provider-side: a discovery
+   read cap sized for one quote rather than a batch, per-shard wall clock running out before a
+   pair was attempted, 60 s per-pair timeouts, and a provider that serves ten blocks per
+   `eth_getLogs`. Two of those are fixed on this branch (read cap raised to a workflow variable,
+   shards grouped by subject so each token's floor search is paid once). **No merged matrix has
+   yet been published from a green aggregate job**, so no per-venue, per-pair, per-direction
+   coverage table can be quoted as complete. Closing this needs either an RPC tier with a wide
+   `eth_getLogs` range — the fork proof succeeds on the same RPC only because it needs a narrow
+   query near a known block — or more shards and more minutes. **Until a merged matrix exists,
+   no claim about which Base tokens are tradeable is supported by evidence beyond the individual
+   `EXECUTABLE_ROUTE` rows above.**
+3. **Discovery completeness is bounded, and a bounded search cannot prove absence.** Three
+   concrete limits, all recorded in code rather than papered over:
+   - *Slipstream (venue kind 1) is enumerated partially.* Only tick spacing 10 is probed, because
+     no ABI-verified getter for the spacing set exists and inventing one is how a fabricated
+     negative happens. `PARTIAL_INDEX_VENUE_KINDS = [1]` marks it, and `rpc-source.ts` refuses to
+     treat an index-only result as proof that no pool exists.
+   - *v4 discovery is bounded by `maxLogCalls` (64) per token.* On a ten-block-range provider a
+     pool initialized long after its token's deployment block is out of reach; the search returns
+     `capped`, which is UNMEASURED, never "no v4 pool".
+   - *Consequently `MISSING_LIQUIDITY` cannot currently be produced at all.* A definitive negative
+     needs the sweep complete **and** the v4 scan to reach the pinned block. Reporting 0 missing
+     liquidity is therefore not a claim that liquidity exists everywhere — it is a claim that
+     absence was never provable.
+4. **No end-to-end app-level fork test.** The Foundry suite proves the *contract*. Nothing yet
    drives `prepareV2Execution` or the new wiring against a real Base archive node, so the gap
    between fabricated readers (Tier 1) and contract behaviour (Tier 2) is still closed only by
    reasoning plus ABI-parity assertions. The same RPC log-range limit in item 2 currently blocks
    building it.
-4. **Settlement is wired but unexercised against a real receipt.** `/api/swap/v2/settlement` and
+5. **Settlement is wired but unexercised against a real receipt.** `/api/swap/v2/settlement` and
    `v2-settlement-client.ts` are complete and tested against encoded fixtures, and
    `useSwapExecution` now calls the server route for V2 receipts. No real V2 transaction has ever
    been broadcast, so that path has never run end-to-end in production.
-5. **Front-end is wired but dormant.** `SwapForm` and `useSwapExecution` now dispatch through
+6. **Front-end is wired but dormant.** `SwapForm` and `useSwapExecution` now dispatch through
    `requestSwapQuoteWithV2`, and all seven V1-only dispatchers recognise V2. While
    `V2_DEPLOYMENT` is null none of it can execute: the status probe reports `activated:false`, so
    the live surface is today's V1 path with one extra cached GET per minute. This has not been
    exercised in a real browser session against an activated backend.
-6. **V1 defects deliberately left alone** (deferred by instruction): `swapPathHopKey` omits
+7. **V1 defects deliberately left alone** (deferred by instruction): `swapPathHopKey` omits
    `tokenOut`, so WETH- and USDC-bridge two-hop candidates collide and the WETH bridge is
    dropped (observed 16 candidates instead of 19); V1 generates only 1–2 hops despite
    `SWAP_MAX_PATH_HOPS = 3`; V1 has no v4 adapter. **Do not** add `tokenOut` to that key
    without updating `lib/swap/swap-path-token-pairs.test.ts`, whose regexes
    (`/:100($|>)/`, `/:500($|>)/`) encode the current format.
-7. **Pancake V3 and 0x Settler stay disabled.** Neither has a passing fork proof. Settler must
+8. **Pancake V3 and 0x Settler stay disabled.** Neither has a passing fork proof. Settler must
    never be called directly.
 
 ## 7. Activation plan
@@ -353,3 +470,19 @@ Activation is a single constant, so rollback is a revert:
 - A venue is never advertised as supported unless its calldata and execution are proven.
 - Never fabricate a quote, never silently substitute a route, never report an RPC failure as
   missing liquidity, and never describe an unrun test as passed.
+- **Positives and negatives are not symmetric in discovery.** An incomplete search may return
+  the pools it did verify — every one of them came from a canonical source, so an unfinished
+  scan costs route *quality*, never route *truth*. Claiming that **no** compatible pool exists
+  is a different act, and is only permitted when the getter-backed sweep completed *and* the v4
+  scan reached the pinned block. Anything less is `DISCOVERY_UNAVAILABLE`.
+- **A v4 PoolKey is trusted only if it re-derives.** `keccak256(abi.encode(PoolKey))` must equal
+  the `Initialize` log's own indexed `id`, which is how the PoolManager computes a pool id and how
+  the fork suite checks its fixture. A log that fails the check is rejected, not believed.
+- **A v4 pool against native ETH is a WETH route.** `currency0 == address(0)` normalises to
+  canonical WETH in discovery, the factory index and the sweep alike — the deployed executor
+  settles such a hop into WETH, and the fork suite proves it.
+- **A search budget is a statement about the searcher, not the chain.** Running out of calls,
+  time or provider tolerance produces `capped` / `unavailable`, never `complete`.
+- **The coverage plan owns the denominator.** Shards report verdicts; they do not get to redefine
+  which pairs existed. A pair no shard reported is an explicit gap in the merged matrix, and an
+  aggregation that is switched on with nothing to merge is a failure, not a pass.

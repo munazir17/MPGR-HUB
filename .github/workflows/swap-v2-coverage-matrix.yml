@@ -8,10 +8,12 @@ name: Swap V2 coverage matrix (read-only)
 # part of the plan: run 39431366188 measured 54 of 212 pairs and recorded 158
 # UNMEASURED, most of them purely "probe budget exhausted" — a scheduling artefact,
 # not a coverage fact. The probe plan is pure and deterministic
-# (lib/swap/v2/coverage-plan.ts), so it is split round-robin into disjoint batches,
-# each with its own budget, and an offline `aggregate` job merges them and PROVES
-# that every planned pair was attempted. A shard that does not report turns the
-# aggregate job red rather than quietly shrinking the matrix.
+# (lib/swap/v2/coverage-plan.ts) and is split into disjoint batches GROUPED BY
+# SUBJECT TOKEN, because the expensive part of a measurement is per token (a
+# deployment-floor binary search plus a windowed v4 Initialize scan), not per pair.
+# Each batch gets its own budget, and an offline `aggregate` job merges them and
+# PROVES that every planned pair was attempted. A shard that does not report turns
+# the aggregate job red rather than quietly shrinking the matrix.
 #
 # This is deliberately a SEPARATE workflow from swap-v2-fork-proof.yml so that a
 # coverage run can never affect, or be confused with, the fork proof.
@@ -36,12 +38,22 @@ concurrency:
 env:
   # Number of parallel batches. The matrix below must list exactly 1..N.
   COVERAGE_SHARDS: "4"
+  # Handoff directory between the shard jobs and the aggregate job. NOT
+  # deployments/.local: that path is dot-prefixed and git-ignored, and run
+  # 39454971188 proved the consequence — all four shards wrote their matrices, the
+  # artifacts uploaded "successfully", and the aggregate job collected zero of them.
+  # Every path below derives from this one variable so the two jobs cannot drift.
+  MPGR_V2_COVERAGE_DIR: coverage-out
   # The probe plan is shared by the shards and by the offline aggregator: if the two
   # jobs saw different values, the aggregator would rebuild a different plan and
   # report every pair as unattempted. Defining them here, at workflow level, is what
   # makes that impossible rather than merely unlikely.
   MPGR_V2_COVERAGE_MAX_PAIRS: "12"
   MPGR_V2_COVERAGE_TOTAL_PAIRS: "250"
+  # Reads per pair. Sized for a batch, not for one quote: a token's deployment floor
+  # alone is ~26 sequential eth_getCode round-trips. The wall clock and the v4 log cap
+  # remain the real bounds.
+  MPGR_V2_COVERAGE_MAX_READS: "24576"
 
 jobs:
   coverage:
@@ -83,10 +95,10 @@ jobs:
             echo
             echo 'Read-only discovery against Base. No signature, no broadcast, no deployment key.'
             echo
-            if [ -f "deployments/.local/swap-v2-coverage-matrix.shard-${{ matrix.shard }}-of-${{ env.COVERAGE_SHARDS }}.md" ]; then
-              cat "deployments/.local/swap-v2-coverage-matrix.shard-${{ matrix.shard }}-of-${{ env.COVERAGE_SHARDS }}.md"
-            elif [ -f deployments/.local/swap-v2-coverage-matrix.md ]; then
-              cat deployments/.local/swap-v2-coverage-matrix.md
+            if [ -f "$MPGR_V2_COVERAGE_DIR/swap-v2-coverage-matrix.shard-${{ matrix.shard }}-of-${{ env.COVERAGE_SHARDS }}.md" ]; then
+              cat "$MPGR_V2_COVERAGE_DIR/swap-v2-coverage-matrix.shard-${{ matrix.shard }}-of-${{ env.COVERAGE_SHARDS }}.md"
+            elif [ -f "$MPGR_V2_COVERAGE_DIR/swap-v2-coverage-matrix.md" ]; then
+              cat "$MPGR_V2_COVERAGE_DIR/swap-v2-coverage-matrix.md"
             else
               echo '**This shard was NOT measured.** Base was unreachable from the runner, so no shard matrix exists. A skipped measurement is not evidence of missing liquidity or of universal support.'
               grep -E "::warning::|NOT MEASURED" "v2-coverage-shard-${{ matrix.shard }}.log" || true
@@ -96,16 +108,14 @@ jobs:
           # so the shard states plainly, in a durable channel, which files it is
           # handing to the aggregate job and how big they are. An empty or tiny
           # listing here is what makes a silent aggregation gap diagnosable.
-          listing=$(find deployments/.local -maxdepth 1 -type f -printf '%f=%s ' 2>/dev/null | sort | tr -d '\n')
-          echo "::notice::shard ${{ matrix.shard }}/${{ env.COVERAGE_SHARDS }} handoff files: ${listing:-NONE — this shard wrote nothing}"
+          listing=$(find "$MPGR_V2_COVERAGE_DIR" -maxdepth 1 -type f -printf '%f=%s ' 2>/dev/null | sort | tr -d '\n')
+          echo "::notice::shard ${{ matrix.shard }}/${{ env.COVERAGE_SHARDS }} handoff files in $MPGR_V2_COVERAGE_DIR: ${listing:-NONE — this shard wrote nothing}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: swap-v2-coverage-shard-${{ matrix.shard }}
           path: |
-            deployments/.local/swap-v2-coverage-shard-*.json
-            deployments/.local/swap-v2-coverage-matrix*.json
-            deployments/.local/swap-v2-coverage-matrix*.md
+            ${{ env.MPGR_V2_COVERAGE_DIR }}
             v2-coverage-shard-${{ matrix.shard }}.log
           if-no-files-found: warn
 
@@ -133,21 +143,25 @@ jobs:
       - name: Collect shard artifacts
         run: |
           set -euo pipefail
-          mkdir -p deployments/.local
+          mkdir -p "$MPGR_V2_COVERAGE_DIR"
+          tree=$(find shard-input -type f -printf '%p (%s bytes)\n' 2>/dev/null | sort || true)
           echo "downloaded artifact tree:"
-          find shard-input -type f -printf '  %p (%s bytes)\n' 2>/dev/null | sort || echo "  (shard-input does not exist)"
+          echo "${tree:-  (shard-input holds no files at all)}"
           # Do not depend on how download-artifact nested the paths: find the shard
           # matrices wherever they landed and put them where the merger reads them.
-          find shard-input -name 'swap-v2-coverage-shard-*.json' -exec cp {} deployments/.local/ \; 2>/dev/null || true
-          find shard-input -name 'swap-v2-coverage-matrix*.md' -exec cp {} deployments/.local/ \; 2>/dev/null || true
+          find shard-input -name 'swap-v2-coverage-shard-*.json' -exec cp {} "$MPGR_V2_COVERAGE_DIR/" \; 2>/dev/null || true
+          find shard-input -name 'swap-v2-coverage-matrix*.md' -exec cp {} "$MPGR_V2_COVERAGE_DIR/" \; 2>/dev/null || true
           find shard-input -name 'v2-coverage-shard-*.log' -exec cp {} . \; 2>/dev/null || true
-          echo "collected into deployments/.local:"
-          ls -la deployments/.local || true
-          collected=$(find deployments/.local -maxdepth 1 -name 'swap-v2-coverage-shard-*.json' | wc -l | tr -d ' ')
+          echo "collected into $MPGR_V2_COVERAGE_DIR:"
+          ls -la "$MPGR_V2_COVERAGE_DIR" || true
+          collected=$(find "$MPGR_V2_COVERAGE_DIR" -maxdepth 1 -name 'swap-v2-coverage-shard-*.json' | wc -l | tr -d ' ')
           echo "shard JSON artifacts collected: $collected of ${{ env.COVERAGE_SHARDS }}"
-          echo "::notice::aggregate collected $collected of ${{ env.COVERAGE_SHARDS }} shard JSON artifact(s)"
-          if [ "$collected" -eq 0 ]; then
-            echo "::error::No coverage shard JSON reached the aggregate job even though the shard jobs reported success. The artifact handoff is broken, so there is nothing to merge and NO coverage may be published from this run."
+          echo "::notice::aggregate collected $collected of ${{ env.COVERAGE_SHARDS }} shard JSON artifact(s) into $MPGR_V2_COVERAGE_DIR"
+          if [ "$collected" -lt "${{ env.COVERAGE_SHARDS }}" ]; then
+            # Fewer than expected is already a defect: the merge would publish a
+            # matrix with holes in it. Say which shard is missing, and show the tree
+            # so the cause is visible without needing the step log.
+            echo "::error::Only $collected of ${{ env.COVERAGE_SHARDS }} shard JSON artifact(s) reached the aggregate job. Downloaded tree: ${tree:-EMPTY}. Nothing will be published as coverage from a partial handoff."
             exit 1
           fi
       - name: Merge shards and prove every planned pair was attempted
@@ -165,18 +179,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          md="$MPGR_V2_COVERAGE_DIR/swap-v2-coverage-matrix.md"
           {
             echo "## MPGR Swap V2 coverage matrix (merged) — $GITHUB_SHA"
             echo 'Read-only discovery against Base. No signature, no broadcast, no deployment key.'
             echo
-            if [ -f deployments/.local/swap-v2-coverage-matrix.md ]; then
-              cat deployments/.local/swap-v2-coverage-matrix.md
+            if [ -f "$md" ]; then
+              cat "$md"
             else
               echo '**Coverage was NOT measured.** No shard produced a matrix, so nothing is claimed. A skipped measurement is not evidence of missing liquidity or of universal support.'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           grep -E "::warning::|::notice::|NOT MEASURED" v2-coverage-shard-*.log v2-coverage-aggregate.log 2>/dev/null | head -200 || true
-          md=deployments/.local/swap-v2-coverage-matrix.md
           if [ -n "$PR_NUMBER" ] && [ -f "$md" ]; then
             {
               echo "Read-only V2 coverage matrix (merged from ${{ env.COVERAGE_SHARDS }} shards): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -216,9 +230,7 @@ jobs:
         with:
           name: swap-v2-coverage-matrix
           path: |
-            deployments/.local/swap-v2-coverage-matrix.json
-            deployments/.local/swap-v2-coverage-matrix.md
-            deployments/.local/swap-v2-coverage-matrix.shard-*.md
+            ${{ env.MPGR_V2_COVERAGE_DIR }}
             v2-coverage-shard-*.log
             v2-coverage-aggregate.log
           if-no-files-found: warn

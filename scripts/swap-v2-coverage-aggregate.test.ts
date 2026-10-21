@@ -32,7 +32,9 @@ import {
 import { SWAP_V2_ENABLED_KINDS, SWAP_V2_SEALED_MANIFEST } from "@/lib/swap/v2/deployment";
 
 const OUT_DIR = process.env.MPGR_V2_COVERAGE_DIR ?? "deployments/.local";
-const REPORT_DIR = "deployments/.local";
+/** The merged matrix is written beside the shards it was built from, so one env var
+ * controls the whole handoff and nothing lands in a path an artifact step can miss. */
+const REPORT_DIR = OUT_DIR;
 const ENABLED = process.env.MPGR_V2_COVERAGE_AGGREGATE === "1" || process.env.MPGR_V2_COVERAGE_AGGREGATE === "true";
 const MAX_TOKEN_TOKEN_PAIRS = Number(process.env.MPGR_V2_COVERAGE_MAX_PAIRS ?? 12);
 const MAX_TOTAL_PAIRS = Number(process.env.MPGR_V2_COVERAGE_TOTAL_PAIRS ?? 250);
