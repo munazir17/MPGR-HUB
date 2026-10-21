@@ -676,6 +676,42 @@ Two honest readings of that last row, because the numbers invite an over-claim i
   the next tuning to try is weighting the budget toward the forward side rather than splitting it
   evenly; that is a knob, not a redesign, and it is deliberately not guessed at here.
 
+### What staged discovery did to the matrix
+
+The tuning curve above was measured before discovery became staged. Ordering the stages — getters
+first, v4 only when they cannot answer, no whole-chain sweep — changed the shape of the run far more
+than any budget tweak did, because a pair that a getter can answer stopped paying for a scan:
+
+| Run | Commit | Discovery | Measured | Never attempted | Timeouts | Could not finish |
+| --- | --- | --- | --- | --- | --- | --- |
+| `39626429104` | `809387d` | union load, all three sources every pair | 85 | 43 | 14 | 60 |
+| `39657704403` | `1b5d55c` | **staged** | **109** | **0** | **1** | 88 |
+| `39658916918` | `37b1017` | **staged** | **109** | **0** | **1** | 88 |
+
+Three things worth reading carefully, because two of them look like regressions and are not:
+
+- **"Probe budget exhausted before this pair was measured" disappeared from the gap table**, and
+  per-pair timeouts fell from 14 to 1. Every shard now attempts every pair it owns. Measured pairs
+  rose to **109 of 210 (52%)**, the best run on this branch, and the two staged runs agreed on
+  109/101 exactly — the spread across earlier runs was mostly pairs never being reached, not chain
+  state changing.
+- **"Discovery could not finish" rose from 60 to 88.** That is the same pairs moving from "we never
+  got to them" to "we tried, and a ten-block `eth_getLogs` range cannot answer this". The number got
+  worse while the evidence got better: an unattempted pair says nothing at all, whereas 88 pairs now
+  name the provider limit that blocks them.
+- **All five venue kinds measured, with mixed-venue multi-hop in volume** — Slipstream 71, v3 18
+  (4 mixed), Aerodrome Classic 17 (5 mixed), Uniswap v2 6 (1 mixed), v4 3. Mixed-venue routes were
+  previously measured 0–1 at a time; they are now routine, because pairs that used to exhaust their
+  budget reach the multi-hop stage.
+
+And the result that retires a caveat recorded earlier in this document: **no token in the matrix
+routes in only one direction any more.** Tokens executable in both directions rose to **47**, the
+"one direction only" list is **empty**, and just three tokens (`COINc`, `CRCLc`, `INTCc`) measured
+neither. Every earlier asymmetric row was a probe-size or attempt-order artefact, as suspected.
+`MPGR → ETH` — the native sentinel on the buy side of a token/token probe — measured
+`EXECUTABLE_ROUTE`, 1 hop, venue kind 7, at a recorded probe of `1e12`: the first token/token pair
+involving MPGR this matrix has ever measured.
+
 **What the two-sided scan is still not:** a way to cross 4.2 M blocks on a ten-block provider. That
 is 420 000 calls and remains infeasible, so a token whose only v4 pool was initialized in the middle
 of that range is still out of reach, and still reported as `capped` with the uncovered blocks named.
@@ -687,13 +723,14 @@ live state, or settled. No claim in this document is live-verified.
 > **Universal trading is NOT proven.** What is proven is that the app-side surface is
 > internally consistent with the deployed contract's ABI and invariants, and fails closed when
 > live state disagrees. Token coverage on Base is a liquidity fact, not a code fact, and it is
-> only **partially** measured: run `39607488924` measured **97 of 210 planned pairs**, every one of
-> them an `EXECUTABLE_ROUTE`, across **all five enabled venue kinds** — including **both** directions
-> of MPGR against WETH through a canonically re-derived native-side v4 PoolKey, each verdict printed
-> beside the exact probe amount that produced it. The other 113 are `UNMEASURED_PROVIDER_FAILURE`,
-> and **no pair at all has been proven to *lack* liquidity**. Roughly half the plan unmeasured is not
-> universal coverage, an unmeasured row is not a negative, and a token/token pair has still never been
-> measured in any run.
+> only **partially** measured: runs `39657704403` and `39658916918` each measured **109 of 210
+> planned pairs**, every one of them an `EXECUTABLE_ROUTE`, across **all five enabled venue kinds**
+> with mixed-venue multi-hop in four of them — including **both** directions of MPGR against WETH
+> through a canonically re-derived native-side v4 PoolKey and `MPGR → ETH` as a token/token probe,
+> each verdict printed beside the exact probe amount that produced it. The other 101 are
+> `UNMEASURED_PROVIDER_FAILURE`, and **no pair at all has been proven to *lack* liquidity**. Half the
+> plan unmeasured is not universal coverage, an unmeasured row is not a negative, and only one
+> token/token pair has ever been measured.
 
 ## 6. Remaining limitations and blockers
 
@@ -701,17 +738,18 @@ live state, or settled. No claim in this document is live-verified.
    chain access).
 2. **Token coverage is only partially measured — still the largest remaining gap.** The matrix runs
    in CI as six parallel shards plus an offline aggregate job, and it now produces real verdicts.
-   The shipped configuration's run is `39626429104` (commit `809387d`, blocks 52903683–52903700):
-   6 of 6 shards, 210 planned pairs, **85 measured and every one of them an executable route**, 125
-   UNMEASURED, across **all five enabled venue kinds** (Slipstream 60, v4 12, v3 7, Aerodrome
-   Classic 4, Uniswap v2 3) and including **both** directions of MPGR against WETH at a recorded
-   probe of `1e12` raw units. The best single run observed was `39607488924` at 97 of 210. **Even
-   that is 46% of the plan, and it is not universal coverage.** Every gap is harness- or provider-side: 32 pairs were never
+   The current configuration's runs are `39657704403` (`1b5d55c`) and `39658916918` (`37b1017`):
+   6 of 6 shards, 210 planned pairs, **109 measured and every one of them an executable route**, 101
+   UNMEASURED, across **all five enabled venue kinds** (Slipstream 71, v3 18, Aerodrome Classic 17,
+   Uniswap v2 6, v4 3, with mixed-venue multi-hop in four of them), **both** directions of MPGR
+   against WETH plus `MPGR → ETH` as a token/token probe, and 47 tokens executable in both
+   directions with none executable in only one. **That is 52% of the plan, and it is not universal
+   coverage.** Every gap is harness- or provider-side: 32 pairs were never
    attempted because a shard's wall clock ran out, 64 died on a ten-block `eth_getLogs` range that
    cannot cover 4.2 M blocks, 11 timed out, 3 were venue rejections and 1 a provider error. None is
-   a liquidity finding. All 85 executable routes are still token↔WETH or token↔USDC; **not one
-   token/token pair has been measured in any run**, because the shard that owns those probes has
-   never reached them. Measured counts across the six most recent green runs were 81, 97, 34, 75, 68
+   a liquidity finding. The 109 executable routes are still overwhelmingly token↔WETH/USDC; only
+   one token/token pair has ever been measured (`MPGR → ETH`, which is the native-side v4 pool
+   again), because the twelve sampled token/token probes are the pairs a getter cannot answer. Measured counts across the six most recent green runs were 81, 97, 34, 75, 68
    and 85 — a spread driven by provider latency, rate limiting and scan budget, not by chain state,
    so **any coverage number quoted from this branch must be quoted with its run id**. Closing the rest needs an RPC tier
    whose `eth_getLogs` range is wider than ten blocks (the fork proof succeeds on the same RPC only
@@ -778,11 +816,15 @@ live state, or settled. No claim in this document is live-verified.
     executable in *neither* from 10 to **4**, put all five venue kinds on the board for the first
     time, and turned **`MPGR → WETH SELL` into a measured `EXECUTABLE_ROUTE`** — with the
     `QUOTE_ZERO_OUTPUT` bucket going to zero matrix-wide, which is the diagnosis confirming itself.
-11. **A residual asymmetry in the matrix is an attempt-order artefact, not a routing fact.** The
-    "executable in one direction only" list changed *membership* between runs (`AVGOc`, `MSTRc`,
-    `RDDTc`, `cbBTC` resolved; `MRNAc`, `NVAXc`, `NVDAc`, `PMc`, `TTWOc`, `cbETH` appeared) because
-    32–102 pairs per run are never attempted at all. No one-directional row should be read as
-    evidence of a one-directional route until the shard budget stops being the binding constraint.
+11. **RESOLVED — the one-directional results were artefacts, and the matrix now says so.** With
+    probes sized per token and discovery staged so every pair is actually attempted, the "executable
+    in one direction only" list is **empty** across two consecutive runs (`39657704403`,
+    `39658916918`): 47 tokens route in both directions and only `COINc`, `CRCLc` and `INTCc` route in
+    neither. The earlier per-run churn in that list (`AVGOc`, `MSTRc`, `RDDTc`, `cbBTC` resolving
+    while `MRNAc`, `NVAXc`, `NVDAc`, `PMc`, `TTWOc`, `cbETH` appeared) was attempt order and dust
+    rounding, not routing. The caveat is retired rather than repeated, but the discipline stays: a
+    one-directional row is only evidence once the shard budget is no longer the binding constraint,
+    and it now is not.
 12. **The v4 search budget is tuned from a measured curve, and the curve refuted the model.** Five
     runs are tabulated in §5: per-pair timeouts track *total `eth_getLogs` call count* and essentially
     ignore concurrency (11 at 64 calls, 18 at 96, 25 at 128, 41 at 256), so parallelism does not buy
