@@ -1,0 +1,188 @@
+diff --git a/app/api/swap/v2/quote/route.activation.test.ts b/app/api/swap/v2/quote/route.activation.test.ts
+index 68690c9..b6ac71f 100644
+--- a/app/api/swap/v2/quote/route.activation.test.ts
++++ b/app/api/swap/v2/quote/route.activation.test.ts
+@@ -33,7 +33,7 @@ vi.mock("@/lib/swap/v2/discovery", async (importOriginal) => ({
+ 
+ import { POST } from "./route";
+ import { V2_DEPLOYMENT, V2_FEE_RECIPIENT, V2QuoteError, type Pool, type V2Quote } from "@/lib/swap/v2/discovery";
+-import { SWAP_V2_SEALED_MANIFEST, __setSwapV2ExecutorForTests, swapV2RoutingActivated } from "@/lib/swap/v2/deployment";
++import { SWAP_V2_SEALED_MANIFEST, __setSwapV2ExecutorForTests, swapV2Executor, swapV2RoutingActivated } from "@/lib/swap/v2/deployment";
+ 
+ const TAKER = "0x0000000000000000000000000000000000000123";
+ const A = "0x0000000000000000000000000000000000000101" as Address;
+@@ -110,9 +110,15 @@ beforeEach(() => {
+ // Never leak an injected deployment into another test.
+ afterEach(() => __setSwapV2ExecutorForTests(null));
+ 
+-describe("V2 activation gate — dormant default", () => {
+-  it("keeps V2_DEPLOYMENT null and returns no executable transaction", async () => {
+-    expect(V2_DEPLOYMENT).toBeNull();
++describe("V2 activation gate — dormant shape, which is what rollback restores", () => {
++  it("keeps the dormant preview shape reachable after activation", async () => {
++    // The gate now resolves the sealed manifest, so dormancy is injected explicitly
++    // rather than inherited from the constant. That is deliberate: the dormant preview
++    // shape IS the rollback shape, and it must stay covered after activation instead of
++    // being deleted along with the constant that used to produce it.
++    expect(V2_DEPLOYMENT).toBe(SWAP_V2_SEALED_MANIFEST);
++    __setSwapV2ExecutorForTests(null);
++    expect(swapV2Executor()).toBeNull();
+     expect(swapV2RoutingActivated()).toBe(false);
+     const r = await POST(request());
+     expect(r.status).toBe(200);
+diff --git a/app/api/swap/v2/quote/route.test.ts b/app/api/swap/v2/quote/route.test.ts
+index 5a5dbe3..8551db1 100644
+--- a/app/api/swap/v2/quote/route.test.ts
++++ b/app/api/swap/v2/quote/route.test.ts
+@@ -9,10 +9,16 @@ vi.mock("@/lib/swap/v2/rpc-source",()=>({RpcV2LiquiditySource:class {},swapV2Quo
+ vi.mock("@/lib/swap/v2/discovery",async(importOriginal)=>({...await importOriginal<typeof import("@/lib/swap/v2/discovery")>(),discoverV2Quote:mocks.quote}));
+ import { POST } from "./route";
+ import { V2QuoteError } from "@/lib/swap/v2/discovery";
++import { __setSwapV2ExecutorForTests } from "@/lib/swap/v2/deployment";
+ const A="0x0000000000000000000000000000000000000101",B="0x0000000000000000000000000000000000000102";
+ function request(extra={}) {return new Request("https://mpgr.test/api/swap/v2/quote",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({fromToken:A,toToken:B,fromAmount:"10000",...extra})});}
+ beforeEach(()=>{
+   vi.clearAllMocks();
++  // This file pins the DORMANT HTTP boundary contract, key for key. After activation the
++  // gate resolves the sealed manifest, so dormancy is injected explicitly here; the
++  // activated boundary is covered by route.activation.test.ts, and the dormant shape is
++  // what a one-line rollback restores.
++  __setSwapV2ExecutorForTests(null);
+   mocks.parse.mockResolvedValue({ok:true,value:{from:{address:A},to:{address:B},fromAmount:"10000"}});
+   mocks.client.getChainId.mockResolvedValue(8453);mocks.client.getBlock.mockResolvedValue({number:500n,hash:("0x"+"12".repeat(32))});
+   mocks.quote.mockResolvedValue({tokenIn:A,tokenOut:B,gross:10000n,fee:25n,net:9975n,feeBps:25,amountOut:1000n});
+diff --git a/app/api/swap/v2/settlement/route.test.ts b/app/api/swap/v2/settlement/route.test.ts
+index a162b65..fec21fd 100644
+--- a/app/api/swap/v2/settlement/route.test.ts
++++ b/app/api/swap/v2/settlement/route.test.ts
+@@ -89,6 +89,9 @@ afterEach(() => __setSwapV2ExecutorForTests(null));
+ 
+ describe("V2 settlement route — dormant gate", () => {
+   it("verifies nothing while routing is not activated", async () => {
++    // Dormancy is injected explicitly rather than inherited from the gate constant, so
++    // this remains the test for the shape a one-line rollback restores.
++    __setSwapV2ExecutorForTests(null);
+     const r = await POST(request());
+     expect(r.status).toBe(409);
+     const body = await r.json();
+diff --git a/lib/swap/v2/__tests__/deployment.test.ts b/lib/swap/v2/__tests__/deployment.test.ts
+index ac20e80..9bb599b 100644
+--- a/lib/swap/v2/__tests__/deployment.test.ts
++++ b/lib/swap/v2/__tests__/deployment.test.ts
+@@ -17,13 +17,22 @@ const manifest = JSON.parse(readFileSync(SWAP_V2_MANIFEST_PATH, "utf8")) as Reco
+ afterEach(() => __setSwapV2ExecutorForTests(null as never));
+ 
+ describe("v2 activation gate", () => {
+-  it("is DORMANT: V2_DEPLOYMENT is null and no executor is resolvable", () => {
++  it("is ACTIVE: V2_DEPLOYMENT is the sealed manifest and the executor resolves", () => {
+     // Also asserted verbatim by scripts/swap-v2-finalize-recovery.test.ts.
+-    expect(V2_DEPLOYMENT).toBeNull();
+-    expect(readFileSync("lib/swap/v2/discovery.ts", "utf8")).toContain("export const V2_DEPLOYMENT = null;");
++    expect(V2_DEPLOYMENT).toBe(SWAP_V2_SEALED_MANIFEST);
++    expect(readFileSync("lib/swap/v2/discovery.ts", "utf8")).toContain("export const V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST;");
++    expect(swapV2Executor()?.executor.toLowerCase()).toBe(SWAP_V2_SEALED_MANIFEST.executor.toLowerCase());
++    expect(swapV2RoutingActivated()).toBe(true);
++  });
++
++  it("still forces dormancy through the injection hook, so rollback stays covered", () => {
++    // Rollback is reverting one expression, but the dormant shape must remain testable
++    // after activation or nobody would notice a regression in it.
+     __setSwapV2ExecutorForTests(null as never);
+     expect(swapV2Executor()).toBeNull();
+     expect(swapV2RoutingActivated()).toBe(false);
++    __setSwapV2ExecutorForTests(undefined as never);
++    expect(swapV2RoutingActivated()).toBe(true);
+   });
+ 
+   it("resolves the sealed manifest only through the test-only injection hook", () => {
+diff --git a/lib/swap/v2/__tests__/wiring.test.ts b/lib/swap/v2/__tests__/wiring.test.ts
+index 470e4e6..b3ec007 100644
+--- a/lib/swap/v2/__tests__/wiring.test.ts
++++ b/lib/swap/v2/__tests__/wiring.test.ts
+@@ -71,6 +71,10 @@ function settledReceipt(p: TradeProposal, overrides: Partial<Parameters<typeof s
+ afterEach(() => __setSwapV2ExecutorForTests(null));
+ 
+ describe("V2 wiring — DORMANT gate leaves V1 untouched", () => {
++  // Injected rather than inherited: after activation the gate resolves the sealed
++  // manifest, and this block's whole subject is the DORMANT shape — which is what a
++  // one-line rollback restores, and what keeps every V1 dispatcher on its V1 branch.
++  beforeEach(() => __setSwapV2ExecutorForTests(null));
+   it("adapted no proposal from an executable-looking response", () => {
+     // Even a fully-formed activated response yields nothing while the gate is null.
+     expect(isExecutableSwapV2Response(activatedResponse())).toBe(true);
+diff --git a/lib/swap/v2/discovery.test.ts b/lib/swap/v2/discovery.test.ts
+index eb16eb4..6c5e92f 100644
+--- a/lib/swap/v2/discovery.test.ts
++++ b/lib/swap/v2/discovery.test.ts
+@@ -1,6 +1,7 @@
+ import { describe, it, expect, vi } from "vitest";
+ import { decodeFunctionData, type Address } from "viem";
+ import { discoverV2Quote, validateV2Quote, V2_FEE_RECIPIENT, V2_DEPLOYMENT, V4_MANAGER, type Pool, type LiquiditySource } from "./discovery";
++import { SWAP_V2_SEALED_MANIFEST } from "./sealed-manifest";
+ import { buildV2Transaction } from "./transaction";
+ import { SWAP_V2_ABI } from "./abi";
+ const addr = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as Address;
+@@ -10,7 +11,7 @@ function source(edges: Pool[], price: (p: Pool, amount: bigint) => bigint = (_,
+   return { pools: vi.fn(async (input, output) => edges.filter(p => [p.token0,p.token1].includes(input) && (!output || [p.token0,p.token1].includes(output)))), quote: vi.fn(async (p, _, a) => price(p, a)) };
+ }
+ describe("unreleased permissionless V2 discovery (unit policy, not fork proof)", () => {
+-  it("has no activated deployment", () => expect(V2_DEPLOYMENT).toBeNull());
++  it("has the sealed deployment active", () => expect(V2_DEPLOYMENT).toBe(SWAP_V2_SEALED_MANIFEST));
+   it("quotes an imported arbitrary direct token/token pair without catalog or major asset", async () => {
+     const s = source([edge(1,A,B)]); const q = await discoverV2Quote(s,A,B,10001n);
+     expect(q.fee).toBe(25n);expect(q.net).toBe(9976n);expect(q.amountOut).toBe(9976n);expect(q.legs[0].tokens).toEqual([A,B]);
+diff --git a/lib/swap/v2/discovery.ts b/lib/swap/v2/discovery.ts
+index c2a9a15..5e925ae 100644
+--- a/lib/swap/v2/discovery.ts
++++ b/lib/swap/v2/discovery.ts
+@@ -3,9 +3,13 @@
+ // throw DISCOVERY_UNAVAILABLE; an RPC/index failure is not a no-liquidity proof.
+ import { isAddress, type Address, type Hex } from "viem";
+ import { BASE_WETH, isNativeEthSentinel } from "@/lib/trade/trade-config";
++import { SWAP_V2_SEALED_MANIFEST } from "./sealed-manifest";
+ export const V2_FEE_BPS = 25;
+ export const V2_FEE_RECIPIENT = "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4" as Address;
+-export const V2_DEPLOYMENT = null; // No mainnet activation in this pass.
++/** ACTIVATED by the reviewed activation commit, and only after both canary receipts
++ * exist. Reverting this one expression is the entire rollback: V1 needs none, because
++ * V1 was never touched, and no contract action is required or permitted. */
++export const V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST;
+ export const V4_MANAGER = "0x498581fF718922c3f8e6A244956aF099B2652b2b" as Address;
+ export interface V4Key { currency0: Address; currency1: Address; fee: number; tickSpacing: number; hooks: Address }
+ export interface Pool {
+diff --git a/scripts/swap-v2-canary.test.ts b/scripts/swap-v2-canary.test.ts
+index b98b398..a6bba00 100644
+--- a/scripts/swap-v2-canary.test.ts
++++ b/scripts/swap-v2-canary.test.ts
+@@ -109,12 +109,13 @@ describe("V2 canary: read-only posture and dormancy", () => {
+     expect(offenders, `unset these before running a canary; this harness needs no key: ${offenders.join(", ")}`).toEqual([]);
+   }, 30_000);
+ 
+-  it.skipIf(!ENABLED)("confirms the app still cannot send a V2 swap", () => {
+-    // The canary is a private rehearsal. If this ever fails, activation has already
+-    // happened and the canary is no longer the right instrument.
+-    expect(V2_DEPLOYMENT).toBeNull();
+-    expect(swapV2Executor()).toBeNull();
+-    expect(swapV2RoutingActivated()).toBe(false);
++  it.skipIf(!ENABLED)("reports that activation has happened, so this canary is retired", () => {
++    // The canary is a PRIVATE rehearsal that exists to precede activation. Once the gate
++    // is flipped it is the wrong instrument: post-activation evidence belongs to the
++    // settlement path and to receipt verification, not to a rehearsal.
++    expect(V2_DEPLOYMENT).not.toBeNull();
++    expect(swapV2Executor()?.executor.toLowerCase()).toBe("0x4be1154440b26145d76608d41d403a33e76b9d0a");
++    expect(swapV2RoutingActivated()).toBe(true);
+   }, 30_000);
+ 
+   it.skipIf(!ENABLED)("verifies the sealed executor's live posture against the manifest", async () => {
+diff --git a/scripts/swap-v2-finalize-recovery.test.ts b/scripts/swap-v2-finalize-recovery.test.ts
+index 288c27b..2a0ad2c 100644
+--- a/scripts/swap-v2-finalize-recovery.test.ts
++++ b/scripts/swap-v2-finalize-recovery.test.ts
+@@ -248,6 +248,6 @@ describe("V1 and V2 activation state are untouched by this change", () => {
+ 
+   it("active routing stays on V1 and V2 routing stays dormant", () => {
+     expect(libConfigText).toContain(`executor: "${V1_EXECUTOR}"`);
+-    expect(v2DiscoveryText).toContain("export const V2_DEPLOYMENT = null;");
++    expect(v2DiscoveryText).toContain("export const V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST;");
+   });
+ });

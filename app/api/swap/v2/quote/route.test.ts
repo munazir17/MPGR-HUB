@@ -5,7 +5,7 @@ vi.mock("@/lib/api/request-guard",()=>({verifyTrustedOrigin:()=>null,readJsonBod
 vi.mock("@/lib/trade/trade-rate-limit",()=>({checkRateLimit:async()=>({allowed:true}),clientIpFromRequest:()=>"test"}));
 vi.mock("@/lib/trade/trade-request",()=>({parseTradeSwapRequest:mocks.parse}));
 vi.mock("@/lib/trade/trade-public-client",()=>({getTradePublicClient:()=>mocks.client}));
-vi.mock("@/lib/swap/v2/rpc-source",()=>({RpcV2LiquiditySource:class {}}));
+vi.mock("@/lib/swap/v2/rpc-source",()=>({RpcV2LiquiditySource:class {},swapV2QuoteSource:()=>({})}));
 vi.mock("@/lib/swap/v2/discovery",async(importOriginal)=>({...await importOriginal<typeof import("@/lib/swap/v2/discovery")>(),discoverV2Quote:mocks.quote}));
 import { POST } from "./route";
 import { V2QuoteError } from "@/lib/swap/v2/discovery";
@@ -14,7 +14,7 @@ function request(extra={}) {return new Request("https://mpgr.test/api/swap/v2/qu
 beforeEach(()=>{
   vi.clearAllMocks();
   mocks.parse.mockResolvedValue({ok:true,value:{from:{address:A},to:{address:B},fromAmount:"10000"}});
-  mocks.client.getChainId.mockResolvedValue(8453);mocks.client.getBlock.mockResolvedValue({number:500n,hash:"0x1234"});
+  mocks.client.getChainId.mockResolvedValue(8453);mocks.client.getBlock.mockResolvedValue({number:500n,hash:("0x"+"12".repeat(32))});
   mocks.quote.mockResolvedValue({tokenIn:A,tokenOut:B,gross:10000n,fee:25n,net:9975n,feeBps:25,amountOut:1000n});
 });
 describe("unreleased V2 quote HTTP boundary",()=>{

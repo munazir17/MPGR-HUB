@@ -45,6 +45,7 @@ import { config } from "@/lib/wagmi";
 import { inspectExecutorSwapTransaction } from "@/lib/executor/executor-intent";
 import { swapPathExecutor } from "@/lib/swap/swap-executor-config";
 import { inspectSwapExecutorTransaction } from "@/lib/swap/swap-executor-intent";
+import { inspectSwapV2Transaction } from "@/lib/swap/v2/v2-inspect";
 import { verifyAgentFeeInSwapTransaction } from "./trade-agent-fee";
 import {
   MPGR_EXECUTOR_PROVIDER_ID,
@@ -465,7 +466,31 @@ export async function executeTrade(
     if (feeInvariant.fee) {
       const grossAmountIn = parsePositiveAmount(proposal.fromAmount);
       const swapPathDeployment = swapPathExecutor();
-      if (swapPathDeployment !== null && tx.to.toLowerCase() === swapPathDeployment.executor.toLowerCase()) {
+      // V2 first: its calldata is undecodable by the V1 and legacy ABIs, so
+      // without this branch a V2 swap would be rejected here and never reach the
+      // wallet. Null while the V2 gate is dormant, leaving both branches below
+      // exactly as they were.
+      const inspectedV2 = inspectSwapV2Transaction(proposal, { to: tx.to, data: tx.data, value: tx.value });
+      if (inspectedV2 !== null) {
+        if (
+          proposal.permit2 !== null ||
+          !inspectedV2.ok ||
+          grossAmountIn === null ||
+          inspectedV2.value.grossAmountIn !== grossAmountIn ||
+          inspectedV2.value.expectedFeeAmount !== feeInvariant.fee.amount ||
+          inspectedV2.value.recipient.toLowerCase() !== account.toLowerCase() ||
+          // The spender that pulled the funds must be the contract being called.
+          inspectedV2.value.spender.toLowerCase() !== tx.to.toLowerCase() ||
+          BigInt(tx.value || "0") !== (isNativeEthSentinel(proposal.from.address) ? grossAmountIn : 0n)
+        ) {
+          const snapshot = fail(
+            "INVALID_INPUT",
+            "The swap transaction does not match the quoted MPGR fee collected by the V2 executor — nothing was signed.",
+          );
+          onChange(snapshot);
+          return snapshot;
+        }
+      } else if (swapPathDeployment !== null && tx.to.toLowerCase() === swapPathDeployment.executor.toLowerCase()) {
         const inspectedPath = inspectSwapExecutorTransaction({ to: tx.to, data: tx.data, value: tx.value }, { deployment: swapPathDeployment, fromAddress: proposal.from.address, toAddress: proposal.to.address, taker: account, nativeIn: isNativeEthSentinel(proposal.from.address), nativeOut: isNativeEthSentinel(proposal.to.address) });
         if (
           proposal.permit2 !== null ||

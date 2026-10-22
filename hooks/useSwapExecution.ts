@@ -7,7 +7,9 @@ import { executeTrade, idleTradeExecutionSnapshot, type TradeExecutionSnapshot }
 import { swapQuoteNeedsRefresh } from "@/lib/swap/swap-lifecycle";
 import { ManualSwapQuoteError } from "@/lib/trade/manual-swap";
 import { revalidateTradeProposal } from "@/lib/trade/trade-confirmation";
-import { requestSwapQuote } from "@/lib/swap/swap-quote";
+import { requestSwapQuoteWithV2 } from "@/lib/swap/v2/v2-quote-client";
+import { verifySwapV2SettlementRemote } from "@/lib/swap/v2/v2-settlement-client";
+import { isSwapV2Proposal } from "@/lib/swap/v2/v2-target";
 import { validateSwapWallet } from "@/lib/swap/swap-wallet";
 import { swapQuotePolicyError, verifySwapSettlement, type SwapSettlement } from "@/lib/swap/swap-policy";
 import { formatAtomicAmount } from "@/lib/trade/trade-format";
@@ -51,7 +53,7 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
   const close = useCallback(() => { if (!active.current) { session.current++; setProposal(null); } }, []);
   const refreshQuote = useCallback(async (p: TradeProposal) => {
     try {
-      const next = await requestSwapQuote({ fromToken: p.from.address, toToken: p.to.address,
+      const next = await requestSwapQuoteWithV2({ fromToken: p.from.address, toToken: p.to.address,
         amount: formatAtomicAmount(p.fromAmount, p.from.decimals, p.from.decimals), slippageBps: p.slippageBps }, p.taker, undefined, [p.from, p.to], { fresh: true });
       setSessionExpired(false); return next;
     } catch (e) { if (e instanceof ManualSwapQuoteError && e.status === 401) setSessionExpired(true); throw e; }
@@ -131,6 +133,15 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
               const tx = await getTransaction(config, { chainId: 8453, hash: receipt.transactionHash });
               if (!swapTransactionMatches(p, receipt, tx)) return { code: "PROVIDER_ERROR", message: "The mined transaction does not match the reviewed swap. Do not resubmit; inspect it on BaseScan." };
             } catch { return { code: "PROVIDER_ERROR", message: "Swap submitted. Its transaction details could not be verified yet. Check status; do not resubmit." }; }
+            // V2 receipts are verified server-side, which re-fetches the receipt
+            // by hash and reads the executor's live fee posture at the MINED
+            // block — stronger than anything the browser can assert locally.
+            if (isSwapV2Proposal(p)) {
+              const remote = await verifySwapV2SettlementRemote(receipt.transactionHash);
+              verified = remote.settlement;
+              if (session.current === run) setProof(verified);
+              return remote.error ?? (verified.verified ? null : { code: "PROVIDER_ERROR", message: verified.reason! });
+            }
             verified = verifySwapSettlement(p, receipt);
             if (session.current === run) setProof(verified);
             return verified.verified ? null : { code: "PROVIDER_ERROR", message: verified.reason! };

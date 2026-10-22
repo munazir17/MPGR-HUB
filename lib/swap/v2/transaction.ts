@@ -4,7 +4,7 @@ import { SWAP_V2_ABI } from "./abi";
 import { validateV2Quote, V2_FEE_RECIPIENT, type Pool, type V2Quote } from "./discovery";
 const SAFE = "0xd9aE570767C5a15780DD5cdAdd0b1b732D98994B";
 const z32 = `0x${"00".repeat(32)}` as Hex;
-export function buildV2Transaction(q: V2Quote, executor: Address, taker: Address, deadline: bigint, slippageBps: number, nativeIn = false, nativeOut = false) {
+export function buildV2Transaction(q: V2Quote, executor: Address, taker: Address, deadline: bigint, slippageBps: number, nativeIn = false, nativeOut = false, intentId: Hex = z32) {
   validateV2Quote(q);
   if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 5000) throw Error("Invalid slippage");
   const weth = "0x4200000000000000000000000000000000000006";
@@ -14,7 +14,7 @@ export function buildV2Transaction(q: V2Quote, executor: Address, taker: Address
   const hop = (p: Pool, output: Address) => ({ router: p.router, tokenOut: output, kind: p.kind, poolFee: p.poolFee, tickSpacing: p.tickSpacing, stable: p.stable, pool: p.pool,
     v4Key: p.v4Key ?? { currency0: zeroAddress, currency1: zeroAddress, fee: 0, tickSpacing: 0, hooks: zeroAddress }, hookData: "0x" as Hex });
   const paths = q.legs.map(l => l.pools.map((p, i) => hop(p, l.tokens[i + 1])));
-  const params = { router: paths[0][0].router, tokenIn: q.tokenIn, tokenOut: q.tokenOut, grossAmountIn: q.gross, expectedFeeAmount: q.fee, amountOutMinimum: minimum, recipient: taker, deadline, intentId: z32, unwrapNativeOut: nativeOut };
+  const params = { router: paths[0][0].router, tokenIn: q.tokenIn, tokenOut: q.tokenOut, grossAmountIn: q.gross, expectedFeeAmount: q.fee, amountOutMinimum: minimum, recipient: taker, deadline, intentId, unwrapNativeOut: nativeOut };
   const auth = { kind: 0, deadline: 0n, nonce: 0n, v: 0, r: z32, s: z32, signature: "0x" as Hex };
   const data = paths.length === 1
     ? encodeFunctionData({ abi: SWAP_V2_ABI, functionName: "swapExactInput", args: [params, paths[0], auth] })

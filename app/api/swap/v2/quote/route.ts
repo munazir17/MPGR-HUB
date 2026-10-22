@@ -1,15 +1,28 @@
-// Unreleased read-only V2 preview. Does not alter /api/swap/quote or any live
-// executor. No transaction is returned before a sealed deployment is activated.
+// V2 quote surface. DORMANT BY DEFAULT: while `V2_DEPLOYMENT` is null this
+// route is the unchanged read-only preview and returns no executable
+// transaction. The activation branch below is unreachable until a separate,
+// explicitly approved commit flips the gate; it never alters /api/swap/quote
+// or any live V1 executor.
 import { NextResponse } from "next/server";
+import type { Address } from "viem";
 import { authenticateRequest } from "@/lib/auth/session-store";
 import { readJsonBody, verifyTrustedOrigin } from "@/lib/api/request-guard";
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 import { parseTradeSwapRequest } from "@/lib/trade/trade-request";
 import { getTradePublicClient } from "@/lib/trade/trade-public-client";
+import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { discoverV2Quote, V2QuoteError, V2_FEE_RECIPIENT } from "@/lib/swap/v2/discovery";
-import { RpcV2LiquiditySource } from "@/lib/swap/v2/rpc-source";
+import { swapV2QuoteSource } from "@/lib/swap/v2/rpc-source";
+import { swapV2Executor } from "@/lib/swap/v2/deployment";
+import { prepareV2Execution, serializeV2Swap, type V2ExecutionReader } from "@/lib/swap/v2/execution";
+import { V2PreflightError } from "@/lib/swap/v2/preflight";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+/** Same lifetime discipline as the V1 path surface: a quote is short-lived and
+ * must be re-requested rather than silently reused. */
+const V2_QUOTE_DEADLINE_SECONDS = 180;
+const stringify = (value: unknown) =>
+  JSON.parse(JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)));
 export async function POST(request: Request) {
   const reply = (value: unknown, status = 200) => NextResponse.json(value, { status, headers: { "Cache-Control": "no-store" } });
   const origin = verifyTrustedOrigin(request); if (origin) return origin;
@@ -27,10 +40,44 @@ export async function POST(request: Request) {
   try {
     const client = getTradePublicClient(); if (await client.getChainId() !== 8453) return reply({ code: "PROVIDER_ERROR" }, 503);
     const block = await client.getBlock(); if (!block.hash || block.number === null) return reply({ code: "PROVIDER_ERROR" }, 503);
+    // The pinned block hash is hashed into the intent id as bytes32, so a
+    // malformed provider hash must be rejected here rather than surfacing later
+    // as an opaque ABI encoding failure. Fail closed: no transaction is built.
+    if (!/^0x[0-9a-fA-F]{64}$/.test(block.hash)) return reply({ code: "PROVIDER_ERROR", error: "The provider returned a malformed block hash; the quote could not be pinned." }, 503);
     const p = parsed.value;
-    const q = await discoverV2Quote(new RpcV2LiquiditySource(client, block.number), p.from.address, p.to.address, BigInt(p.fromAmount));
+    // Staged discovery, configured for a real paste: factory getters first, a bounded v4
+    // `Initialize` search only if they cannot answer, and no whole-chain eth_getLogs sweep.
+    // A capped search reports DISCOVERY_UNAVAILABLE rather than pretending the pool is
+    // missing. See swapV2QuoteSource for why each bound is what it is.
+    const q = await discoverV2Quote(swapV2QuoteSource(client, block.number), p.from.address, p.to.address, BigInt(p.fromAmount));
     if ((await client.getBlock({ blockNumber: block.number })).hash !== block.hash) return reply({ code: "QUOTE_CHANGED" }, 409);
-    return reply(JSON.parse(JSON.stringify({ quote: q, blockNumber: block.number, blockHash: block.hash, preview: true, executable: false, executionSimulation: "not-run-unreleased", transaction: null }, (_, value) => typeof value === "bigint" ? value.toString() : value)));
+
+    // ---- Activation gate. `null` = dormant: the historical preview shape. ----
+    const deployment = swapV2Executor();
+    if (!deployment) {
+      return reply(stringify({ quote: q, blockNumber: block.number, blockHash: block.hash, preview: true, executable: false, executionSimulation: "not-run-unreleased", transaction: null }));
+    }
+
+    // ---- Activated shape (unreachable until V2_DEPLOYMENT is flipped). ----
+    // A real transaction is returned only after the deployed executor simulates
+    // this exact calldata at the pinned block as the real taker, and only after
+    // the built calldata passes independent intent inspection.
+    const nativeIn = isNativeEthSentinel(p.from.address);
+    const nativeOut = isNativeEthSentinel(p.to.address);
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + V2_QUOTE_DEADLINE_SECONDS);
+    let swap;
+    try {
+      swap = await prepareV2Execution(client as unknown as V2ExecutionReader, deployment, {
+        quote: q, taker: p.taker as Address, slippageBps: p.slippageBps, deadline, nativeIn, nativeOut,
+      }, { number: block.number, hash: block.hash, timestamp: BigInt(block.timestamp) });
+    } catch (error) {
+      if (error instanceof V2PreflightError) return reply({ code: error.code, error: error.message }, error.status);
+      if (error instanceof V2QuoteError) return reply({ code: error.code, error: error.message }, error.code === "DISCOVERY_UNAVAILABLE" ? 503 : 422);
+      return reply({ code: "EXECUTION_UNAVAILABLE", error: "The V2 executor could not verify this route. No swap was prepared." }, 503);
+    }
+    // The block must still be the one the simulation was pinned to.
+    if ((await client.getBlock({ blockNumber: block.number })).hash !== block.hash) return reply({ code: "QUOTE_CHANGED" }, 409);
+    return reply(serializeV2Swap(swap, q, { slippageBps: p.slippageBps, nativeIn, nativeOut }));
   } catch (error) {
     if (error instanceof V2QuoteError) return reply({ code: error.code, error: error.message }, error.code === "DISCOVERY_UNAVAILABLE" ? 503 : 422);
     return reply({ code: "PROVIDER_ERROR", error: "V2 preview discovery is unavailable; no transaction prepared" }, 503);

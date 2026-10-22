@@ -1,0 +1,284 @@
+name: Swap V2 coverage matrix (read-only)
+
+# Produces the real token/pair coverage evidence for MPGR Swap V2 by running the
+# app's own discovery stack against Base. READ-ONLY: no deployer key is mapped,
+# nothing is signed, nothing is broadcast, and no contract state is touched.
+#
+# SHARDED ON PURPOSE. One job with one global wall-clock budget could only attempt
+# part of the plan: run 39431366188 measured 54 of 212 pairs and recorded 158
+# UNMEASURED, most of them purely "probe budget exhausted" — a scheduling artefact,
+# not a coverage fact. The probe plan is pure and deterministic
+# (lib/swap/v2/coverage-plan.ts) and is split into disjoint batches GROUPED BY
+# SUBJECT TOKEN, because the expensive part of a measurement is per token (a
+# deployment-floor binary search plus a windowed v4 Initialize scan), not per pair.
+# Each batch gets its own budget, and an offline `aggregate` job merges them and
+# PROVES that every planned pair was attempted. A shard that does not report turns
+# the aggregate job red rather than quietly shrinking the matrix.
+#
+# This is deliberately a SEPARATE workflow from swap-v2-fork-proof.yml so that a
+# coverage run can never affect, or be confused with, the fork proof.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "lib/swap/v2/**"
+      - "scripts/swap-v2-coverage-matrix.test.ts"
+      - "scripts/swap-v2-coverage-aggregate.test.ts"
+      - ".github/workflows/swap-v2-coverage-matrix.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: swap-v2-coverage-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Number of parallel batches. The matrix below must list exactly 1..N.
+  #
+  # Six, not four, because run 39556393443 showed what four costs: shards 1, 2 and 4
+  # exhausted the wall clock and 55 planned pairs were never attempted at all. Shards
+  # are grouped by subject token, so more shards means fewer tokens per shard, and the
+  # per-token v4 scan — the single most expensive thing here — is paid fewer times per
+  # job. The limit is the provider, not the runner: six concurrent jobs already share
+  # one rate-limited RPC.
+  COVERAGE_SHARDS: "6"
+  # Per-pair wall clock. The first pair to touch a token pays that token's whole v4
+  # Initialize scan (~64 sequential ten-block eth_getLogs calls, 40-60 s on this
+  # provider) and every later pair reuses the cached result. At 60 s that first pair
+  # reliably timed out — 39 pairs did in run 39556393443 — so the scan cost was paid
+  # and thrown away. 120 s lets the pair that pays for the cache also keep its verdict.
+  MPGR_V2_COVERAGE_PAIR_TIMEOUT_MS: "120000"
+  # Handoff directory between the shard jobs and the aggregate job. NOT
+  # deployments/.local: that path is dot-prefixed and git-ignored, and run
+  # 39454971188 proved the consequence — all four shards wrote their matrices, the
+  # artifacts uploaded "successfully", and the aggregate job collected zero of them.
+  # Every path below derives from this one variable so the two jobs cannot drift.
+  MPGR_V2_COVERAGE_DIR: coverage-out
+  # The probe plan is shared by the shards and by the offline aggregator: if the two
+  # jobs saw different values, the aggregator would rebuild a different plan and
+  # report every pair as unattempted. Defining them here, at workflow level, is what
+  # makes that impossible rather than merely unlikely.
+  MPGR_V2_COVERAGE_MAX_PAIRS: "12"
+  MPGR_V2_COVERAGE_TOTAL_PAIRS: "250"
+  # Reads per pair. Sized for a batch, not for one quote: a token's deployment floor
+  # alone is ~26 sequential eth_getCode round-trips. The wall clock and the v4 log cap
+  # remain the real bounds.
+  MPGR_V2_COVERAGE_MAX_READS: "24576"
+  # eth_getLogs calls per token's v4 Initialize search, and how many may be in flight.
+  # The provider behind this secret serves only a ten-block range, so the scan is
+  # two-sided — forward from a token's deployment floor, backward from the pinned block —
+  # and both numbers were chosen from MEASURED runs, not from reasoning:
+  #
+  #   run 39607488924,  64 calls at 1 in flight : 97 of 210 pairs measured, 64 rows
+  #     "discovery could not finish", 11 timeouts, 32 pairs never attempted.
+  #   run 39610667933, 256 calls at 4 in flight : 34 of 210 measured, only 26 rows
+  #     "discovery could not finish" — the extra reach worked — but 41 timeouts and 102
+  #     pairs never attempted. Shards 3, 4 and 6 measured 1-2 pairs each, and the run
+  #     logged "HTTP request failed": six shards x four in-flight calls throttled the one
+  #     shared endpoint, and every retry costs a second of a 21-minute shard budget.
+  #   run 39616446107,  96 calls at 2 in flight : 75 of 210 measured, 54 rows "discovery
+  #     could not finish", 18 timeouts, 55 never attempted, and all FIVE venue kinds
+  #     measured with MPGR executable in both directions.
+  #   run 39621664624, 128 calls at 2 in flight : 68 of 210 measured, 53 rows "discovery
+  #     could not finish", 25 timeouts, 56 never attempted, all five venue kinds again.
+  #
+  # Those five runs refute the cost model this was tuned on. Concurrency does NOT buy back
+  # what a bigger call budget spends: per-pair timeouts rise with TOTAL CALL COUNT and
+  # essentially ignore parallelism (11 at 64 calls, 18 at 96, 25 at 128, 41 at 256), which
+  # is what a rate-limited endpoint looks like when it queues requests server-side. So the
+  # only lever that actually costs a shard its 21 minutes is how many calls a token's scan
+  # makes, and the cheapest configuration measured the most pairs.
+  #
+  # 64 calls is therefore kept — the total that produced the best result (97 of 210) — and
+  # now buys coverage at BOTH ends of the range (~320 blocks forward from a token's
+  # deployment floor and ~320 backward from the pinned block) instead of ~640 at one end.
+  # Concurrency stays at 2: mild, and not what the data blames. Both numbers remain bounded,
+  # and an unfinished search still reports `capped` and names the blocks it never reached,
+  # so it can never support "this token has no pool".
+  MPGR_V2_COVERAGE_V4_LOG_CALLS: "64"
+  # Kept low on purpose: six shards share one rate-limited endpoint, and a 429 costs more
+  # of the shard budget than the parallelism ever returns.
+  MPGR_V2_COVERAGE_V4_CONCURRENCY: "2"
+
+jobs:
+  coverage:
+    # Secrets are not available to fork PRs; skip rather than run without an RPC.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      # One shard failing must not cancel the others: a partial matrix that reports
+      # its own gaps is more honest than no matrix at all.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci
+      - name: Measure this shard of V2 coverage against real Base (read-only)
+        env:
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          # Opt-in gate: without this the coverage test skips, so the ordinary
+          # `npm test` run in CI is never slowed down by the live matrix.
+          MPGR_V2_COVERAGE: "1"
+          MPGR_V2_COVERAGE_SHARDS: ${{ env.COVERAGE_SHARDS }}
+          MPGR_V2_COVERAGE_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          npx vitest run scripts/swap-v2-coverage-matrix.test.ts 2>&1 | tee "v2-coverage-shard-${{ matrix.shard }}.log"
+      - name: Shard summary
+        if: always()
+        run: |
+          {
+            echo "## MPGR Swap V2 coverage — shard ${{ matrix.shard }}/${{ env.COVERAGE_SHARDS }} — $GITHUB_SHA"
+            echo
+            echo 'Read-only discovery against Base. No signature, no broadcast, no deployment key.'
+            echo
+            if [ -f "$MPGR_V2_COVERAGE_DIR/swap-v2-coverage-matrix.shard-${{ matrix.shard }}-of-${{ env.COVERAGE_SHARDS }}.md" ]; then
+              cat "$MPGR_V2_COVERAGE_DIR/swap-v2-coverage-matrix.shard-${{ matrix.shard }}-of-${{ env.COVERAGE_SHARDS }}.md"
+            elif [ -f "$MPGR_V2_COVERAGE_DIR/swap-v2-coverage-matrix.md" ]; then
+              cat "$MPGR_V2_COVERAGE_DIR/swap-v2-coverage-matrix.md"
+            else
+              echo '**This shard was NOT measured.** Base was unreachable from the runner, so no shard matrix exists. A skipped measurement is not evidence of missing liquidity or of universal support.'
+              grep -E "::warning::|NOT MEASURED" "v2-coverage-shard-${{ matrix.shard }}.log" || true
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Annotations are capped and step logs are not readable from every client,
+          # so the shard states plainly, in a durable channel, which files it is
+          # handing to the aggregate job and how big they are. An empty or tiny
+          # listing here is what makes a silent aggregation gap diagnosable.
+          listing=$(find "$MPGR_V2_COVERAGE_DIR" -maxdepth 1 -type f -printf '%f=%s ' 2>/dev/null | sort | tr -d '\n')
+          echo "::notice::shard ${{ matrix.shard }}/${{ env.COVERAGE_SHARDS }} handoff files in $MPGR_V2_COVERAGE_DIR: ${listing:-NONE — this shard wrote nothing}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: swap-v2-coverage-shard-${{ matrix.shard }}
+          path: |
+            ${{ env.MPGR_V2_COVERAGE_DIR }}
+            v2-coverage-shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+
+  aggregate:
+    # Runs even when shards fail, so the merged report states exactly which pairs
+    # no shard attempted instead of silently shrinking.
+    needs: coverage
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: swap-v2-coverage-shard-*
+          path: shard-input
+          merge-multiple: true
+      - name: Collect shard artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p "$MPGR_V2_COVERAGE_DIR"
+          tree=$(find shard-input -type f -printf '%p (%s bytes)\n' 2>/dev/null | sort || true)
+          echo "downloaded artifact tree:"
+          echo "${tree:-  (shard-input holds no files at all)}"
+          # Do not depend on how download-artifact nested the paths: find the shard
+          # matrices wherever they landed and put them where the merger reads them.
+          find shard-input -name 'swap-v2-coverage-shard-*.json' -exec cp {} "$MPGR_V2_COVERAGE_DIR/" \; 2>/dev/null || true
+          find shard-input -name 'swap-v2-coverage-matrix*.md' -exec cp {} "$MPGR_V2_COVERAGE_DIR/" \; 2>/dev/null || true
+          find shard-input -name 'v2-coverage-shard-*.log' -exec cp {} . \; 2>/dev/null || true
+          echo "collected into $MPGR_V2_COVERAGE_DIR:"
+          ls -la "$MPGR_V2_COVERAGE_DIR" || true
+          collected=$(find "$MPGR_V2_COVERAGE_DIR" -maxdepth 1 -name 'swap-v2-coverage-shard-*.json' | wc -l | tr -d ' ')
+          echo "shard JSON artifacts collected: $collected of ${{ env.COVERAGE_SHARDS }}"
+          echo "::notice::aggregate collected $collected of ${{ env.COVERAGE_SHARDS }} shard JSON artifact(s) into $MPGR_V2_COVERAGE_DIR"
+          if [ "$collected" -lt "${{ env.COVERAGE_SHARDS }}" ]; then
+            # Fewer than expected is already a defect: the merge would publish a
+            # matrix with holes in it. Say which shard is missing, and show the tree
+            # so the cause is visible without needing the step log.
+            echo "::error::Only $collected of ${{ env.COVERAGE_SHARDS }} shard JSON artifact(s) reached the aggregate job. Downloaded tree: ${tree:-EMPTY}. Nothing will be published as coverage from a partial handoff."
+            exit 1
+          fi
+      - name: Merge shards and prove every planned pair was attempted
+        env:
+          # No BASE_MAINNET_RPC_URL here on purpose: aggregation is offline. If it
+          # ever needed an RPC it would no longer be an independent check.
+          MPGR_V2_COVERAGE_AGGREGATE: "1"
+          MPGR_V2_COVERAGE_SHARDS: ${{ env.COVERAGE_SHARDS }}
+        run: |
+          set -euo pipefail
+          npx vitest run scripts/swap-v2-coverage-aggregate.test.ts 2>&1 | tee v2-coverage-aggregate.log
+      - name: Coverage summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          md="$MPGR_V2_COVERAGE_DIR/swap-v2-coverage-matrix.md"
+          {
+            echo "## MPGR Swap V2 coverage matrix (merged) — $GITHUB_SHA"
+            echo 'Read-only discovery against Base. No signature, no broadcast, no deployment key.'
+            echo
+            if [ -f "$md" ]; then
+              cat "$md"
+            else
+              echo '**Coverage was NOT measured.** No shard produced a matrix, so nothing is claimed. A skipped measurement is not evidence of missing liquidity or of universal support.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -E "::warning::|::notice::|NOT MEASURED" v2-coverage-shard-*.log v2-coverage-aggregate.log 2>/dev/null | head -200 || true
+          if [ -n "$PR_NUMBER" ] && [ -f "$md" ]; then
+            {
+              echo "Read-only V2 coverage matrix (merged from ${{ env.COVERAGE_SHARDS }} shards): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+              echo
+              total=$(wc -c < "$md")
+              if [ "$total" -le 56000 ]; then
+                cat "$md"
+              else
+                # A PR comment is capped at 65536 characters and a full matrix is
+                # larger. Publish the analysis in full, then the rows that decide
+                # whether MPGR itself is tradable, and say plainly what was left out
+                # and where the complete table lives. Never truncate silently: a
+                # shortened report that looks complete is how a gap gets read as a
+                # result.
+                sed -n '1,/^## Every probed pair/p' "$md"
+                echo
+                echo "### Every pair involving MPGR"
+                echo
+                echo "| From | To | Dir | Category | Hops | Legs | Venues | Reason |"
+                echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
+                awk '/^## Every probed pair/{f=1} f' "$md" | grep -F 'MPGR' || echo "| (no MPGR row in the plan) | | | | | | | |"
+                echo
+                echo "> **Truncated for this comment.** The merged matrix is $total bytes; GitHub caps a comment at 65536 characters. The complete per-pair table is in this job's summary and in the \`swap-v2-coverage-matrix\` artifact of this run."
+              fi
+            } > /tmp/v2-coverage-comment.md
+            # Belt and braces: whatever the sections above grew to, a comment that
+            # GitHub would reject is worse than one that says it was trimmed.
+            if [ "$(wc -c < /tmp/v2-coverage-comment.md)" -gt 60000 ]; then
+              head -c 59000 /tmp/v2-coverage-comment.md > /tmp/v2-coverage-comment-trim.md
+              printf '\n\n> **Trimmed to fit the 65536-character comment limit.** The complete matrix is in this job summary and the `swap-v2-coverage-matrix` artifact.\n' >> /tmp/v2-coverage-comment-trim.md
+              mv /tmp/v2-coverage-comment-trim.md /tmp/v2-coverage-comment.md
+            fi
+            gh pr comment "$PR_NUMBER" --body-file /tmp/v2-coverage-comment.md
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: swap-v2-coverage-matrix
+          path: |
+            ${{ env.MPGR_V2_COVERAGE_DIR }}
+            v2-coverage-shard-*.log
+            v2-coverage-aggregate.log
+          if-no-files-found: warn
