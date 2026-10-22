@@ -20,9 +20,9 @@ describe("bounded direct search space — compatibility, NOT live liquidity", ()
     expect(swapRouteCandidates(NATIVE_ETH_SENTINEL, d.weth)).toEqual([]);
     expect(swapRouteCandidates(d.weth, d.weth)).toEqual([]);
   });
-  it("all 35 unregistered catalog assets remain blocked regardless of discovery", () => {
+  it("all 44 unregistered catalog assets remain blocked regardless of discovery", () => {
     const assets = MANUAL_SWAP_TOKENS.filter(t => t.kind !== "native" && !d.tokens.some(a=>a.address.toLowerCase()===t.address.toLowerCase()));
-    expect(assets).toHaveLength(35);
+    expect(assets).toHaveLength(44);
     for (const t of assets) expect(swapRouteCandidates(t.address,d.weth)).toEqual([]);
   });
   it("unknown router/module, V4, mismatched tokens, quoter and ambiguous pool-key fields cannot be admitted", () => {

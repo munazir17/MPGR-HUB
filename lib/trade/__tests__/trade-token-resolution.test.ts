@@ -12,7 +12,7 @@ const SECOND = "0x2222222222222222222222222222222222222222";
 const TAKER = "0x3333333333333333333333333333333333333333";
 const fetchMock = vi.fn();
 function list(tokens: unknown[]) { fetchMock.mockResolvedValue(new Response(JSON.stringify({ tokens }))); }
-function token(address = ADDRESS, chainId = 8453) { return { address, chainId, symbol: "DEGEN", name: "Degen", decimals: 18 }; }
+function token(address = ADDRESS, chainId = 8453) { return { address, chainId, symbol: "BRETT", name: "Brett", decimals: 18 }; }
 
 beforeEach(() => {
   vi.clearAllMocks(); resetTokenDiscoveryCache(); vi.stubGlobal("fetch", fetchMock);
@@ -66,44 +66,44 @@ describe("direct Base contract validation", () => {
 });
 
 describe("Uniswap Base discovery is separate from verification/liquidity", () => {
-  it.each(["DEGEN", "Degen"])("resolves a unique name/symbol through RPC, never trusts list decimals: %s", async query => {
+  it.each(["BRETT", "Brett"])("resolves a unique name/symbol through RPC, never trusts list decimals: %s", async query => {
     list([token()]);
     expect(await resolveSwapToken(query)).toMatchObject({ ok: true, token: { address: getAddress(ADDRESS), decimals: 6, verified: false } });
     expect(fetchMock).toHaveBeenCalledWith("https://tokens.uniswap.org", expect.objectContaining({ redirect: "error" }));
   });
   it("does not guess when multiple Base contracts match", async () => {
     list([token(), token(SECOND)]);
-    const result = await resolveSwapToken("DEGEN");
+    const result = await resolveSwapToken("BRETT");
     expect(result).toMatchObject({ ok: false, error: { code: "TOKEN_AMBIGUOUS" } });
     if (!result.ok) { expect(result.error.message).toContain(getAddress(ADDRESS)); expect(result.error.message).toContain(SECOND); }
     expect(rpc.getCode).not.toHaveBeenCalled();
   });
   it("ignores other chains and deduplicates identical contract entries", async () => {
     list([token(), token(), token(SECOND, 1)]);
-    expect(await discoverBaseTokens("degen")).toHaveLength(1);
+    expect(await discoverBaseTokens("brett")).toHaveLength(1);
   });
   it("absent listing is not an invalid address or a no-liquidity claim", async () => {
     list([]);
-    expect(await resolveSwapToken("DEGEN")).toMatchObject({ ok: false, error: { code: "TOKEN_NOT_FOUND" } });
+    expect(await resolveSwapToken("BRETT")).toMatchObject({ ok: false, error: { code: "TOKEN_NOT_FOUND" } });
   });
   it("fails discovery cleanly and leaves exact-contract lookup available", async () => {
     fetchMock.mockRejectedValue(new Error("Bearer secret"));
-    const result = await resolveSwapToken("DEGEN");
+    const result = await resolveSwapToken("BRETT");
     expect(result).toMatchObject({ ok: false, error: { code: "PROVIDER_ERROR" } });
     expect(JSON.stringify(result)).not.toContain("secret");
     expect((await resolveSwapToken(ADDRESS)).ok).toBe(true);
   });
   it("bounds the list and never follows user-controlled URLs", async () => {
     fetchMock.mockResolvedValue(new Response("x".repeat(2_000_001)));
-    await expect(discoverBaseTokens("DEGEN")).rejects.toThrow("limit");
+    await expect(discoverBaseTokens("BRETT")).rejects.toThrow("limit");
     expect(fetchMock.mock.calls[0][0]).toBe("https://tokens.uniswap.org");
   });
   it("shares a list fetch, expires it, and does not reuse failed fetches", async () => {
     vi.useFakeTimers(); list([token()]);
-    await Promise.all([discoverBaseTokens("DEGEN"), discoverBaseTokens("Degen")]);
+    await Promise.all([discoverBaseTokens("BRETT"), discoverBaseTokens("Brett")]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(300_001); list([token()]);
-    await discoverBaseTokens("DEGEN"); expect(fetchMock).toHaveBeenCalledTimes(2);
+    await discoverBaseTokens("BRETT"); expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

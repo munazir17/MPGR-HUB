@@ -15,7 +15,7 @@ beforeEach(() => {
 it("RPC failure reports all 14 routes in both directions/two amounts and all 35 candidates as unverified", async () => {
   const broken = { ...client, getChainId: async () => { throw new Error("private diagnostics"); } };
   const result = await auditSwapRoutes(broken);
-  expect(result.tokens).toHaveLength(50); expect(result.tokens.filter(t => !t.registered)).toHaveLength(35);
+  expect(result.tokens).toHaveLength(59); expect(result.tokens.filter(t => !t.registered)).toHaveLength(44);
   expect(result.routes).toHaveLength(60); // 28 directions * 2 amounts + 2 native directions * 2 amounts
   expect(result.routes.every(r => r.qualification === "unavailable" && !r.executionEvidenceComplete)).toBe(true);
   expect(result.tokens.every(t => t.permission === "unknown")).toBe(true);
