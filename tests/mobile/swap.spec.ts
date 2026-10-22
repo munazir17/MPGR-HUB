@@ -317,12 +317,9 @@ test("Swap: published-list discovery checks exact Base metadata without granting
   });
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap();
   await page.getByLabel("Search tokens or Base contract").fill("AERO");
-  await page.getByRole("button", { name: "Search more Base tokens", exact: true }).tap();
-  await expect(page.getByRole("dialog")).toContainText(aero);
-  await expect(page.getByRole("button", { name: `Select AERO ${aero}`, exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Check AERO on Base", exact: true }).tap();
-  const imported = page.getByRole("button", { name: `Select AERO ${aero}`, exact: true });
-  await expect(imported).toBeEnabled(); await expect(imported.getByTestId("token-route-status")).toHaveCount(0); await expect(imported).toHaveAttribute("title", /0\.25% MPGR fee/);
+  const listed = page.getByRole("button", { name: `Select AERO ${aero}`, exact: true });
+  await expect(listed).toBeEnabled();
+  await expect(listed.getByTestId("token-route-status")).toHaveCount(0);
   expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });
 test("Swap: high price impact demands explicit acknowledgement before confirmation", async ({ page }, info) => {

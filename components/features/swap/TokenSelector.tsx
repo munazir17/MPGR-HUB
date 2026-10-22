@@ -13,6 +13,7 @@ import { fetchSwapTokenHints } from "@/lib/swap/swap-token-hints";
 import { importSwapToken } from "@/lib/swap/swap-inspection-client";
 import { readSwapBalance } from "@/lib/swap/swap-wallet";
 import { formatAtomicAmount } from "@/lib/trade/trade-format";
+import listedTokens from "@/lib/swap/base-listed-tokens.json";
 import type { SwapTokenHint } from "@/lib/swap/swap-token-discovery";
 
 /** Concise, truthful row statuses. Full diagnostics live in the swap form's
@@ -22,6 +23,16 @@ function rowStatus(status: { code: string; selectable: boolean }) {
   return { label: "Same asset", tone: "text-zinc-500" };
 }
 const shortAddress = (address: string) => `${address.slice(0, 10)}…${address.slice(-6)}`;
+const listed = listedTokens as readonly { address: Address; symbol: string; name: string; decimals: number }[];
+const listedMatch = (query: string, known: readonly TradeTokenRef[]): TradeTokenRef[] => {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2 || q.startsWith("0x")) return [];
+  const have = new Set(known.map((token) => token.address.toLowerCase()));
+  return listed.filter((token) => !have.has(token.address.toLowerCase()) && (token.symbol.toLowerCase().includes(q) || token.name.toLowerCase().includes(q)))
+    .sort((a, b) => Number(b.symbol.toLowerCase() === q) - Number(a.symbol.toLowerCase() === q) || a.symbol.localeCompare(b.symbol))
+    .slice(0, 20)
+    .map((token) => ({ address: token.address, symbol: token.symbol, name: token.name, decimals: token.decimals, kind: "erc20" as const, verified: false }));
+};
 const formatUsd = (value: number) => value >= 1000
   ? `$${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
   : value >= 1
@@ -90,8 +101,10 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
   }, [tokens]);
   const addressSearch = search.trim().toLowerCase().startsWith("0x");
   const exact = isAddress(search.trim(), { strict: false });
-  const results = tokens.filter(t => (tab === "stocks" ? t.kind === "b20-tokenized-stock" : true) && (addressSearch ? t.address.toLowerCase() === search.trim().toLowerCase()
-    : [t.symbol, t.name].some(value => value.toLowerCase().includes(search.trim().toLowerCase()))));
+  const query = search.trim().toLowerCase();
+  const local = tokens.filter(t => (tab === "stocks" ? t.kind === "b20-tokenized-stock" : true) && (addressSearch ? t.address.toLowerCase() === query
+    : [t.symbol, t.name].some(value => value.toLowerCase().includes(query))));
+  const results = tab === "stocks" || addressSearch ? local : [...local, ...listedMatch(search, tokens)];
   const validate = async (address = search.trim()) => {
     if (busy || !isAddress(address, { strict: false })) return;
     const current = ++run.current; const controller = new AbortController(); pending.current = controller;
@@ -151,7 +164,7 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
     {addressSearch && !exact && <p role="alert" className="text-xs text-amber-300">Invalid address. Paste 0x and 40 hexadecimal characters.</p>}
     {!addressSearch && !results.length && <p className="py-5 text-sm text-zinc-400">No results. Paste an exact Base contract to validate a token.</p>}
     {addressSearch && exact && !imported && <div className="flex items-center gap-3 rounded-2xl border border-amber-300/15 bg-amber-300/5 p-3">
-      <p className="min-w-0 flex-1 text-xs text-amber-100">Validate this Base ERC-20 by exact contract. A quote checks liquidity before any swap.</p>
+      <p className="min-w-0 flex-1 text-xs text-amber-100">This contract can be bought or sold when a route has liquidity. The 0.25% fee still applies.</p>
       <button type="button" disabled={busy} onClick={() => void validate()} className="min-h-11 shrink-0 rounded-xl bg-white/10 px-3 text-sm font-medium">{busy ? <span className="flex items-center gap-2"><Loader2 size={16} className="animate-spin" />Validating…</span> : sessionExpired ? "Sign in and retry" : "Validate Base token"}</button>
     </div>}
     {!addressSearch && search.trim().length >= 2 && <button type="button" disabled={busy} onClick={() => void discover()} className="min-h-11 w-full rounded-xl bg-white/10 px-3 text-sm">{busy ? "Checking token list…" : sessionExpired ? "Sign in and search Base tokens" : "Search more Base tokens"}</button>}
