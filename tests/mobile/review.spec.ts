@@ -77,7 +77,7 @@ for (const [state, reason] of [
     await expect(page.getByTestId("activation-calls")).toHaveText("0");
     if (state === "preview-blocked") {
       await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("runtime flag: disabled; production flag: missing");
-      await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("Use MPGR Swap");
+      await expect(page.getByTestId("agent-autonomy-draft-review")).toContainText("Use PaigerSwap");
       await expect(button(page)).toBeInViewport();
       await expect(page.getByTestId("trading-launcher-manual")).toHaveCount(0);
       await expect(page.getByLabel("Command swap proposals")).toBeVisible();

@@ -77,7 +77,7 @@ test("Swap: search, exact contract validation, duplicate symbols and unsupported
   await search.fill("No such token"); await expect(page.getByText(/No results\./)).toBeVisible(); await search.fill("0x123"); await expect(page.getByRole("alert")).toContainText("Invalid address");
   await search.fill(importedAddress); await page.getByRole("button", { name: "Validate Base token" }).tap(); await expect(page.getByText(/Import is not endorsement/)).toBeVisible();
   await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeEnabled();
-  await expect(page.getByTestId("token-route-status")).toContainText("Quote verifies route");
+  await expect(page.getByTestId("token-route-status")).toHaveCount(0);
   await page.getByRole("button", { name: "Close Select a token" }).tap();
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap(); await page.getByLabel("Search tokens or Base contract").fill("USDC");
   await expect(page.getByRole("button", { name: `Select USDC ${token("USDC")}`, exact: true })).toBeVisible(); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true })).toBeVisible(); await expect(page.getByRole("dialog").locator("img")).toHaveCount(1); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).locator("img")).toHaveCount(0); await expect(page.getByRole("button", { name: `Select USDC ${importedAddress}`, exact: true }).getByTestId("token-logo-fallback")).toHaveCount(1);
@@ -180,7 +180,7 @@ test("Swap correction: pay first, MAX belongs only to pay, one contextual fee ac
  await expect(page.getByTestId("mpgr-fee-row")).toHaveCount(1); await page.locator("summary").filter({hasText:"Costs & execution details"}).tap(); await expect(page.getByTestId("mpgr-fee-row")).toContainText("0.0025 USDC"); await expect(page.getByTestId("mpgr-fee-row")).toContainText("included in executable route; collection not verified");
  await page.screenshot({path:info.outputPath("pay-first.png"),fullPage:true});
  await page.getByRole("button",{name:"Confirm Swap",exact:true}).tap(); await expect(page.getByTestId("mpgr-fee-row")).toHaveCount(1); await expect(page.getByRole("dialog").getByTestId("mpgr-fee-row")).toHaveCount(1);
- expect((await page.locator("body").textContent())!.match(/MPGR fee/g)).toHaveLength(1); await evidence(page,info,state.trace);
+ expect((await page.locator("body").textContent())!.match(/Paiger fee/g)).toHaveLength(1); await evidence(page,info,state.trace);
 });
 test("Swap correction: receive selection never changes pay or silently reverses the pair",async({page},info)=>{
  const state=await setup(page);await quoted(page);
@@ -237,7 +237,7 @@ test("Swap: registered token status requires a fresh quote and never promises ex
   await page.getByRole("button", { name: "You receive token: ETH", exact: true }).tap();
   const eth = page.getByRole("button", { name: `Select ETH ${NATIVE_ETH_SENTINEL}`, exact: true });
   await expect(eth).toBeEnabled();
-  await expect(eth.getByTestId("token-route-status")).toContainText("Available to swap");
+  await expect(eth.getByTestId("token-route-status")).toHaveCount(0);
   expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0);
   await evidence(page, info, state.trace);
 });
@@ -251,7 +251,7 @@ test("Swap: approved but non-registered pair is draft-searchable, not a liquidit
  await row.tap();await page.getByRole("button",{name:"You pay token: USDC",exact:true}).tap();
  await page.getByLabel("Search tokens or Base contract").fill("WETH");
  const weth=page.getByRole("button",{name:`Select WETH ${token("WETH")}`,exact:true});
- await expect(weth).toBeEnabled();await expect(weth.getByTestId("token-route-status")).toContainText("Quote verifies route");
+ await expect(weth).toBeEnabled();await expect(weth.getByTestId("token-route-status")).toHaveCount(0);
  expect(state.quoteCount()).toBe(0);expect(await sends(page)).toHaveLength(0);await evidence(page,info,state.trace);
 });
 
@@ -322,7 +322,7 @@ test("Swap: published-list discovery checks exact Base metadata without granting
   await expect(page.getByRole("button", { name: `Select AERO ${aero}`, exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Check AERO on Base", exact: true }).tap();
   const imported = page.getByRole("button", { name: `Select AERO ${aero}`, exact: true });
-  await expect(imported).toBeEnabled(); await expect(imported).toContainText("Quote verifies route"); await expect(imported).toHaveAttribute("title", /0\.25% MPGR fee/);
+  await expect(imported).toBeEnabled(); await expect(imported.getByTestId("token-route-status")).toHaveCount(0); await expect(imported).toHaveAttribute("title", /0\.25% MPGR fee/);
   expect(state.quoteCount()).toBe(0); expect(await sends(page)).toHaveLength(0); await evidence(page, info, state.trace);
 });
 test("Swap: high price impact demands explicit acknowledgement before confirmation", async ({ page }, info) => {

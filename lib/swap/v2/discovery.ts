@@ -2,7 +2,7 @@
 // the legacy catalog. A source must return all matching on-chain pool keys or
 // throw DISCOVERY_UNAVAILABLE; an RPC/index failure is not a no-liquidity proof.
 import { isAddress, type Address, type Hex } from "viem";
-import { BASE_WETH, isNativeEthSentinel } from "@/lib/trade/trade-config";
+import { BASE_USDC, BASE_WETH, isNativeEthSentinel } from "@/lib/trade/trade-config";
 export const V2_FEE_BPS = 25;
 export const V2_FEE_RECIPIENT = "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4" as Address;
 export const V2_DEPLOYMENT = null; // No mainnet activation in this pass.
@@ -469,6 +469,26 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
   } else {
     const candidates: Leg[] = [];
     trace.multihop.attempted = true;
+    // Major-asset bridges only. Pair lookups use factory getters, not a chain
+    // log sweep, so a token that pools against WETH or USDC can still be quoted
+    // when neighbour enumeration is disabled. Fee stays on gross, once.
+    const bridges = [BASE_WETH, BASE_USDC].filter((bridge) => !eq(bridge, tokenIn) && !eq(bridge, tokenOut));
+    for (const bridge of bridges) {
+      try {
+        const left = (await source.pools(tokenIn, bridge)).filter((pool) => validPool(pool) && eq(other(pool, tokenIn) ?? "", bridge));
+        const right = (await source.pools(bridge, tokenOut)).filter((pool) => validPool(pool) && eq(other(pool, bridge) ?? "", tokenOut));
+        let combinations = 0;
+        for (const hopIn of left) for (const hopOut of right) {
+          if (combinations >= 6) break;
+          combinations += 1;
+          const quotedHop = await quoteLeg(source, [hopIn, hopOut], [tokenIn, bridge, tokenOut], net);
+          if (quotedHop) candidates.push(quotedHop);
+        }
+      } catch (error) {
+        if (!(error instanceof V2QuoteError)) throw error;
+        trace.multihop.note = error.message;
+      }
+    }
     try {
     // Meet in the middle: enumerate liquidity neighbors of the requested
     // endpoints only. Never enumerate every WETH/USDC pool as a bridge catalog.
@@ -492,17 +512,15 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
         }
       }
     }
-    candidates.sort((a, b) => a.amountOut === b.amountOut ? a.pools.length - b.pools.length : a.amountOut > b.amountOut ? -1 : 1);
-    if (candidates.length) legs = [candidates[0]];
-    trace.multihop.candidates = candidates.length;
     } catch (error) {
-      // Multi-hop failing must not mask what the DIRECT attempt learned: for a pair
-      // whose only pool is a native-side v4 pool, the direct attribution is the answer
-      // and the multi-hop outage is context. Anything that is not a routing error is
-      // still unexpected and is not swallowed.
+      // Neighbour enumeration can be unavailable when the log sweep is off.
+      // A WETH/USDC bridge found above is still a real route, so do not drop it.
       if (!(error instanceof V2QuoteError)) throw error;
       trace.multihop.note = error.message;
     }
+    candidates.sort((a, b) => a.amountOut === b.amountOut ? a.pools.length - b.pools.length : a.amountOut > b.amountOut ? -1 : 1);
+    if (candidates.length) legs = [candidates[0]];
+    trace.multihop.candidates = candidates.length;
   }
   if (!legs.length) throw attributeRouteFailure(trace);
   const result: V2Quote = { tokenIn, tokenOut, gross, feeBps: 25, feeRecipient: V2_FEE_RECIPIENT, fee, net, amountOut: legs.reduce((s, l) => s + l.amountOut, 0n), legs };

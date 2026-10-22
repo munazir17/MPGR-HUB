@@ -35,7 +35,7 @@ vi.mock("next/link", () => ({
 const { AppSidebar } = await import("@/components/layout/AppSidebar");
 
 const EXPECTED_ENTRIES: Record<string, string> = {
-  "MPGR Swap": "/swap",
+  "PaigerSwap": "/swap",
   "Reward Hub": "/rewards",
   Leaderboard: "/leaderboard",
   Campaigns: "/campaigns",

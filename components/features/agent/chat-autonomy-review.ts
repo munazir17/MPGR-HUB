@@ -123,7 +123,7 @@ export function chatReviewAuthorizationError(args: {
   if (readError) return readError;
   if (!config) return "Autonomy settings have not loaded. Retry loading settings; no goal was created.";
   const where = args.settingsRead?.deploymentEnvironment === "preview" ? "in Preview" : "on this deployment";
-  const unavailable = `Mainnet autonomous authorization is unavailable ${where}. Use MPGR Swap for user-confirmed swaps.`;
+  const unavailable = `Mainnet autonomous authorization is unavailable ${where}. Use PaigerSwap for user-confirmed swaps.`;
   const runtimeGate = args.settingsRead?.runtimeGate;
   const productionGate = args.settingsRead?.productionGate;
   const runtimeNote = runtimeGate && runtimeGate !== "unknown" ? `runtime flag: ${runtimeGate}` : "";

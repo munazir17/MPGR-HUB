@@ -21,7 +21,7 @@ export function SwapExecutionDialog({ trade }: { trade: ReturnType<typeof useSwa
     <dl className="space-y-4 rounded-2xl border border-white/10 p-4">
       <div><dt className="text-xs text-zinc-400">You paid · verified</dt><dd className="mt-1 break-words text-xl">{swapAmount(proof.amountIn!, p.from)}</dd></div>
       <div><dt className="text-xs text-zinc-400">You received · verified</dt><dd className="mt-1 break-words text-xl text-emerald-200">{swapAmount(proof.amountOut!, p.to)}</dd></div>
-      <div data-testid="mpgr-fee-row"><dt className="text-xs text-zinc-400">MPGR fee (0.25%) · collection verified</dt><dd className="break-words text-sm">{swapAmount(proof.feeAmount!, p.from)} · included in amount paid</dd></div>
+      <div data-testid="mpgr-fee-row"><dt className="text-xs text-zinc-400">Paiger fee (0.25%) · collection verified</dt><dd className="break-words text-sm">{swapAmount(proof.feeAmount!, p.from)} · included in amount paid</dd></div>
       <div><dt className="text-xs text-zinc-400">Network</dt><dd>Base</dd></div>
       <div><dt className="text-xs text-zinc-400">Receive address</dt><dd className="break-all text-xs">{p.taker}</dd></div>
     </dl>
