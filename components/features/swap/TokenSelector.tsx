@@ -1,9 +1,9 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { useAccount } from "wagmi";
-import { isAddress, type Address } from "viem";
+import { isAddress, formatUnits, type Address } from "viem";
 import { Search, Check, Loader2 } from "lucide-react";
-import { isNativeEthSentinel } from "@/lib/trade/trade-config";
+import { BASE_WETH, isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { TokenImportError } from "@/lib/trade/token-import";
 import type { TradeTokenRef } from "@/lib/trade/trade-types";
 import { SwapDialog } from "./SwapDialog";
@@ -22,6 +22,11 @@ function rowStatus(status: { code: string; selectable: boolean }) {
   return { label: "Same asset", tone: "text-zinc-500" };
 }
 const shortAddress = (address: string) => `${address.slice(0, 10)}…${address.slice(-6)}`;
+const formatUsd = (value: number) => value >= 1000
+  ? `$${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
+  : value >= 1
+    ? `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : `$${value.toLocaleString("en-US", { maximumFractionDigits: 4 })}`;
 
 export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, opposite, onImport }: { tokens: readonly TradeTokenRef[]; selected: string;
   opposite: TradeTokenRef; selectingPay: boolean; onImport: (t: TradeTokenRef) => void; onSelect: (t: TradeTokenRef) => void; onClose: () => void; authorize: (force?: boolean) => Promise<boolean> }) {
@@ -34,6 +39,7 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
   const [imported, setImported] = useState<TradeTokenRef | null>(null);
   const [tab, setTab] = useState<"all" | "stocks">("all");
   const [balances, setBalances] = useState<Record<string, { value: bigint; decimals: number }>>({});
+  const [prices, setPrices] = useState<Record<string, number>>({});
   const { address, chainId, isConnected } = useAccount();
   const run = useRef(0); const pending = useRef<AbortController | null>(null);
   useEffect(() => () => { run.current++; pending.current?.abort(); }, []);
@@ -53,6 +59,35 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
     });
     return () => { active = false; };
   }, [address, chainId, isConnected, tokens]);
+  useEffect(() => {
+    let active = true;
+    const weth = BASE_WETH.toLowerCase();
+    const queried = [...new Set(tokens.map((token) => isNativeEthSentinel(token.address) ? weth : token.address.toLowerCase()))];
+    void (async () => {
+      const next: Record<string, number> = {};
+      for (let index = 0; index < queried.length; index += 30) {
+        const batch = queried.slice(index, index + 30);
+        try {
+          const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${batch.join(",")}`);
+          if (!response.ok) continue;
+          const body = await response.json() as { pairs?: { chainId?: string; priceUsd?: string; liquidity?: { usd?: number }; baseToken?: { address?: string } }[] };
+          const best = new Map<string, { usd: number; liquidity: number }>();
+          for (const pair of body.pairs ?? []) {
+            if (pair.chainId !== "base") continue;
+            const tokenAddress = pair.baseToken?.address?.toLowerCase();
+            const usd = Number(pair.priceUsd);
+            const liquidity = Number(pair.liquidity?.usd ?? 0);
+            if (!tokenAddress || !batch.includes(tokenAddress) || !Number.isFinite(usd) || usd <= 0) continue;
+            const current = best.get(tokenAddress);
+            if (!current || liquidity > current.liquidity) best.set(tokenAddress, { usd, liquidity });
+          }
+          for (const [tokenAddress, row] of best) next[tokenAddress] = row.usd;
+        } catch { /* A missing price never invents a value or blocks selection. */ }
+      }
+      if (active) setPrices(next);
+    })();
+    return () => { active = false; };
+  }, [tokens]);
   const addressSearch = search.trim().toLowerCase().startsWith("0x");
   const exact = isAddress(search.trim(), { strict: false });
   const results = tokens.filter(t => (tab === "stocks" ? t.kind === "b20-tokenized-stock" : true) && (addressSearch ? t.address.toLowerCase() === search.trim().toLowerCase()
@@ -85,6 +120,8 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
     const status = swapCapabilityStatus(t.address, opposite.address, imported?.address.toLowerCase() === t.address.toLowerCase());
     const chip = rowStatus(status);
     const held = balances[t.address.toLowerCase()];
+    const price = prices[isNativeEthSentinel(t.address) ? BASE_WETH.toLowerCase() : t.address.toLowerCase()];
+    const usd = held && held.value > 0n && price ? Number(formatUnits(held.value, held.decimals)) * price : null;
     const blocked = !status.selectable;
     return <button key={t.address} type="button" disabled={blocked} title={status.message} onClick={() => onSelect(t)}
       className="flex min-h-[64px] w-full items-center gap-3 rounded-2xl px-3 py-2 text-left hover:bg-white/5 focus-visible:outline focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-65"
@@ -93,12 +130,13 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2"><bdi className="truncate text-sm font-semibold">{t.symbol}</bdi>
           {!t.verified && <span className="shrink-0 text-[10px] text-amber-300">Unverified</span>}
-          <span data-testid={chip ? "token-route-unavailable" : undefined} className={`ml-auto shrink-0 text-[10px] ${chip?.tone ?? ""}`}>{chip?.label}</span></span>
+          {chip && <span data-testid="token-route-unavailable" className={`text-[10px] ${chip.tone}`}>{chip.label}</span>}</span>
         <span className="block truncate text-xs text-zinc-400">{tokenName(t.name)}</span>
-        <span className="flex items-center justify-between gap-2">
-          <span className="block truncate font-mono text-[10px] text-zinc-500" title={t.address}>{isNativeEthSentinel(t.address) ? "Native Base asset" : shortAddress(t.address)}</span>
-          {held && <span className="shrink-0 text-[11px] text-zinc-200">{formatAtomicAmount(held.value.toString(), held.decimals, 4)}</span>}
-        </span>
+        <span className="block truncate font-mono text-[10px] text-zinc-500" title={t.address}>{isNativeEthSentinel(t.address) ? "Native Base asset" : shortAddress(t.address)}</span>
+      </span>
+      <span className="shrink-0 text-right">
+        {usd !== null && Number.isFinite(usd) && usd > 0 && <span className="block text-sm text-white">{formatUsd(usd)}</span>}
+        {held && <span className="block text-[11px] text-zinc-400">{formatAtomicAmount(held.value.toString(), held.decimals, 4)}</span>}
       </span>
       {selected.toLowerCase() === t.address.toLowerCase() && <Check size={18} className="shrink-0 text-emerald-300" />}
     </button>;
@@ -124,10 +162,17 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
     {!addressSearch && searched && !hints.length && <p role="status" className="text-xs text-zinc-400">No additional matches on this list. Paste an exact Base contract to check a different token.</p>}
     {error && <p role="alert" className="break-words text-xs text-red-300">{error}</p>}
     <div className="max-h-[46dvh] space-y-1 overflow-y-auto pr-1">{[...results].sort((a, b) => {
-      const left = balances[a.address.toLowerCase()]?.value ?? 0n;
-      const right = balances[b.address.toLowerCase()]?.value ?? 0n;
-      if (left === right) return 0;
-      return left > right ? -1 : 1;
+      const worth = (token: TradeTokenRef) => {
+        const held = balances[token.address.toLowerCase()];
+        const price = prices[isNativeEthSentinel(token.address) ? BASE_WETH.toLowerCase() : token.address.toLowerCase()];
+        if (!held || held.value <= 0n || !price) return 0;
+        const usd = Number(formatUnits(held.value, held.decimals)) * price;
+        return Number.isFinite(usd) ? usd : 0;
+      };
+      const left = worth(a);
+      const right = worth(b);
+      if (left !== right) return right - left;
+      return tokens.findIndex((token) => token.address.toLowerCase() === a.address.toLowerCase()) - tokens.findIndex((token) => token.address.toLowerCase() === b.address.toLowerCase());
     }).map(option)}{imported && tab === "all" && !results.some(t => t.address.toLowerCase() === imported.address.toLowerCase()) && option(imported)}</div>
     {(imported || results.some(t => !t.verified)) && <p className="rounded-xl bg-amber-300/5 p-3 text-xs text-amber-200">Import is not endorsement. A live quote still has to find liquidity, and every executed swap collects the 0.25% Paiger fee.</p>}
   </SwapDialog>;

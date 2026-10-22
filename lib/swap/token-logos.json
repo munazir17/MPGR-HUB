@@ -76,6 +76,46 @@
       "sha256": "a7c57ad0b94ca5c63369ac7796ee18b9a28b011f6b33d51d655e592ffb22c27a",
       "width": 256,
       "height": 256
+    },
+    "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2": {
+      "kind": "erc20",
+      "src": "/tokens/base/0xfde4c96c8593536e31f229ea8f37b2ada2699bb2.png",
+      "source": "https://github.com/trustwallet/assets/blob/bc378531dd5b67281e7b03e0a7c376d40b68bb62/blockchains/base/assets/0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2/logo.png",
+      "sha256": "1c2ecfc8c08a821a4839f2ae0df1d8796a8df233939b537b4e26514fa4f91196",
+      "width": 300,
+      "height": 300
+    },
+    "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42": {
+      "kind": "erc20",
+      "src": "/tokens/base/0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42.png",
+      "source": "https://github.com/trustwallet/assets/blob/bc378531dd5b67281e7b03e0a7c376d40b68bb62/blockchains/base/assets/0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42/logo.png",
+      "sha256": "54f4216472dd25b1ffb5caf32cc0d81f645c84be166cd713f759a80f05a1418f",
+      "width": 200,
+      "height": 200
+    },
+    "0xa88594d404727625a9437c3f886c7643872296ae": {
+      "kind": "erc20",
+      "src": "/tokens/base/0xa88594d404727625a9437c3f886c7643872296ae.png",
+      "source": "https://github.com/trustwallet/assets/blob/bc378531dd5b67281e7b03e0a7c376d40b68bb62/blockchains/base/assets/0xA88594D404727625A9437C3f886C7643872296AE/logo.png",
+      "sha256": "046657582b7dfa2ffcc0de7e79fed0255b5a78321d2b0333a3568348174ce215",
+      "width": 256,
+      "height": 256
+    },
+    "0xac1bd2486aaf3b5c0fc3fd868558b082a531b2b4": {
+      "kind": "erc20",
+      "src": "/tokens/base/0xac1bd2486aaf3b5c0fc3fd868558b082a531b2b4.png",
+      "source": "https://github.com/trustwallet/assets/blob/bc378531dd5b67281e7b03e0a7c376d40b68bb62/blockchains/base/assets/0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4/logo.png",
+      "sha256": "b8ddb06011c5b57fe64e9f71c492df8b9ac377fa3c6d81181f6ec7da265255a2",
+      "width": 256,
+      "height": 256
+    },
+    "0x4f9fd6be4a90f2620860d680c0d4d5fb53d1a825": {
+      "kind": "erc20",
+      "src": "/tokens/base/0x4f9fd6be4a90f2620860d680c0d4d5fb53d1a825.png",
+      "source": "https://github.com/trustwallet/assets/blob/bc378531dd5b67281e7b03e0a7c376d40b68bb62/blockchains/base/assets/0x4F9Fd6Be4a90f2620860d680c0d4d5Fb53d1A825/logo.png",
+      "sha256": "34c031b803dcb28e2c55f5f2bbe89ee38acb583790abac5d24388249350e4e61",
+      "width": 256,
+      "height": 256
     }
   }
 }
