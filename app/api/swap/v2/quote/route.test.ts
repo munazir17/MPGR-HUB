@@ -9,10 +9,16 @@ vi.mock("@/lib/swap/v2/rpc-source",()=>({RpcV2LiquiditySource:class {},swapV2Quo
 vi.mock("@/lib/swap/v2/discovery",async(importOriginal)=>({...await importOriginal<typeof import("@/lib/swap/v2/discovery")>(),discoverV2Quote:mocks.quote}));
 import { POST } from "./route";
 import { V2QuoteError } from "@/lib/swap/v2/discovery";
+import { __setSwapV2ExecutorForTests } from "@/lib/swap/v2/deployment";
 const A="0x0000000000000000000000000000000000000101",B="0x0000000000000000000000000000000000000102";
 function request(extra={}) {return new Request("https://mpgr.test/api/swap/v2/quote",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({fromToken:A,toToken:B,fromAmount:"10000",...extra})});}
 beforeEach(()=>{
   vi.clearAllMocks();
+  // This file pins the DORMANT HTTP boundary contract, key for key. After activation the
+  // gate resolves the sealed manifest, so dormancy is injected explicitly here; the
+  // activated boundary is covered by route.activation.test.ts, and the dormant shape is
+  // what a one-line rollback restores.
+  __setSwapV2ExecutorForTests(null);
   mocks.parse.mockResolvedValue({ok:true,value:{from:{address:A},to:{address:B},fromAmount:"10000"}});
   mocks.client.getChainId.mockResolvedValue(8453);mocks.client.getBlock.mockResolvedValue({number:500n,hash:("0x"+"12".repeat(32))});
   mocks.quote.mockResolvedValue({tokenIn:A,tokenOut:B,gross:10000n,fee:25n,net:9975n,feeBps:25,amountOut:1000n});

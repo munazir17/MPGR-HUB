@@ -33,7 +33,7 @@ vi.mock("@/lib/swap/v2/discovery", async (importOriginal) => ({
 
 import { POST } from "./route";
 import { V2_DEPLOYMENT, V2_FEE_RECIPIENT, V2QuoteError, type Pool, type V2Quote } from "@/lib/swap/v2/discovery";
-import { SWAP_V2_SEALED_MANIFEST, __setSwapV2ExecutorForTests, swapV2RoutingActivated } from "@/lib/swap/v2/deployment";
+import { SWAP_V2_SEALED_MANIFEST, __setSwapV2ExecutorForTests, swapV2Executor, swapV2RoutingActivated } from "@/lib/swap/v2/deployment";
 
 const TAKER = "0x0000000000000000000000000000000000000123";
 const A = "0x0000000000000000000000000000000000000101" as Address;
@@ -110,9 +110,15 @@ beforeEach(() => {
 // Never leak an injected deployment into another test.
 afterEach(() => __setSwapV2ExecutorForTests(null));
 
-describe("V2 activation gate — dormant default", () => {
-  it("keeps V2_DEPLOYMENT null and returns no executable transaction", async () => {
-    expect(V2_DEPLOYMENT).toBeNull();
+describe("V2 activation gate — dormant shape, which is what rollback restores", () => {
+  it("keeps the dormant preview shape reachable after activation", async () => {
+    // The gate now resolves the sealed manifest, so dormancy is injected explicitly
+    // rather than inherited from the constant. That is deliberate: the dormant preview
+    // shape IS the rollback shape, and it must stay covered after activation instead of
+    // being deleted along with the constant that used to produce it.
+    expect(V2_DEPLOYMENT).toBe(SWAP_V2_SEALED_MANIFEST);
+    __setSwapV2ExecutorForTests(null);
+    expect(swapV2Executor()).toBeNull();
     expect(swapV2RoutingActivated()).toBe(false);
     const r = await POST(request());
     expect(r.status).toBe(200);
