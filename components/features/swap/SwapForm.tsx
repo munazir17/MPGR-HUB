@@ -191,7 +191,6 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     {fresh && proposal && <div className="space-y-2 px-1 text-xs"><div className="flex flex-wrap justify-between gap-2"><span className="text-zinc-300">{rate}</span>
       <span className="text-zinc-400">Impact: {proposal.priceImpactBps == null ? "unavailable" : `${proposal.priceImpactBps / 100}%`}</span></div>
       {proposal.needsPermit2Approval && <p className="text-zinc-400">Token approval may be required for this pay amount. Approval is not a swap.</p>}
-      <p className="text-zinc-400">{proposal.providerLabel}</p>
       <p className="text-zinc-300">Minimum received: {formatAtomicAmount(proposal.minToAmount, proposal.to.decimals, proposal.to.decimals)} {proposal.to.symbol}</p>
       {proposal.risk.filter(r => r.severity !== "info" && !["executor-approval", "router-approval", "permit2-approval"].includes(r.id)).map(r => <p key={r.id} className="text-amber-200">{r.detail}</p>)}
     </div>}

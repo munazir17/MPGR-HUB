@@ -300,7 +300,7 @@ test("Swap: mined approval survives lagging latest RPC; same dialog becomes fina
 test("Swap: success event with different mined calldata cannot show a final success or resubmit", async ({ page }, info) => {
   const state = await setup(page); await review(page); await scenario(page, "wrong-mined-input");
   await page.getByRole("button", { name: "Confirm & Swap", exact: true }).tap();
-  await expect(page.getByRole("alert")).toContainText("does not match the reviewed swap");
+  await expect(page.getByRole("alert")).toContainText("could not be confirmed");
   await expect(page.getByTestId("swap-status")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Confirm & Swap", exact: true })).toHaveCount(0);
   expect(await sends(page)).toHaveLength(2); await evidence(page, info, state.trace);
