@@ -52,8 +52,10 @@ one command, and impossible to activate by accident. The working tree stays clea
 
 2. **Record both transaction hashes** in the activation commit message. An activation whose
    evidence is "we ran a canary" is not auditable; the hashes are.
-3. **The fork proof is green on the commit being activated**, and CI is green apart from the
-   known `npm run audit:high` advisory gate.
+3. **The fork proof is green on the commit being activated**, and CI is green — all of it,
+   including `npm run audit:high`, which no longer has a known-failing carve-out (see §6 item 9
+   of [`SWAP-V2-INTEGRATION.md`](../SWAP-V2-INTEGRATION.md)). A red gate here is now a reason to
+   stop, not a reason to proceed.
 4. **Nothing is being deployed.** The executor is sealed at
    `0x4be1154440b26145d76608D41d403a33e76b9d0A` (deploy tx
    `0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b`, block 52820895) and

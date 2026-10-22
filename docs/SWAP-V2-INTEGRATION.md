@@ -860,23 +860,39 @@ live state, or settled. No claim in this document is live-verified.
    (`/:100($|>)/`, `/:500($|>)/`) encode the current format.
 8. **Pancake V3 and 0x Settler stay disabled.** Neither has a passing fork proof. Settler must
    never be called directly.
-9. **CI's `quality` job is red on `npm run audit:high`, and this branch did not cause it.** Lint,
-   typecheck and the full test suite all pass in that job; only the security gate fails, on two
-   findings published upstream after the last green run on `main`:
-   - `vite` — a **direct devDependency pinned at exactly `8.3.0`**, inside the affected range
-     `8.3.0 - 8.3.2`. `8.3.5` is published and `vitest@4.1.11` accepts `^8.0.0`, so the fix is a
-     one-line bump.
-   - `follow-redirects` — transitive via `axios@^1.20.0` (which requires `^1.16.0`); `1.16.0` is
-     installed and affected, `1.16.1` is published and satisfies the same range, so the fix is a
-     lockfile update with no override needed.
+9. **RESOLVED — CI's `quality` job is green again; the two upstream advisories were fixed, not silenced.**
+   Lint, typecheck and the full suite always passed in that job; only the security gate failed, on
+   two findings published upstream after the last green run on `main` (`git diff 05e7fbc HEAD --
+   package.json package-lock.json scripts/audit-high.mjs` was empty, so this branch added no
+   dependency and did not touch the gate — the same lockfile passed CI on `main`, making the
+   failure date-dependent and equally true of `main`). Both had patched releases, so both were
+   upgraded and **neither was added to `scripts/audit-high.mjs`'s allowlist**, which is unchanged:
+   - `vite` — a direct devDependency pinned at exactly `8.3.0`, inside the affected range
+     `8.3.0 - 8.3.2` (six advisories, the highest `GHSA-587h-7wmj-h5pm`). Bumped to **`8.3.5`**,
+     npm's own `fixAvailable` recommendation and `isSemVerMajor: false`. `vitest@4.1.11` and
+     `@vitest/mocker` both accept `^6.0.0 || ^7.0.0 || ^8.0.0`, and `vite@8.3.5` declares the same
+     `engines.node` (`^20.19.0 || >=22.12.0`) as `8.3.0`, so CI's Node 20 runner is unaffected.
+     The exact pin style was kept rather than widened to a range.
+   - `follow-redirects` — transitive via `axios@^1.20.0`; `1.16.0` was installed and affected by
+     `GHSA-q3jh-wrc6-jgq8` and `GHSA-8r9p-f939-6h3c` (both high, range `>=1.16.0 <1.16.1`). Pinned
+     to **`1.16.1`** with an `overrides` entry. A lockfile refresh alone would also have resolved
+     it, because axios's own `^1.16.0` admits `1.16.1`; the override is there so a future
+     resolution cannot silently walk back to an affected release, and it matches the file's
+     existing convention (`ws`, `rpc-websockets`).
 
-   `git diff 05e7fbc HEAD -- package.json package-lock.json scripts/audit-high.mjs` is **empty**:
-   this branch adds no dependencies and does not touch the gate. The same lockfile passed CI on
-   `main` at `05e7fbc`, so the failure is date-dependent and applies to `main` equally. It is
-   deliberately **not** fixed here, and deliberately **not** silenced by adding either package to
-   `scripts/audit-high.mjs`'s allowlist — adding an allowlist entry for a new high-severity
-   advisory is the dependency equivalent of excluding a Slither detector. Both fixes belong in a
-   separate, reviewable dependency PR.
+   `npm run audit:high` now exits **0** ("Security gate PASSED: no unexpected HIGH/CRITICAL
+   vulnerabilities"). The summary still reports four highs — `@coinbase/agentkit`,
+   `@solana/spl-token`, `@solana/buffer-layout-utils` and `bigint-buffer`, the same four
+   pre-existing allowlisted transitive findings, with the same reasons. `npm audit fix --force`
+   was **not** used. The lockfile moved exactly 19 entries and added or removed no package:
+   `vite 8.3.0 → 8.3.5`, `follow-redirects 1.16.0 → 1.16.1`, and vite's own subtree
+   (`rolldown 1.2.8 → 1.2.15`, `@oxc-project/types 0.149.0 → 0.155.0`, fifteen rolldown platform
+   bindings). No production dependency changed version except that one transitive override.
+   The whole quality chain was then re-run locally in CI's own order and every step exited 0:
+   `npm ci` (1338 packages, proving `package.json` and the lockfile are in sync), `npm run lint`
+   (0 errors, the same 62 pre-existing warnings), `npm run typecheck`, `npm test`
+   (**4708 passed | 32 skipped, 349 files**) and `npm run audit:high`.
+
 10. **RESOLVED — probe sizing, and what it changed.** The fixed `PROBE_AMOUNT = 1_000_000` is gone;
     `lib/swap/v2/coverage-probe.ts` now sizes each probe from the sold token's on-chain `decimals()`
     as exact powers of ten (`1e-6 → 1e-4 → 1e-2` of one unit, clamped to `[400, 1e24]`), sizes each
