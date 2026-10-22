@@ -159,7 +159,7 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
       className="min-h-12 min-w-0 flex-1 bg-transparent text-sm outline-none" maxLength={160}
       onChange={e => { run.current++; pending.current?.abort(); setBusy(false); setError(null); setImported(null); setHints([]); setSearched(false); setSearch(e.target.value); }} /></label>
     <div className="flex gap-2">
-      {([["all", "All"], ["stocks", "Stocks"]] as const).map(([id, label]) => <button key={id} type="button" onClick={() => setTab(id)} className={`min-h-10 flex-1 rounded-xl text-sm ${tab === id ? "bg-white/10 text-white" : "text-zinc-400"}`}>{label}</button>)}
+      {([["all", "All"], ["stocks", "Tokenized stocks"]] as const).map(([id, label]) => <button key={id} type="button" onClick={() => setTab(id)} className={`min-h-10 flex-1 rounded-xl text-sm ${tab === id ? "bg-white/10 text-white" : "text-zinc-400"}`}>{label}</button>)}
     </div>
     {addressSearch && !exact && <p role="alert" className="text-xs text-amber-300">Invalid address. Paste 0x and 40 hexadecimal characters.</p>}
     {!addressSearch && !results.length && <p className="py-5 text-sm text-zinc-400">No results. Paste an exact Base contract to validate a token.</p>}
