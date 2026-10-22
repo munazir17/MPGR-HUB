@@ -17,7 +17,7 @@ function viewportCases(){
   await page.screenshot({path:info.outputPath("selector-logos.png"),fullPage:true});
   await expect(page.getByRole("button",{name:`Select ETH ${NATIVE_ETH_SENTINEL}`,exact:true})).toContainText("Native Base asset");
   await page.getByRole("button",{name:`Select WETH ${BASE_WETH}`,exact:true}).click();await expect(page.getByTestId("receive-panel")).toContainText("Wrapped Ether");await expect(page.getByTestId("receive-panel")).toContainText("Balance: 100");await imageLoaded(page,"receive");await page.screenshot({path:info.outputPath("weth-selected.png"),fullPage:true});
-  await select(page,"receive","AAPLc");await expect(page.getByTestId("receive-panel").getByTestId("token-logo-fallback")).toHaveCount(1);await expect(page.getByTestId("receive-panel").locator("img")).toHaveCount(0);expect(await walletCalls(page)).not.toContain("simulated-send");await evidence(page,info,state.trace);
+  await select(page,"receive","AAPLc");await imageLoaded(page,"receive");expect(await walletCalls(page)).not.toContain("simulated-send");await evidence(page,info,state.trace);
  });
  test("Native UI: Go back uses actual same-origin SPA history without signing or altering quotes",async({page},info)=>{
   const state=await setup(page);await page.evaluate(()=>{history.replaceState({},"","/profile");history.pushState({},"","/swap");});await quote(page);const back=page.getByRole("button",{name:"Go back",exact:true});await expect(back).toBeVisible();expect(await back.evaluate(e=>e.getBoundingClientRect().width)).toBeGreaterThanOrEqual(44);await back.click();await expect(page).toHaveURL(/\/profile$/);expect(state.quoteCount()).toBe(1);expect(await walletCalls(page)).not.toContain("simulated-send");await evidence(page,info,state.trace);

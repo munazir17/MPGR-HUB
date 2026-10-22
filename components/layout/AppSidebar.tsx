@@ -53,7 +53,7 @@ interface SidebarGroup {
 // (Campaigns is the one dedicated route added as its own entry — it
 // lives under Rewards, between Leaderboard and Play.)
 const SIDEBAR_GROUPS: SidebarGroup[] = [
-  { title: "Trading", links: [{ href: "/swap", label: "MPGR Swap", icon: Coins }] },
+  { title: "Trading", links: [{ href: "/swap", label: "PaigerSwap", icon: Coins }] },
   {
     title: "Rewards",
     links: [

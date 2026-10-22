@@ -5,6 +5,7 @@ import { swapQuoteFresh } from "@/lib/swap/swap-lifecycle";
 import type { useSwapExecution } from "@/hooks/useSwapExecution";
 import { SwapDialog } from "./SwapDialog";
 import { SwapDetails, swapAmount } from "./SwapDetails";
+import { publicSwapMessage } from "@/lib/swap/public-message";
 export function SwapExecutionDialog({ trade }: { trade: ReturnType<typeof useSwapExecution> }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(timer); }, []);
@@ -21,11 +22,11 @@ export function SwapExecutionDialog({ trade }: { trade: ReturnType<typeof useSwa
     <dl className="space-y-4 rounded-2xl border border-white/10 p-4">
       <div><dt className="text-xs text-zinc-400">You paid · verified</dt><dd className="mt-1 break-words text-xl">{swapAmount(proof.amountIn!, p.from)}</dd></div>
       <div><dt className="text-xs text-zinc-400">You received · verified</dt><dd className="mt-1 break-words text-xl text-emerald-200">{swapAmount(proof.amountOut!, p.to)}</dd></div>
-      <div data-testid="mpgr-fee-row"><dt className="text-xs text-zinc-400">MPGR fee (0.25%) · collection verified</dt><dd className="break-words text-sm">{swapAmount(proof.feeAmount!, p.from)} · included in amount paid</dd></div>
+      <div data-testid="mpgr-fee-row"><dt className="text-xs text-zinc-400">Paiger fee (0.25%) · collection verified</dt><dd className="break-words text-sm">{swapAmount(proof.feeAmount!, p.from)} · included in amount paid</dd></div>
       <div><dt className="text-xs text-zinc-400">Network</dt><dd>Base</dd></div>
       <div><dt className="text-xs text-zinc-400">Receive address</dt><dd className="break-all text-xs">{p.taker}</dd></div>
     </dl>
-    <p className="text-xs text-zinc-400">Amounts verified against the mined transaction and Executor event. Network gas is additional and is not included in the amount paid above.</p>
+    <p className="text-xs text-zinc-400">Network gas is extra and is not included above.</p>
     <a className="inline-flex min-h-11 items-center gap-1 text-sm text-emerald-300 underline" href={`https://basescan.org/tx/${s.swapHash}`} target="_blank" rel="noopener noreferrer">View swap on BaseScan<ExternalLink size={14} /></a>
     {s.approvalHash && <a className="inline-flex min-h-11 items-center gap-1 text-xs text-zinc-400 underline" href={`https://basescan.org/tx/${s.approvalHash}`} target="_blank" rel="noopener noreferrer">View approval<ExternalLink size={12} /></a>}
     <button type="button" onClick={trade.close} className="min-h-12 w-full rounded-2xl bg-emerald-300 font-semibold text-[#071710]">Done</button>
@@ -39,11 +40,11 @@ export function SwapExecutionDialog({ trade }: { trade: ReturnType<typeof useSwa
     </div>
     <SwapDetails proposal={p} feeState={success ? "verified" : reverted ? "reverted" : submitted ? "submitted" : "quoted"} />
     {p.risk.filter(r => r.severity !== "info" && !["executor-approval", "router-approval", "permit2-approval"].includes(r.id)).map(r => <p key={r.id} className="text-xs text-amber-200">{r.detail}</p>)}
-    {!submitted && s.state === "IDLE" && <p className="text-xs text-zinc-400">{p.needsPermit2Approval ? "Allowance is checked live. If needed, approve only this pay amount, then sign the swap. Approval alone does not swap." : "Balance, allowance, recipient, route, minimum and fee configuration are rechecked before signing."}</p>}
+    {!submitted && s.state === "IDLE" && <p className="text-xs text-zinc-400">{p.needsPermit2Approval ? "Your wallet may ask for approval of this amount first. Approval is not a swap." : "Your wallet will ask you to confirm this swap."}</p>}
     {trade.quoteUpdated && !trade.isBusy && <p role="status" className="text-xs text-emerald-200">Quote updated — review new output.</p>}
     {trade.isBusy && <p role="status" className="flex items-center gap-2 text-sm text-zinc-300"><Loader2 size={17} className="shrink-0 animate-spin" />{s.stepLabel ?? "Refreshing quote…"}</p>}
     {!swapQuoteFresh(p, now) && !submitted && !trade.isBusy && <p role="status" className="text-xs text-amber-200">Quote needs updating.</p>}
-    {s.error && <p role="alert" className="break-words rounded-xl border border-red-300/10 bg-red-300/5 p-3 text-xs leading-relaxed text-red-200">{s.error.message}</p>}
+    {s.error && <p role="alert" className="break-words rounded-xl border border-red-300/10 bg-red-300/5 p-3 text-xs leading-relaxed text-red-200">{publicSwapMessage(s.error.message)}</p>}
     {s.approvalHash && <div className="flex items-start justify-between gap-3 text-xs"><p className="text-zinc-400">Approval transaction<br /><span className="text-zinc-500">Not a swap or fee payment</span></p><a className="inline-flex min-h-11 items-center gap-1 text-emerald-300 underline" href={`https://basescan.org/tx/${s.approvalHash}`} target="_blank" rel="noopener noreferrer">View approval<ExternalLink size={12} /></a></div>}
     {s.swapHash && <a className="inline-flex min-h-11 items-center gap-1 text-xs text-emerald-300 underline" href={`https://basescan.org/tx/${s.swapHash}`} target="_blank" rel="noopener noreferrer">View swap on BaseScan<ExternalLink size={12} /></a>}
     {success && <p role="status" data-testid="swap-status" className="flex items-center gap-2 text-sm text-emerald-200"><CheckCircle2 size={18} />Swap confirmed · output verified</p>}

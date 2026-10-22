@@ -25,7 +25,7 @@ import {
 import { RpcV2LiquiditySource, swapV2QuoteSource } from "../rpc-source";
 import { V4DiscoveryCache, v4PoolKeyId } from "../rpc-v4";
 import { SWAP_PATH_VENUES } from "../../swap-executor-config";
-import { BASE_WETH, NATIVE_ETH_SENTINEL } from "@/lib/trade/trade-config";
+import { BASE_USDC, BASE_WETH, NATIVE_ETH_SENTINEL } from "@/lib/trade/trade-config";
 
 const A = "0x0000000000000000000000000000000000000a01" as Address;
 const B = "0x0000000000000000000000000000000000000b02" as Address;
@@ -353,6 +353,35 @@ describe("multi-hop is a fallback, never a preference, and never longer than thr
     expect(quote.legs[0].pools).toHaveLength(2);
     expect(quote.legs[0].tokens.map((t) => t.toLowerCase())).toEqual([A.toLowerCase(), X.toLowerCase(), B.toLowerCase()]);
     expect(quote.legs[0].pools.length).toBeLessThanOrEqual(3);
+  });
+
+  it("quotes a WETH bridge when neighbour enumeration is unavailable", async () => {
+    const pool = (id: Address, token0: Address, token1: Address) => ({
+      id: `idx:${id.toLowerCase()}`, pool: id, router: SWAP_PATH_VENUES.uniswapV3.router,
+      factory: SWAP_PATH_VENUES.uniswapV3.factory, kind: 2 as const, token0, token1,
+      poolFee: 3000, tickSpacing: 60, stable: false,
+    });
+    const left = pool(POOL, A, BASE_WETH);
+    const right = pool("0x0000000000000000000000000000000000000d04" as Address, BASE_WETH, B);
+    const source = {
+      async pools(input: Address, output?: Address) {
+        if (!output) throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "neighbour sweep disabled");
+        const pair = [input.toLowerCase(), output.toLowerCase()].sort().join(":");
+        const weth = BASE_WETH.toLowerCase();
+        if (pair === [A.toLowerCase(), weth].sort().join(":")) return [left];
+        if (pair === [B.toLowerCase(), weth].sort().join(":")) return [right];
+        if (pair === [A.toLowerCase(), BASE_USDC.toLowerCase()].sort().join(":")) return [];
+        if (pair === [B.toLowerCase(), BASE_USDC.toLowerCase()].sort().join(":")) return [];
+        return [];
+      },
+      async quote(_pool: unknown, _input: Address, amount: bigint) { return amount / 2n; },
+      negativeProvable: () => false,
+    };
+    const quote = await discoverV2Quote(source as never, A, B, GROSS);
+    expect(quote.legs[0].pools).toHaveLength(2);
+    expect(quote.legs[0].tokens.map((t) => t.toLowerCase())).toEqual([A.toLowerCase(), BASE_WETH.toLowerCase(), B.toLowerCase()]);
+    expect(quote.fee).toBe(GROSS * 25n / 10_000n);
+    expect(quote.legs[0].amountIn).toBe(quote.net);
   });
 });
 

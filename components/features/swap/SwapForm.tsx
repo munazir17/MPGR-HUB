@@ -10,7 +10,6 @@ import { useSwapBalances, type SwapBalance } from "@/hooks/useSwapBalances";
 import { swapQuoteFresh, swapQuoteNeedsRefresh } from "@/lib/swap/swap-lifecycle";
 import { swapInputError as manualSwapInputError } from "@/lib/swap/swap-capability";
 import { requestSwapQuoteWithV2, fetchSwapV2Status } from "@/lib/swap/v2/v2-quote-client";
-import { swapV2RoutingEvidence } from "@/lib/swap/v2/v2-evidence";
 import { inspectSwapLiquidity } from "@/lib/swap/swap-inspection-client";
 import { estimateSwapGas } from "@/lib/swap/swap-wallet";
 import { parseSlippagePercent, safeMaximum, slippagePercent } from "@/lib/swap/swap-policy";
@@ -20,10 +19,6 @@ import { TokenIcon, tokenName } from "./TokenIcon";
 import { TokenSelector } from "./TokenSelector";
 import { SlippageSettings } from "./SlippageSettings";
 import { SwapDetails } from "./SwapDetails";
-import { SwapLiquidityInspection } from "./SwapLiquidityInspection";
-import { swapPoolAsset } from "@/lib/swap/swap-capability";
-import { swapRoutingEvidence } from "@/lib/swap/swap-route-candidates";
-import { swapPathRoutingEvidence } from "@/lib/swap/swap-path-evidence";
 interface Props { authenticated: boolean; signIn: (options?: { force?: boolean }) => Promise<boolean>; onConnect: () => void; onReview: (proposal: TradeProposal) => void;
   balanceRevision: number; executionBusy: boolean; settledHash: string | null; reviewOpen: boolean }
 const SETTINGS_KEY = "mpgr:swap:8453:slippage";
@@ -178,8 +173,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
       {!token.verified && <p className="text-xs text-amber-300">Unverified token. Import is not endorsement; it may be unsafe or unsellable.<span className="mt-1 block break-all font-mono text-[10px]">{token.address}</span></p>}
     </div>;
   };
-  // V2 route evidence, when this proposal came from the activated V2 engine.
-  const v2Evidence = fresh && proposal ? swapV2RoutingEvidence(proposal) : undefined;
+  // V2 route evidence stays on the proposal. The swap screen does not print it.
   let rate = "";
   if (fresh && proposal) {
     const atomic = BigInt(proposal.toAmount) * 10n ** BigInt(proposal.from.decimals) / BigInt(proposal.fromAmount);
@@ -197,7 +191,6 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     {fresh && proposal && <div className="space-y-2 px-1 text-xs"><div className="flex flex-wrap justify-between gap-2"><span className="text-zinc-300">{rate}</span>
       <span className="text-zinc-400">Impact: {proposal.priceImpactBps == null ? "unavailable" : `${proposal.priceImpactBps / 100}%`}</span></div>
       {proposal.needsPermit2Approval && <p className="text-zinc-400">Token approval may be required for this pay amount. Approval is not a swap.</p>}
-      <p className="text-zinc-400">{proposal.providerLabel}</p>
       <p className="text-zinc-300">Minimum received: {formatAtomicAmount(proposal.minToAmount, proposal.to.decimals, proposal.to.decimals)} {proposal.to.symbol}</p>
       {proposal.risk.filter(r => r.severity !== "info" && !["executor-approval", "router-approval", "permit2-approval"].includes(r.id)).map(r => <p key={r.id} className="text-amber-200">{r.detail}</p>)}
     </div>}
@@ -216,24 +209,6 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
       className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-300 px-4 text-base font-semibold text-[#071710] shadow-[0_6px_30px_-12px_rgba(110,231,183,0.4)] hover:bg-emerald-200 disabled:bg-white/[0.07] disabled:text-zinc-500 disabled:shadow-none">
       {busy && <Loader2 size={18} className="animate-spin" />}{!isConnected ? "Connect wallet" : chainId !== 8453 ? "Switch to Base" : busy ? "Refreshing quote…" : insufficient ? "Insufficient balance" : invalid ? "Enter a pay amount" : sessionExpired ? "Sign in and retry quote" : fresh ? "Confirm Swap" : proposal ? "Refresh quote" : "Get quote"}
     </button>
-    {!reviewOpen && swapPoolAsset(pay.address) !== swapPoolAsset(receive.address) && <details data-testid="swap-technical-details" className="rounded-2xl border border-white/5 bg-white/[0.02] px-3 py-1">
-      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between text-xs text-zinc-400 hover:text-zinc-200">Technical route details (read-only)<ChevronDown size={14} className="shrink-0" /></summary>
-      <div className="space-y-2 pb-3 pt-1">
-        {v2Evidence && <div data-testid="swap-v2-route-evidence" className="space-y-1 text-[11px] text-zinc-400">
-          <p>MPGR Executor V2 · {v2Evidence.entry === "swapExactInputSplit" ? `${v2Evidence.legs}-way split` : `${v2Evidence.hops}-hop`} · pools verified at block {v2Evidence.blockNumber}</p>
-          <p>Execution simulation: {v2Evidence.executionSimulation}</p>
-          <p className="break-all font-mono text-[10px]">intent: {v2Evidence.intentId}</p>
-          {v2Evidence.pools.map((poolAddress, i) => <p key={`${poolAddress}:${i}`} className="break-all font-mono text-[10px]">pool {i + 1}: {poolAddress}</p>)}
-          <p>{v2Evidence.settlementNote}</p>
-        </div>}
-        {fresh && proposal && (swapRoutingEvidence(proposal) || swapPathRoutingEvidence(proposal)) && <div data-testid="swap-route-evidence" className="space-y-1 text-[11px] text-zinc-400">
-          <p>Hops: {swapPathRoutingEvidence(proposal)?.hops ?? swapRoutingEvidence(proposal)!.hops} · pools verified at block {swapPathRoutingEvidence(proposal)?.blockNumber ?? swapRoutingEvidence(proposal)!.blockNumber}</p>
-          <p>Execution simulation: {swapPathRoutingEvidence(proposal)?.executionSimulation ?? swapRoutingEvidence(proposal)!.executionSimulation}</p>
-          {(swapPathRoutingEvidence(proposal)?.outcomes ?? swapRoutingEvidence(proposal)!.outcomes).map(o => <p key={o.key} className="break-all font-mono text-[10px]">{o.key}: {o.state}{o.output ? ` → ${o.output}` : ""}</p>)}
-        </div>}
-        <SwapLiquidityInspection from={pay} to={receive} authorize={authorize} />
-      </div>
-    </details>}
     {!reviewOpen && (proposal || error) && <SwapDetails proposal={fresh ? proposal : null} issue={error} payToken={pay} />}
     {select && <TokenSelector tokens={tokens} opposite={select === "fromToken" ? receive : pay} selectingPay={select === "fromToken"} onImport={token => setImports(old => [...old.filter(t => t.address.toLowerCase() !== token.address.toLowerCase()), token])} selected={input[select]} authorize={authorize} onClose={() => setSelect(null)} onSelect={token => {
       setImports(old => [...old.filter(t => t.address.toLowerCase() !== token.address.toLowerCase()), token]);

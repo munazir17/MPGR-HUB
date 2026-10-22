@@ -5,8 +5,8 @@ import { BASE_USDC, NATIVE_ETH_SENTINEL } from "@/lib/trade/trade-config";
 import { swapCounterassets, swapPoolAsset, swapRouteIssue, swapInputError } from "../swap-capability";
 import { findBasePairByAddress } from "@/lib/markets/base-pairs";
 describe("complete selectable catalog — exact-address registration, not liquidity claims", () => {
-  it("covers all 48 catalog assets; 13 route-connected, 35 discovery-only", () => {
-    expect(MANUAL_SWAP_TOKENS).toHaveLength(48);
+  it("covers all 57 catalog assets; 13 route-connected, 44 discovery-only", () => {
+    expect(MANUAL_SWAP_TOKENS).toHaveLength(57);
     expect(MANUAL_SWAP_TOKENS.filter(t => swapCounterassets(t.address).length)).toHaveLength(13);
   });
   it.each(MANUAL_SWAP_TOKENS.map(t => [t.symbol, t] as const))("%s: approved identities can search both directions; discovery cannot authorize execution", (_symbol, token) => {
@@ -33,7 +33,7 @@ describe("complete selectable catalog — exact-address registration, not liquid
 import { swapCapabilityStatus } from "../swap-capability";
 it("metadata validation lets unregistered assets be quoted without claiming liquidity", () => {
   const assets = MANUAL_SWAP_TOKENS.filter(t => !swapCounterassets(t.address).length);
-  expect(assets).toHaveLength(35);
+  expect(assets).toHaveLength(44);
   for (const token of assets) {
     expect(swapRouteIssue(token.address, BASE_USDC)?.code).toBe("FEE_ROUTE_UNREGISTERED");
     expect(swapCapabilityStatus(token.address, BASE_USDC, true)).toMatchObject({ code: "QUOTE_REQUIRED", selectable: true, message: expect.stringContaining("Token details checked") });

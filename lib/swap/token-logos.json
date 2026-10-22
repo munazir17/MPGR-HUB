@@ -76,6 +76,526 @@
       "sha256": "a7c57ad0b94ca5c63369ac7796ee18b9a28b011f6b33d51d655e592ffb22c27a",
       "width": 256,
       "height": 256
+    },
+    "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2": {
+      "kind": "erc20",
+      "src": "/tokens/base/0xfde4c96c8593536e31f229ea8f37b2ada2699bb2.png",
+      "source": "https://github.com/trustwallet/assets/blob/bc378531dd5b67281e7b03e0a7c376d40b68bb62/blockchains/base/assets/0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2/logo.png",
+      "sha256": "1c2ecfc8c08a821a4839f2ae0df1d8796a8df233939b537b4e26514fa4f91196",
+      "width": 300,
+      "height": 300
+    },
+    "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42": {
+      "kind": "erc20",
+      "src": "/tokens/base/0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42.png",
+      "source": "https://github.com/trustwallet/assets/blob/bc378531dd5b67281e7b03e0a7c376d40b68bb62/blockchains/base/assets/0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42/logo.png",
+      "sha256": "54f4216472dd25b1ffb5caf32cc0d81f645c84be166cd713f759a80f05a1418f",
+      "width": 200,
+      "height": 200
+    },
+    "0xa88594d404727625a9437c3f886c7643872296ae": {
+      "kind": "erc20",
+      "src": "/tokens/base/0xa88594d404727625a9437c3f886c7643872296ae.png",
+      "source": "https://github.com/trustwallet/assets/blob/bc378531dd5b67281e7b03e0a7c376d40b68bb62/blockchains/base/assets/0xA88594D404727625A9437C3f886C7643872296AE/logo.png",
+      "sha256": "046657582b7dfa2ffcc0de7e79fed0255b5a78321d2b0333a3568348174ce215",
+      "width": 256,
+      "height": 256
+    },
+    "0xac1bd2486aaf3b5c0fc3fd868558b082a531b2b4": {
+      "kind": "erc20",
+      "src": "/tokens/base/0xac1bd2486aaf3b5c0fc3fd868558b082a531b2b4.png",
+      "source": "https://github.com/trustwallet/assets/blob/bc378531dd5b67281e7b03e0a7c376d40b68bb62/blockchains/base/assets/0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4/logo.png",
+      "sha256": "b8ddb06011c5b57fe64e9f71c492df8b9ac377fa3c6d81181f6ec7da265255a2",
+      "width": 256,
+      "height": 256
+    },
+    "0x4f9fd6be4a90f2620860d680c0d4d5fb53d1a825": {
+      "kind": "erc20",
+      "src": "/tokens/base/0x4f9fd6be4a90f2620860d680c0d4d5fb53d1a825.png",
+      "source": "https://github.com/trustwallet/assets/blob/bc378531dd5b67281e7b03e0a7c376d40b68bb62/blockchains/base/assets/0x4F9Fd6Be4a90f2620860d680c0d4d5Fb53d1A825/logo.png",
+      "sha256": "34c031b803dcb28e2c55f5f2bbe89ee38acb583790abac5d24388249350e4e61",
+      "width": 256,
+      "height": 256
+    },
+    "0xb2000000000000000000008d204203177a78af01": {
+      "kind": "erc20",
+      "src": "/tokens/base/0xb2000000000000000000008d204203177a78af01.png",
+      "source": "https://mpgrhub.xyz/icon.png",
+      "sha256": "6276f0bba3b35daafaeb41fd9ea58c0927b22b69344ebfb6453e9adf5b3fe8bf",
+      "width": 256,
+      "height": 256
+    },
+    "0xb2000000000000000000000d8ce462e99ee7a47b": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000000d8ce462e99ee7a47b.png",
+      "source": "https://metadata.coinbase.com/equity_icons/15a01962474463e33042583faa6ddaa2ca493101d56d49337b8f7530ecf10a50.png",
+      "sha256": "1daebe9c30b538573f8e119dc7cd90a480e07f8411ee9812edfe15fa477b5944",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000105a1f43ff3605c5de": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000105a1f43ff3605c5de.png",
+      "source": "https://metadata.coinbase.com/equity_icons/c9902520bd33cba3df2aca2baa62d1e99043fca3bb88e6387b596194c9627254.png",
+      "sha256": "26a4666c023720ab8d3208642f9d9b80b07f3d7e185ffb8dcefd5da00e28ca39",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000016f9dfe862feba122b": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000016f9dfe862feba122b.png",
+      "source": "https://metadata.coinbase.com/equity_icons/d70bb7fb735dcde077a73666df4739c3ef2c8eb23033fd6dc863f1693e5fa80b.png",
+      "sha256": "2536eab570499de1ae9fb813ecd67b5ee1879b3f3f990f864429ed7ffbd7b17c",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000018fe7ec7d6dfeeb528": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000018fe7ec7d6dfeeb528.png",
+      "source": "https://metadata.coinbase.com/equity_icons/7c4cae65ba0b98ce50c6620fe0d2e6318cf25e9c4f7799a5a45fa9effd07ff77.png",
+      "sha256": "c09d003efe72d7b68b75ef7efccb90786e17b251e67d567e0397136eb6c2480e",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000019f6e7c675b73c2e4d": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000019f6e7c675b73c2e4d.png",
+      "source": "https://metadata.coinbase.com/equity_icons/f217835f2637739f460cc9335a59ec96011c1b9510a40cee3243aeef50eb7a45.png",
+      "sha256": "7ffad12de343a8b0192a4e0bf467a6bc4b7f9e4aa4484f9e1a507e6a5bbdf38a",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000001e800a7f5189430cd0": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000001e800a7f5189430cd0.png",
+      "source": "https://metadata.coinbase.com/equity_icons/a3b67028295d0e9fa3182c867b8a9afed5ebcbd8c012de3a46e160ae5e490980.png",
+      "sha256": "67e85ced0dcdfe4b95450f4db21dd9e42f2aaf9245a43ec2527d92bcaa8ba398",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000002137743d4a01fe4e88": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000002137743d4a01fe4e88.png",
+      "source": "https://metadata.coinbase.com/equity_icons/9fd38760895467cb7177810563240bc13c9ba1b4727efb4a43ed6aa3c354a7b5.png",
+      "sha256": "cdaf9ca37deda9d1de188e2086055ce3c01802b4bac631d71f3536419a451d03",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000259694b27bf052e7d7": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000259694b27bf052e7d7.png",
+      "source": "https://metadata.coinbase.com/equity_icons/12446573d37291930d486bb7f1f380125aa270aa9989b1e8b60b60529946e765.png",
+      "sha256": "0a73cdb0f062004d139bd7078e8acd4caf7e8cdbf2b26aff80737ca79ea98b43",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000002601c5c94f435da168": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000002601c5c94f435da168.png",
+      "source": "https://metadata.coinbase.com/equity_icons/b396ed85244f93f0b85fb135c2e5090638f65393b49854637e168d77d2180020.png",
+      "sha256": "414a53a54ddec7edfd0ccf2da58ef9546a794072b28c97f39ff45c6104f72c4e",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000002d0ba3164cc74f58b7": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000002d0ba3164cc74f58b7.png",
+      "source": "https://metadata.coinbase.com/equity_icons/0e80e31df40f7c42b49a3c7f6d23c6351625d73f235aeb69006ddee9221702b0.png",
+      "sha256": "1955d720b448b315ba7dbe1471f6463bbbe394e93b395d4c3a678885f932a4d3",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000347afba223d7b6b63c": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000347afba223d7b6b63c.png",
+      "source": "https://metadata.coinbase.com/equity_icons/37fc406ca612c0231f6aba50bdcb1e8057958a075da45d718723986b8ddffd98.png",
+      "sha256": "43e96e40f71b6c0a917d2c55418e0532599e5fe0c345aea70a1c4ced9742626f",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000397293cb8cda9a10c5": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000397293cb8cda9a10c5.png",
+      "source": "https://metadata.coinbase.com/equity_icons/495de6bc9902690826d533b9506494890f59d611d10f04231c00936f659bb0cb.png",
+      "sha256": "d9c5e7ee6cec915bbda02fd80542180cbd1ffaad019318af6937ff6bfdba6c1e",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000428e3a3eebbb20692b": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000428e3a3eebbb20692b.png",
+      "source": "https://metadata.coinbase.com/equity_icons/eb816a29bbe55360569198a1a25f02299c0272504161766c10a25b3d9c58774a.png",
+      "sha256": "0d956b8bb928937b638cc9f630dc8e3de3e7054acb1c74a3764103c10b6361b2",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000432a1d2bd864acec82": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000432a1d2bd864acec82.png",
+      "source": "https://metadata.coinbase.com/equity_icons/8c4cfd6ed235405fcfb9c315b8ad81e1d0f91fc09aa1031775906e86d405a7a3.png",
+      "sha256": "5d2cd9a11aa33c448661766cba2fa43be389517b16e9b6e59d7e5ec1f6112d36",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000043a599976181bcf336": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000043a599976181bcf336.png",
+      "source": "https://metadata.coinbase.com/equity_icons/c5c723e9033c85cb8ee016a0674a3e1bdc0b2d3027a86aeb8108895479f22a3b.png",
+      "sha256": "b56d27c54c580d10ae2ef39563dac615d2f1228134f997c45aa4cd548bb07aba",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000044e3cd7a0e1028e57a": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000044e3cd7a0e1028e57a.png",
+      "source": "https://metadata.coinbase.com/equity_icons/7a8682560961723731658ecacaf7572293d641a4f92a87e58c8f923d45ae3669.png",
+      "sha256": "989d6a656ec4dfb31209888b466da2e1afec01463e72a9487f7640003db56448",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000450ad3abe5d4846c6e": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000450ad3abe5d4846c6e.png",
+      "source": "https://metadata.coinbase.com/equity_icons/b0023876e88d8c35430d618a5008e423023187143d62f22977c95a29ae59f276.png",
+      "sha256": "1c78e8114f6f1f58002334dc7409457c128fd00d0391e865891d75b0fa04f6d1",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000004884b426556b92883d": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000004884b426556b92883d.png",
+      "source": "https://metadata.coinbase.com/equity_icons/496024423dd795f8b547ffa0668f12a1e6bf09af247534754546a1a6661c7969.png",
+      "sha256": "cb7f253c70a6342418a3200a16c3806dca5e7fcbf4db614f1de1aa510106ffdc",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000004aff16039ba04bdfbc": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000004aff16039ba04bdfbc.png",
+      "source": "https://metadata.coinbase.com/equity_icons/cc2d84b704e34b83b5fc1f3b0e89c67e5ccc9142e666a50a5cbde261cf09e2aa.png",
+      "sha256": "b03a560d1de8912fde2bff0c44866b03b4f54f1917356a1b509fbd8019fb4b2a",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000535fe96f18204bfd96": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000535fe96f18204bfd96.png",
+      "source": "https://metadata.coinbase.com/equity_icons/bce21de071543a4d49e02c85f917b61557698dd63982c126c29ee15e1ec8d8d3.png",
+      "sha256": "a2b193f8ed171d89e5df636243d3a5cdaaa456cc9ad39ded00cb34ee87e23338",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000058b8c947e44011dfe6": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000058b8c947e44011dfe6.png",
+      "source": "https://metadata.coinbase.com/equity_icons/a05b651716324c9658fa72b80f6a0c75345326792d50b047eee01d3b631e16a5.png",
+      "sha256": "4581af8d960eb0504fc7bb1820b9d094fcee2f58d682ab806723af1b4edba98f",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000005bd7ae89b9e6189bb5": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000005bd7ae89b9e6189bb5.png",
+      "source": "https://metadata.coinbase.com/equity_icons/3cdc2d066a939dfe182dabb2e3093b645af837e60afd95ca12fd3cdd9c226f17.png",
+      "sha256": "ec88101af0f3e6dc26b282ccda74231b79e107779a0ee32c5cef648aeb51db20",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000006064f8ec027f042294": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000006064f8ec027f042294.png",
+      "source": "https://metadata.coinbase.com/equity_icons/bf1757c5584a85325327533f7bbcc617efd47d2f20f8baf169c069a3265d87ca.png",
+      "sha256": "bc39e1438be6fb77a9f89507ca738a0f1a5973c0b9398a978f1ce09e5157b16b",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000066242d4067724cb7a1": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000066242d4067724cb7a1.png",
+      "source": "https://metadata.coinbase.com/equity_icons/b10e490495d7918a3b6ae1281f416cb608a4642ba05ec442ed14546b40c8936d.png",
+      "sha256": "3cd28b6f08ba108cb4d47566b866d53beb0e35e82589ee1de3840254a932e76d",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000067c8c151f24e1c9924": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000067c8c151f24e1c9924.png",
+      "source": "https://metadata.coinbase.com/equity_icons/de769be1d4653ab0e397593eec747f0decd4b3181e351f40fe2942ab451a07cc.png",
+      "sha256": "5998281c9e548c8cd57167cf8c5e251c8dfa7583cfa0728a9d7a4422c4136e38",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000690275843b6e246286": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000690275843b6e246286.png",
+      "source": "https://metadata.coinbase.com/equity_icons/921f1d48585625dde39570f4e406d9f019e1189be2b92dae5be6a7b7ec540212.png",
+      "sha256": "abfbf9c516fa6ea3f839f87d0e3331722ddf099c0c4ed10e35668790ee3a0b9d",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000006ee1c139a723872e09": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000006ee1c139a723872e09.png",
+      "source": "https://metadata.coinbase.com/equity_icons/6e5c70af1553b6d63ceba6dd136c7851ab399d2f3b9a7a7311d7b03230a36d3c.png",
+      "sha256": "7322f8dbc5fef9a6f89864b61a91b8eb1b06bdf66bbb53348d703dec30a1a1b6",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000007790ed6e48e06ed935": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000007790ed6e48e06ed935.png",
+      "source": "https://metadata.coinbase.com/equity_icons/3c421afc3407038dbc631169eb67566659e55a70a932156d64c2f863a1119a58.png",
+      "sha256": "5deb88657fffd2ad417f04479497abfff83b4bb655919be3edc3867a2280bd3d",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000078ee7ce2fe4908108c": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000078ee7ce2fe4908108c.png",
+      "source": "https://metadata.coinbase.com/equity_icons/1fee9b7a44e800d438dd9d96c3283e05784c925c2c871a48ff735950740b551a.png",
+      "sha256": "5b371bf838efd359979d55c9fa2ffb80b06485ac16598669cc364853294fa5d7",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000007b9fcbd005511acbd5": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000007b9fcbd005511acbd5.png",
+      "source": "https://metadata.coinbase.com/equity_icons/79fa65beabbe27c7b84a38b8f67a492793a0c203a5312c8feddc23e4b7c66b79.png",
+      "sha256": "c43a6feb8e9ad018f44de9324305d1187a8f0b5922290ed1aee1ac884009e2e7",
+      "width": 128,
+      "height": 128
+    },
+    "0xb2000000000000000000007d16372840df4dabbe": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000007d16372840df4dabbe.png",
+      "source": "https://metadata.coinbase.com/equity_icons/cb8ee560fcd2d52473592e8dbbe3ab4f3e75f4732405a1acbfff8dfc652dd602.png",
+      "sha256": "26c5d34599c6090842a23d9cc4173e71507e5cbebce63cd77582c05a3b837219",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000801830b13b8e493423": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000801830b13b8e493423.png",
+      "source": "https://metadata.coinbase.com/equity_icons/7d9e400a631483d7bbfb4a71c5714042f56c2d9f14687339bc9fa41beb2e95b9.png",
+      "sha256": "9b88c6a1303854359c3e560929b88e9d173fa4d42c96273688671707203a4edb",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000081050ac3d4395df527": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000081050ac3d4395df527.png",
+      "source": "https://metadata.coinbase.com/equity_icons/f3b80cf8a85d0d70228a96cb0dad82a2df9b0a4dc1a8b394d21198a19ad8c0d4.png",
+      "sha256": "605622ed8027c3ac18041a9173e9061c3d0902f0e6226df0a197991a4f23ca76",
+      "width": 200,
+      "height": 200
+    },
+    "0xb20000000000000000000089221e238277d52515": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb20000000000000000000089221e238277d52515.png",
+      "source": "https://metadata.coinbase.com/equity_icons/477529de304b588a517c285b9004876a92b333303f2582e17b3f7722972cd637.png",
+      "sha256": "f6e58024a8587c77b8b3172d1495f769a5e9ff3757e6346b131e33915156d359",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000008bc8786b856e61707c": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000008bc8786b856e61707c.png",
+      "source": "https://metadata.coinbase.com/equity_icons/1cedbfb3caee9498470945ff5041715b8c90921d904b3567a43bc4df82069e66.png",
+      "sha256": "7a4dff15e8a980246843d1c4ee04088cd766ab991be25d1c32c657cc6dbf68fa",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000008fc2a8c23cf5937b66": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000008fc2a8c23cf5937b66.png",
+      "source": "https://metadata.coinbase.com/equity_icons/5740046bda77406610064923501b2e41cf39c3ec93256a9d981dadd61faa51c4.png",
+      "sha256": "f7c4d222f80db498b2f9b42b6960b6888078676d9e91487c3da862ea002b3a79",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000009272a491812842aa84": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000009272a491812842aa84.png",
+      "source": "https://metadata.coinbase.com/equity_icons/0fc4178ac460d7b526d06d03f2e5045c03de0966f23b39012fc552ec5d9a6724.png",
+      "sha256": "eae735314d66021a0305eff67aa2c0daaa93240e96dad161e729b760bb809744",
+      "width": 200,
+      "height": 200
+    },
+    "0xb2000000000000000000009426b660396ebcf343": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb2000000000000000000009426b660396ebcf343.png",
+      "source": "https://metadata.coinbase.com/equity_icons/6fb95c3e55a0ffbd2c1c8eb9f82977caefb59707770d94fb02459ae2b7794ec9.png",
+      "sha256": "9a0e79e9d4629b86171a7b1f2fe50c5983432f8568803b694fdd174c6a2bfd15",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000a310e034e09186fb2d": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000a310e034e09186fb2d.png",
+      "source": "https://metadata.coinbase.com/equity_icons/d889a9b4a3f8cdca76fba1983718d4a6def65e87984ed79451577d99248d5621.png",
+      "sha256": "9ae91aab0cc039ccfc9638d45bd03341e01e70de31458e4e7723b623e7d98725",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000a613d12deafbbb1db7": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000a613d12deafbbb1db7.png",
+      "source": "https://metadata.coinbase.com/equity_icons/ff66ef3199719715b106d78ecfe5bf048afc9079ab93e51e01cad12021c26221.png",
+      "sha256": "9a1e1f12de7490dc01d68d91d7d37d26850eb87f45eeea9e8bde1dc3cae42c18",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000ab99cfa739e253872b": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000ab99cfa739e253872b.png",
+      "source": "https://metadata.coinbase.com/equity_icons/e90930ade985016f48816c6bd9fd1e8274b28507f4833881b3a16c77c2a3e2e7.png",
+      "sha256": "fbb9047911bc2cfd4f6a5dd8549f6085d9986b142d81d1c884462a18bdf3fab1",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000b1a29cf17a1819288a": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000b1a29cf17a1819288a.png",
+      "source": "https://metadata.coinbase.com/equity_icons/698ccf1c9cd70aa267c525b6ead3a76a28e33885e24219bee0425d12311f5722.png",
+      "sha256": "19c9c5c08c8fe627069dbe5e5ce9fcc3f5c948bb9261eba19a8bff1c359808b5",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000bd0c7627b663c581a6": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000bd0c7627b663c581a6.png",
+      "source": "https://metadata.coinbase.com/equity_icons/fa1d2d3ff5f612941f77718f48b7bbc7dfb3e4b960cc85f1de85ddbe1792ab47.png",
+      "sha256": "4c89c79b079f688fa868b699566ee3606b2cf467ed6521be78252291103857cb",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000c2e324d24d7eecd1fb": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000c2e324d24d7eecd1fb.png",
+      "source": "https://metadata.coinbase.com/equity_icons/873819f4b14efe44b94abecbc8e8864d2998163abd0ca55b449ee6eb07d0d94c.png",
+      "sha256": "8b4a28b99d6df97a6d27c38f57c80bb49a16ceaa3cd943fdf0c5c9417416240d",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000c597c476fcf9aed3a8": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000c597c476fcf9aed3a8.png",
+      "source": "https://metadata.coinbase.com/equity_icons/5f8bc2c935bff092a0621876088404e35d873e3c511a8570d91e17f77c80533e.png",
+      "sha256": "e222b43a6b30d9803635a71261cda25adbca751f0f1e8e3bd49b20f1f468fca7",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000ca425ab42e07c35bc3": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000ca425ab42e07c35bc3.png",
+      "source": "https://metadata.coinbase.com/equity_icons/654c1b2fa043d39f365bc2bcd07b7b988f08f651918087874ffd8e5b0db75d80.png",
+      "sha256": "3e2a3dbeea5a238478c32539b800dabfc06cc919e476b39d3e91b5ad9dbc7ee7",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000cd7e6b8042cb7c2bb5": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000cd7e6b8042cb7c2bb5.png",
+      "source": "https://metadata.coinbase.com/equity_icons/691748c6073e5e7805376a4d6ca07ac0080d0ed215010a53587ee964641fbf43.png",
+      "sha256": "eec9b84f1483a874a9a93671b9d592aaa57fc70122a3b63051b1f28523b113aa",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000d9192b6b456483c2e8": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000d9192b6b456483c2e8.png",
+      "source": "https://metadata.coinbase.com/equity_icons/06d3c2cac2c89e3a8bc4b2fe40ff259f104b55244321dea400e44b22f215896b.png",
+      "sha256": "14d06abf6ef1b765c520157b8987e61c73f12cc57ad15b7ece5a833d9b9de591",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000e215e9b76ecba02468": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000e215e9b76ecba02468.png",
+      "source": "https://metadata.coinbase.com/equity_icons/98d174e79a7238a1866a1f7e5d0a3a49f95e566affef238e5c5e3ab970924d7a.png",
+      "sha256": "bee1e5a058690f9f9d6678345afe6ba7323e8fde96b104454c2b3c12ecb96598",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000ea2df44a307cab279c": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000ea2df44a307cab279c.png",
+      "source": "https://metadata.coinbase.com/equity_icons/575166a4a31d422fbfa792b557cb89072bdfad064bc09c6e4648064bb3f67914.png",
+      "sha256": "86814efe00e789d7988ee5b94d6e32d442ba0c14528e0a0c7765f29c59ec452d",
+      "width": 256,
+      "height": 256
+    },
+    "0xb200000000000000000000ec3c4c7395cc609813": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000ec3c4c7395cc609813.png",
+      "source": "https://metadata.coinbase.com/equity_icons/d58939c6dddb2b72c5835c3919644ce758038a1964a39777863b73be90a63891.png",
+      "sha256": "31b48158267470e1fbf1b121112bc19bbf491de3715e56c98162afd14c1b9afc",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000f111184a74720787e6": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000f111184a74720787e6.png",
+      "source": "https://metadata.coinbase.com/equity_icons/43c7fe215cc44bb5e9fd69cd7c3df620081f95199ce0546ed9106ee5f6576fd7.png",
+      "sha256": "add6c72a5adfc7fe78b52f0777ba01c593fa56902aceb4438b5acfd36dcaad39",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000f1a0f91e34892e4718": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000f1a0f91e34892e4718.png",
+      "source": "https://metadata.coinbase.com/equity_icons/0b4d7572da33930f741d650ba269e4d324ad584b760fa3e2319b4112798168a8.png",
+      "sha256": "5a2c305021621e2958dffdc023e6b80c15b4771d99788c62081d76e2466093a1",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000f215e4c890cfb7176b": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000f215e4c890cfb7176b.png",
+      "source": "https://metadata.coinbase.com/equity_icons/1ce59340dc15e072634ddb07e08193f030b867a4791c113c90325a8ce9182070.png",
+      "sha256": "f7bcf824e2073e3f4a3b4dc4604d56709fda172bb784a3fe368c1cd14e270ea6",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000f720c26062bc3067da": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000f720c26062bc3067da.png",
+      "source": "https://metadata.coinbase.com/equity_icons/ab6469891e1953bb08c7576e4f7536d79bcf36d45b3893c669ada2d928e940bb.png",
+      "sha256": "7c969cc360b60742c96b31bed159cfbc3cec52a38d4ee2b31594bc29e86bd963",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000fa63cfff5c794dbb95": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000fa63cfff5c794dbb95.png",
+      "source": "https://metadata.coinbase.com/equity_icons/990ee179c29aa2c0081aa80aaf85461826e726706956e8f726f47a9d324a9b8a.png",
+      "sha256": "6b41288f6d0311a32d954ee243a9b197776e3c131744fb3eed32500fcdfd5754",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000fc737aea6196ab5a4c": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000fc737aea6196ab5a4c.png",
+      "source": "https://metadata.coinbase.com/equity_icons/05ae387b9635774d2724b23f7fac0bd3100fe0023f4c35587b5a28db7b8768c4.png",
+      "sha256": "a9197da6c90f3f8b7848c01c98c8289a88a87ee51a452778c599dc7330b34764",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000fd2f87532b90095211": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000fd2f87532b90095211.png",
+      "source": "https://metadata.coinbase.com/equity_icons/25fc96eaeae0e9dc2490307a8cae3d153045c29caff8b90679abea6dcfcf7d95.png",
+      "sha256": "da40586f21379a642011eea7e19727ff7076cd021a29f0a2978eb66d068af3a3",
+      "width": 200,
+      "height": 200
+    },
+    "0xb200000000000000000000fec679b39992f67627": {
+      "kind": "b20-tokenized-stock",
+      "src": "/tokens/base/0xb200000000000000000000fec679b39992f67627.png",
+      "source": "https://metadata.coinbase.com/equity_icons/d6295fc189eed989c317fe8e4cc480ca45e2eab094523f71c15c0bbf3628dfe5.png",
+      "sha256": "52aee80252bc0cc614788fd2afec9bb7110189f373bdf05e9d46872deaf95bbe",
+      "width": 200,
+      "height": 200
     }
   }
 }

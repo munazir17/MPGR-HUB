@@ -16,7 +16,7 @@ export function SwapExperience() {
   const trade = useSwapExecution(() => setBalanceRevision(n => n + 1), authenticate);
   return <main className="relative mx-auto w-full max-w-[520px] px-3 py-4 text-white sm:px-5 sm:py-12">
     <header className="mb-3 flex items-start justify-between gap-2 px-1"><SwapBackButton disabled={trade.isBusy} /><div className="min-w-0 flex-1"><p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-emerald-300/75">Onchain. On your terms.</p>
-      <h1 className="text-[28px] font-semibold tracking-tight">MPGR Swap</h1><p className="mt-1 text-xs text-zinc-500">Your assets. Your wallet. Your signature.</p></div>
+      <h1 className="text-[28px] font-semibold tracking-tight">PaigerSwap</h1><p className="mt-1 text-xs text-zinc-500">Your assets. Your wallet. Your signature.</p></div>
       <button type="button" aria-label="Recent swaps" onClick={() => { setActivity(true); void trade.checkHistory(); }} className="mt-5 flex h-11 w-11 items-center justify-center rounded-full border border-white/10 text-zinc-400 hover:bg-white/5"><History size={19} /></button>
     </header>
     <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#10151f] p-3 shadow-[0_20px_80px_-40px_rgba(0,0,0,0.8)] sm:p-4" aria-label="Spot swap">
