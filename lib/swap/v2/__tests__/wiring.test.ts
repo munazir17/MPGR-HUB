@@ -71,6 +71,10 @@ function settledReceipt(p: TradeProposal, overrides: Partial<Parameters<typeof s
 afterEach(() => __setSwapV2ExecutorForTests(null));
 
 describe("V2 wiring — DORMANT gate leaves V1 untouched", () => {
+  // Injected rather than inherited: after activation the gate resolves the sealed
+  // manifest, and this block's whole subject is the DORMANT shape — which is what a
+  // one-line rollback restores, and what keeps every V1 dispatcher on its V1 branch.
+  beforeEach(() => __setSwapV2ExecutorForTests(null));
   it("adapted no proposal from an executable-looking response", () => {
     // Even a fully-formed activated response yields nothing while the gate is null.
     expect(isExecutableSwapV2Response(activatedResponse())).toBe(true);

@@ -89,6 +89,9 @@ afterEach(() => __setSwapV2ExecutorForTests(null));
 
 describe("V2 settlement route — dormant gate", () => {
   it("verifies nothing while routing is not activated", async () => {
+    // Dormancy is injected explicitly rather than inherited from the gate constant, so
+    // this remains the test for the shape a one-line rollback restores.
+    __setSwapV2ExecutorForTests(null);
     const r = await POST(request());
     expect(r.status).toBe(409);
     const body = await r.json();

@@ -136,12 +136,13 @@ describe("V2 canary: read-only posture and dormancy", () => {
     expect(offenders, `unset these before running a canary; this harness needs no key: ${offenders.join(", ")}`).toEqual([]);
   }, 30_000);
 
-  it.skipIf(!ENABLED)("confirms the app still cannot send a V2 swap", () => {
-    // The canary is a private rehearsal. If this ever fails, activation has already
-    // happened and the canary is no longer the right instrument.
-    expect(V2_DEPLOYMENT).toBeNull();
-    expect(swapV2Executor()).toBeNull();
-    expect(swapV2RoutingActivated()).toBe(false);
+  it.skipIf(!ENABLED)("reports that activation has happened, so this canary is retired", () => {
+    // The canary is a PRIVATE rehearsal that exists to precede activation. Once the gate
+    // is flipped it is the wrong instrument: post-activation evidence belongs to the
+    // settlement path and to receipt verification, not to a rehearsal.
+    expect(V2_DEPLOYMENT).not.toBeNull();
+    expect(swapV2Executor()?.executor.toLowerCase()).toBe("0x4be1154440b26145d76608d41d403a33e76b9d0a");
+    expect(swapV2RoutingActivated()).toBe(true);
   }, 30_000);
 
   it.skipIf(!ENABLED)("verifies the sealed executor's live posture against the manifest", async () => {

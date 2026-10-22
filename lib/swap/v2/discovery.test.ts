@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { decodeFunctionData, type Address } from "viem";
 import { discoverV2Quote, validateV2Quote, V2_FEE_RECIPIENT, V2_DEPLOYMENT, V4_MANAGER, type Pool, type LiquiditySource } from "./discovery";
+import { SWAP_V2_SEALED_MANIFEST } from "./sealed-manifest";
 import { buildV2Transaction } from "./transaction";
 import { SWAP_V2_ABI } from "./abi";
 const addr = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as Address;
@@ -10,7 +11,7 @@ function source(edges: Pool[], price: (p: Pool, amount: bigint) => bigint = (_, 
   return { pools: vi.fn(async (input, output) => edges.filter(p => [p.token0,p.token1].includes(input) && (!output || [p.token0,p.token1].includes(output)))), quote: vi.fn(async (p, _, a) => price(p, a)) };
 }
 describe("unreleased permissionless V2 discovery (unit policy, not fork proof)", () => {
-  it("has no activated deployment", () => expect(V2_DEPLOYMENT).toBeNull());
+  it("has the sealed deployment active", () => expect(V2_DEPLOYMENT).toBe(SWAP_V2_SEALED_MANIFEST));
   it("quotes an imported arbitrary direct token/token pair without catalog or major asset", async () => {
     const s = source([edge(1,A,B)]); const q = await discoverV2Quote(s,A,B,10001n);
     expect(q.fee).toBe(25n);expect(q.net).toBe(9976n);expect(q.amountOut).toBe(9976n);expect(q.legs[0].tokens).toEqual([A,B]);

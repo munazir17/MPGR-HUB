@@ -248,6 +248,6 @@ describe("V1 and V2 activation state are untouched by this change", () => {
 
   it("active routing stays on V1 and V2 routing stays dormant", () => {
     expect(libConfigText).toContain(`executor: "${V1_EXECUTOR}"`);
-    expect(v2DiscoveryText).toContain("export const V2_DEPLOYMENT = null;");
+    expect(v2DiscoveryText).toContain("export const V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST;");
   });
 });

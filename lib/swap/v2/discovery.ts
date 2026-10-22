@@ -3,9 +3,13 @@
 // throw DISCOVERY_UNAVAILABLE; an RPC/index failure is not a no-liquidity proof.
 import { isAddress, type Address, type Hex } from "viem";
 import { BASE_USDC, BASE_WETH, isNativeEthSentinel } from "@/lib/trade/trade-config";
+import { SWAP_V2_SEALED_MANIFEST } from "./sealed-manifest";
 export const V2_FEE_BPS = 25;
 export const V2_FEE_RECIPIENT = "0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4" as Address;
-export const V2_DEPLOYMENT = null; // No mainnet activation in this pass.
+/** ACTIVATED by the reviewed activation commit, and only after both canary receipts
+ * exist. Reverting this one expression is the entire rollback: V1 needs none, because
+ * V1 was never touched, and no contract action is required or permitted. */
+export const V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST;
 export const V4_MANAGER = "0x498581fF718922c3f8e6A244956aF099B2652b2b" as Address;
 export interface V4Key { currency0: Address; currency1: Address; fee: number; tickSpacing: number; hooks: Address }
 export interface Pool {

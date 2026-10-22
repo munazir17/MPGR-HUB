@@ -17,13 +17,22 @@ const manifest = JSON.parse(readFileSync(SWAP_V2_MANIFEST_PATH, "utf8")) as Reco
 afterEach(() => __setSwapV2ExecutorForTests(null as never));
 
 describe("v2 activation gate", () => {
-  it("is DORMANT: V2_DEPLOYMENT is null and no executor is resolvable", () => {
+  it("is ACTIVE: V2_DEPLOYMENT is the sealed manifest and the executor resolves", () => {
     // Also asserted verbatim by scripts/swap-v2-finalize-recovery.test.ts.
-    expect(V2_DEPLOYMENT).toBeNull();
-    expect(readFileSync("lib/swap/v2/discovery.ts", "utf8")).toContain("export const V2_DEPLOYMENT = null;");
+    expect(V2_DEPLOYMENT).toBe(SWAP_V2_SEALED_MANIFEST);
+    expect(readFileSync("lib/swap/v2/discovery.ts", "utf8")).toContain("export const V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST;");
+    expect(swapV2Executor()?.executor.toLowerCase()).toBe(SWAP_V2_SEALED_MANIFEST.executor.toLowerCase());
+    expect(swapV2RoutingActivated()).toBe(true);
+  });
+
+  it("still forces dormancy through the injection hook, so rollback stays covered", () => {
+    // Rollback is reverting one expression, but the dormant shape must remain testable
+    // after activation or nobody would notice a regression in it.
     __setSwapV2ExecutorForTests(null as never);
     expect(swapV2Executor()).toBeNull();
     expect(swapV2RoutingActivated()).toBe(false);
+    __setSwapV2ExecutorForTests(undefined as never);
+    expect(swapV2RoutingActivated()).toBe(true);
   });
 
   it("resolves the sealed manifest only through the test-only injection hook", () => {
