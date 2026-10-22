@@ -38,7 +38,7 @@ export async function readErc20Allowance(client: Pick<AllowanceClient, "readCont
 /** State override that makes `allowance(owner, spender)` report max uint256.
  * Undefined when the token does not use a standard mapping slot, or the RPC
  * refuses overrides. The caller's real allowance is not modified. */
-export async function erc20AllowanceOverride(client: AllowanceClient, token: Address, owner: Address, spender: Address, blockNumber: bigint): Promise<StateOverride | undefined> {
+export async function erc20AllowanceOverride(client: Pick<AllowanceClient, "call">, token: Address, owner: Address, spender: Address, blockNumber: bigint): Promise<StateOverride | undefined> {
   const data = encodeFunctionData({ abi: erc20Abi, functionName: "allowance", args: [owner, spender] });
   const key = token.toLowerCase();
   const cached = slots.get(key);
