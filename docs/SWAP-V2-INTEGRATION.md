@@ -279,6 +279,76 @@ The consequences, all of them deliberate:
 path cannot drift from it. Its v4 cache is per quote, because the cache is keyed by `token@block` and
 a shared one would grow without bound in a long-lived server while every quote pins a fresh block.
 
+### A PoolKey is sorted, not directional — the defect the private canary found
+
+The operator's canary got past `eth_call` on `MPGR → native ETH`, then died in
+`prepareV2Execution` with:
+
+```
+V2 calldata failed independent inspection: The v4 PoolKey currencies do not match this hop's
+sell and receive tokens.
+```
+
+That message is `execution.ts:122` wrapping a reason produced by `validatePath` in `intent.ts`.
+The reason was wrong, and the contract was right. `validatePath`'s v4 branch compared the
+PoolKey **directionally** — it required `currency0 == sell` *and* `currency1 == receive`. A
+PoolKey is not a direction: the PoolManager sorts it (`currency0 < currency1`) and hashes the
+sorted tuple into the pool id, so the key identifies a *pair*, and either token can be the one
+being sold. Because `address(0)` sorts below every ERC-20, **every** native-side pool names the
+token as `currency1` — so selling a token into native ETH, the single most common shape a
+native v4 pool has, always failed inspection. MPGR's pool is exactly that shape:
+`currency0 = 0x0000…0000`, `currency1 = 0xB2000000000000000000008d204203177a78AF01`.
+
+The deployed contract never had this bug. `MPGRSwapExecutorV2._validateHop` (lines 371-375)
+accepts either arrangement:
+
+```solidity
+if (k.currency0 >= k.currency1 || k.tickSpacing <= 0 || k.tickSpacing > 32767) revert InvalidPath();
+address c0 = k.currency0 == address(0) ? address(WETH) : k.currency0;
+if (!((tokenIn == c0 && h.tokenOut == c1) || (tokenIn == c1 && h.tokenOut == c0))) revert InvalidPath();
+if (h.poolFee != 0 || h.tickSpacing != 0 || h.stable) revert InvalidPath();
+```
+
+and `_callV4` (line 449) *derives* the direction rather than assuming it:
+`zeroForOne = input == (currency0 == address(0) ? WETH : currency0)`. `rpc-hints.ts:52` was
+already order-independent. Only `intent.ts` disagreed with the chain, which is why the executor
+simulated the hop happily while the app refused to hand it over. The contract was not changed.
+
+**The fix** makes inspection match the contract: normalise both key currencies (`address(0)` →
+canonical WETH, as everywhere else) and accept the pair when `{c0, c1}` is `{sell, receive}` in
+**either** order. Membership is unchanged — a key for a different pair still fails, a
+degenerate key whose two currencies normalise to the same asset still fails, and `currency0 <
+currency1` is still required, because accepting either *match order* must never become
+accepting an unsorted *key*: the PoolManager hashes the key as given, so a reversed key names a
+different pool. A second divergence was found while reading the contract and is mirrored too:
+a v4 hop must carry `poolFee == 0`, `tickSpacing == 0` and `stable == false`, since the key
+carries the fee and spacing. Inspection was *looser* than the contract there, which means it
+could have handed a wallet calldata the sealed executor would revert on.
+
+**Why the suite was green.** Every v4 test that existed sold the `currency0` side: the native
+ETH sell test in `execution.test.ts` buys a token with ETH, and `intent.test.ts`'s accepted v4
+shape sells native for `TOKEN_B`. The BUY direction of a native pool was covered; the SELL
+direction — the one with liquidity — was not. Both are now covered at both layers, and each new
+positive test was proven falsifiable by stashing the fix: four intent-level tests and the
+execution-level `MPGR → native ETH` test go red against the old check, while `WETH → MPGR`
+stays green under it, which is precisely the asymmetry that hid the defect.
+
+**The canary harness itself had two invalid address literals**, found while writing those
+tests: `MPGR` was spelled with 42 hex characters (two extra zeros) and `USDC` with one
+incorrect EIP-55 case (`…C32D4F71b54…` instead of `…C32D4f71b54…`). viem rejects both inside
+its address encoder, so an armed run would have died before discovery — reading exactly like a
+routing failure while nothing was ever attempted. Both are corrected to the chain-verified
+values (MPGR from the pool's own `Initialize` log in `docs/proofs/`, matching `COVERAGE_MPGR`),
+and a new **always-on** test asserts every address the canary names is valid, so the harness
+cannot silently rot again. It caught both defects on first run.
+
+**Evidence tier for this fix: simulated, not fork-tested and not live.** It is proven by 12 new
+unit tests through the real production modules, and by the contract source it mirrors. Base is
+not reachable from the sandbox (`SSL_ERROR_SYSCALL` on `https://mainnet.base.org`), so the armed
+canary was **not** run here: the operator reruns
+`MPGR_V2_CANARY=1 CANARY=1 CANARY_WALLET=0x… npx vitest run scripts/swap-v2-canary.test.ts`.
+Nothing was signed, sent, deployed or activated, and `V2_DEPLOYMENT` is still `null`.
+
 ## 5. Evidence tiers: what is actually proven
 
 **Tier 1 — unit-simulated (this change): 268 tests across 20 files on the V2 surface,
@@ -835,6 +905,15 @@ live state, or settled. No claim in this document is live-verified.
     initialized in the middle of that range stays out of reach and stays reported as `capped` with the
     uncovered blocks named. Only a wider-log-range RPC changes that.
 
+13. **RESOLVED — v4 PoolKey directionality broke every native-side SELL, and only the canary caught it.**
+    `intent.ts` compared a sorted PoolKey as if it were directional, so selling any token whose
+    liquidity is a native v4 pool (MPGR included) failed inspection after the executor had
+    already simulated it. The contract was correct and is unchanged; inspection now accepts
+    either order while still refusing a different pair, an unsorted key and a non-zero
+    `poolFee`/`tickSpacing`/`stable` hop. Proven by 12 new tests, each positive falsifiable
+    against the old check. See §4. The canary harness's own two invalid address literals are
+    fixed and now guarded by an always-on test.
+
 ## 7. Activation plan
 
 Requires separate explicit approval. **None of this has been done.** The exact diff exists, is
@@ -912,6 +991,12 @@ Activation is a single constant, so rollback is a revert:
   scan costs route *quality*, never route *truth*. Claiming that **no** compatible pool exists
   is a different act, and is only permitted when the getter-backed sweep completed *and* the v4
   scan reached the pinned block. Anything less is `DISCOVERY_UNAVAILABLE`.
+- **A v4 PoolKey names a pair, never a direction.** `currency0 < currency1` is how the
+  PoolManager *sorts* and hashes a key, not how a swap flows through it, and `address(0)` sorts
+  first — so in every native-side pool the token is `currency1`. Any check, hint or encoder that
+  assumes `currency0` is the sell token will reject the most common shape such a pool has.
+  Direction is *derived* (`zeroForOne`), and a key whose two currencies are not exactly the sell
+  and receive tokens, in either order, is still refused.
 - **A v4 PoolKey is trusted only if it re-derives.** `keccak256(abi.encode(PoolKey))` must equal
   the `Initialize` log's own indexed `id`, which is how the PoolManager computes a pool id and how
   the fork suite checks its fixture. A log that fails the check is rejected, not believed.

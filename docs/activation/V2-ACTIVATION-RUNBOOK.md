@@ -36,6 +36,20 @@ one command, and impossible to activate by accident. The working tree stays clea
    `SwapExecuted` with `feeBps 25` and `feeAmount == grossAmountIn * 25 / 10000` to
    `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4`, and a `SwapPathExecuted` whenever the route
    had more than one leg. **If a verification fails, stop. Do not broadcast a second time.**
+   **Read the layer an armed-build failure names before concluding anything.** The MPGR leg is
+   the one that exercises a native-side v4 PoolKey sold from `currency1` — `currency0` is
+   `address(0)`, which sorts below every ERC-20, so MPGR can only ever be `currency1`. An
+   earlier app-side inspection check compared that key *directionally* and refused the build
+   after the sealed executor had already simulated the hop successfully; that is fixed and
+   regression-tested at both layers (§4 of
+   [`SWAP-V2-INTEGRATION.md`](../SWAP-V2-INTEGRATION.md)), and the contract was never wrong.
+   So: `V2 calldata failed independent inspection: …` is an **app-side** rule and a bug report;
+   a discovery error is routing or provider reach; only a simulation error is the chain's
+   answer about this swap. The two address literals the harness builds with are now checked by
+   an always-on test, because an invalid one used to look like a routing failure. **The armed
+   build has never been run against Base in CI or in the sandbox** (Base is not reachable from
+   there), so the operator's run is this fix's first live exercise — report what it prints.
+
 2. **Record both transaction hashes** in the activation commit message. An activation whose
    evidence is "we ran a canary" is not auditable; the hashes are.
 3. **The fork proof is green on the commit being activated**, and CI is green apart from the

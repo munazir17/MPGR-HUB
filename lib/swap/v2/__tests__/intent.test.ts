@@ -88,6 +88,123 @@ describe("v2 intent inspection — accepted shapes", () => {
   });
 });
 
+/** MPGR, imported by address. Its only Base liquidity is a Uniswap v4 pool against
+ * NATIVE ETH, so its PoolKey has currency0 = address(0) and currency1 = MPGR — and
+ * because address(0) sorts below every ERC-20, MPGR is currency1 in the only pool it has.
+ * That is the shape this describe block exists for. */
+// Chain-verified from the pool's own Initialize log (docs/proofs/swap-v2-base-fork-*.md),
+// and the same literal COVERAGE_MPGR and rpc-v4.test.ts already use. Lowercase, because viem
+// rejects a mixed-case literal unless its EIP-55 checksum is exactly right.
+const MPGR = "0xb2000000000000000000008d204203177a78af01" as Address;
+const ZERO = "0x0000000000000000000000000000000000000000" as Address;
+/** The native-side PoolKey exactly as the PoolManager sorts it. */
+const nativeMpgrKey = { currency0: ZERO, currency1: MPGR, fee: 0, tickSpacing: 200, hooks: HOOKS };
+const v4Hop = (tokenOut: Address, key = nativeMpgrKey, over: Parameters<typeof hop>[0] = {}) =>
+  hop({ kind: 7, router: V4_MANAGER, pool: V4_MANAGER, tokenOut, poolFee: 0, tickSpacing: 0, stable: false, v4Key: key, ...over });
+
+describe("a native-side v4 PoolKey validates in BOTH directions", () => {
+  // A PoolKey is SORTED, not directional: currency0 < currency1 is an identity convention
+  // the PoolManager hashes. Requiring currency0 to be the sell token rejected every
+  // native-side pool sold the "wrong" way round, which is every sell of MPGR — while the
+  // sealed executor simulated and settled that same hop without complaint.
+  it("accepts MPGR -> WETH, where the sell token is currency1", () => {
+    const data = encodeSingle(params(1_000_000_000_000_000_000n, { tokenIn: MPGR, tokenOut: WETH, router: V4_MANAGER }), [v4Hop(WETH)]);
+    const r = inspect(data, 0n, intentContext({ fromAddress: MPGR, toAddress: WETH }));
+    expect(r.ok, r.ok ? "" : r.reason).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.paths[0][0].v4Key?.currency0.toLowerCase()).toBe(ZERO.toLowerCase());
+    expect(lc(r.value.paths[0][0].v4Key!.currency1)).toBe(lc(MPGR));
+    expect(r.value.hops).toBe(1);
+  });
+
+  it("accepts WETH -> MPGR, where the sell token is currency0 normalised from address(0)", () => {
+    const data = encodeSingle(params(1_000_000_000_000_000_000n, { tokenIn: WETH, tokenOut: MPGR, router: V4_MANAGER }), [v4Hop(MPGR)]);
+    const r = inspect(data, 0n, intentContext({ fromAddress: WETH, toAddress: MPGR }));
+    expect(r.ok, r.ok ? "" : r.reason).toBe(true);
+    if (r.ok) expect(lc(r.value.tokenOut)).toBe(lc(MPGR));
+  });
+
+  it("accepts MPGR -> native ETH, the exact shape the canary builds", () => {
+    // The hop delivers WETH and the executor unwraps it, so the calldata receive token is
+    // WETH while the user asked for ETH. Only the sell side direction was ever in doubt.
+    const data = encodeSingle(
+      params(1_000_000_000_000_000_000n, { tokenIn: MPGR, tokenOut: WETH, router: V4_MANAGER, unwrapNativeOut: true }),
+      [v4Hop(WETH)],
+    );
+    const r = inspect(data, 0n, intentContext({ fromAddress: MPGR, toAddress: WETH, nativeOut: true }));
+    expect(r.ok, r.ok ? "" : r.reason).toBe(true);
+    if (r.ok) {
+      // The intent exposes the unwrap flag and the WETH-normalised receive token; the
+      // user-facing "native ETH" lives on the transaction value/recipient side.
+      expect(r.value.unwrapNativeOut).toBe(true);
+      expect(lc(r.value.tokenOut)).toBe(lc(WETH));
+      expect(lc(r.value.tokenIn)).toBe(lc(MPGR));
+      expect(r.value.expectedFeeAmount * 10_000n).toBe(r.value.grossAmountIn * BigInt(r.value.feeBps));
+    }
+  });
+
+  it("accepts the same pool inside a multi-hop path, in the direction that used to fail", () => {
+    // MPGR -> WETH through the native pool, then WETH -> TOKEN_B through a v3 pool. The
+    // v4 hop is first and sells currency1, which is the regression, and the path shape
+    // proves the fix is not special-cased to a single hop.
+    const data = encodeSingle(params(1_000_000n, { tokenIn: MPGR, tokenOut: TOKEN_B, router: V4_MANAGER }), [
+      v4Hop(WETH),
+      hop({ kind: 2, router: UNI_V3_ROUTER, pool: POOL_AB, tokenOut: TOKEN_B, poolFee: 500 }),
+    ]);
+    const r = inspect(data, 0n, intentContext({ fromAddress: MPGR, toAddress: TOKEN_B }));
+    expect(r.ok, r.ok ? "" : r.reason).toBe(true);
+    if (r.ok) expect(r.value.hops).toBe(2);
+  });
+
+  it("still rejects a PoolKey for a DIFFERENT pair", () => {
+    const otherPair = { currency0: ZERO, currency1: TOKEN_C, fee: 0, tickSpacing: 200, hooks: HOOKS };
+    const data = encodeSingle(params(1_000_000n, { tokenIn: MPGR, tokenOut: WETH, router: V4_MANAGER }), [v4Hop(WETH, otherPair)]);
+    const r = inspect(data, 0n, intentContext({ fromAddress: MPGR, toAddress: WETH }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/do not match/i);
+  });
+
+  it("still rejects a PoolKey that shares one currency but not the other", () => {
+    // Right sell token, wrong receive token: one matching currency is not a match.
+    const halfRight = { currency0: ZERO, currency1: MPGR, fee: 3000, tickSpacing: 60, hooks: HOOKS };
+    const data = encodeSingle(params(1_000_000n, { tokenIn: MPGR, tokenOut: TOKEN_C, router: V4_MANAGER }), [v4Hop(TOKEN_C, halfRight)]);
+    const r = inspect(data, 0n, intentContext({ fromAddress: MPGR, toAddress: TOKEN_C }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/do not match/i);
+  });
+
+  it("still rejects a key that is not sorted, rather than accepting it in reverse", () => {
+    // Accepting either ORDER of match must not become accepting an unsorted key: the
+    // PoolManager hashes the key as given, so a reversed key names a different pool.
+    const reversed = { currency0: MPGR, currency1: ZERO, fee: 0, tickSpacing: 200, hooks: HOOKS };
+    const data = encodeSingle(params(1_000_000n, { tokenIn: MPGR, tokenOut: WETH, router: V4_MANAGER }), [v4Hop(WETH, reversed)]);
+    const r = inspect(data, 0n, intentContext({ fromAddress: MPGR, toAddress: WETH }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/currency0 < currency1/i);
+  });
+
+  it("rejects a key whose two currencies are the same asset once normalised", () => {
+    // address(0) against WETH is not a pool: both sides normalise to WETH.
+    const degenerate = { currency0: ZERO, currency1: WETH, fee: 0, tickSpacing: 200, hooks: HOOKS };
+    const data = encodeSingle(params(1_000_000n, { tokenIn: WETH, tokenOut: MPGR, router: V4_MANAGER }), [v4Hop(MPGR, degenerate)]);
+    const r = inspect(data, 0n, intentContext({ fromAddress: WETH, toAddress: MPGR }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/do not match/i);
+  });
+
+  it("rejects a v4 hop that puts a fee or spacing in the hop fields instead of the key", () => {
+    // _validateHop reverts unless the hop's own poolFee/tickSpacing/stable are zero,
+    // because the PoolKey carries them. Mirrored here so inspection cannot hand back
+    // calldata the sealed executor would reject.
+    for (const over of [{ poolFee: 3000 }, { tickSpacing: 200 }, { stable: true }]) {
+      const data = encodeSingle(params(1_000_000n, { tokenIn: MPGR, tokenOut: WETH, router: V4_MANAGER }), [v4Hop(WETH, nativeMpgrKey, over)]);
+      const r = inspect(data, 0n, intentContext({ fromAddress: MPGR, toAddress: WETH }));
+      expect(r.ok, JSON.stringify(over)).toBe(false);
+      if (!r.ok) expect(r.reason).toMatch(/PoolKey; the hop fields must be zero/i);
+    }
+  });
+});
+
 describe("v2 intent inspection — rejected shapes", () => {
   it("rejects a forged or skipped fee", () => {
     expect(inspect(encodeSingle(params(1_000_000n, { expectedFeeAmount: 0n }), [hop()])).ok).toBe(false);

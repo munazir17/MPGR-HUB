@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { Address, Hex } from "viem";
 import { prepareV2Execution, v2IntentId, type V2ExecutionReader } from "../execution";
 import { V2PreflightError } from "../preflight";
-import { V2_FEE_RECIPIENT, type V2Quote } from "../discovery";
+import { V2_FEE_RECIPIENT, V2QuoteError, type Pool, type V2Quote } from "../discovery";
 import { SWAP_V2_SEALED_MANIFEST } from "../deployment";
 import {
   TOKEN_A, TOKEN_B, WETH, TAKER, POOL_AB, POOL_AB_2, POOL_AC, POOL_CD, POOL_DB, TOKEN_C, TOKEN_D,
@@ -238,6 +238,116 @@ describe("prepareV2Execution — activated shape", () => {
       .rejects.toThrow(/minimum/i);
     await expect(prepareV2Execution(fakeReader({ simulated: null }), deployment, request(directQuote()), BLOCK))
       .rejects.toThrow(/no data/i);
+  });
+});
+
+/** MPGR, imported by address with no catalog entry. Its only Base liquidity is a Uniswap v4
+ * pool against NATIVE ETH, which the PoolManager sorted as currency0 = address(0) and
+ * currency1 = MPGR. The gross, fee, output and minimum below are the chain-verified numbers
+ * the fork proof produced for this leg at 1 MPGR (1e18): fee 2_500_000_000_000_000 is exactly
+ * 25 bps of gross, net output 5_997_618_925, and 100 bps of slippage on that is 5_937_642_735. */
+const MPGR = "0xb2000000000000000000008d204203177a78af01" as Address;
+const ZERO = "0x0000000000000000000000000000000000000000" as Address;
+const MPGR_GROSS = 1_000_000_000_000_000_000n;
+const MPGR_FEE = 2_500_000_000_000_000n;
+const MPGR_NET = MPGR_GROSS - MPGR_FEE;
+const MPGR_OUT = 5_997_618_925n;
+const MPGR_MIN = 5_937_642_735n;
+/** The real PoolKey, including the real hooks contract and the real 200 tick spacing. */
+const mpgrNativePool = () => v4Pool(ZERO, MPGR, 0, 200, HOOKS);
+
+describe("prepareV2Execution — the canary's MPGR leg, in both directions", () => {
+  it("sells MPGR into native ETH through a PoolKey whose currency1 is the sell token", async () => {
+    // This is the build the operator's private canary ran. Discovery found the pool and the
+    // executor simulated the hop, then independent inspection refused it — because it demanded
+    // currency0 be the sell token. A PoolKey is SORTED by the PoolManager, not directional:
+    // address(0) sorts below every ERC-20, so a native-side pool always names the token as
+    // currency1, and selling that token is the common case, not an edge case.
+    const quote: V2Quote = {
+      tokenIn: MPGR, tokenOut: WETH, gross: MPGR_GROSS, feeBps: 25, feeRecipient: V2_FEE_RECIPIENT,
+      fee: MPGR_FEE, net: MPGR_NET, amountOut: MPGR_OUT,
+      legs: [{ pools: [mpgrNativePool()], tokens: [MPGR, WETH], amountIn: MPGR_NET, amountOut: MPGR_OUT }],
+    };
+    const reader = fakeReader({ simulated: MPGR_OUT });
+    const swap = await prepareV2Execution(reader, deployment, request(quote, { nativeOut: true }), BLOCK);
+
+    // The fee invariant, on the real numbers: 25 bps of gross, once, before any split.
+    expect(swap.fee).toBe(MPGR_FEE);
+    expect(swap.fee * 10_000n).toBe(swap.intent.grossAmountIn * BigInt(swap.feeBps));
+    expect(swap.feeRecipient.toLowerCase()).toBe(V2_FEE_RECIPIENT.toLowerCase());
+    expect(swap.intent.swapAmountIn).toBe(MPGR_NET); // net is what routes; gross is what is charged
+    expect(swap.minimum).toBe(MPGR_MIN);
+    expect(swap.intent.amountOutMinimum).toBe(MPGR_MIN);
+
+    // Native OUT: the hop delivers WETH and the executor unwraps it, so no ETH goes in.
+    expect(swap.transaction.value).toBe(0n);
+    expect(swap.intent.unwrapNativeOut).toBe(true);
+    expect(swap.intent.tokenOut.toLowerCase()).toBe(WETH.toLowerCase());
+    expect(swap.intent.tokenIn.toLowerCase()).toBe(MPGR.toLowerCase());
+    expect(swap.entry).toBe("swapExactInput");
+    // Still only ever the sealed executor, even though the hop addresses the PoolManager.
+    expect(swap.transaction.to.toLowerCase()).toBe(deployment.executor.toLowerCase());
+    expect(swap.intent.paths[0][0].pool.toLowerCase()).not.toBe(swap.transaction.to.toLowerCase());
+
+    // The PoolKey survives inspection unchanged, and the hop fields stay zeroed because the
+    // key carries the fee and spacing — the contract reverts otherwise.
+    const hop = swap.intent.paths[0][0];
+    expect(hop.v4Key?.currency0).toBe(ZERO);
+    expect(hop.v4Key?.currency1.toLowerCase()).toBe(MPGR.toLowerCase());
+    expect(hop.v4Key?.tickSpacing).toBe(200);
+    expect(hop.poolFee).toBe(0);
+    expect(hop.tickSpacing).toBe(0);
+    expect(hop.stable).toBe(false);
+
+    // And the bytes that passed independent inspection are the bytes that were simulated,
+    // as the taker, at the pinned block: inspection cannot bless calldata that is not sent.
+    expect(reader.callArgs).toHaveLength(1);
+    expect(reader.callArgs[0].data.toLowerCase()).toBe(swap.transaction.data.toLowerCase());
+    expect(reader.callArgs[0].account.toLowerCase()).toBe(TAKER.toLowerCase());
+    expect(reader.callArgs[0].to.toLowerCase()).toBe(deployment.executor.toLowerCase());
+    expect(reader.callArgs[0].blockNumber).toBe(BLOCK.number);
+    expect(reader.callArgs[0].value).toBe(0n);
+    expect(swap.executionSimulation).toBe("eth-call-succeeded-no-settlement-proof");
+  });
+
+  it("buys MPGR with native ETH through the same PoolKey", async () => {
+    // The mirror leg. Amounts here are fixture values, not chain facts: what is
+    // chain-verified is the PoolKey, which is identical in both directions.
+    const gross = 1_000_000n, fee = (gross * 25n) / 10_000n;
+    const quote: V2Quote = {
+      tokenIn: WETH, tokenOut: MPGR, gross, feeBps: 25, feeRecipient: V2_FEE_RECIPIENT,
+      fee, net: gross - fee, amountOut: 1000n,
+      legs: [{ pools: [mpgrNativePool()], tokens: [WETH, MPGR], amountIn: gross - fee, amountOut: 1000n }],
+    };
+    const swap = await prepareV2Execution(fakeReader({ simulated: 1000n }), deployment, request(quote, { nativeIn: true }), BLOCK);
+    expect(swap.transaction.value).toBe(gross);
+    expect(swap.intent.nativeIn).toBe(true);
+    expect(swap.intent.unwrapNativeOut).toBe(false);
+    expect(swap.intent.tokenOut.toLowerCase()).toBe(MPGR.toLowerCase());
+    expect(swap.intent.paths[0][0].v4Key?.currency0).toBe(ZERO);
+  });
+
+  it("refuses a PoolKey for a different pair before any calldata is built or simulated", async () => {
+    // The fix widens ORDER, never membership — and membership is refused twice, at two
+    // independent layers. This is the FIRST: quote validation rejects a pool whose own
+    // PoolKey disagrees with its token0/token1, so no calldata is ever built and nothing is
+    // ever simulated. The SECOND layer, inspection comparing the encoded key against the
+    // hop's sell and receive tokens in either order, is exercised directly in intent.test.ts,
+    // which is where a wrong-ORDER key can actually be constructed.
+    const lyingPool: Pool = {
+      ...v4Pool(ZERO, MPGR, 0, 200, HOOKS),
+      v4Key: { currency0: ZERO, currency1: TOKEN_C, fee: 0, tickSpacing: 200, hooks: HOOKS },
+    };
+    const quote: V2Quote = {
+      tokenIn: MPGR, tokenOut: WETH, gross: MPGR_GROSS, feeBps: 25, feeRecipient: V2_FEE_RECIPIENT,
+      fee: MPGR_FEE, net: MPGR_NET, amountOut: MPGR_OUT,
+      legs: [{ pools: [lyingPool], tokens: [MPGR, WETH], amountIn: MPGR_NET, amountOut: MPGR_OUT }],
+    };
+    const reader = fakeReader({ simulated: MPGR_OUT });
+    await expect(prepareV2Execution(reader, deployment, request(quote, { nativeOut: true }), BLOCK))
+      .rejects.toSatisfy((error: unknown) => error instanceof V2QuoteError && error.code === "FEE_POLICY_INVALID");
+    expect(reader.calls).toBe(0); // failed closed before a single simulated byte existed
+    expect(reader.callArgs).toHaveLength(0);
   });
 });
 

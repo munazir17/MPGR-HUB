@@ -114,8 +114,34 @@ function validatePath(path: readonly RawHop[], tokenIn: Address, tokenOut: Addre
       if (!key || !isAddressLike(key.currency0) || !isAddressLike(key.currency1)) return "A v4 hop requires a full PoolKey.";
       if (BigInt(key.currency0) >= BigInt(key.currency1)) return "A v4 PoolKey must order currency0 < currency1.";
       if (!Number.isInteger(key.tickSpacing) || key.tickSpacing <= 0 || key.tickSpacing > 32767) return "A v4 PoolKey tickSpacing is out of range.";
-      if (!eq(norm(key.currency0), norm(input)) || !eq(norm(key.currency1), hop.tokenOut.toLowerCase())) {
+      // A PoolKey is SORTED, NOT DIRECTIONAL. `currency0 < currency1` is an identity
+      // convention the PoolManager hashes, not a trade direction, so requiring
+      // currency0 to be the sell token rejected every native-side v4 pool sold the
+      // "wrong" way round: address(0) sorts below every ERC-20, which makes the token
+      // currency1 in every such pool, and selling that token is a perfectly ordinary
+      // swap the deployed executor simulates and settles fine.
+      //
+      // This mirrors MPGRSwapExecutorV2._validateHop exactly:
+      //   address c0 = k.currency0 == address(0) ? address(WETH) : k.currency0;
+      //   if (!((tokenIn == c0 && h.tokenOut == c1) || (tokenIn == c1 && h.tokenOut == c0)))
+      //       revert InvalidPath();
+      // so the two normalised currencies must be exactly this hop's sell and receive
+      // tokens, in EITHER order — and a key for a different pair still fails.
+      const c0 = norm(key.currency0), c1 = norm(key.currency1);
+      const sell = norm(input), receive = norm(hop.tokenOut);
+      // A key whose two currencies normalise to the same asset (address(0) against WETH)
+      // is not a pool at all, and neither is a hop that sells and receives one asset.
+      if (eq(c0, c1) || eq(sell, receive)) return "The v4 PoolKey currencies do not match this hop's sell and receive tokens.";
+      const forward = eq(c0, sell) && eq(c1, receive);
+      const reverse = eq(c1, sell) && eq(c0, receive);
+      if (!forward && !reverse) {
         return "The v4 PoolKey currencies do not match this hop's sell and receive tokens.";
+      }
+      // The PoolKey carries the real tier and spacing, so the hop's own flat fields must
+      // be zeroed — also mirrored from _validateHop, which reverts otherwise. Without
+      // this the inspection could hand back calldata the sealed executor rejects.
+      if (hop.poolFee !== 0 || hop.tickSpacing !== 0 || hop.stable) {
+        return "A v4 hop carries its fee and tick spacing in the PoolKey; the hop fields must be zero.";
       }
     } else {
       if (eq(hop.pool, hop.router) || eq(hop.pool, venue.factory)) return "A pool cannot be the router or factory itself.";

@@ -14,8 +14,8 @@
 //
 // THE TWO SWAPS THE OPERATOR SIGNS (tiny size, their own wallet, their own gas):
 //
-//   1. USDC 0x833589fCD6eDb6E08f4c7C32D4F71b54bdA02913 -> WETH, 1.00 USDC (1000000 raw)
-//   2. MPGR 0xB200000000000000000000008d204203177a78AF01 -> native ETH, 1 MPGR (1e18 raw)
+//   1. USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 -> WETH, 1.00 USDC (1000000 raw)
+//   2. MPGR 0xB2000000000000000000008d204203177a78AF01 -> native ETH, 1 MPGR (1e18 raw)
 //      (1 MPGR is the same size the fork proof executes, so the canary and the fork
 //      evidence are directly comparable.)
 //
@@ -62,8 +62,16 @@ const WALLET = (process.env.CANARY_WALLET ?? "").trim();
 const VERIFY_TX = (process.env.CANARY_VERIFY_TX ?? "").trim();
 const RPC_URL = process.env.BASE_MAINNET_RPC_URL ?? "https://mainnet.base.org";
 
-const USDC = "0x833589fCD6eDb6E08f4c7C32D4F71b54bdA02913" as Address;
-const MPGR = "0xB200000000000000000000008d204203177a78AF01" as Address;
+/** Native USDC on Base. Spelled in viem's own EIP-55 form: a single wrong case in a
+ * checksummed literal makes viem throw inside the address encoder, which an operator
+ * reads as "the swap failed" when nothing was ever attempted. */
+const USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Address;
+/** MPGR, imported by address. This literal is the chain-verified `currency1` from the pool's
+ * own Initialize log (docs/proofs/swap-v2-base-fork-*.md) and the same address
+ * COVERAGE_MPGR, rpc-v4.test.ts and fork-fixture-discovery.test.ts already use. It is 40 hex
+ * characters: viem rejects anything else, and the guard test below fails the build if a
+ * digit is ever added or dropped here. */
+const MPGR = "0xB2000000000000000000008d204203177a78AF01" as Address;
 const EXECUTOR = SWAP_V2_SEALED_MANIFEST.executor;
 const TREASURY = SWAP_V2_SEALED_MANIFEST.feeRecipient;
 const CHAIN_TIMEOUT_MS = 240_000;
@@ -97,6 +105,25 @@ describe("the canary harness holds no signing material", () => {
     // from fragments for the same reason as everything else in this test.
     const envPattern = new RegExp(`process\\.env\\.[A-Z_]*(${["KEY", "MNE" + "MONIC", "SEED"].join("|")})`);
     expect(source).not.toMatch(envPattern);
+  });
+});
+
+describe("the canary names real addresses", () => {
+  it("uses valid, chain-verified addresses for both legs", () => {
+    // Always on: an invalid literal here would make the operator's armed run die inside
+    // viem's address encoder instead of building a swap, which reads as a routing failure
+    // and is not one. The expected values are the ones the fork proof read off-chain —
+    // MPGR from the pool's Initialize log, USDC and the treasury from the sealed manifest.
+    for (const [label, value] of [["USDC", USDC], ["MPGR", MPGR], ["EXECUTOR", EXECUTOR], ["TREASURY", TREASURY]] as const) {
+      expect(isAddress(value), `${label} is not a valid 20-byte address: ${value}`).toBe(true);
+    }
+    expect(MPGR.toLowerCase()).toBe("0xb2000000000000000000008d204203177a78af01");
+    expect(USDC.toLowerCase()).toBe("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913");
+    expect(TREASURY.toLowerCase()).toBe("0x96f7fb5c4277bd1190fb6ef4820ebc96ba6964a4");
+    expect(MPGR.toLowerCase()).not.toBe(USDC.toLowerCase());
+    // A native-side v4 pool sorts address(0) first, so MPGR is currency1 — the direction
+    // this canary leg exercises. Asserted here so the runbook's own claim stays honest.
+    expect(SWAP_V2_WETH.toLowerCase()).toBe("0x4200000000000000000000000000000000000006");
   });
 });
 
