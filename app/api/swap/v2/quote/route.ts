@@ -16,6 +16,8 @@ import { swapV2QuoteSource } from "@/lib/swap/v2/rpc-source";
 import { swapV2Executor } from "@/lib/swap/v2/deployment";
 import { prepareV2Execution, serializeV2Swap, type V2ExecutionReader } from "@/lib/swap/v2/execution";
 import { V2PreflightError } from "@/lib/swap/v2/preflight";
+import { erc20AllowanceOverride, readErc20Allowance, type AllowanceClient } from "@/lib/swap/v2/simulation-allowance";
+import type { StateOverride } from "viem";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 /** Same lifetime discipline as the V1 path surface: a quote is short-lived and
@@ -23,6 +25,16 @@ export const dynamic = "force-dynamic";
 const V2_QUOTE_DEADLINE_SECONDS = 180;
 const stringify = (value: unknown) =>
   JSON.parse(JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)));
+
+function readerWithAllowance(reader: V2ExecutionReader, stateOverride: StateOverride): V2ExecutionReader {
+  return new Proxy(reader, {
+    get(target, prop, receiver) {
+      if (prop === "call") return (args: object) => (target.call as (args: object) => Promise<{ data: `0x${string}` | null }>)({ ...args, stateOverride });
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 export async function POST(request: Request) {
   const reply = (value: unknown, status = 200) => NextResponse.json(value, { status, headers: { "Cache-Control": "no-store" } });
   const origin = verifyTrustedOrigin(request); if (origin) return origin;
@@ -65,15 +77,28 @@ export async function POST(request: Request) {
     const nativeIn = isNativeEthSentinel(p.from.address);
     const nativeOut = isNativeEthSentinel(p.to.address);
     const deadline = BigInt(Math.floor(Date.now() / 1000) + V2_QUOTE_DEADLINE_SECONDS);
+    const baseReader = client as unknown as V2ExecutionReader;
+    const allowance = nativeIn ? null : await readErc20Allowance(client as unknown as AllowanceClient, p.from.address as Address, p.taker as Address, deployment.executor, block.number);
+    const needsApproval = allowance !== null && allowance < BigInt(p.fromAmount);
+    const override = needsApproval ? await erc20AllowanceOverride(client as unknown as AllowanceClient, p.from.address as Address, p.taker as Address, deployment.executor, block.number) : undefined;
+    const reader = override ? readerWithAllowance(baseReader, override) : baseReader;
     let swap;
+    const prepare = (fundedReader: V2ExecutionReader, quoteWithoutFunding = false) => prepareV2Execution(fundedReader, deployment, {
+      quote: q, taker: p.taker as Address, slippageBps: p.slippageBps, deadline, nativeIn, nativeOut,
+    }, { number: block.number, hash: block.hash, timestamp: BigInt(block.timestamp) }, quoteWithoutFunding ? { quoteWithoutFunding: true } : undefined);
     try {
-      swap = await prepareV2Execution(client as unknown as V2ExecutionReader, deployment, {
-        quote: q, taker: p.taker as Address, slippageBps: p.slippageBps, deadline, nativeIn, nativeOut,
-      }, { number: block.number, hash: block.hash, timestamp: BigInt(block.timestamp) });
+      swap = await prepare(reader);
     } catch (error) {
       if (error instanceof V2PreflightError) return reply({ code: error.code, error: error.message }, error.status);
       if (error instanceof V2QuoteError) return reply({ code: error.code, error: error.message }, error.code === "DISCOVERY_UNAVAILABLE" ? 503 : 422);
-      return reply({ code: "EXECUTION_UNAVAILABLE", error: "The V2 executor could not verify this route. No swap was prepared." }, 503);
+      if (!needsApproval) return reply({ code: "EXECUTION_UNAVAILABLE", error: "The V2 executor could not verify this route. No swap was prepared." }, 503);
+      try {
+        swap = await prepare(baseReader, true);
+      } catch (again) {
+        if (again instanceof V2PreflightError) return reply({ code: again.code, error: again.message }, again.status);
+        if (again instanceof V2QuoteError) return reply({ code: again.code, error: again.message }, again.code === "DISCOVERY_UNAVAILABLE" ? 503 : 422);
+        return reply({ code: "EXECUTION_UNAVAILABLE", error: "The V2 executor could not verify this route. No swap was prepared." }, 503);
+      }
     }
     // The block must still be the one the simulation was pinned to.
     if ((await client.getBlock({ blockNumber: block.number })).hash !== block.hash) return reply({ code: "QUOTE_CHANGED" }, 409);

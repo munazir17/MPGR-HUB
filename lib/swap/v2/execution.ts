@@ -52,7 +52,7 @@ export interface V2ExecutableSwap {
   posture: V2Posture;
   blockNumber: bigint;
   blockHash: Hex;
-  executionSimulation: "eth-call-succeeded-no-settlement-proof";
+  executionSimulation: "eth-call-succeeded-no-settlement-proof" | "quoted-before-approval";
   entry: V2SwapIntent["entry"];
 }
 
@@ -89,6 +89,7 @@ export async function prepareV2Execution(
   deployment: SwapV2ExecutorDeployment,
   request: V2ExecutionRequest,
   block: { number: bigint; hash: Hex; timestamp?: bigint },
+  options?: { quoteWithoutFunding?: boolean },
 ): Promise<V2ExecutableSwap> {
   const { quote, taker, slippageBps, deadline, nativeIn, nativeOut } = request;
   // Re-validate the quote's own invariants (single gross fee, leg allocation,
@@ -102,13 +103,21 @@ export async function prepareV2Execution(
   const intentId = v2IntentId(deployment, quote, taker, slippageBps, block);
   const built = buildV2Transaction(quote, deployment.executor, taker, deadline, slippageBps, nativeIn, nativeOut, intentId);
 
-  const simulated = await reader.call({
-    account: taker, to: deployment.executor, data: built.data, value: built.value, blockNumber: block.number,
-  });
-  if (!simulated.data) throw new Error("V2 executor simulation returned no data; no swap was prepared.");
-  const simulatedOut = BigInt(simulated.data);
-  if (simulatedOut < built.minimum) throw new Error("V2 executor simulation did not satisfy the committed minimum; no swap was prepared.");
-  if (simulatedOut < quote.amountOut) throw new Error("V2 executor simulation returned less than the quoted output; no swap was prepared.");
+  // Missing ERC-20 approval makes eth_call revert before the route can be
+  // shown. The quoted output is still the number the user has to review;
+  // the wallet approves, then simulates the same calldata for real.
+  let executionSimulation: V2ExecutableSwap["executionSimulation"] = "eth-call-succeeded-no-settlement-proof";
+  if (options?.quoteWithoutFunding) {
+    executionSimulation = "quoted-before-approval";
+  } else {
+    const simulated = await reader.call({
+      account: taker, to: deployment.executor, data: built.data, value: built.value, blockNumber: block.number,
+    });
+    if (!simulated.data) throw new Error("V2 executor simulation returned no data; no swap was prepared.");
+    const simulatedOut = BigInt(simulated.data);
+    if (simulatedOut < built.minimum) throw new Error("V2 executor simulation did not satisfy the committed minimum; no swap was prepared.");
+    if (simulatedOut < quote.amountOut) throw new Error("V2 executor simulation returned less than the quoted output; no swap was prepared.");
+  }
 
   const inspected = inspectV2SwapTransaction(
     { to: built.to, data: built.data, value: built.value },
@@ -129,7 +138,7 @@ export async function prepareV2Execution(
     minimum: built.minimum, quotedOut: quote.amountOut, fee: quote.fee,
     feeBps: posture.feeBps, feeRecipient: posture.feeRecipient, intentId,
     intent: inspected.value, posture, blockNumber: block.number, blockHash: block.hash,
-    executionSimulation: "eth-call-succeeded-no-settlement-proof",
+    executionSimulation,
     entry: inspected.value.entry,
   };
 }

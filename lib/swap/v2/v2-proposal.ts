@@ -102,7 +102,7 @@ export function swapV2ProposalFromResponse(
     if (typeof response.deadline !== "string" || !ATOMIC.test(response.deadline) || response.deadline === "0") return null;
     if (typeof response.blockNumber !== "string" || !ATOMIC.test(response.blockNumber)) return null;
     if (typeof response.blockHash !== "string" || !HASH32.test(response.blockHash)) return null;
-    if (response.executionSimulation !== "eth-call-succeeded-no-settlement-proof") return null;
+    if (response.executionSimulation !== "eth-call-succeeded-no-settlement-proof" && response.executionSimulation !== "quoted-before-approval") return null;
     if (typeof response.settlementNote !== "string" || response.settlementNote.length === 0) return null;
     if (response.entry !== "swapExactInput" && response.entry !== "swapExactInputSplit") return null;
 
@@ -170,7 +170,7 @@ export function swapV2ProposalFromResponse(
       blockNumber: response.blockNumber,
       blockHash: response.blockHash as Hex,
       calldataHash: keccak256(tx.data as Hex),
-      executionSimulation: "eth-call-succeeded-no-settlement-proof",
+      executionSimulation: response.executionSimulation,
       settlementNote: response.settlementNote,
     };
 

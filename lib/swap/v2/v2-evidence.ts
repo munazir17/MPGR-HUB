@@ -33,7 +33,7 @@ export interface SwapV2RoutingEvidence {
   blockNumber: string;
   blockHash: Hex;
   calldataHash: Hex;
-  executionSimulation: "eth-call-succeeded-no-settlement-proof";
+  executionSimulation: "eth-call-succeeded-no-settlement-proof" | "quoted-before-approval";
   settlementNote: string;
 }
 
@@ -67,6 +67,6 @@ export function swapV2RoutingEvidenceValid(p: TradeProposal, e: SwapV2RoutingEvi
   if (new Set(e.pools.map((x) => x.toLowerCase())).size !== e.pools.length) return false;
   if (!/^\d+$/.test(e.blockNumber) || !HASH32.test(e.blockHash)) return false;
   if (!p.transaction || e.calldataHash !== keccak256(p.transaction.data)) return false;
-  if (e.executionSimulation !== "eth-call-succeeded-no-settlement-proof") return false;
+  if (e.executionSimulation !== "eth-call-succeeded-no-settlement-proof" && e.executionSimulation !== "quoted-before-approval") return false;
   return typeof e.settlementNote === "string" && e.settlementNote.length > 0;
 }
