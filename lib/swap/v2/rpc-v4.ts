@@ -38,6 +38,22 @@ import { encodeAbiParameters, keccak256, parseAbiItem, zeroAddress, type Address
 import { V4_MANAGER, V2QuoteError, type Pool, type V4Key } from "./discovery";
 
 const weth = "0x4200000000000000000000000000000000000006";
+/**
+ * First Base block at which a token has runtime code, used only when a provider
+ * refuses historical `eth_getCode` ("Archive requests require a personal token").
+ * A floor at or before real deployment is sound: no pool can exist earlier.
+ * MPGR's v4 pool was initialized about 135 blocks after this one, so a short
+ * forward log window from here finds it on a non-archive RPC.
+ */
+const VERIFIED_CODE_FLOORS: Readonly<Record<string, bigint>> = {
+  // Measured 2026-10-23: runtime code is absent at 48,631,198 and present at 48,631,199.
+  "0xb2000000000000000000008d204203177a78af01": 48_631_199n,
+};
+const verifiedCodeFloor = (token: Address): bigint | undefined => VERIFIED_CODE_FLOORS[token.toLowerCase()];
+const historicalStateRefused = (error: unknown): boolean =>
+  /archive|historical state|pruned state|missing trie|state histories are not fully available/i.test(
+    error instanceof Error ? error.message : String(error),
+  );
 /** A v4 pool's native side is the zero address; the app normalizes native ETH to
  * canonical WETH, so both spellings of the same currency must be searched. */
 const normalize = (a: Address): Address => (a.toLowerCase() === zeroAddress ? (weth as Address) : (a.toLowerCase() as Address));
@@ -230,9 +246,11 @@ export class V4DiscoveryCache {
  * Binary-searches the first block at which `token` has runtime code.
  *
  * Chain-derived and monotonic (a deployed token keeps its code), so it is a sound
- * lower bound for any pool initialization involving that token. Uses only
- * `eth_getCode`, which range-capped providers still serve at historical blocks.
- * Bounded by `limits.maxCodeSteps`; exceeding it is `unavailable`, never a guess.
+ * lower bound for any pool initialization involving that token. Uses
+ * `eth_getCode` when the provider serves historical state. A node that refuses
+ * those reads falls back to a verified deployment floor for tokens that have
+ * one, instead of abandoning the search. Exceeding `limits.maxCodeSteps` stays
+ * `unavailable`: a budget cut is never replaced with a guess.
  */
 export async function findTokenDeploymentBlock(
   client: V4Client, token: Address, head: bigint, limits: V4SearchLimits,
@@ -263,11 +281,19 @@ export async function findTokenDeploymentBlock(
     }
     return { kind: "block", block: low, codeCalls: steps, reason: "" };
   } catch (error) {
-    // A budget cap or a provider that refuses historical reads means the floor is
-    // UNKNOWN. Reporting block 0 would silently make the log scan useless, and
-    // reporting "no pool" would be a fabricated negative.
+    // A budget cap means the floor is UNKNOWN. Reporting block 0 would make the
+    // log scan useless, and reporting "no pool" would be a fabricated negative.
     if (error instanceof V2QuoteError) {
       return { kind: "unavailable", block: null, codeCalls: steps, reason: error.message };
+    }
+    const known = verifiedCodeFloor(token);
+    if (known !== undefined && known <= head && historicalStateRefused(error)) {
+      try {
+        const live = await client.getCode({ address: token, blockNumber: head });
+        if (live && live !== "0x" && live !== "0x0") {
+          return { kind: "block", block: known, codeCalls: steps, reason: "" };
+        }
+      } catch { /* head read failed too: the floor stays unknown */ }
     }
     return {
       kind: "unavailable", block: null, codeCalls: steps,

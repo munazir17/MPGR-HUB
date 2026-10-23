@@ -126,6 +126,13 @@ function extractStatusAndCode(error: unknown): {
 export function classifyBaseRpcFailure(error: unknown): BaseRpcFailureKind {
   const { status, code, name, message } = extractStatusAndCode(error);
 
+  // Historical state on a non-archive node is that node's limit, not a bad
+  // request. Stopping the fallback chain here is how a publicnode archive
+  // refusal hides an endpoint that can still answer eth_getCode.
+  if (/archive request|historical state|pruned state|missing trie|state histories are not fully available/i.test(message)) {
+    return "server_error";
+  }
+
   if (DETERMINISTIC_RANGE_OR_SIZE_RE.test(message)) {
     return "invalid_request";
   }

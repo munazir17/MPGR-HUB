@@ -570,7 +570,7 @@ export async function executeTrade(
             value: 0n,
           });
           onChange({ state: "APPROVING", approvalHash, swapHash: null, error: null, stepLabel: "Waiting for the approval receipt…" });
-          const receipt = await waitForTransactionReceipt(config, { hash: approvalHash, chainId: TRADE_CHAIN_ID });
+          const receipt = await waitForTransactionReceipt(config, { hash: approvalHash, chainId: TRADE_CHAIN_ID, pollingInterval: 1_000 });
           if (input.safety) {
             if (!receipt.transactionHash || receipt.from?.toLowerCase() !== account.toLowerCase() || receipt.to?.toLowerCase() !== proposal.from.address.toLowerCase()) {
               const snapshot = { ...fail("PROVIDER_ERROR", "Approval receipt does not match the quoted wallet and token. Check status; no swap was submitted."), approvalHash };
@@ -671,7 +671,7 @@ export async function executeTrade(
       stepLabel: "Waiting for Base confirmation…",
     });
 
-    const receipt = await waitForTransactionReceipt(config, { hash: swapHash, chainId: TRADE_CHAIN_ID });
+    const receipt = await waitForTransactionReceipt(config, { hash: swapHash, chainId: TRADE_CHAIN_ID, pollingInterval: 1_000 });
     if (receipt.status !== "success") {
       const snapshot = fail("SEND_FAILED", "The swap transaction failed on Base.");
       onChange({ ...snapshot, approvalHash, swapHash });

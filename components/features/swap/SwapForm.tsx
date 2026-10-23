@@ -42,11 +42,11 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
   const [riskAcked, setRiskAcked] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
   // BUY/SELL symmetry. While V2 routing is activated, probe the REVERSE direction
-  // with the existing read-only liquidity inspection so the risk panel can say
-  // whether this token can be sold again. Unknown stays unknown: a partial or
-  // failed probe is never reported as "no reverse route", because that would
-  // invent a risk signal. While V2 is dormant no probe runs at all, so live V1
-  // behaviour and its risk warnings are bit-identical to before.
+  // with the existing read-only liquidity inspection. That inspector only sees
+  // getter-backed v2/v3 venues, so an empty result is NOT proof the token cannot
+  // be sold — MPGR's pool is Uniswap v4 and would otherwise raise a false
+  // "no reverse route" warning. A positive path can still clear the warning.
+  // Unknown stays unknown. While V2 is dormant no probe runs at all.
   const [v2Activated, setV2Activated] = useState(false);
   // The probe result is stored WITH the pair it describes, and the value actually
   // used is derived during render. A result for a different pair is simply
@@ -61,7 +61,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     const controller = new AbortController(); let cancelled = false;
     // setState only ever runs in the async callback, never in the effect body.
     inspectSwapLiquidity(proposal.to.address, proposal.from.address, controller.signal)
-      .then(r => { if (!cancelled) setSellSideProbe({ key, value: r.partial ? null : r.paths.length > 0 }); })
+      .then(r => { if (!cancelled) setSellSideProbe({ key, value: !r.partial && r.paths.length > 0 ? true : null }); })
       .catch(() => { if (!cancelled) setSellSideProbe({ key, value: null }); });
     return () => { cancelled = true; controller.abort(); };
   }, [v2Activated, proposal, sellSideKey]);
@@ -160,8 +160,8 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
       <div className={`flex items-center gap-2 ${expanded ? "flex-wrap" : ""}`}>
         {/* Recreate the native edit control after modal focus restoration; its exact value stays in React state. */}
         <textarea key={`${side}:${reviewOpen}`} rows={expanded ? Math.ceil(amountValue.length / 24) : 1} wrap="soft" aria-label={isPay ? "You pay amount" : "You receive amount"} readOnly={!isPay} inputMode="decimal" autoComplete="off" maxLength={90}
-          className={`min-h-12 min-w-0 w-full flex-1 resize-none overflow-hidden bg-transparent text-[clamp(1rem,4.8vw,1.85rem)] font-medium tracking-tight outline-none placeholder:text-zinc-600 ${expanded ? "basis-full" : ""} ${!isPay ? "text-zinc-200" : "text-white"}`}
-          style={{ lineHeight: "1.3", fontSize: `${Math.max(0.85, 1.85 - Math.max(0, amountValue.length - 8) * 0.045)}rem` }}
+          className={`min-h-12 min-w-0 w-full flex-1 resize-none overflow-hidden bg-transparent text-[clamp(1rem,4.8vw,1.85rem)] font-medium tracking-tight outline-none focus:outline-none focus-visible:outline-none placeholder:text-zinc-600 ${expanded ? "basis-full" : ""} ${!isPay ? "text-zinc-200" : "text-white"}`}
+          style={{ lineHeight: "1.3", outline: "none", fontSize: `${Math.max(0.85, 1.85 - Math.max(0, amountValue.length - 8) * 0.045)}rem` }}
           value={amountValue} placeholder={isPay ? "0.00" : busy ? "Quoting…" : "—"}
           onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); if (isPay) e.currentTarget.form?.requestSubmit(); } }}
           onChange={isPay ? e => edit({ amount: e.target.value }) : undefined} />
