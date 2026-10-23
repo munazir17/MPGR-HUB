@@ -9,6 +9,7 @@ import {
   getTapeSnapshot,
   groupPairsByToken,
   resetTapeCache,
+  roundFromCallResult,
   selectTapeDexPair,
   type DexScreenerPairLike,
   type TapeSourceDeps,
@@ -31,6 +32,21 @@ function makeDeps(
     ...deps,
   };
 }
+
+describe("roundFromCallResult", () => {
+  it("reads a viem tuple array and a named latestRoundData object", () => {
+    expect(roundFromCallResult([1n, 21457000000n, 2n, 1792732172n, 1792732172n])).toEqual({
+      answer: "21457000000",
+      updatedAt: 1792732172,
+    });
+    expect(roundFromCallResult({ answer: 21457000000n, updatedAt: 1792732172n })).toEqual({
+      answer: "21457000000",
+      updatedAt: 1792732172,
+    });
+    expect(roundFromCallResult(null)).toBeNull();
+    expect(roundFromCallResult({ answer: "nope" })).toBeNull();
+  });
+});
 
 describe("selectTapeDexPair", () => {
   const token = "0xb200000000000000000000C2e324d24d7eEcd1fb";
@@ -200,6 +216,30 @@ describe("buildTapeSnapshot (injected deps, no network)", () => {
     expect(entry.stale).toBe(true); // no dex leg either
     expect(entry.premiumBps).toBeNull();
     expect(entry.feedUpdatedAt).toBe(frozenUpdatedAt);
+  });
+
+  it("does not call a live DEX price stale just because the equity heartbeat is old", async () => {
+    const frozenUpdatedAt = Math.floor(now / 1000) - 72 * 3600;
+    const deps = makeDeps({
+      now,
+      fetchDexPairs: vi.fn(async () => [
+        {
+          chainId: "base",
+          dexId: "aerodrome",
+          baseToken: { address: aapl.address },
+          quoteToken: { address: BASE_USDC },
+          priceUsd: "341.05",
+          priceChange: { h24: 1.54 },
+          liquidity: { usd: 1_400_000 },
+        },
+      ]),
+      readFeedRound: vi.fn(async () => ({ answer: "33936000000", updatedAt: frozenUpdatedAt })),
+    });
+    const snapshot = await buildTapeSnapshot(deps);
+    const entry = snapshot.stocks.find((s) => s.symbol === "AAPLc")!;
+    expect(entry.usdDex).toBeCloseTo(341.05, 2);
+    expect(entry.feedStale).toBe(true);
+    expect(entry.stale).toBe(false);
   });
 
   it("surfaces the on-chain pause flag and a failed read as null", async () => {

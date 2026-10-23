@@ -75,9 +75,12 @@ function stockToChip(entry: TapeStockEntry): TapeChipModel {
     symbol: entry.symbol,
     // The DEX leg is what a swap actually executes against; fall back
     // to the official feed when the DEX price is unavailable.
+    // `entry.stale` is already "no fresh source at all". A frozen
+    // Chainlink heartbeat (feedStale) must not paint a live DEX price
+    // with the word "stale".
     usd: entry.usdDex ?? entry.usdFeed,
     change24h: entry.change24h,
-    stale: entry.stale || entry.feedStale,
+    stale: entry.stale,
   };
 }
 
