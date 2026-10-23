@@ -46,7 +46,7 @@ function quotedCost(proposal: TradeProposal, value: { amount: string; token: str
 
 export function formatTradeReview(proposal: TradeProposal): string {
   if (proposal.executionAvailable === false) return NO_BASE_ROUTE;
-  if (!proposal.from || !proposal.to) return "Review the swap in the confirm window. Nothing is signed until you confirm.";
+  if (!proposal.from || !proposal.to) return "Review the swap details before confirming. Nothing is signed or submitted until you explicitly confirm in your wallet.";
   const fee = proposal.agentFee;
   const feeLine = fee?.status === "applied"
     ? `fee ${amount(fee.amountAtomic, proposal.from)}${fee.bps !== null ? ` (${fee.bps / 100}%)` : ""}`
