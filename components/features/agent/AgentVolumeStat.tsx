@@ -10,10 +10,12 @@ interface AgentStats {
 
 function formatUsd(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "—";
+  const small = value > 0 && value < 1000;
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: 0,
+    maximumFractionDigits: value >= 1000 ? 0 : 2,
+    minimumFractionDigits: small ? 2 : 0,
     notation: value >= 1_000_000 ? "compact" : "standard",
   }).format(value);
 }
@@ -45,7 +47,7 @@ export function AgentVolumeStat() {
     <div
       className="mx-auto flex w-fit max-w-full items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.025] px-5 py-3"
       data-testid="agent-volume-stat"
-      aria-label="MPGR Agent total value traded"
+      aria-label="Total value traded on MPGR Hub"
     >
       <div className="text-right leading-none">
         <div className="text-xl font-semibold tracking-[-0.025em] text-white md:text-2xl">

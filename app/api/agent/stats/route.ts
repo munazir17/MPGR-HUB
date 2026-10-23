@@ -7,6 +7,8 @@ import { getTradePublicClient } from "@/lib/trade/trade-public-client";
 import { getRedis } from "@/lib/api/redis";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, BASE_MAINNET_USDC } from "@/lib/executor/executor-config";
 import { VERIFIED_HISTORICAL_AGENT_TRADES } from "@/lib/agent/agent-volume-history";
+import { checkpointAnchor } from "@/lib/agent/hub-volume-checkpoint";
+import { anchorFromCursor, settleHubVolume, type VolumeAnchor } from "@/lib/agent/hub-volume";
 
 // Public "total value traded" analytics for the Agent panel.
 //
@@ -60,6 +62,9 @@ export const maxDuration = 60;
 const CACHE_KEY = "mpgr:agent:stats:v2";
 const NEGATIVE_KEY = "mpgr:agent:stats:unavailable:v1";
 const LOCK_KEY = "mpgr:agent:stats:lock:v1";
+const HUB_CURSOR_KEY = "mpgr:hub:volume:v1";
+const HUB_CURSOR_TTL_SECONDS = 30 * 24 * 60 * 60;
+const HUB_STALE_MS = 6 * 60 * 60 * 1000;
 const CACHE_TTL_SECONDS = 60;
 // Lease lifetime in seconds (SET EX). Must exceed SCAN_BUDGET_MS so a live scan
 // cannot outlive its lease under normal operation.
@@ -508,10 +513,112 @@ async function refresh(): Promise<Stats | null> {
 // In-process single-flight: concurrent cold-cache requests on one instance
 // await the same scan instead of each starting a full one.
 let inflight: Promise<Stats | null> | null = null;
+let hubInflight: Promise<Stats | null> | null = null;
+
+interface StoredHubCursor {
+  throughBlock: number;
+  totalUsdcAtomic: string;
+  tradeCount: number;
+  seedTxHashes?: string[];
+  updatedAt?: number;
+}
+
+function statsFromAnchor(anchor: VolumeAnchor): Stats | null {
+  if (anchor.totalUsdcAtomic > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return {
+    available: true,
+    totalValueTradedUsd: Number(anchor.totalUsdcAtomic) / 1_000_000,
+    tradeCount: anchor.tradeCount,
+  };
+}
+
+async function readHubCursor(): Promise<{ anchor: VolumeAnchor; updatedAt: number } | null> {
+  try {
+    const raw = await getRedis().get<StoredHubCursor>(HUB_CURSOR_KEY);
+    if (!raw || typeof raw !== "object") return null;
+    if (!Number.isSafeInteger(raw.throughBlock) || raw.throughBlock < 0) return null;
+    if (typeof raw.totalUsdcAtomic !== "string" || !/^\d+$/.test(raw.totalUsdcAtomic)) return null;
+    if (!Number.isInteger(raw.tradeCount) || raw.tradeCount < 0) return null;
+    const seeds = Array.isArray(raw.seedTxHashes)
+      ? raw.seedTxHashes.filter((hash) => typeof hash === "string" && /^0x[0-9a-f]{64}$/i.test(hash))
+      : [];
+    return {
+      anchor: {
+        throughBlock: BigInt(raw.throughBlock),
+        totalUsdcAtomic: BigInt(raw.totalUsdcAtomic),
+        tradeCount: raw.tradeCount,
+        seedTxHashes: seeds,
+      },
+      updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeHubCursor(anchor: VolumeAnchor): Promise<void> {
+  try {
+    const body: StoredHubCursor = {
+      throughBlock: Number(anchor.throughBlock),
+      totalUsdcAtomic: anchor.totalUsdcAtomic.toString(),
+      tradeCount: anchor.tradeCount,
+      seedTxHashes: [...anchor.seedTxHashes],
+      updatedAt: Date.now(),
+    };
+    await getRedis().set(HUB_CURSOR_KEY, body, { ex: HUB_CURSOR_TTL_SECONDS });
+  } catch {
+    // The sealed checkpoint still covers history if the cursor cannot be saved.
+  }
+}
+
+/**
+ * Live hub total: sealed history plus a short archive tip across the agent
+ * and both swap executors. A prefix that has not reached head is stored so
+ * the next request continues, and is not returned as the total. A recent
+ * completed cursor is served if the tip read itself fails.
+ */
+async function refreshHub(): Promise<Stats | null> {
+  const token = randomUUID();
+  const lease = await acquireLease(token);
+  if (lease === "held") return null;
+  try {
+    const stored = await readHubCursor();
+    const anchor = anchorFromCursor(checkpointAnchor(), stored?.anchor ?? null);
+    const settled = await settleHubVolume(Date.now() + 40_000, fetch, anchor).catch(() => null);
+    if (!settled) {
+      if (stored && Date.now() - stored.updatedAt < HUB_STALE_MS) return statsFromAnchor(stored.anchor);
+      return null;
+    }
+    await writeHubCursor(settled.anchor);
+    if (!settled.done) {
+      if (stored && Date.now() - stored.updatedAt < HUB_STALE_MS) return statsFromAnchor(stored.anchor);
+      return null;
+    }
+    const stats = statsFromAnchor(settled.anchor);
+    if (!stats) return null;
+    await writeCached(stats);
+    return stats;
+  } finally {
+    if (lease === "owned") await releaseLease(token);
+  }
+}
 
 export async function GET() {
   const cached = await readCached();
   if (cached) return available(cached);
+
+  // Tests keep the single-executor client path (and its failure contract).
+  // Production reads agent + swap from a public archive, starting at the
+  // sealed checkpoint so a page load only scans new blocks.
+  if (process.env.NODE_ENV !== "test" && process.env.VITEST !== "true") {
+    if (!hubInflight) {
+      hubInflight = refreshHub().finally(() => {
+        hubInflight = null;
+      });
+    }
+    const hub = await hubInflight;
+    return hub ? available(hub) : unavailable();
+  }
 
   if (await readNegative()) return unavailable();
 
