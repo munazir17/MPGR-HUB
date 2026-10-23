@@ -118,7 +118,7 @@ describe("natural-language request through the real tool runtime", () => {
     expect(http.mock.calls.filter(([url]) => url === "/api/trade/quote")).toHaveLength(1);
     expect(result.reply).not.toMatch(/liquidityAvailable|transaction.*data|calldata|router|Executor|MCP|0x[a-fA-F0-9]{40}\b/);
     expect(result.reply).toContain("Route: 0x Swap API (Base)");
-    expect(result.reply).toContain("Executable alternatives were not compared.");
     expect(result.reply).toContain("Confirm swap?");
+    expect(result.reply).not.toContain("Executable alternatives");
   });
 });

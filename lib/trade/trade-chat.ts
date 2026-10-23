@@ -38,28 +38,28 @@ export function publicTradeError(error: { code?: unknown; message?: unknown } | 
 
 const amount = (value: string, token: TradeTokenRef) => `${formatAtomicAmount(value, token.decimals, token.decimals)} ${token.symbol}`;
 
+function quotedCost(proposal: TradeProposal, value: { amount: string; token: string } | undefined): string | null {
+  if (!value?.amount || value.amount === "0") return null;
+  const token = [proposal.from, proposal.to].find(t => t.address.toLowerCase() === value.token.toLowerCase()) ?? findKnownTradeToken(value.token);
+  return token ? `${formatAtomicAmount(value.amount, token.decimals, token.decimals)} ${token.symbol}` : null;
+}
+
 export function formatTradeReview(proposal: TradeProposal): string {
   if (proposal.executionAvailable === false) return NO_BASE_ROUTE;
-  // Defensive against incomplete persisted/older proposal payloads. The modal
-  // remains gated by the existing validator; never invent missing amounts.
   if (!proposal.from || !proposal.to) return "Review the swap details before confirming. Nothing is signed or submitted until you explicitly confirm in your wallet.";
   const fee = proposal.agentFee;
-  const cost = (value: { amount: string; token: string } | undefined) => {
-    if (!value) return "not provided — not assumed zero";
-    const token = [proposal.from, proposal.to].find(t => t.address.toLowerCase() === value.token.toLowerCase()) ?? findKnownTradeToken(value.token);
-    return token ? `${formatAtomicAmount(value.amount, token.decimals, token.decimals)} ${token.symbol}` : `${value.amount} base units (token not resolved)`;
-  };
+  const feeLine = fee?.status === "applied"
+    ? `fee ${amount(fee.amountAtomic, proposal.from)}${fee.bps !== null ? ` (${fee.bps / 100}%)` : ""}`
+    : "no MPGR fee on this route";
+  const gas = quotedCost(proposal, proposal.fees?.gasFee);
+  const protocol = quotedCost(proposal, proposal.fees?.protocolFee);
+  const costs = [gas ? `Gas ${gas}` : null, protocol ? `Protocol ${protocol}` : null].filter((line): line is string => line !== null);
+  const route = proposal.provider === "mpgr-executor" ? "Fee-aware Base route" : proposal.providerLabel;
   return [
     `Swap ${amount(proposal.fromAmount, proposal.from)} → ~${amount(proposal.toAmount, proposal.to)}`,
-    `Minimum received: ${amount(proposal.minToAmount, proposal.to)}`,
-    "Network: Base",
-    ...(proposal.providerLabel ? [`Route: ${proposal.provider === "mpgr-executor" ? "Fee-aware Base route" : proposal.providerLabel}`] : []),
-    "Executable alternatives were not compared.",
-    `Slippage: ${proposal.slippageBps / 100}%`,
-    ...(fee?.status === "applied" ? [`MPGR fee${fee.bps !== null ? ` (${fee.bps / 100}%)` : ""}: ${amount(fee.amountAtomic, proposal.from)} (taken from the swap amount in the same transaction)`] : ["MPGR fee: not applied on this quoted route."]),
-    `Network cost estimate: ${cost(proposal.fees?.gasFee)}`,
-    `Swap protocol cost: ${cost(proposal.fees?.protocolFee)}`,
-    "Your wallet signs and sends the transaction. MPGR never controls your funds.",
+    `Min received ${amount(proposal.minToAmount, proposal.to)} · Base · ${proposal.slippageBps / 100}% slippage · ${feeLine}`,
+    ...(route ? [`Route: ${route}`] : []),
+    ...(costs.length ? [costs.join(" · ")] : []),
     "Confirm swap?",
   ].join("\n");
 }

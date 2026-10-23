@@ -373,9 +373,8 @@ describe("OFFLINE command → real parser/tool runtime → existing Executor quo
     expect(params.expectedFeeAmount).toBe(BigInt(gross) * 25n / 10000n);
     expect(params.unwrapNativeOut).toBe(nativeOut);
     expect(http).toHaveBeenCalledTimes(1); expect(mocks.routed).not.toHaveBeenCalled();
-    expect(result.reply).toContain("Executable alternatives were not compared.");
     expect(result.reply).toContain("Confirm swap?");
-    expect(result.reply).not.toMatch(/swap confirmed|successful/i);
+    expect(result.reply).not.toMatch(/Executable alternatives|swap confirmed|successful/i);
   });
 });
 

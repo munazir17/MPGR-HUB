@@ -43,6 +43,9 @@ import {
 interface AgentAutonomyPanelProps {
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
+  /** Inside the Conditional goals section: no second header, no essay. */
+  embedded?: boolean;
+  commandNotice?: string | null;
   autonomy: ReturnType<typeof useAgentAutonomy>;
 }
 
@@ -128,8 +131,43 @@ function relative(iso: string): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: AgentAutonomyPanelProps) {
-  const { config, goals, policies, tokens, busy, error, dismissError, pause, resume, cancel, revokePolicy, revokeSlot, signDelegatedSlots, slots, slotsSigningSupported, authorizeGoal, mutate, authenticated, authenticating, signIn } =
+function GoalSwitch({
+  activeCount,
+  pausedCount,
+  runtimeLabel,
+  busy,
+  enabled,
+  onToggle,
+}: {
+  activeCount: number;
+  pausedCount: number;
+  runtimeLabel: string;
+  busy: boolean;
+  enabled: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2" data-testid="agent-autonomy-switch">
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${activeCount > 0 ? "bg-good" : "bg-white/30"}`} aria-hidden="true" />
+      <span className="text-[11px] font-semibold text-white">Autonomous Goals</span>
+      <span className="min-w-0 truncate text-[11px] text-muted">
+        {activeCount} on{pausedCount ? ` · ${pausedCount} paused` : ""} · {runtimeLabel}
+      </span>
+      <button
+        type="button"
+        data-testid="agent-autonomy-toggle"
+        disabled={!enabled || busy}
+        onClick={onToggle}
+        className="ml-auto min-h-[32px] shrink-0 rounded-lg border border-white/15 bg-white/[0.04] px-3 text-[11px] font-medium text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        {activeCount > 0 ? "Turn off" : "Turn on"}
+      </button>
+    </div>
+  );
+}
+
+export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange, embedded = false, commandNotice = null }: AgentAutonomyPanelProps) {
+  const { config, goals, policies, tokens, busy, error, dismissError, pause, resume, cancel, revokePolicy, revokeSlot, signDelegatedSlots, slots, slotsSigningSupported, authorizeGoal, mutate, authenticated, authenticating, signIn, setGoalsArmed } =
     autonomy;
   const [localOpen, setOpen] = useState(false);
   const open = expanded ?? localOpen;
@@ -141,6 +179,8 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
   const [delegatedHours, setDelegatedHours] = useState(24);
 
   const activeCount = useMemo(() => goals.filter((g) => ["ACTIVE", "WAITING", "EXECUTING"].includes(g.status)).length, [goals]);
+  const pausedCount = useMemo(() => goals.filter((g) => g.status === "PAUSED").length, [goals]);
+  const runtimeLabel = !config ? "Checking…" : !config.enabled ? "Runtime off" : config.emergencyDisabled ? "Emergency stop" : config.executionAvailable ? "Execution live" : "Checks pending";
 
   // Manual entry point only — never pre-filled from a chat draft.
   const formState = form ?? autonomyDraftToForm(null, tokens);
@@ -171,6 +211,7 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
 
   return (
     <div className="shrink-0 border-t border-white/[0.06] bg-white/[0.02]" data-testid="agent-autonomy-panel">
+      {!embedded && (
       <button
         type="button"
         onClick={() => onExpandedChange ? onExpandedChange(!open) : setOpen((v) => !v)}
@@ -195,6 +236,21 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
         <span className="flex-1" />
         <ChevronDown className={clsx("h-3.5 w-3.5 text-muted transition-transform duration-200", open && "rotate-180")} aria-hidden="true" />
       </button>
+      )}
+
+      {embedded && (
+        <div className="space-y-1 px-3 py-2">
+          <GoalSwitch
+            activeCount={activeCount}
+            pausedCount={pausedCount}
+            runtimeLabel={runtimeLabel}
+            busy={busy}
+            enabled={Boolean(config?.enabled) && !config?.emergencyDisabled && Boolean(setGoalsArmed)}
+            onToggle={() => void setGoalsArmed?.(!activeCount)}
+          />
+          <p className="text-[11px] text-muted">{commandNotice ?? "Chat sets the goal. One signature. Swaps: ETH, cbBTC, DEGEN, VIRTUAL, stocks. Goals: USDC into WETH or a live stock."}</p>
+        </div>
+      )}
 
       <AnimatePresence initial={false}>
         {open && (
@@ -206,6 +262,19 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
             className="overflow-hidden"
           >
             <div className="max-h-[65dvh] space-y-3 overflow-y-auto px-3 pb-3 sm:px-4 md:px-5">
+              {!embedded && (
+                <>
+                  <GoalSwitch
+                    activeCount={activeCount}
+                    pausedCount={pausedCount}
+                    runtimeLabel={runtimeLabel}
+                    busy={busy}
+                    enabled={Boolean(config?.enabled) && !config?.emergencyDisabled && Boolean(setGoalsArmed)}
+                    onToggle={() => void setGoalsArmed?.(!activeCount)}
+                  />
+                  <p className="text-[11px] text-muted">{commandNotice ?? "Chat sets the goal. One signature. Turn off pauses every goal. Chat swaps ETH, cbBTC, DEGEN, VIRTUAL, and live stocks. Autonomous goals: USDC into WETH or a live stock."}</p>
+                </>
+              )}
               {error && (
                 <div className="flex items-center gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
                   <span className="min-w-0 flex-1">{error}</span>
@@ -226,10 +295,7 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
 
               {/* GOALS */}
               {goals.length === 0 ? (
-                <p className="text-xs text-muted">
-                  No goals yet. Create one below, or ask the agent in chat (e.g. “Buy AAPLc whenever it falls
-                  below $200”) — chat drafts open their own review, and nothing runs until you authorize it.
-                </p>
+                <p className="text-xs text-muted">No goals yet. Set one in chat, or use the form. Nothing runs until you sign.</p>
               ) : (
                 <ul className="space-y-2">
                   {goals.map((goal) => (
@@ -298,11 +364,7 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
                   <p className="text-[11px] font-medium text-sky-200" data-testid="delegated-execution-readiness">
                     {delegatedExecutionStatus(config)}
                   </p>
-                  <p className="text-[11px] leading-relaxed text-muted">
-                    Sign pre-authorized single-trade slots. Each slot executes exactly once, exactly as signed below — same
-                    tokens, same amount, never below your minimum output, never after expiry. The operator broadcaster can
-                    only submit these signed slots and holds no keys of yours. Revoke anytime.
-                  </p>
+                  <p className="text-[11px] text-muted">Each signed slot runs once. Revoke anytime.</p>
 
                   {slots.length > 0 && (
                     <ul className="space-y-1.5">
@@ -340,7 +402,7 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
                     </ul>
                   )}
                   {slots.length === 0 && (
-                    <p className="text-[11px] text-muted">No delegated slots. Nothing can be executed without your explicit signature below.</p>
+                    <p className="text-[11px] text-muted">No signed slots yet.</p>
                   )}
 
                   {(() => {
@@ -546,10 +608,8 @@ export function AgentAutonomyPanel({ autonomy, expanded, onExpandedChange }: Age
                       />
                     </label>
                   </div>
-                  <p className="text-[10px] leading-relaxed text-muted">
-                    Slippage limit {formState.slippageBps / 100}% · at least {formState.cooldownSeconds / 60} min between checks · authorization expires in{" "}
-                    {formState.ttlDays} days. MPGR never holds your keys — the goal executes only through the
-                    non-custodial executor inside these limits.
+                  <p className="text-[10px] text-muted">
+                    {formState.slippageBps / 100}% slippage · {formState.cooldownSeconds / 60} min cooldown · {formState.ttlDays} day expiry. You sign. MPGR never holds keys.
                   </p>
                   <div className="flex gap-2">
                     <button

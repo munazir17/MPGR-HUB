@@ -49,7 +49,7 @@ import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTr
 import { AgentTransferConfirmationModal } from "@/components/features/agent/AgentTransferConfirmationModal";
 import { AgentTradingLauncher } from "@/components/features/agent/AgentTradingLauncher";
 import { AgentAutonomyDraftReview } from "@/components/features/agent/AgentAutonomyDraftReview";
-import { AgentAutonomyDock, goalsMatchingRemoval, parseAutonomyCommand } from "@/components/features/agent/AgentAutonomyDock";
+import { goalsMatchingRemoval, parseAutonomyCommand } from "@/components/features/agent/AgentAutonomyDock";
 import { useAgentAutonomy } from "@/hooks/useAgentAutonomy";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAgentChat } from "@/hooks/useAgentChat";
@@ -412,7 +412,6 @@ export function AgentExperience({
               className="shrink-0 border-t border-white/[0.06] bg-white/[0.02] p-2 sm:p-3"
               style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
             >
-              <AgentAutonomyDock autonomy={autonomy} connected={isConnected} notice={autonomyNotice} />
               <AgentInput
                 onSend={handleSend}
                 disabled={thinking}
@@ -431,6 +430,7 @@ export function AgentExperience({
           </div>
           {instantSwapError && <p role="alert" className="my-2 break-words text-xs text-red-300">{instantSwapError}</p>}
           <AgentTradingLauncher autonomy={autonomy} connected={isConnected} onConnect={() => openConnectModal?.()}
+            notice={autonomyNotice}
             proposals={messages.flatMap((m) => m.tradeProposal ? [m.tradeProposal] : []).slice(-5).reverse()}
             onReviewTrade={tradeQuote.openProposal} />
         </AgentErrorBoundary>
