@@ -134,6 +134,23 @@ jobs:
           # Only chain-cache subdirs are removed — the Solidity compile
           # cache is preserved.
           rm -rf cache/base cache/base-sepolia cache/8453 cache/84532
+          # A set Alchemy key can still be past its monthly cap (HTTP 429).
+          # The secret||publicnode default never switches in that case, so
+          # the fork never starts. Probe once and fall back. Never print the URL.
+          probe_rpc() {
+            local url="$1" code
+            code="$(curl -sS -o "$RUNNER_TEMP/rpc-probe.json" -w '%{http_code}' --max-time 12 \
+              -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+              "$url" || echo 000)"
+            [ "$code" = "200" ] && grep -q '"result"' "$RUNNER_TEMP/rpc-probe.json"
+          }
+          if ! probe_rpc "$BASE_MAINNET_RPC_URL"; then
+            echo "::warning title=fork RPC fallback::Configured Base RPC rejected eth_chainId. This job will fork from the public endpoint instead."
+            BASE_MAINNET_RPC_URL="https://base-rpc.publicnode.com"
+            export BASE_MAINNET_RPC_URL
+          fi
+          rm -f "$RUNNER_TEMP/rpc-probe.json"
           # Public Base RPCs rate-limit shared CI egress IPs (HTTP 429 "over
           # rate limit") under fork load. One settle-and-retry absorbs those
           # transient storms; a real, deterministic failure fails both runs
