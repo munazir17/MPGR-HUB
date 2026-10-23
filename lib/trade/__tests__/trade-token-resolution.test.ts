@@ -3,6 +3,7 @@ import { getAddress } from "viem";
 import { resolveSwapToken } from "../trade-token-resolution";
 import { hydrateTradeSwapArguments, parseTradeSwapRequest } from "../trade-request";
 import { discoverBaseTokens, resetTokenDiscoveryCache } from "../trade-token-discovery";
+import { resetDexDiscoveryCache } from "../dex-token-discovery";
 import { resolveTradeToken } from "../trade-tokens";
 
 const rpc = vi.hoisted(() => ({ getCode: vi.fn(), readContract: vi.fn() }));
@@ -11,11 +12,11 @@ const ADDRESS = "0x1234567890abcdef1234567890abcdef12345678";
 const SECOND = "0x2222222222222222222222222222222222222222";
 const TAKER = "0x3333333333333333333333333333333333333333";
 const fetchMock = vi.fn();
-function list(tokens: unknown[]) { fetchMock.mockResolvedValue(new Response(JSON.stringify({ tokens }))); }
+function list(tokens: unknown[]) { fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ tokens })))); }
 function token(address = ADDRESS, chainId = 8453) { return { address, chainId, symbol: "BRETT", name: "Brett", decimals: 18 }; }
 
 beforeEach(() => {
-  vi.clearAllMocks(); resetTokenDiscoveryCache(); vi.stubGlobal("fetch", fetchMock);
+  vi.clearAllMocks(); resetTokenDiscoveryCache(); resetDexDiscoveryCache(); vi.stubGlobal("fetch", fetchMock);
   rpc.getCode.mockResolvedValue("0x6000");
   rpc.readContract.mockImplementation(async ({ functionName }) => ({ decimals: 6, symbol: "DEGEN", name: "Degen", totalSupply: 100000000n, balanceOf: 0n })[functionName as "decimals"]);
 });

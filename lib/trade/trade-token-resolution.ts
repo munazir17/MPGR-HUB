@@ -2,6 +2,7 @@
 // liquidity; routing remains the existing live quote path. No signing or writes.
 import { erc20Abi, getAddress, isAddress, zeroAddress } from "viem";
 import { discoverBaseTokens } from "./trade-token-discovery";
+import { discoverDexBaseTokens } from "./dex-token-discovery";
 import { findKnownTradeToken, findKnownTradeTokenMatches, resolveTradeToken } from "./trade-tokens";
 import { getTradePublicClient } from "./trade-public-client";
 import { readB20Decimals } from "./tokenized-stocks-onchain";
@@ -9,6 +10,7 @@ import type { TradeError, TradeTokenRef } from "./trade-types";
 
 type Result = { ok: true; token: TradeTokenRef } | { ok: false; error: TradeError };
 const fail = (code: TradeError["code"], message: string): Result => ({ ok: false, error: { code, message } });
+const usd = (value: number) => value >= 1_000_000 ? `$${(value / 1_000_000).toFixed(1)}M` : value >= 1_000 ? `$${Math.round(value / 1_000)}k` : `$${Math.round(value)}`;
 const inflight = new Map<string, Promise<Result>>();
 
 function contractReadFailure(error: unknown): boolean {
@@ -73,6 +75,15 @@ export async function resolveSwapToken(input: unknown): Promise<Result> {
     if (!matches.length) {
       try { matches = await discoverBaseTokens(text); }
       catch { return fail("PROVIDER_ERROR", "Token discovery is temporarily unavailable. Try again or provide the exact Base contract address."); }
+    }
+    if (!matches.length) {
+      let dex: Awaited<ReturnType<typeof discoverDexBaseTokens>>;
+      try { dex = await discoverDexBaseTokens(text); }
+      catch { return fail("PROVIDER_ERROR", "Token discovery is temporarily unavailable. Try again or provide the exact Base contract address."); }
+      if (dex.status === "unavailable") return fail("PROVIDER_ERROR", "Token discovery is temporarily unavailable. Try again or provide the exact Base contract address.");
+      if (dex.status === "thin") return fail("LIQUIDITY_UNAVAILABLE", `Base pools for this ticker are under $25k liquidity (deepest is ${usd(dex.bestUsd)}). Nothing was prepared. Paste the exact contract if you still want that address checked.`);
+      if (dex.status === "ambiguous") return fail("TOKEN_AMBIGUOUS", `Several Base pools use this ticker. Repeat the swap with the exact contract: ${dex.matches.map((token) => `${token.address} (${usd(token.liquidityUsd)})`).join(", ")}.`);
+      if (dex.status === "unique") matches = [dex.match];
     }
     if (!matches.length) return fail("TOKEN_NOT_FOUND", "No matching Base token was found in the discovery catalog. Provide the exact contract address to check it directly.");
     if (matches.length > 1) return fail("TOKEN_AMBIGUOUS", `Multiple Base contracts match. Repeat the swap with the exact contract you intend: ${matches.slice(0, 8).map(t => t.address).join(", ")}.`);

@@ -52,7 +52,7 @@ export function buildSwapRiskFacts(input: {
       severity: "critical",
       title: "Unverified sell token",
       detail:
-        "This sell token is not in MPGR's Base catalog. The address was supplied as a raw 0x value. Confirm it on a block explorer before signing.",
+        "Not in the MPGR catalog. Resolved from a Base pool or an address you pasted. Not a safety audit. Confirm the contract, then sign.",
     });
   }
   if (!input.to.verified) {
@@ -61,7 +61,7 @@ export function buildSwapRiskFacts(input: {
       severity: "critical",
       title: "Unverified buy token",
       detail:
-        "This buy token is not in MPGR's Base catalog. Confirm the contract address before signing.",
+        "Not in the MPGR catalog. Resolved from a Base pool or an address you pasted. Not a safety audit. Confirm the contract, then sign.",
     });
   }
 
