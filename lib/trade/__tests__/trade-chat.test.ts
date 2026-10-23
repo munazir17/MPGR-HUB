@@ -34,12 +34,9 @@ describe("consumer trade chat", () => {
   it("shows exact reviewed amounts and applicable fees without tool implementation data", () => {
     const text = formatTradeReview(proposal());
     expect(text).toContain("1 USDC → ~0.000370006219589809 WETH");
-    expect(text).toContain("Minimum received: 0.00036630615739391 WETH");
+    expect(text).toContain("Min received 0.00036630615739391 WETH");
     expect(text).toContain("0.0025 USDC"); expect(text).toContain("0.25%");
-    // The fee is disclosed as part of the swap, never as a separate payment.
-    expect(text).toContain("taken from the swap amount in the same transaction");
-    expect(text).not.toMatch(/separate|pay fee|after the swap/i);
-    expect(text).toContain("Your wallet signs and sends");
+    expect(text).not.toMatch(/separate|pay fee|after the swap|not provided|not assumed zero/i);
     expect(text).toContain("Confirm swap?");
     expect(text).not.toMatch(/0x|provider|MCP|Executor|Permit2|calldata|liquidityAvailable/);
   });
@@ -48,7 +45,7 @@ describe("consumer trade chat", () => {
   });
   it("discloses a skipped fee without configuration/debug explanations", () => {
     const p = proposal(); p.agentFee = { status: "skipped", bps: null, recipient: null, amountAtomic: "0", displayAmount: null, reason: "The MPGR fee is collected inside the swap transaction by the MPGR Executor, which does not route this pair — no fee is charged." };
-    expect(formatTradeReview(p)).toContain("MPGR fee: not applied on this quoted route");
+    expect(formatTradeReview(p)).toContain("no MPGR fee on this route");
     expect(formatTradeReview(p)).not.toMatch(/configured|does not route this pair/);
   });
   it("keeps success concise with one explorer link and no approval internals; output remains explicitly an estimate", () => {

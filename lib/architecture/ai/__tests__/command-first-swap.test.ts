@@ -33,8 +33,8 @@ describe("command-first Base swaps use existing prepare-only tools before the mo
     expect(runTool).toHaveBeenCalledExactlyOnceWith("prepare_swap", { amount, sellSymbol: "USDC", buySymbol: target }, expect.anything());
     expect(runToolCallingLoop).not.toHaveBeenCalled(); expect(response.tradeProposal).toBe(proposal);
     expect(response.tradeProposal).toMatchObject({ chainId: 8453, requiresConfirmation: true });
-    expect(response.reply).toContain("Executable alternatives were not compared."); expect(response.reply).not.toMatch(/best route|swap confirmed|successful/i);
-    expect(response.reply).toContain("Minimum received:"); expect(response.reply).toContain("0.000001 ETH");
+    expect(response.reply).toContain("Min received"); expect(response.reply).not.toMatch(/best route|swap confirmed|successful|Executable alternatives/i);
+    expect(response.reply).toContain("0.000001 ETH");
   });
   it.each(["Swap 20 USDC to WETH on Ethereum", "Buy $10 of ETH on chain 1", "Swap 20 USDC to WETH on Base Sepolia", "Show me the best available route for 100 USDC to ETH chain ID 84532", "Swap 20 USDC to WETH on UnknownChain"])("rejects a non-Base chain before any model/tool: %s", async prompt => {
     for (const provider of [getAIProvider(), new DeterministicAIProvider()]) { const response = await provider.generateReply(request(prompt)); expect(response.reply).toContain("8453"); expect(response.tradeProposal).toBeUndefined(); expect(response.autonomyGoalDraft).toBeUndefined(); }
