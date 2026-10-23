@@ -15,7 +15,7 @@ import { swapQuotePolicyError, verifySwapSettlement, type SwapSettlement } from 
 import { formatAtomicAmount } from "@/lib/trade/trade-format";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 import type { Hash, TransactionReceipt } from "viem";
-import { swapTransactionMatches } from "@/lib/swap/swap-transaction";
+import { swapTransactionIdentityMatches, swapTransactionMatches } from "@/lib/swap/swap-transaction";
 import { readSwapAllowance } from "@/lib/swap/swap-allowance";
 export interface SwapActivity {
   id: string; proposal: TradeProposal; startedAt: number;
@@ -129,15 +129,31 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
             approvalStatus = status === "success" ? "confirmed" : "reverted"; refreshBalancesRef.current();
           },
           verifySettlement: async (p, receipt) => {
-            try {
-              const tx = await getTransaction(config, { chainId: 8453, hash: receipt.transactionHash });
-              if (!swapTransactionMatches(p, receipt, tx)) return { code: "PROVIDER_ERROR", message: "The mined transaction does not match the reviewed swap. Do not resubmit; inspect it on BaseScan." };
-            } catch { return { code: "PROVIDER_ERROR", message: "Swap submitted. Its transaction details could not be verified yet. Check status; do not resubmit." }; }
+            const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+            let indexed = false;
+            let identityFailed = false;
+            for (let attempt = 0; attempt < 5; attempt++) {
+              if (attempt) await pause(350 * attempt);
+              try {
+                const tx = await getTransaction(config, { chainId: 8453, hash: receipt.transactionHash });
+                if (swapTransactionMatches(p, receipt, tx)) { indexed = true; break; }
+                if (!swapTransactionIdentityMatches(p, receipt, tx)) { identityFailed = true; break; }
+              } catch { /* node has the receipt but not the transaction body yet */ }
+            }
+            if (!indexed) {
+              return identityFailed
+                ? { code: "PROVIDER_ERROR", message: "The mined transaction does not match the reviewed swap. Do not resubmit; inspect it on BaseScan." }
+                : { code: "PROVIDER_ERROR", message: "Swap submitted. Its transaction details could not be verified yet. Check status; do not resubmit." };
+            }
             // V2 receipts are verified server-side, which re-fetches the receipt
             // by hash and reads the executor's live fee posture at the MINED
             // block — stronger than anything the browser can assert locally.
             if (isSwapV2Proposal(p)) {
-              const remote = await verifySwapV2SettlementRemote(receipt.transactionHash);
+              let remote = await verifySwapV2SettlementRemote(receipt.transactionHash);
+              for (let attempt = 0; attempt < 3 && remote.error && remote.error.code !== "SEND_FAILED"; attempt++) {
+                await pause(600);
+                remote = await verifySwapV2SettlementRemote(receipt.transactionHash);
+              }
               verified = remote.settlement;
               if (session.current === run) setProof(verified);
               return remote.error ?? (verified.verified ? null : { code: "PROVIDER_ERROR", message: verified.reason! });
@@ -205,8 +221,9 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
   }, [activities, checking, snapshot.swapHash]);
   useEffect(() => {
     if (!activities.some(a => a.swapStatus === "pending" || a.swapStatus === "unverified" || a.approvalStatus === "pending")) return;
-    const interval = setInterval(() => { void checkHistory(); }, 15_000);
-    return () => clearInterval(interval);
+    const kick = setTimeout(() => { void checkHistory(); }, 400);
+    const interval = setInterval(() => { void checkHistory(); }, 2_000);
+    return () => { clearTimeout(kick); clearInterval(interval); };
   }, [activities, checkHistory]);
   return { proposal, snapshot, proof, isBusy, open, close, confirm, retryQuote, checking, sessionExpired, quoteUpdated, historyError, checkHistory,
     activities: account.isConnected && account.chainId === 8453 ? activities.filter(a => a.proposal.taker.toLowerCase() === account.address?.toLowerCase()) : [] };

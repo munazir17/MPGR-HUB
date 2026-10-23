@@ -580,6 +580,10 @@ describe("RPC failure classification and deterministic non-retryable handling", 
       }),
     ).toBe("invalid_request");
     expect(classifyBaseRpcFailure({ code: -32602, message: "invalid params" })).toBe("invalid_request");
+    expect(classifyBaseRpcFailure({
+      code: -32602,
+      message: "Invalid parameters were provided to the RPC method. Details: Archive requests require a personal token.",
+    })).toBe("server_error");
     expect(classifyBaseRpcFailure({ status: 413, message: "response size exceeded" })).toBe("invalid_request");
     expect(
       classifyBaseRpcFailure({

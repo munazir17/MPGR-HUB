@@ -65,6 +65,8 @@ interface ChainOptions {
   /** A sloppy provider that also returns logs the topic filter should have excluded. */
   unfilteredLogs?: FabricatedPool[];
   refuseArchiveCode?: boolean;
+  /** Interior historical code reads fail; block 0 and head still answer. */
+  refuseInteriorArchive?: boolean;
   quoteOut?: bigint;
 }
 
@@ -131,6 +133,7 @@ function chain(options: ChainOptions = {}): MockChain {
       if (noCode.has(address)) return "0x" as Hex;
       const block = query.blockNumber ?? head;
       if (options.refuseArchiveCode && block !== head) throw new Error("archive state is not available on this plan");
+      if (options.refuseInteriorArchive && block !== head && block !== 0n) throw new Error("Archive requests require a personal token");
       const deployedAt = code[address];
       if (deployedAt === undefined) return "0x6080604052" as Hex; // predeploy-like: code from block 0
       return block >= deployedAt ? ("0x6080604052" as Hex) : ("0x" as Hex);
@@ -207,14 +210,32 @@ describe("v4 discovery: chain-derived search floor", () => {
     expect(c.calls.getLogs).toBe(0);
   });
 
-  it("says 'unavailable' when the provider refuses historical code reads", async () => {
+  it("says 'unavailable' when every historical code read is refused and the token has no verified floor", async () => {
     const c = chain({ refuseArchiveCode: true, code: { [MPGR.toLowerCase()]: MPGR_DEPLOYED } });
-    const floor = await findTokenDeploymentBlock(c.client, MPGR, HEAD, limits(), budget);
-    expect(floor.kind).toBe("unavailable");
-    const result = await discoverV4Pools(c.client, WETH, MPGR, HEAD, {}, budget);
+    // MPGR has a verified floor, so its own search can continue. An arbitrary
+    // token cannot: refusing history with nothing to fall back on stays unmeasured.
+    const mpgrFloor = await findTokenDeploymentBlock(c.client, MPGR, HEAD, limits(), budget);
+    expect(mpgrFloor).toMatchObject({ kind: "block", block: MPGR_DEPLOYED });
+    const unknown = await findTokenDeploymentBlock(c.client, OTHER, HEAD, limits(), budget);
+    expect(unknown.kind).toBe("unavailable");
+    const result = await discoverV4Pools(c.client, WETH, OTHER, HEAD, {}, budget);
     expect(result.state).toBe("unavailable");
     expect(result.pools).toEqual([]);
     expect(result.note).toMatch(/floor could not be derived/i);
+  });
+
+  it("finds the MPGR v4 pool from the verified floor when interior archive reads are refused", async () => {
+    const c = chain({
+      refuseInteriorArchive: true,
+      code: { [MPGR.toLowerCase()]: MPGR_DEPLOYED },
+      pools: [{ block: MPGR_DEPLOYED + 1n, key: nativeMpgrKey }],
+      logRangeCap: 10n,
+    });
+    const floor = await findTokenDeploymentBlock(c.client, MPGR, HEAD, limits(), budget);
+    expect(floor).toMatchObject({ kind: "block", block: MPGR_DEPLOYED });
+    const result = await discoverV4Pools(c.client, WETH, MPGR, HEAD, {}, budget);
+    expect(result.state).not.toBe("unavailable");
+    expect(result.pools.some((pool) => pool.v4Key?.currency1.toLowerCase() === MPGR.toLowerCase())).toBe(true);
   });
 
   it("never guesses a floor: a capped code-step budget is unavailable", async () => {
