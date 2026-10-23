@@ -49,6 +49,7 @@ import { AgentTradeConfirmationModal } from "@/components/features/agent/AgentTr
 import { AgentTransferConfirmationModal } from "@/components/features/agent/AgentTransferConfirmationModal";
 import { AgentTradingLauncher } from "@/components/features/agent/AgentTradingLauncher";
 import { AgentAutonomyDraftReview } from "@/components/features/agent/AgentAutonomyDraftReview";
+import { AgentAutonomyDock, goalsMatchingRemoval, parseAutonomyCommand } from "@/components/features/agent/AgentAutonomyDock";
 import { useAgentAutonomy } from "@/hooks/useAgentAutonomy";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAgentChat } from "@/hooks/useAgentChat";
@@ -130,16 +131,56 @@ export function AgentExperience({
 
   const heroStatuses: AgentStatusId[] = thinking ? ["thinking"] : ["online"];
   const hasMessages = messages.length > 0;
+  const [autonomyNotice, setAutonomyNotice] = useState<string | null>(null);
 
   // Send squash — the core compresses ~200ms on every outgoing message
   // (both the hero object and the top-bar jewel listen to this signal).
   const [squashSignal, setSquashSignal] = useState(0);
   const handleSend = useCallback(
     (prompt: string) => {
+      const command = parseAutonomyCommand(prompt);
+      if (command) {
+        setSquashSignal((n) => n + 1);
+        if (!isConnected) {
+          setAutonomyNotice("Connect your wallet first.");
+          return;
+        }
+        if (command.kind === "arm") {
+          void autonomy.setGoalsArmed(command.armed).then((result) => {
+            if (!result.ok) {
+              setAutonomyNotice(result.error ?? "Could not update autonomous goals.");
+              return;
+            }
+            setAutonomyNotice(
+              result.changed === 0
+                ? command.armed
+                  ? "No paused goals to resume. Tell me the trade and I'll draft the goal."
+                  : "Autonomous goals are already off."
+                : command.armed
+                  ? `Resumed ${result.changed} goal${result.changed === 1 ? "" : "s"}.`
+                  : `Paused ${result.changed} goal${result.changed === 1 ? "" : "s"}.`,
+            );
+          });
+          return;
+        }
+        const hits = goalsMatchingRemoval(autonomy.goals, autonomy.tokens, command.symbol);
+        if (hits.length === 0) {
+          setAutonomyNotice(command.symbol ? `No open ${command.symbol} goal.` : "No open goals to remove.");
+          return;
+        }
+        void (async () => {
+          let removed = 0;
+          for (const goal of hits) {
+            if (await autonomy.cancel(goal.id)) removed += 1;
+          }
+          setAutonomyNotice(removed ? `Removed ${removed} goal${removed === 1 ? "" : "s"}.` : "Could not remove that goal.");
+        })();
+        return;
+      }
       setSquashSignal((n) => n + 1);
       sendMessage(prompt);
     },
-    [sendMessage],
+    [autonomy, isConnected, sendMessage],
   );
 
   // While disconnected a chip tap is a connect prompt, not a send —
@@ -371,6 +412,7 @@ export function AgentExperience({
               className="shrink-0 border-t border-white/[0.06] bg-white/[0.02] p-2 sm:p-3"
               style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
             >
+              <AgentAutonomyDock autonomy={autonomy} connected={isConnected} notice={autonomyNotice} />
               <AgentInput
                 onSend={handleSend}
                 disabled={thinking}

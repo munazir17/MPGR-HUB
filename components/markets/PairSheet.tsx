@@ -234,7 +234,7 @@ export function PairSheet({ symbol, onClose, onPrepareSwap, preview }: PairSheet
   const priceSource = stock?.source ?? wrapped?.source ?? (preview ? "live tape" : null);
   const premium = stock ? formatPremiumBps(stock.premiumBps) : null;
   const change = formatChange24h(stock?.change24h ?? wrapped?.change24h ?? preview?.change24h ?? null);
-  const stale = stock ? stock.stale || stock.feedStale : wrapped?.stale ?? preview?.stale ?? true;
+  const stale = stock ? stock.stale : wrapped?.stale ?? preview?.stale ?? true;
   const lastUpdate = stock
     ? formatUnixSeconds(stock.feedUpdatedAt) ?? formatUnixSeconds(stock.dexUpdatedAt)
     : formatUnixSeconds(wrapped?.updatedAt ?? null);

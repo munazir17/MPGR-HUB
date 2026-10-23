@@ -69,8 +69,14 @@ export function tapeFeedStaleSeconds(): number {
 }
 
 const DEXSCREENER_TIMEOUT_MS = 9_000;
-/** DexScreener accepts comma-separated token batches; keep batches small. */
-const DEXSCREENER_BATCH_SIZE = 10;
+/**
+ * DexScreener's `/latest/dex/tokens` response is capped (about 30 pairs).
+ * A comma-separated batch therefore drops every token that shares the call
+ * with a busy one — those chips come back with no price and render "stale"
+ * even though a single-address query has a live Base pool. One address per
+ * request, a few in flight, so every tape asset gets its own pair list.
+ */
+const DEXSCREENER_CONCURRENCY = 8;
 const DEXSCREENER_HOST = "https://api.dexscreener.com";
 
 export { DEXSCREENER_HOST };
@@ -220,6 +226,23 @@ export function tapeSourceLabel(pair: DexScreenerPairLike | null): string {
 // Default (production) deps
 // ---------------------------------------------------------------------------
 
+/** Chainlink latestRoundData, whether viem returns a tuple array or a named object. */
+export function roundFromCallResult(result: unknown): ChainlinkRoundLike | null {
+  if (result == null || (typeof result !== "object" && !Array.isArray(result))) return null;
+  const record = result as { answer?: unknown; updatedAt?: unknown; 1?: unknown; 3?: unknown };
+  const answer = Array.isArray(result) ? result[1] : record.answer ?? record[1];
+  const updatedAt = Array.isArray(result) ? result[3] : record.updatedAt ?? record[3];
+  if (
+    (typeof answer !== "bigint" && typeof answer !== "number" && typeof answer !== "string") ||
+    (typeof updatedAt !== "bigint" && typeof updatedAt !== "number" && typeof updatedAt !== "string")
+  ) {
+    return null;
+  }
+  const updated = Number(updatedAt);
+  if (!Number.isFinite(updated)) return null;
+  return { answer: answer.toString(), updatedAt: updated };
+}
+
 function defaultDeps(): TapeSourceDeps {
   const readFeedRound = async (feed: string): Promise<ChainlinkRoundLike | null> => {
     try {
@@ -228,10 +251,7 @@ function defaultDeps(): TapeSourceDeps {
         abi: CHAINLINK_AGGREGATOR_V3_ABI,
         functionName: "latestRoundData",
       });
-      const answer = round[1];
-      const updatedAt = round[3];
-      if (answer === undefined || updatedAt === undefined) return null;
-      return { answer: (answer as bigint).toString(), updatedAt: Number(updatedAt) };
+      return roundFromCallResult(round);
     } catch {
       return null;
     }
@@ -267,90 +287,96 @@ function defaultDeps(): TapeSourceDeps {
 
     async readOnchainBatch(pairs) {
       const client = getTradePublicClient();
-      const feedIndices: number[] = [];
-      const contracts: {
-        address: `0x${string}`;
-        abi: typeof CHAINLINK_AGGREGATOR_V3_ABI | typeof B20_TOKEN_ABI;
-        functionName: "latestRoundData" | "paused";
-      }[] = [];
+      const feedRounds: (ChainlinkRoundLike | null)[] = Array.from({ length: pairs.length }, () => null);
+      const pausedFlags: (boolean | null)[] = Array.from({ length: pairs.length }, () => null);
+      // One giant multicall (every feed + every paused()) is rejected or
+      // timed out by public RPCs, which previously nulled EVERY equity
+      // price. Small chunks keep a failed slice from blanking the tape.
+      const CHUNK = 12;
 
-      pairs.forEach((pair, index) => {
-        if (pair.chainlinkFeed) {
-          feedIndices.push(index);
+      for (let start = 0; start < pairs.length; start += CHUNK) {
+        const slice = pairs.slice(start, start + CHUNK);
+        const contracts: {
+          address: `0x${string}`;
+          abi: typeof CHAINLINK_AGGREGATOR_V3_ABI | typeof B20_TOKEN_ABI;
+          functionName: "latestRoundData" | "paused";
+        }[] = [];
+        const feedLocal: number[] = [];
+        slice.forEach((pair, index) => {
+          if (pair.chainlinkFeed) {
+            feedLocal.push(index);
+            contracts.push({
+              address: pair.chainlinkFeed as `0x${string}`,
+              abi: CHAINLINK_AGGREGATOR_V3_ABI,
+              functionName: "latestRoundData",
+            });
+          }
+        });
+        const pausedOffset = contracts.length;
+        slice.forEach((pair) => {
           contracts.push({
-            address: pair.chainlinkFeed as `0x${string}`,
-            abi: CHAINLINK_AGGREGATOR_V3_ABI,
-            functionName: "latestRoundData",
+            address: pair.address as `0x${string}`,
+            abi: B20_TOKEN_ABI,
+            functionName: "paused",
           });
+        });
+
+        try {
+          const results = await client.multicall({ contracts, allowFailure: true });
+          feedLocal.forEach((localIndex, callIdx) => {
+            const entry = results[callIdx];
+            if (!entry || entry.status !== "success") return;
+            const round = roundFromCallResult(entry.result);
+            if (round) feedRounds[start + localIndex] = round;
+          });
+          slice.forEach((_pair, index) => {
+            const entry = results[pausedOffset + index];
+            if (!entry || entry.status !== "success") return;
+            pausedFlags[start + index] = Boolean(entry.result);
+          });
+        } catch {
+          await Promise.all(
+            slice.map(async (pair, index) => {
+              if (pair.chainlinkFeed) feedRounds[start + index] = await readFeedRound(pair.chainlinkFeed);
+              pausedFlags[start + index] = await readPaused(pair.address);
+            }),
+          );
         }
-      });
-
-      const pausedOffset = contracts.length;
-      pairs.forEach((pair) => {
-        contracts.push({
-          address: pair.address as `0x${string}`,
-          abi: B20_TOKEN_ABI,
-          functionName: "paused",
-        });
-      });
-
-      try {
-        const results = await client.multicall({
-          contracts,
-          allowFailure: true,
-        });
-
-        const feedRounds: (ChainlinkRoundLike | null)[] = Array.from({ length: pairs.length }, () => null);
-        feedIndices.forEach((pairIndex, callIdx) => {
-          const entry = results[callIdx];
-          if (!entry || entry.status !== "success" || !Array.isArray(entry.result)) return;
-          const answer = entry.result[1];
-          const updatedAt = entry.result[3];
-          if (answer === undefined || updatedAt === undefined) return;
-          feedRounds[pairIndex] = {
-            answer: (answer as bigint).toString(),
-            updatedAt: Number(updatedAt),
-          };
-        });
-
-        const pausedFlags: (boolean | null)[] = pairs.map((_pair, index) => {
-          const entry = results[pausedOffset + index];
-          if (!entry || entry.status !== "success") return null;
-          return Boolean(entry.result);
-        });
-
-        return { feedRounds, pausedFlags };
-      } catch {
-        const [feedRounds, pausedFlags] = await Promise.all([
-          Promise.all(
-            pairs.map((pair) =>
-              pair.chainlinkFeed ? readFeedRound(pair.chainlinkFeed) : Promise.resolve(null),
-            ),
-          ),
-          Promise.all(pairs.map((pair) => readPaused(pair.address))),
-        ]);
-        return { feedRounds, pausedFlags };
       }
+
+      return { feedRounds, pausedFlags };
     },
 
     async fetchDexPairs(addresses) {
-      const all: DexScreenerPairLike[] = [];
-      for (let i = 0; i < addresses.length; i += DEXSCREENER_BATCH_SIZE) {
-        const batch = addresses.slice(i, i + DEXSCREENER_BATCH_SIZE);
-        const url = `${DEXSCREENER_HOST}/latest/dex/tokens/${batch.join(",")}`;
-        try {
-          const response = await fetch(url, {
-            headers: { accept: "application/json" },
-            signal: AbortSignal.timeout(DEXSCREENER_TIMEOUT_MS),
-          });
-          if (!response.ok) continue;
-          const data = (await response.json()) as { pairs?: DexScreenerPairLike[] };
-          if (Array.isArray(data.pairs)) all.push(...data.pairs);
-        } catch {
-          // Batch failed — those tokens come back stale, the rest still render.
+      const unique = [...new Set(addresses)];
+      const lists: DexScreenerPairLike[][] = new Array(unique.length);
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < unique.length) {
+          const index = cursor;
+          cursor += 1;
+          const address = unique[index];
+          const url = `${DEXSCREENER_HOST}/latest/dex/tokens/${address}`;
+          try {
+            const response = await fetch(url, {
+              headers: { accept: "application/json" },
+              signal: AbortSignal.timeout(DEXSCREENER_TIMEOUT_MS),
+            });
+            if (!response.ok) {
+              lists[index] = [];
+              continue;
+            }
+            const data = (await response.json()) as { pairs?: DexScreenerPairLike[] };
+            lists[index] = Array.isArray(data.pairs) ? data.pairs : [];
+          } catch {
+            // This token stays unpriced; the others still render.
+            lists[index] = [];
+          }
         }
-      }
-      return all;
+      };
+      const workers = Math.min(DEXSCREENER_CONCURRENCY, unique.length);
+      await Promise.all(Array.from({ length: workers }, () => worker()));
+      return lists.flat();
     },
   };
 }

@@ -344,6 +344,48 @@ export function useAgentAutonomy() {
   const resume = useCallback((goalId: string) => mutate(goalId, { action: "resume" }), [mutate]);
   const cancel = useCallback((goalId: string) => mutate(goalId, { action: "cancel" }, "DELETE"), [mutate]);
 
+  /**
+   * Manual master switch for THIS wallet's goals.
+   * On resumes paused goals. Off pauses active/waiting goals.
+   * It never creates a permission and never signs.
+   */
+  const setGoalsArmed = useCallback(async (armed: boolean): Promise<{ ok: boolean; changed: number; error: string | null }> => {
+    const targets = goals.filter((goal) => {
+      if (TERMINAL.has(goal.status) || goal.status === "EXECUTING") return false;
+      return armed ? goal.status === "PAUSED" : (goal.status === "ACTIVE" || goal.status === "WAITING");
+    });
+    if (targets.length === 0) return { ok: true, changed: 0, error: null };
+    setBusy(true);
+    setError(null);
+    try {
+      if (!(await ensureSession())) {
+        const message = "Sign in with your wallet first.";
+        setError(message);
+        return { ok: false, changed: 0, error: message };
+      }
+      let changed = 0;
+      let failure: string | null = null;
+      for (const goal of targets) {
+        const res = await fetchWithSession(`/api/agent/autonomy/goals/${encodeURIComponent(goal.id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: armed ? "resume" : "pause" }),
+        });
+        if (res.ok) {
+          changed += 1;
+          continue;
+        }
+        const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+        failure ??= payload?.error ?? "That action could not be completed.";
+      }
+      await refresh();
+      if (failure) setError(failure);
+      return { ok: failure === null, changed, error: failure };
+    } finally {
+      setBusy(false);
+    }
+  }, [goals, refresh, ensureSession]);
+
   const revokePolicy = useCallback(
     async (policyId: string) => {
       setBusy(true);
@@ -838,6 +880,7 @@ export function useAgentAutonomy() {
     pause,
     resume,
     cancel,
+    setGoalsArmed,
     revokePolicy,
     revokeSlot,
     signDelegatedSlots,
