@@ -114,7 +114,7 @@ jobs:
           else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && hashFiles('smoke-rehearsal.json') != ''
         with:
           name: smoke-rehearsal
@@ -177,7 +177,7 @@ jobs:
           else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && hashFiles('smoke-live.json') != ''
         with:
           name: smoke-live
