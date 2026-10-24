@@ -198,3 +198,33 @@ describe("game adapter (server RunRecord evidence)", () => {
     if (!result.ok) expect(result.code).toBe("adapter-rejected");
   });
 });
+
+describe("agent and trading adapters refuse client-claimed points", () => {
+  it("does not award agent-competition points for a bare task claim", async () => {
+    const campaign = findCampaignBySlug("agent-competition");
+    expect(campaign).toBeTruthy();
+    const result = await resolveCampaignAction(
+      campaign!,
+      "agent_task_completed",
+      W1,
+      {},
+      new Date("2026-11-02T12:00:00.000Z"),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("adapter-rejected");
+  });
+
+  it("does not award trading points from client-reported volume", async () => {
+    const campaign = findCampaignBySlug("trading-competition");
+    expect(campaign).toBeTruthy();
+    const result = await resolveCampaignAction(
+      campaign!,
+      "log_trade_session",
+      W1,
+      { volumeUsd: 5_000_000 },
+      new Date("2026-10-10T12:00:00.000Z"),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("adapter-rejected");
+  });
+});

@@ -169,7 +169,7 @@ describe("wallet authentication flow (real routes, Lua-backed Redis double)", ()
     expect((await whoAmI(sessionCookie)).authenticated).toBe(true);
 
     const { POST: logout } = await import("./logout/route");
-    const response = await logout(new Request(`${APP_ORIGIN}/api/auth/logout`, { method: "POST", headers: { cookie: `mpgr_session=${sessionCookie}` } }));
+    const response = await logout(new Request(`${APP_ORIGIN}/api/auth/logout`, { method: "POST", headers: { origin: APP_ORIGIN, cookie: `mpgr_session=${sessionCookie}` } }));
     expect(response.status).toBe(200);
     expect(setCookies(response).some((c) => /^mpgr_session=;.*Max-Age=0/.test(c))).toBe(true);
 
@@ -183,12 +183,30 @@ describe("wallet authentication flow (real routes, Lua-backed Redis double)", ()
     expect((await whoAmI(again.sessionCookie)).authenticated).toBe(true);
   });
 
+  it("cross-site logout is rejected and does not revoke the session", async () => {
+    const { sessionCookie } = await signIn();
+    const { POST: logout } = await import("./logout/route");
+    const forged = await logout(new Request(`${APP_ORIGIN}/api/auth/logout`, {
+      method: "POST",
+      headers: { origin: "https://evil.example", cookie: `mpgr_session=${sessionCookie}` },
+    }));
+    expect(forged.status).toBe(403);
+    expect((await whoAmI(sessionCookie)).authenticated).toBe(true);
+
+    const missing = await logout(new Request(`${APP_ORIGIN}/api/auth/logout`, {
+      method: "POST",
+      headers: { cookie: `mpgr_session=${sessionCookie}` },
+    }));
+    expect(missing.status).toBe(403);
+    expect((await whoAmI(sessionCookie)).authenticated).toBe(true);
+  });
+
   it("logout with a revoked/legacy/missing cookie is a harmless no-op", async () => {
     const { POST: logout } = await import("./logout/route");
     const { createSession } = await import("@/lib/auth/session");
     const legacy = createSession("0x1111111111111111111111111111111111111111").value;
     for (const cookie of [undefined, "garbage", legacy]) {
-      const response = await logout(new Request(`${APP_ORIGIN}/api/auth/logout`, { method: "POST", headers: cookie ? { cookie: `mpgr_session=${cookie}` } : {} }));
+      const response = await logout(new Request(`${APP_ORIGIN}/api/auth/logout`, { method: "POST", headers: cookie ? { origin: APP_ORIGIN, cookie: `mpgr_session=${cookie}` } : { origin: APP_ORIGIN } }));
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ authenticated: false });
     }
@@ -207,7 +225,7 @@ describe("wallet authentication flow (real routes, Lua-backed Redis double)", ()
     expect((await whoAmI(b.sessionCookie)).wallet).toBe(b.account.address.toLowerCase());
     // Revoking A does not touch B.
     const { POST: logout } = await import("./logout/route");
-    await logout(new Request(`${APP_ORIGIN}/api/auth/logout`, { method: "POST", headers: { cookie: `mpgr_session=${a.sessionCookie}` } }));
+    await logout(new Request(`${APP_ORIGIN}/api/auth/logout`, { method: "POST", headers: { origin: APP_ORIGIN, cookie: `mpgr_session=${a.sessionCookie}` } }));
     expect((await whoAmI(a.sessionCookie)).authenticated).toBe(false);
     expect((await whoAmI(b.sessionCookie)).authenticated).toBe(true);
   });
