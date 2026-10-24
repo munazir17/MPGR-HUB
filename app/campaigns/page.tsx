@@ -27,7 +27,7 @@ type TabId = "active" | "upcoming" | "completed" | "all";
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "active", label: "Active" },
-  { id: "upcoming", label: "Upcoming" },
+  { id: "upcoming", label: "Coming Soon" },
   { id: "completed", label: "Completed" },
   { id: "all", label: "All" },
 ];
@@ -35,9 +35,19 @@ const TABS: Array<{ id: TabId; label: string }> = [
 export default function CampaignsPage() {
   const [mounted, setMounted] = useState(false);
   const [tab, setTab] = useState<TabId>("active");
+  const [tabTouched, setTabTouched] = useState(false);
   const { campaigns, loading, error } = useCampaigns();
 
   useEffect(() => setMounted(true), []);
+
+  // Nothing is live yet. Show Coming Soon instead of an empty Active tab
+  // until the operator starts an event. A manual tab click sticks.
+  useEffect(() => {
+    if (tabTouched || loading) return;
+    const active = campaigns.some((campaign) => campaign.status === "active");
+    const upcoming = campaigns.some((campaign) => campaign.status === "upcoming");
+    if (!active && upcoming) setTab("upcoming");
+  }, [campaigns, loading, tabTouched]);
 
   const visible = useMemo(() => {
     if (tab === "all") return campaigns;
@@ -79,7 +89,10 @@ export default function CampaignsPage() {
                   type="button"
                   role="tab"
                   aria-selected={tab === item.id}
-                  onClick={() => setTab(item.id)}
+                  onClick={() => {
+                    setTabTouched(true);
+                    setTab(item.id);
+                  }}
                   className={clsx(
                     "min-h-[36px] shrink-0 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors duration-200 sm:text-sm",
                     tab === item.id

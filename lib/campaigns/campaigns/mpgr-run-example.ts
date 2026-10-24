@@ -1,8 +1,8 @@
 // lib/campaigns/campaigns/mpgr-run-example.ts
 //
 // Example campaign definition — weekly MPGR Run competition.
-// To launch a real campaign: copy this file, change the fields (new id!),
-// and register the export in ./index.ts. No UI or engine changes needed.
+// Nothing has launched. The window stays in the future so this event
+// resolves to upcoming ("Coming soon") until an operator moves startAt.
 
 import type { CampaignDefinition } from "@/lib/campaigns/campaign-types";
 
@@ -13,8 +13,8 @@ const campaign: CampaignDefinition = {
   description:
     "Compete for the weekly MPGR reward pool. Submit verified MPGR Run sessions — every valid run earns campaign points on top of a participation bonus.",
   banner: "/campaigns/mpgr-run-weekly.jpg",
-  startAt: "2026-10-07T00:00:00.000Z",
-  endAt: "2026-10-21T23:59:59.000Z",
+  startAt: "2027-10-07T00:00:00.000Z",
+  endAt: "2027-10-21T23:59:59.000Z",
   status: "auto",
   eventType: "game",
   trackingMetric: "score",

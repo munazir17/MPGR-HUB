@@ -80,7 +80,7 @@ describe("GET /api/campaigns", () => {
 
   it("attaches the viewer standing when a session cookie is present", async () => {
     // Move inside the run window so the join is accepted.
-    vi.setSystemTime(new Date("2026-10-10T12:00:00.000Z"));
+    vi.setSystemTime(new Date("2027-10-10T12:00:00.000Z"));
     const wallet = "0x1111111111111111111111111111111111111111" as const;
     const cookie = await cookieFor(wallet);
 
@@ -104,7 +104,7 @@ describe("GET /api/campaigns", () => {
 
   it("finalizes a completed campaign's leaderboard on read (write-once)", async () => {
     // Move past the agent window so the campaign is completed and finalizable.
-    vi.setSystemTime(new Date("2026-11-16T12:00:00.000Z"));
+    vi.setSystemTime(new Date("2027-11-16T12:00:00.000Z"));
     const res = await getList();
     expect(res.status).toBe(200);
     const data = await res.json();

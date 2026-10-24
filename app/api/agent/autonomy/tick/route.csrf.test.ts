@@ -7,7 +7,14 @@ import type { Address } from "viem";
 
 const WALLET = "0x1111111111111111111111111111111111111111" as Address;
 const APP_ORIGIN = "https://mpgrhub.xyz";
-const tick = vi.fn(async () => ({ ranAt: "now", scanned: 0, evaluated: 0, skippedBusy: 0, disabled: false, results: [] }));
+const tick = vi.fn(async (_input: { wallet?: string }) => ({
+  ranAt: "now",
+  scanned: 0,
+  evaluated: 0,
+  skippedBusy: 0,
+  disabled: false,
+  results: [] as { kind: string }[],
+}));
 
 vi.mock("@/lib/autonomy", () => ({ bootstrapAutonomyPosture: async () => undefined }));
 vi.mock("@/lib/autonomy/api-helpers", () => ({
