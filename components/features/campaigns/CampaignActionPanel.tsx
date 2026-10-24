@@ -95,12 +95,18 @@ export function CampaignActionPanel({
     return (
       <GlassCard className="p-5">
         <p className="text-[12px] font-medium uppercase tracking-[0.14em] text-muted">
-          {campaign.status === "completed" ? "Campaign ended" : "Campaign not active"}
+          {campaign.status === "completed"
+            ? "Campaign ended"
+            : campaign.status === "upcoming"
+              ? "Coming soon"
+              : "Campaign not active"}
         </p>
         <p className="mt-2 text-sm leading-relaxed text-muted">
           {campaign.status === "completed"
             ? "This campaign is closed. The leaderboard below is the finalized result — rewards are distributed manually by the operator."
-            : "Participation opens when the campaign becomes active."}
+            : campaign.status === "upcoming"
+              ? "This event has not started. Participation opens when it goes live."
+              : "Participation opens when the campaign becomes active."}
         </p>
         {viewer?.joined && (
           <div className="mt-4 grid grid-cols-2 gap-3">

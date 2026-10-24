@@ -25,7 +25,7 @@ const APP_ORIGIN = "https://mpgrhub.xyz";
 vi.stubEnv("AUTH_SESSION_SECRET", "s".repeat(32));
 vi.stubEnv("APP_ORIGIN", APP_ORIGIN);
 
-const BASE = Date.parse("2026-10-16T12:00:00.000Z");
+const BASE = Date.parse("2027-10-16T12:00:00.000Z");
 let suiteTick = 0;
 
 const W1 = "0x1111111111111111111111111111111111111111";
@@ -65,7 +65,7 @@ async function post(
   );
 }
 
-function mockRun(sessionId: string, wallet: string, score: number, submittedAt = "2026-10-16T10:00:00.000Z") {
+function mockRun(sessionId: string, wallet: string, score: number, submittedAt = "2027-10-16T10:00:00.000Z") {
   getRunRecord.mockResolvedValueOnce({
     sessionId,
     wallet: wallet as RunRecord["wallet"],
@@ -102,7 +102,7 @@ describe("GET /api/campaigns/[slug]", () => {
 
   it("serves the frozen leaderboard for a completed campaign", async () => {
     // Move past the agent window so it resolves to completed.
-    vi.setSystemTime(new Date("2026-11-16T12:00:00.000Z"));
+    vi.setSystemTime(new Date("2027-11-16T12:00:00.000Z"));
     const res = await get("agent-competition");
     expect(res.status).toBe(200);
     const data = await res.json();

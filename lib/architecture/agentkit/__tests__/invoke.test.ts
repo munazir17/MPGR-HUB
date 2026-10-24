@@ -70,7 +70,7 @@ describe("invokeAgentKitAction allowlist gate", () => {
     if (!result.ok) expect(result.code).toBe("INVALID_INPUT");
   });
 
-  it("rejects make_http_request to a private host before AgentKit fetch", async () => {
+  it("rejects make_http_request to a private host before any fetch", async () => {
     const result = await invokeAgentKitAction({
       actionName: "X402ActionProvider_make_http_request",
       args: { url: "https://127.0.0.1/secret" },
@@ -80,6 +80,66 @@ describe("invokeAgentKitAction allowlist gate", () => {
     if (!result.ok) {
       expect(result.code).toBe("INVALID_INPUT");
     }
+  });
+
+  it("does not follow a redirect onto a private address or return that body", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.includes("127.0.0.1") || url.includes("169.254.169.254")) {
+        return new Response("SECRET_METADATA", { status: 200 });
+      }
+      if (url.startsWith("https://example.com/redir")) {
+        expect(init?.redirect).toBe("manual");
+        return new Response(null, { status: 302, headers: { location: "http://127.0.0.1/latest/meta-data/" } });
+      }
+      throw new Error(`Unexpected network request ${url}`);
+    }));
+
+    const result = await invokeAgentKitAction({
+      actionName: "make_http_request",
+      args: { url: "https://example.com/redir", method: "GET" },
+    });
+
+    expect(seen.some((url) => url.includes("127.0.0.1"))).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("INVALID_INPUT");
+    expect(JSON.stringify(result)).not.toContain("SECRET_METADATA");
+  });
+
+  it("drops a public 200 body and refuses caller headers or a non-GET method", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.startsWith("https://example.com/page")) {
+        return new Response("SECRET_PAGE", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+      throw new Error(`Unexpected network request ${url}`);
+    }));
+
+    const ok = await invokeAgentKitAction({
+      actionName: "make_http_request",
+      args: { url: "https://example.com/page" },
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(JSON.stringify(ok.result)).not.toContain("SECRET_PAGE");
+      expect((ok.result as { data?: unknown }).data).toBeNull();
+    }
+
+    const posted = await invokeAgentKitAction({
+      actionName: "make_http_request",
+      args: { url: "https://example.com/page", method: "POST", body: { steal: true } },
+    });
+    expect(posted.ok).toBe(false);
+    if (!posted.ok) expect(posted.code).toBe("INVALID_INPUT");
+
+    const headed = await invokeAgentKitAction({
+      actionName: "make_http_request",
+      args: { url: "https://example.com/page", headers: { authorization: "Bearer x" } },
+    });
+    expect(headed.ok).toBe(false);
+    if (!headed.ok) expect(headed.code).toBe("INVALID_INPUT");
   });
 
   it("runs mpgr_onchain_policy through AgentKit and returns Base policy JSON", async () => {

@@ -3,7 +3,8 @@
 // The scheduler entry point (spec §10). Reuses the EXISTING scheduling
 // seams — no new worker, no setInterval:
 //   * a live SIWE session triggers a wallet-scoped tick (the client
-//     heartbeat while the app is open);
+//     heartbeat while the app is open) — only after verifyTrustedOrigin,
+//     because the session cookie is SameSite=None;
 //   * Vercel Cron + CRON_SECRET (the repo's only server scheduler, same
 //     pattern as the game settlement route) triggers a bounded all-wallet
 //     pass.
@@ -24,7 +25,7 @@
 import { NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 
-import { requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
+import { requestIdFromRequest, verifyTrustedOrigin, withRequestId } from "@/lib/api/request-guard";
 import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 import { authenticateRequest } from "@/lib/auth/session-store";
 import { isAutonomousAgentEnabled } from "@/lib/autonomy/config";
@@ -75,6 +76,12 @@ async function runTick(request: Request, opts: { cronOnly: boolean }): Promise<R
     if (opts.cronOnly) {
       return json({ error: "Unauthorized", code: "CRON_AUTH_REQUIRED" }, { status: 401, headers: { "Cache-Control": "no-store" } });
     }
+    // Session cookie is SameSite=None in production (Mini App webview).
+    // A cross-site page can therefore POST this heartbeat and force a
+    // wallet-scoped evaluation of already-authorized swaps. Cron keeps
+    // working: it authenticates with CRON_SECRET and never reaches here.
+    const originError = verifyTrustedOrigin(request);
+    if (originError) return withRequestId(originError, requestId);
     const session = await authenticateRequest(request);
     if (!session) return json({ error: "Authentication required", code: "AUTH_REQUIRED" }, { status: 401, headers: { "Cache-Control": "no-store" } });
     const rate = await checkRateLimit(`${session.wallet.toLowerCase()}:autonomy-tick`, RATE_LIMIT, RATE_WINDOW_MS);
