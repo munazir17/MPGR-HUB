@@ -1,36 +1,19 @@
 // lib/campaigns/adapters/trading-adapter.ts
 //
-// eventType "trading" — manual actions with a bounded numeric input
-// (e.g. reported session volume). The shared validation already clamps
-// the value to the configured [min, max] integer range and enforces
-// per-day caps; this adapter exists so trading-specific rules (hooks
-// into a future server trade ledger, stricter bounds, allow-lists) can
-// be added WITHOUT touching the Campaign page or the core engine.
+// eventType "trading". Client-reported volume is not a trade.
+// Points stay refused until a server trade record is the evidence source.
 
 import type { AdapterContext, AdapterValidation, CampaignEventAdapter } from "./types";
-import { collectNumericEvidence } from "./shared";
 
 export const tradingCampaignAdapter: CampaignEventAdapter = {
   eventType: "trading",
 
-  validate(context: AdapterContext): AdapterValidation {
-    const { action, payload } = context;
-
-    if (action.evidence) {
-      // No trading evidence source is wired yet — fail closed instead of
-      // trusting whatever the client sent.
-      return { ok: false, reason: "Unsupported trading evidence source." };
-    }
-
-    const evidence = collectNumericEvidence(action, payload);
-    if (!evidence) {
-      return { ok: false, reason: "Missing or out-of-range trading input." };
-    }
-
+  validate(_context: AdapterContext): AdapterValidation {
+    // No server trade ledger is wired. Client volume (volumeUsd or any
+    // other numeric field) must not become campaign points.
     return {
-      ok: true,
-      evidence,
-      evidenceId: null,
+      ok: false,
+      reason: "Trading points require a server trade record. Client-reported volume is not accepted.",
     };
   },
 };

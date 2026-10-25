@@ -1,7 +1,7 @@
 // lib/campaigns/campaigns/trading-example.ts
 //
-// Example campaign definition — trading competition with a non-MPGR
-// reward, demonstrating that rewards are free-form (type/pool/symbol).
+// Nothing has launched. The window stays in the future so this event
+// resolves to upcoming ("Coming soon") until an operator moves startAt.
 
 import type { CampaignDefinition } from "@/lib/campaigns/campaign-types";
 
@@ -12,8 +12,8 @@ const campaign: CampaignDefinition = {
   description:
     "Put your Base trading to work. Log qualifying trading sessions during the event window and climb the campaign leaderboard for a tokenized-stock reward pool.",
   banner: "/campaigns/trading-competition.jpg",
-  startAt: "2026-10-01T00:00:00.000Z",
-  endAt: "2026-10-15T23:59:59.000Z",
+  startAt: "2027-10-01T00:00:00.000Z",
+  endAt: "2027-10-15T23:59:59.000Z",
   status: "auto",
   eventType: "trading",
   trackingMetric: "volume",

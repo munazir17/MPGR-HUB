@@ -59,7 +59,7 @@ function runRecord(patch: Partial<RunRecord> = {}): RunRecord {
     sessionId: "session-abc-123",
     wallet: W1 as RunRecord["wallet"],
     weekKey: "2026-W41",
-    submittedAt: "2026-10-10T10:00:00.000Z",
+    submittedAt: "2027-10-10T10:00:00.000Z",
     serverValidated: true,
     result: { score: 4_200 } as RunRecord["result"],
     ...patch,
@@ -154,7 +154,7 @@ describe("shared validation pipeline", () => {
 
 describe("game adapter (server RunRecord evidence)", () => {
   const campaign = findCampaignBySlug("mpgr-run-weekly")!;
-  const now = new Date("2026-10-10T12:00:00.000Z");
+  const now = new Date("2027-10-10T12:00:00.000Z");
 
   it("derives score and idempotency id from the server record", async () => {
     getRunRecord.mockResolvedValueOnce(runRecord());
@@ -194,6 +194,36 @@ describe("game adapter (server RunRecord evidence)", () => {
   it("fails closed when the evidence store throws", async () => {
     getRunRecord.mockRejectedValueOnce(new Error("redis down"));
     const result = await resolveCampaignAction(campaign, "verified_run", W1, { sessionId: "session-abc-123" }, now);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("adapter-rejected");
+  });
+});
+
+describe("agent and trading adapters refuse client-claimed points", () => {
+  it("does not award agent-competition points for a bare task claim", async () => {
+    const campaign = findCampaignBySlug("agent-competition");
+    expect(campaign).toBeTruthy();
+    const result = await resolveCampaignAction(
+      campaign!,
+      "agent_task_completed",
+      W1,
+      {},
+      new Date("2027-11-02T12:00:00.000Z"),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("adapter-rejected");
+  });
+
+  it("does not award trading points from client-reported volume", async () => {
+    const campaign = findCampaignBySlug("trading-competition");
+    expect(campaign).toBeTruthy();
+    const result = await resolveCampaignAction(
+      campaign!,
+      "log_trade_session",
+      W1,
+      { volumeUsd: 5_000_000 },
+      new Date("2027-10-10T12:00:00.000Z"),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("adapter-rejected");
   });

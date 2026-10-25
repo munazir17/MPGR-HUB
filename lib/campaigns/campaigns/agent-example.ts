@@ -1,8 +1,8 @@
 // lib/campaigns/campaigns/agent-example.ts
 //
 // Example campaign definition — AI agent activity competition.
-// The window is set in the future so the campaign currently resolves to
-// upcoming; the operator activates campaigns later by editing startAt/endAt.
+// Nothing has launched. The window stays in the future so this event
+// resolves to upcoming ("Coming soon") until an operator moves startAt.
 
 import type { CampaignDefinition } from "@/lib/campaigns/campaign-types";
 
@@ -13,8 +13,8 @@ const campaign: CampaignDefinition = {
   description:
     "A community competition rewarding the wallets that put the MPGR AI Agent to work. Join with your connected wallet, complete agent tasks during the event window, and climb the campaign leaderboard.",
   banner: "/campaigns/agent-competition.jpg",
-  startAt: "2026-11-01T00:00:00.000Z",
-  endAt: "2026-11-15T23:59:59.000Z",
+  startAt: "2027-11-01T00:00:00.000Z",
+  endAt: "2027-11-15T23:59:59.000Z",
   status: "auto",
   eventType: "agent",
   trackingMetric: "activity",

@@ -81,17 +81,17 @@ describe("campaign lifecycle status (start/end)", () => {
   });
 
   it("is active exactly inside the window", () => {
-    vi.setSystemTime(new Date("2026-10-07T00:00:00.000Z"));
+    vi.setSystemTime(new Date("2027-10-07T00:00:00.000Z"));
     expect(resolveCampaignStatus(mpgrRun)).toBe("active");
-    vi.setSystemTime(new Date("2026-10-15T12:00:00.000Z"));
+    vi.setSystemTime(new Date("2027-10-15T12:00:00.000Z"));
     expect(resolveCampaignStatus(mpgrRun)).toBe("active");
   });
 
   it("is completed at/after endAt", () => {
-    vi.setSystemTime(new Date("2026-10-21T23:59:59.000Z"));
+    vi.setSystemTime(new Date("2027-10-21T23:59:59.000Z"));
     // endAt is inclusive to the last second (status flips when now >= end).
     const atEnd = resolveCampaignStatus(mpgrRun);
-    vi.setSystemTime(new Date("2026-10-22T00:00:00.000Z"));
+    vi.setSystemTime(new Date("2027-10-22T00:00:00.000Z"));
     expect(resolveCampaignStatus(mpgrRun)).toBe("completed");
     expect(["active", "completed"]).toContain(atEnd);
     expect(isCampaignActive(mpgrRun)).toBe(false);
@@ -121,13 +121,13 @@ describe("multiple campaigns coexist", () => {
   });
 
   it("moves examples through upcoming → active → completed as clocks cross their windows", () => {
-    vi.setSystemTime(new Date("2026-10-10T12:00:00.000Z"));
+    vi.setSystemTime(new Date("2027-10-10T12:00:00.000Z"));
     const active = getCampaignsByStatus("active").map((c) => c.slug);
     expect(active).toContain("mpgr-run-weekly");
     expect(active).toContain("trading-competition");
     expect(getCampaignsByStatus("upcoming").map((c) => c.slug)).toContain("agent-competition");
 
-    vi.setSystemTime(new Date("2026-11-05T12:00:00.000Z"));
+    vi.setSystemTime(new Date("2027-11-05T12:00:00.000Z"));
     expect(getCampaignsByStatus("active").map((c) => c.slug)).toContain("agent-competition");
     const completed = getCampaignsByStatus("completed").map((c) => c.slug);
     expect(completed).toContain("mpgr-run-weekly");

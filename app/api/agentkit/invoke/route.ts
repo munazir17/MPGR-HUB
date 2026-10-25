@@ -106,10 +106,25 @@ export async function POST(request: Request) {
       ? mapAgentKitHttpResult(invoked.result, args.url)
       : null;
 
+  // Never echo an arbitrary upstream body. 402 payment requirements are
+  // the only payload this action is allowed to return.
+  const result =
+    actionName === "make_http_request"
+      ? mapped?.status === 402
+        ? mapped.body
+        : {
+            success: true,
+            url: mapped?.finalUrl ?? args.url,
+            method: "GET",
+            status: mapped?.status ?? 0,
+            data: null,
+          }
+      : invoked.result;
+
   return json(
     {
       actionName: invoked.actionName,
-      result: invoked.result,
+      result,
       ...(mapped
         ? {
             discovery: mapped,

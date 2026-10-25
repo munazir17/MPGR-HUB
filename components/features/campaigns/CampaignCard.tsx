@@ -18,7 +18,7 @@ export function campaignStatusStyles(status: CampaignStatus): { label: string; c
     case "active":
       return { label: "Active", className: "border-primary/30 bg-primary/10 text-primary" };
     case "upcoming":
-      return { label: "Upcoming", className: "border-gold/30 bg-gold/10 text-gold" };
+      return { label: "Coming Soon", className: "border-gold/30 bg-gold/10 text-gold" };
     case "paused":
       return { label: "Paused", className: "border-white/15 bg-white/[0.04] text-muted" };
     default:

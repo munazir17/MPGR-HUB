@@ -9,7 +9,7 @@ import { createMpgrAgentKit } from "./runtime";
 import { isPrepareOnlyError } from "./prepare-only-wallet";
 import { PREPARE_ONLY_ERROR } from "./config";
 import { parseAgentKitResult } from "./map-x402";
-import { resolveDiscoveryTarget } from "@/lib/x402/x402-discover";
+import { resolveDiscoveryTarget, discoverX402Resource, X402DiscoveryError } from "@/lib/x402/x402-discover";
 
 export interface AgentKitInvokeRequest {
   actionName: string;
@@ -64,53 +64,78 @@ function safeErrorMessage(error: unknown): string {
 }
 
 /**
- * SSRF gate for AgentKit's make_http_request.
+ * User-supplied HTTP goes through discoverX402Resource, never AgentKit.
  *
- * This now performs the FULL gate — scheme + host classification +
- * DNS resolution, where every returned A/AAAA record must be public —
- * rather than the previous scheme/host-literal-only check. That closes
- * the "public hostname resolving to 127.0.0.1 / 169.254.169.254" case
- * on this path too.
+ * AgentKit's makeHttpRequest follows redirects, retries a 404 as POST,
+ * forwards caller headers/body, and returns the response body. A public
+ * first hop can 302 to 169.254.169.254 or rebind DNS, and
+ * POST /api/agentkit/invoke used to echo that body.
  *
- * KNOWN RESIDUAL RISK — redirects.
- * AgentKit performs the HTTP request inside its own action provider and
- * follows redirects itself. There is no hook to validate each hop, and
- * no way to pin the socket. So a public, allowed first hop that
- * 302-redirects to an internal address is still followed by AgentKit.
- *
- * Why this is acceptable today: the one caller that reaches AgentKit
- * with a user-supplied URL is POST /api/x402/discover, which is now
- * authenticated, origin-checked and rate limited, and which returns a
- * non-402 body as `null` (see readResponseBody / mapAgentKitHttpResult)
- * so an internal response body is not echoed back to the caller.
- *
- * The fully-gated path — lib/x402/x402-discover.ts's
- * discoverX402Resource — follows redirects manually and re-resolves
- * every hop. Preferring that path for all outbound discovery, or
- * disabling redirects in the AgentKit action provider, is tracked as
- * follow-up work and is deliberately NOT bundled into this PR.
+ * discoverX402Resource is GET-only, follows redirects manually, re-checks
+ * every hop, pins the resolved address, and returns a body only for 402.
  */
-async function assertHttpActionUrl(
-  canonical: string,
+async function invokeSafeHttpRequest(
   args: Record<string, unknown>,
-): Promise<AgentKitInvokeResult | null> {
-  if (canonical !== "make_http_request") {
-    return null;
-  }
-
-  const url = typeof args.url === "string" ? args.url : "";
-
-  try {
-    await resolveDiscoveryTarget(url);
-    return null;
-  } catch (error) {
+): Promise<AgentKitInvokeResult> {
+  const method = args.method;
+  if (method !== undefined && method !== "GET") {
     return {
       ok: false,
       code: "INVALID_INPUT",
-      error:
-        error instanceof Error
+      error: "Only a GET request is allowed.",
+    };
+  }
+  if (
+    args.headers !== undefined ||
+    args.body !== undefined ||
+    args.queryParams !== undefined
+  ) {
+    return {
+      ok: false,
+      code: "INVALID_INPUT",
+      error: "Custom headers, bodies, and query parameters are not allowed.",
+    };
+  }
+
+  const url = typeof args.url === "string" ? args.url : "";
+  try {
+    // Resolve first so a blocked host fails as input, not as a fetch error.
+    await resolveDiscoveryTarget(url);
+    const found = await discoverX402Resource(url);
+    if (found.status === 402 && found.body && typeof found.body === "object") {
+      return {
+        ok: true,
+        actionName: "make_http_request",
+        result: found.body,
+      };
+    }
+    return {
+      ok: true,
+      actionName: "make_http_request",
+      result: {
+        success: true,
+        url: found.finalUrl,
+        method: "GET",
+        status: found.status,
+        data: null,
+      },
+    };
+  } catch (error) {
+    if (error instanceof X402DiscoveryError) {
+      const input =
+        error.code === "INVALID_URL" || error.code === "BLOCKED_HOST";
+      return {
+        ok: false,
+        code: input ? "INVALID_INPUT" : "PROVIDER_ERROR",
+        error: input
           ? error.message
-          : "That resource URL is not allowed.",
+          : "Could not reach that resource.",
+      };
+    }
+    return {
+      ok: false,
+      code: "PROVIDER_ERROR",
+      error: "Could not reach that resource.",
     };
   }
 }
@@ -149,9 +174,8 @@ export async function invokeAgentKitAction(
   }
 
   const args = request.args ?? {};
-  const blockedUrl = await assertHttpActionUrl(canonical, args);
-  if (blockedUrl) {
-    return blockedUrl;
+  if (canonical === "make_http_request") {
+    return invokeSafeHttpRequest(args);
   }
 
   try {
