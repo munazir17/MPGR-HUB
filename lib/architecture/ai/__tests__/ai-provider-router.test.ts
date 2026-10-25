@@ -43,7 +43,7 @@ describe("resolveProviderKindOrder", () => {
   it("always ends with deterministic and only uses implemented network kinds", () => {
     const order = resolveProviderKindOrder("general");
     expect(order.at(-1)).toBe("deterministic");
-    expect(order).toEqual(["gemini", "nvidia", "openai", "deterministic"]);
+    expect(order).toEqual(["gemini", "groq", "nvidia", "openrouter", "openai", "deterministic"]);
     expect(order).not.toContain("anthropic");
   });
 
@@ -54,7 +54,9 @@ describe("resolveProviderKindOrder", () => {
   it("keeps Gemini primary for structured turns, with NVIDIA then OpenAI as fallbacks", () => {
     expect(resolveProviderKindOrder("structured")).toEqual([
       "gemini",
+      "groq",
       "nvidia",
+      "openrouter",
       "openai",
       "deterministic",
     ]);

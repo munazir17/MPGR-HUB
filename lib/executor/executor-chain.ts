@@ -11,6 +11,7 @@ import { createPublicClient, fallback, http, type Address, type Hex } from "viem
 import { base, baseSepolia } from "viem/chains";
 
 import { DELEGATED_MAINNET_RPC_BOUNDS } from "@/lib/delegated/rpc-bounds";
+import { parseEndpointList, PUBLIC_BASE_RPC_URLS, uniqueRpcUrls } from "@/lib/chain/rpc-endpoints";
 
 import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, type ExecutorChainId } from "./executor-config";
 import type { ReceiptLike } from "./executor-verify";
@@ -32,14 +33,21 @@ export interface ChainReader {
 
 export function executorRpcUrl(chainId: ExecutorChainId): string {
   if (chainId === BASE_SEPOLIA_CHAIN_ID) return process.env.BASE_SEPOLIA_RPC_URL?.trim() || "https://sepolia.base.org";
-  return process.env.BASE_RPC_URL?.trim() || "https://mainnet.base.org";
+  return executorMainnetRpcUrls()[0] ?? "https://mainnet.base.org";
 }
 
-// Second public Base mainnet endpoint used ONLY when no server RPC is
-// configured (see createChainReader). Kept as a literal here — importing
-// transport plumbing from lib/trade would couple the executor to a module
-// several route tests replace with minimal mocks.
-const BASE_MAINNET_PUBLIC_FALLBACK_RPC = "https://base-rpc.publicnode.com";
+/** Trusted server URLs when the operator configured any. Otherwise the
+ * public list. A single configured URL stays a single transport so a
+ * dedicated RPC failure still does not silently hop to a public node. */
+export function executorMainnetRpcUrls(): string[] {
+  const trusted = uniqueRpcUrls([process.env.BASE_RPC_URL, ...parseEndpointList(process.env.BASE_RPC_URLS)]);
+  if (trusted.length > 0) return trusted;
+  return [...PUBLIC_BASE_RPC_URLS];
+}
+
+// Public Base endpoints live in lib/chain/rpc-endpoints.ts. They are used
+// only when the operator has not configured BASE_RPC_URL / BASE_RPC_URLS.
+// A configured dedicated URL still does not fall through to a public node.
 
 // ---------------------------------------------------------------------------
 // Receipt-read hardening (application-level, additive).
@@ -62,7 +70,7 @@ const BASE_MAINNET_PUBLIC_FALLBACK_RPC = "https://base-rpc.publicnode.com";
 //    to getTransactionReceipt AFTER the primary read errored;
 //  - PUBLIC, key-less endpoints only; never any secret or paid token;
 //  - all endpoints failing rethrows the ORIGINAL error (fail closed).
-const BASE_MAINNET_RECEIPT_FALLBACK_URLS = ["https://mainnet.base.org", "https://base-rpc.publicnode.com"] as const;
+const BASE_MAINNET_RECEIPT_FALLBACK_URLS = PUBLIC_BASE_RPC_URLS;
 
 /** origin-only (paths/credentials never logged — mirrors trade-public-client discipline). */
 function safeOrigin(rawUrl: string): string {
@@ -168,26 +176,22 @@ export function createChainReader(chainId: ExecutorChainId): ChainReader {
   //    8 s, one retry). viem's default (10 s, 3 retries, timeouts retried) let one dead
   //    RPC cost ~40 s per call and pushed a tick past maxDuration.
   //  - Sepolia: unchanged (10 s timeout, viem default retries).
-  const configured = Boolean(process.env.BASE_RPC_URL?.trim());
+  const mainnetUrls = executorMainnetRpcUrls();
+  const configured = Boolean(process.env.BASE_RPC_URL?.trim() || process.env.BASE_RPC_URLS?.trim());
   const timeout = 10_000;
   const mainnetBounds = {
     timeout: DELEGATED_MAINNET_RPC_BOUNDS.timeoutMs,
     retryCount: DELEGATED_MAINNET_RPC_BOUNDS.retryCount,
   };
+  const mainnetTransport = !configured || mainnetUrls.length > 1
+    ? fallback(mainnetUrls.map((url) => http(url, mainnetBounds)), { retryCount: 0 })
+    : http(mainnetUrls[0], mainnetBounds);
   const client =
-    chainId === BASE_MAINNET_CHAIN_ID && !configured
-      ? createPublicClient({
-          chain: base,
-          transport: fallback([
-            http(executorRpcUrl(chainId), mainnetBounds),
-            http(BASE_MAINNET_PUBLIC_FALLBACK_RPC, mainnetBounds),
-          ]),
-        })
+    chainId === BASE_MAINNET_CHAIN_ID
+      ? createPublicClient({ chain: base, transport: mainnetTransport })
       : createPublicClient({
-          chain: chainId === BASE_MAINNET_CHAIN_ID ? base : baseSepolia,
-          transport: chainId === BASE_MAINNET_CHAIN_ID
-            ? http(executorRpcUrl(chainId), mainnetBounds)
-            : http(executorRpcUrl(chainId), { timeout }),
+          chain: baseSepolia,
+          transport: http(executorRpcUrl(chainId), { timeout }),
         });
   return {
     chainId,

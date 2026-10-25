@@ -48,13 +48,20 @@ import { fetchWithSession } from "@/lib/api/authenticated-fetch";
 // error — degrades to the deterministic engine rather than breaking the
 // Agent.
 export class OpenAIAIProvider implements AIProvider {
-  readonly name = "openai";
   readonly requiresNetwork = true;
+  readonly name: string;
+  private readonly route: string;
+
+  constructor(name = "openai", route = "/api/agent/complete") {
+    this.name = name;
+    this.route = route;
+  }
 
   async generateReply(request: AIProviderRequest): Promise<AIProviderResponse> {
     const baseSystemPrompt = buildSystemPrompt(request);
     const advertisedTools = selectAdvertisedToolsForPrompt(request.prompt);
-    return runToolCallingLoop(request, baseSystemPrompt, sendCompletion, {
+    const route = this.route;
+    return runToolCallingLoop(request, baseSystemPrompt, (systemPrompt, userPrompt) => sendCompletion(systemPrompt, userPrompt, route), {
       compactToolCatalog: true,
       toolCatalog: advertisedTools,
     });
@@ -66,13 +73,13 @@ export class OpenAIAIProvider implements AIProvider {
 // get back { content }. runToolCallingLoop calls this once per model turn
 // (up to its bounded max) — it has no knowledge of OpenAI, this route, or
 // fetch at all.
-export async function sendCompletion(systemPrompt: string, userPrompt: string): Promise<string> {
-  return postComplete(systemPrompt, userPrompt, true);
+export async function sendCompletion(systemPrompt: string, userPrompt: string, route = "/api/agent/complete"): Promise<string> {
+  return postComplete(systemPrompt, userPrompt, true, route);
 }
 
-async function postComplete(systemPrompt: string, userPrompt: string, allowCompactRetry: boolean): Promise<string> {
+async function postComplete(systemPrompt: string, userPrompt: string, allowCompactRetry: boolean, route: string): Promise<string> {
   const sized = compactPromptInputs(systemPrompt, userPrompt);
-  const res = await fetchWithSession("/api/agent/complete", {
+  const res = await fetchWithSession(route, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ systemPrompt: sized.systemPrompt, userPrompt: sized.userPrompt }),
@@ -86,7 +93,7 @@ async function postComplete(systemPrompt: string, userPrompt: string, allowCompa
         systemChars: 6_000,
         userChars: 2_000,
       });
-      return postComplete(retry.systemPrompt, retry.userPrompt, false);
+      return postComplete(retry.systemPrompt, retry.userPrompt, false, route);
     }
     throw new Error(message);
   }

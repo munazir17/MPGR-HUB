@@ -40,7 +40,7 @@ export function classifyAgentTask(prompt: string): AgentModelTask {
 /**
  * Preferred network order for a turn.
  * Default remains the configured provider (Gemini unless NEXT_PUBLIC_AI_PROVIDER says otherwise).
- * Chain: Gemini → NVIDIA NIM → OpenAI → deterministic.
+ * Chain: Gemini → Groq → NVIDIA NIM → OpenRouter → OpenAI → deterministic.
  * Research turns still prefer Gemini when it is implemented.
  * Unimplemented kinds are never returned.
  */

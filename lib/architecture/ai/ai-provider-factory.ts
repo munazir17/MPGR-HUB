@@ -4,6 +4,8 @@ import { DeterministicAIProvider } from "./deterministic-ai-provider";
 import { OpenAIAIProvider } from "./openai-ai-provider";
 import { GeminiAIProvider } from "./gemini-ai-provider";
 import { NvidiaAIProvider } from "./nvidia-ai-provider";
+import { GroqAIProvider } from "./groq-ai-provider";
+import { OpenRouterAIProvider } from "./openrouter-ai-provider";
 
 // Phase 3C Part 3 — AI Provider factory.
 //
@@ -37,6 +39,10 @@ export function createAIProvider(kind: AIProviderKind): AIProvider {
       return new GeminiAIProvider();
     case "nvidia":
       return new NvidiaAIProvider();
+    case "groq":
+      return new GroqAIProvider();
+    case "openrouter":
+      return new OpenRouterAIProvider();
     case "deterministic":
     default:
       return new DeterministicAIProvider();
