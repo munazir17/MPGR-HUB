@@ -32,6 +32,7 @@
 
 import { createPublicClient, fallback, http } from "viem";
 import { base } from "wagmi/chains";
+import { parseEndpointList, PUBLIC_BASE_RPC_URLS, uniqueRpcUrls } from "@/lib/chain/rpc-endpoints";
 
 const DEFAULT_TIMEOUT_MS = 12_000;
 const DEFAULT_RETRY_COUNT = 2;
@@ -177,13 +178,12 @@ function shouldRetryRpcFailure(error: unknown): boolean {
 }
 
 export function rpcUrls(): string[] {
-  const urls = [
-    process.env.BASE_RPC_URL?.trim(),
-    process.env.NEXT_PUBLIC_BASE_RPC_URL?.trim(),
-    "https://mainnet.base.org",
-    "https://base-rpc.publicnode.com",
-  ].filter((url): url is string => !!url && url.length > 0);
-  return [...new Set(urls)];
+  return uniqueRpcUrls([
+    process.env.BASE_RPC_URL,
+    ...parseEndpointList(process.env.BASE_RPC_URLS),
+    process.env.NEXT_PUBLIC_BASE_RPC_URL,
+    ...PUBLIC_BASE_RPC_URLS,
+  ]);
 }
 
 // --- sanitized transport diagnostics (no secrets ever) ----------------

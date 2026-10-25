@@ -32,7 +32,9 @@ export type AIProviderKind =
   | "anthropic"
   | "gemini"
   | "ollama"
-  | "nvidia";
+  | "nvidia"
+  | "groq"
+  | "openrouter";
 
 const DEFAULT_PROVIDER_KIND: AIProviderKind = "gemini";
 
@@ -43,6 +45,8 @@ const ALL_PROVIDER_KINDS: readonly AIProviderKind[] = [
   "gemini",
   "ollama",
   "nvidia",
+  "groq",
+  "openrouter",
 ];
 
 // Grows as later Phase 3C parts add real implementations. Kept as its own
@@ -53,12 +57,17 @@ const IMPLEMENTED_PROVIDER_KINDS: readonly AIProviderKind[] = [
   "openai",
   "gemini",
   "nvidia",
+  "groq",
+  "openrouter",
 ];
 
-/** Network providers that already have a client + server route. Anthropic/Ollama stay declared-only. */
+/** Network providers that already have a client + server route. Anthropic/Ollama stay declared-only.
+ * Order is the failover order: free-tier Gemini, then Groq, NVIDIA, OpenRouter, OpenAI. */
 export const IMPLEMENTED_NETWORK_PROVIDER_KINDS: readonly AIProviderKind[] = [
   "gemini",
+  "groq",
   "nvidia",
+  "openrouter",
   "openai",
 ];
 

@@ -10,6 +10,7 @@ import {
   verifyTrustedOrigin,
 } from "@/lib/api/request-guard";
 import { composeTrustedPromptParts, compactPromptInputs, validatePromptInputs } from "@/lib/architecture/ai/server-policy";
+import { isRetryableProviderStatus, readApiKeys, rotateApiKeys } from "@/lib/architecture/ai/api-key-pool";
 
 // Phase 3C Part 6 — server-side Route Handler for the OpenAI provider.
 //
@@ -57,14 +58,8 @@ export async function POST(request: Request) {
   if (rateError) return withRequestId(rateError, requestId);
   const budgetError = await enforceAiDailyBudget(request);
   if (budgetError) return withRequestId(budgetError, requestId);
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    // No key configured — a clear, fast 503 rather than a hung request.
-    // The client-side provider throws on any non-OK response, which
-    // CircuitBreakerAIProvider and FallbackAIProvider (already wired in
-    // Phase 3C Part 5's default composition) turn into a fast, seamless
-    // fallback to the deterministic engine — so an unconfigured key
-    // degrades gracefully rather than breaking the Agent.
+  const keys = rotateApiKeys("openai", readApiKeys("OPENAI_API_KEY", "OPENAI_API_KEYS"));
+  if (keys.length === 0) {
     return respond({ error: "OPENAI_API_KEY is not configured on the server." }, { status: 503 });
   }
 
@@ -86,27 +81,36 @@ export async function POST(request: Request) {
 
   const model = process.env.OPENAI_MODEL || DEFAULT_MODEL;
 
-  let upstream: Response;
-  try {
-    upstream = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: AbortSignal.timeout(20_000),
-      body: JSON.stringify({
-        model,
-        temperature: 0.4,
-        max_tokens: 700,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: bounded.systemPrompt },
-          { role: "user", content: bounded.userPrompt },
-        ],
-      }),
-    });
-  } catch (err) {
+  let upstream: Response | undefined;
+  for (const apiKey of keys) {
+    try {
+      upstream = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        signal: AbortSignal.timeout(20_000),
+        body: JSON.stringify({
+          model,
+          temperature: 0.4,
+          max_tokens: 700,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: bounded.systemPrompt },
+            { role: "user", content: bounded.userPrompt },
+          ],
+        }),
+      });
+    } catch {
+      upstream = undefined;
+      continue;
+    }
+    if (upstream.ok || !isRetryableProviderStatus(upstream.status)) break;
+    await upstream.text().catch(() => "");
+    upstream = undefined;
+  }
+  if (!upstream) {
     return respond({ error: "Failed to reach OpenAI. Please retry shortly." }, { status: 502 });
   }
 

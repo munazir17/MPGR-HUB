@@ -23,6 +23,7 @@ import {
   resolveNvidiaModel,
   type NvidiaTool,
 } from "@/lib/architecture/ai/nvidia-function-calling";
+import { isRetryableProviderStatus, readApiKeys, rotateApiKeys } from "@/lib/architecture/ai/api-key-pool";
 
 // Server-side Route Handler for NVIDIA NIM.
 //
@@ -68,8 +69,8 @@ export async function POST(request: Request) {
   const budgetError = await enforceAiDailyBudget(request);
   if (budgetError) return withRequestId(budgetError, requestId);
 
-  const apiKey = process.env.NVIDIA_API_KEY;
-  if (!apiKey) {
+  const keys = rotateApiKeys("nvidia", readApiKeys("NVIDIA_API_KEY", "NVIDIA_API_KEYS"));
+  if (keys.length === 0) {
     // Missing key is a skip, not a crash: the provider chain falls
     // through to OpenAI then the deterministic engine.
     logNvidiaEvent("skipped_missing_key", { code: "PROVIDER_UNREACHABLE", requestId });
@@ -129,19 +130,28 @@ export async function POST(request: Request) {
     payload.tool_choice = "auto";
   }
 
-  let upstream: Response;
-  try {
-    upstream = await fetch(nvidiaChatCompletionsUrl(baseUrl), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/json",
-      },
-      signal: AbortSignal.timeout(20_000),
-      body: JSON.stringify(payload),
-    });
-  } catch {
+  let upstream: Response | undefined;
+  for (const apiKey of keys) {
+    try {
+      upstream = await fetch(nvidiaChatCompletionsUrl(baseUrl), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "application/json",
+        },
+        signal: AbortSignal.timeout(20_000),
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      upstream = undefined;
+      continue;
+    }
+    if (upstream.ok || !isRetryableProviderStatus(upstream.status)) break;
+    await upstream.text().catch(() => "");
+    upstream = undefined;
+  }
+  if (!upstream) {
     logNvidiaEvent("upstream_unreachable", { code: "PROVIDER_UNREACHABLE", requestId });
     return respond(
       {

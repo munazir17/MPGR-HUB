@@ -19,6 +19,7 @@ import {
   resolveGeminiModel,
   type GeminiFunctionDeclaration,
 } from "@/lib/architecture/ai/gemini-function-declarations";
+import { isRetryableProviderStatus, readApiKeys, rotateApiKeys } from "@/lib/architecture/ai/api-key-pool";
 
 // Phase 3C Gemini addendum — server-side Route Handler for the Gemini
 // provider.
@@ -96,9 +97,8 @@ export async function POST(request: Request) {
   if (rateError) return withRequestId(rateError, requestId);
   const budgetError = await enforceAiDailyBudget(request);
   if (budgetError) return withRequestId(budgetError, requestId);
-  const apiKey = process.env.GEMINI_API_KEY;
-
-  if (!apiKey) {
+  const keys = rotateApiKeys("gemini", readApiKeys("GEMINI_API_KEY", "GEMINI_API_KEYS"));
+  if (keys.length === 0) {
     return respond(
       {
         error: "GEMINI_API_KEY is not configured on the server.",
@@ -172,19 +172,28 @@ export async function POST(request: Request) {
     functionDeclarations,
   });
 
-  let upstream: Response;
+  let upstream: Response | undefined;
+  for (const apiKey of keys) {
+    try {
+      upstream = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        signal: AbortSignal.timeout(20_000),
+        body: JSON.stringify(geminiPayload),
+      });
+    } catch {
+      upstream = undefined;
+      continue;
+    }
+    if (upstream.ok || !isRetryableProviderStatus(upstream.status)) break;
+    await upstream.text().catch(() => "");
+    upstream = undefined;
+  }
 
-  try {
-    upstream = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-      signal: AbortSignal.timeout(20_000),
-      body: JSON.stringify(geminiPayload),
-    });
-  } catch {
+  if (!upstream) {
     logGeminiEvent("upstream_unreachable", {
       code: "PROVIDER_UNREACHABLE",
     });

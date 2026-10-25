@@ -104,16 +104,22 @@ const DEAD_PORT_2 = "http://127.0.0.1:2";
 afterEach(() => {
   resetBaseRpcProbeForTests();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 describe("Base RPC fallback transport", () => {
   it("orders providers: configured server URL first, then browser URL, then public defaults, deduped", () => {
     vi.stubEnv("BASE_RPC_URL", "  https://rpc.example.internal  ");
+    vi.stubEnv("BASE_RPC_URLS", "https://rpc-b.example.internal, https://rpc.example.internal");
     vi.stubEnv("NEXT_PUBLIC_BASE_RPC_URL", "https://mainnet.base.org");
     expect(rpcUrls()).toEqual([
       "https://rpc.example.internal",
+      "https://rpc-b.example.internal",
       "https://mainnet.base.org",
       "https://base-rpc.publicnode.com",
+      "https://base.llamarpc.com",
+      "https://base.drpc.org",
+      "https://1rpc.io/base",
     ]);
   });
 
@@ -528,6 +534,7 @@ describe("executor chain reader (server RPC selection)", () => {
     const configured = await startRpcServer((_body, res) => rateLimited(res));
     const healthy = await startRpcServer((body, res) => healthyJsonRpc(res, body));
     vi.stubEnv("BASE_RPC_URL", configured.url);
+    vi.stubEnv("BASE_RPC_URLS", "");
     const realFetch = globalThis.fetch;
     vi.stubGlobal("fetch", ((input: string | URL | Request, init?: RequestInit) =>
       realFetch(input, init)) as typeof fetch);
@@ -549,6 +556,7 @@ describe("executor chain reader (server RPC selection)", () => {
     const limited = await startRpcServer((_body, res) => rateLimited(res));
     const healthy = await startRpcServer((body, res) => healthyJsonRpc(res, body));
     vi.stubEnv("BASE_RPC_URL", "");
+    vi.stubEnv("BASE_RPC_URLS", "");
     const realFetch = globalThis.fetch;
     // Redirect the hard-coded public hostnames to local mocks (no egress).
     vi.stubGlobal("fetch", ((input: string | URL | Request, init?: RequestInit) => {

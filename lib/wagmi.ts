@@ -1,5 +1,7 @@
 import { createConfig, http } from "wagmi";
+import { fallback } from "viem";
 import { base } from "wagmi/chains";
+import { browserRpcUrls } from "@/lib/chain/rpc-endpoints";
 import { Attribution } from "ox/erc8021";
 import { connectorsForWallets } from "@rainbow-me/rainbowkit";
 import {
@@ -52,35 +54,12 @@ export const config = createConfig({
     codes: ["bc_6w84im9m"],
   }),
   transports: {
-    // retryCount: 0 — viem's transport-level retry is disabled here so
-    // lib/token/rpc-retry.ts's withRetry() is the single, coordinated
-    // retry layer for every RPC call. Without this, viem's own default
-    // (retryCount: 3, exponential backoff) retries underneath withRetry's
-    // own maxAttempts, so one "logical" call (one getLogs chunk, one
-    // readContract, etc.) can produce up to ~12 real HTTP requests before
-    // withRetry ever sees a failure — amplification that's invisible to
-    // the app's own retry diagnostics but still consumes real request
-    // budget against the RPC provider, whichever URL
-    // NEXT_PUBLIC_BASE_RPC_URL points at. No change to maxAttempts,
-    // backoff strategy, or any call-site behavior — only removes the
-    // duplicate inner layer.
-    //
-    // timeout: 10_000 — Reward Hub loading fix (bounded RPC timeout).
-    // Every RPC call made anywhere in the app (staking reads, the staking
-    // history scan's getLogs/getBlock calls, token reads, etc.) goes
-    // through this single transport via wagmi's getClient(config), so one
-    // bounded timeout here covers all of them without touching any
-    // individual call site. Previously an unresponsive (not erroring,
-    // just hanging) RPC request had no upper bound at this layer, which
-    // could leave withRetry's per-attempt wait — and therefore whatever
-    // loading state was awaiting it — unbounded in the pathological case.
-    // 10s per attempt still leaves room for withRetry's own backoff/retry
-    // cycle on top; it does not change retryCount (still 0, per above) or
-    // add a second retry layer, only a ceiling on how long any single
-    // attempt can hang.
-    [base.id]: http(
-      process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org",
-      { retryCount: 0, timeout: 10_000 }
+    // Public fallback only. Server secrets (BASE_RPC_URL / BASE_RPC_URLS)
+    // are never read here, so they cannot be bundled into the browser.
+    // retryCount stays 0; lib/token/rpc-retry.ts remains the app retry.
+    [base.id]: fallback(
+      browserRpcUrls().map((url) => http(url, { retryCount: 0, timeout: 10_000 })),
+      { retryCount: 0 },
     ),
   },
   ssr: true,
