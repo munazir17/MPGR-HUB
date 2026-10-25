@@ -145,6 +145,19 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     } catch (e) { if (version.current === run) setError(e instanceof Error ? e.message : "Could not estimate a safe native maximum. Enter a smaller amount."); }
     finally { if (version.current === run) { busyRef.current = false; setBusy(false); } }
   };
+  const fillPercent = async (percent: 25 | 50 | 75 | 100) => {
+    if (balances.pay.state !== "ready" || busyRef.current || executionBusy) return;
+    if (isNativeEthSentinel(pay.address) && percent === 100) {
+      await max();
+      return;
+    }
+    const value = (balances.pay.value * BigInt(percent)) / 100n;
+    if (value < 400n) {
+      setError("That share of the balance is too small. Choose a larger percent or enter an amount.");
+      return;
+    }
+    edit({ amount: formatUnits(value, balances.pay.decimals) });
+  };
   const balanceText = (balance: SwapBalance) => balance.state === "ready" ? formatAtomicAmount(balance.value.toString(), balance.decimals, balance.decimals)
     : balance.state === "error" ? "Read unavailable" : balance.state === "wrong-network" ? "Switch to Base" : balance.state === "loading" ? "Loading…" : "Connect wallet";
   const panel = (side: "receive" | "pay") => {
@@ -154,9 +167,18 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     return <div className="min-w-0 space-y-2 rounded-[22px] border border-white/[0.04] bg-[#171e2a] p-3 sm:p-4" data-testid={`${side}-panel`}>
       <div className="flex items-center justify-between gap-2"><span className="text-xs text-zinc-400">{isPay ? "You pay" : "You receive"}</span>
         <span className="flex min-w-0 items-center gap-2 text-[11px] text-zinc-400"><span className="min-w-0 truncate" title={balanceText(balance)}>Balance: {balanceText(balance)}</span>
-          {isPay && <button type="button" disabled={balance.state !== "ready" || (balance.state === "ready" && balance.value < 400n) || busy || executionBusy} onClick={() => void max()} className="min-h-11 shrink-0 px-1 text-[11px] font-semibold text-emerald-300 disabled:opacity-40">MAX</button>}
           {balance.state === "error" && <button type="button" className="min-h-11 text-emerald-300" onClick={balances.refresh}>Retry balance</button>}
         </span></div>
+      {isPay && <div className="grid grid-cols-4 gap-1.5" role="group" aria-label="Pay amount from balance">
+        {([25, 50, 75, 100] as const).map((percent) => (
+          <button key={percent} type="button" aria-label={percent === 100 ? "MAX" : `${percent}%`}
+            disabled={balance.state !== "ready" || (balance.state === "ready" && balance.value < 400n) || busy || executionBusy}
+            onClick={() => void fillPercent(percent)}
+            className="h-8 rounded-lg border border-white/10 bg-white/[0.03] text-[11px] font-semibold text-emerald-300 hover:bg-white/[0.06] disabled:opacity-40">
+            {percent}%
+          </button>
+        ))}
+      </div>}
       <div className={`flex items-center gap-2 ${expanded ? "flex-wrap" : ""}`}>
         {/* Recreate the native edit control after modal focus restoration; its exact value stays in React state. */}
         <textarea key={`${side}:${reviewOpen}`} rows={expanded ? Math.ceil(amountValue.length / 24) : 1} wrap="soft" aria-label={isPay ? "You pay amount" : "You receive amount"} readOnly={!isPay} inputMode="decimal" autoComplete="off" maxLength={90}
