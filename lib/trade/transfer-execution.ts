@@ -15,6 +15,7 @@
 
 import { isAddress, type Address, type Hash } from "viem";
 import { sendTransaction, waitForTransactionReceipt } from "wagmi/actions";
+import { withBuilderSuffix } from "@/lib/chain/builder-attribution";
 
 import { config } from "@/lib/wagmi";
 import { TRADE_CHAIN_ID } from "./trade-config";
@@ -161,13 +162,13 @@ export async function executeTransfer(
 
     let txHash: Hash;
     try {
-      txHash = await sendTransaction(config, {
+      txHash = await sendTransaction(config, withBuilderSuffix({
         account,
         chainId: TRADE_CHAIN_ID,
         to: proposal.transaction.to,
         data: proposal.transaction.data,
         value: BigInt(proposal.transaction.value || "0"),
-      });
+      }));
     } catch (err) {
       const classified = classifyWalletError(err, "SEND_FAILED");
       const snapshot = fail(classified.code, classified.message);

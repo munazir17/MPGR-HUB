@@ -13,6 +13,7 @@ import { swapPairIssue, swapPoolAsset, swapRouteIssue } from "@/lib/swap/swap-ca
 import { swapQuotePolicyError } from "@/lib/swap/swap-policy";
 import { swapQuoteFresh } from "@/lib/swap/swap-lifecycle";
 import { swapPathPairEligible } from "@/lib/swap/swap-path-quote";
+import { getTapeSnapshot } from "@/lib/markets/tape";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,6 +53,8 @@ export async function POST(request: Request) {
     if (findExecutorToken(deployment, swapPoolAsset(token.address))?.decimals !== token.decimals && !pathEligible) return reply({ code: "TOKEN_METADATA_UNAVAILABLE", error: "Live token decimals do not match the approved route registration. No swap was prepared." }, 422);
   }
   const p = parsed.value;
+  // Warm the price tape while the pools are quoted, so impact does not add another wait.
+  const tapeReady = getTapeSnapshot().catch(() => null);
   let search: Awaited<ReturnType<typeof searchSwapRoutes>>;
   try {
     search = await searchSwapRoutes(getTradePublicClient(), p, body.refreshQuote === true);
@@ -65,6 +68,7 @@ export async function POST(request: Request) {
   const invalid = swapQuotePolicyError(result.proposal);
   if (invalid) return reply({ code: "EXECUTION_UNAVAILABLE", reason: "FEE_POLICY_INVALID", error: invalid }, 422);
   if (!swapQuoteFresh(result.proposal)) return reply({ code: "QUOTE_EXPIRED", error: "The quote expired during preparation. Request a fresh quote." }, 422);
+  await tapeReady;
   const priceImpactBps = await estimateQuotePriceImpactBps({ quote: result.proposal, fromAddress: p.from.address, toAddress: p.to.address, fromDecimals: p.from.decimals, toDecimals: p.to.decimals });
   // Price-impact reads must not extend the quote lifetime either.
   if (!swapQuoteFresh(result.proposal)) return reply({ code: "QUOTE_EXPIRED", error: "The quote expired during preparation. Request a fresh quote." }, 422);

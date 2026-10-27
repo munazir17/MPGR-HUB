@@ -1,6 +1,7 @@
 // lib/token-lock/token-lock-client.ts
 
 import { readContract, writeContract, simulateContract, waitForTransactionReceipt } from "wagmi/actions";
+import { withBuilderSuffix } from "@/lib/chain/builder-attribution";
 import type { Address, Hash } from "viem";
 import { config } from "@/lib/wagmi";
 import { erc20Abi } from "@/lib/erc20-abi";
@@ -182,7 +183,7 @@ export const tokenLockClient = {
       chainId: MPGR_TOKEN_LOCK_CONFIG.chainId,
       gas: B20_APPROVE_GAS_LIMIT,
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   // createLock() internally performs an MPGR transferFrom/safeTransferFrom,
@@ -209,7 +210,7 @@ export const tokenLockClient = {
       gas: TOKEN_LOCK_CREATE_LOCK_GAS_LIMIT,
       account,
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   async withdraw(lockId: bigint): Promise<Hash> {
@@ -218,7 +219,7 @@ export const tokenLockClient = {
       functionName: "withdraw",
       args: [lockId],
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   async earlyUnlock(lockId: bigint): Promise<Hash> {
@@ -227,7 +228,7 @@ export const tokenLockClient = {
       functionName: "earlyUnlock",
       args: [lockId],
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   async waitForReceipt(hash: Hash) {

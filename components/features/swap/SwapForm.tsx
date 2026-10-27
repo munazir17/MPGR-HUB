@@ -116,7 +116,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
   useEffect(() => {
     if (!authenticated || sessionExpired || !isConnected || chainId !== 8453 || executionBusy || manualSwapInputError(input, tokens)) return;
     if (lastAuto.current === fingerprint) return;
-    const timer = setTimeout(() => { lastAuto.current = fingerprint; void prepare(); }, 700);
+    const timer = setTimeout(() => { lastAuto.current = fingerprint; void prepare(); }, 150);
     return () => clearTimeout(timer);
   }, [fingerprint, authenticated, sessionExpired, isConnected, chainId, executionBusy, input, tokens, prepare]);
   useEffect(() => {

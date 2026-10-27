@@ -48,6 +48,7 @@
 
 import { isAddress, type Address, type Hash } from "viem";
 import { sendTransaction, waitForTransactionReceipt } from "wagmi/actions";
+import { withBuilderSuffix } from "@/lib/chain/builder-attribution";
 
 import { config } from "@/lib/wagmi";
 import type { AgentActionContract } from "./agent-action-contract";
@@ -354,13 +355,13 @@ export async function executeAgentAction(
        * No ABI is selected here.
        * No functionName is selected here.
        */
-      hash = await sendTransaction(config, {
+      hash = await sendTransaction(config, withBuilderSuffix({
         account: currentAccount as Address,
         to: action.to,
         data: action.data,
         value: action.value,
         chainId: baseChainId,
-      });
+      }));
     } catch (err) {
       const classified = classifySendError(err);
 

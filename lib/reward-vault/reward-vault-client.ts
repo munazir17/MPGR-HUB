@@ -1,6 +1,7 @@
 // lib/reward-vault/reward-vault-client.ts
 
 import { readContract, writeContract, simulateContract, waitForTransactionReceipt } from "wagmi/actions";
+import { withBuilderSuffix } from "@/lib/chain/builder-attribution";
 import type { Address, Hash } from "viem";
 import { config } from "@/lib/wagmi";
 import { REWARD_VAULT_ABI } from "./reward-vault-abi";
@@ -204,7 +205,7 @@ export const rewardVaultClient = {
       functionName: "claim",
       args: [rewardId],
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   async claimMultiple(rewardIds: bigint[]): Promise<Hash> {
@@ -213,7 +214,7 @@ export const rewardVaultClient = {
       functionName: "claimMultiple",
       args: [rewardIds],
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   async waitForReceipt(hash: Hash) {
