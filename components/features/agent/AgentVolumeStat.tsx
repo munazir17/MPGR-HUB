@@ -25,18 +25,22 @@ export function AgentVolumeStat() {
 
   useEffect(() => {
     let cancelled = false;
-
-    fetch("/api/agent/stats", { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data: AgentStats | null) => {
-        if (!cancelled && data) setStats(data);
-      })
-      .catch(() => {
-        // Keep the metric as an honest placeholder when the analytics read is unavailable.
-      });
-
+    const load = () => {
+      fetch("/api/agent/stats", { cache: "no-store" })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data: AgentStats | null) => {
+          if (!cancelled && data) setStats(data);
+        })
+        .catch(() => {
+          // Keep the last figure when a refresh fails. The label stays honest
+          // only after a successful read; a first failure leaves the placeholder.
+        });
+    };
+    load();
+    const timer = setInterval(load, 30_000);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, []);
 

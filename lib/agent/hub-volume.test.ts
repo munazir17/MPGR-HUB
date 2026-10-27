@@ -3,7 +3,8 @@ import { encodeEventTopics, encodeAbiParameters, parseAbiItem, toHex, type Addre
 import { VERIFIED_HISTORICAL_AGENT_TRADES } from "@/lib/agent/agent-volume-history";
 import { BASE_MAINNET_USDC } from "@/lib/executor/executor-config";
 import { HUB_VOLUME_CHECKPOINT } from "@/lib/agent/hub-volume-checkpoint";
-import { anchorFromCursor, HUB_VOLUME_RPC, HUB_VOLUME_RPCS, hubVolumeSources, scanHubVolume, settleHubVolume, type VolumeAnchor } from "./hub-volume";
+import { PRICED_WETH_LEG_TRADES } from "@/lib/agent/hub-weth-legs";
+import { anchorFromCursor, decodeEthUsdAnswer, foldPricedWethLegs, HUB_VOLUME_RPC, HUB_VOLUME_RPCS, hubVolumeSources, scanHubVolume, settleHubVolume, wethWeiToUsdcAtomic, type VolumeAnchor } from "./hub-volume";
 
 const EVENT = parseAbiItem(
   "event SwapExecuted(address indexed taker,address indexed router,bytes32 indexed intentId,address tokenIn,address tokenOut,uint256 grossAmountIn,uint256 feeAmount,uint256 swapAmountIn,uint256 amountOut,address feeRecipient,uint16 feeBps,uint8 routerKind,uint8 flags)",
@@ -162,11 +163,61 @@ describe("settleHubVolume", () => {
 describe("HUB_VOLUME_CHECKPOINT", () => {
   it("is a completed archive total at or after every executor deployment", () => {
     expect(HUB_VOLUME_CHECKPOINT.throughBlock).toBe(52_991_695n);
-    expect(HUB_VOLUME_CHECKPOINT.totalUsdcAtomic).toBe(23_428_317n);
-    expect(HUB_VOLUME_CHECKPOINT.tradeCount).toBe(25);
+    expect(HUB_VOLUME_CHECKPOINT.totalUsdcAtomic).toBe(38_024_442n);
+    expect(HUB_VOLUME_CHECKPOINT.tradeCount).toBe(32);
+    expect(HUB_VOLUME_CHECKPOINT.wethLegTxHashes).toHaveLength(7);
     expect(HUB_VOLUME_CHECKPOINT.seedTxHashes.map((hash) => hash.toLowerCase())).toEqual(SEEDS);
     for (const source of hubVolumeSources()) {
       expect(HUB_VOLUME_CHECKPOINT.throughBlock >= source.fromBlock).toBe(true);
     }
+  });
+
+  it("includes each sealed WETH leg once", () => {
+    const delta = PRICED_WETH_LEG_TRADES.reduce((sum, trade) => sum + trade.usdcAtomic, 0n);
+    expect(23_428_317n + delta).toBe(HUB_VOLUME_CHECKPOINT.totalUsdcAtomic);
+    expect(25 + PRICED_WETH_LEG_TRADES.length).toBe(HUB_VOLUME_CHECKPOINT.tradeCount);
+    const folded = foldPricedWethLegs(anchorAt(10n, 1_000_000n, 2));
+    expect(folded.totalUsdcAtomic).toBe(1_000_000n + delta);
+    expect(folded.tradeCount).toBe(2 + PRICED_WETH_LEG_TRADES.length);
+    expect(foldPricedWethLegs(folded)).toBe(folded);
+    expect(wethWeiToUsdcAtomic(10n ** 18n, 2_000n * 10n ** 8n)).toBe(2_000_000_000n);
+    const answer = (2_000n * 10n ** 8n).toString(16).padStart(64, "0");
+    expect(decodeEthUsdAnswer(`0x${"0".repeat(64)}${answer}${"0".repeat(64 * 3)}`)).toBe(2_000n * 10n ** 8n);
+  });
+});
+
+describe("WETH-leg pricing", () => {
+  const WETH = "0x4200000000000000000000000000000000000006" as Address;
+
+  it("adds a new WETH leg at the Chainlink price and skips a sealed hash", async () => {
+    const sources = hubVolumeSources();
+    const through = sources[sources.length - 1].fromBlock;
+    const head = through + 4n;
+    const hash = "0x" + "99".repeat(32);
+    const price = (2_000n * 10n ** 8n).toString(16).padStart(64, "0");
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; params: [{ address?: string }] };
+      if (body.method === "eth_blockNumber") return json({ result: toHex(head) });
+      if (body.method === "eth_call") return json({ result: `0x${"0".repeat(64)}${price}${"0".repeat(192)}` });
+      if (body.params[0].address?.toLowerCase() === sources[1].address.toLowerCase()) {
+        return json({ result: [log(hash, WETH, OTHER, 10n ** 18n, 1n)] });
+      }
+      return json({ result: [] });
+    });
+    const settled = await settleHubVolume(Date.now() + 5_000, fetchImpl as typeof fetch, anchorAt(through, 1_000_000n, 1));
+    expect(settled?.done).toBe(true);
+    if (!settled?.done) return;
+    expect(settled.volume.tradeCount).toBe(2);
+    expect(settled.volume.totalValueTradedUsd).toBeCloseTo(2001, 6);
+
+    const again = await settleHubVolume(Date.now() + 5_000, fetchImpl as typeof fetch, {
+      ...settled.anchor,
+      throughBlock: through,
+      wethLegTxHashes: [hash],
+    });
+    expect(again?.done).toBe(true);
+    if (!again?.done) return;
+    expect(again.volume.tradeCount).toBe(2);
+    expect(again.volume.totalValueTradedUsd).toBeCloseTo(2001, 6);
   });
 });

@@ -1,5 +1,6 @@
 import { reviewQuoteFixture } from "./test-fixtures/chat-review-quote";
 import { chatDraftToForm } from "./chat-autonomy-review";
+import { TRADE_QUOTE_MAX_AGE_MS } from "@/lib/trade/trade-config";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -243,7 +244,7 @@ it("shows output/provider/freshness/fees/risks in review and passes one exact hu
 });
 it("a previously enabled handler refuses a quote that expires before the click", async () => {
   render(); await effects(); const tree = render();
-  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + TRADE_QUOTE_MAX_AGE_MS + 5_000);
   try { await (find(tree, "agent-autonomy-draft-authorize").props.onClick as () => Promise<void>)(); }
   finally { clock.mockRestore(); }
   expect(autonomy.activateDraft).not.toHaveBeenCalled();
@@ -291,7 +292,7 @@ it("an expiry timer's latched invalid state overrides a still-fresh clock check 
   const realSetTimeout = setTimeout;
   let expire: (() => void) | undefined;
   vi.stubGlobal("setTimeout", (callback: () => void, ms: number) => {
-    if (ms > 1000 && ms <= 31_000) expire = callback;
+    if (ms > 1000 && ms <= TRADE_QUOTE_MAX_AGE_MS + 5_000) expire = callback;
     return realSetTimeout(callback, ms);
   });
   render(); await effects(); render(); await effects();

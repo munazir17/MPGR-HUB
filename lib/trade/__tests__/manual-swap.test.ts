@@ -3,6 +3,7 @@ import { MANUAL_SWAP_TOKENS, manualQuoteFresh, manualSwapInputError, requestManu
 import { reviewQuoteFixture } from "@/components/features/agent/test-fixtures/chat-review-quote";
 import { CHAT_REVIEW_TOKENS, chatDraftToForm } from "@/components/features/agent/chat-autonomy-review";
 import { buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
+import { TRADE_QUOTE_MAX_AGE_MS } from "@/lib/trade/trade-config";
 const prompt = "Buy AAPLc whenever price falls below $200 worth 1 USDC";
 const form = chatDraftToForm(buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt));
 const input = { fromToken: form.sell, toToken: form.buy, amount: "1", slippageBps: form.slippageBps };
@@ -41,7 +42,7 @@ describe("Manual entry into existing quote/confirmation flow", () => {
   });
   it("expires by both API expiry and max quote age", () => {
     const proposal = quote(); expect(manualQuoteFresh(proposal)).toBe(true);
-    expect(manualQuoteFresh({ ...proposal, quotedAt: new Date(Date.now() - 31_000).toISOString() })).toBe(false);
+    expect(manualQuoteFresh({ ...proposal, quotedAt: new Date(Date.now() - TRADE_QUOTE_MAX_AGE_MS - 1_000).toISOString() })).toBe(false);
     expect(manualQuoteFresh({ ...proposal, expiresAt: "bad" })).toBe(false);
   });
 });

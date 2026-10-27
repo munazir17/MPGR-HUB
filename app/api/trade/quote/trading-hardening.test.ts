@@ -70,7 +70,7 @@ describe("RPC-resolved token → existing quote/prepare route", () => {
     vi.advanceTimersByTime(2_000);
     const reused = await (await POST(req())).json();
     expect(reused.proposal.quotedAt).toBe(first.proposal.quotedAt);
-    vi.advanceTimersByTime(31_000);
+    vi.advanceTimersByTime(121_000);
     expect(isTradeQuoteFresh(first.proposal)).toBe(false);
     const fresh = await (await POST(req())).json();
     expect(mocks.quote).toHaveBeenCalledTimes(2);

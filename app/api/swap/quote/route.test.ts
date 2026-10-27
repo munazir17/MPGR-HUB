@@ -16,7 +16,7 @@ const wallet = "0x2222222222222222222222222222222222222222";
 vi.mock("@/lib/auth/session-store", () => ({ authenticateRequest: async () => m.authenticated ? { wallet: "0x2222222222222222222222222222222222222222" } : null }));
 vi.mock("@/lib/trade/trade-rate-limit", () => ({ checkRateLimit: async () => ({ allowed: !m.limited, retryAfterSeconds: 30 }), clientIpFromRequest: () => "offline" }));
 vi.mock("@/lib/api/request-guard", async original => ({ ...await original<typeof import("@/lib/api/request-guard")>(), verifyTrustedOrigin: () => m.originError ? Response.json({ code: "UNTRUSTED_ORIGIN" }, { status: 403 }) : null }));
-vi.mock("@/lib/trade/trade-price-impact", () => ({ estimateQuotePriceImpactBps: async () => { if (m.impactExpires) vi.setSystemTime(Date.now() + 31000); return null; } }));
+vi.mock("@/lib/trade/trade-price-impact", () => ({ estimateQuotePriceImpactBps: async () => { if (m.impactExpires) vi.setSystemTime(Date.now() + 121_000); return null; } }));
 vi.mock("@/lib/trade/trade-swap-router", () => ({ createRoutedSwapQuote: m.routed }));
 vi.mock("@/lib/trade/trade-public-client", () => ({ getTradePublicClient: () => ({
   getChainId: async () => m.chainId,
