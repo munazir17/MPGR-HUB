@@ -7,12 +7,12 @@
 // mainnet.base.org rate-limits; fall back to a public endpoint so
 // B20 quotes do not 429 in production.
 //
-// RPC transport hardening (additive, behavior-preserving):
-//  - bounded per-transport timeouts (12 s) inside a viem `fallback`
-//    transport with STRICT ordering (no latency re-ranking): the
-//    configured server URL is always tried first, public defaults last;
-//  - viem applies the client-level retry policy (3 retries, 150→600 ms
-//    backoff) around the whole chain — finite, never infinite;
+// RPC transport hardening:
+//  - each call round-robins trusted URLs (BASE_RPC_URL + BASE_RPC_URLS)
+//    and keeps public endpoints as a failover tail. A single dedicated
+//    URL is returned unchanged and never starts on a public node;
+//  - bounded per-URL timeouts. Retries walk the rotated list a finite
+//    number of times — never infinite;
 //  - every transport outcome is recorded in a small sanitized ring
 //    buffer (protocol+origin ONLY — never paths, query strings, basic
 //    auth, or API keys: providers commonly embed secrets in the URL
@@ -30,9 +30,10 @@
 //    `200` — the success path never reads bodies, so it stays free of
 //    per-call overhead.
 
-import { createPublicClient, fallback, http } from "viem";
+import { createPublicClient, http, type Transport } from "viem";
 import { base } from "wagmi/chains";
 import { parseEndpointList, PUBLIC_BASE_RPC_URLS, uniqueRpcUrls } from "@/lib/chain/rpc-endpoints";
+import { roundRobin, resetRoundRobinForTests } from "@/lib/runtime/round-robin";
 
 const DEFAULT_TIMEOUT_MS = 12_000;
 const DEFAULT_RETRY_COUNT = 2;
@@ -170,6 +171,69 @@ export function classifyBaseRpcFailure(error: unknown): BaseRpcFailureKind {
 
 function shouldStopRpcFallback(error: unknown): boolean {
   return classifyBaseRpcFailure(error) === "invalid_request";
+}
+
+/** Trusted URLs are tried first. When more than one is configured, each
+ * call starts at the next one so a single free endpoint is not hit first
+ * every time. Public endpoints stay a failover tail, never the start,
+ * and a single dedicated URL is returned unchanged. */
+export function orderRpcUrlsForCall(urls: readonly string[], poolId: string): string[] {
+  const trusted = new Set(uniqueRpcUrls([process.env.BASE_RPC_URL, ...parseEndpointList(process.env.BASE_RPC_URLS)]));
+  const head = urls.filter((url) => trusted.has(url));
+  const tail = urls.filter((url) => !trusted.has(url));
+  if (head.length > 1) return [...roundRobin(`${poolId}:trusted`, head), ...tail];
+  if (head.length === 0 && urls.length > 1) return roundRobin(`${poolId}:public`, urls);
+  return [...urls];
+}
+
+export function rotatingHttpTransport(
+  urls: readonly string[],
+  opts: {
+    timeout: number;
+    perUrlRetryCount?: number;
+    passes?: number;
+    retryDelayMs?: number;
+    poolId: string;
+    fetchFn?: typeof fetch;
+    rotate?: boolean;
+  },
+): Transport {
+  const list = urls.length > 0 ? [...urls] : ["https://mainnet.base.org"];
+  return (params) => {
+    const calls = list.map((url) =>
+      http(url, {
+        timeout: opts.timeout,
+        retryCount: opts.perUrlRetryCount ?? 0,
+        ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
+      })(params),
+    );
+    const primary = calls[0];
+    return {
+      ...primary,
+      async request(args, requestOpts) {
+        const sequence = opts.rotate === false ? list : orderRpcUrlsForCall(list, opts.poolId);
+        const byUrl = new Map(list.map((url, index) => [url, calls[index]]));
+        const attemptCalls = sequence.map((url) => byUrl.get(url)!);
+        let lastError: unknown;
+        const passes = opts.passes ?? 1;
+        for (let attempt = 0; attempt < passes; attempt += 1) {
+          for (const call of attemptCalls) {
+            try {
+              return await call.request(args, requestOpts);
+            } catch (err) {
+              lastError = err;
+              if (shouldStopRpcFallback(err)) throw err;
+            }
+          }
+          if (attempt + 1 >= passes || !shouldRetryRpcFailure(lastError)) break;
+          if ((opts.retryDelayMs ?? 0) > 0) {
+            await new Promise((resolve) => setTimeout(resolve, opts.retryDelayMs! * 2 ** attempt));
+          }
+        }
+        throw lastError;
+      },
+    };
+  };
 }
 
 function shouldRetryRpcFailure(error: unknown): boolean {
@@ -403,13 +467,17 @@ export function createBaseRpcClient(
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const retryCount = opts.retryCount ?? DEFAULT_RETRY_COUNT;
   const retryDelay = opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
-  const innerFallback = fallback(
-    urls.map((url) => http(url, { timeout, retryCount: 0, fetchFn: probingFetchFn })),
-    { retryCount: 0, shouldThrow: shouldStopRpcFallback },
-  );
   const inFlightRequests = new Map<string, Promise<unknown>>();
-  const transport: ReturnType<typeof fallback> = (params) => {
-    const resolved = innerFallback({ ...params, retryCount: 0 });
+  const inner = rotatingHttpTransport(urls, {
+    timeout,
+    perUrlRetryCount: 0,
+    passes: retryCount + 1,
+    retryDelayMs: retryDelay,
+    poolId: "trade-rpc",
+    fetchFn: probingFetchFn as typeof fetch,
+  });
+  const transport: Transport = (params) => {
+    const resolved = inner(params);
     return {
       ...resolved,
       async request(args, requestOpts) {
@@ -423,27 +491,9 @@ export function createBaseRpcClient(
           const existing = inFlightRequests.get(dedupeKey);
           if (existing) return existing as never;
         }
-
-        const run = (async () => {
-          let lastError: unknown;
-          for (let attempt = 0; attempt <= retryCount; attempt += 1) {
-            try {
-              return await resolved.request(args, requestOpts);
-            } catch (err) {
-              lastError = err;
-              if (!shouldRetryRpcFailure(err) || attempt === retryCount) {
-                throw err;
-              }
-              if (retryDelay > 0) {
-                await new Promise((r) => setTimeout(r, retryDelay * 2 ** attempt));
-              }
-            }
-          }
-          throw lastError;
-        })().finally(() => {
+        const run = resolved.request(args, requestOpts).finally(() => {
           if (dedupeKey) inFlightRequests.delete(dedupeKey);
         });
-
         if (dedupeKey) inFlightRequests.set(dedupeKey, run);
         return (await run) as never;
       },
@@ -470,6 +520,7 @@ export function resetBaseRpcProbeForTests(): void {
   lastReportedAt = 0;
   cachedDefaultClient = null;
   cachedDefaultClientKey = null;
+  resetRoundRobinForTests();
 }
 
 export function getTradePublicClient() {

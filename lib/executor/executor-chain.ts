@@ -7,11 +7,12 @@ import "server-only";
 // RPC URLs are SERVER env vars (not NEXT_PUBLIC): BASE_SEPOLIA_RPC_URL, BASE_RPC_URL.
 
 import { randomBytes } from "node:crypto";
-import { createPublicClient, fallback, http, type Address, type Hex } from "viem";
+import { createPublicClient, http, type Address, type Hex } from "viem";
 import { base, baseSepolia } from "viem/chains";
 
 import { DELEGATED_MAINNET_RPC_BOUNDS } from "@/lib/delegated/rpc-bounds";
 import { parseEndpointList, PUBLIC_BASE_RPC_URLS, uniqueRpcUrls } from "@/lib/chain/rpc-endpoints";
+import { rotatingHttpTransport } from "@/lib/trade/trade-public-client";
 
 import { BASE_MAINNET_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, type ExecutorChainId } from "./executor-config";
 import type { ReceiptLike } from "./executor-verify";
@@ -166,26 +167,22 @@ export async function waitForTransactionReceiptWithFallback(
 
 export function createChainReader(chainId: ExecutorChainId): ChainReader {
   // Transport hardening (behavior-preserving):
-  //  - BASE_RPC_URL configured → EXACTLY one transport, byte-identical to
-  //    the audited rule "a configured provider failure does not silently
-  //    fall back" (docs/MAINNET_TRADING_AUDIT_2026-09-26.md item 8).
-  //  - Nothing configured → keep the documented public default first and
-  //    add ONE extra public endpoint behind it, so preview/dev deployments
-  //    without a server RPC survive mainnet.base.org rate limiting.
+  //  - Trusted URLs (BASE_RPC_URL + BASE_RPC_URLS) are the only transports
+  //    when any are set. Each call round-robins that list. Public nodes are
+  //    used only when nothing trusted is configured, so a single dedicated
+  //    URL never hops to a public node.
   //  - MAINNET: bounded per attempt AND capped on retries (DELEGATED_MAINNET_RPC_BOUNDS:
   //    8 s, one retry). viem's default (10 s, 3 retries, timeouts retried) let one dead
   //    RPC cost ~40 s per call and pushed a tick past maxDuration.
   //  - Sepolia: unchanged (10 s timeout, viem default retries).
   const mainnetUrls = executorMainnetRpcUrls();
-  const configured = Boolean(process.env.BASE_RPC_URL?.trim() || process.env.BASE_RPC_URLS?.trim());
   const timeout = 10_000;
-  const mainnetBounds = {
+  const mainnetTransport = rotatingHttpTransport(mainnetUrls, {
     timeout: DELEGATED_MAINNET_RPC_BOUNDS.timeoutMs,
-    retryCount: DELEGATED_MAINNET_RPC_BOUNDS.retryCount,
-  };
-  const mainnetTransport = !configured || mainnetUrls.length > 1
-    ? fallback(mainnetUrls.map((url) => http(url, mainnetBounds)), { retryCount: 0 })
-    : http(mainnetUrls[0], mainnetBounds);
+    perUrlRetryCount: DELEGATED_MAINNET_RPC_BOUNDS.retryCount,
+    passes: 1,
+    poolId: "executor-mainnet",
+  });
   const client =
     chainId === BASE_MAINNET_CHAIN_ID
       ? createPublicClient({ chain: base, transport: mainnetTransport })

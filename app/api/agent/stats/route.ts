@@ -8,7 +8,7 @@ import { getRedis } from "@/lib/api/redis";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, BASE_MAINNET_USDC } from "@/lib/executor/executor-config";
 import { VERIFIED_HISTORICAL_AGENT_TRADES } from "@/lib/agent/agent-volume-history";
 import { checkpointAnchor } from "@/lib/agent/hub-volume-checkpoint";
-import { anchorFromCursor, settleHubVolume, type VolumeAnchor } from "@/lib/agent/hub-volume";
+import { anchorFromCursor, foldPricedWethLegs, settleHubVolume, type VolumeAnchor } from "@/lib/agent/hub-volume";
 
 // Public "total value traded" analytics for the Agent panel.
 //
@@ -520,6 +520,7 @@ interface StoredHubCursor {
   totalUsdcAtomic: string;
   tradeCount: number;
   seedTxHashes?: string[];
+  wethLegTxHashes?: string[];
   updatedAt?: number;
 }
 
@@ -542,12 +543,17 @@ async function readHubCursor(): Promise<{ anchor: VolumeAnchor; updatedAt: numbe
     const seeds = Array.isArray(raw.seedTxHashes)
       ? raw.seedTxHashes.filter((hash) => typeof hash === "string" && /^0x[0-9a-f]{64}$/i.test(hash))
       : [];
+    const recordedWeth = Object.prototype.hasOwnProperty.call(raw, "wethLegTxHashes");
+    const wethLegTxHashes = recordedWeth && Array.isArray(raw.wethLegTxHashes)
+      ? raw.wethLegTxHashes.filter((hash) => typeof hash === "string" && /^0x[0-9a-f]{64}$/i.test(hash))
+      : undefined;
     return {
       anchor: {
         throughBlock: BigInt(raw.throughBlock),
         totalUsdcAtomic: BigInt(raw.totalUsdcAtomic),
         tradeCount: raw.tradeCount,
         seedTxHashes: seeds,
+        ...(recordedWeth ? { wethLegTxHashes: wethLegTxHashes ?? [] } : {}),
       },
       updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : 0,
     };
@@ -563,6 +569,7 @@ async function writeHubCursor(anchor: VolumeAnchor): Promise<void> {
       totalUsdcAtomic: anchor.totalUsdcAtomic.toString(),
       tradeCount: anchor.tradeCount,
       seedTxHashes: [...anchor.seedTxHashes],
+      wethLegTxHashes: [...(anchor.wethLegTxHashes ?? [])],
       updatedAt: Date.now(),
     };
     await getRedis().set(HUB_CURSOR_KEY, body, { ex: HUB_CURSOR_TTL_SECONDS });
@@ -583,15 +590,15 @@ async function refreshHub(): Promise<Stats | null> {
   if (lease === "held") return null;
   try {
     const stored = await readHubCursor();
-    const anchor = anchorFromCursor(checkpointAnchor(), stored?.anchor ?? null);
+    const anchor = foldPricedWethLegs(anchorFromCursor(checkpointAnchor(), stored?.anchor ?? null));
     const settled = await settleHubVolume(Date.now() + 40_000, fetch, anchor).catch(() => null);
     if (!settled) {
-      if (stored && Date.now() - stored.updatedAt < HUB_STALE_MS) return statsFromAnchor(stored.anchor);
+      if (stored && Date.now() - stored.updatedAt < HUB_STALE_MS) return statsFromAnchor(foldPricedWethLegs(stored.anchor));
       return null;
     }
     await writeHubCursor(settled.anchor);
     if (!settled.done) {
-      if (stored && Date.now() - stored.updatedAt < HUB_STALE_MS) return statsFromAnchor(stored.anchor);
+      if (stored && Date.now() - stored.updatedAt < HUB_STALE_MS) return statsFromAnchor(foldPricedWethLegs(stored.anchor));
       return null;
     }
     const stats = statsFromAnchor(settled.anchor);

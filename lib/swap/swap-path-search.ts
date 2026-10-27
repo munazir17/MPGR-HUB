@@ -20,7 +20,7 @@ import { swapQuotePolicyError } from "./swap-policy";
 import { SwapRouteQualificationError, type SwapRouteReadClient } from "./swap-route-selection";
 
 export interface SwapPathSearchResult { proposal: TradeProposal; blockNumber: bigint; blockHash: Hex }
-const QUOTE_DEADLINE_SECONDS = 180;
+const QUOTE_DEADLINE_SECONDS = 300;
 
 async function simulateReadyPath(reader: SwapRouteReadClient, deployment: SwapPathExecutorDeployment, p: TradeProposal, blockNumber: bigint): Promise<SwapPathRoutingEvidence["executionSimulation"]> {
   const notRun = "not-run-wallet-preflight-required" as const;

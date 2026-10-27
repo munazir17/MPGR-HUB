@@ -5,6 +5,7 @@ import {
   resolveConfiguredProviderKind,
 } from "./ai-provider-config";
 import type { EventBus, Logger } from "@/lib/architecture/core/types";
+import { roundRobin } from "@/lib/runtime/round-robin";
 
 export type AgentModelTask = "research" | "structured" | "general";
 
@@ -88,8 +89,14 @@ export class ProviderChainAIProvider implements AIProvider {
     }
 
     let lastError: unknown;
-    for (let i = 0; i < this.providers.length; i += 1) {
-      const provider = this.providers[i];
+    const network = this.providers.filter((provider) => provider.requiresNetwork);
+    const local = this.providers.filter((provider) => !provider.requiresNetwork);
+    // Each call starts on the next configured network provider. The local
+    // deterministic engine stays last so a total outage still answers.
+    const pool = `ai:${this.providers.map((provider) => provider.name).join("|")}`;
+    const attempt = [...(network.length > 1 ? roundRobin(pool, network) : network), ...local];
+    for (let i = 0; i < attempt.length; i += 1) {
+      const provider = attempt[i];
       try {
         const response = await provider.generateReply(request);
         if (i > 0) {
@@ -102,7 +109,7 @@ export class ProviderChainAIProvider implements AIProvider {
       } catch (err) {
         lastError = err;
         const message = err instanceof Error ? err.message : String(err);
-        const next = this.providers[i + 1];
+        const next = attempt[i + 1];
         this.logger.error("AI provider chain step failed", {
           provider: provider.name,
           rateLimited: isRateLimitMessage(message),

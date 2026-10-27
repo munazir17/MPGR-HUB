@@ -210,7 +210,7 @@ MPGR HUB does not invent a DEX, a stock mint API, or a custodial broker.
 
 - Quote and price via Coinbase Developer Platform on network `base`
 - Execution: user signs (Permit2 / approve as required)
-- Quotes older than 30 seconds are refreshed; a worse `minToAmount` aborts
+- Quotes older than 2 minutes are refreshed; a worse `minToAmount` aborts
 - If CDP rejects a token, **0x Swap API v2** on Base is tried next
 - Used for ETH / WETH / USDC / MPGR / ordinary Base ERC-20
 - **Not** used for Coinbase B20 tokenized stocks

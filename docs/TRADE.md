@@ -22,7 +22,7 @@ BYO flow (documented):
 3. Concat `[tx.data, signatureLength32, signature]`
 4. `sendTransaction` with the quote's `to` / `data` / `value`
 
-Quotes older than 30s are re-fetched. A worse `minToAmount` aborts as `QUOTE_CHANGED`.
+Quotes older than 2 minutes are re-fetched. A worse `minToAmount` aborts as `QUOTE_CHANGED`.
 
 If CDP rejects the token or reports no liquidity, the 0x Swap API v2 AllowanceHolder path on Base is tried next. Same unsigned-proposal + wallet-confirm contract.
 

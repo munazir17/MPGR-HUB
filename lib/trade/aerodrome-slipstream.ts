@@ -113,7 +113,7 @@ export const aerodromeSwapRouterAbi = [
   },
 ] as const;
 
-/** SwapRouter deadline buffer. Quotes expire in 30s; this leaves headroom to sign. */
+/** SwapRouter deadline buffer. Quotes stay valid for 120s; this leaves headroom to sign. */
 export const AERODROME_SWAP_DEADLINE_SECONDS = 180;
 
 export type AerodromeRouteResult<T> =

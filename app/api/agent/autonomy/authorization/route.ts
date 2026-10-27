@@ -19,7 +19,9 @@
 // this route.
 
 import { NextResponse } from "next/server";
-import { recoverAddress, type Address, type Hex } from "viem";
+import { type Address, type Hex } from "viem";
+import { getTradePublicClient } from "@/lib/trade/trade-public-client";
+import { isEoaWalletSignature, normalizeWalletSignature, walletOwnsSignature } from "@/lib/executor/wallet-signature";
 
 import { verifyTrustedOrigin, readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
 import { checkRateLimit } from "@/lib/trade/trade-rate-limit";
@@ -49,6 +51,15 @@ const RATE_WINDOW_MS = 60_000;
 
 const DECIMAL = /^\d{1,78}$/;
 const SLOT_ID_RE = /^[a-zA-Z0-9_.-]{4,120}$/;
+
+function integerSeconds(value: unknown): number {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value === "string" && /^\d{1,12}$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : -1;
+  }
+  return -1;
+}
 
 /** Public view of a slot: shows every bounded detail, NEVER the signature. */
 function publicSlot(slot: DelegatedAuthorizationSlot, nowSeconds: number) {
@@ -143,7 +154,7 @@ export async function POST(request: Request) {
     return respond({ error: "Too many requests. Please slow down.", code: "RATE_LIMITED" }, { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) } });
   }
 
-  const parsedBody = await readJsonBody(request);
+  const parsedBody = await readJsonBody(request, 48 * 1024);
   if (!parsedBody.ok) return withRequestId(parsedBody.response, requestId);
   const body = (parsedBody.value && typeof parsedBody.value === "object" ? parsedBody.value : {}) as Record<string, unknown>;
 
@@ -215,7 +226,7 @@ export async function POST(request: Request) {
       const permit = (s.permit && typeof s.permit === "object" ? s.permit : {}) as Record<string, unknown>;
       const witness = (s.witness && typeof s.witness === "object" ? s.witness : {}) as Record<string, unknown>;
       const slotIndex = typeof s.slotIndex === "number" && Number.isInteger(s.slotIndex) && s.slotIndex >= 0 && s.slotIndex < MAX_DELEGATED_SLOTS ? s.slotIndex : -1;
-      const deadline = typeof permit.deadline === "number" && Number.isInteger(permit.deadline) ? permit.deadline : -1;
+      const deadline = integerSeconds(permit.deadline);
       const nonce = typeof permit.nonce === "string" && DECIMAL.test(permit.nonce) && permit.nonce !== "0" ? permit.nonce : "";
       const amount = typeof permit.amount === "string" && DECIMAL.test(permit.amount) && permit.amount !== "0" ? permit.amount : "";
       const minAmountOut = typeof witness.minAmountOut === "string" && DECIMAL.test(witness.minAmountOut) ? witness.minAmountOut : "";
@@ -223,10 +234,32 @@ export async function POST(request: Request) {
       const buyToken = typeof witness.buyToken === "string" && witness.buyToken.startsWith("0x") ? witness.buyToken : "";
       const actionId = typeof witness.actionId === "string" && /^0x[0-9a-fA-F]{64}$/.test(witness.actionId) ? witness.actionId : "";
       const policyHash = typeof witness.policyHash === "string" && /^0x[0-9a-fA-F]{64}$/.test(witness.policyHash) ? witness.policyHash : "";
-      const signature = typeof s.signature === "string" && /^0x[0-9a-fA-F]{130}$/.test(s.signature) ? s.signature : "";
+      const signature = normalizeWalletSignature(s.signature);
       const owner = typeof witness.owner === "string" && witness.owner.startsWith("0x") ? witness.owner : "";
       if (slotIndex < 0 || deadline <= 0 || !nonce || !amount || !minAmountOut || !token || !buyToken || !actionId || !policyHash || !signature || !owner) {
-        return respond({ error: "Malformed authorization slot.", code: "INVALID_AUTHORIZATION" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+        const missing = [
+          slotIndex < 0 ? "slot" : "",
+          deadline <= 0 ? "deadline" : "",
+          !nonce ? "nonce" : "",
+          !amount ? "amount" : "",
+          !minAmountOut ? "minimum output" : "",
+          !token ? "sell token" : "",
+          !buyToken ? "buy token" : "",
+          !actionId ? "action" : "",
+          !policyHash ? "policy" : "",
+          !owner ? "owner" : "",
+          !signature ? "signature" : "",
+        ].filter(Boolean);
+        const signatureOnly = missing.length === 1 && missing[0] === "signature";
+        return respond(
+          {
+            error: signatureOnly
+              ? "This wallet did not return a usable authorization signature. Reconnect Base Wallet or Coinbase Wallet and try once more."
+              : `Authorization is incomplete (${missing.join(", ")}).`,
+            code: "INVALID_AUTHORIZATION",
+          },
+          { status: 400, headers: { "Cache-Control": "no-store" } },
+        );
       }
       if (existingIndexes.has(slotIndex) || records.some((r) => r.slotIndex === slotIndex)) {
         return respond({ error: "Duplicate slot index.", code: "SLOT_INDEX_REUSED" }, { status: 400, headers: { "Cache-Control": "no-store" } });
@@ -284,9 +317,17 @@ export async function POST(request: Request) {
       //    the recovered signer is bound to (wallet, chain, executor) — not
       //    merely to a wallet.
       const digest = delegatedPermitDigest({ permit: record.permit, witness: record.witness }, policy.chainId, executor);
-      const signer = await recoverAddress({ hash: digest, signature: record.signature });
-      if (signer.toLowerCase() !== auth.wallet.toLowerCase()) {
-        return respond({ error: "Signature does not belong to the authenticated wallet.", code: "SIGNATURE_INVALID" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+      const owns = await walletOwnsSignature(digest, record.signature, auth.wallet, getTradePublicClient());
+      if (!owns) {
+        return respond(
+          {
+            error: isEoaWalletSignature(record.signature)
+              ? "Signature does not belong to the authenticated wallet."
+              : "Smart wallet signature could not be verified on Base. The account must already be deployed. Try again, or use a standard wallet.",
+            code: "SIGNATURE_INVALID",
+          },
+          { status: 400, headers: { "Cache-Control": "no-store" } },
+        );
       }
       records.push(record);
     }

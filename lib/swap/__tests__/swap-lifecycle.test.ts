@@ -5,7 +5,7 @@ import { chatDraftToForm } from "@/components/features/agent/chat-autonomy-revie
 import { buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/chat-draft";
 import { decodeFunctionData, encodeFunctionData, keccak256, type Address, type Hex } from "viem";
 import { MPGR_EXECUTOR_ABI } from "@/lib/executor/mpgr-executor-abi";
-import { BASE_USDC, BASE_WETH } from "@/lib/trade/trade-config";
+import { TRADE_QUOTE_MAX_AGE_MS, BASE_USDC, BASE_WETH } from "@/lib/trade/trade-config";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 import { MPGR_SWAP_EXECUTOR_ABI } from "../swap-executor-abi";
 import { SWAP_PATH_EXECUTOR_DEPLOYMENT, SWAP_PATH_VENUES } from "../swap-executor-config";
@@ -13,16 +13,16 @@ import { swapPathFeeFloor } from "../swap-executor-intent";
 const prompt = "Buy AAPLc whenever price falls below $200 worth 1 USDC";
 const quote = () => simulatedExecutorQuote(chatDraftToForm(buildGoalDraft(detectAutonomousTradeRequest(prompt)!, prompt)));
 describe("Swap clocks preserve provider and route validity", () => {
- it("caps a generous response at the existing 30s policy, without rewriting its timestamps",()=>{
+ it("caps a generous response at the quote policy, without rewriting its timestamps",()=>{
   const p=quote(), created=Date.parse(p.quotedAt);p.expiresAt=new Date(created+600000).toISOString();const original=p.expiresAt;
-  expect(swapQuoteExpiry(p)).toBe(created+30000);expect(p.expiresAt).toBe(original);expect(swapQuoteFresh(p,created+30000)).toBe(false);
+  expect(swapQuoteExpiry(p)).toBe(created+TRADE_QUOTE_MAX_AGE_MS);expect(p.expiresAt).toBe(original);expect(swapQuoteFresh(p,created+TRADE_QUOTE_MAX_AGE_MS)).toBe(false);
  });
  it("honors a genuinely shorter expiry, including the exact expiry boundary",()=>{
   const p=quote(), created=Date.parse(p.quotedAt);p.expiresAt=new Date(created+1000).toISOString();
   expect(swapQuoteFresh(p,created+999)).toBe(true);expect(swapQuoteFresh(p,created+1000)).toBe(false);
   expect(swapQuoteNeedsRefresh(p,created+100)).toBe(false);expect(swapQuoteNeedsRefresh(p,created+800)).toBe(true);
  });
- it("requests review-time refresh near expiry, not on every render",()=>{const p=quote(),created=Date.parse(p.quotedAt);expect(swapQuoteNeedsRefresh(p,created+1000)).toBe(false);expect(swapQuoteNeedsRefresh(p,created+26000)).toBe(true);});
+ it("requests review-time refresh near expiry, not on every render",()=>{const p=quote(),created=Date.parse(p.quotedAt);expect(swapQuoteNeedsRefresh(p,created+1000)).toBe(false);expect(swapQuoteNeedsRefresh(p,created+TRADE_QUOTE_MAX_AGE_MS-4000)).toBe(true);});
  it("enforces the actual encoded route deadline even if response metadata is later",()=>{
   const p=quote(),created=Date.parse(p.quotedAt);const x=decodeFunctionData({abi:MPGR_EXECUTOR_ABI,data:p.transaction!.data});
   if(x.functionName!=="swapSlipstreamExactInputSingle")throw new Error("Unexpected fixture route");
@@ -57,9 +57,9 @@ describe("Swap-path executor proposals use the swap-path deadline, not the legac
  };
  it("a valid path proposal is fresh inside its response window (regression: legacy decode zeroed its expiry)", () => {
   const p = pathProposal(9999999999n);
-  expect(swapQuoteExpiry(p)).toBe(created + 30_000);
+  expect(swapQuoteExpiry(p)).toBe(created + TRADE_QUOTE_MAX_AGE_MS);
   expect(swapQuoteFresh(p, created + 1_000)).toBe(true);
-  expect(swapQuoteFresh(p, created + 30_000)).toBe(false);
+  expect(swapQuoteFresh(p, created + TRADE_QUOTE_MAX_AGE_MS)).toBe(false);
  });
  it("the encoded swap-path deadline caps freshness, and fee-tampered calldata fails closed", () => {
   const deadlineMs = created + 10_000;

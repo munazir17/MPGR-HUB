@@ -24,6 +24,7 @@ import {
   createBaseRpcClient,
   describeBaseRpcHealth,
   getTradePublicClient,
+  orderRpcUrlsForCall,
   readRpcErrorCode,
   resetBaseRpcProbeForTests,
   rpcUrls,
@@ -120,6 +121,18 @@ describe("Base RPC fallback transport", () => {
       "https://base.llamarpc.com",
       "https://base.drpc.org",
       "https://1rpc.io/base",
+    ]);
+  });
+
+  it("round-robins configured RPC urls and keeps public endpoints as failover only", () => {
+    vi.stubEnv("BASE_RPC_URL", "https://rpc-a.example.internal");
+    vi.stubEnv("BASE_RPC_URLS", "https://rpc-b.example.internal");
+    const pool = ["https://rpc-a.example.internal", "https://rpc-b.example.internal", "https://mainnet.base.org"];
+    expect(orderRpcUrlsForCall(pool, "test-rotate")).toEqual(pool);
+    expect(orderRpcUrlsForCall(pool, "test-rotate")).toEqual([
+      "https://rpc-b.example.internal",
+      "https://rpc-a.example.internal",
+      "https://mainnet.base.org",
     ]);
   });
 

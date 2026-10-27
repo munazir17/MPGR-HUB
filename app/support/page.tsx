@@ -202,7 +202,7 @@ export default function SupportPage() {
       <InfoSection id="trading" title="Trading & swaps">
         <UL>
           <LI>
-            <Strong>“Quote expired”.</Strong> Quotes are valid for 30 seconds and
+            <Strong>“Quote expired”.</Strong> Quotes stay valid for 2 minutes and
             are refreshed automatically; a worse minimum-output aborts the
             execution. Request the quote again.
           </LI>
