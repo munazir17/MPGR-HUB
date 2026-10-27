@@ -7,11 +7,16 @@ import { PRICED_WETH_LEG_TRADES } from "@/lib/agent/hub-weth-legs";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, BASE_MAINNET_USDC } from "@/lib/executor/executor-config";
 import { SWAP_PATH_EXECUTOR_DEPLOYMENT } from "@/lib/swap/swap-executor-config";
 import { SWAP_V2_SEALED_MANIFEST } from "@/lib/swap/v2/sealed-manifest";
+import { isNativeEthSentinel } from "@/lib/trade/trade-config";
+import { KNOWN_TRADE_TOKENS } from "@/lib/trade/trade-tokens";
 
-// Hub volume is the USD notional of SwapExecuted on the agent executor and
-// both swap executors. USDC legs use the USDC amount. A WETH leg with no
-// USDC side is priced from Chainlink ETH/USD at scan time, then frozen into
-// the cursor so it is not repriced later. Any other pair is skipped.
+// Hub volume is the USD notional of every SwapExecuted on the agent executor
+// and both swap executors. A USD stable leg is the dollar amount. WETH with
+// no stable side is priced from Chainlink ETH/USD. Any other token is priced
+// from its own amount at a live Base USD price, using catalog decimals or
+// the token's decimals(). One side only — the two legs of one swap are not
+// added twice. A price that cannot be read stops the scan instead of
+// publishing a total that dropped that trade.
 
 // Public archive endpoints in 5,000-block waves (BlockPI's cap). A capped
 // Alchemy key cannot read this range.
@@ -30,6 +35,18 @@ const PROVIDER_TIMEOUT_MS = [8_000, 12_000] as const;
 const WETH = "0x4200000000000000000000000000000000000006";
 const ETH_USD_FEED = "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70";
 const LATEST_ROUND_DATA = "0xfeaf968c";
+const DECIMALS_SELECTOR = "0x313ce567";
+const DEX_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/";
+const USD_PEG_SYMBOLS = new Set(["usdc", "usdt", "dai", "usdbc", "usds"]);
+
+const KNOWN_DECIMALS = new Map<string, number>();
+const USD_PEG_DECIMALS = new Map<string, number>();
+for (const token of KNOWN_TRADE_TOKENS) {
+  if (isNativeEthSentinel(token.address)) continue;
+  const address = token.address.toLowerCase();
+  KNOWN_DECIMALS.set(address, token.decimals);
+  if (USD_PEG_SYMBOLS.has(token.symbol.toLowerCase())) USD_PEG_DECIMALS.set(address, token.decimals);
+}
 
 /** Chainlink ETH/USD answer (8 decimals) from latestRoundData, or null. */
 export function decodeEthUsdAnswer(data: string): bigint | null {
@@ -39,10 +56,23 @@ export function decodeEthUsdAnswer(data: string): bigint | null {
   return answer;
 }
 
+/** Token atomic units to USDC atomic (6 decimals) at an 8-decimal USD price. */
+export function tokenAmountToUsdcAtomic(amount: bigint, decimals: number, price8: bigint): bigint {
+  if (amount <= 0n || price8 <= 0n || decimals < 0 || decimals > 36) return 0n;
+  return (amount * price8) / 10n ** BigInt(decimals + 2);
+}
+
 /** WETH wei to USDC atomic units (6 decimals) at an 8-decimal ETH/USD price. */
 export function wethWeiToUsdcAtomic(wethWei: bigint, ethUsd8: bigint): bigint {
-  if (wethWei <= 0n || ethUsd8 <= 0n) return 0n;
-  return (wethWei * ethUsd8) / 10n ** 20n;
+  return tokenAmountToUsdcAtomic(wethWei, 18, ethUsd8);
+}
+
+/** "123.45" → 8-decimal USD price. Rejects empty, signed, and non-numeric text. */
+export function parseUsdPrice8(usd: string | undefined): bigint | null {
+  if (!usd || !/^\d+(\.\d+)?$/.test(usd) || usd.split(".")[0].length > 12) return null;
+  const [whole, frac = ""] = usd.split(".");
+  const price = BigInt(whole) * 10n ** 8n + BigInt((frac + "00000000").slice(0, 8));
+  return price > 0n ? price : null;
 }
 
 /** Add sealed WETH-leg dollars once. A cursor that already lists the hashes is unchanged. */
@@ -148,6 +178,8 @@ export async function settleHubVolume(deadline: number, fetchImpl: typeof fetch,
   const pricedWeth = new Set((anchor.wethLegTxHashes ?? []).map((hash) => hash.toLowerCase()));
   let progressed = false;
   let ethUsd: bigint | null | undefined;
+  const dexPrice8 = new Map<string, bigint>();
+  const decimalsCache = new Map<string, number>();
 
   while (through < latest) {
     if (Date.now() > deadline) break;
@@ -168,21 +200,37 @@ export async function settleHubVolume(deadline: number, fetchImpl: typeof fetch,
     let addUsdc = 0n;
     let addCount = 0;
     const wethLegs: bigint[] = [];
+    const tokenLegs: { token: string; amount: bigint }[] = [];
+    const hashes: string[] = [];
     for (const log of groups.flat()) {
       const hash = log.transactionHash?.toLowerCase();
       if (hash && pricedWeth.has(hash)) continue;
       const leg = swapLeg(log);
       if (!leg) continue;
-      if (leg.kind === "usdc") addUsdc += leg.amount;
-      else wethLegs.push(leg.amount);
+      if (leg.kind === "usd") addUsdc += leg.amount;
+      else if (leg.kind === "weth") wethLegs.push(leg.amount);
+      else tokenLegs.push({ token: leg.token, amount: leg.amount });
       addCount += 1;
-      if (hash) seenLogs.add(hash);
+      if (hash) hashes.push(hash);
     }
+    let priced = true;
     if (wethLegs.length > 0) {
       if (ethUsd === undefined) ethUsd = await readEthUsd(fetchImpl);
-      if (ethUsd === null) break;
-      for (const wei of wethLegs) addUsdc += wethWeiToUsdcAtomic(wei, ethUsd);
+      if (ethUsd === null) priced = false;
+      else for (const wei of wethLegs) addUsdc += wethWeiToUsdcAtomic(wei, ethUsd);
     }
+    if (priced) {
+      for (const leg of tokenLegs) {
+        const usd = await tokenLegToUsdcAtomic(fetchImpl, leg.token, leg.amount, dexPrice8, decimalsCache);
+        if (usd === null) {
+          priced = false;
+          break;
+        }
+        addUsdc += usd;
+      }
+    }
+    if (!priced) break;
+    for (const hash of hashes) seenLogs.add(hash);
     total += addUsdc;
     count += addCount;
     through = to;
@@ -255,7 +303,7 @@ async function readChunk(fetchImpl: typeof fetch, chunk: Chunk, deadline: number
   return null;
 }
 
-function swapLeg(log: RawLog): { kind: "usdc" | "weth"; amount: bigint } | null {
+function swapLeg(log: RawLog): { kind: "usd"; amount: bigint } | { kind: "weth"; amount: bigint } | { kind: "token"; token: string; amount: bigint } | null {
   if (!log.data || !log.topics || log.topics.length < 1) return null;
   try {
     const decoded = decodeEventLog({ abi: [EVENT], data: log.data, topics: log.topics as [Hex, ...Hex[]] });
@@ -263,12 +311,93 @@ function swapLeg(log: RawLog): { kind: "usdc" | "weth"; amount: bigint } | null 
     if (!args.tokenIn || !args.tokenOut || args.grossAmountIn === undefined || args.amountOut === undefined) return null;
     const tokenIn = args.tokenIn.toLowerCase();
     const tokenOut = args.tokenOut.toLowerCase();
-    const usdc = BASE_MAINNET_USDC.toLowerCase();
-    if (tokenIn === usdc) return { kind: "usdc", amount: args.grossAmountIn };
-    if (tokenOut === usdc) return { kind: "usdc", amount: args.amountOut };
+    const pegIn = USD_PEG_DECIMALS.get(tokenIn);
+    if (pegIn !== undefined) return { kind: "usd", amount: toUsdAtomic6(args.grossAmountIn, pegIn) };
+    const pegOut = USD_PEG_DECIMALS.get(tokenOut);
+    if (pegOut !== undefined) return { kind: "usd", amount: toUsdAtomic6(args.amountOut, pegOut) };
     if (tokenIn === WETH) return { kind: "weth", amount: args.grossAmountIn };
     if (tokenOut === WETH) return { kind: "weth", amount: args.amountOut };
+    return { kind: "token", token: tokenIn, amount: args.grossAmountIn };
+  } catch {
     return null;
+  }
+}
+
+function toUsdAtomic6(amount: bigint, decimals: number): bigint {
+  if (amount <= 0n) return 0n;
+  if (decimals === 6) return amount;
+  if (decimals > 6) return amount / 10n ** BigInt(decimals - 6);
+  return amount * 10n ** BigInt(6 - decimals);
+}
+
+async function tokenLegToUsdcAtomic(
+  fetchImpl: typeof fetch,
+  token: string,
+  amount: bigint,
+  prices: Map<string, bigint>,
+  decimalsCache: Map<string, number>,
+): Promise<bigint | null> {
+  const decimals = await readTokenDecimals(fetchImpl, token, decimalsCache);
+  if (decimals === null) return null;
+  let price = prices.get(token);
+  if (price === undefined) {
+    const read = await readDexPrice8(fetchImpl, token);
+    if (read === null) return null;
+    price = read;
+    prices.set(token, price);
+  }
+  return tokenAmountToUsdcAtomic(amount, decimals, price);
+}
+
+async function readTokenDecimals(fetchImpl: typeof fetch, token: string, cache: Map<string, number>): Promise<number | null> {
+  const known = cache.get(token) ?? KNOWN_DECIMALS.get(token);
+  if (known !== undefined) {
+    cache.set(token, known);
+    return known;
+  }
+  const params = [{ to: token, data: DECIMALS_SELECTOR }, "latest"];
+  for (let i = 0; i < HUB_VOLUME_RPCS.length; i += 1) {
+    const timeout = PROVIDER_TIMEOUT_MS[i] ?? 8_000;
+    let result = await rpc(fetchImpl, HUB_VOLUME_RPCS[i], "eth_call", params, timeout);
+    if (!result.ok && result.retryable) result = await rpc(fetchImpl, HUB_VOLUME_RPCS[i], "eth_call", params, timeout);
+    if (result.ok && typeof result.result === "string") {
+      const decoded = decodeDecimals(result.result);
+      if (decoded !== null) {
+        cache.set(token, decoded);
+        return decoded;
+      }
+    }
+  }
+  return null;
+}
+
+function decodeDecimals(data: string): number | null {
+  if (!/^0x[0-9a-fA-F]+$/.test(data)) return null;
+  try {
+    const value = BigInt(data);
+    if (value > 36n) return null;
+    return Number(value);
+  } catch {
+    return null;
+  }
+}
+
+async function readDexPrice8(fetchImpl: typeof fetch, token: string): Promise<bigint | null> {
+  try {
+    const response = await fetchImpl(`${DEX_TOKEN_URL}${token}`, { signal: AbortSignal.timeout(8_000) });
+    if (!response.ok) return null;
+    const body = await response.json() as {
+      pairs?: { chainId?: string; priceUsd?: string; liquidity?: { usd?: number }; baseToken?: { address?: string } }[];
+    };
+    let best: { price: bigint; liquidity: number } | null = null;
+    for (const pair of body.pairs ?? []) {
+      if (pair.chainId !== "base" || pair.baseToken?.address?.toLowerCase() !== token) continue;
+      const price = parseUsdPrice8(pair.priceUsd);
+      const liquidity = Number(pair.liquidity?.usd ?? 0);
+      if (price === null) continue;
+      if (!best || liquidity > best.liquidity) best = { price, liquidity };
+    }
+    return best?.price ?? null;
   } catch {
     return null;
   }

@@ -4,7 +4,7 @@ import { VERIFIED_HISTORICAL_AGENT_TRADES } from "@/lib/agent/agent-volume-histo
 import { BASE_MAINNET_USDC } from "@/lib/executor/executor-config";
 import { HUB_VOLUME_CHECKPOINT } from "@/lib/agent/hub-volume-checkpoint";
 import { PRICED_WETH_LEG_TRADES } from "@/lib/agent/hub-weth-legs";
-import { anchorFromCursor, decodeEthUsdAnswer, foldPricedWethLegs, HUB_VOLUME_RPC, HUB_VOLUME_RPCS, hubVolumeSources, scanHubVolume, settleHubVolume, wethWeiToUsdcAtomic, type VolumeAnchor } from "./hub-volume";
+import { anchorFromCursor, decodeEthUsdAnswer, foldPricedWethLegs, HUB_VOLUME_RPC, HUB_VOLUME_RPCS, hubVolumeSources, parseUsdPrice8, scanHubVolume, settleHubVolume, tokenAmountToUsdcAtomic, wethWeiToUsdcAtomic, type VolumeAnchor } from "./hub-volume";
 
 const EVENT = parseAbiItem(
   "event SwapExecuted(address indexed taker,address indexed router,bytes32 indexed intentId,address tokenIn,address tokenOut,uint256 grossAmountIn,uint256 feeAmount,uint256 swapAmountIn,uint256 amountOut,address feeRecipient,uint16 feeBps,uint8 routerKind,uint8 flags)",
@@ -12,6 +12,8 @@ const EVENT = parseAbiItem(
 const TAKER = "0x1111111111111111111111111111111111111111" as Address;
 const ROUTER = "0x2222222222222222222222222222222222222222" as Address;
 const OTHER = "0x3333333333333333333333333333333333333333" as Address;
+const CBBTC = "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf" as Address;
+const USDT = "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2" as Address;
 const INTENT = `0x${"ab".repeat(32)}` as Hex;
 const SEEDS = VERIFIED_HISTORICAL_AGENT_TRADES.map((trade) => trade.txHash.toLowerCase());
 
@@ -42,8 +44,12 @@ function anchorAt(throughBlock: bigint, totalUsdcAtomic = 5_000_000n, tradeCount
 
 afterEach(() => vi.unstubAllGlobals());
 
+function dex(token: Address, priceUsd: string) {
+  return json({ pairs: [{ chainId: "base", baseToken: { address: token }, priceUsd, liquidity: { usd: 1_000_000 } }] });
+}
+
 describe("scanHubVolume", () => {
-  it("sums USDC legs from every hub executor and skips a non-USDC pair", async () => {
+  it("sums every executor, including a non-USDC token at its USD price", async () => {
     const sources = hubVolumeSources();
     expect(sources.map((source) => source.address.toLowerCase())).toEqual([
       "0xd982726e28275661f8ab64054e6b17a70a63505a",
@@ -51,7 +57,8 @@ describe("scanHubVolume", () => {
       "0x4be1154440b26145d76608d41d403a33e76b9d0a",
     ]);
     const head = sources.reduce((max, source) => source.fromBlock > max ? source.fromBlock : max, 0n) + 10n;
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("dexscreener.com")) return dex(CBBTC, "100");
       const body = JSON.parse(String(init?.body)) as { method: string; params: [{ address?: string; fromBlock?: string }] };
       if (body.method === "eth_blockNumber") return json({ result: toHex(head) });
       const address = body.params[0].address?.toLowerCase();
@@ -61,7 +68,7 @@ describe("scanHubVolume", () => {
       if (address === sources[0].address.toLowerCase()) {
         return json({ result: [
           log("0x" + "11".repeat(32), BASE_MAINNET_USDC, OTHER, 2_000_000n, 1n),
-          log("0x" + "22".repeat(32), OTHER, OTHER, 9n, 9n),
+          log("0x" + "22".repeat(32), CBBTC, OTHER, 50_000_000n, 1n),
         ] });
       }
       if (address === sources[1].address.toLowerCase()) {
@@ -70,9 +77,9 @@ describe("scanHubVolume", () => {
       return json({ result: [] });
     });
     const volume = await scanHubVolume(Date.now() + 5_000, fetchImpl as typeof fetch);
-    expect(volume?.tradeCount).toBe(2 + 3);
-    expect(volume?.totalValueTradedUsd).toBeCloseTo((2_000_000 + 500_000 + 2_000_000 + 1_000_000 + 267_304) / 1_000_000, 6);
-    expect(fetchImpl.mock.calls.every(([url]) => url === HUB_VOLUME_RPC)).toBe(true);
+    expect(volume?.tradeCount).toBe(3 + 3);
+    expect(volume?.totalValueTradedUsd).toBeCloseTo((2_000_000 + 500_000 + 50_000_000 + 2_000_000 + 1_000_000 + 267_304) / 1_000_000, 6);
+    expect(fetchImpl.mock.calls.filter(([url]) => !String(url).includes("dexscreener.com")).every(([url]) => url === HUB_VOLUME_RPC)).toBe(true);
   });
 
   it("does not publish a total when the archive read fails", async () => {
@@ -95,7 +102,7 @@ describe("settleHubVolume", () => {
       if (body.params[0].address?.toLowerCase() === sources[0].address.toLowerCase()) {
         return json({ result: [
           log("0x" + "44".repeat(32), BASE_MAINNET_USDC, OTHER, 2_000_000n, 1n),
-          log("0x" + "55".repeat(32), OTHER, OTHER, 9n, 9n),
+          log("0x" + "55".repeat(32), USDT, OTHER, 1_000_000n, 1n),
         ] });
       }
       return json({ result: [] });
@@ -103,8 +110,8 @@ describe("settleHubVolume", () => {
     const settled = await settleHubVolume(Date.now() + 5_000, fetchImpl as typeof fetch, anchorAt(through));
     expect(settled?.done).toBe(true);
     if (!settled?.done) return;
-    expect(settled.volume.tradeCount).toBe(5);
-    expect(settled.volume.totalValueTradedUsd).toBeCloseTo(7, 6);
+    expect(settled.volume.tradeCount).toBe(6);
+    expect(settled.volume.totalValueTradedUsd).toBeCloseTo(8, 6);
     expect(settled.anchor.throughBlock).toBe(head);
   });
 
@@ -219,5 +226,43 @@ describe("WETH-leg pricing", () => {
     if (!again?.done) return;
     expect(again.volume.tradeCount).toBe(2);
     expect(again.volume.totalValueTradedUsd).toBeCloseTo(2001, 6);
+  });
+});
+
+describe("any-token pricing", () => {
+  it("converts a token amount at an 8-decimal USD price", () => {
+    expect(parseUsdPrice8("100")).toBe(100n * 10n ** 8n);
+    expect(parseUsdPrice8("2.5")).toBe(250_000_000n);
+    expect(parseUsdPrice8("")).toBeNull();
+    expect(parseUsdPrice8("-1")).toBeNull();
+    expect(tokenAmountToUsdcAtomic(50_000_000n, 8, 100n * 10n ** 8n)).toBe(50_000_000n);
+    expect(tokenAmountToUsdcAtomic(2n * 10n ** 8n, 8, 250_000_000n)).toBe(5_000_000n);
+  });
+
+  it("prices an unlisted token from decimals() and does not advance when the price is missing", async () => {
+    const sources = hubVolumeSources();
+    const through = sources[sources.length - 1].fromBlock;
+    const head = through + 4n;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("dexscreener.com")) return dex(OTHER, "2.5");
+      const body = JSON.parse(String(init?.body)) as { method: string; params: [{ address?: string; data?: string }] };
+      if (body.method === "eth_blockNumber") return json({ result: toHex(head) });
+      if (body.method === "eth_call") return json({ result: toHex(8n) });
+      if (body.params[0].address?.toLowerCase() === sources[1].address.toLowerCase()) {
+        return json({ result: [log("0x" + "ab".repeat(32), OTHER, CBBTC, 2n * 10n ** 8n, 1n)] });
+      }
+      return json({ result: [] });
+    });
+    const settled = await settleHubVolume(Date.now() + 5_000, fetchImpl as typeof fetch, anchorAt(through, 1_000_000n, 1));
+    expect(settled?.done).toBe(true);
+    if (!settled?.done) return;
+    expect(settled.volume.tradeCount).toBe(2);
+    expect(settled.volume.totalValueTradedUsd).toBeCloseTo(6, 6);
+
+    const blocked = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("dexscreener.com")) return json({ pairs: [] }, 200);
+      return fetchImpl(url, init);
+    });
+    expect(await settleHubVolume(Date.now() + 5_000, blocked as typeof fetch, anchorAt(through, 1_000_000n, 1))).toBeNull();
   });
 });
