@@ -107,7 +107,7 @@ describe("buildTradeProposal", () => {
     expect(result.proposal.kind).toBe("tokenized-stock-swap");
   });
 
-  it("isTradeQuoteFresh respects the 30s window", () => {
+  it("isTradeQuoteFresh respects the 120s window", () => {
     const result = buildTradeProposal({
       from: usdc,
       to: weth,
@@ -119,6 +119,6 @@ describe("buildTradeProposal", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(isTradeQuoteFresh(result.proposal, Date.parse("2026-01-01T00:00:10.000Z"))).toBe(true);
-    expect(isTradeQuoteFresh(result.proposal, Date.parse("2026-01-01T00:01:00.000Z"))).toBe(false);
+    expect(isTradeQuoteFresh(result.proposal, Date.parse("2026-01-01T00:02:01.000Z"))).toBe(false);
   });
 });

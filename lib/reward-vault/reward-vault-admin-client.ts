@@ -23,6 +23,7 @@
 
 import { createPublicClient, createWalletClient, http, type Address, type Hash } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { parseEndpointList, uniqueRpcUrls } from "@/lib/chain/rpc-endpoints";
 import { REWARD_VAULT_ADMIN_ABI } from "@/lib/reward-allocation/reward-vault-admin-abi";
 import { MPGR_REWARD_VAULT_CONFIG } from "./reward-vault-config";
 
@@ -32,11 +33,8 @@ const VAULT_CONTRACT = {
 } as const;
 
 function getRpcUrl(): string {
-  // Server-only RPC URL, if configured, is preferred (private/authenticated
-  // endpoints shouldn't be the same NEXT_PUBLIC one shipped to the
-  // browser). Falls back to the existing public RPC URL used by the
-  // client so a fresh deploy still works with zero extra config.
-  return process.env.BASE_RPC_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org";
+  const trusted = uniqueRpcUrls([process.env.BASE_RPC_URL, ...parseEndpointList(process.env.BASE_RPC_URLS)]);
+  return trusted[0] || process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org";
 }
 
 let cachedAccount: ReturnType<typeof privateKeyToAccount> | null = null;

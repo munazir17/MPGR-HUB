@@ -117,7 +117,6 @@ function validAuth(over: Record<string, unknown> = {}): Record<string, unknown> 
 describe("hardening §1: malformed signatures fail closed BEFORE the broadcaster", () => {
   const malformed: Array<[string, unknown]> = [
     ["64-byte (short) signature", "0x" + "22".repeat(64)],
-    ["66-byte (long) signature", "0x" + "22".repeat(66)],
     ["non-hex signature", "0x" + "zz".repeat(65)],
     ["empty signature", ""],
     ["missing signature", undefined],
@@ -154,6 +153,15 @@ describe("hardening §1: malformed signatures fail closed BEFORE the broadcaster
     expect(data.delegatedExecutor).toBe(DELEGATED_EXECUTOR_ADDRESS);
     // No broadcaster key configured in tests -> no broadcaster identity is invented:
     expect((data.expectedSender as string | null) ?? null).toBe(null);
+  });
+
+  it("a longer smart-wallet signature is shape-valid and is passed through for Permit2 ERC-1271", async () => {
+    const deps = delegatedDeps();
+    const auth = validAuth();
+    const smart = ("0x" + "33".repeat(66)) as Hex;
+    auth.authorization.signature = smart;
+    const out = await delegateSwap(deps, auth);
+    expect(out.ok).toBe(true);
   });
 });
 

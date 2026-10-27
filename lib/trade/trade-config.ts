@@ -125,8 +125,9 @@ export const TRADE_DEFAULT_SLIPPAGE_BPS = 100;
 export const TRADE_MAX_SLIPPAGE_BPS = 500;
 export const TRADE_MIN_SLIPPAGE_BPS = 1;
 
-/** Quotes go stale quickly; confirm/execute re-quotes past this age. */
-export const TRADE_QUOTE_MAX_AGE_MS = 30_000;
+/** Quotes stay reviewable long enough to confirm on a phone.
+ * On-chain route deadlines still cap this. Confirm re-quotes past this age. */
+export const TRADE_QUOTE_MAX_AGE_MS = 120_000;
 
 export const TRADE_PRICE_TIMEOUT_MS = 12_000;
 export const TRADE_QUOTE_TIMEOUT_MS = 15_000;

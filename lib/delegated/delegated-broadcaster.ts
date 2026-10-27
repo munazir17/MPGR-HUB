@@ -33,6 +33,9 @@ import { createPublicClient, createWalletClient, http, type Address, type Chain,
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 
+import { parseEndpointList, PUBLIC_BASE_RPC_URLS, uniqueRpcUrls } from "@/lib/chain/rpc-endpoints";
+import { rotatingHttpTransport } from "@/lib/trade/trade-public-client";
+
 import {
   BASE_MAINNET_CHAIN_ID,
   BASE_SEPOLIA_CHAIN_ID,
@@ -121,8 +124,14 @@ function baseSepoliaRpcUrl(): string {
   return process.env.BASE_SEPOLIA_RPC_URL?.trim() || "https://sepolia.base.org";
 }
 
+function baseMainnetRpcUrls(): string[] {
+  const trusted = uniqueRpcUrls([process.env.BASE_RPC_URL, ...parseEndpointList(process.env.BASE_RPC_URLS)]);
+  if (trusted.length > 0) return trusted;
+  return [...PUBLIC_BASE_RPC_URLS];
+}
+
 function baseMainnetRpcUrl(): string {
-  return process.env.BASE_RPC_URL?.trim() || "https://mainnet.base.org";
+  return baseMainnetRpcUrls()[0] ?? "https://mainnet.base.org";
 }
 
 /**
@@ -174,14 +183,20 @@ export function createMainnetDelegatedBroadcaster(
   if (!key) return { broadcast: () => unavailable(MAINNET_UNAVAILABLE), address: null };
   const account = privateKeyToAccount(key);
   if (isCanaryAccount(account.address)) return { broadcast: () => unavailable(MAINNET_UNAVAILABLE), address: null };
+  const urls = baseMainnetRpcUrls();
   const client = createWalletClient({
     account,
     chain: base as Chain,
-    transport: http(baseMainnetRpcUrl(), { timeout: bounds.timeoutMs, retryCount: bounds.retryCount }),
+    transport: http(urls[0] ?? baseMainnetRpcUrl(), { timeout: bounds.timeoutMs, retryCount: bounds.retryCount }),
   });
   const estimateClient = createPublicClient({
     chain: base as Chain,
-    transport: http(baseMainnetRpcUrl(), { timeout: bounds.timeoutMs, retryCount: bounds.retryCount }),
+    transport: rotatingHttpTransport(urls, {
+      timeout: bounds.timeoutMs,
+      perUrlRetryCount: bounds.retryCount,
+      passes: 1,
+      poolId: "broadcaster-estimate",
+    }),
   });
   return {
     address: account.address,
@@ -216,7 +231,20 @@ export function delegatedChainView() {
 
 /** Read-only chain view for Base mainnet (posture bootstrap + verification). Bounded. */
 export function mainnetDelegatedChainView(bounds: DelegatedRpcBounds = DELEGATED_MAINNET_RPC_BOUNDS) {
-  return createChainView(base, baseMainnetRpcUrl(), bounds);
+  const client = createPublicClient({
+    chain: base,
+    transport: rotatingHttpTransport(baseMainnetRpcUrls(), {
+      timeout: bounds.timeoutMs,
+      perUrlRetryCount: bounds.retryCount,
+      passes: 1,
+      poolId: "delegated-chain-view",
+    }),
+  });
+  return {
+    getBytecode: (address: Address) => client.getBytecode({ address }),
+    readContract: <T>(args: { address: Address; abi: readonly unknown[]; functionName: string; args?: readonly unknown[] }) =>
+      client.readContract(args as never) as Promise<T>,
+  };
 }
 
 /** Read-only chain view for a delegated chain, or null when unsupported. */

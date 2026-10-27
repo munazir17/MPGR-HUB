@@ -222,7 +222,7 @@ function DraftReviewDialog({ draft, autonomy, onClose, embedded }: DraftReviewDi
       <span className="min-w-0 flex-1">{error}</span>
       <button type="button" onClick={dismissError} aria-label="Dismiss error"><X className="h-3.5 w-3.5" /></button>
     </div>}
-    {notice && <div role={activated ? "status" : "alert"} className={`mb-3 flex items-center gap-2 rounded-xl border px-3 py-2 text-xs ${activated ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-200" : "border-red-400/20 bg-red-500/10 text-red-200"}`}>
+    {notice && notice !== error && <div role={activated ? "status" : "alert"} className={`mb-3 flex items-center gap-2 rounded-xl border px-3 py-2 text-xs ${activated ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-200" : "border-red-400/20 bg-red-500/10 text-red-200"}`}>
       {activated ? <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <ShieldOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
       <span className="min-w-0 flex-1">{notice}</span>
     </div>}

@@ -472,7 +472,7 @@ export default function WhitepaperPage() {
           <LI>Quote and price via the Coinbase CDP Trade API on network <Code>base</Code>.</LI>
           <LI>0x Swap API is used as a fallback when CDP will not route the pair.</LI>
           <LI>
-            Quotes older than 30 seconds are refreshed; a worse minimum-output
+            Quotes older than 2 minutes are refreshed; a worse minimum-output
             aborts. Slippage defaults to 1% and is clamped to 0.01%–5%.
           </LI>
           <LI>

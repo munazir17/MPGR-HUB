@@ -13,7 +13,7 @@ import "server-only";
 //
 // Safety properties:
 //   - entries expire after a few seconds, far inside
-//     TRADE_QUOTE_MAX_AGE_MS (30s), so a served quote is still fresh
+//     TRADE_QUOTE_MAX_AGE_MS (120s), so a served quote is still fresh
 //   - the key is scoped to the authenticated session wallet by callers
 //   - only a successful value is cached; failures are never reused
 //   - it caches a QUOTE, never a signature, transaction broadcast, or

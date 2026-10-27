@@ -1,5 +1,6 @@
-import { createPublicClient, http, verifyMessage, type Address } from "viem";
+import { createPublicClient, fallback, http, verifyMessage, type Address } from "viem";
 import { CHAIN, DEFAULT_PUBLIC_RPC_URL } from "@/lib/chain/base";
+import { parseEndpointList, PUBLIC_BASE_RPC_URLS, uniqueRpcUrls } from "@/lib/chain/rpc-endpoints";
 import { SUPPORTED_CHAIN_ID } from "./config";
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
@@ -61,12 +62,10 @@ export function parseSiweMessage(message: string): AuthMessage | null {
   };
 }
 
-function authRpcUrl(): string {
-  return (
-    process.env.BASE_RPC_URL?.trim() ||
-    process.env.NEXT_PUBLIC_BASE_RPC_URL?.trim() ||
-    DEFAULT_PUBLIC_RPC_URL
-  );
+function authRpcUrls(): string[] {
+  const trusted = uniqueRpcUrls([process.env.BASE_RPC_URL, ...parseEndpointList(process.env.BASE_RPC_URLS)]);
+  if (trusted.length > 0) return trusted;
+  return uniqueRpcUrls([process.env.NEXT_PUBLIC_BASE_RPC_URL, DEFAULT_PUBLIC_RPC_URL, ...PUBLIC_BASE_RPC_URLS]);
 }
 
 /**
@@ -82,9 +81,10 @@ export const siweSignatureVerifier = {
     return verifyMessage({ address, message, signature });
   },
   async contract(address: Address, message: string, signature: `0x${string}`): Promise<boolean> {
+    const urls = authRpcUrls();
     const client = createPublicClient({
       chain: CHAIN,
-      transport: http(authRpcUrl(), { timeout: 10_000 }),
+      transport: urls.length === 1 ? http(urls[0], { timeout: 10_000, retryCount: 0 }) : fallback(urls.map((url) => http(url, { timeout: 10_000, retryCount: 0 })), { retryCount: 0 }),
     });
     return client.verifyMessage({ address, message, signature });
   },

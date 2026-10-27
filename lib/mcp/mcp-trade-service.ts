@@ -29,6 +29,7 @@ import {
   type Log,
   encodeFunctionData,
 } from "viem";
+import { normalizeWalletSignature } from "@/lib/executor/wallet-signature";
 
 import {
   BASE_MAINNET_CHAIN_ID,
@@ -1054,7 +1055,8 @@ export async function delegateSwap(deps: McpDeps, input: unknown, onStage?: (sta
   const permit = asRecord(auth.permit);
   const permitted = asRecord(permit.permitted);
   const witness = asRecord(auth.witness);
-  const sig = auth.signature;
+  const sig = normalizeWalletSignature(auth.signature);
+  if (!sig) return fail("INVALID_AUTHORIZATION", "Signature must be a wallet signature (65-byte or smart-wallet).");
   const numeric = (v: unknown) => (typeof v === "string" && /^\d{1,78}$/.test(v) ? BigInt(v) : null);
   const addr = (v: unknown) => (typeof v === "string" && isAddress(v) ? getAddress(v) : null);
   const tokenIn = addr(permitted.token);
@@ -1073,7 +1075,6 @@ export async function delegateSwap(deps: McpDeps, input: unknown, onStage?: (sta
   if (!tokenIn || !buyToken || !owner || amount === null || nonce === null || deadline === null || minOut === null || !policyHash || !actionId || !intentId) {
     return fail("INVALID_AUTHORIZATION", "Delegated authorization is incomplete or malformed.");
   }
-  if (typeof sig !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(sig)) return fail("INVALID_AUTHORIZATION", "Signature must be 65-byte rsv hex.");
   const grossAmountIn = amount;
   const fee = (grossAmountIn * BigInt(DELEGATED_EXECUTOR_FEE_BPS)) / 10_000n;
   if (fee === 0n) return fail("FEE_ROUNDS_TO_ZERO", "Amount too small for the canonical 25 bps fee.");

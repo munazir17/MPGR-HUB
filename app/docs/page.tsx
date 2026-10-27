@@ -442,7 +442,7 @@ export default function DocsPage() {
             ],
             [
               "Quote freshness",
-              "A quote older than 30 seconds is re-quoted before signing; a worse minimum-output aborts",
+              "A quote older than 2 minutes is re-quoted before signing; a worse minimum-output aborts",
               "lib/trade/trade-config.ts, lib/trade/trade-execution.ts",
             ],
             [
@@ -699,7 +699,7 @@ export default function DocsPage() {
             <Strong>Slippage</Strong> — 1% default, 1–500 bps accepted.
           </LI>
           <LI>
-            <Strong>Freshness</Strong> — a quote older than 30 seconds is
+            <Strong>Freshness</Strong> — a quote older than 2 minutes is
             refreshed, and a worse minimum-output aborts the execution.
           </LI>
           <LI>

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ProviderChainAIProvider,
   classifyAgentTask,
@@ -8,6 +8,7 @@ import {
 import type { AIProvider, AIProviderRequest, AIProviderResponse } from "../ai-provider";
 import type { EventBus, Logger } from "@/lib/architecture/core/types";
 import { TimeoutAIProvider, AIProviderTimeoutError } from "../ai-provider-timeout";
+import { resetRoundRobinForTests } from "@/lib/runtime/round-robin";
 
 function fakeBus(): EventBus {
   return { emit: vi.fn(), on: vi.fn(), off: vi.fn() } as unknown as EventBus;
@@ -64,6 +65,8 @@ describe("resolveProviderKindOrder", () => {
 });
 
 describe("ProviderChainAIProvider", () => {
+  beforeEach(() => resetRoundRobinForTests());
+
   it("falls through to the next provider after a rate-limit style failure", async () => {
     const failing: AIProvider = {
       name: "gemini",
@@ -91,6 +94,17 @@ describe("ProviderChainAIProvider", () => {
     expect(result.reply).toBe("ok");
     expect(nvidia.generateReply).toHaveBeenCalledOnce();
     expect(ok.generateReply).toHaveBeenCalledOnce();
+  });
+
+  it("starts the next call on the next network provider and keeps the local engine last", async () => {
+    const reply = { intent: "general_help" as const, reply: "ok", actions: [], highlights: [], followUps: [] };
+    const gemini: AIProvider = { name: "gemini", requiresNetwork: true, generateReply: vi.fn().mockResolvedValue(reply) };
+    const groq: AIProvider = { name: "groq", requiresNetwork: true, generateReply: vi.fn().mockResolvedValue({ ...reply, reply: "groq" }) };
+    const local: AIProvider = { name: "deterministic", requiresNetwork: false, generateReply: vi.fn().mockResolvedValue(reply) };
+    const chain = new ProviderChainAIProvider([gemini, groq, local], fakeBus(), fakeLogger());
+    expect((await chain.generateReply(request("hello"))).reply).toBe("ok");
+    expect((await chain.generateReply(request("hello again"))).reply).toBe("groq");
+    expect(local.generateReply).not.toHaveBeenCalled();
   });
 });
 

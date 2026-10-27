@@ -7,7 +7,8 @@ import { MANUAL_SWAP_TOKENS, ManualSwapQuoteError, type ManualSwapInput } from "
 import { TRADE_DEFAULT_SLIPPAGE_BPS, NATIVE_ETH_SENTINEL, isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { formatAtomicAmount, parseHumanTokenAmount } from "@/lib/trade/trade-format";
 import { useSwapBalances, type SwapBalance } from "@/hooks/useSwapBalances";
-import { swapQuoteFresh, swapQuoteNeedsRefresh } from "@/lib/swap/swap-lifecycle";
+import { swapQuoteFresh, swapQuoteNeedsRefresh, swapQuoteExpiry } from "@/lib/swap/swap-lifecycle";
+import { formatSwapUsd, useTokenUsdPrice } from "@/hooks/useTokenUsdPrice";
 import { swapInputError as manualSwapInputError } from "@/lib/swap/swap-capability";
 import { requestSwapQuoteWithV2, fetchSwapV2Status } from "@/lib/swap/v2/v2-quote-client";
 import { inspectSwapLiquidity } from "@/lib/swap/swap-inspection-client";
@@ -35,6 +36,8 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
   const tokens = useMemo(() => [...new Map([...MANUAL_SWAP_TOKENS, ...imports].map(t => [t.address.toLowerCase(), t])).values()], [imports]);
   const pay = tokens.find(t => t.address.toLowerCase() === input.fromToken.toLowerCase())!;
   const receive = tokens.find(t => t.address.toLowerCase() === input.toToken.toLowerCase())!;
+  const payUsd = useTokenUsdPrice(pay.address, pay.symbol);
+  const receiveUsd = useTokenUsdPrice(receive.address, receive.symbol);
   const balances = useSwapBalances(pay, receive, balanceRevision);
   const [select, setSelect] = useState<"fromToken" | "toToken" | null>(null);
   const [settings, setSettings] = useState(false);
@@ -95,12 +98,12 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     }
     setSessionExpired(false); return true;
   }, [address, chainId, isConnected, authenticated, sessionExpired, signIn, onConnect]);
-  const prepare = useCallback(async (freshReview = false) => {
+  const prepare = useCallback(async (freshReview = false, keepVisible = false) => {
     if (busyRef.current || executionBusy) return;
     const invalid = manualSwapInputError(input, tokens);
     if (invalid) { setError(invalid); return; }
     const run = ++version.current; const controller = new AbortController(); pending.current = controller;
-    busyRef.current = true; setBusy(true); setError(null); setProposal(null);
+    busyRef.current = true; setBusy(true); setError(null); if (!keepVisible) setProposal(null);
     try {
       if (!(await authorize()) || version.current !== run) return;
       const next = await requestSwapQuoteWithV2(input, address!, controller.signal, tokens, { fresh: freshReview });
@@ -116,6 +119,12 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     const timer = setTimeout(() => { lastAuto.current = fingerprint; void prepare(); }, 700);
     return () => clearTimeout(timer);
   }, [fingerprint, authenticated, sessionExpired, isConnected, chainId, executionBusy, input, tokens, prepare]);
+  useEffect(() => {
+    if (!proposal || reviewOpen || !swapQuoteFresh(proposal)) return;
+    const delay = Math.max(1_000, swapQuoteExpiry(proposal) - Date.now() - 20_000);
+    const timer = setTimeout(() => { void prepare(true, true); }, delay);
+    return () => clearTimeout(timer);
+  }, [proposal, reviewOpen, prepare]);
   const fresh = !!proposal && swapQuoteFresh(proposal, now);
   const parsedPay = balances.pay.state === "ready" ? parseHumanTokenAmount(input.amount, balances.pay.decimals) : null;
   const insufficient = balances.pay.state === "ready" && parsedPay !== null && parsedPay > balances.pay.value;
@@ -192,6 +201,9 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
           <TokenIcon token={token} /><bdi className="truncate">{token.symbol}</bdi><ChevronDown size={14} className="shrink-0 text-zinc-400" /></button>
       </div>
       <p className="truncate text-[11px] text-zinc-400" title={tokenName(token.name)}>{tokenName(token.name)}{isNativeEthSentinel(token.address) ? " · Native Base asset" : ""}</p>
+      {formatSwapUsd(amountValue, isPay ? payUsd : receiveUsd) && (
+        <p className="text-xs font-medium text-zinc-300" data-testid={`${side}-usd`}>{formatSwapUsd(amountValue, isPay ? payUsd : receiveUsd)}</p>
+      )}
       {!token.verified && <p className="text-xs text-amber-300">Unverified token. Import is not endorsement; it may be unsafe or unsellable.<span className="mt-1 block break-all font-mono text-[10px]">{token.address}</span></p>}
     </div>;
   };
