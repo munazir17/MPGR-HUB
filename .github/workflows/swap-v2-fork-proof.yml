@@ -40,30 +40,46 @@ jobs:
           mkdir -p .forge-deps
           git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
           git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
-      # A set Alchemy key can still be past its monthly cap. The
-      # secret||public default never switches in that case, so discovery
-      # dies on the first eth_chainId. Probe once and fall back. Never
-      # print the URL. Same public endpoint the contracts-fork job uses:
-      # mainnet.base.org rate-limits shared CI egress and prunes state.
-      - name: Select a Base RPC that still accepts requests
+      # Chain id is not enough. publicnode answers eth_chainId and then
+      # rejects historical reads ("Archive requests require a personal
+      # token"), so discovery never finds the Initialize log. Probe block
+      # 10_000_000. Never print a URL that may embed an API key.
+      - name: Select a Base RPC that still serves historical reads
         env:
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://base-rpc.publicnode.com' }}
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
         run: |
           set -euo pipefail
           probe_rpc() {
             local url="$1" code
-            code="$(curl -sS -o "$RUNNER_TEMP/rpc-probe.json" -w '%{http_code}' --max-time 12 \
+            code="$(curl -sS -o "$RUNNER_TEMP/rpc-probe.json" -w '%{http_code}' --max-time 15 \
               -H 'content-type: application/json' \
               -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
               "$url" || echo 000)"
-            [ "$code" = "200" ] && grep -Eq '"result"[[:space:]]*:[[:space:]]*"0x2105"' "$RUNNER_TEMP/rpc-probe.json"
+            [ "$code" = "200" ] && grep -Eq '"result"[[:space:]]*:[[:space:]]*"0x2105"' "$RUNNER_TEMP/rpc-probe.json" || return 1
+            code="$(curl -sS -o "$RUNNER_TEMP/rpc-probe.json" -w '%{http_code}' --max-time 15 \
+              -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x989680",false]}' \
+              "$url" || echo 000)"
+            [ "$code" = "200" ] && grep -Eq '"hash"[[:space:]]*:[[:space:]]*"0x[0-9a-fA-F]{64}"' "$RUNNER_TEMP/rpc-probe.json"
           }
-          CHOSEN="$BASE_MAINNET_RPC_URL"
-          if ! probe_rpc "$CHOSEN"; then
-            echo "::warning title=fork RPC fallback::Configured Base RPC rejected eth_chainId. This job will use the public endpoint instead."
-            CHOSEN="https://base-rpc.publicnode.com"
-            probe_rpc "$CHOSEN" || { echo "::error::Public Base RPC also rejected eth_chainId"; exit 1; }
+          CHOSEN=""
+          if [ -n "${BASE_MAINNET_RPC_URL:-}" ] && probe_rpc "$BASE_MAINNET_RPC_URL"; then
+            CHOSEN="$BASE_MAINNET_RPC_URL"
+            echo "Using configured BASE_MAINNET_RPC_URL (historical read ok)."
+          else
+            if [ -n "${BASE_MAINNET_RPC_URL:-}" ]; then
+              echo "::warning title=fork RPC fallback::Configured Base RPC cannot serve a historical block (monthly cap or non-archive). Trying public archive endpoints."
+            fi
+            for url in https://base.gateway.tenderly.co https://mainnet.base.org; do
+              if probe_rpc "$url"; then
+                CHOSEN="$url"
+                echo "Using public archive endpoint: $url"
+                break
+              fi
+              echo "::warning title=fork RPC skipped::$url rejected the historical probe."
+            done
           fi
+          [ -n "$CHOSEN" ] || { echo "::error::No Base RPC could serve chain id 8453 and historical block 10000000"; exit 1; }
           {
             echo "BASE_MAINNET_RPC_URL<<__MPGR_RPC__"
             printf '%s\n' "$CHOSEN"
@@ -87,7 +103,7 @@ jobs:
             if [ "$status" != "0" ]; then return "$status"; fi
             python3 scripts/swap-deploy-v2/require-fork-proof.py v2-fork-proof.json
           }
-          # Public Base RPCs 429 shared CI egress under fork load. One
+          # Public archive RPCs 429 shared CI egress under fork load. One
           # settle-and-retry absorbs that. A deterministic failure fails twice.
           run_suite
           STATUS=$?
