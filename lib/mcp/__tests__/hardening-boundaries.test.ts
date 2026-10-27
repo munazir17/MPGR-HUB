@@ -159,7 +159,7 @@ describe("hardening §1: malformed signatures fail closed BEFORE the broadcaster
     const deps = delegatedDeps();
     const auth = validAuth();
     const smart = ("0x" + "33".repeat(66)) as Hex;
-    auth.authorization.signature = smart;
+    (auth.authorization as Record<string, unknown>).signature = smart;
     const out = await delegateSwap(deps, auth);
     expect(out.ok).toBe(true);
   });
