@@ -22,6 +22,7 @@
 // pretending an allocation happened.
 
 import { createPublicClient, createWalletClient, http, type Address, type Hash } from "viem";
+import { MPGR_BUILDER_DATA_SUFFIX } from "@/lib/chain/builder-attribution";
 import { privateKeyToAccount } from "viem/accounts";
 import { parseEndpointList, uniqueRpcUrls } from "@/lib/chain/rpc-endpoints";
 import { REWARD_VAULT_ADMIN_ABI } from "@/lib/reward-allocation/reward-vault-admin-abi";
@@ -65,6 +66,7 @@ function getWalletClient() {
     account: getSignerAccount(),
     chain: MPGR_REWARD_VAULT_CONFIG.chain,
     transport: http(getRpcUrl(), { timeout: 12_000, retryCount: 0 }),
+    dataSuffix: MPGR_BUILDER_DATA_SUFFIX,
   });
 }
 

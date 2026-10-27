@@ -131,11 +131,9 @@ it("reorg after a rejected first pool cannot reuse permission reads from the pre
   const changedClient={...client,getBlock:async()=>({number:100n,timestamp:blockTime,hash:read.mock.calls.some(([a])=>a.functionName==="getPool")?`0x${"cd".repeat(32)}` as const:hash})};
   await expect(searchSwapRoutes(changedClient,input())).rejects.toMatchObject({reason:"BLOCK_CHANGED"});expect(simulate).not.toHaveBeenCalled();
 });
-it("the scheduling budget stops additional candidates and discloses a partial comparison",async()=>{
+it("quotes every direct pool together, and a clock jump past the snapshot is refused",async()=>{
   vi.useFakeTimers();try{
-    advance=13000;const p=(await searchSwapRoutes(client,input())).proposal;
-    expect(simulate).toHaveBeenCalledTimes(1);expect(p.swapRouting!.comparisonComplete).toBe(false);
-    expect(p.swapRouting!.outcomes.filter(o=>o.reason==="SEARCH_BUDGET_EXCEEDED")).toHaveLength(4);
+    advance=13000;await expect(searchSwapRoutes(client,input())).rejects.toMatchObject({reason:"STALE_BLOCK"});
   }finally{vi.useRealTimers();}
 });
 

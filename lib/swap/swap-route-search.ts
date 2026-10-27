@@ -87,16 +87,14 @@ export async function searchSwapRoutes(client: SwapRouteReadClient, input: Execu
     throw new SwapRouteQualificationError(pathEligible ? "LIQUIDITY_UNAVAILABLE" : "FEE_ROUTE_UNREGISTERED", pathEligible ? "No factory-verified pool quoted this pair for this amount. No swap was prepared." : "Exact token registration and Executor allowlist verification are required. Imported metadata cannot authorize execution.");
   }
   const reader = requestReader(client);
-  const outcomes: SwapRouteOutcome[] = [];
-  let winner: { proposal: SwapRoutedProposal; qualified: Awaited<ReturnType<typeof qualifySwapRouteCandidate>>; gas: string | null } | undefined;
-  let firstFailure: SwapRouteQualificationError | undefined;
   const startedAt = Date.now();
-  // Five candidates maximum, sequential: bounded provider pressure, stable tie order.
-  for (const route of candidates) {
+  // Every direct pool is quoted together. Wall-clock is one pool, not the sum,
+  // and a tie still keeps the earlier venue. A global posture failure still
+  // rejects the whole quote.
+  const attempts = await Promise.all(candidates.map(async (route, index) => {
     const key = swapRouteKey(route);
     if (Date.now() - startedAt > 12_000) {
-      outcomes.push({ key, state: "unavailable", reason: "SEARCH_BUDGET_EXCEEDED", output: null });
-      continue;
+      return { index, outcome: { key, state: "unavailable" as const, reason: "SEARCH_BUDGET_EXCEEDED", output: null } };
     }
     try {
       const qualified = await qualifySwapRouteCandidate(reader, input.from.address, input.to.address, route, blockNumber);
@@ -115,9 +113,11 @@ export async function searchSwapRoutes(client: SwapRouteReadClient, input: Execu
       if (!result.ok) {
         const provider = result.supported && result.error.code === "PROVIDER_ERROR";
         const reason = result.supported ? result.error.code : "EXECUTION_UNAVAILABLE";
-        outcomes.push({ key, state: provider ? "unavailable" : "rejected", reason, output: null });
-        firstFailure ??= new SwapRouteQualificationError(reason, provider ? "A compatible pool quote could not be verified. Retry; no swap was prepared." : "No positive, fee-compatible direct quote could be prepared for this amount.", provider ? 503 : 422);
-        continue;
+        return {
+          index,
+          outcome: { key, state: provider ? "unavailable" as const : "rejected" as const, reason, output: null },
+          failure: new SwapRouteQualificationError(reason, provider ? "A compatible pool quote could not be verified. Retry; no swap was prepared." : "No positive, fee-compatible direct quote could be prepared for this amount.", provider ? 503 : 422),
+        };
       }
       if (!swapQuoteFresh(result.proposal)) throw new SwapRouteQualificationError("STALE_BLOCK", "A candidate quote expired during route comparison. Refresh before signing.");
       const outcome: SwapRouteOutcome = { key, state: "quoted", reason: "QUOTE_ONLY_NOT_EXECUTION_PROOF", output: result.proposal.toAmount };
@@ -129,13 +129,25 @@ export async function searchSwapRoutes(client: SwapRouteReadClient, input: Execu
       const invalid = swapQuotePolicyError(proposal);
       if (invalid) throw new SwapRouteQualificationError("QUOTE_POLICY_INVALID", "This candidate failed exact fee/calldata policy validation; no signature was requested.");
       proposal.swapRouting!.executionSimulation = await checkReadyExecutor(reader, qualified, proposal);
-      outcomes.push(outcome);
-      if (!winner || BigInt(proposal.toAmount) > BigInt(winner.proposal.toAmount)) winner = { proposal, qualified, gas: cached.gas };
+      return { index, outcome, winner: { proposal, qualified, gas: cached.gas } };
     } catch (error) {
       const failure = error instanceof SwapRouteQualificationError ? error : new SwapRouteQualificationError("ROUTE_VERIFICATION_UNAVAILABLE", "Current pool evidence could not be verified. Retry; no swap was prepared.", 503);
-      if (GLOBAL_BLOCKS.has(failure.reason)) throw failure;
-      firstFailure ??= failure;
-      outcomes.push({ key, state: failure.status === 503 ? "unavailable" : "rejected", reason: failure.reason, output: null });
+      if (GLOBAL_BLOCKS.has(failure.reason)) return { index, fatal: failure };
+      return { index, outcome: { key, state: failure.status === 503 ? "unavailable" as const : "rejected" as const, reason: failure.reason, output: null }, failure };
+    }
+  }));
+  const fatal = attempts.find((attempt) => "fatal" in attempt && attempt.fatal);
+  if (fatal && "fatal" in fatal && fatal.fatal) throw fatal.fatal;
+  const outcomes: SwapRouteOutcome[] = attempts.map((attempt) => {
+    if ("outcome" in attempt && attempt.outcome) return attempt.outcome;
+    return { key: swapRouteKey(candidates[attempt.index]), state: "unavailable" as const, reason: "ROUTE_VERIFICATION_UNAVAILABLE", output: null };
+  });
+  let winner: { proposal: SwapRoutedProposal; qualified: Awaited<ReturnType<typeof qualifySwapRouteCandidate>>; gas: string | null } | undefined;
+  let firstFailure: SwapRouteQualificationError | undefined;
+  for (const attempt of attempts) {
+    if ("failure" in attempt && attempt.failure && !firstFailure) firstFailure = attempt.failure;
+    if ("winner" in attempt && attempt.winner && (!winner || BigInt(attempt.winner.proposal.toAmount) > BigInt(winner.proposal.toAmount))) {
+      winner = attempt.winner;
     }
   }
   if (!winner) {

@@ -2,7 +2,7 @@ import { createConfig, http } from "wagmi";
 import { fallback } from "viem";
 import { base } from "wagmi/chains";
 import { browserRpcUrls } from "@/lib/chain/rpc-endpoints";
-import { Attribution } from "ox/erc8021";
+import { MPGR_BUILDER_DATA_SUFFIX } from "@/lib/chain/builder-attribution";
 import { connectorsForWallets } from "@rainbow-me/rainbowkit";
 import {
   base as baseSmartWallet,
@@ -50,9 +50,7 @@ export const farcasterConnector = farcasterMiniApp();
 export const config = createConfig({
   connectors: [...rainbowKitConnectors, farcasterConnector],
   chains: [base],
-  dataSuffix: Attribution.toDataSuffix({
-    codes: ["bc_6w84im9m"],
-  }),
+  dataSuffix: MPGR_BUILDER_DATA_SUFFIX,
   transports: {
     // Public fallback only. Server secrets (BASE_RPC_URL / BASE_RPC_URLS)
     // are never read here, so they cannot be bundled into the browser.

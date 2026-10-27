@@ -42,6 +42,7 @@ import {
 
 import { erc20Abi } from "@/lib/erc20-abi";
 import { config } from "@/lib/wagmi";
+import { withBuilderSuffix } from "@/lib/chain/builder-attribution";
 import { inspectExecutorSwapTransaction } from "@/lib/executor/executor-intent";
 import { swapPathExecutor } from "@/lib/swap/swap-executor-config";
 import { inspectSwapExecutorTransaction } from "@/lib/swap/swap-executor-intent";
@@ -562,13 +563,13 @@ export async function executeTrade(
             functionName: "approve",
             args: [proposal.permit2Spender, BigInt(proposal.fromAmount)],
           });
-          approvalHash = await sendTransaction(config, {
+          approvalHash = await sendTransaction(config, withBuilderSuffix({
             account,
             chainId: TRADE_CHAIN_ID,
             to: proposal.from.address,
             data,
             value: 0n,
-          });
+          }));
           onChange({ state: "APPROVING", approvalHash, swapHash: null, error: null, stepLabel: "Waiting for the approval receipt…" });
           const receipt = await waitForTransactionReceipt(config, { hash: approvalHash, chainId: TRADE_CHAIN_ID, pollingInterval: 1_000 });
           if (input.safety) {
@@ -647,14 +648,14 @@ export async function executeTrade(
     });
 
     try {
-      swapHash = await sendTransaction(config, {
+      swapHash = await sendTransaction(config, withBuilderSuffix({
         account,
         chainId: TRADE_CHAIN_ID,
         to: tx.to,
         data,
         value: BigInt(tx.value || "0"),
         gas: tx.gas ? BigInt(tx.gas) : undefined,
-      });
+      }));
     } catch (err) {
       const classified = classifyWalletError(err, "SEND_FAILED");
       const snapshot = fail(classified.code, input.safety && classified.code === "WALLET_REJECTED"

@@ -29,7 +29,8 @@ import "server-only";
 // Fail-closed: without the env key there is no broadcaster for that chain and
 // every delegated execution on it refuses.
 
-import { createPublicClient, createWalletClient, http, type Address, type Chain, type Hash, type Hex } from "viem";
+import { concatHex, createPublicClient, createWalletClient, http, type Address, type Chain, type Hash, type Hex } from "viem";
+import { MPGR_BUILDER_DATA_SUFFIX } from "@/lib/chain/builder-attribution";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 
@@ -163,7 +164,7 @@ export function createDelegatedBroadcaster(): { broadcast: DelegatedBroadcastFn;
     broadcast: async (tx, onStage) => {
       if (tx.chainId !== BASE_SEPOLIA_CHAIN_ID) throw new Error(`broadcaster: refusing chain ${tx.chainId} (Base Sepolia only)`);
       onStage?.("send");
-      return client.sendTransaction({ to: tx.to, data: tx.data, chain: client.chain, kzg: undefined });
+      return client.sendTransaction({ to: tx.to, data: concatHex([tx.data, MPGR_BUILDER_DATA_SUFFIX]), chain: client.chain, kzg: undefined });
     },
   };
 }
@@ -208,10 +209,11 @@ export function createMainnetDelegatedBroadcaster(
       // invisibly, so a budget-end timeout can name the in-flight stage.
       // Passing the estimated `gas` back in makes sendTransaction skip its
       // own estimation — the same estimate, the same transaction.
+      const data = concatHex([tx.data, MPGR_BUILDER_DATA_SUFFIX]);
       onStage?.("estimate");
-      const gas = await estimateClient.estimateGas({ account: account.address, to: tx.to, data: tx.data, value });
+      const gas = await estimateClient.estimateGas({ account: account.address, to: tx.to, data, value });
       onStage?.("send");
-      return client.sendTransaction({ to: tx.to, data: tx.data, chain: client.chain, kzg: undefined, gas });
+      return client.sendTransaction({ to: tx.to, data, chain: client.chain, kzg: undefined, gas });
     },
   };
 }
