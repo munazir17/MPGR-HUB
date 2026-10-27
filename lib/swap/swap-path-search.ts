@@ -112,12 +112,10 @@ export async function searchSwapPaths(
   } catch {
     balanceIssue = null; // live re-read before signing still guards this.
   }
-  const outcomes: SwapPathOutcome[] = [];
-  let winner: { proposal: TradeProposal; quotedOut: bigint } | null = null;
   const startedAt = Date.now();
-  for (const candidate of candidates) {
+  const attempts = await Promise.all(candidates.map(async (candidate, index) => {
     const key = swapPathKey(candidate);
-    if (Date.now() - startedAt > 12_000) { outcomes.push({ key, state: "unavailable", reason: "SEARCH_BUDGET_EXCEEDED", output: null }); continue; }
+    if (Date.now() - startedAt > 12_000) return { index, outcome: { key, state: "unavailable" as const, reason: "SEARCH_BUDGET_EXCEEDED", output: null } };
     try {
       const quote = await quoteSwapPath(client, input as SwapPathQuoteInput, candidate, block);
       const id = tradeProposalId({ from: input.from.address, to: input.to.address, fromAmount: input.fromAmount, taker: input.taker, slippageBps: input.slippageBps });
@@ -143,14 +141,23 @@ export async function searchSwapPaths(
       };
       if (!swapPathRoutingEvidenceValid(p, evidence)) throw new SwapPathQuoteError("QUOTE_POLICY_INVALID", "Path evidence does not match the prepared transaction.");
       evidence.executionSimulation = await simulateReadyPath(client, deployment, p, block.number);
-      evidence.outcomes = outcomes.slice();
       (p as SwapPathRoutedProposal).swapPathRouting = evidence;
-      outcomes.push({ key, state: "quoted", reason: "QUOTE_ONLY_NOT_EXECUTION_PROOF", output: built.quotedOut.toString() });
-      if (!winner || built.quotedOut > winner.quotedOut) winner = { proposal: p, quotedOut: built.quotedOut };
+      return { index, outcome: { key, state: "quoted" as const, reason: "QUOTE_ONLY_NOT_EXECUTION_PROOF", output: built.quotedOut.toString() }, proposal: p, quotedOut: built.quotedOut };
     } catch (error) {
       const code = error instanceof SwapPathQuoteError ? error.code : error instanceof SwapRouteQualificationError ? error.reason : "ROUTE_VERIFICATION_UNAVAILABLE";
-      if (["FEE_RECIPIENT_CHANGED", "FEE_POLICY_INVALID", "QUOTE_POLICY_INVALID"].includes(code)) throw error;
-      outcomes.push({ key, state: code === "POOL_UNAVAILABLE" || code === "LIQUIDITY_UNAVAILABLE" ? "rejected" : "unavailable", reason: code, output: null });
+      if (["FEE_RECIPIENT_CHANGED", "FEE_POLICY_INVALID", "QUOTE_POLICY_INVALID"].includes(code)) return { index, fatal: error instanceof Error ? error : new SwapPathQuoteError("QUOTE_POLICY_INVALID", "Path quote failed.") };
+      return { index, outcome: { key, state: code === "POOL_UNAVAILABLE" || code === "LIQUIDITY_UNAVAILABLE" ? "rejected" as const : "unavailable" as const, reason: code, output: null } };
+    }
+  }));
+  const fatal = attempts.find((attempt) => "fatal" in attempt && attempt.fatal);
+  if (fatal && "fatal" in fatal && fatal.fatal) throw fatal.fatal;
+  const outcomes: SwapPathOutcome[] = [];
+  let winner: { proposal: TradeProposal; quotedOut: bigint } | null = null;
+  for (const attempt of attempts) {
+    if (!("outcome" in attempt) || !attempt.outcome) continue;
+    outcomes.push(attempt.outcome);
+    if ("proposal" in attempt && attempt.proposal && attempt.quotedOut !== undefined && (!winner || attempt.quotedOut > winner.quotedOut)) {
+      winner = { proposal: attempt.proposal, quotedOut: attempt.quotedOut };
     }
   }
   if (!winner) return null;

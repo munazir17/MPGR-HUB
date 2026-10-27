@@ -1,6 +1,7 @@
 // lib/staking/staking-client.ts
 
 import { readContract, writeContract, simulateContract, waitForTransactionReceipt } from "wagmi/actions";
+import { withBuilderSuffix } from "@/lib/chain/builder-attribution";
 import type { Address, Hash } from "viem";
 import { config } from "@/lib/wagmi";
 import { erc20Abi } from "@/lib/erc20-abi";
@@ -201,7 +202,7 @@ export const stakingClient = {
       chainId: MPGR_STAKING_CONFIG.chainId,
       gas: B20_APPROVE_GAS_LIMIT,
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   async stake(amount: bigint): Promise<Hash> {
@@ -210,7 +211,7 @@ export const stakingClient = {
       functionName: "stake",
       args: [amount],
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   async unstake(amount: bigint): Promise<Hash> {
@@ -219,7 +220,7 @@ export const stakingClient = {
       functionName: "unstake",
       args: [amount],
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   async claimRewards(): Promise<Hash> {
@@ -227,7 +228,7 @@ export const stakingClient = {
       ...STAKING_CONTRACT,
       functionName: "claimRewards",
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   async exit(): Promise<Hash> {
@@ -235,7 +236,7 @@ export const stakingClient = {
       ...STAKING_CONTRACT,
       functionName: "exit",
     });
-    return writeContract(config, request);
+    return writeContract(config, withBuilderSuffix(request));
   },
 
   async waitForReceipt(hash: Hash) {
