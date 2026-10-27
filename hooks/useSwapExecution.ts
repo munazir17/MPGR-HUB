@@ -16,6 +16,7 @@ import { formatAtomicAmount } from "@/lib/trade/trade-format";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 import type { Hash, TransactionReceipt } from "viem";
 import { swapTransactionIdentityMatches, swapTransactionMatches } from "@/lib/swap/swap-transaction";
+import { receiptHasApproval } from "@/lib/swap/swap-mined-call";
 import { readSwapAllowance } from "@/lib/swap/swap-allowance";
 export interface SwapActivity {
   id: string; proposal: TradeProposal; startedAt: number;
@@ -193,7 +194,14 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
         let next = { ...a };
         if (a.approvalHash) {
           try { const receipt = await getTransactionReceipt(config, { hash: a.approvalHash, chainId: 8453 });
-            if (receipt.transactionHash.toLowerCase() === a.approvalHash.toLowerCase() && receipt.from.toLowerCase() === a.proposal.taker.toLowerCase() && receipt.to?.toLowerCase() === a.proposal.from.address.toLowerCase()) next.approvalStatus = receipt.status === "success" ? "confirmed" : "reverted";
+            const hashOk = receipt.transactionHash?.toLowerCase() === a.approvalHash.toLowerCase();
+            const direct = hashOk && receipt.from?.toLowerCase() === a.proposal.taker.toLowerCase() && receipt.to?.toLowerCase() === a.proposal.from.address.toLowerCase();
+            let amount = -1n;
+            try { amount = BigInt(a.proposal.fromAmount); } catch { amount = -1n; }
+            const logProof = hashOk && !!a.proposal.permit2Spender && receiptHasApproval(
+              receipt.logs, a.proposal.from.address, a.proposal.taker, a.proposal.permit2Spender, amount,
+            );
+            if (direct || logProof) next.approvalStatus = receipt.status === "success" ? "confirmed" : "reverted";
             else next.approvalStatus = "unknown";
             // Carry the mined-block floor through manual receipt recovery too.
             // Never attach an old activity's checkpoint to a newly opened review.

@@ -22,6 +22,7 @@ import { swapV2Executor, SWAP_V2_CHAIN_ID, SWAP_V2_WETH } from "@/lib/swap/v2/de
 import { inspectV2SwapTransaction } from "@/lib/swap/v2/intent";
 import { verifyV2Posture, V2PreflightError } from "@/lib/swap/v2/preflight";
 import { verifyV2Receipt } from "@/lib/swap/v2/settlement";
+import { accountCallsFromTransaction, isEntryPointAddress, stripAttributionSuffixes } from "@/lib/swap/swap-mined-call";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,14 +63,25 @@ export async function POST(request: Request) {
       client.getTransactionReceipt({ hash: hash as Hex }),
     ]);
 
-    // Attribute strictly: only the wallet that sent it may verify it, and it must
-    // target the sealed V2 executor. This is what stops someone submitting an
-    // arbitrary V2 swap hash and receiving a verification for it.
-    if (tx.to?.toLowerCase() !== deployment.executor.toLowerCase()) {
-      return reply({ code: "NOT_V2_EXECUTOR", verified: false, error: "That transaction does not target the MPGR V2 executor." }, 422);
+    // Attribute strictly. A direct send is one call from tx.from. A Coinbase
+    // Smart Wallet bundle is a bundler calling EntryPoint; the taker is the
+    // userOp sender and the ETH value is the inner call value, not tx.value.
+    // Exactly one call from the signed-in wallet is accepted. A builder-code
+    // suffix is stripped only after the wrapper ABI has been decoded.
+    const calls = accountCallsFromTransaction({ from: tx.from, to: tx.to, input: tx.input, value: tx.value });
+    if (isEntryPointAddress(tx.to) && calls.length === 0) {
+      return reply({ code: "UNDECODABLE_CALLDATA", verified: false, error: "The mined calldata is not V2 executor calldata." }, 422);
     }
-    if (tx.from.toLowerCase() !== wallet) {
+    const mine = calls.filter((call) => call.from.toLowerCase() === wallet);
+    if (mine.length === 0) {
       return reply({ code: "NOT_YOUR_TRANSACTION", verified: false, error: "That transaction was not sent by the signed-in wallet." }, 403);
+    }
+    if (mine.length !== 1) {
+      return reply({ code: "NOT_SINGLE_SWAP", verified: false, error: "That transaction is not a single swap from the signed-in wallet." }, 422);
+    }
+    const call = mine[0];
+    if (call.to.toLowerCase() !== deployment.executor.toLowerCase()) {
+      return reply({ code: "NOT_V2_EXECUTOR", verified: false, error: "That transaction does not target the MPGR V2 executor." }, 422);
     }
     if (receipt.transactionHash.toLowerCase() !== tx.hash.toLowerCase()) {
       return reply({ code: "PROVIDER_ERROR", verified: false, error: "The receipt does not match the submitted transaction." }, 503);
@@ -78,11 +90,13 @@ export async function POST(request: Request) {
       return reply({ code: "PROVIDER_ERROR", verified: false, error: "The receipt is not anchored to a mined block yet." }, 503);
     }
 
-    // Decode the MINED calldata to learn what was actually executed. Native-in is
-    // a fact about the mined value, never about what the client claims.
+    const minedData = stripAttributionSuffixes(call.data);
+    // Decode the MINED account-call calldata to learn what was actually executed.
+    // Native-in is the inner call value: a userOp's outer transaction value is
+    // often zero even when the swap sends ETH.
     let decoded: { functionName: string; args: unknown };
     try {
-      decoded = decodeFunctionData({ abi: SWAP_V2_ABI, data: tx.input }) as { functionName: string; args: unknown };
+      decoded = decodeFunctionData({ abi: SWAP_V2_ABI, data: minedData }) as { functionName: string; args: unknown };
     } catch {
       return reply({ code: "UNDECODABLE_CALLDATA", verified: false, error: "The mined calldata is not V2 executor calldata." }, 422);
     }
@@ -95,7 +109,7 @@ export async function POST(request: Request) {
       return reply({ code: "UNDECODABLE_CALLDATA", verified: false, error: "The mined calldata carries no readable V2 swap parameters." }, 422);
     }
 
-    const nativeIn = tx.value > 0n;
+    const nativeIn = call.value > 0n;
     const nativeOut = params.unwrapNativeOut === true;
 
     // Read the fee terms LIVE at the mined block. Settlement must be judged
@@ -110,9 +124,9 @@ export async function POST(request: Request) {
     }
 
     const inspected = inspectV2SwapTransaction(
-      { to: tx.to, data: tx.input, value: tx.value },
+      { to: call.to, data: minedData, value: call.value },
       {
-        deployment, taker: tx.from, feeBps, feeRecipient,
+        deployment, taker: call.from, feeBps, feeRecipient,
         // The mined calldata is the source of truth for the executed pair.
         fromAddress: nativeIn ? SWAP_V2_WETH : minedIn,
         toAddress: nativeOut ? SWAP_V2_WETH : minedOut,

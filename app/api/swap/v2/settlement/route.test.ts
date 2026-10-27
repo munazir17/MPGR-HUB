@@ -7,7 +7,8 @@
 //
 // Offline: fabricated client, real calldata from the real encoder.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Address, Hex, Log } from "viem";
+import { concatHex, encodeFunctionData, type Address, type Hex, type Log } from "viem";
+import { Attribution } from "ox/erc8021";
 
 const mocks = vi.hoisted(() => ({
   signedIn: true,
@@ -20,10 +21,11 @@ vi.mock("@/lib/trade/trade-rate-limit", () => ({ checkRateLimit: async () => ({ 
 vi.mock("@/lib/trade/trade-public-client", () => ({ getTradePublicClient: () => mocks.client }));
 
 import { POST } from "./route";
-import { __setSwapV2ExecutorForTests, SWAP_V2_SEALED_MANIFEST } from "@/lib/swap/v2/deployment";
+import { __setSwapV2ExecutorForTests, SWAP_V2_FLAG_NATIVE_IN, SWAP_V2_SEALED_MANIFEST, SWAP_V2_V4_POOL_MANAGER } from "@/lib/swap/v2/deployment";
 import { V2_FEE_RECIPIENT } from "@/lib/swap/v2/discovery";
 import { activatedResponse, swapExecutedLog, BLOCK } from "@/lib/swap/v2/__tests__/activation-fixtures";
-import { TAKER, TOKEN_A, TOKEN_B, UNI_V3_ROUTER } from "@/lib/swap/v2/__tests__/helpers";
+import { TAKER, TOKEN_A, TOKEN_B, UNI_V3_ROUTER, HOOKS, WETH, directQuote, v4Pool } from "@/lib/swap/v2/__tests__/helpers";
+import { ENTRYPOINT_V06 } from "@/lib/swap/swap-mined-call";
 
 const EXECUTOR = SWAP_V2_SEALED_MANIFEST.executor;
 const HASH = `0x${"aa".repeat(32)}` as Hex;
@@ -221,5 +223,65 @@ describe("V2 settlement route — activated gate", () => {
     expect(r.status).toBe(401);
     expect((await r.json()).code).toBe("AUTH_REQUIRED");
     expect(mocks.client.getTransaction).not.toHaveBeenCalled();
+  });
+
+  it("verifies a direct swap whose calldata carries the MPGR builder suffix", async () => {
+    const fixture = minedFixture();
+    fixture.transaction.input = concatHex([fixture.transaction.input, Attribution.toDataSuffix({ codes: ["bc_6w84mi9m"] })]);
+    wire(fixture);
+    const body = await (await POST(request())).json();
+    expect(body.verified).toBe(true);
+    expect(body.code).toBe("SETTLED");
+    expect(body.amountIn).toBe("1000000");
+  });
+
+  it("verifies a smart-wallet bundle: inner ETH value, outer value zero, combined suffix", async () => {
+    const gross = 1_000_000n;
+    const fee = 2_500n;
+    const net = gross - fee;
+    const quote = directQuote({
+      tokenIn: WETH, tokenOut: TOKEN_B, gross, fee, net, amountOut: 1_000n,
+      legs: [{
+        pools: [v4Pool("0x0000000000000000000000000000000000000000", TOKEN_B, 0, 200, HOOKS)],
+        tokens: [WETH, TOKEN_B], amountIn: net, amountOut: 1_000n,
+      }],
+    });
+    const response = activatedResponse({ quote, nativeIn: true });
+    const built = response.transaction as { data: string; value: string };
+    expect(BigInt(built.value)).toBe(gross);
+    const bundler = "0x3333333333333333333333333333333333333333" as Address;
+    const inner = concatHex([built.data as Hex, Attribution.toDataSuffix({ codes: ["bc_6w84mi9m"] })]);
+    const executeBatch = { type: "function", name: "executeBatch", stateMutability: "payable", inputs: [{ name: "calls", type: "tuple[]", components: [{ name: "target", type: "address" }, { name: "value", type: "uint256" }, { name: "data", type: "bytes" }] }], outputs: [] } as const;
+    const handleOps = { type: "function", name: "handleOps", stateMutability: "nonpayable", inputs: [{ name: "ops", type: "tuple[]", components: [{ name: "sender", type: "address" }, { name: "nonce", type: "uint256" }, { name: "initCode", type: "bytes" }, { name: "callData", type: "bytes" }, { name: "callGasLimit", type: "uint256" }, { name: "verificationGasLimit", type: "uint256" }, { name: "preVerificationGas", type: "uint256" }, { name: "maxFeePerGas", type: "uint256" }, { name: "maxPriorityFeePerGas", type: "uint256" }, { name: "paymasterAndData", type: "bytes" }, { name: "signature", type: "bytes" }] }, { name: "beneficiary", type: "address" }], outputs: [] } as const;
+    const callData = concatHex([encodeFunctionData({ abi: [executeBatch], functionName: "executeBatch", args: [[{ target: EXECUTOR, value: gross, data: inner }]] }), Attribution.toDataSuffix({ codes: ["bc_6w84mi9m", "bc_mnip"] })]);
+    const input = encodeFunctionData({ abi: [handleOps], functionName: "handleOps", args: [[{ sender: TAKER, nonce: 1n, initCode: "0x", callData, callGasLimit: 1n, verificationGasLimit: 1n, preVerificationGas: 1n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n, paymasterAndData: "0x", signature: "0x" }], bundler] });
+    const log = swapExecutedLog({
+      taker: TAKER, router: SWAP_V2_V4_POOL_MANAGER, intentId: response.intentId as Hex,
+      tokenIn: WETH, tokenOut: TOKEN_B, grossAmountIn: gross, feeAmount: fee, swapAmountIn: net, amountOut: 1_000n,
+      feeRecipient: V2_FEE_RECIPIENT, feeBps: 25, routerKind: 7, flags: SWAP_V2_FLAG_NATIVE_IN,
+    });
+    const fixture = {
+      intentId: response.intentId as Hex,
+      transaction: { hash: HASH, from: bundler, to: ENTRYPOINT_V06, value: 0n, input },
+      receipt: { transactionHash: HASH, status: "success" as const, blockNumber: BLOCK.number, blockHash: BLOCK.hash, from: bundler, to: ENTRYPOINT_V06, logs: [log] as unknown as readonly Log[] },
+    };
+    wire(fixture);
+    const body = await (await POST(request())).json();
+    expect(body.verified).toBe(true);
+    expect(body.code).toBe("SETTLED");
+    expect(body.amountIn).toBe(gross.toString());
+  });
+
+  it("does not verify someone else's user operation in the same bundle", async () => {
+    const base = minedFixture();
+    const bundler = "0x3333333333333333333333333333333333333333" as Address;
+    const executeBatch = { type: "function", name: "executeBatch", stateMutability: "payable", inputs: [{ name: "calls", type: "tuple[]", components: [{ name: "target", type: "address" }, { name: "value", type: "uint256" }, { name: "data", type: "bytes" }] }], outputs: [] } as const;
+    const handleOps = { type: "function", name: "handleOps", stateMutability: "nonpayable", inputs: [{ name: "ops", type: "tuple[]", components: [{ name: "sender", type: "address" }, { name: "nonce", type: "uint256" }, { name: "initCode", type: "bytes" }, { name: "callData", type: "bytes" }, { name: "callGasLimit", type: "uint256" }, { name: "verificationGasLimit", type: "uint256" }, { name: "preVerificationGas", type: "uint256" }, { name: "maxFeePerGas", type: "uint256" }, { name: "maxPriorityFeePerGas", type: "uint256" }, { name: "paymasterAndData", type: "bytes" }, { name: "signature", type: "bytes" }] }, { name: "beneficiary", type: "address" }], outputs: [] } as const;
+    const callData = encodeFunctionData({ abi: [executeBatch], functionName: "executeBatch", args: [[{ target: EXECUTOR, value: base.transaction.value, data: base.transaction.input }]] });
+    const input = encodeFunctionData({ abi: [handleOps], functionName: "handleOps", args: [[{ sender: TOKEN_A, nonce: 1n, initCode: "0x", callData, callGasLimit: 1n, verificationGasLimit: 1n, preVerificationGas: 1n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n, paymasterAndData: "0x", signature: "0x" }], bundler] });
+    wire({ ...base, transaction: { ...base.transaction, from: bundler, to: ENTRYPOINT_V06, input, value: 0n }, receipt: { ...base.receipt, from: bundler, to: ENTRYPOINT_V06 } });
+    const r = await POST(request());
+    expect(r.status).toBe(403);
+    expect((await r.json()).code).toBe("NOT_YOUR_TRANSACTION");
   });
 });
