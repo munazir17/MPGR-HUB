@@ -10,17 +10,32 @@
 // out of the matched on-chain log, and the Foundry suite then verifies them
 // independently before use. If neither path finds the event, this exits non-zero
 // and claims NO proof — a missing hint is never turned into a fabricated fixture.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import {
   V4_POOL_MANAGER, decodeInitializeLog, findInitializeByCurrency, findInitializeByPoolId,
   findTokenDeploymentBlock,
 } from './fork-fixture-discovery.mjs';
 
-const rpcUrl = process.env.BASE_MAINNET_RPC_URL;
+// Public endpoints that still serve historical Base blocks. A full node that
+// answers eth_chainId (publicnode) then rejects getBlock/getLogs as "archive"
+// cannot find the Initialize log. The configured secret is tried first; a
+// monthly capacity error rotates off it. Never print a URL that may embed a key.
+const PUBLIC_BASE_RPCS = [
+  'https://base.gateway.tenderly.co',
+  'https://mainnet.base.org',
+];
+const configured = (process.env.BASE_MAINNET_RPC_URL ?? '').trim();
+const endpoints = [...new Set([configured, ...PUBLIC_BASE_RPCS].filter(Boolean))];
+let active = 0;
+
+function redact(message) {
+  let out = String(message ?? '');
+  for (const url of endpoints) if (url) out = out.replaceAll(url, '[RPC]');
+  return out.replace(/[\r\n]/g, ' ');
+}
 function fatal(error) {
-  const message = String(error?.message ?? error).replaceAll(rpcUrl ?? 'UNSET_RPC', '[RPC]').replace(/[\r\n]/g, ' ');
-  console.error('::error::V2 real-pool discovery failed: '+message);
+  console.error('::error::V2 real-pool discovery failed: '+redact(error?.message ?? error));
   process.exit(1);
 }
 process.on('uncaughtException',fatal);
@@ -32,13 +47,51 @@ const cast = (...args) => execFileSync('cast', args, {encoding:'utf8'}).trim();
 const topic = cast('keccak', 'Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)');
 const log = (line) => console.log(`[discovery] ${line}`);
 
+function rotate(reason) {
+  if (endpoints.length < 2) return;
+  active = (active + 1) % endpoints.length;
+  const next = endpoints[active];
+  const label = PUBLIC_BASE_RPCS.includes(next) ? next : 'configured BASE_MAINNET_RPC_URL';
+  log(`rpc refused (${redact(reason).slice(0, 140)}); switching to ${label}`);
+}
+function shouldRotate(message) {
+  return /archive request|capacity limit|rate limit|request limit|too many requests|usage limit|over rate|monthly|unauthorized|-32011|-32602/i.test(message);
+}
+
 async function rpc(method, params) {
-  for (let i=0;i<6;i++) {
+  if (endpoints.length === 0) throw Error('BASE_MAINNET_RPC_URL is unset and no public fallback is configured');
+  let last = Error('RPC failed');
+  let streak = 0;
+  const tries = Math.max(8, endpoints.length * 4);
+  for (let i = 0; i < tries; i++) {
+    const url = endpoints[active];
     try {
-      const r = await fetch(rpcUrl, {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}),signal:AbortSignal.timeout(30000)});
-      const j = await r.json(); if (j.error) throw Error(j.error.message); return j.result;
-    } catch (e) { if (i===5) throw e; await new Promise(r=>setTimeout(r,2000*(i+1))); }
+      const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({jsonrpc:'2.0', id:1, method, params}), signal:AbortSignal.timeout(30000)});
+      const j = await r.json();
+      if (j.error) throw Error(String(j.error.message ?? j.error));
+      streak = 0;
+      return j.result;
+    } catch (e) {
+      last = e;
+      const message = String(e?.message ?? e);
+      streak++;
+      if (endpoints.length > 1 && (shouldRotate(message) || streak >= 2)) {
+        rotate(message);
+        streak = 0;
+        continue;
+      }
+      if (i === tries - 1) throw e;
+      await new Promise(r => setTimeout(r, 1500 * ((i % 3) + 1)));
+    }
   }
+  throw last;
+}
+
+function publishRpc() {
+  const url = endpoints[active];
+  if (!process.env.GITHUB_ENV || !PUBLIC_BASE_RPCS.includes(url)) return;
+  appendFileSync(process.env.GITHUB_ENV, `BASE_MAINNET_RPC_URL<<__MPGR_RPC__\n${url}\n__MPGR_RPC__\n`);
+  log(`Foundry fork will use ${url}`);
 }
 
 const chain = await rpc('eth_chainId',[]); if (Number(chain)!==8453) throw Error('Not Base');
@@ -88,6 +141,7 @@ if (!found) {
 }
 
 if (!found) throw Error('MPGR/ETH or MPGR/WETH real v4 Initialize event not found by hint or on-chain search; no proof claimed');
+publishRpc();
 mkdirSync('deployments/.local',{recursive:true});
 writeFileSync('deployments/.local/v2-fork-fixtures.json',JSON.stringify({block:latest,manager,mpgr:found},null,2));
 console.log('Verified on-chain MPGR Initialize event:', JSON.stringify(found));

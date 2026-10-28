@@ -1,9 +1,11 @@
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
-import { encodeFunctionData, type Address } from "viem";
+import { concatHex, encodeFunctionData, type Address } from "viem";
+import { Attribution } from "ox/erc8021";
 const m = vi.hoisted(() => ({ block: vi.fn(), tx: vi.fn(), read: vi.fn() }));
 vi.mock("wagmi/actions", () => ({ getBlock: m.block, getTransaction: m.tx, readContract: m.read }));
 vi.mock("@/lib/wagmi", () => ({ config: {} }));
 import { readSwapAllowance, type ApprovalReceipt } from "../swap-allowance";
+import { ENTRYPOINT_V06 } from "../swap-mined-call";
 import { SWAP_PATH_EXECUTOR_DEPLOYMENT } from "../swap-executor-config";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as d } from "@/lib/executor/executor-config";
 import { erc20Abi } from "@/lib/erc20-abi";
@@ -72,3 +74,28 @@ it("path proposals without a spender hint still read the Swap executor allowance
   expect(await readSwapAllowance({ ...pathP, permit2Spender: null })).toBe(1000000n);
   expect(m.read).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ args: [owner, swapExecutor] }));
 });
+it("approve calldata with a builder suffix still reads the allowance", async () => {
+  const tx = approval();
+  tx.input = concatHex([tx.input, Attribution.toDataSuffix({ codes: ["bc_6w84mi9m"] })]);
+  m.tx.mockResolvedValue(tx);
+  expect(await readSwapAllowance(p, receipt)).toBe(1000000n);
+});
+it("a suffixed approval of the wrong spender is still not an allowance", async () => {
+  const tx = approval();
+  tx.input = concatHex([encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [owner, 1000000n] }), Attribution.toDataSuffix({ codes: ["bc_6w84mi9m"] })]);
+  m.tx.mockResolvedValue(tx);
+  expect(await readSwapAllowance(p, receipt)).toBeNull();
+  expect(m.read).not.toHaveBeenCalled();
+});
+it("a smart-wallet approve is the inner call, not the bundler transaction", async () => {
+  const bundler = "0x3333333333333333333333333333333333333333" as Address;
+  const inner = concatHex([approval().input, Attribution.toDataSuffix({ codes: ["bc_6w84mi9m"] })]);
+  const executeBatch = { type: "function", name: "executeBatch", stateMutability: "payable", inputs: [{ name: "calls", type: "tuple[]", components: [{ name: "target", type: "address" }, { name: "value", type: "uint256" }, { name: "data", type: "bytes" }] }], outputs: [] } as const;
+  const handleOps = { type: "function", name: "handleOps", stateMutability: "nonpayable", inputs: [{ name: "ops", type: "tuple[]", components: [{ name: "sender", type: "address" }, { name: "nonce", type: "uint256" }, { name: "initCode", type: "bytes" }, { name: "callData", type: "bytes" }, { name: "callGasLimit", type: "uint256" }, { name: "verificationGasLimit", type: "uint256" }, { name: "preVerificationGas", type: "uint256" }, { name: "maxFeePerGas", type: "uint256" }, { name: "maxPriorityFeePerGas", type: "uint256" }, { name: "paymasterAndData", type: "bytes" }, { name: "signature", type: "bytes" }] }, { name: "beneficiary", type: "address" }], outputs: [] } as const;
+  const callData = concatHex([encodeFunctionData({ abi: [executeBatch], functionName: "executeBatch", args: [[{ target: p.from.address, value: 0n, data: inner }]] }), Attribution.toDataSuffix({ codes: ["bc_6w84mi9m", "bc_mnip"] })]);
+  const input = encodeFunctionData({ abi: [handleOps], functionName: "handleOps", args: [[{ sender: owner, nonce: 1n, initCode: "0x", callData, callGasLimit: 1n, verificationGasLimit: 1n, preVerificationGas: 1n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n, paymasterAndData: "0x", signature: "0x" }], bundler] });
+  m.tx.mockResolvedValue({ hash, from: bundler, to: ENTRYPOINT_V06, value: 0n, input });
+  const bundled: ApprovalReceipt = { ...receipt, from: bundler, to: ENTRYPOINT_V06 };
+  expect(await readSwapAllowance(p, bundled)).toBe(1000000n);
+});
+

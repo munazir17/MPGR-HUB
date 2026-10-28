@@ -43,6 +43,7 @@ import {
 import { erc20Abi } from "@/lib/erc20-abi";
 import { config } from "@/lib/wagmi";
 import { withBuilderSuffix } from "@/lib/chain/builder-attribution";
+import { approvalReceiptIdentifies } from "@/lib/swap/swap-mined-call";
 import { inspectExecutorSwapTransaction } from "@/lib/executor/executor-intent";
 import { swapPathExecutor } from "@/lib/swap/swap-executor-config";
 import { inspectSwapExecutorTransaction } from "@/lib/swap/swap-executor-intent";
@@ -573,7 +574,9 @@ export async function executeTrade(
           onChange({ state: "APPROVING", approvalHash, swapHash: null, error: null, stepLabel: "Waiting for the approval receipt…" });
           const receipt = await waitForTransactionReceipt(config, { hash: approvalHash, chainId: TRADE_CHAIN_ID, pollingInterval: 1_000 });
           if (input.safety) {
-            if (!receipt.transactionHash || receipt.from?.toLowerCase() !== account.toLowerCase() || receipt.to?.toLowerCase() !== proposal.from.address.toLowerCase()) {
+            if (!receipt.transactionHash || !proposal.permit2Spender || !approvalReceiptIdentifies(
+              receipt, account, proposal.from.address, proposal.permit2Spender, BigInt(proposal.fromAmount),
+            )) {
               const snapshot = { ...fail("PROVIDER_ERROR", "Approval receipt does not match the quoted wallet and token. Check status; no swap was submitted."), approvalHash };
               onChange(snapshot); return snapshot;
             }

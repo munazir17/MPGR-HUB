@@ -24,8 +24,17 @@ export function useSwapBalances(pay: TradeTokenRef, receive: TradeTokenRef, exte
     const interval = setInterval(() => { void load(); }, 15_000);
     return () => { active = false; clearInterval(interval); };
   }, [address, chainId, isConnected, pay, receive, key]);
-  const balance = (token: TradeTokenRef): SwapBalance => !isConnected || !address ? { state: "disconnected" }
-    : chainId !== 8453 ? { state: "wrong-network" } : read.key !== key ? { state: "loading" }
-      : read.values[token.address.toLowerCase()] ?? { state: "loading" };
+  const balance = (token: TradeTokenRef): SwapBalance => {
+    if (!isConnected || !address) return { state: "disconnected" };
+    if (chainId !== 8453) return { state: "wrong-network" };
+    const current = read.values[token.address.toLowerCase()];
+    if (read.key === key) return current ?? { state: "loading" };
+    // A refresh (or the 15s poll's key bump) must not blank a balance we already
+    // showed. Dropping to "loading" flips the button between Insufficient and
+    // Refresh quote. A wallet, chain, or first load still waits.
+    const prefix = `${address.toLowerCase()}:${chainId}:${isConnected}:`;
+    if (current?.state === "ready" && read.key.startsWith(prefix)) return current;
+    return { state: "loading" };
+  };
   return { pay: balance(pay), receive: balance(receive), refresh };
 }

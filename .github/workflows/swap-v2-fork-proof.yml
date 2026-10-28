@@ -40,20 +40,80 @@ jobs:
           mkdir -p .forge-deps
           git clone --depth 1 --branch v5.4.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git .forge-deps/openzeppelin-contracts
           git clone --depth 1 --branch v1.9.7 https://github.com/foundry-rs/forge-std.git .forge-deps/forge-std
-      - name: Discover MPGR pool key from real Initialize event
+      # Chain id is not enough. publicnode answers eth_chainId and then
+      # rejects historical reads ("Archive requests require a personal
+      # token"), so discovery never finds the Initialize log. Probe block
+      # 10_000_000. Never print a URL that may embed an API key.
+      - name: Select a Base RPC that still serves historical reads
         env:
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
+          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL }}
+        run: |
+          set -euo pipefail
+          probe_rpc() {
+            local url="$1" code
+            code="$(curl -sS -o "$RUNNER_TEMP/rpc-probe.json" -w '%{http_code}' --max-time 15 \
+              -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+              "$url" || echo 000)"
+            [ "$code" = "200" ] && grep -Eq '"result"[[:space:]]*:[[:space:]]*"0x2105"' "$RUNNER_TEMP/rpc-probe.json" || return 1
+            code="$(curl -sS -o "$RUNNER_TEMP/rpc-probe.json" -w '%{http_code}' --max-time 15 \
+              -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x989680",false]}' \
+              "$url" || echo 000)"
+            [ "$code" = "200" ] && grep -Eq '"hash"[[:space:]]*:[[:space:]]*"0x[0-9a-fA-F]{64}"' "$RUNNER_TEMP/rpc-probe.json"
+          }
+          CHOSEN=""
+          if [ -n "${BASE_MAINNET_RPC_URL:-}" ] && probe_rpc "$BASE_MAINNET_RPC_URL"; then
+            CHOSEN="$BASE_MAINNET_RPC_URL"
+            echo "Using configured BASE_MAINNET_RPC_URL (historical read ok)."
+          else
+            if [ -n "${BASE_MAINNET_RPC_URL:-}" ]; then
+              echo "::warning title=fork RPC fallback::Configured Base RPC cannot serve a historical block (monthly cap or non-archive). Trying public archive endpoints."
+            fi
+            for url in https://base.gateway.tenderly.co https://mainnet.base.org; do
+              if probe_rpc "$url"; then
+                CHOSEN="$url"
+                echo "Using public archive endpoint: $url"
+                break
+              fi
+              echo "::warning title=fork RPC skipped::$url rejected the historical probe."
+            done
+          fi
+          [ -n "$CHOSEN" ] || { echo "::error::No Base RPC could serve chain id 8453 and historical block 10000000"; exit 1; }
+          {
+            echo "BASE_MAINNET_RPC_URL<<__MPGR_RPC__"
+            printf '%s\n' "$CHOSEN"
+            echo "__MPGR_RPC__"
+          } >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/rpc-probe.json"
+      - name: Discover MPGR pool key from real Initialize event
         run: |
           set -euo pipefail
           node scripts/swap-deploy-v2/discover-fork-fixtures.mjs 2>&1 | tee v2-discovery.log
       - name: Real Base V2 fork suite only (no deployer secret or broadcast)
-        env:
-          BASE_MAINNET_RPC_URL: ${{ secrets.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org' }}
         run: |
-          set -euo pipefail
-          forge test --network base --hardfork base:Beryl --chain-id 8453 --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol -vvv 2>&1 | node scripts/swap-deploy-v2/sanitize-log.mjs | tee v2-fork-proof.log
-          forge test --network base --hardfork base:Beryl --chain-id 8453 --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol --json > v2-fork-proof.json
-          python3 scripts/swap-deploy-v2/require-fork-proof.py v2-fork-proof.json
+          set +e
+          set -uo pipefail
+          run_suite() {
+            forge test --network base --hardfork base:Beryl --chain-id 8453 --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol -vvv 2>&1 | node scripts/swap-deploy-v2/sanitize-log.mjs | tee v2-fork-proof.log
+            local status=${PIPESTATUS[0]}
+            if [ "$status" != "0" ]; then return "$status"; fi
+            forge test --network base --hardfork base:Beryl --chain-id 8453 --match-path test/swap-fork/MPGRSwapExecutorV2BaseFork.t.sol --json > v2-fork-proof.json
+            status=$?
+            if [ "$status" != "0" ]; then return "$status"; fi
+            python3 scripts/swap-deploy-v2/require-fork-proof.py v2-fork-proof.json
+          }
+          # Public archive RPCs 429 shared CI egress under fork load. One
+          # settle-and-retry absorbs that. A deterministic failure fails twice.
+          run_suite
+          STATUS=$?
+          if [ "$STATUS" != "0" ]; then
+            echo "::warning title=V2 fork suite failed once::retrying after 60s (public Base RPC 429s are transient)"
+            sleep 60
+            run_suite
+            STATUS=$?
+          fi
+          exit "$STATUS"
       - name: Proof summary
         if: always()
         env:

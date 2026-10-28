@@ -2,16 +2,19 @@
 // cannot report the pre-approval allowance. If the RPC refuses that block as
 // archive state, `latest` is accepted only once it covers the pay amount.
 // Events alone are NOT allowance proof. No state overrides or wallet writes.
-import { encodeFunctionData, type TransactionReceipt } from "viem";
+import type { TransactionReceipt } from "viem";
 import { getBlock, getTransaction, readContract } from "wagmi/actions";
 import { config } from "@/lib/wagmi";
 import { erc20Abi } from "@/lib/erc20-abi";
 import { BASE_MAINNET_EXECUTOR_DEPLOYMENT as deployment } from "@/lib/executor/executor-config";
 import type { TradeProposal } from "@/lib/trade/trade-types";
+import { isExactApprove, receiptHasApproval, resolveSingleAccountCall } from "./swap-mined-call";
 import { swapPathExecutor } from "./swap-executor-config";
 import { swapV2Target } from "@/lib/swap/v2/v2-target";
 
-export type ApprovalReceipt = Pick<TransactionReceipt, "status" | "from" | "to" | "transactionHash" | "blockNumber" | "blockHash">;
+export type ApprovalReceipt = Pick<TransactionReceipt, "status" | "from" | "to" | "transactionHash" | "blockNumber" | "blockHash"> & {
+  logs?: TransactionReceipt["logs"];
+};
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isArchiveReadRefusal = (error: unknown) =>
   /archive|historical state|invalid parameters were provided/i.test(error instanceof Error ? error.message : String(error));
@@ -33,16 +36,23 @@ export async function readSwapAllowance(p: Pick<TradeProposal, "chainId" | "take
       : deployment.executor;
     if (p.chainId !== 8453 || (p.permit2Spender != null && p.permit2Spender.toLowerCase() !== spender.toLowerCase())) return null;
     if (receipt) {
-      if (receipt.status !== "success" || receipt.from.toLowerCase() !== p.taker.toLowerCase() ||
-          receipt.to?.toLowerCase() !== p.from.address.toLowerCase() || !receipt.blockHash || receipt.blockNumber == null) return null;
-      const expected = encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, BigInt(p.fromAmount)] }).toLowerCase();
+      if (receipt.status !== "success" || !receipt.blockHash || receipt.blockNumber == null) return null;
+      const logProof = receiptHasApproval(receipt.logs, p.from.address, p.taker, spender, BigInt(p.fromAmount));
       let indexed = false;
       for (const delay of [0, 350, 800]) {
         if (delay) await pause(delay);
         try {
           const tx = await getTransaction(config, { chainId: 8453, hash: receipt.transactionHash });
-          if (tx.hash.toLowerCase() !== receipt.transactionHash.toLowerCase() || tx.from.toLowerCase() !== p.taker.toLowerCase() ||
-              tx.to?.toLowerCase() !== p.from.address.toLowerCase() || tx.value !== 0n || tx.input.toLowerCase() !== expected) return null;
+          if (tx.hash.toLowerCase() !== receipt.transactionHash.toLowerCase()) return null;
+          if (receipt.from && tx.from && receipt.from.toLowerCase() !== tx.from.toLowerCase()) return null;
+          if ((receipt.to || tx.to) && receipt.to?.toLowerCase() !== tx.to?.toLowerCase()) return null;
+          const call = resolveSingleAccountCall(tx, p.taker);
+          const approveCall = !!call && call.to.toLowerCase() === p.from.address.toLowerCase()
+            && call.value === 0n && isExactApprove(call.data, spender, BigInt(p.fromAmount));
+          // A decoded call that is not this exact approve is not proof, even if
+          // some other log mentions the token. Logs only identify a receipt we
+          // could not unwrap to a single account call (a smart-wallet bundle).
+          if (!approveCall && !(logProof && !call)) return null;
           indexed = true;
           break;
         } catch { /* the receipt can land before this RPC has indexed the transaction */ }
