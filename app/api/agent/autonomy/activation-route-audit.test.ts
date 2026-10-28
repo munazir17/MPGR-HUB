@@ -25,11 +25,14 @@ import { AUTONOMY_CHAIN_ID, type AutonomyPolicy } from "@/lib/autonomy/types";
 
 // Isolated readiness seam for the lifecycle test below. Real policy/goal/slot
 // handlers, signature validation and Redis state machines are NOT replaced.
-vi.mock("@/lib/autonomy", () => ({ autonomyStatus: () => ({
-  executionAvailable: true, emergencyDisabled: false,
-  productionGate: process.env.AUTONOMOUS_PRODUCTION_ENABLED === "true",
-  delegated: { chainId: 8453 },
-}) }));
+vi.mock("@/lib/autonomy", () => ({
+  autonomyStatus: () => ({
+    executionAvailable: true, emergencyDisabled: false,
+    productionGate: process.env.AUTONOMOUS_PRODUCTION_ENABLED === "true",
+    delegated: { chainId: 8453 },
+  }),
+  bootstrapAutonomyPosture: async () => undefined,
+}));
 const redis = new LuaRedis();
 vi.mock("@/lib/api/redis", () => ({ getRedis: () => redis.client() }));
 
