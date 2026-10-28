@@ -45,6 +45,7 @@ export interface SwapV2QuoteResponse {
   entry?: string; minToAmount?: string; toAmount?: string; fee?: string;
   feeBps?: number; feeRecipient?: string; slippageBps?: number; deadline?: string;
   nativeIn?: boolean; nativeOut?: boolean; hops?: number; settlementNote?: string;
+  priceImpactBps?: number | null;
 }
 
 const ATOMIC = /^\d+$/;
@@ -175,7 +176,7 @@ export function swapV2ProposalFromResponse(
     };
 
     const display = (atomic: string, token: TradeTokenRef) =>
-      formatAtomicAmount(atomic, token.decimals, token.decimals);
+      formatAtomicAmount(atomic, token.decimals, 6);
 
     const proposal: TradeProposal = {
       id: `mpgr-swap-v2:${response.intentId}`,
@@ -205,7 +206,9 @@ export function swapV2ProposalFromResponse(
         reason: null,
         collection: "mpgr-executor",
       },
-      priceImpactBps: null,
+      priceImpactBps: Number.isInteger(response.priceImpactBps) && (response.priceImpactBps ?? -1) >= 0 && (response.priceImpactBps ?? 0) <= 10_000
+        ? response.priceImpactBps!
+        : null,
       issues: { allowance: null, balance: null, simulationIncomplete: false },
       transaction: { to: tx.to as Address, data: tx.data as Hex, value: tx.value },
       // No Permit2 on the V2 path: a plain ERC-20 approval to the executor, or

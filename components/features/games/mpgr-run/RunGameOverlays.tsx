@@ -100,10 +100,7 @@ export function RunGameOverlays({
             exit={{ opacity: 0 }}
             className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background/70 px-6 text-center backdrop-blur-sm"
           >
-            <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-primary-glow/25 to-primary/10 ring-1 ring-primary/25 animate-float">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={CHARACTER_SPRITES.idle} alt="MPGR Runner" className="h-16 w-16 object-contain" />
-            </div>
+            <img src="/brand/mpgr-run.png" alt="MPGR Run" className="h-24 w-24 rounded-2xl object-cover shadow-[0_0_28px_rgba(56,189,248,0.45)]" />
             <div>
               <p className="text-lg font-bold text-white">MPGR Run</p>
               <p className="mt-1 max-w-xs text-xs text-muted">

@@ -36,8 +36,14 @@ vi.mock("@/lib/trade/trade-rate-limit", () => ({
 }));
 
 const activationGate = vi.hoisted(() => ({ ready: true, emergencyAllowed: true }));
-vi.mock("@/lib/autonomy", () => ({ autonomyStatus: () => ({ executionAvailable: activationGate.ready, emergencyDisabled: false, delegated: { chainId: 84532 }, productionGate: false }) }));
-vi.mock("@/lib/autonomy/emergency-switch", () => ({ readAutonomousEmergencySwitch: async () => ({ allowed: activationGate.emergencyAllowed }) }));
+vi.mock("@/lib/autonomy", () => ({
+  autonomyStatus: () => ({ executionAvailable: activationGate.ready, emergencyDisabled: false, delegated: { chainId: 84532 }, productionGate: false }),
+  bootstrapAutonomyPosture: async () => undefined,
+}));
+vi.mock("@/lib/autonomy/emergency-switch", () => ({
+  readAutonomousEmergencySwitch: async () => ({ allowed: activationGate.emergencyAllowed, reason: activationGate.emergencyAllowed ? "ENABLED" : "EMERGENCY_SWITCH_DISABLED", correlationId: "t" }),
+  emergencySwitchBlocksExecution: (decision: { allowed: boolean }) => !decision.allowed,
+}));
 import { PATCH } from "../goals/[id]/route";
 import { DELETE, GET, POST } from "./route";
 import type { AutonomySystem } from "@/lib/autonomy/index";

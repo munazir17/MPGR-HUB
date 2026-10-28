@@ -173,5 +173,6 @@ export function serializeV2Swap(
     slippageBps: opts.slippageBps, deadline: swap.intent.deadline,
     nativeIn: opts.nativeIn, nativeOut: opts.nativeOut, hops: swap.intent.hops,
     settlementNote: SWAP_V2_SETTLEMENT_NOTE,
+    priceImpactBps: typeof quote.priceImpactBps === "number" ? quote.priceImpactBps : null,
   }, (_key, value) => (typeof value === "bigint" ? value.toString() : value))) as Record<string, unknown>;
 }

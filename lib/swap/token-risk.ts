@@ -24,7 +24,9 @@ export function assessSwapRisk(input: SwapRiskInput): SwapRiskWarning[] {
   const key = input.chainId === 8453 ? input.receiveAddress.toLowerCase() : "";
   const flag = key ? flagged[key] : undefined;
   if (flag) out.push({ code: "FLAGGED_TOKEN", message: `Community/operator risk flag on this contract: ${flag}`, ackRequired: true });
-  if (input.priceImpactBps !== null && input.priceImpactBps >= 1000) {
+  if (input.priceImpactBps !== null && input.priceImpactBps >= 5000) {
+    out.push({ code: "EXTREME_PRICE_IMPACT", message: `This size would lose about ${(input.priceImpactBps / 100).toFixed(1)}% versus the pool price. Reduce the amount — the swap stays blocked so you are not filled at a wrecked rate.`, ackRequired: true });
+  } else if (input.priceImpactBps !== null && input.priceImpactBps >= 1000) {
     out.push({ code: "THIN_LIQUIDITY", message: `This trade moves the pool price by ~${(input.priceImpactBps / 100).toFixed(1)}%. Liquidity is thin for this size; you may receive far less than quoted.`, ackRequired: true });
   } else if (input.priceImpactBps !== null && input.priceImpactBps >= 500) {
     out.push({ code: "HIGH_PRICE_IMPACT", message: `High price impact (~${(input.priceImpactBps / 100).toFixed(1)}%). A smaller trade would get a better rate.`, ackRequired: true });

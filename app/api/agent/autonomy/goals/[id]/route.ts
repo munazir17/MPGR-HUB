@@ -5,14 +5,14 @@ import { isLiveAutonomyPair } from "@/lib/autonomy/chat-draft";
 // cancel — plus the full audit trail for the goal. Every mutation is a CAS
 // through the goal state machine; invalid transitions are refused with 409.
 
-import { autonomyStatus } from "@/lib/autonomy";
-import { readAutonomousEmergencySwitch } from "@/lib/autonomy/emergency-switch";
+import { autonomyStatus, bootstrapAutonomyPosture } from "@/lib/autonomy";
+import { emergencySwitchBlocksExecution, readAutonomousEmergencySwitch } from "@/lib/autonomy/emergency-switch";
 import { findLiveSlotBoundToGoal, serverSlotToLike } from "@/lib/autonomy/draft-activation";
 import { validateNewSlotAgainstPolicy } from "@/lib/autonomy/delegated-authorization";
 import { NextResponse } from "next/server";
 
 import { verifyTrustedOrigin, readJsonBody, requestIdFromRequest, withRequestId } from "@/lib/api/request-guard";
-import { isAutonomousAgentEnabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
+import { isAutonomousAgentEnabled, isAutonomousProductionEnabled, AUTONOMY_LIMITS } from "@/lib/autonomy/config";
 import { publicActionRecord, publicAuditEvent, publicGoal, requireWallet, system } from "@/lib/autonomy/api-helpers";
 import { parseBaseUnits } from "@/lib/autonomy/policy-engine";
 import type { GoalStatus } from "@/lib/autonomy/types";
@@ -93,11 +93,20 @@ export async function PATCH(request: Request, context: RouteContext) {
 
   try {
     if (action === "activate" || action === "resume") {
-      // A session/policy grant is NOT token permission. Only persisted,
-      // live slots for this exact goal may make a draft runnable.
+      // A cold serverless instance reports executionAvailable=false until the
+      // on-chain posture read finishes (ONCHAIN_CHECK_PENDING). The config
+      // endpoint already awaits that read, so the confirm button can be live
+      // while this route still refuses. Warm the same read before deciding.
+      if (isAutonomousAgentEnabled() && isAutonomousProductionEnabled()) {
+        await Promise.race([
+          bootstrapAutonomyPosture().catch(() => undefined),
+          new Promise<void>((resolve) => setTimeout(resolve, 8_000)),
+        ]);
+      }
       const readiness = autonomyStatus();
-      if (!readiness.executionAvailable || readiness.emergencyDisabled || !(await readAutonomousEmergencySwitch()).allowed) {
-        return json({ error: "Execution readiness is not confirmed; goal remains inactive.", code: "EXECUTION_NOT_READY" }, { status: 503 });
+      const emergency = await readAutonomousEmergencySwitch();
+      if (!readiness.executionAvailable || readiness.emergencyDisabled || emergencySwitchBlocksExecution(emergency)) {
+        return json({ error: "Execution readiness is not confirmed; goal remains inactive.", code: "EXECUTION_NOT_READY", reason: emergency.reason }, { status: 503 });
       }
       const goal = loaded.goal;
       const policy = await store.getPolicy(goal.policyId);

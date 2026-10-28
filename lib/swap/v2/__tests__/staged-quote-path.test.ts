@@ -11,7 +11,8 @@
 // survive it:
 //
 //   1. a pair a factory getter can answer is quoted with ZERO eth_getLogs calls;
-//   2. Uniswap v4 is searched only after the getter-backed venues fail;
+//   2. Uniswap v4 is not searched up front when a getter already quoted a fair fill;
+//      a thin or size-wrecked getter fill may still price v4 through a WETH/USDC hop;
 //   3. a capped v4 search yields DISCOVERY_UNAVAILABLE, never LIQUIDITY_UNAVAILABLE;
 //   4. any two distinct Base ERC-20s, or native ETH on one side, with no catalog veto;
 //   5. a quotable direct pair is never rewritten through a mandatory WETH/USDC hop;
@@ -20,7 +21,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, encodeAbiParameters, parseAbi, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
 import {
-  V2_FEE_RECIPIENT, V4_MANAGER, discoverV2Quote, validateV2Quote, V2QuoteError, type V2Quote, type V4Key,
+  V2_FEE_RECIPIENT, V4_MANAGER, discoverV2Quote, validateV2Quote, V2QuoteError, type V2Quote, type V4Key, type Pool,
 } from "../discovery";
 import { RpcV2LiquiditySource, swapV2QuoteSource } from "../rpc-source";
 import { V4DiscoveryCache, v4PoolKeyId } from "../rpc-v4";
@@ -77,6 +78,13 @@ function chain(options: ChainOptions = {}): MockChain {
   const calls = { getLogs: 0, getCode: 0, call: 0 };
   const v4QuoterCalls: MockChain["v4QuoterCalls"] = [];
   const quoteOut = options.quoteOut ?? 1_000_000n;
+  // Proportional to size. A constant output made every route look like ~99% impact
+  // and would force the thin-pool v4 rescue on quotes that are actually fair.
+  const scaledQuote = (amount: bigint) => {
+    if (amount <= 0n) return 0n;
+    const out = quoteOut * amount / GROSS;
+    return out > 0n ? out : 1n;
+  };
   const index = options.indexPool;
   const v4 = options.v4Pool;
   const deployedAt = options.tokenDeployedAt ?? DEPLOYED;
@@ -119,7 +127,7 @@ function chain(options: ChainOptions = {}): MockChain {
       if (to === V4_QUOTER && fn?.functionName === "quoteExactInputSingle") {
         const params = fn.args[0] as { zeroForOne: boolean; exactAmount: bigint };
         v4QuoterCalls.push({ zeroForOne: params.zeroForOne, exactAmount: params.exactAmount });
-        return { data: encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [quoteOut, 200_000n]) };
+        return { data: encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [scaledQuote(params.exactAmount), 200_000n]) };
       }
       if (!fn) return { data: encodeAbiParameters([{ type: "uint256" }], [0n]) };
       // Factory getters: only the configured venue/pair answers with a pool.
@@ -152,10 +160,12 @@ function chain(options: ChainOptions = {}): MockChain {
       }
       // Venue quoters.
       if (fn.functionName === "quoteExactInputSingle") {
-        return { data: encodeAbiParameters([{ type: "uint256" }, { type: "uint160" }, { type: "uint32" }, { type: "uint256" }], [quoteOut, 0n, 0, 0n]) };
+        const params = fn.args[0] as { amountIn?: bigint };
+        return { data: encodeAbiParameters([{ type: "uint256" }, { type: "uint160" }, { type: "uint32" }, { type: "uint256" }], [scaledQuote(params?.amountIn ?? GROSS), 0n, 0, 0n]) };
       }
       if (fn.functionName === "getAmountsOut") {
-        return { data: encodeAbiParameters([{ type: "uint256[]" }], [[GROSS, quoteOut]]) };
+        const amountIn = typeof fn.args[0] === "bigint" ? fn.args[0] : GROSS;
+        return { data: encodeAbiParameters([{ type: "uint256[]" }], [[amountIn, scaledQuote(amountIn)]]) };
       }
       return { data: encodeAbiParameters([{ type: "uint256" }], [0n]) };
     },
@@ -458,5 +468,230 @@ describe("swapV2QuoteSource is configured for one paste, not for a batch", () =>
     // floor and scan are functions of (token, block) and must not leak between them.
     expect(first).toBeInstanceOf(RpcV2LiquiditySource);
     expect(new V4DiscoveryCache()).toBeInstanceOf(V4DiscoveryCache);
+  });
+});
+
+describe("a thin direct pool loses to a materially better factory-indexed bridge", () => {
+  const pool = (id: Address, token0: Address, token1: Address): Pool => ({
+    id, pool: id, router: SWAP_PATH_VENUES.uniswapV3.router, factory: SWAP_PATH_VENUES.uniswapV3.factory,
+    kind: 2, token0, token1, poolFee: 3000, tickSpacing: 0, stable: false,
+  });
+  const direct = pool("0x0000000000000000000000000000000000000d01", A, BASE_WETH);
+  const left = pool("0x0000000000000000000000000000000000000d02", A, USDC);
+  const right = pool("0x0000000000000000000000000000000000000d03", USDC, BASE_WETH);
+  const byPair = (a: Address, b: Address): Pool[] => {
+    const key = [a, b].map((t) => t.toLowerCase()).sort().join(":");
+    const hit = [direct, left, right].find((p) => [p.token0, p.token1].map((t) => t.toLowerCase()).sort().join(":") === key);
+    return hit ? [hit] : [];
+  };
+  const source = {
+    directStages(a: Address, b: Address) {
+      return [{ name: "factory-index" as const, pools: async () => byPair(a, b), complete: () => true }];
+    },
+    async pools() { return []; },
+    async quote(p: Pool, _input: Address, amount: bigint) {
+      return p.id === direct.id ? amount / 100n : amount / 2n;
+    },
+  };
+
+  it("routes through USDC when the direct WETH pool pays about 18x less", async () => {
+    const quote = await discoverV2Quote(source, A, BASE_WETH, GROSS);
+    expect(quote.legs).toHaveLength(1);
+    expect(quote.legs[0].pools.map((p) => p.id)).toEqual([left.id, right.id]);
+    expect(quote.amountOut).toBeGreaterThan(GROSS / 100n);
+  });
+
+  it("keeps the direct pool when the bridge is not materially better", async () => {
+    const even = { ...source, async quote(_p: Pool, _input: Address, amount: bigint) { return amount / 2n; } };
+    const quote = await discoverV2Quote(even, A, BASE_WETH, GROSS);
+    expect(quote.legs[0].pools).toHaveLength(1);
+    expect(quote.legs[0].pools[0].id).toBe(direct.id);
+  });
+});
+
+describe("a size-wrecked getter quote yields to Uniswap v4", () => {
+  const pool = (id: Address, token0: Address, token1: Address, kind: Pool["kind"]): Pool => ({
+    id: kind === 7 ? `${V4_MANAGER.toLowerCase()}:deep` : id,
+    pool: kind === 7 ? V4_MANAGER : id,
+    router: kind === 7 ? V4_MANAGER : SWAP_PATH_VENUES.uniswapV3.router,
+    factory: kind === 7 ? V4_MANAGER : SWAP_PATH_VENUES.uniswapV3.factory,
+    kind, token0, token1, poolFee: 3000, tickSpacing: kind === 7 ? 60 : 0, stable: false,
+    ...(kind === 7 ? { v4Key: { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks: "0x1111111111111111111111111111111111111111" as Address } } : {}),
+  });
+  const direct = pool("0x0000000000000000000000000000000000000d11", A, BASE_WETH, 2);
+  const deep = pool("0x0000000000000000000000000000000000000d12", A, BASE_WETH, 7);
+  let v4Reads = 0;
+  const stagesFor = (a: Address, b: Address) => {
+    const key = [a, b].map((t) => t.toLowerCase()).sort().join(":");
+    const directKey = [A, BASE_WETH].map((t) => t.toLowerCase()).sort().join(":");
+    return [
+      { name: "factory-index" as const, pools: async () => key === directKey ? [direct] : [], complete: () => true },
+      { name: "v4-canonical-logs" as const, pools: async () => { v4Reads += 1; return key === directKey ? [deep] : []; }, complete: () => true },
+    ];
+  };
+  const source = {
+    directStages: stagesFor,
+    async pools() { return []; },
+    async quote(p: Pool, _input: Address, amount: bigint) {
+      // 0.1% probe is near the fair rate; the full size on the getter pool is not.
+      if (p.id === direct.id) return amount * 1000n < GROSS ? amount / 2n : amount / 50n;
+      return amount / 2n;
+    },
+  };
+
+  it("does not open v4 when the getter quote is already fair", async () => {
+    v4Reads = 0;
+    const fair = { ...source, async quote(_p: Pool, _input: Address, amount: bigint) { return amount / 2n; } };
+    const quote = await discoverV2Quote(fair, A, BASE_WETH, GROSS);
+    expect(quote.legs[0].pools[0].id).toBe(direct.id);
+    expect(v4Reads).toBe(0);
+  });
+
+  it("replaces the wrecked getter pool with the v4 pool", async () => {
+    v4Reads = 0;
+    const quote = await discoverV2Quote(source, A, BASE_WETH, GROSS);
+    expect(quote.legs[0].pools[0].kind).toBe(7);
+    expect(quote.amountOut).toBeGreaterThan(GROSS / 50n);
+    expect(quote.priceImpactBps == null || quote.priceImpactBps < 500).toBe(true);
+    expect(v4Reads).toBeGreaterThan(0);
+  });
+});
+
+describe("a thin direct pair is routed through the liquid hub, fee once", () => {
+  const pool = (id: string, token0: Address, token1: Address, kind: Pool["kind"]): Pool => ({
+    id, pool: (kind === 7 ? V4_MANAGER : id) as Address,
+    router: kind === 7 ? V4_MANAGER : SWAP_PATH_VENUES.uniswapV3.router,
+    factory: kind === 7 ? V4_MANAGER : SWAP_PATH_VENUES.uniswapV3.factory,
+    kind, token0, token1, poolFee: kind === 7 ? 0 : 3000, tickSpacing: kind === 7 ? 60 : 0, stable: false,
+    ...(kind === 7 ? { v4Key: { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks: "0x1111111111111111111111111111111111111111" as Address } } : {}),
+  });
+  const direct = pool("0x0000000000000000000000000000000000000e11", A, BASE_WETH, 2);
+  const deep = pool(`${V4_MANAGER.toLowerCase()}:usdc`, A, USDC, 7);
+  const hub = pool("0x0000000000000000000000000000000000000e13", BASE_WETH, USDC, 2);
+  const keyOf = (a: Address, b: Address) => [a, b].map((t) => t.toLowerCase()).sort().join(":");
+  const directKey = keyOf(A, BASE_WETH);
+  const usdcKey = keyOf(A, USDC);
+  const hubKey = keyOf(USDC, BASE_WETH);
+  const source = {
+    directStages(a: Address, b: Address) {
+      const key = keyOf(a, b);
+      return [
+        { name: "factory-index" as const, pools: async () => key === directKey ? [direct] : key === hubKey ? [hub] : [], complete: () => true },
+        { name: "v4-canonical-logs" as const, pools: async () => key === usdcKey ? [deep] : [], complete: () => true },
+      ];
+    },
+    async pools() { return []; },
+    async quote(p: Pool, _input: Address, amount: bigint) {
+      if (p.id === direct.id) return amount * 1000n < GROSS ? amount / 2n : amount / 50n;
+      return amount / 2n;
+    },
+  };
+
+  it("sells through the USDC pool that has liquidity and still takes 25 bps once", async () => {
+    const quote = await discoverV2Quote(source, A, BASE_WETH, GROSS);
+    expect(quote.legs).toHaveLength(1);
+    expect(quote.legs[0].pools.map((p) => p.id)).toEqual([deep.id, hub.id]);
+    expect(quote.legs[0].tokens.map((t) => t.toLowerCase())).toEqual([A.toLowerCase(), USDC.toLowerCase(), BASE_WETH.toLowerCase()]);
+    expect(quote.feeBps).toBe(25);
+    expect(quote.fee).toBe(GROSS * 25n / 10_000n);
+    expect(quote.feeRecipient.toLowerCase()).toBe(V2_FEE_RECIPIENT.toLowerCase());
+    expect(quote.legs[0].amountIn).toBe(quote.net);
+    expect(quote.amountOut).toBeGreaterThan(GROSS / 50n);
+    expect(() => validateV2Quote(quote)).not.toThrow();
+  });
+});
+
+describe("a linearly mispriced thin pair still finds the liquid hub", () => {
+  // Spot price is wrong at every size, so a 0.1% probe does not look like impact.
+  // The only deep book is v4 against USDC. The indexer flag is what opens that scan.
+  const pool = (id: string, token0: Address, token1: Address, kind: Pool["kind"]): Pool => ({
+    id, pool: (kind === 7 ? V4_MANAGER : id) as Address,
+    router: kind === 7 ? V4_MANAGER : SWAP_PATH_VENUES.uniswapV3.router,
+    factory: kind === 7 ? V4_MANAGER : SWAP_PATH_VENUES.uniswapV3.factory,
+    kind, token0, token1, poolFee: kind === 7 ? 0 : 3000, tickSpacing: kind === 7 ? 60 : 0, stable: false,
+    ...(kind === 7 ? { v4Key: { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks: "0x1111111111111111111111111111111111111111" as Address } } : {}),
+  });
+  const direct = pool("0x0000000000000000000000000000000000000f11", A, BASE_WETH, 2);
+  const deep = pool(`${V4_MANAGER.toLowerCase()}:usdc-deep`, A, USDC, 7);
+  const hub = pool("0x0000000000000000000000000000000000000f13", BASE_WETH, USDC, 2);
+  const keyOf = (a: Address, b: Address) => [a, b].map((t) => t.toLowerCase()).sort().join(":");
+  let v4Reads = 0;
+  const source = {
+    directStages(a: Address, b: Address) {
+      const key = keyOf(a, b);
+      return [
+        { name: "factory-index" as const, pools: async () => key === keyOf(A, BASE_WETH) ? [direct] : key === keyOf(USDC, BASE_WETH) ? [hub] : [], complete: () => true },
+        { name: "v4-canonical-logs" as const, pools: async () => { v4Reads += 1; return key === keyOf(A, USDC) ? [deep] : []; }, complete: () => true },
+      ];
+    },
+    async pools() { return []; },
+    async quote(p: Pool, _input: Address, amount: bigint) {
+      return p.id === direct.id ? amount / 100n : amount / 2n;
+    },
+    async depthHint(): Promise<{ thin: boolean } | null> { return { thin: true }; },
+  };
+
+  it("routes through the deep USDC pool and takes the 25 bps fee once", async () => {
+    v4Reads = 0;
+    const quote = await discoverV2Quote(source, A, BASE_WETH, GROSS);
+    expect(v4Reads).toBeGreaterThan(0);
+    expect(quote.legs).toHaveLength(1);
+    expect(quote.legs[0].pools.map((p) => p.id)).toEqual([deep.id, hub.id]);
+    expect(quote.feeBps).toBe(25);
+    expect(quote.fee).toBe(GROSS * 25n / 10_000n);
+    expect(quote.feeRecipient.toLowerCase()).toBe(V2_FEE_RECIPIENT.toLowerCase());
+    expect(quote.net).toBe(GROSS - quote.fee);
+    expect(quote.legs[0].amountIn).toBe(quote.net);
+    expect(quote.amountOut).toBeGreaterThan(GROSS / 100n);
+    expect(() => validateV2Quote(quote)).not.toThrow();
+  });
+
+  it("does not open v4 when the indexer says the direct book is the deep one", async () => {
+    v4Reads = 0;
+    const calm = { ...source, async depthHint() { return { thin: false }; } };
+    const quote = await discoverV2Quote(calm, A, BASE_WETH, GROSS);
+    expect(v4Reads).toBe(0);
+    expect(quote.legs[0].pools).toHaveLength(1);
+    expect(quote.legs[0].pools[0].id).toBe(direct.id);
+  });
+
+  it("keeps the getter quote when the indexer and the v4 scan both fail", async () => {
+    const dead = {
+      ...source,
+      async depthHint() { throw new Error("indexer down"); },
+      directStages(a: Address, b: Address) {
+        const key = keyOf(a, b);
+        return [
+          { name: "factory-index" as const, pools: async () => key === keyOf(A, BASE_WETH) ? [direct] : [], complete: () => true },
+          { name: "v4-canonical-logs" as const, pools: () => new Promise<Pool[]>(() => {}), complete: () => false },
+        ];
+      },
+    };
+    const quote = await discoverV2Quote(dead, A, BASE_WETH, GROSS);
+    expect(quote.legs[0].pools[0].id).toBe(direct.id);
+    expect(quote.fee).toBe(GROSS * 25n / 10_000n);
+    expect(() => validateV2Quote(quote)).not.toThrow();
+  });
+
+  it("does not hang the quote when the v4 rescue never returns", async () => {
+    const hung = {
+      ...source,
+      v4RescueBudgetMs: 40,
+      directStages(a: Address, b: Address) {
+        const key = keyOf(a, b);
+        return [
+          { name: "factory-index" as const, pools: async () => key === keyOf(A, BASE_WETH) ? [direct] : key === keyOf(USDC, BASE_WETH) ? [hub] : [], complete: () => true },
+          { name: "v4-canonical-logs" as const, pools: () => new Promise<Pool[]>(() => {}), complete: () => false },
+        ];
+      },
+    };
+    const quote = await Promise.race([
+      discoverV2Quote(hung, A, BASE_WETH, GROSS),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("quote hung")), 1_000)),
+    ]);
+    expect(quote.feeBps).toBe(25);
+    expect(quote.fee).toBe(GROSS * 25n / 10_000n);
+    expect(quote.amountOut).toBeGreaterThan(0n);
+    expect(() => validateV2Quote(quote)).not.toThrow();
   });
 });

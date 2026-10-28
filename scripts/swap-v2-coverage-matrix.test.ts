@@ -38,7 +38,53 @@ import {
 import { describeProbePolicy, probePair } from "@/lib/swap/v2/coverage-probe";
 import { erc20Abi } from "@/lib/erc20-abi";
 
-const RPC_URL = process.env.BASE_MAINNET_RPC_URL ?? "https://mainnet.base.org";
+const CONFIGURED_RPC = process.env.BASE_MAINNET_RPC_URL?.trim() || "";
+/** GitHub runners often cannot open the first endpoint (a private URL that never
+ * answers, or mainnet.base.org under six simultaneous shards). Try the configured
+ * URL once, then public Base endpoints that answer eth_chainId. None of these URLs
+ * are printed: the report only says whether the secret or a public fallback won. */
+const RPC_CANDIDATES = [
+  CONFIGURED_RPC,
+  "https://base-rpc.publicnode.com",
+  "https://base.drpc.org",
+  "https://mainnet.base.org",
+  "https://base.meowrpc.com",
+].filter((url, index, all) => url.length > 0 && all.indexOf(url) === index);
+
+function buildClient(rpcUrl: string) {
+  return createPublicClient({
+    chain: base,
+    // Retries matter here: several shards hit the same provider concurrently, and a
+    // 429 must be absorbed rather than recorded as an unmeasured pair.
+    transport: http(rpcUrl, { timeout: 20_000, retryCount: 2, retryDelay: 500 }),
+  });
+}
+type Client = ReturnType<typeof buildClient>;
+
+function labelFor(rpcUrl: string): string {
+  return CONFIGURED_RPC && rpcUrl === CONFIGURED_RPC ? "secrets.BASE_MAINNET_RPC_URL" : "public Base RPC fallback";
+}
+
+async function reachable(): Promise<{ ok: true; client: Client; rpcLabel: string } | { ok: false; reason: string }> {
+  const reasons: string[] = [];
+  for (const rpcUrl of RPC_CANDIDATES) {
+    try {
+      const client = buildClient(rpcUrl);
+      const chainId = await Promise.race([
+        client.getChainId(),
+        new Promise<never>((_res, rej) => setTimeout(() => rej(new Error("timeout")), 8_000)),
+      ]);
+      if (chainId !== 8453) {
+        reasons.push("wrong-chain");
+        continue;
+      }
+      return { ok: true, client, rpcLabel: labelFor(rpcUrl) };
+    } catch (error) {
+      reasons.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return { ok: false, reason: reasons.join("; ") || "timeout" };
+}
 // OPT-IN. This filename matches vitest's test-file glob, so without a gate the
 // ordinary `npm test` run would attempt the full live matrix — which is exactly
 // what cancelled CI's quality job on the first attempt. The dedicated coverage
@@ -93,30 +139,6 @@ const V4_LOG_CONCURRENCY = Number(process.env.MPGR_V2_COVERAGE_V4_CONCURRENCY ??
  */
 const PROBE_POLICY = describeProbePolicy();
 
-function buildClient() {
-  return createPublicClient({
-    chain: base,
-    // Retries matter here: several shards hit the same provider concurrently, and a
-    // 429 must be absorbed rather than recorded as an unmeasured pair.
-    transport: http(RPC_URL, { timeout: 30_000, retryCount: 5, retryDelay: 1_000 }),
-  });
-}
-type Client = ReturnType<typeof buildClient>;
-
-async function reachable(): Promise<{ ok: true; client: Client } | { ok: false; reason: string }> {
-  try {
-    const client = buildClient();
-    const chainId = await Promise.race([
-      client.getChainId(),
-      new Promise<never>((_res, rej) => setTimeout(() => rej(new Error("timeout")), 20_000)),
-    ]);
-    if (chainId !== 8453) return { ok: false, reason: `RPC reported chain ${chainId}, not Base 8453` };
-    return { ok: true, client };
-  } catch (error) {
-    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
-  }
-}
-
 /** Reads the on-chain facts that separate "unsupported token" from "no liquidity". */
 async function tokenFacts(client: Client, address: Address, blockNumber: bigint): Promise<TokenSupportFacts> {
   try {
@@ -157,7 +179,7 @@ describe("V2 live coverage matrix", () => {
         console.warn(`::warning::V2 coverage matrix NOT MEASURED — Base RPC unreachable at [RPC]: ${probe.reason}`);
         return ctx.skip();
       }
-      const { client } = probe;
+      const { client, rpcLabel } = probe;
       const block = await client.getBlock();
       if (block.number === null) return ctx.skip();
       const blockNumber = block.number;
@@ -244,7 +266,6 @@ describe("V2 live coverage matrix", () => {
       }
 
       const summary = summarizeCoverage(rows);
-      const rpcLabel = process.env.BASE_MAINNET_RPC_URL ? "secrets.BASE_MAINNET_RPC_URL" : "https://mainnet.base.org (public)";
       const markdown = renderCoverageMarkdown(rows, {
         chainId: 8453, blockNumber: blockNumber.toString(), rpcLabel,
         shards: { reported: 1, expected: SHARDS }, planSize: plan.length, probePolicy: PROBE_POLICY,

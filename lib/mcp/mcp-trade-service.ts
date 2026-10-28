@@ -1000,7 +1000,7 @@ import {
 import { delegatedBroadcasterAddressFor } from "@/lib/delegated/delegated-broadcaster";
 import { validateDelegatedTransaction } from "@/lib/delegated/broadcast-gate";
 import { isAutonomousProductionEnabled } from "@/lib/autonomy/config";
-import { logEmergencySwitchDecision, readAutonomousEmergencySwitch } from "@/lib/autonomy/emergency-switch";
+import { logEmergencySwitchDecision, readAutonomousEmergencySwitch, emergencySwitchBlocksExecution } from "@/lib/autonomy/emergency-switch";
 
 /**
  * mpgr_delegate_swap — the delegated execution capability. The CALLER (the
@@ -1042,7 +1042,7 @@ export async function delegateSwap(deps: McpDeps, input: unknown, onStage?: (sta
     );
   }
   const emergency = await readAutonomousEmergencySwitch();
-  if (!emergency.allowed) {
+  if (emergencySwitchBlocksExecution(emergency)) {
     logEmergencySwitchDecision({ warn: () => {} }, emergency, { chainId, chokepoint: "mcp_delegateSwap" });
     return fail(
       "EXECUTION_UNAVAILABLE",

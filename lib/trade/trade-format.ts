@@ -21,6 +21,27 @@ export function formatAtomicAmount(
   }
 }
 
+/**
+ * Display amount. Caps noisy 18-decimal dust, but keeps the first significant
+ * digits of a sub-display-unit price (a rate like 0.0000003936 must not become 0).
+ */
+export function readableTokenAmount(atomic: string, decimals: number, maxFractionDigits = 6): string {
+  try {
+    const formatted = formatUnits(BigInt(atomic), decimals);
+    const [whole, frac = ""] = formatted.split(".");
+    if (!frac) return whole;
+    let end = maxFractionDigits;
+    if (/^0*$/.test(frac.slice(0, maxFractionDigits))) {
+      const sig = frac.search(/[1-9]/);
+      end = sig < 0 ? maxFractionDigits : Math.min(frac.length, sig + 4);
+    }
+    const trimmed = frac.slice(0, end).replace(/0+$/, "");
+    return trimmed.length > 0 ? `${whole}.${trimmed}` : whole;
+  } catch {
+    return atomic;
+  }
+}
+
 export function parseAtomicAmount(value: unknown): bigint | null {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const raw = String(value).trim();

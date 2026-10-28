@@ -171,9 +171,12 @@ describe("WETH -> MPGR BUY: the native-side v4 pool is a WETH route", () => {
 
     // The PoolKey was DERIVED from the fabricated log, not read from this file.
     expect(v4PoolKeyId(pool.v4Key!)).toBe(v4PoolKeyId({ ...pool.v4Key! }));
-    expect(c.quoterCalls).toHaveLength(1);
-    expect(c.quoterCalls[0].zeroForOne).toBe(true); // currency0 (native) -> currency1 (token)
-    expect(c.quoterCalls[0].poolKey.hooks.toLowerCase()).toBe(HOOKS.toLowerCase());
+    const net = GROSS - GROSS * 25n / 10_000n;
+    const trade = c.quoterCalls.find((call) => call.exactAmount === net);
+    expect(trade?.zeroForOne).toBe(true); // currency0 (native) -> currency1 (token)
+    expect(trade?.poolKey.hooks.toLowerCase()).toBe(HOOKS.toLowerCase());
+    // A second call is the 0.1% impact probe on the same route, same direction.
+    expect(c.quoterCalls.filter((call) => call.exactAmount === net / 1000n)).toHaveLength(1);
 
     // FEE INVARIANT: 25 bps on GROSS, computed exactly once, recipient pinned.
     expect(V2_FEE_BPS).toBe(25);
