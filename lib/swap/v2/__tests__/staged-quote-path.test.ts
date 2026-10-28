@@ -555,3 +555,47 @@ describe("a size-wrecked getter quote yields to Uniswap v4", () => {
     expect(v4Reads).toBeGreaterThan(0);
   });
 });
+
+describe("a thin direct pair is routed through the liquid hub, fee once", () => {
+  const pool = (id: string, token0: Address, token1: Address, kind: Pool["kind"]): Pool => ({
+    id, pool: (kind === 7 ? V4_MANAGER : id) as Address,
+    router: kind === 7 ? V4_MANAGER : SWAP_PATH_VENUES.uniswapV3.router,
+    factory: kind === 7 ? V4_MANAGER : SWAP_PATH_VENUES.uniswapV3.factory,
+    kind, token0, token1, poolFee: kind === 7 ? 0 : 3000, tickSpacing: kind === 7 ? 60 : 0, stable: false,
+    ...(kind === 7 ? { v4Key: { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks: "0x1111111111111111111111111111111111111111" as Address } } : {}),
+  });
+  const direct = pool("0x0000000000000000000000000000000000000e11", A, BASE_WETH, 2);
+  const deep = pool(`${V4_MANAGER.toLowerCase()}:usdc`, A, USDC, 7);
+  const hub = pool("0x0000000000000000000000000000000000000e13", BASE_WETH, USDC, 2);
+  const keyOf = (a: Address, b: Address) => [a, b].map((t) => t.toLowerCase()).sort().join(":");
+  const directKey = keyOf(A, BASE_WETH);
+  const usdcKey = keyOf(A, USDC);
+  const hubKey = keyOf(USDC, BASE_WETH);
+  const source = {
+    directStages(a: Address, b: Address) {
+      const key = keyOf(a, b);
+      return [
+        { name: "factory-index" as const, pools: async () => key === directKey ? [direct] : key === hubKey ? [hub] : [], complete: () => true },
+        { name: "v4-canonical-logs" as const, pools: async () => key === usdcKey ? [deep] : [], complete: () => true },
+      ];
+    },
+    async pools() { return []; },
+    async quote(p: Pool, _input: Address, amount: bigint) {
+      if (p.id === direct.id) return amount * 1000n < GROSS ? amount / 2n : amount / 50n;
+      return amount / 2n;
+    },
+  };
+
+  it("sells through the USDC pool that has liquidity and still takes 25 bps once", async () => {
+    const quote = await discoverV2Quote(source, A, BASE_WETH, GROSS);
+    expect(quote.legs).toHaveLength(1);
+    expect(quote.legs[0].pools.map((p) => p.id)).toEqual([deep.id, hub.id]);
+    expect(quote.legs[0].tokens.map((t) => t.toLowerCase())).toEqual([A.toLowerCase(), USDC.toLowerCase(), BASE_WETH.toLowerCase()]);
+    expect(quote.feeBps).toBe(25);
+    expect(quote.fee).toBe(GROSS * 25n / 10_000n);
+    expect(quote.feeRecipient.toLowerCase()).toBe(V2_FEE_RECIPIENT.toLowerCase());
+    expect(quote.legs[0].amountIn).toBe(quote.net);
+    expect(quote.amountOut).toBeGreaterThan(GROSS / 50n);
+    expect(() => validateV2Quote(quote)).not.toThrow();
+  });
+});

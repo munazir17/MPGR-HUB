@@ -397,10 +397,13 @@ async function namedStagePools(source: LiquiditySource, name: string, a: Address
   }
 }
 
-/** The deep book for many imported Base tokens is a Uniswap v4 pool (RNBW/USDC
- * is ~$145k there; the Aerodrome WETH pool that factory getters find first is ~$50).
- * v4 has no factory getter, so a fast quote must not stop on the thin pool when
- * that pool's own size impact is already >= 5%. */
+/** The deep book for many imported Base tokens is not the direct pair. RNBW/WETH
+ * on Aerodrome is a few dozen dollars; RNBW/USDC on Uniswap v4 is six figures.
+ * When the quote in hand is already a thin fill, rebuild it as one hop through
+ * WETH or USDC and keep whichever path pays more. The 25 bps fee was taken on
+ * gross before this run, so a longer route does not take it again. Hub-to-hub
+ * (USDC/WETH) stays on factory getters — that pair is already liquid, and a v4
+ * scan of it is what makes a quote feel stuck. */
 async function bestV4WhenThin(source: LiquiditySource, tokenIn: Address, tokenOut: Address, net: bigint, legs: readonly Leg[]): Promise<Leg | null> {
   if (!source.directStages) return null;
   const current = legs.reduce((sum, leg) => sum + leg.amountOut, 0n);
@@ -411,6 +414,19 @@ async function bestV4WhenThin(source: LiquiditySource, tokenIn: Address, tokenOu
     if (better && (!best || leg.amountOut > best.amountOut)) best = leg;
   };
   const connects = (pool: Pool, a: Address, b: Address) => validPool(pool) && eq(other(pool, a) ?? "", b);
+  const hub = (token: Address) => eq(token, BASE_WETH) || eq(token, BASE_USDC);
+  const pairPools = async (a: Address, b: Address): Promise<Pool[]> => {
+    const names = hub(a) && hub(b) ? ["factory-index"] : ["factory-index", "v4-canonical-logs"];
+    const lists = await Promise.all(names.map((name) => namedStagePools(source, name, a, b)));
+    const seen = new Set<string>();
+    const pools: Pool[] = [];
+    for (const pool of lists.flat()) {
+      if (seen.has(pool.id)) continue;
+      seen.add(pool.id);
+      pools.push(pool);
+    }
+    return pools;
+  };
   const direct = (await namedStagePools(source, "v4-canonical-logs", tokenIn, tokenOut))
     .filter((pool) => connects(pool, tokenIn, tokenOut))
     .slice(0, 4);
@@ -419,15 +435,12 @@ async function bestV4WhenThin(source: LiquiditySource, tokenIn: Address, tokenOu
 
   const bridges = [BASE_WETH, BASE_USDC].filter((bridge) => !eq(bridge, tokenIn) && !eq(bridge, tokenOut));
   await Promise.all(bridges.map(async (bridge) => {
-    const [left, right] = await Promise.all([
-      namedStagePools(source, "v4-canonical-logs", tokenIn, bridge),
-      namedStagePools(source, "factory-index", bridge, tokenOut),
-    ]);
-    const hopIns = left.filter((pool) => connects(pool, tokenIn, bridge)).slice(0, 3);
-    const hopOuts = right.filter((pool) => connects(pool, bridge, tokenOut)).slice(0, 3);
+    const [left, right] = await Promise.all([pairPools(tokenIn, bridge), pairPools(bridge, tokenOut)]);
+    const hopIns = left.filter((pool) => connects(pool, tokenIn, bridge)).slice(0, 4);
+    const hopOuts = right.filter((pool) => connects(pool, bridge, tokenOut)).slice(0, 4);
     const combos: Array<[Pool, Pool]> = [];
     for (const hopIn of hopIns) for (const hopOut of hopOuts) {
-      if (combos.length >= 4) break;
+      if (combos.length >= 8) break;
       combos.push([hopIn, hopOut]);
     }
     const quoted = await Promise.all(combos.map(([hopIn, hopOut]) =>
@@ -668,6 +681,11 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     if (candidates.length) legs = [candidates[0]];
     trace.multihop.candidates = candidates.length;
   }
+  let openedThin = false;
+  if (legs.length === 1) {
+    const earlyImpact = await pathPriceImpactBps(source, legs[0], net);
+    openedThin = earlyImpact != null && earlyImpact >= SUSPECT_IMPACT_BPS;
+  }
   // A direct pool that quotes is not automatically the fair price. Compare it
   // with a WETH/USDC factory-index bridge and keep the bridge only when it
   // pays more than 5% extra — enough to drop a thin RNBW/WETH pool, not
@@ -686,7 +704,10 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
   }
   if (!legs.length) throw attributeRouteFailure(trace);
   let priceImpactBps = legs.length === 1 ? await pathPriceImpactBps(source, legs[0], net) : null;
-  if (priceImpactBps != null && priceImpactBps >= SUSPECT_IMPACT_BPS) {
+  // A factory hop can look smooth and still be the thin book. If the route we
+  // started from was already a bad fill, also price the v4 pools on the way
+  // through USDC or WETH. The fee stays the one already removed from gross.
+  if (openedThin || (priceImpactBps != null && priceImpactBps >= SUSPECT_IMPACT_BPS)) {
     try {
       const rescued = await bestV4WhenThin(source, tokenIn, tokenOut, net, legs);
       if (rescued) {
