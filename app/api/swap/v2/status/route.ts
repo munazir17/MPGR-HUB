@@ -1,10 +1,6 @@
-// V2 activation status. Read-only, public, no secrets and no chain access: it
-// reports only whether the app is currently allowed to return an executable V2
-// transaction, so the client can pick an engine without adding a request to
-// every live V1 quote.
-//
-// While `V2_DEPLOYMENT` is null this always reports `activated:false`, and the
-// swap UI behaves exactly as it does today.
+// V2 activation status. Read-only, public, no secrets and no chain access.
+// Reports whether this build's source gate currently allows an executable V2
+// transaction. It does not prove a wallet-confirmed mainnet swap.
 import { NextResponse } from "next/server";
 import { swapV2Executor, swapV2RoutingActivated } from "@/lib/swap/v2/deployment";
 import { SWAP_V2_CHAIN_ID } from "@/lib/swap/v2/deployment";

@@ -15,11 +15,15 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const QUOTE_ID_VERSION = "q1";
 export const QUOTE_TTL_SECONDS = 120;
+/** PaigerSwap V2 binds the exact unsigned calldata into the quote id. A
+ * multi-hop route is larger than the legacy executor payload; 64 KiB is still
+ * a cheap HMAC and rejects unbounded bodies before the MAC is computed. */
+export const QUOTE_ID_MAX_LENGTH = 65_536;
 
 export interface QuotePayload {
   v: 1;
   chainId: number;
-  provider: "mpgr-executor" | "0x-native-fee";
+  provider: "mpgr-executor" | "0x-native-fee" | "paigerswap-v2";
   taker: string;
   sellToken: string;
   buyToken: string;
@@ -34,6 +38,8 @@ export interface QuotePayload {
   /** Issued-at / expiry, unix seconds. */
   iat: number;
   exp: number;
+  /** HMAC-covered PaigerSwap V2 binding. Absent on every legacy payload. */
+  v2?: Record<string, unknown>;
 }
 
 export type QuoteIdError = { code: "QUOTE_SECRET_MISSING" | "QUOTE_ID_INVALID" | "QUOTE_EXPIRED"; message: string };
@@ -80,7 +86,7 @@ export function verifyQuoteId(
     };
   }
   const invalid = { ok: false as const, error: { code: "QUOTE_ID_INVALID" as const, message: "quoteId is invalid or was modified." } };
-  if (typeof quoteId !== "string" || quoteId.length > 4096) return invalid;
+  if (typeof quoteId !== "string" || quoteId.length > QUOTE_ID_MAX_LENGTH) return invalid;
   const parts = quoteId.split(".");
   if (parts.length !== 3 || parts[0] !== QUOTE_ID_VERSION) return invalid;
   const expected = createHmac("sha256", key).update(`${parts[0]}.${parts[1]}`).digest();

@@ -17,6 +17,7 @@ import {
   mainnetDelegatedExecutorDeployment,
 } from "@/lib/executor/delegated-executor";
 import { getAgentFeeRecipient } from "@/lib/trade/trade-agent-fee";
+import { createPaigerSwapV2Port } from "@/lib/mcp/paigerswap-v2-runtime";
 
 import type { McpDeps } from "./mcp-trade-service";
 
@@ -62,6 +63,7 @@ export function createMcpDeps(): McpDeps {
     quoteSecret: secret && secret.length >= 32 ? secret : undefined,
     mainnetEnabled: isMcpMainnetEnabled(),
     mainnetFeeRecipient: fee.ok ? fee.recipient : null,
+    paigerSwapV2: createPaigerSwapV2Port(),
   };
 }
 

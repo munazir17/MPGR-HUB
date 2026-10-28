@@ -1,8 +1,8 @@
-// V2 quote surface. DORMANT BY DEFAULT: while `V2_DEPLOYMENT` is null this
-// route is the unchanged read-only preview and returns no executable
-// transaction. The activation branch below is unreachable until a separate,
-// explicitly approved commit flips the gate; it never alters /api/swap/quote
-// or any live V1 executor.
+// V2 quote surface. While `swapV2Executor()` is null this route is the
+// read-only preview and returns no executable transaction. With the sealed
+// manifest active, a transaction is returned only after discovery, live
+// posture, pinned-block simulation and independent calldata inspection.
+// This route never alters /api/swap/quote or the legacy V1 executor.
 import { NextResponse } from "next/server";
 import type { Address } from "viem";
 import { authenticateRequest } from "@/lib/auth/session-store";
@@ -64,13 +64,12 @@ export async function POST(request: Request) {
     const q = await discoverV2Quote(swapV2QuoteSource(client, block.number), p.from.address, p.to.address, BigInt(p.fromAmount));
     if ((await client.getBlock({ blockNumber: block.number })).hash !== block.hash) return reply({ code: "QUOTE_CHANGED" }, 409);
 
-    // ---- Activation gate. `null` = dormant: the historical preview shape. ----
+    // ---- Activation gate. `null` = dormant preview. The sealed manifest = executable. ----
     const deployment = swapV2Executor();
     if (!deployment) {
       return reply(stringify({ quote: q, blockNumber: block.number, blockHash: block.hash, preview: true, executable: false, executionSimulation: "not-run-unreleased", transaction: null }));
     }
 
-    // ---- Activated shape (unreachable until V2_DEPLOYMENT is flipped). ----
     // A real transaction is returned only after the deployed executor simulates
     // this exact calldata at the pinned block as the real taker, and only after
     // the built calldata passes independent intent inspection.
