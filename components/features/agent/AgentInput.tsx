@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Send, Square } from "lucide-react";
+import { Mic, Send, Square } from "lucide-react";
 import { AgentCommandPalette } from "./AgentCommandPalette";
+import { useAgentMic } from "./useAgentMic";
 import type { useCommandPalette } from "@/hooks/useCommandPalette";
 import type { SlashCommand } from "@/lib/agent-commands/types";
 
@@ -60,6 +61,11 @@ export function AgentInput({
   const [value, setValue] = useState("");
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const mic = useAgentMic((transcript) => {
+    onSend(transcript);
+    setValue("");
+    commandPalette?.close();
+  });
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -171,6 +177,17 @@ export function AgentInput({
             aria-label="Message MPGR Agent"
             className="max-h-[120px] min-h-[52px] flex-1 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-3 py-1.5 text-sm text-white placeholder:text-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 md:min-h-[56px]"
           />
+          <button
+            type="button"
+            onClick={() => void mic.start()}
+            disabled={locked || disabled}
+            aria-pressed={mic.listening}
+            aria-label={mic.listening ? "Stop listening" : "Speak a buy or sell"}
+            title={mic.listening ? "Stop listening" : "Speak a buy or sell"}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[16px] border border-white/10 text-zinc-300 transition-colors hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Mic className={mic.listening ? "h-4 w-4 text-sky-300" : "h-4 w-4"} aria-hidden="true" />
+          </button>
           {/* 44×44 physical key — extruded blue lip that collapses on press. */}
           <button
             type="button"
@@ -193,6 +210,7 @@ export function AgentInput({
             )}
           </button>
         </div>
+        {mic.status ? <p role="status" className="px-3 pt-2 text-[11px] leading-relaxed text-zinc-400">{mic.status}</p> : null}
       </div>
     </div>
   );

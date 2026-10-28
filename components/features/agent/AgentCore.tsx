@@ -158,11 +158,11 @@ export function AgentCore({
         <span className="absolute inset-0" style={{ clipPath: "inset(0 0 50% 0)" }}>
           <span
             style={torusArc({
-              color: "rgba(77,163,255,0.30)",
-              thickness: 3,
+              color: "rgba(77,163,255,0.14)",
+              thickness: 2,
               tilt: 74,
               inset: "-9%",
-              opacity: 0.85,
+              opacity: 0.35,
             })}
           />
         </span>
@@ -198,7 +198,7 @@ export function AgentCore({
             className={clsx("block h-full w-full", !reduceMotion && "animate-core-filament")}
             style={{
               animationDuration: thinking ? "3.6s" : "9s",
-              opacity: thinking ? 1 : 0.6,
+              opacity: thinking ? 0.45 : 0.22,
               filter: thinking
                 ? "drop-shadow(0 0 10px rgba(226,192,115,0.75))"
                 : "drop-shadow(0 0 5px rgba(226,192,115,0.35))",
@@ -207,12 +207,12 @@ export function AgentCore({
           >
             <span
               style={torusArc({
-                color: "#e2c073",
-                thickness: 2,
+                color: "rgba(226,192,115,0.55)",
+                thickness: 1.5,
                 tilt: 58,
                 spin: 24,
                 inset: "16%",
-                opacity: 1,
+                opacity: 0.45,
               })}
             />
           </span>
@@ -238,12 +238,12 @@ export function AgentCore({
         <span className="absolute inset-0 z-10" style={{ clipPath: "inset(50% 0 0 0)" }}>
           <span
             style={torusArc({
-              color: "rgba(96,173,255,0.9)",
-              thickness: 3,
+              color: "rgba(96,173,255,0.28)",
+              thickness: 2,
               tilt: 74,
               inset: "-9%",
-              opacity: 1,
-              glow: "0 2px 10px rgba(77,163,255,0.45)",
+              opacity: 0.4,
+              glow: "0 1px 6px rgba(77,163,255,0.12)",
             })}
           />
         </span>

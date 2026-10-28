@@ -1,0 +1,50 @@
+---
+name: paigerswap
+description: Quote and prepare a Base buy or sell with the existing PaigerSwap MCP tools. Use for swap, buy, and sell requests. The quote and the prepared transaction are not broadcasts. The user wallet signs.
+metadata:
+  version: "2.0"
+  author: munazir17
+license: All Rights Reserved
+---
+
+# PaigerSwap
+
+## Overview
+
+PaigerSwap pricing and execution already live in the app. This skill calls the same MCP trade service (`mpgr_get_quote`, `mpgr_prepare_trade`). It does not calculate a second route and it does not change the 25 bps fee.
+
+## When to use
+
+| User says | Do |
+| --- | --- |
+| "Buy AAPLc with 10 USDC" | Quote, then prepare. Stop for the wallet |
+| "Sell MPGR for ETH" | Quote, then prepare. Stop for the wallet |
+| "What will I get?" | Quote only |
+| "Did my tx land?" | `mpgr_get_trade_status`, then `mpgr_verify_trade` |
+
+## Call
+
+`POST https://mpgrhub.xyz/api/mcp`
+
+Quote (does not broadcast):
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mpgr_get_quote","arguments":{"chainId":8453,"taker":"<user wallet>","sellToken":"USDC","buyToken":"AAPLc","sellAmountHuman":"10","slippageBps":100}}}
+```
+
+Prepare (does not broadcast):
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mpgr_prepare_trade","arguments":{"quoteId":"<from quote>","authorization":"APPROVAL"}}}
+```
+
+`authorization` is `APPROVAL`, `EIP2612`, or `PERMIT2`. For permit modes, the wallet signs the typed data, then `mpgr_finalize_trade` returns the unsigned swap. The wallet sends that transaction.
+
+## Rules
+
+- `taker` must be the connected wallet. Do not substitute another address.
+- Show sell amount, exact fee (`floor(sellAmount * 25 / 10000)` of the sell token), minimum received, and executor before the user signs.
+- If the tool returns `isError`, say so. Do not invent calldata or a price.
+- A thin pool (high price impact) is a warning, not a failed app. Leave that warning visible.
+- Unsupported pairs stay unsupported. Do not mark them executable.
+- The in-app Swap page is the user path. A successful tool result is not an on-chain receipt.
