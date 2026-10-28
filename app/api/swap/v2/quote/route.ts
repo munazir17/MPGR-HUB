@@ -105,6 +105,6 @@ export async function POST(request: Request) {
     return reply(serializeV2Swap(swap, q, { slippageBps: p.slippageBps, nativeIn, nativeOut }));
   } catch (error) {
     if (error instanceof V2QuoteError) return reply({ code: error.code, error: error.message }, error.code === "DISCOVERY_UNAVAILABLE" ? 503 : 422);
-    return reply({ code: "PROVIDER_ERROR", error: "V2 preview discovery is unavailable; no transaction prepared" }, 503);
+    return reply({ code: "PROVIDER_ERROR", error: "Pricing is busy right now. Nothing was sent. Refresh the quote and try again." }, 503);
   }
 }

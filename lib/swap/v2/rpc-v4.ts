@@ -91,6 +91,15 @@ export function isLogRangeError(error: unknown): boolean {
   return /range|too many|more than|response size|limit.*block|block.*limit|exceed/i.test(text);
 }
 
+/** A provider that is out of budget, not a range it can shrink. Retrying the
+ * same wide query makes the cap worse. One narrow window at the token's
+ * deployment floor is the only extra call, because that is where a pool is
+ * initialized. */
+export function isCapacityError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error ?? "");
+  return /request limit|rate limit|too many requests|\b429\b|monthly cap|compute units|over capacity|cu per second/i.test(text);
+}
+
 export type V4Client = Pick<PublicClient, "getLogs" | "getCode">;
 
 export interface V4SearchLimits {
@@ -376,9 +385,15 @@ export async function scanInitializeLogs(
 
   // 1. Discover what this provider will actually serve. Cheapest and most
   //    complete first: a capable RPC answers the whole range in one request.
+  //    A rate-limited RPC must not be walked down every span — that is how a
+  //    429 becomes a fan-out. One narrow window at the deployment floor is
+  //    enough to catch a pool initialized with the token.
   let span: bigint | null = null;
+  let narrowedForCapacity = false;
+  const narrowest = limits.probeSpans[limits.probeSpans.length - 1] ?? 10n;
   for (const candidate of probeLadder(total, spanHint, limits.probeSpans)) {
     if (candidate <= 0n || (span !== null && candidate >= span)) continue;
+    if (narrowedForCapacity && candidate > narrowest) continue;
     const to = floor + candidate - 1n > head ? head : floor + candidate - 1n;
     try {
       await query(positions[0], floor, to);
@@ -386,6 +401,16 @@ export async function scanInitializeLogs(
       break;
     } catch (error) {
       if (error instanceof V2QuoteError) throw error; // budget, not a range problem
+      if (isCapacityError(error)) {
+        if (!narrowedForCapacity && candidate > narrowest) {
+          narrowedForCapacity = true;
+          continue;
+        }
+        return {
+          pools: [], state: "unavailable", floor, scannedTo: null, head, logCalls, codeCalls: 0, rejected,
+          note: `v4 log query unavailable for ${token}: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
       if (!isLogRangeError(error)) {
         return {
           pools: [], state: "unavailable", floor, scannedTo: null, head, logCalls, codeCalls: 0, rejected,
@@ -510,11 +535,13 @@ export async function scanInitializeLogs(
       await drain(batch);
     }
   } catch (error) {
-    if (!(error instanceof V2QuoteError)) throw error;
-    // Budget exhausted mid-scan. Whatever was verified is still usable as a POSITIVE,
-    // but the absence of further pools is not a verdict.
-    state = "capped";
-    note = `v4 Initialize scan for ${token} stopped at ${describeSides(sides, floor, head)} of ${head}: ${error.message}.${gapSentence()}`;
+    // A later window can fail after an earlier one already verified a pool.
+    // Throwing here used to discard that pool and surface as
+    // "V2 preview discovery is unavailable" with no quote. Keep the positive.
+    const detail = error instanceof Error ? error.message : String(error);
+    const budget = error instanceof V2QuoteError;
+    state = budget || pools.size > 0 ? "capped" : "unavailable";
+    note = `v4 Initialize scan for ${token} stopped at ${describeSides(sides, floor, head)} of ${head}: ${detail}.${gapSentence()}`;
   }
   if (!covered()) {
     state = "capped";
@@ -665,10 +692,10 @@ export async function discoverV4Pools(
   try {
     result = await cache.search(client, searched, head, limits, budget);
   } catch (error) {
-    // A blown shared read budget must not discard a positive the factory index
-    // already established, so it degrades to "unavailable" instead of throwing.
-    if (!(error instanceof V2QuoteError)) throw error;
-    return empty("unavailable", `v4 Initialize search for ${searched} could not run: ${error.message}`, searched);
+    // A blown shared read budget, or a provider error after the floor was
+    // known, must not discard a positive the factory index already established.
+    const detail = error instanceof Error ? error.message : String(error);
+    return empty("unavailable", `v4 Initialize search for ${searched} could not run: ${detail}`, searched);
   }
   if (!output) return { ...result, searched };
   const wanted = new Set(sides.map((s) => normalize(s).toLowerCase()));
