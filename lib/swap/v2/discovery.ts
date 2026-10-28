@@ -118,6 +118,14 @@ export interface LiquiditySource {
   negativeProvable?(input: Address, output?: Address): boolean;
   /** Discovery-side notes for the pair, used verbatim in failure attribution. */
   discoveryNotes?(input: Address, output?: Address): string[];
+  /**
+   * Optional and untrusted. `{ thin: true }` means an indexer sees a deeper
+   * WETH or USDC book than the direct pair, so the quote may price that hop
+   * on-chain. It must not select a pool or a price. Null/throw = unknown.
+   */
+  depthHint?(tokenIn: Address, tokenOut: Address): Promise<{ thin: boolean } | null>;
+  /** Wall-clock cap for the thin-book v4 rescue. Production uses the default. */
+  v4RescueBudgetMs?: number;
 }
 export interface Leg { pools: readonly Pool[]; tokens: readonly Address[]; amountIn: bigint; amountOut: bigint }
 export interface V2Quote {
@@ -332,8 +340,22 @@ export function attributeRouteFailure(t: RouteAttemptTrace): V2QuoteError {
  * stages only, so this does not start a log sweep. */
 const BRIDGE_IMPROVEMENT_BPS = 500n;
 /** A getter quote that loses this much versus a 0.1% probe is not the market.
- * Only then do we pay for a Uniswap v4 scan. Healthy pairs stay on getters. */
+ * Only then — or when an indexer says the direct book is thin — do we pay
+ * for a Uniswap v4 scan. Healthy pairs stay on getters. */
 const SUSPECT_IMPACT_BPS = 500;
+/** The v4 rescue is allowed to improve a thin quote. It is not allowed to
+ * hold the response open: a stuck log scan keeps the getter/factory route. */
+const V4_RESCUE_BUDGET_MS = 5_000;
+
+function withBudget<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    work.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 
 async function factoryIndexedPools(source: LiquiditySource, a: Address, b: Address): Promise<readonly Pool[]> {
   const stage = source.directStages?.(a, b)?.find((item) => item.name === "factory-index");
@@ -427,14 +449,16 @@ async function bestV4WhenThin(source: LiquiditySource, tokenIn: Address, tokenOu
     }
     return pools;
   };
-  const direct = (await namedStagePools(source, "v4-canonical-logs", tokenIn, tokenOut))
-    .filter((pool) => connects(pool, tokenIn, tokenOut))
-    .slice(0, 4);
-  for (const quoted of await Promise.all(direct.map((pool) =>
-    quoteLeg(source, [pool], [tokenIn, tokenOut], net).catch(() => null)))) consider(quoted);
+  const directWork = (async () => {
+    const direct = (await namedStagePools(source, "v4-canonical-logs", tokenIn, tokenOut))
+      .filter((pool) => connects(pool, tokenIn, tokenOut))
+      .slice(0, 4);
+    for (const quoted of await Promise.all(direct.map((pool) =>
+      quoteLeg(source, [pool], [tokenIn, tokenOut], net).catch(() => null)))) consider(quoted);
+  })();
 
   const bridges = [BASE_WETH, BASE_USDC].filter((bridge) => !eq(bridge, tokenIn) && !eq(bridge, tokenOut));
-  await Promise.all(bridges.map(async (bridge) => {
+  const bridgeWork = Promise.all(bridges.map(async (bridge) => {
     const [left, right] = await Promise.all([pairPools(tokenIn, bridge), pairPools(bridge, tokenOut)]);
     const hopIns = left.filter((pool) => connects(pool, tokenIn, bridge)).slice(0, 4);
     const hopOuts = right.filter((pool) => connects(pool, bridge, tokenOut)).slice(0, 4);
@@ -447,6 +471,7 @@ async function bestV4WhenThin(source: LiquiditySource, tokenIn: Address, tokenOu
       quoteLeg(source, [hopIn, hopOut], [tokenIn, bridge, tokenOut], net).catch(() => null)));
     for (const hop of quoted) consider(hop);
   }));
+  await Promise.all([directWork, bridgeWork]);
   return best;
 }
 
@@ -539,8 +564,8 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
   if (stages && stages.length > 0) {
     // ORDERED. Getter-backed venues are a handful of eth_calls; the v4 Initialize
     // search is eth_getLogs. A pair a factory can price does not scan v4 up front.
-    // If that getter quote later shows >= 5% size impact, bestV4WhenThin compares
-    // the v4 book — that is how a thin RNBW/WETH pool loses to the liquid v4 USDC pool.
+    // A thin or size-wrecked getter quote is re-priced through WETH/USDC below,
+    // including v4 on the exotic side of that hop. A healthy getter pair is not.
     for (const stage of stages) {
       let pools: readonly Pool[];
       let complete = false;
@@ -682,34 +707,45 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     trace.multihop.candidates = candidates.length;
   }
   let openedThin = false;
-  if (legs.length === 1) {
-    const earlyImpact = await pathPriceImpactBps(source, legs[0], net);
-    openedThin = earlyImpact != null && earlyImpact >= SUSPECT_IMPACT_BPS;
-  }
-  // A direct pool that quotes is not automatically the fair price. Compare it
-  // with a WETH/USDC factory-index bridge and keep the bridge only when it
-  // pays more than 5% extra — enough to drop a thin RNBW/WETH pool, not
-  // enough to rewrite a healthy direct pair for a rounding difference.
-  try {
-    const bridged = await bestIndexedBridge(source, tokenIn, tokenOut, net);
-    const current = legs.reduce((sum, leg) => sum + leg.amountOut, 0n);
-    if (bridged && (current === 0n || bridged.amountOut * 10_000n > current * (10_000n + BRIDGE_IMPROVEMENT_BPS))) {
-      legs = [bridged];
-      trace.multihop.attempted = true;
-      trace.multihop.candidates = Math.max(trace.multihop.candidates, 1);
+  // Impact, the factory hub, and the indexer hint are independent. Waiting for
+  // them one after another is how a thin token's quote feels stuck before the
+  // route is even chosen.
+  const earlyLeg = legs.length === 1 ? legs[0] : null;
+  const earlyImpactPromise = earlyLeg
+    ? pathPriceImpactBps(source, earlyLeg, net) : Promise.resolve(null);
+  const bridgePromise = (async (): Promise<Leg | null> => {
+    try { return await bestIndexedBridge(source, tokenIn, tokenOut, net); }
+    catch (error) {
+      if (!(error instanceof V2QuoteError)) throw error;
+      if (!trace.multihop.note) trace.multihop.note = error.message;
+      return null;
     }
-  } catch (error) {
-    if (!(error instanceof V2QuoteError)) throw error;
-    if (!trace.multihop.note) trace.multihop.note = error.message;
+  })();
+  const depthPromise = source.directStages && source.depthHint
+    ? withBudget(Promise.resolve(source.depthHint(tokenIn, tokenOut)).then((hint) => hint ?? null).catch(() => null), 900)
+    : Promise.resolve(null);
+  const [earlyImpact, bridged, depth] = await Promise.all([earlyImpactPromise, bridgePromise, depthPromise]);
+  // Self-impact misses a pool whose spot price is simply wrong: a 0.1% probe
+  // gets the same bad rate. The indexer flag is only a reason to look at the
+  // hub on-chain, and only when that hub's liquidity is the deep book.
+  openedThin = (earlyImpact != null && earlyImpact >= SUSPECT_IMPACT_BPS) || depth?.thin === true;
+  const beforeBridge = legs.reduce((sum, leg) => sum + leg.amountOut, 0n);
+  if (bridged && (beforeBridge === 0n || bridged.amountOut * 10_000n > beforeBridge * (10_000n + BRIDGE_IMPROVEMENT_BPS))) {
+    legs = [bridged];
+    trace.multihop.attempted = true;
+    trace.multihop.candidates = Math.max(trace.multihop.candidates, 1);
   }
   if (!legs.length) throw attributeRouteFailure(trace);
-  let priceImpactBps = legs.length === 1 ? await pathPriceImpactBps(source, legs[0], net) : null;
-  // A factory hop can look smooth and still be the thin book. If the route we
-  // started from was already a bad fill, also price the v4 pools on the way
-  // through USDC or WETH. The fee stays the one already removed from gross.
-  if (openedThin || (priceImpactBps != null && priceImpactBps >= SUSPECT_IMPACT_BPS)) {
+  // Same leg we already probed: do not quote it again. A replacement hop is probed once.
+  let priceImpactBps = legs.length !== 1 ? null
+    : legs[0] === earlyLeg ? earlyImpact
+    : await pathPriceImpactBps(source, legs[0], net);
+  // Factory hop first (no logs). v4 only if that route is still a bad fill or
+  // the direct book was the thin one. Fee was already removed from gross.
+  if (source.directStages && (openedThin || (priceImpactBps != null && priceImpactBps >= SUSPECT_IMPACT_BPS))) {
     try {
-      const rescued = await bestV4WhenThin(source, tokenIn, tokenOut, net, legs);
+      const budgetMs = source.v4RescueBudgetMs && source.v4RescueBudgetMs > 0 ? source.v4RescueBudgetMs : V4_RESCUE_BUDGET_MS;
+      const rescued = await withBudget(bestV4WhenThin(source, tokenIn, tokenOut, net, legs), budgetMs);
       if (rescued) {
         legs = [rescued];
         trace.multihop.attempted = true;

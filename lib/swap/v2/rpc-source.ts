@@ -1,5 +1,6 @@
 import "server-only";
 import { directRpcHints } from "./rpc-hints";
+import { fetchPairDepthHint } from "./depth-hint";
 import { factoryIndexPools, PARTIAL_INDEX_VENUE_KINDS, type FactoryIndexResult } from "./rpc-index";
 import { discoverV4Pools, V4_INITIALIZE_EVENT, V4DiscoveryCache, type V4DiscoveryOptions, type V4SearchResult } from "./rpc-v4";
 import { decodeFunctionResult, encodeFunctionData, parseAbi, parseAbiItem, zeroAddress, type Address, type PublicClient } from "viem";
@@ -106,6 +107,7 @@ export function swapV2QuoteSource(client: SourceClient, blockNumber: bigint): Rp
     envInt("MPGR_SWAP_V2_MAX_READS", 1024),
     envInt("MPGR_SWAP_V2_MAX_SWEEP_CALLS", 0),
     { cache: new V4DiscoveryCache(), maxLogCalls: envInt("MPGR_SWAP_V2_V4_LOG_CALLS", 64) },
+    true,
   );
 }
 
@@ -184,12 +186,32 @@ export class RpcV2LiquiditySource implements LiquiditySource {
      * deployment floor and its `Initialize` scan are then paid for once per run
      * instead of once per pair. */
     private v4Options: V4DiscoveryOptions = { cache: new V4DiscoveryCache() },
+    /** User-facing quotes only. The coverage matrix constructs this class
+     * directly and must not add an indexer round-trip to every pair. */
+    private depthHints = false,
   ) {}
   private sweepCalls = 0;
   private budget() { if (++this.reads > this.maxReads) throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "RPC pool discovery budget exceeded; use a complete liquidity index"); }
   async hints(input: Address, output: Address): Promise<readonly Pool[]> {
     try { return await directRpcHints(this.client, input, output, this.blockNumber); }
     catch { return []; } // Never treat missing hints as no liquidity.
+  }
+  /**
+   * Whether the direct book is thin next to a WETH/USDC book.
+   *
+   * Off during unit tests: the staged-quote suite pins zero `eth_getLogs` for a
+   * fair getter, and a live indexer must not be able to open a v4 scan there.
+   * Production does not set `VITEST`. A failure is "unknown", so the quote falls
+   * back to size impact and the factory hub.
+   */
+  async depthHint(tokenIn: Address, tokenOut: Address): Promise<{ thin: boolean } | null> {
+    if (!this.depthHints || process.env.VITEST) return null;
+    try {
+      const thin = await fetchPairDepthHint(tokenIn, tokenOut);
+      return thin == null ? null : { thin };
+    } catch {
+      return null;
+    }
   }
   pools(input: Address, output?: Address): Promise<readonly Pool[]> {
     const key = RpcV2LiquiditySource.key(input, output);
@@ -286,8 +308,9 @@ export class RpcV2LiquiditySource implements LiquiditySource {
   /**
    * Ordered direct-pair discovery: getters first, v4 second, and the whole-history
    * canonical sweep only when it is actually enabled. `discoverV2Quote` stops at the
-   * first stage that yields a quotable pool, and opens the v4 scan only when that
-   * quote's own size impact is at least 5%. A healthy getter pair issues no eth_getLogs.
+   * first stage that yields a quotable pool. It opens the v4 scan when that quote's
+   * own size impact is at least 5%, or when the direct book's liquidity is thin
+   * next to a WETH/USDC book. A healthy getter pair issues no eth_getLogs.
    */
   directStages(input: Address, output: Address): readonly DiscoveryStage[] {
     const stages: DiscoveryStage[] = [

@@ -57,10 +57,10 @@ export async function POST(request: Request) {
     // as an opaque ABI encoding failure. Fail closed: no transaction is built.
     if (!/^0x[0-9a-fA-F]{64}$/.test(block.hash)) return reply({ code: "PROVIDER_ERROR", error: "The provider returned a malformed block hash; the quote could not be pinned." }, 503);
     const p = parsed.value;
-    // Staged discovery, configured for a real paste: factory getters first, a bounded v4
-    // `Initialize` search only if they cannot answer, and no whole-chain eth_getLogs sweep.
-    // A capped search reports DISCOVERY_UNAVAILABLE rather than pretending the pool is
-    // missing. See swapV2QuoteSource for why each bound is what it is.
+    // Staged discovery: factory getters first. A healthy pair never scans logs.
+    // A thin direct book is re-quoted through WETH or USDC, v4 included on the
+    // exotic side, and the 25 bps fee stays on gross exactly once. A capped
+    // search reports DISCOVERY_UNAVAILABLE rather than pretending the pool is missing.
     const q = await discoverV2Quote(swapV2QuoteSource(client, block.number), p.from.address, p.to.address, BigInt(p.fromAmount));
     if ((await client.getBlock({ blockNumber: block.number })).hash !== block.hash) return reply({ code: "QUOTE_CHANGED" }, 409);
 
