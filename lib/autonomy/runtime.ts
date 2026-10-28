@@ -675,10 +675,10 @@ export class AutonomyRuntime {
 
     const policy = await this.deps.store.getPolicy(goal.policyId);
     const switchAtTick = await readAutonomousEmergencySwitch();
-    if (!switchAtTick.allowed) {
+    if (emergencySwitchBlocksExecution(switchAtTick)) {
       logEmergencySwitchDecision(this.deps.logger, switchAtTick, { goalId: goal.id, phase: "tick" });
     }
-    const emergency = !switchAtTick.allowed;
+    const emergency = emergencySwitchBlocksExecution(switchAtTick);
 
     // OBSERVE — fresh quote for the exact goal trade. Taker is the goal's
     // own wallet; slippage clamped to the policy cap when a policy exists.
@@ -1051,7 +1051,7 @@ export class AutonomyRuntime {
     // Re-read the KV emergency switch immediately before the adapter can
     // proceed so a disable between tick-start and broadcast is honoured.
     const switchAtBoundary = await readAutonomousEmergencySwitch();
-    if (!switchAtBoundary.allowed) {
+    if (emergencySwitchBlocksExecution(switchAtBoundary)) {
       logEmergencySwitchDecision(this.deps.logger, switchAtBoundary, { goalId: goal.id, phase: "execution-boundary" });
       return {
         kind: "SWITCH_REFUSED",
@@ -1586,7 +1586,7 @@ function isTerminalFailureCode(code: AutonomyFailureCode): boolean {
 
 // --- flag indirection (keeps the runtime import-light for tests) -----------
 import { isAutonomousAgentEnabled } from "./config";
-import { logEmergencySwitchDecision, readAutonomousEmergencySwitch } from "./emergency-switch";
+import { logEmergencySwitchDecision, readAutonomousEmergencySwitch, emergencySwitchBlocksExecution } from "./emergency-switch";
 function isAutonomousRuntimeEnabled(): boolean {
   return isAutonomousAgentEnabled();
 }

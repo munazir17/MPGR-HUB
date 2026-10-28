@@ -17,9 +17,9 @@
 //  - Uniswap V2 (3) and Aerodrome Classic (4): COMPLETE — no tiers to enumerate.
 //  - Uniswap V3 (2): complete over UNISWAP_V3_POOL_FEES, the canonical tier set
 //    this repo already pins. A non-canonical tier would need the log scan.
-//  - Slipstream (1): PARTIAL. Only the tick spacing this repo pins is probed; the
-//    factory's spacing set was not verified from its ABI, so spacings are NOT
-//    invented. Other Slipstream pools still arrive via hints or the log scan.
+//  - Slipstream (1): PARTIAL over SLIPSTREAM_PROBED_TICK_SPACINGS (the pinned
+//    B20 spacing plus Aerodrome's published volatile spacings). A spacing
+//    outside that set still needs a hint or a log scan.
 //  - Uniswap v4 (7): handled by the caller (needs a PoolKey, so a hint or a wide
 //    indexed-currency log query).
 import "server-only";
@@ -49,10 +49,12 @@ const slipFactory = parseAbi(["function getPool(address,address,int24) view retu
 const weth = "0x4200000000000000000000000000000000000006";
 const norm = (a: string) => (a.toLowerCase() === zeroAddress ? weth : a.toLowerCase());
 
-/** Tick spacings probed on Slipstream. Deliberately only what this repo already
- * pins; the factory's full set was not verified from its ABI, so it is not
- * invented. Reported as partial coverage rather than silently treated as complete. */
-export const SLIPSTREAM_PROBED_TICK_SPACINGS: readonly number[] = [BASE_MAINNET_B20_TICK_SPACING];
+/** Tick spacings probed on Slipstream.
+ * 10 is the pinned B20 spacing. The rest are Aerodrome's published volatile
+ * spacings, so a liquid pair (RNBW/USDC and other Base tokens) is quoted
+ * instead of only the stock spacing. The factory's full set is still not
+ * claimed complete — unknown spacings stay partial. */
+export const SLIPSTREAM_PROBED_TICK_SPACINGS: readonly number[] = [1, BASE_MAINNET_B20_TICK_SPACING, 50, 100, 200, 2000];
 /** Venues whose enumeration is not exhaustive, so "no pool" is not definitive. */
 export const PARTIAL_INDEX_VENUE_KINDS: readonly Pool["kind"][] = [1];
 
@@ -109,34 +111,36 @@ export async function factoryIndexPools(
     return r.data ?? null;
   }
 
-  for (const c of candidates(input, output)) {
+  const probes = candidates(input, output).map(async (c) => {
     let raw: `0x${string}` | null;
     try {
       raw = await read(c.factory, c.data);
     } catch {
       // A failed probe means "unknown" for this venue, never "no pool".
       failedKinds.add(c.kind);
-      continue;
+      return;
     }
-    if (!raw) { failedKinds.add(c.kind); continue; }
+    if (!raw) { failedKinds.add(c.kind); return; }
     const address = ("0x" + raw.slice(-40)) as Address;
-    if (address.toLowerCase() === zeroAddress) continue; // factory says: no such pool
+    if (address.toLowerCase() === zeroAddress) return; // factory says: no such pool
     try {
-      // Verify against the pool's own metadata.
+      // Verify against the pool's own metadata. These reads are independent.
       const meta = async <T,>(name: "factory" | "token0" | "token1" | "fee" | "tickSpacing" | "stable"): Promise<T> => {
         const data = await read(address, encodeFunctionData({ abi: props, functionName: name }));
         if (!data) throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "Pool metadata unavailable");
         return decodeFunctionResult({ abi: props, functionName: name, data }) as T;
       };
       const [factory, token0, token1] = await Promise.all([meta<Address>("factory"), meta<Address>("token0"), meta<Address>("token1")]);
-      if (factory.toLowerCase() !== c.factory.toLowerCase()) continue; // counterfeit or wrong venue
-      if (!((norm(token0) === norm(input) && norm(token1) === norm(output)) || (norm(token1) === norm(input) && norm(token0) === norm(output)))) continue;
-      const fee = c.kind === 2 ? await meta<number>("fee") : 0;
-      const spacing = c.kind === 1 ? await meta<number>("tickSpacing") : 0;
-      const stable = c.kind === 4 ? await meta<boolean>("stable") : false;
+      if (factory.toLowerCase() !== c.factory.toLowerCase()) return; // counterfeit or wrong venue
+      if (!((norm(token0) === norm(input) && norm(token1) === norm(output)) || (norm(token1) === norm(input) && norm(token0) === norm(output)))) return;
+      const [fee, spacing, stable, back] = await Promise.all([
+        c.kind === 2 ? meta<number>("fee") : Promise.resolve(0),
+        c.kind === 1 ? meta<number>("tickSpacing") : Promise.resolve(0),
+        c.kind === 4 ? meta<boolean>("stable") : Promise.resolve(false),
+        read(c.factory, c.data),
+      ]);
       // Confirm the factory maps this pair back to the same pool (canonical equality).
-      const back = await read(c.factory, c.data);
-      if (!back || norm("0x" + back.slice(-40)) !== norm(address)) continue;
+      if (!back || norm("0x" + back.slice(-40)) !== norm(address)) return;
       const id = `${c.factory.toLowerCase()}:${address.toLowerCase()}`;
       pools.set(id, {
         id, pool: address, router: c.router, factory: c.factory, kind: c.kind,
@@ -147,7 +151,8 @@ export async function factoryIndexPools(
       // as a discovered route.
       failedKinds.add(c.kind);
     }
-  }
+  });
+  await Promise.all(probes);
 
   const partialKinds = PARTIAL_INDEX_VENUE_KINDS.filter((k) => !failedKinds.has(k));
   return {

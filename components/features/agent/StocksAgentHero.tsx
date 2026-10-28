@@ -34,6 +34,7 @@ export function StocksAgentHero({ statuses, thread = false }: StocksAgentHeroPro
       className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
       data-testid="stocks-agent-hero"
     >
+      <img src="/brand/mpgr-agent.png" alt="" width={36} height={36} className="h-9 w-9 shrink-0 rounded-xl object-cover shadow-[0_0_18px_rgba(56,189,248,0.45)]" />
       {thread && <AgentCore variant="jewel" state={thinking ? "thinking" : "idle"} />}
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">

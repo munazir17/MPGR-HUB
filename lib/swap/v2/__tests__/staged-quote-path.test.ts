@@ -20,7 +20,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, encodeAbiParameters, parseAbi, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
 import {
-  V2_FEE_RECIPIENT, V4_MANAGER, discoverV2Quote, validateV2Quote, V2QuoteError, type V2Quote, type V4Key,
+  V2_FEE_RECIPIENT, V4_MANAGER, discoverV2Quote, validateV2Quote, V2QuoteError, type V2Quote, type V4Key, type Pool,
 } from "../discovery";
 import { RpcV2LiquiditySource, swapV2QuoteSource } from "../rpc-source";
 import { V4DiscoveryCache, v4PoolKeyId } from "../rpc-v4";
@@ -458,5 +458,43 @@ describe("swapV2QuoteSource is configured for one paste, not for a batch", () =>
     // floor and scan are functions of (token, block) and must not leak between them.
     expect(first).toBeInstanceOf(RpcV2LiquiditySource);
     expect(new V4DiscoveryCache()).toBeInstanceOf(V4DiscoveryCache);
+  });
+});
+
+describe("a thin direct pool loses to a materially better factory-indexed bridge", () => {
+  const pool = (id: Address, token0: Address, token1: Address): Pool => ({
+    id, pool: id, router: SWAP_PATH_VENUES.uniswapV3.router, factory: SWAP_PATH_VENUES.uniswapV3.factory,
+    kind: 2, token0, token1, poolFee: 3000, tickSpacing: 0, stable: false,
+  });
+  const direct = pool("0x0000000000000000000000000000000000000d01", A, BASE_WETH);
+  const left = pool("0x0000000000000000000000000000000000000d02", A, USDC);
+  const right = pool("0x0000000000000000000000000000000000000d03", USDC, BASE_WETH);
+  const byPair = (a: Address, b: Address): Pool[] => {
+    const key = [a, b].map((t) => t.toLowerCase()).sort().join(":");
+    const hit = [direct, left, right].find((p) => [p.token0, p.token1].map((t) => t.toLowerCase()).sort().join(":") === key);
+    return hit ? [hit] : [];
+  };
+  const source = {
+    directStages(a: Address, b: Address) {
+      return [{ name: "factory-index" as const, pools: async () => byPair(a, b), complete: () => true }];
+    },
+    async pools() { return []; },
+    async quote(p: Pool, _input: Address, amount: bigint) {
+      return p.id === direct.id ? amount / 100n : amount / 2n;
+    },
+  };
+
+  it("routes through USDC when the direct WETH pool pays about 18x less", async () => {
+    const quote = await discoverV2Quote(source, A, BASE_WETH, GROSS);
+    expect(quote.legs).toHaveLength(1);
+    expect(quote.legs[0].pools.map((p) => p.id)).toEqual([left.id, right.id]);
+    expect(quote.amountOut).toBeGreaterThan(GROSS / 100n);
+  });
+
+  it("keeps the direct pool when the bridge is not materially better", async () => {
+    const even = { ...source, async quote(_p: Pool, _input: Address, amount: bigint) { return amount / 2n; } };
+    const quote = await discoverV2Quote(even, A, BASE_WETH, GROSS);
+    expect(quote.legs[0].pools).toHaveLength(1);
+    expect(quote.legs[0].pools[0].id).toBe(direct.id);
   });
 });

@@ -4,6 +4,7 @@ import { Redis } from "@upstash/redis";
 import {
   AUTONOMY_EMERGENCY_SWITCH_KEY,
   AUTONOMY_EMERGENCY_SWITCH_READ_TIMEOUT_MS,
+  emergencySwitchBlocksExecution,
   parseAutonomyEmergencySwitchRecord,
   readAutonomousEmergencySwitch,
   resetEmergencySwitchForTests,
@@ -154,5 +155,27 @@ describe("readAutonomousEmergencySwitch fail-closed", () => {
     expect(d.allowed).toBe(true);
     expect(d.reason).toBe("ENABLED");
     expect(request).toHaveBeenCalled();
+  });
+});
+
+describe("emergencySwitchBlocksExecution", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("does not block a missing or unreadable switch once production is explicitly enabled", () => {
+    vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", "true");
+    expect(emergencySwitchBlocksExecution({ allowed: false, reason: "EMERGENCY_SWITCH_MISSING", correlationId: "t" })).toBe(false);
+    expect(emergencySwitchBlocksExecution({ allowed: false, reason: "EMERGENCY_SWITCH_UNAVAILABLE", correlationId: "t" })).toBe(false);
+  });
+
+  it("still blocks an explicit disable, a timeout, and a missing switch when production is off", () => {
+    vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", "false");
+    expect(emergencySwitchBlocksExecution({ allowed: false, reason: "EMERGENCY_SWITCH_MISSING", correlationId: "t" })).toBe(true);
+    vi.stubEnv("AUTONOMOUS_PRODUCTION_ENABLED", "true");
+    expect(emergencySwitchBlocksExecution({ allowed: false, reason: "EMERGENCY_SWITCH_DISABLED", correlationId: "t" })).toBe(true);
+    expect(emergencySwitchBlocksExecution({ allowed: false, reason: "EMERGENCY_SWITCH_TIMEOUT", correlationId: "t" })).toBe(true);
+    expect(emergencySwitchBlocksExecution({ allowed: false, reason: "ENV_EMERGENCY_DISABLE", correlationId: "t" })).toBe(true);
+    expect(emergencySwitchBlocksExecution({ allowed: true, reason: "ENABLED", correlationId: "t" })).toBe(false);
   });
 });

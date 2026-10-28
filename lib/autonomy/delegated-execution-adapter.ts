@@ -58,7 +58,7 @@ import {
 } from "@/lib/delegated/delegated-broadcaster";
 
 import { isAutonomousAgentEnabled, isAutonomousExecutionEmergencyDisabled, isAutonomousProductionEnabled } from "./config";
-import { logEmergencySwitchDecision, readAutonomousEmergencySwitch } from "./emergency-switch";
+import { logEmergencySwitchDecision, readAutonomousEmergencySwitch, emergencySwitchBlocksExecution } from "./emergency-switch";
 import type { Logger } from "@/lib/architecture/core/types";
 import { DELEGATED_ADAPTER_ID, selectDelegatedSlot, type DelegatedAuthorizationSlot, type DelegatedAuthorizationStore } from "./delegated-authorization";
 import type { McpGateway } from "./mcp-gateway";
@@ -339,7 +339,7 @@ export class DelegatedExecutionAdapter implements AutonomousExecutionAdapter {
     // Fail-closed: missing/malformed/unavailable KV refuses before any slot
     // is consumed or any broadcast is attempted.
     const emergency = await readAutonomousEmergencySwitch();
-    if (!emergency.allowed) {
+    if (emergencySwitchBlocksExecution(emergency)) {
       logEmergencySwitchDecision({ warn: () => {}, debug: () => {} }, emergency, { adapter: this.id });
       return {
         ok: false,

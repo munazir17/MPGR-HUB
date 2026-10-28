@@ -123,6 +123,8 @@ export interface Leg { pools: readonly Pool[]; tokens: readonly Address[]; amoun
 export interface V2Quote {
   tokenIn: Address; tokenOut: Address; gross: bigint; feeBps: 25; feeRecipient: Address;
   fee: bigint; net: bigint; amountOut: bigint; legs: readonly Leg[];
+  /** Basis points the full size loses versus a 0.1% probe on the same path. */
+  priceImpactBps?: number | null;
 }
 export class V2QuoteError extends Error {
   /** Present on routing failures: what was discovered, what each candidate did, and
@@ -324,8 +326,81 @@ export function attributeRouteFailure(t: RouteAttemptTrace): V2QuoteError {
         `No compatible pool was discovered for this pair, and the search did not finish, so absence is not proven.${t.poolsReturned ? ` ${t.poolsReturned} pool(s) were returned but none connects ${t.tokenIn} to ${t.tokenOut}.` : ""}${notes}${multihop}${notProvable}`);
 }
 
-/** Direct quotes always win over multihop, regardless of hypothetical hop output.
- * Multi-hop discovers neighbors from actual pools, never a fixed bridge list. */
+/** Direct quotes win when they are within 5% of a WETH/USDC bridge.
+ * A thin or mispriced direct pool (RNBW→ETH through a tiny WETH pool) loses
+ * to a factory-indexed bridge that pays materially more. Bridges use getter
+ * stages only, so this does not start a log sweep. */
+const BRIDGE_IMPROVEMENT_BPS = 500n;
+
+async function factoryIndexedPools(source: LiquiditySource, a: Address, b: Address): Promise<readonly Pool[]> {
+  const stage = source.directStages?.(a, b)?.find((item) => item.name === "factory-index");
+  if (stage) {
+    try { return await stage.pools(); } catch (error) {
+      if (error instanceof V2QuoteError) throw error;
+      return [];
+    }
+  }
+  return source.pools(a, b);
+}
+
+/** Best two-hop through WETH or USDC, from the factory-index stage only.
+ * Sources without staged discovery are unchanged: a direct quote is not
+ * rewritten, and the existing fallback still uses `pools()`. */
+async function bestIndexedBridge(source: LiquiditySource, tokenIn: Address, tokenOut: Address, net: bigint): Promise<Leg | null> {
+  if (!source.directStages) return null;
+  const bridges = [BASE_WETH, BASE_USDC].filter((bridge) => !eq(bridge, tokenIn) && !eq(bridge, tokenOut));
+  const stagePools = async (a: Address, b: Address): Promise<readonly Pool[]> => {
+    const stage = source.directStages?.(a, b)?.find((item) => item.name === "factory-index");
+    if (!stage) return [];
+    try { return await stage.pools(); } catch (error) {
+      if (error instanceof V2QuoteError) throw error;
+      return [];
+    }
+  };
+  const found: Leg[] = [];
+  await Promise.all(bridges.map(async (bridge) => {
+    try {
+      const [left, right] = await Promise.all([
+        stagePools(tokenIn, bridge),
+        stagePools(bridge, tokenOut),
+      ]);
+      const hopIns = left.filter((pool) => validPool(pool) && eq(other(pool, tokenIn) ?? "", bridge)).slice(0, 4);
+      const hopOuts = right.filter((pool) => validPool(pool) && eq(other(pool, bridge) ?? "", tokenOut)).slice(0, 4);
+      const combos: Array<[Pool, Pool]> = [];
+      for (const hopIn of hopIns) for (const hopOut of hopOuts) {
+        if (combos.length >= 6) break;
+        combos.push([hopIn, hopOut]);
+      }
+      const quotedHops = await Promise.all(combos.map(([hopIn, hopOut]) =>
+        quoteLeg(source, [hopIn, hopOut], [tokenIn, bridge, tokenOut], net).catch((error: unknown) => {
+          if (error instanceof V2QuoteError && error.code !== "DISCOVERY_UNAVAILABLE") throw error;
+          return null;
+        })));
+      for (const hop of quotedHops) if (hop) found.push(hop);
+    } catch (error) {
+      if (!(error instanceof V2QuoteError)) throw error;
+    }
+  }));
+  if (!found.length) return null;
+  return found.reduce((best, hop) => hop.amountOut > best.amountOut ? hop : best);
+}
+
+/** Size impact versus a 0.1% probe on the same path. Null when it cannot be measured. */
+async function pathPriceImpactBps(source: LiquiditySource, leg: Leg, net: bigint): Promise<number | null> {
+  if (leg.pools.length < 1 || leg.amountOut <= 0n || net <= 1000n) return null;
+  const probeIn = net / 1000n;
+  try {
+    const probe = await quoteLeg(source, [...leg.pools], [...leg.tokens], probeIn);
+    if (!probe || probe.amountOut <= 0n) return null;
+    const fair = probe.amountOut * net / probeIn;
+    if (fair <= 0n) return null;
+    const worse = fair > leg.amountOut ? fair - leg.amountOut : 0n;
+    const bps = Number(worse * 10000n / fair);
+    return Number.isFinite(bps) ? Math.min(10_000, Math.max(0, bps)) : null;
+  } catch {
+    return null;
+  }
+}
 export async function discoverV2Quote(source: LiquiditySource, from: string, to: string, gross: bigint): Promise<V2Quote> {
   const tokenIn = asset(from), tokenOut = asset(to);
   if (eq(tokenIn, tokenOut)) throw new V2QuoteError("INVALID_PAIR", "ETH and WETH are the same asset; select distinct assets");
@@ -460,15 +535,27 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     legs = [best];
     // Optimize direct venue splits on net allocation, never fee each leg. No
     // repeated pool: quoter calls are independent; shared liquidity is not additive.
-    for (let i = 0; i < direct.length; i++) for (let j = i + 1; j < direct.length; j++) {
+    // Quoted in parallel — the previous nested awaits were most of a slow quote.
+    const splits: Array<Promise<readonly Leg[] | null>> = [];
+    for (let i = 0; i < direct.length; i++) for (let j = i + 1; j < direct.length && j < i + 3; j++) {
       if (direct[i].id === direct[j].id) continue;
       for (const weight of [25n, 50n, 75n]) {
         const first = net * weight / 100n;
         if (!first || first === net) continue;
-        const a = await quoteLeg(source, [direct[i]], [tokenIn, tokenOut], first);
-        const b = await quoteLeg(source, [direct[j]], [tokenIn, tokenOut], net - first);
-        if (a && b && a.amountOut + b.amountOut > legs.reduce((s, l) => s + l.amountOut, 0n)) legs = [a, b];
+        const leftPool = direct[i];
+        const rightPool = direct[j];
+        splits.push((async () => {
+          const [a, b] = await Promise.all([
+            quoteLeg(source, [leftPool], [tokenIn, tokenOut], first),
+            quoteLeg(source, [rightPool], [tokenIn, tokenOut], net - first),
+          ]);
+          return a && b ? [a, b] as const : null;
+        })());
       }
+    }
+    const splitResults = await Promise.all(splits);
+    for (const pair of splitResults) {
+      if (pair && pair[0].amountOut + pair[1].amountOut > legs.reduce((s, l) => s + l.amountOut, 0n)) legs = pair;
     }
   } else {
     const candidates: Leg[] = [];
@@ -479,15 +566,20 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     const bridges = [BASE_WETH, BASE_USDC].filter((bridge) => !eq(bridge, tokenIn) && !eq(bridge, tokenOut));
     for (const bridge of bridges) {
       try {
-        const left = (await source.pools(tokenIn, bridge)).filter((pool) => validPool(pool) && eq(other(pool, tokenIn) ?? "", bridge));
-        const right = (await source.pools(bridge, tokenOut)).filter((pool) => validPool(pool) && eq(other(pool, bridge) ?? "", tokenOut));
+        const [leftAll, rightAll] = await Promise.all([
+          factoryIndexedPools(source, tokenIn, bridge),
+          factoryIndexedPools(source, bridge, tokenOut),
+        ]);
+        const left = leftAll.filter((pool) => validPool(pool) && eq(other(pool, tokenIn) ?? "", bridge));
+        const right = rightAll.filter((pool) => validPool(pool) && eq(other(pool, bridge) ?? "", tokenOut));
         let combinations = 0;
+        const hops: Array<Promise<Leg | null>> = [];
         for (const hopIn of left) for (const hopOut of right) {
           if (combinations >= 6) break;
           combinations += 1;
-          const quotedHop = await quoteLeg(source, [hopIn, hopOut], [tokenIn, bridge, tokenOut], net);
-          if (quotedHop) candidates.push(quotedHop);
+          hops.push(quoteLeg(source, [hopIn, hopOut], [tokenIn, bridge, tokenOut], net).catch(() => null));
         }
+        for (const quotedHop of await Promise.all(hops)) if (quotedHop) candidates.push(quotedHop);
       } catch (error) {
         if (!(error instanceof V2QuoteError)) throw error;
         trace.multihop.note = error.message;
@@ -526,8 +618,26 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     if (candidates.length) legs = [candidates[0]];
     trace.multihop.candidates = candidates.length;
   }
+  // A direct pool that quotes is not automatically the fair price. Compare it
+  // with a WETH/USDC factory-index bridge and keep the bridge only when it
+  // pays more than 5% extra — enough to drop a thin RNBW/WETH pool, not
+  // enough to rewrite a healthy direct pair for a rounding difference.
+  try {
+    const bridged = await bestIndexedBridge(source, tokenIn, tokenOut, net);
+    const current = legs.reduce((sum, leg) => sum + leg.amountOut, 0n);
+    if (bridged && (current === 0n || bridged.amountOut * 10_000n > current * (10_000n + BRIDGE_IMPROVEMENT_BPS))) {
+      legs = [bridged];
+      trace.multihop.attempted = true;
+      trace.multihop.candidates = Math.max(trace.multihop.candidates, 1);
+    }
+  } catch (error) {
+    if (!(error instanceof V2QuoteError)) throw error;
+    if (!trace.multihop.note) trace.multihop.note = error.message;
+  }
   if (!legs.length) throw attributeRouteFailure(trace);
-  const result: V2Quote = { tokenIn, tokenOut, gross, feeBps: 25, feeRecipient: V2_FEE_RECIPIENT, fee, net, amountOut: legs.reduce((s, l) => s + l.amountOut, 0n), legs };
+  const amountOut = legs.reduce((s, l) => s + l.amountOut, 0n);
+  const priceImpactBps = legs.length === 1 ? await pathPriceImpactBps(source, legs[0], net) : null;
+  const result: V2Quote = { tokenIn, tokenOut, gross, feeBps: 25, feeRecipient: V2_FEE_RECIPIENT, fee, net, amountOut, legs, priceImpactBps };
   validateV2Quote(result); return result;
 }
 export interface V2Snapshot { number: bigint; hash: Hex }

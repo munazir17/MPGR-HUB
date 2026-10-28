@@ -5,7 +5,7 @@ import { ArrowDownUp, ChevronDown, Loader2, Settings2 } from "lucide-react";
 import { formatUnits } from "viem";
 import { MANUAL_SWAP_TOKENS, ManualSwapQuoteError, type ManualSwapInput } from "@/lib/trade/manual-swap";
 import { TRADE_DEFAULT_SLIPPAGE_BPS, NATIVE_ETH_SENTINEL, isNativeEthSentinel } from "@/lib/trade/trade-config";
-import { formatAtomicAmount, parseHumanTokenAmount } from "@/lib/trade/trade-format";
+import { parseHumanTokenAmount, readableTokenAmount } from "@/lib/trade/trade-format";
 import { useSwapBalances, type SwapBalance } from "@/hooks/useSwapBalances";
 import { swapQuoteFresh, swapQuoteNeedsRefresh, swapQuoteExpiry } from "@/lib/swap/swap-lifecycle";
 import { formatSwapUsd, useTokenUsdPrice } from "@/hooks/useTokenUsdPrice";
@@ -130,14 +130,14 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
   const insufficient = balances.pay.state === "ready" && parsedPay !== null && parsedPay > balances.pay.value;
   const invalid = manualSwapInputError(input, tokens);
   const toggle = () => {
-    const amount = proposal && swapQuoteFresh(proposal) ? formatAtomicAmount(proposal.toAmount, proposal.to.decimals, proposal.to.decimals) : "";
+    const amount = proposal && swapQuoteFresh(proposal) ? readableTokenAmount(proposal.toAmount, proposal.to.decimals, 6) : "";
     edit({ fromToken: input.toToken, toToken: input.fromToken, amount });
   };
   const max = async () => {
     if (balances.pay.state !== "ready" || busyRef.current || executionBusy) return;
     if (!isNativeEthSentinel(pay.address)) {
       if (balances.pay.value < 400n) { setError("Balance is too small for a nonzero required fee. MAX was not applied."); return; }
-      edit({ amount: formatUnits(balances.pay.value, balances.pay.decimals) }); return;
+      edit({ amount: readableTokenAmount(balances.pay.value.toString(), balances.pay.decimals, 6) }); return;
     }
     const run = ++version.current; const controller = new AbortController(); pending.current = controller;
     busyRef.current = true; setBusy(true); setError(null);
@@ -149,7 +149,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
       if (version.current !== run) return;
       const value = safeMaximum(balances.pay.value, true, gas);
       if (!value || value < 400n) throw new Error("Not enough ETH after the buffered network-fee reserve.");
-      edit({ amount: formatUnits(value, balances.pay.decimals) });
+      edit({ amount: readableTokenAmount(value.toString(), balances.pay.decimals, 6) });
       setNotice(`MAX reserves ${formatUnits(gas * 2n, 18)} ETH for estimated Base gas. Rechecked before signing; estimates can change.`);
     } catch (e) { if (version.current === run) setError(e instanceof Error ? e.message : "Could not estimate a safe native maximum. Enter a smaller amount."); }
     finally { if (version.current === run) { busyRef.current = false; setBusy(false); } }
@@ -165,13 +165,13 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
       setError("That share of the balance is too small. Choose a larger percent or enter an amount.");
       return;
     }
-    edit({ amount: formatUnits(value, balances.pay.decimals) });
+    edit({ amount: readableTokenAmount(value.toString(), balances.pay.decimals, 6) });
   };
-  const balanceText = (balance: SwapBalance) => balance.state === "ready" ? formatAtomicAmount(balance.value.toString(), balance.decimals, balance.decimals)
+  const balanceText = (balance: SwapBalance) => balance.state === "ready" ? readableTokenAmount(balance.value.toString(), balance.decimals, 6)
     : balance.state === "error" ? "Read unavailable" : balance.state === "wrong-network" ? "Switch to Base" : balance.state === "loading" ? "Loading…" : "Connect wallet";
   const panel = (side: "receive" | "pay") => {
     const isPay = side === "pay", token = isPay ? pay : receive, balance = isPay ? balances.pay : balances.receive;
-    const amountValue = isPay ? input.amount : fresh && proposal ? formatAtomicAmount(proposal.toAmount, proposal.to.decimals, proposal.to.decimals) : "";
+    const amountValue = isPay ? input.amount : fresh && proposal ? readableTokenAmount(proposal.toAmount, proposal.to.decimals, 6) : "";
     const expanded = amountValue.length > 8;
     return <div className="min-w-0 space-y-2 rounded-[22px] border border-white/[0.04] bg-[#171e2a] p-3 sm:p-4" data-testid={`${side}-panel`}>
       <div className="flex items-center justify-between gap-2"><span className="text-xs text-zinc-400">{isPay ? "You pay" : "You receive"}</span>
@@ -211,7 +211,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
   let rate = "";
   if (fresh && proposal) {
     const atomic = BigInt(proposal.toAmount) * 10n ** BigInt(proposal.from.decimals) / BigInt(proposal.fromAmount);
-    const formatted = formatAtomicAmount(atomic.toString(), proposal.to.decimals, proposal.to.decimals);
+    const formatted = readableTokenAmount(atomic.toString(), proposal.to.decimals, 8);
     rate = `1 ${proposal.from.symbol} ≈ ${formatted} ${proposal.to.symbol}`;
   }
   return <form aria-label="Swap tokens" onSubmit={e => { e.preventDefault(); if (!isConnected) onConnect(); else if (chainId !== 8453) switchChain({ chainId: 8453 }); else if (proposal && swapQuoteFresh(proposal) && !swapQuoteNeedsRefresh(proposal) && !insufficient && !busyRef.current && !executionBusy) onReview(proposal); else { lastAuto.current = fingerprint; void prepare(!!proposal || !!error); } }} className="space-y-3">
@@ -223,9 +223,9 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     {panel("receive")}
     {notice && <p role="status" className="px-1 text-xs leading-relaxed text-zinc-400">{notice}</p>}
     {fresh && proposal && <div className="space-y-2 px-1 text-xs"><div className="flex flex-wrap justify-between gap-2"><span className="text-zinc-300">{rate}</span>
-      <span className="text-zinc-400">Impact: {proposal.priceImpactBps == null ? "unavailable" : `${proposal.priceImpactBps / 100}%`}</span></div>
+      <span className="text-zinc-400">Impact: {proposal.priceImpactBps == null ? "unavailable" : `${(proposal.priceImpactBps / 100).toFixed(2)}%`}</span></div>
       {proposal.needsPermit2Approval && <p className="text-zinc-400">Token approval may be required for this pay amount. Approval is not a swap.</p>}
-      <p className="text-zinc-300">Minimum received: {formatAtomicAmount(proposal.minToAmount, proposal.to.decimals, proposal.to.decimals)} {proposal.to.symbol}</p>
+      <p className="text-zinc-300">Minimum received: {readableTokenAmount(proposal.minToAmount, proposal.to.decimals, 6)} {proposal.to.symbol}</p>
       {proposal.risk.filter(r => r.severity !== "info" && !["executor-approval", "router-approval", "permit2-approval"].includes(r.id)).map(r => <p key={r.id} className="text-amber-200">{r.detail}</p>)}
     </div>}
     {input.slippageBps > 100 && <p className="px-1 text-xs text-amber-300">High slippage ({slippagePercent(input.slippageBps)}%). You accept a larger adverse price change.</p>}

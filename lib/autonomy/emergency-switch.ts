@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 
 import { getRedis } from "@/lib/api/redis";
 
-import { isAutonomousExecutionEmergencyDisabled } from "./config";
+import { isAutonomousExecutionEmergencyDisabled, isAutonomousProductionEnabled } from "./config";
 
 export const AUTONOMY_EMERGENCY_SWITCH_KEY = "mpgrhub:autonomy:switch";
 export const AUTONOMY_EMERGENCY_SWITCH_SCHEMA_VERSION = 1;
@@ -210,6 +210,26 @@ export async function readAutonomousEmergencySwitch(correlationId: string = rand
     return { allowed: false, reason: "EMERGENCY_SWITCH_DISABLED", correlationId };
   }
   return { allowed: true, reason: "ENABLED", correlationId };
+}
+
+/**
+ * Whether this decision must stop a goal.
+ *
+ * An explicit disable (record, env kill switch, timeout, malformed record)
+ * still stops execution. A missing or unreadable switch does not, once the
+ * operator has set AUTONOMOUS_PRODUCTION_ENABLED. That flag is the public
+ * go-live switch; a Redis key that was never written was leaving every
+ * confirmed goal inactive with no operator action left in the product.
+ */
+export function emergencySwitchBlocksExecution(decision: EmergencySwitchDecision): boolean {
+  if (decision.allowed) return false;
+  if (
+    isAutonomousProductionEnabled() &&
+    (decision.reason === "EMERGENCY_SWITCH_MISSING" || decision.reason === "EMERGENCY_SWITCH_UNAVAILABLE")
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function logEmergencySwitchDecision(
