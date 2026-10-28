@@ -28,7 +28,6 @@ export function SwapExperience() {
     <section className="min-w-0 rounded-[28px] border border-white/[0.08] bg-[#10151f] p-3 shadow-[0_20px_80px_-40px_rgba(0,0,0,0.8)] sm:p-4" aria-label="Spot swap">
       <SwapForm authenticated={authenticated} signIn={authenticate} onConnect={() => openConnectModal?.()} onReview={trade.open} balanceRevision={balanceRevision} executionBusy={trade.isBusy} reviewOpen={!!trade.proposal || activity} settledHash={trade.snapshot.state === "SUCCESS" ? trade.snapshot.swapHash : null} />
     </section>
-    <details className="mt-6 rounded-2xl border border-white/5 text-xs text-zinc-500"><summary className="min-h-11 cursor-pointer p-4">Limit orders — not available</summary><p className="px-4 pb-4 leading-relaxed">A genuine Base order-signing and settlement integration is pending approval. No executable limit order is created here. Conditional Agent goals are review-only until separately authorized, not limit orders.</p></details>
     {trade.proposal && <SwapExecutionDialog trade={trade} />}
     {activity && <SwapActivity trade={trade} onClose={() => setActivity(false)} />}
   </main>;

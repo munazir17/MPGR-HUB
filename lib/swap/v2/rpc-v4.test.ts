@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, encodeAbiParameters, encodeFunctionData, parseAbi, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
 import { V4_MANAGER, discoverV2Quote, V2QuoteError, type V4Key } from "./discovery";
 import { RpcV2LiquiditySource } from "./rpc-source";
-import { probeLadder, V4DiscoveryCache, discoverV4Pools, findTokenDeploymentBlock, scanInitializeLogs, v4PoolKeyId, V4_SEARCH_LIMITS } from "./rpc-v4";
+import { probeLadder, V4DiscoveryCache, discoverV4Pools, findTokenDeploymentBlock, scanInitializeLogs, v4PoolKeyId, V4_SEARCH_LIMITS, isCapacityError } from "./rpc-v4";
 import { buildV2Transaction } from "./transaction";
 import { SWAP_V2_ABI } from "./abi";
 import { NATIVE_ETH_SENTINEL } from "@/lib/trade/trade-config";
@@ -494,6 +494,22 @@ describe("v4 discovery: bounds and honest failure", () => {
     expect(result.note).toMatch(/socket hang up/);
     // Exactly one attempt: a network failure is not a licence to retry at scale.
     expect(result.logCalls).toBe(1);
+  });
+
+  it("keeps a pool found at the deployment floor when a later window hits a rate limit", async () => {
+    const c = mpgrChain();
+    const original = c.client.getLogs.bind(c.client);
+    (c.client as unknown as { getLogs: (q: { fromBlock: bigint; toBlock: bigint }) => Promise<unknown> }).getLogs = async (query) => {
+      // Backward windows start at the head. A rate limit there must not erase
+      // the pool already read from the deployment floor.
+      if (query.fromBlock > MPGR_DEPLOYED + 100n) throw new Error("request limit reached");
+      return original(query);
+    };
+    const result = await discoverV4Pools(c.client, WETH, MPGR, HEAD, {}, budget);
+    expect(result.pools).toHaveLength(1);
+    expect(result.pools[0].v4Key).toEqual(nativeMpgrKey);
+    expect(result.state).toBe("capped");
+    expect(isCapacityError(new Error("request limit reached"))).toBe(true);
   });
 
   it("reports 'capped' when the pool sits beyond the bounded scan window", async () => {

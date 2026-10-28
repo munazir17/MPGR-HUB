@@ -268,10 +268,9 @@ export class RpcV2LiquiditySource implements LiquiditySource {
         const index = await factoryIndexPools(this.client, input, output, this.blockNumber, () => this.budget());
         diag.factoryIndex = index;
         return index.pools;
-      } catch (error) {
+      } catch {
         // An index that could not run leaves the later stages; it is not a verdict of
-        // "no liquidity".
-        if (!(error instanceof V2QuoteError)) throw error;
+        // "no liquidity", and it must not abort v4 discovery for this pair.
         diag.factoryIndex = null;
         return [];
       }
@@ -295,11 +294,12 @@ export class RpcV2LiquiditySource implements LiquiditySource {
         diag.v4 = v4;
         return v4.pools;
       } catch (error) {
-        // A search that could not run is "we could not look", never "no v4 pool".
-        if (!(error instanceof V2QuoteError)) throw error;
+        // A search that could not run is "we could not look", never "no v4 pool",
+        // and never an uncaught provider error on the quote route.
+        const message = error instanceof Error ? error.message : String(error);
         diag.v4 = {
           pools: [], state: "unavailable", floor: null, scannedTo: null, head: this.blockNumber,
-          logCalls: 0, codeCalls: 0, rejected: [], note: error.message,
+          logCalls: 0, codeCalls: 0, rejected: [], note: message,
         };
         return [];
       }

@@ -574,13 +574,18 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
         complete = stage.complete();
       } catch (error) {
         // A stage that cannot run is recorded and the search continues: a later stage may
-        // still answer. If none does, attribution names every stage that failed.
+        // still answer. A plain provider error must not escape as an uncaught failure —
+        // that is what the swap screen showed as "V2 preview discovery is unavailable".
+        const message = error instanceof Error ? error.message : String(error);
         trace.stages.push({
           name: stage.name, poolsReturned: 0, quotable: 0, complete: false,
-          note: error instanceof Error ? error.message : String(error),
+          note: message,
         });
-        if (!(error instanceof V2QuoteError)) throw error;
-        if (stageFailure === null) stageFailure = error;
+        if (stageFailure === null) {
+          stageFailure = error instanceof V2QuoteError
+            ? error
+            : new V2QuoteError("DISCOVERY_UNAVAILABLE", message);
+        }
         continue;
       }
       const attempted = await attemptPoolSet(pools);
@@ -669,8 +674,7 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
         }
         for (const quotedHop of await Promise.all(hops)) if (quotedHop) candidates.push(quotedHop);
       } catch (error) {
-        if (!(error instanceof V2QuoteError)) throw error;
-        trace.multihop.note = error.message;
+        trace.multihop.note = error instanceof Error ? error.message : String(error);
       }
     }
     try {
@@ -699,8 +703,8 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     } catch (error) {
       // Neighbour enumeration can be unavailable when the log sweep is off.
       // A WETH/USDC bridge found above is still a real route, so do not drop it.
-      if (!(error instanceof V2QuoteError)) throw error;
-      trace.multihop.note = error.message;
+      // A provider exception is a note, not a reason to throw the quote away.
+      trace.multihop.note = error instanceof Error ? error.message : String(error);
     }
     candidates.sort((a, b) => a.amountOut === b.amountOut ? a.pools.length - b.pools.length : a.amountOut > b.amountOut ? -1 : 1);
     if (candidates.length) legs = [candidates[0]];
@@ -716,8 +720,7 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
   const bridgePromise = (async (): Promise<Leg | null> => {
     try { return await bestIndexedBridge(source, tokenIn, tokenOut, net); }
     catch (error) {
-      if (!(error instanceof V2QuoteError)) throw error;
-      if (!trace.multihop.note) trace.multihop.note = error.message;
+      if (!trace.multihop.note) trace.multihop.note = error instanceof Error ? error.message : String(error);
       return null;
     }
   })();
@@ -753,8 +756,7 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
         priceImpactBps = await pathPriceImpactBps(source, rescued, net);
       }
     } catch (error) {
-      if (!(error instanceof V2QuoteError)) throw error;
-      if (!trace.multihop.note) trace.multihop.note = error.message;
+      if (!trace.multihop.note) trace.multihop.note = error instanceof Error ? error.message : String(error);
     }
   }
   const amountOut = legs.reduce((s, l) => s + l.amountOut, 0n);

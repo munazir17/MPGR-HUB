@@ -25,12 +25,13 @@ import {
 } from "@/lib/architecture/ai/nvidia-function-calling";
 import { isRetryableProviderStatus, readApiKeys, rotateApiKeys } from "@/lib/architecture/ai/api-key-pool";
 
-// Server-side Route Handler for NVIDIA NIM.
+// Server-side Route Handler for NVIDIA NIM chat.
 //
-// This is the ONLY place NVIDIA_API_KEY is read. It is never prefixed
-// with NEXT_PUBLIC_. The browser only talks to THIS route; this route
-// is the only thing that talks to integrate.api.nvidia.com (or a
-// configured NVIDIA_BASE_URL).
+// NVIDIA_API_KEY is read only on the server, never prefixed with
+// NEXT_PUBLIC_. Chat completions are called from this route. Speech
+// transcription for the agent mic is the other server reader
+// (app/api/agent/voice). The browser never talks to
+// integrate.api.nvidia.com directly.
 //
 // Native OpenAI-compatible tool_calls are translated into the existing
 // {"toolCall":...} protocol. This route never executes tools, never
