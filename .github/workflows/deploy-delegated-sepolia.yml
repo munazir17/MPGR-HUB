@@ -46,7 +46,7 @@ jobs:
       RPC_URL: ${{ vars.BASE_SEPOLIA_RPC_URL || secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
       EXECUTOR_INPUT: ${{ inputs.executor || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Mode resolution: push runs are VERIFY-ONLY unless the HEAD commit
       # message contains the explicit [deploy-delegated] tag; a labeled PR or
