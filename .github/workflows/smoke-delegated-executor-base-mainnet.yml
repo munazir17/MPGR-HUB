@@ -145,7 +145,7 @@ jobs:
           else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && hashFiles('smoke-delegated-rehearsal.json') != ''
         with:
           name: smoke-delegated-rehearsal
@@ -254,7 +254,7 @@ jobs:
           else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && hashFiles('smoke-delegated-preflight.json') != ''
         with:
           name: smoke-delegated-preflight
@@ -378,7 +378,7 @@ jobs:
           else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md >/dev/null; fi
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && hashFiles('smoke-delegated-live.json') != ''
         with:
           name: smoke-delegated-live
