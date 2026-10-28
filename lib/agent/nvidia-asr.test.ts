@@ -23,9 +23,9 @@ describe("NVIDIA Parakeet ASR", () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ text: "sell 5 MPGR for ETH" }), { status: 200 }));
     const result = await transcribeWithNvidia(new Blob(["abc"], { type: "audio/webm" }), "nvapi-secret", fetchImpl);
     expect(result).toEqual({ transcript: "sell 5 MPGR for ETH", model: "nvidia/parakeet-ctc-1.1b-asr" });
-    const init = fetchImpl.mock.calls[0]?.[1] as RequestInit;
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://integrate.api.nvidia.com/v1/audio/transcriptions");
-    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer nvapi-secret");
+    const calls = fetchImpl.mock.calls as unknown as [string, RequestInit][];
+    expect(String(calls[0]?.[0])).toBe("https://integrate.api.nvidia.com/v1/audio/transcriptions");
+    expect((calls[0]?.[1].headers as Record<string, string>).Authorization).toBe("Bearer nvapi-secret");
     fetchImpl.mockResolvedValueOnce(new Response("no", { status: 429 }));
     await expect(transcribeWithNvidia(new Blob(["abc"]), "nvapi-secret", fetchImpl)).rejects.toThrow(/transcription failed/);
   });

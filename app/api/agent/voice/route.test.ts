@@ -81,7 +81,8 @@ describe("POST /api/agent/voice", () => {
     const payload = await response.json();
     expect(payload).toMatchObject({ transcript: "buy 10 USDC of AAPLc", model: "nvidia/parakeet-ctc-1.1b-asr" });
     expect(JSON.stringify(payload)).not.toContain(FAKE_KEY);
-    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://integrate.api.nvidia.com/v1/audio/transcriptions");
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect(String(calls[0]?.[0])).toBe("https://integrate.api.nvidia.com/v1/audio/transcriptions");
   });
 
   it("rejects an empty recording", async () => {
