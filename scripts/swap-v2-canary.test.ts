@@ -3,14 +3,11 @@
 // THE PRIVATE CANARY for the sealed V2 executor. Read-only until an operator arms it,
 // and it never signs, never sends, and never holds a key.
 //
-// WHY THIS EXISTS. Activation of V2 routing is a separate, reviewed commit that has not
-// happened: `V2_DEPLOYMENT` is still `null`, so the app — on this branch and on main —
-// cannot send a V2 swap. Before that commit is reviewed, an operator needs evidence that
-// the deployed executor at 0x4be1154440b26145d76608D41d403a33e76b9d0A actually settles a
-// real swap and pays the 25 bps fee to the pinned treasury. This harness produces that
-// evidence in two halves: it builds and verifies the two canary swaps WITHOUT sending
-// them, and then it verifies the receipts AFTER the operator has signed and broadcast
-// them from their own wallet.
+// WHY THIS EXISTS. The source gate is the sealed manifest, so the app can build
+// a V2 transaction. This harness is still not a broadcast: it never signs and
+// never sends. An operator uses it to build two unsigned canary swaps and, after
+// signing them in their own wallet, to verify the receipts. A passing unit test
+// is not that receipt.
 //
 // THE TWO SWAPS THE OPERATOR SIGNS (tiny size, their own wallet, their own gas):
 //

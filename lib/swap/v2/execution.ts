@@ -1,11 +1,9 @@
 // lib/swap/v2/execution.ts
 // End-to-end V2 execution preparation: posture -> build -> simulate -> inspect.
 //
-// Dormant by construction. `swapV2Executor()` returns null while
-// `V2_DEPLOYMENT` is null, so nothing in the app can reach this module's
-// output. Activation is a separate, explicitly approved commit.
-//
-// Ordering is deliberate and fail-closed:
+// Reachable only through `swapV2Executor()`. While that gate is the sealed
+// manifest, callers can prepare a transaction. While it is null, they cannot.
+// This module never signs and never broadcasts.
 //   1. Live posture (chain, code, pause, fee, cap, recipient, owner, timelock,
 //      PoolManager pin) and every enabled venue's on-chain registration.
 //   2. Build typed calldata for the exact quoted route.

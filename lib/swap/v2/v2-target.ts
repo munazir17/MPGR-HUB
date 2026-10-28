@@ -12,11 +12,11 @@
 // executor families share provider "mpgr-executor", and the transaction TARGET
 // picks the decoder. Each branch stays fail-closed on the other's calldata.
 //
-// SAFETY WHILE DORMANT: `swapV2Executor()` returns null as long as
-// `V2_DEPLOYMENT` is null, so this returns null for every proposal and all
-// downstream V2 branches are inert — V1 behaviour is bit-identical. A V2
-// proposal can only exist if the server produced one, which requires the same
-// gate to be flipped, so client and server can never disagree.
+// The source gate is currently the sealed manifest, so a server-built V2
+// proposal resolves here. `swapV2Executor()` returns null when that constant is
+// reverted or a test injects null, and this module then returns null for every
+// proposal. A V2 proposal can only exist if the server produced one under the
+// same gate.
 import type { TradeProposal } from "@/lib/trade/trade-types";
 import { swapV2Executor, type SwapV2ExecutorDeployment } from "./deployment";
 

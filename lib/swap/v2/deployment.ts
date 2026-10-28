@@ -1,16 +1,14 @@
 // lib/swap/v2/deployment.ts
 // Typed binding for the sealed MPGRSwapExecutorV2 deployment record.
 //
-// ACTIVATION STATE: DEPLOYED ON BASE MAINNET, ROUTING **NOT** ACTIVATED.
-// `V2_DEPLOYMENT` in ./discovery.ts stays `null`, so `swapV2Executor()` below
-// returns `null` and every V2 surface stays inert: /api/swap/v2/quote keeps
-// returning `preview: true, executable: false, transaction: null`, and no V2
-// transaction can be built, simulated, approved, signed or verified.
-//
-// Activation is a separate, explicitly approved commit that flips
-// `V2_DEPLOYMENT` to `SWAP_V2_SEALED_MANIFEST` below. There is deliberately
-// NO env override: an undeclared address can never become executable through
-// configuration drift, mirroring the V1 `SWAP_PATH_EXECUTOR_DEPLOYMENT` rule.
+// ACTIVATION STATE: DEPLOYED ON BASE MAINNET AND ROUTING IS ACTIVATED.
+// `V2_DEPLOYMENT` in ./discovery.ts is `SWAP_V2_SEALED_MANIFEST`, so
+// `swapV2Executor()` returns that sealed record and `/api/swap/v2/quote` can
+// return an executable transaction after posture, simulation and inspection.
+// Reverting that one expression to `null` is the rollback: this function then
+// returns null, the quote route returns the preview shape, and V1 is untouched.
+// There is deliberately NO env override: an undeclared address can never become
+// executable through configuration drift.
 //
 // Every field of SWAP_V2_SEALED_MANIFEST is copied verbatim from
 // deployments/base-mainnet/mpgr-swap-executor-v2.json; parity is enforced by
@@ -42,8 +40,8 @@ export function __setSwapV2ExecutorForTests(deployment: SwapV2ExecutorDeployment
 }
 
 /** The single activation gate for every V2 execution surface.
- * Returns `null` (dormant) until `V2_DEPLOYMENT` is flipped by an approved
- * activation commit; an explicit `null` injection forces dormancy in tests. */
+ * Returns the sealed manifest while `V2_DEPLOYMENT` points at it. An explicit
+ * `null` injection forces the dormant preview shape in tests. */
 export function swapV2Executor(): SwapV2ExecutorDeployment | null {
   const active = testDeployment !== undefined ? testDeployment : (V2_DEPLOYMENT as SwapV2ExecutorDeployment | null);
   return active ?? null;

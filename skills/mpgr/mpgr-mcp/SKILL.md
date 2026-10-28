@@ -34,9 +34,9 @@ Call `tools/list`, then only these names:
 | --- | --- |
 | `mpgr_get_capabilities` | Chains, executor, 25 bps fee, auth modes |
 | `mpgr_list_tokens` | Allowlisted tokens on `chainId` 8453 or 84532 |
-| `mpgr_get_quote` | Quote only. Returns `quoteId` (about 120s). No transaction is sent |
-| `mpgr_prepare_trade` | Unsigned steps for the user's wallet |
-| `mpgr_finalize_trade` | Attaches a signature the wallet already produced |
+| `mpgr_get_quote` | Quote only. Returns `quoteId` (about 120s). Legacy allowlisted pairs use the MPGR Executor. Other Base pairs use PaigerSwap V2 when that gate is on. No transaction is sent |
+| `mpgr_prepare_trade` | Unsigned steps for the user's wallet. V2 quotes require `APPROVAL` and return the V2 executor transaction |
+| `mpgr_finalize_trade` | Permit modes on the legacy executor only. Not used for PaigerSwap V2 |
 | `mpgr_get_trade_status` | Receipt state for a hash the user already sent |
 | `mpgr_verify_trade` | Checks the receipt against the quote, including the exact fee |
 

@@ -1,11 +1,14 @@
 # V2 activation runbook — the exact diff, and what must be true before applying it
 
-**Status of this document: the activation below has NOT been applied.** `V2_DEPLOYMENT` in
-`lib/swap/v2/discovery.ts` is still literally `null`, the app on this branch and on `main`
-still cannot build, simulate, sign or send a V2 swap, and `/api/swap/v2/quote` still returns
-`preview: true, executable: false, transaction: null`. The patch in
-[`v2-activation.patch`](./v2-activation.patch) is committed **inert**: it is a file in the
-repository, not a change to the code.
+**Status of this document: the one-line activation HAS been applied on `main`.**
+`lib/swap/v2/discovery.ts` exports `V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST`.
+Do not apply [`v2-activation.patch`](./v2-activation.patch) again. Rollback is
+reverting that expression to `null`. The steps below are the historical
+procedure that was required before the constant was flipped. The patch file
+remains in the repository as the record of that diff.
+
+**Historical status, now superseded:** the activation below has been applied.
+The rest of this file was written while `V2_DEPLOYMENT` was still `null`.
 
 ## Why the diff is a file and not an uncommitted edit
 

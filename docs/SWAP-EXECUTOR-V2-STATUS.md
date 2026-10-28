@@ -1,6 +1,25 @@
-# MPGR Swap V2 — deployed and sealed, routing NOT activated
+# MPGR Swap V2 — deployed, sealed, and routing activated in source
 
-## Production state
+## Current state (verified 2026-10-28 against `main` `d8a004f`)
+
+These are separate facts. A later section of this file records the seal-time
+note that routing was not yet activated. That note is historical. It is not the
+current source or production status.
+
+| Layer | Status | Evidence |
+| --- | --- | --- |
+| Contract deployed on Base | Yes | Executor `0x4be1154440b26145d76608D41d403a33e76b9d0A`, chain 8453, deploy tx `0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b`, block 52820895. Read-only `eth_getCode` is 21963 bytes, code hash `0x53896cc37145121436fb4372c6814deb98345261b8ea6e0a6343234dd55e3e39`. |
+| Source gate | On | `lib/swap/v2/discovery.ts` exports `V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST`. Rollback is reverting that one expression to `null`. |
+| Quote API path | Enabled by the gate | `POST /api/swap/v2/quote` builds an executable transaction only after posture, simulation and inspection. Unauthenticated calls are rejected (`AUTH_REQUIRED` / origin guard). A dormant injection still returns `preview: true, executable: false`. |
+| Production runtime | Source gate observed on | `GET https://mpgrhub.xyz/api/swap/v2/status` returned `activated: true` with this executor, fee 25 bps, and treasury `0x96F7fb5C4277BD1190fb6eF4820eBC96bA6964A4`. That is not a wallet-confirmed swap. |
+| On-chain posture | Matches the manifest | Read-only `mainnet.base.org`: `feeBps` 25, `MAX_FEE_BPS` 100, `FEE_TIMELOCK_SECONDS` 172800, `pendingEffectiveAt` 0, `paused` false, owner and `GOVERNANCE_SAFE` `0xd9aE570767C5a15780DD5cdAdd0b1b732D98994B`, fee recipient pinned. Venue kinds: Uniswap V3 = 2, Slipstream = 1, Uniswap V2 = 3, Aerodrome Classic = 4, Uniswap V4 = 7. Pancake and 0x stay disabled. |
+| Wallet-confirmed live swap | Not claimed here | No transaction was signed or broadcast for this audit. |
+
+MPGR Agent (`mpgr_get_quote` / `mpgr_prepare_trade`) does **not** automatically use this executor for every pair. Allowlisted legacy routes (USDC↔WETH and USDC↔B20 stocks) stay on the legacy executor `0xD982726e28275661F8aB64054E6b17a70a63505A`. Other Base mainnet pairs, including MPGR, go through `prepareV2Execution` when `MPGR_MCP_ENABLE_BASE_MAINNET=true` and this gate is on. A V2 simulation or RPC failure is returned as an error. Only a completed discovery with no pool may fall through to the existing 0x native-fee path. Sepolia is unchanged. The server never signs.
+
+## Historical seal record
+
+## Production state at seal time
 
 - **Deployed exactly once.** Trusted pinned run
   [39294717599](https://github.com/munazir17/MPGR-HUB/actions/runs/39294717599)
@@ -26,12 +45,11 @@
   Uniswap V2 = 3, Aerodrome Classic = 4, Uniswap V4 = 7). Primary endpoint
   `mainnet.base.org`, independent cross-check `base.drpc.org` (candidate list in the
   recovery workflow).
-- **Routing is NOT activated.** `lib/swap/v2/discovery.ts` keeps
-  `V2_DEPLOYMENT = null`, so `/api/swap/v2/quote` still returns
-  `preview: true, executable: false, transaction: null`. Activation is a separate,
-  explicit, human-reviewed step that flips `V2_DEPLOYMENT` to the sealed manifest and
-  must pass the existing V2 activation checks; it is not part of the deployment or the
-  recovery.
+- **Routing was not activated at seal time.** The source gate was later set to
+  `V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST`. See the current-state table above.
+  The consumed deploy config JSON still contains the seal-time sentence that
+  routing was not activated; that file is a one-shot deployment record and was
+  not rewritten.
 - **V1 is untouched and still active:** executor `0xBC4dE809b4b72bCe8f61c87daC6Be12e3F7c6b3E`,
   its sealed manifest, consumed gate, deployment scripts and the active
   `SWAP_PATH_EXECUTOR_DEPLOYMENT` constant are byte-identical to before this change
@@ -125,10 +143,8 @@ ETH/WETH and identical assets are rejected as the same asset.
   and a future activation boundary that verifies owner/fee/cap/recipient and
   simulates the actual executor at the pinned block before exposing execution.
 
-**The API returns `preview: true`, `executable: false`, `transaction: null`.**
-`V2_DEPLOYMENT` is null. A venue quote is not called executor simulation or
-execution proof. No user is routed to either legacy executor by this endpoint.
-The existing active quote endpoint and app deployment config are unchanged.
+**While the source gate is null, the API returns `preview: true`, `executable: false`, `transaction: null`.**
+The gate is currently the sealed manifest, so an authenticated quote can be executable after simulation. A venue quote alone is still not a settlement proof. No user is routed to the legacy executor by this endpoint. The existing `/api/swap/quote` path is unchanged.
 
 ## Validation
 
@@ -148,7 +164,8 @@ The existing active quote endpoint and app deployment config are unchanged.
   `tx=0xb8682c025c17ab8322040dfeec58dfe1fa62a880f5ba7edf7972e84ed10bc35b`
   `block=52820895` `gasUsed=0x4f0591`
   `codeHash=0x53896cc37145121436fb4372c6814deb98345261b8ea6e0a6343234dd55e3e39`
-  `crossChecked=true` — routing NOT activated.
+  `crossChecked=true`. Routing was not activated by that recovery; the source
+  gate was flipped in a later commit. See the current-state table.
 - A first recovery attempt (run 39302687541) failed **closed** because
   `base-rpc.publicnode.com` returned `-32603 no state found for block 52822572` for the
   receipt; the cross-check refused a one-sided verification and nothing was sealed.
@@ -157,5 +174,7 @@ The existing active quote endpoint and app deployment config are unchanged.
 - Offline regression suites (no RPC, key or tx): `finalize-manifest.test.sh` **57/57**,
   `recover-finalize.test.sh` **35/35**, `swap-v2-finalize-recovery.test.ts` **20/20**.
 
-Activation of V2 routing remains a separate, explicit decision. Nothing in the
-deployment, the recovery or this record enables it.
+The recovery did not enable routing. The source gate was enabled later, as a
+separate change, and is recorded in the current-state table. Reverting
+`V2_DEPLOYMENT` to `null` disables it again. Nothing in the deployment record
+should be re-broadcast.

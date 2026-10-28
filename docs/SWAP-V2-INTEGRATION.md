@@ -1,17 +1,19 @@
 # MPGR Swap V2 — Execution Surface Integration
 
-**Status: implemented and unit-tested. V2 routing is DORMANT.**
+**Status: the source gate is on.** `lib/swap/v2/discovery.ts` exports
+`V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST`. `GET /api/swap/v2/status` reports
+`activated: true` on the current production build. That is not a
+wallet-confirmed swap. Rollback is reverting the constant to `null`.
 
 ```
-V2_ROUTING_STATUS:              OFF   (lib/swap/v2/discovery.ts: `export const V2_DEPLOYMENT = null;`)
-LIVE_TRANSACTIONS_BROADCAST:    NO
-CONTRACTS_DEPLOYED_OR_CHANGED:  NO
-V1_MODIFIED:                    NO
-ACTIVATION_APPROVED:            NO
+V2_ROUTING_STATUS:              ON    (lib/swap/v2/discovery.ts: `export const V2_DEPLOYMENT = SWAP_V2_SEALED_MANIFEST;`)
+LIVE_WALLET_BROADCAST_BY_THIS_DOC: NO
+CONTRACTS_REDEPLOYED:           NO
+V1_EXECUTOR_MODIFIED:           NO
 ```
 
-Nothing in this document is a claim that universal trading works. Read
-[Evidence tiers](#evidence-tiers-what-is-actually-proven) before believing any part of it.
+Paragraphs below that say the surface is dormant describe the pre-activation
+design of the gate. The dormant response is what a `null` gate still returns.
 
 ---
 

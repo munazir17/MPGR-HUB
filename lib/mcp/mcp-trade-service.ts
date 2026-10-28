@@ -74,6 +74,17 @@ import {
   type UnsignedTransactionRequest,
 } from "@/lib/executor/executor-intent";
 import { verifyExecutorReceipt } from "@/lib/executor/executor-verify";
+import { MPGR_TOKEN_ADDRESS } from "@/lib/chain/base";
+import { BASE_USDC, BASE_WETH, isNativeEthSentinel } from "@/lib/trade/trade-config";
+import { V2_FEE_RECIPIENT } from "@/lib/swap/v2/discovery";
+import { SWAP_V2_SEALED_MANIFEST } from "@/lib/swap/v2/sealed-manifest";
+import {
+  inspectPaigerSwapV2Binding,
+  paigerSwapV2QuoteView,
+  parsePaigerSwapV2Binding,
+  verifyPaigerSwapV2Trade,
+  type PaigerSwapV2Port,
+} from "./paigerswap-v2";
 import {
   ZERO_EX_ALLOWANCE_HOLDER_BASE,
   getZeroExNativeFeeQuote,
@@ -112,6 +123,11 @@ export interface McpDeps {
   /** Validated MPGR fee wallet for the 0x fallback path (null => non-executor mainnet quotes refused). */
   mainnetFeeRecipient: Address | null;
   zeroExFetch?: typeof fetch;
+  /**
+   * PaigerSwap V2 for Base mainnet pairs the legacy executor does not already
+   * route. Absent or inactive preserves the previous 0x fallback. Never signs.
+   */
+  paigerSwapV2?: PaigerSwapV2Port;
 }
 
 export type ToolOutcome =
@@ -235,6 +251,7 @@ export function getCapabilities(deps: McpDeps): ToolOutcome {
       ? deps.mainnetEnabled
         ? [
             ...(d ? ["mpgr-executor"] : []),
+            ...(deps.paigerSwapV2?.activated ? ["paigerswap-v2"] : []),
             ...(deps.mainnetFeeRecipient ? ["0x-native-fee"] : []),
           ]
         : []
@@ -280,11 +297,13 @@ export function getCapabilities(deps: McpDeps): ToolOutcome {
         EIP2612: "Sign an EIP-2612 permit (typed data) — permit + fee + swap happen in ONE tx. Token must support permit.",
         PERMIT2: "One-time approve(Permit2), then sign a Permit2 SignatureTransfer per trade — ONE swap tx.",
       },
-      baseMainnetDispatch:
-        "Registered executor pairs route through the MPGR Executor: USDC<->WETH (Uniswap V3, fee 3000) and USDC<->each B20 tokenized stock (Aerodrome Slipstream, tickSpacing 10), all incl. native ETH where applicable and all with the 25 bps fee taken inside the swap transaction. Any other pair (arbitrary ERC-20, WETH<->B20, B20<->B20) falls back to the 0x native-fee path.",
+      baseMainnetDispatch: deps.paigerSwapV2?.activated
+        ? "Registered executor pairs stay on the legacy MPGR Executor: USDC<->WETH (Uniswap V3, fee 3000) and USDC<->each B20 tokenized stock (Aerodrome Slipstream, tickSpacing 10). Other Base pairs, including MPGR, are quoted through the sealed PaigerSwap V2 executor when it can simulate a route. A completed V2 search with no pool may use the 0x native-fee path. A V2 simulation, RPC, or fee failure is an error and is not replaced with another route."
+        : "Registered executor pairs route through the MPGR Executor: USDC<->WETH (Uniswap V3, fee 3000) and USDC<->each B20 tokenized stock (Aerodrome Slipstream, tickSpacing 10), all incl. native ETH where applicable and all with the 25 bps fee taken inside the swap transaction. Any other pair (arbitrary ERC-20, WETH<->B20, B20<->B20) falls back to the 0x native-fee path.",
       providers: {
         "mpgr-executor": "Custom MPGR executor (NOT externally audited yet): typed Aerodrome Slipstream + Uniswap V3 adapters, allowlisted routers/tokens, exact fee, atomic. Deployed on Base mainnet and Base Sepolia.",
-        "0x-native-fee": "0x Swap API (AllowanceHolder) with swapFeeToken=sellToken; quote rejected unless the integrator fee is exactly floor(sellAmount*25/10000) of the sell token. Base mainnet only, for pairs without a proven executor route; disabled by default.",
+        "0x-native-fee": "0x Swap API (AllowanceHolder) with swapFeeToken=sellToken; quote rejected unless the integrator fee is exactly floor(sellAmount*25/10000) of the sell token. Base mainnet only, for pairs V2 could not route and that have no proven legacy executor route; disabled by default.",
+        "paigerswap-v2": "Sealed PaigerSwap V2 executor on Base. Used by mpgr_get_quote for pairs the legacy executor does not already route, only while V2 routing is activated and Base mainnet MCP trading is enabled. Reuses V2 discovery, calldata, the single 25 bps gross fee, and eth_call simulation. The wallet still confirms the unsigned transaction.",
         "uniswap-v3":
           "Venue used by mpgr-executor on Base mainnet (USDC<->WETH, fee 3000 — the official Base Uniswap V3 0.30% pool) and on Base Sepolia (tUSD/tSTOCK and WETH/tUSD, fee 3000). Swaps go through Uniswap V3 SwapRouter02 exactInputSingle; the pool is verified by CREATE2 against the official factory.",
         "aerodrome-slipstream":
@@ -332,7 +351,9 @@ export function listTokens(deps: McpDeps, input: unknown): ToolOutcome {
       })),
       ...(chainId === BASE_MAINNET_CHAIN_ID
         ? {
-            note: "Every pair listed here is routable through the MPGR Executor, which takes the 25 bps fee inside the swap transaction (approve when needed + swap, never a separate fee transaction). Other ERC-20 pairs on Base mainnet use the 0x native-fee path when the operator has enabled mainnet trading.",
+            note: deps.paigerSwapV2?.activated
+              ? "Every pair listed here is routable through the legacy MPGR Executor, which takes the 25 bps fee inside the swap transaction. Other Base pairs, including MPGR, are quoted through PaigerSwap V2 when mainnet MCP trading is enabled."
+              : "Every pair listed here is routable through the MPGR Executor, which takes the 25 bps fee inside the swap transaction (approve when needed + swap, never a separate fee transaction). Other ERC-20 pairs on Base mainnet use the 0x native-fee path when the operator has enabled mainnet trading.",
           }
         : {}),
     },
@@ -410,10 +431,178 @@ export async function getQuote(deps: McpDeps, input: unknown): Promise<ToolOutco
         return quoteExecutor(deps, BASE_MAINNET_CHAIN_ID, mainnet, args, sell, buy, taker, slippage);
       }
     }
+    if (deps.paigerSwapV2?.activated) {
+      const v2 = await quotePaigerSwapV2(deps, args, taker, slippage);
+      if (v2.ok || !v2.fallThrough) return v2.outcome;
+    }
     return quoteZeroEx(deps, args, taker, slippage);
   }
 
   return quoteExecutor(deps, chainId, deps.registry[chainId] as ExecutorDeployment, args, null, null, taker, slippage);
+}
+
+const V2_QUOTE_DEADLINE_SECONDS = 180;
+
+interface ResolvedV2Token {
+  address: Address;
+  symbol: string;
+  decimals: number;
+  native: boolean;
+}
+
+async function resolveV2Token(deps: McpDeps, raw: unknown): Promise<ResolvedV2Token | { error: string }> {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 80) {
+    return { error: "Token must be ETH, WETH, USDC, MPGR, or a Base address." };
+  }
+  if (raw.toUpperCase() === "ETH" || isNativeEthSentinel(raw)) {
+    return { address: getAddress(BASE_WETH), symbol: "ETH", decimals: 18, native: true };
+  }
+  const known = [
+    { symbol: "WETH", address: BASE_WETH, decimals: 18 },
+    { symbol: "USDC", address: BASE_USDC, decimals: 6 },
+    { symbol: "MPGR", address: MPGR_TOKEN_ADDRESS, decimals: 18 },
+  ];
+  const bySymbol = known.find((token) => token.symbol.toLowerCase() === raw.toLowerCase());
+  if (bySymbol) return { address: getAddress(bySymbol.address), symbol: bySymbol.symbol, decimals: bySymbol.decimals, native: false };
+  if (!isAddress(raw)) return { error: "Unknown token. Pass ETH, WETH, USDC, MPGR, or a token address." };
+  const address = getAddress(raw);
+  const pinned = known.find((token) => token.address.toLowerCase() === address.toLowerCase());
+  if (pinned) return { address, symbol: pinned.symbol, decimals: pinned.decimals, native: false };
+  try {
+    const reader = deps.reader(BASE_MAINNET_CHAIN_ID);
+    const erc20 = [
+      { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] },
+      { type: "function", name: "symbol", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+    ] as const;
+    const decimals = await reader.readContract({ address, abi: erc20, functionName: "decimals" });
+    let symbol = "TOKEN";
+    try {
+      const read = await reader.readContract({ address, abi: erc20, functionName: "symbol" });
+      if (typeof read === "string" && read.length > 0 && read.length <= 32) symbol = read;
+    } catch {
+      symbol = "TOKEN";
+    }
+    const n = typeof decimals === "number" ? decimals : Number(decimals);
+    if (!Number.isInteger(n) || n < 0 || n > 36) return { error: "Token decimals could not be read. No quote was prepared." };
+    return { address, symbol, decimals: n, native: false };
+  } catch {
+    return { error: "Token metadata could not be read. No quote was prepared." };
+  }
+}
+
+/**
+ * PaigerSwap V2 quote for a pair the legacy executor does not already own.
+ * `fallThrough` is true only when V2 proved there is no route, so the existing
+ * 0x path can still answer. Simulation and RPC failures do not fall through.
+ */
+async function quotePaigerSwapV2(
+  deps: McpDeps,
+  args: Record<string, unknown>,
+  taker: Address,
+  slippage: number,
+): Promise<{ ok: true; outcome: ToolOutcome } | { ok: false; fallThrough: boolean; outcome: ToolOutcome }> {
+  const port = deps.paigerSwapV2;
+  if (!port?.activated) {
+    return { ok: false, fallThrough: true, outcome: fail("V2_NOT_ACTIVATED", "PaigerSwap V2 routing is not activated.") };
+  }
+  if (port.executor.toLowerCase() !== SWAP_V2_SEALED_MANIFEST.executor.toLowerCase()) {
+    return { ok: false, fallThrough: false, outcome: fail("EXECUTOR_MISMATCH", "PaigerSwap V2 is not pinned to the sealed executor. No swap was prepared.") };
+  }
+  const sell = await resolveV2Token(deps, args.sellToken);
+  if ("error" in sell) return { ok: false, fallThrough: false, outcome: fail("TOKEN_NOT_RESOLVED", sell.error) };
+  const buy = await resolveV2Token(deps, args.buyToken);
+  if ("error" in buy) return { ok: false, fallThrough: false, outcome: fail("TOKEN_NOT_RESOLVED", buy.error) };
+  if (sell.address.toLowerCase() === buy.address.toLowerCase()) {
+    return { ok: false, fallThrough: false, outcome: fail("INVALID_PAIR", "Sell and buy tokens must differ. ETH and WETH are the same asset.") };
+  }
+  const amount = parseSellAmount(args, sell.decimals);
+  if (typeof amount === "string") return { ok: false, fallThrough: false, outcome: fail("INVALID_AMOUNT", amount) };
+  const fee = (amount * 25n) / 10_000n;
+  if (fee <= 0n || fee >= amount) {
+    return { ok: false, fallThrough: false, outcome: fail("FEE_ROUNDS_TO_ZERO", "Sell amount is too small to collect the 25 bps fee exactly once.") };
+  }
+  const now = deps.nowSeconds();
+  const deadline = BigInt(now + V2_QUOTE_DEADLINE_SECONDS);
+  let quoted;
+  try {
+    quoted = await port.quote({
+      sellToken: sell.address,
+      buyToken: buy.address,
+      gross: amount,
+      taker,
+      slippageBps: slippage,
+      nativeIn: sell.native,
+      nativeOut: buy.native,
+      deadline,
+    });
+  } catch {
+    return { ok: false, fallThrough: false, outcome: fail("EXECUTION_UNAVAILABLE", "PaigerSwap V2 quoting failed. No swap was prepared.") };
+  }
+  if (!quoted.ok) return { ok: false, fallThrough: quoted.fallThrough, outcome: fail(quoted.code, quoted.message) };
+  if (quoted.fee !== fee) {
+    return { ok: false, fallThrough: false, outcome: fail("FEE_POLICY_INVALID", "PaigerSwap V2 fee was not floor(sellAmount * 25 / 10000) once on the gross sell amount.") };
+  }
+  if (quoted.amountOut <= 0n) {
+    return { ok: false, fallThrough: false, outcome: fail("QUOTE_FAILED", "PaigerSwap V2 returned no usable output. No swap was prepared.") };
+  }
+  const minBuy = (quoted.amountOut * BigInt(10_000 - slippage)) / 10_000n;
+  if (minBuy <= 0n || BigInt(quoted.binding.minBuyAmount) !== minBuy) {
+    return { ok: false, fallThrough: false, outcome: fail("QUOTE_FAILED", "PaigerSwap V2 minimum output does not match the requested slippage.") };
+  }
+  if (quoted.binding.executor.toLowerCase() !== port.executor.toLowerCase() || quoted.binding.deadline !== deadline.toString()) {
+    return { ok: false, fallThrough: false, outcome: fail("EXECUTION_UNAVAILABLE", "PaigerSwap V2 returned a transaction that is not bound to this quote.") };
+  }
+  const inspected = inspectPaigerSwapV2Binding(quoted.binding, {
+    taker,
+    sellToken: sell.address,
+    buyToken: buy.address,
+    nativeIn: sell.native,
+    nativeOut: buy.native,
+    gross: amount,
+    fee,
+    minBuyAmount: minBuy,
+  });
+  if (!inspected.ok) {
+    return { ok: false, fallThrough: false, outcome: fail("EXECUTION_UNAVAILABLE", `PaigerSwap V2 calldata was rejected: ${inspected.reason}`) };
+  }
+  const reader = deps.reader(BASE_MAINNET_CHAIN_ID);
+  const balance = sell.native ? await reader.getBalance({ address: taker }) : await readTokenBalance(reader, sell.address, taker);
+  const payload: QuotePayload = {
+    v: 1,
+    chainId: BASE_MAINNET_CHAIN_ID,
+    provider: "paigerswap-v2",
+    taker,
+    sellToken: sell.address,
+    buyToken: buy.address,
+    sellNative: sell.native,
+    buyNative: buy.native,
+    sellAmount: amount.toString(),
+    expectedBuyAmount: quoted.amountOut.toString(),
+    slippageBps: slippage,
+    feeBps: 25,
+    feeAmount: fee.toString(),
+    feeRecipient: V2_FEE_RECIPIENT,
+    iat: now,
+    exp: now + QUOTE_TTL_SECONDS,
+    v2: quoted.binding as unknown as Record<string, unknown>,
+  };
+  const signed = signQuoteId(payload, deps.quoteSecret);
+  if (!signed.ok) return { ok: false, fallThrough: false, outcome: fail(signed.error.code, signed.error.message) };
+  return {
+    ok: true,
+    outcome: {
+      ok: true,
+      data: paigerSwapV2QuoteView({
+        quoteId: signed.quoteId,
+        payload,
+        binding: quoted.binding,
+        sell,
+        buy,
+        balance,
+        priceImpactBps: quoted.priceImpactBps,
+      }),
+    },
+  };
 }
 
 /**
@@ -626,6 +815,97 @@ function parseAuthorization(raw: unknown): AuthorizationMode | null {
   return raw === "APPROVAL" || raw === "EIP2612" || raw === "PERMIT2" ? raw : null;
 }
 
+async function preparePaigerSwapV2(
+  deps: McpDeps,
+  p: QuotePayload,
+  quoteId: string,
+  args: Record<string, unknown>,
+): Promise<ToolOutcome> {
+  const port = deps.paigerSwapV2;
+  if (!port?.activated) return fail("V2_NOT_ACTIVATED", "PaigerSwap V2 routing is not activated. Request a fresh quote. Nothing was sent.");
+  const authorization = parseAuthorization(args.authorization ?? "APPROVAL");
+  if (authorization !== "APPROVAL") {
+    return fail("INVALID_AUTHORIZATION", "PaigerSwap V2 requires authorization APPROVAL. Permit modes are not used on this executor. Nothing was sent.");
+  }
+  if (p.chainId !== BASE_MAINNET_CHAIN_ID) return fail("UNSUPPORTED_CHAIN", "PaigerSwap V2 is Base mainnet only.");
+  if (p.feeBps !== 25 || p.feeRecipient.toLowerCase() !== V2_FEE_RECIPIENT.toLowerCase()) {
+    return fail("FEE_POLICY_INVALID", "Quote fee does not match the pinned 25 bps treasury.");
+  }
+  const binding = parsePaigerSwapV2Binding(p.v2);
+  if (!binding) return fail("QUOTE_ID_INVALID", "Quote is missing its PaigerSwap V2 transaction binding.");
+  const gross = BigInt(p.sellAmount);
+  const fee = (gross * 25n) / 10_000n;
+  if (p.feeAmount !== fee.toString()) return fail("FEE_MISMATCH", "Fee does not match the quote.");
+  if (deps.nowSeconds() > Number(binding.deadline)) return fail("QUOTE_EXPIRED", "The V2 deadline passed. Request a fresh quote. Nothing was sent.");
+  const taker = getAddress(p.taker);
+  const sell = getAddress(p.sellToken);
+  const buy = getAddress(p.buyToken);
+  const inspected = inspectPaigerSwapV2Binding(binding, {
+    taker, sellToken: sell, buyToken: buy, nativeIn: p.sellNative, nativeOut: p.buyNative,
+    gross, fee, minBuyAmount: BigInt(binding.minBuyAmount),
+  });
+  if (!inspected.ok) return fail("EXECUTION_UNAVAILABLE", `PaigerSwap V2 calldata was rejected: ${inspected.reason}`);
+  let confirmed;
+  try {
+    confirmed = await port.confirm(binding, taker);
+  } catch {
+    return fail("EXECUTION_UNAVAILABLE", "PaigerSwap V2 could not re-check this quote. Nothing was sent.");
+  }
+  if (!confirmed.ok) return fail(confirmed.code, confirmed.message);
+  const reader = deps.reader(BASE_MAINNET_CHAIN_ID);
+  const balance = p.sellNative ? await reader.getBalance({ address: taker }) : await readTokenBalance(reader, sell, taker);
+  if (balance < gross) return fail("INSUFFICIENT_BALANCE", `Taker balance ${balance.toString()} < sellAmount ${gross.toString()}.`);
+  const steps: Record<string, unknown>[] = [];
+  const transactionRequest = {
+    chainId: BASE_MAINNET_CHAIN_ID,
+    to: binding.transaction.to,
+    data: binding.transaction.data,
+    value: binding.transaction.value,
+  };
+  if (!p.sellNative) {
+    const allowance = await readAllowance(reader, sell, taker, binding.executor);
+    if (allowance < gross) {
+      steps.push({
+        step: "sendApprovalTransaction",
+        who: "user wallet",
+        description: `Approve the PaigerSwap V2 executor to spend exactly ${p.sellAmount} of the sell token (not unlimited).`,
+        transactionRequest: encodeExactApproval(BASE_MAINNET_CHAIN_ID, sell, binding.executor, gross),
+      });
+    }
+  }
+  steps.push({ step: "sendSwapTransaction", who: "user wallet", afterPreviousStepConfirmed: steps.length > 0, transactionRequest });
+  return {
+    ok: true,
+    data: {
+      provider: "paigerswap-v2",
+      quoteId,
+      executor: binding.executor,
+      spender: binding.executor,
+      chainId: BASE_MAINNET_CHAIN_ID,
+      steps,
+      transactionRequest,
+      typedData: null,
+      permit: null,
+      expiresAt: Number(binding.deadline),
+      feeBps: 25,
+      feeAmount: p.feeAmount,
+      feeRecipient: p.feeRecipient,
+      minBuyAmount: binding.minBuyAmount,
+      expectedBuyAmount: p.expectedBuyAmount,
+      sellAmount: p.sellAmount,
+      recipient: taker,
+      route: {
+        provider: "paigerswap-v2",
+        entry: binding.entry,
+        hops: binding.hops,
+        pools: binding.pools,
+        executionSimulation: binding.executionSimulation,
+      },
+      safety: "Unsigned data only. Review in your wallet before sending: `to` must be the PaigerSwap V2 executor, the recipient must be your own address, and this server never signs or broadcasts.",
+    },
+  };
+}
+
 // ============================================================ prepare
 
 export async function prepareTrade(deps: McpDeps, input: unknown): Promise<ToolOutcome> {
@@ -636,6 +916,7 @@ export async function prepareTrade(deps: McpDeps, input: unknown): Promise<ToolO
   const p = v.payload;
   const quoteId = args.quoteId as string;
   if (p.provider === "0x-native-fee") return prepareZeroEx(deps, p, quoteId);
+  if (p.provider === "paigerswap-v2") return preparePaigerSwapV2(deps, p, quoteId, args);
 
   const authorization = parseAuthorization(args.authorization ?? "APPROVAL");
   if (!authorization) return fail("INVALID_AUTHORIZATION", "authorization must be APPROVAL, EIP2612 or PERMIT2.");
@@ -730,6 +1011,9 @@ export async function finalizeTrade(deps: McpDeps, input: unknown): Promise<Tool
   if (!v.ok) return fail(v.error.code, v.error.message);
   const p = v.payload;
   if (now > p.iat + INTENT_TTL_SECONDS) return fail("QUOTE_EXPIRED", "Intent deadline passed. Request a new quote.");
+  if (p.provider === "paigerswap-v2") {
+    return fail("NOT_APPLICABLE", "PaigerSwap V2 does not use permit finalization. Call mpgr_prepare_trade with authorization APPROVAL, then send that unsigned transaction from your wallet.");
+  }
   if (p.provider !== "mpgr-executor") return fail("NOT_APPLICABLE", "finalize is only used for executor permit modes.");
   const authorization = parseAuthorization(args.authorization);
   if (authorization !== "EIP2612" && authorization !== "PERMIT2") {
@@ -826,6 +1110,25 @@ export async function verifyTrade(deps: McpDeps, input: unknown): Promise<ToolOu
   }
 
   if (p.provider === "0x-native-fee") return verifyZeroExReceipt(p, receipt);
+  if (p.provider === "paigerswap-v2") {
+    const checked = verifyPaigerSwapV2Trade(p, receipt);
+    return {
+      ok: true,
+      data: jsonSafe({
+        verified: checked.verified,
+        reason: checked.reason,
+        provider: "paigerswap-v2",
+        executor: SWAP_V2_SEALED_MANIFEST.executor,
+        chainId: p.chainId,
+        amountIn: checked.settlement?.amountIn ?? null,
+        amountOut: checked.settlement?.amountOut ?? null,
+        feeAmount: checked.settlement?.feeAmount ?? null,
+        feeBps: checked.settlement?.feeBps ?? null,
+        feeRecipient: checked.settlement?.feeRecipient ?? null,
+        explorerUrl: `${EXECUTOR_EXPLORERS[chainId]}/tx/${receipt.transactionHash}`,
+      }) as Record<string, unknown>,
+    };
+  }
 
   const defaultDeployment = deps.registry[chainId];
   if (!defaultDeployment) return fail("EXECUTOR_NOT_DEPLOYED", "Executor not deployed on this chain.");
