@@ -134,6 +134,8 @@ jobs:
           MPGR_V2_COVERAGE_SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
+          # Stagger shards so six jobs do not open the public Base RPC in the same second.
+          sleep $(( (${{ matrix.shard }} - 1) * 8 ))
           npx vitest run scripts/swap-v2-coverage-matrix.test.ts 2>&1 | tee "v2-coverage-shard-${{ matrix.shard }}.log"
       - name: Shard summary
         if: always()

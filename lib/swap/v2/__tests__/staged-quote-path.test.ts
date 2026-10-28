@@ -77,6 +77,13 @@ function chain(options: ChainOptions = {}): MockChain {
   const calls = { getLogs: 0, getCode: 0, call: 0 };
   const v4QuoterCalls: MockChain["v4QuoterCalls"] = [];
   const quoteOut = options.quoteOut ?? 1_000_000n;
+  // Proportional to size. A constant output made every route look like ~99% impact
+  // and would force the thin-pool v4 rescue on quotes that are actually fair.
+  const scaledQuote = (amount: bigint) => {
+    if (amount <= 0n) return 0n;
+    const out = quoteOut * amount / GROSS;
+    return out > 0n ? out : 1n;
+  };
   const index = options.indexPool;
   const v4 = options.v4Pool;
   const deployedAt = options.tokenDeployedAt ?? DEPLOYED;
@@ -119,7 +126,7 @@ function chain(options: ChainOptions = {}): MockChain {
       if (to === V4_QUOTER && fn?.functionName === "quoteExactInputSingle") {
         const params = fn.args[0] as { zeroForOne: boolean; exactAmount: bigint };
         v4QuoterCalls.push({ zeroForOne: params.zeroForOne, exactAmount: params.exactAmount });
-        return { data: encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [quoteOut, 200_000n]) };
+        return { data: encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [scaledQuote(params.exactAmount), 200_000n]) };
       }
       if (!fn) return { data: encodeAbiParameters([{ type: "uint256" }], [0n]) };
       // Factory getters: only the configured venue/pair answers with a pool.
@@ -152,10 +159,12 @@ function chain(options: ChainOptions = {}): MockChain {
       }
       // Venue quoters.
       if (fn.functionName === "quoteExactInputSingle") {
-        return { data: encodeAbiParameters([{ type: "uint256" }, { type: "uint160" }, { type: "uint32" }, { type: "uint256" }], [quoteOut, 0n, 0, 0n]) };
+        const params = fn.args[0] as { amountIn?: bigint };
+        return { data: encodeAbiParameters([{ type: "uint256" }, { type: "uint160" }, { type: "uint32" }, { type: "uint256" }], [scaledQuote(params?.amountIn ?? GROSS), 0n, 0, 0n]) };
       }
       if (fn.functionName === "getAmountsOut") {
-        return { data: encodeAbiParameters([{ type: "uint256[]" }], [[GROSS, quoteOut]]) };
+        const amountIn = typeof fn.args[0] === "bigint" ? fn.args[0] : GROSS;
+        return { data: encodeAbiParameters([{ type: "uint256[]" }], [[amountIn, scaledQuote(amountIn)]]) };
       }
       return { data: encodeAbiParameters([{ type: "uint256" }], [0n]) };
     },
@@ -496,5 +505,53 @@ describe("a thin direct pool loses to a materially better factory-indexed bridge
     const quote = await discoverV2Quote(even, A, BASE_WETH, GROSS);
     expect(quote.legs[0].pools).toHaveLength(1);
     expect(quote.legs[0].pools[0].id).toBe(direct.id);
+  });
+});
+
+describe("a size-wrecked getter quote yields to Uniswap v4", () => {
+  const pool = (id: Address, token0: Address, token1: Address, kind: Pool["kind"]): Pool => ({
+    id: kind === 7 ? `${V4_MANAGER.toLowerCase()}:deep` : id,
+    pool: kind === 7 ? V4_MANAGER : id,
+    router: kind === 7 ? V4_MANAGER : SWAP_PATH_VENUES.uniswapV3.router,
+    factory: kind === 7 ? V4_MANAGER : SWAP_PATH_VENUES.uniswapV3.factory,
+    kind, token0, token1, poolFee: 3000, tickSpacing: kind === 7 ? 60 : 0, stable: false,
+    ...(kind === 7 ? { v4Key: { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks: "0x1111111111111111111111111111111111111111" as Address } } : {}),
+  });
+  const direct = pool("0x0000000000000000000000000000000000000d11", A, BASE_WETH, 2);
+  const deep = pool("0x0000000000000000000000000000000000000d12", A, BASE_WETH, 7);
+  let v4Reads = 0;
+  const stagesFor = (a: Address, b: Address) => {
+    const key = [a, b].map((t) => t.toLowerCase()).sort().join(":");
+    const directKey = [A, BASE_WETH].map((t) => t.toLowerCase()).sort().join(":");
+    return [
+      { name: "factory-index" as const, pools: async () => key === directKey ? [direct] : [], complete: () => true },
+      { name: "v4-canonical-logs" as const, pools: async () => { v4Reads += 1; return key === directKey ? [deep] : []; }, complete: () => true },
+    ];
+  };
+  const source = {
+    directStages: stagesFor,
+    async pools() { return []; },
+    async quote(p: Pool, _input: Address, amount: bigint) {
+      // 0.1% probe is near the fair rate; the full size on the getter pool is not.
+      if (p.id === direct.id) return amount * 1000n < GROSS ? amount / 2n : amount / 50n;
+      return amount / 2n;
+    },
+  };
+
+  it("does not open v4 when the getter quote is already fair", async () => {
+    v4Reads = 0;
+    const fair = { ...source, async quote(_p: Pool, _input: Address, amount: bigint) { return amount / 2n; } };
+    const quote = await discoverV2Quote(fair, A, BASE_WETH, GROSS);
+    expect(quote.legs[0].pools[0].id).toBe(direct.id);
+    expect(v4Reads).toBe(0);
+  });
+
+  it("replaces the wrecked getter pool with the v4 pool", async () => {
+    v4Reads = 0;
+    const quote = await discoverV2Quote(source, A, BASE_WETH, GROSS);
+    expect(quote.legs[0].pools[0].kind).toBe(7);
+    expect(quote.amountOut).toBeGreaterThan(GROSS / 50n);
+    expect(quote.priceImpactBps == null || quote.priceImpactBps < 500).toBe(true);
+    expect(v4Reads).toBeGreaterThan(0);
   });
 });

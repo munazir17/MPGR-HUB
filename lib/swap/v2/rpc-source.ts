@@ -286,8 +286,8 @@ export class RpcV2LiquiditySource implements LiquiditySource {
   /**
    * Ordered direct-pair discovery: getters first, v4 second, and the whole-history
    * canonical sweep only when it is actually enabled. `discoverV2Quote` stops at the
-   * first stage that yields a quotable pool, so a pair with a Uniswap v2, v3 or
-   * Aerodrome pool never issues a single `eth_getLogs`.
+   * first stage that yields a quotable pool, and opens the v4 scan only when that
+   * quote's own size impact is at least 5%. A healthy getter pair issues no eth_getLogs.
    */
   directStages(input: Address, output: Address): readonly DiscoveryStage[] {
     const stages: DiscoveryStage[] = [

@@ -14,6 +14,8 @@ describe("token risk assessment", () => {
     expect(riskAckRequired(high)).toBe(true);
     const thin = assessSwapRisk({ ...base, priceImpactBps: 1500 });
     expect(thin.map(w => w.code)).toEqual(["THIN_LIQUIDITY"]);
+    const wrecked = assessSwapRisk({ ...base, priceImpactBps: 5000 });
+    expect(wrecked.map(w => w.code)).toEqual(["EXTREME_PRICE_IMPACT"]);
     const unsellable = assessSwapRisk({ ...base, priceImpactBps: null, sellSideQuoted: false });
     expect(unsellable.map(w => w.code)).toEqual(["SELL_SIDE_UNQUOTED"]);
   });

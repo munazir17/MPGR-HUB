@@ -126,6 +126,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     return () => clearTimeout(timer);
   }, [proposal, reviewOpen, prepare]);
   const fresh = !!proposal && swapQuoteFresh(proposal, now);
+  const extremeImpact = fresh && proposal != null && proposal.priceImpactBps != null && proposal.priceImpactBps >= 5000;
   const parsedPay = balances.pay.state === "ready" ? parseHumanTokenAmount(input.amount, balances.pay.decimals) : null;
   const insufficient = balances.pay.state === "ready" && parsedPay !== null && parsedPay > balances.pay.value;
   const invalid = manualSwapInputError(input, tokens);
@@ -239,9 +240,9 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     </div>}
     {proposal && !fresh && <p role="status" className="px-1 text-xs text-amber-300">Quote needs updating.</p>}
     {insufficient && <p role="alert" className="px-1 text-xs text-amber-300">Insufficient {pay.symbol} balance. Lower the pay amount.</p>}
-    <button type="submit" disabled={busy || executionBusy || (riskAckNeeded && !riskAcked) || (isConnected && chainId === 8453 && (!!invalid || insufficient))}
+    <button type="submit" disabled={busy || executionBusy || extremeImpact || (riskAckNeeded && !riskAcked) || (isConnected && chainId === 8453 && (!!invalid || insufficient))}
       className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-300 px-4 text-base font-semibold text-[#071710] shadow-[0_6px_30px_-12px_rgba(110,231,183,0.4)] hover:bg-emerald-200 disabled:bg-white/[0.07] disabled:text-zinc-500 disabled:shadow-none">
-      {busy && <Loader2 size={18} className="animate-spin" />}{!isConnected ? "Connect wallet" : chainId !== 8453 ? "Switch to Base" : busy ? "Refreshing quote…" : insufficient ? "Insufficient balance" : invalid ? "Enter a pay amount" : sessionExpired ? "Sign in and retry quote" : fresh ? "Confirm Swap" : proposal ? "Refresh quote" : "Get quote"}
+      {busy && <Loader2 size={18} className="animate-spin" />}{!isConnected ? "Connect wallet" : chainId !== 8453 ? "Switch to Base" : busy ? "Refreshing quote…" : extremeImpact ? "Price impact too high — lower the amount" : insufficient ? "Insufficient balance" : invalid ? "Enter a pay amount" : sessionExpired ? "Sign in and retry quote" : fresh ? "Confirm Swap" : proposal ? "Refresh quote" : "Get quote"}
     </button>
     {!reviewOpen && (proposal || error) && <SwapDetails proposal={fresh ? proposal : null} issue={error} payToken={pay} />}
     {select && <TokenSelector tokens={tokens} opposite={select === "fromToken" ? receive : pay} selectingPay={select === "fromToken"} onImport={token => setImports(old => [...old.filter(t => t.address.toLowerCase() !== token.address.toLowerCase()), token])} selected={input[select]} authorize={authorize} onClose={() => setSelect(null)} onSelect={token => {

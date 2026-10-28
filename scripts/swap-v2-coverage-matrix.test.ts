@@ -104,17 +104,24 @@ function buildClient() {
 type Client = ReturnType<typeof buildClient>;
 
 async function reachable(): Promise<{ ok: true; client: Client } | { ok: false; reason: string }> {
-  try {
-    const client = buildClient();
-    const chainId = await Promise.race([
-      client.getChainId(),
-      new Promise<never>((_res, rej) => setTimeout(() => rej(new Error("timeout")), 20_000)),
-    ]);
-    if (chainId !== 8453) return { ok: false, reason: `RPC reported chain ${chainId}, not Base 8453` };
-    return { ok: true, client };
-  } catch (error) {
-    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  let reason = "timeout";
+  // Six shards hit the public Base RPC at once. One 20s miss is a blip, not
+  // "the chain is down" — retry before the aggregate is left with zero shards.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 2_000 * attempt));
+    try {
+      const client = buildClient();
+      const chainId = await Promise.race([
+        client.getChainId(),
+        new Promise<never>((_res, rej) => setTimeout(() => rej(new Error("timeout")), 20_000)),
+      ]);
+      if (chainId !== 8453) return { ok: false, reason: `RPC reported chain ${chainId}, not Base 8453` };
+      return { ok: true, client };
+    } catch (error) {
+      reason = error instanceof Error ? error.message : String(error);
+    }
   }
+  return { ok: false, reason };
 }
 
 /** Reads the on-chain facts that separate "unsupported token" from "no liquidity". */

@@ -331,6 +331,9 @@ export function attributeRouteFailure(t: RouteAttemptTrace): V2QuoteError {
  * to a factory-indexed bridge that pays materially more. Bridges use getter
  * stages only, so this does not start a log sweep. */
 const BRIDGE_IMPROVEMENT_BPS = 500n;
+/** A getter quote that loses this much versus a 0.1% probe is not the market.
+ * Only then do we pay for a Uniswap v4 scan. Healthy pairs stay on getters. */
+const SUSPECT_IMPACT_BPS = 500;
 
 async function factoryIndexedPools(source: LiquiditySource, a: Address, b: Address): Promise<readonly Pool[]> {
   const stage = source.directStages?.(a, b)?.find((item) => item.name === "factory-index");
@@ -383,6 +386,55 @@ async function bestIndexedBridge(source: LiquiditySource, tokenIn: Address, toke
   }));
   if (!found.length) return null;
   return found.reduce((best, hop) => hop.amountOut > best.amountOut ? hop : best);
+}
+
+async function namedStagePools(source: LiquiditySource, name: string, a: Address, b: Address): Promise<readonly Pool[]> {
+  const stage = source.directStages?.(a, b)?.find((item) => item.name === name);
+  if (!stage) return [];
+  try { return await stage.pools(); } catch (error) {
+    if (error instanceof V2QuoteError && error.code !== "DISCOVERY_UNAVAILABLE") throw error;
+    return [];
+  }
+}
+
+/** The deep book for many imported Base tokens is a Uniswap v4 pool (RNBW/USDC
+ * is ~$145k there; the Aerodrome WETH pool that factory getters find first is ~$50).
+ * v4 has no factory getter, so a fast quote must not stop on the thin pool when
+ * that pool's own size impact is already >= 5%. */
+async function bestV4WhenThin(source: LiquiditySource, tokenIn: Address, tokenOut: Address, net: bigint, legs: readonly Leg[]): Promise<Leg | null> {
+  if (!source.directStages) return null;
+  const current = legs.reduce((sum, leg) => sum + leg.amountOut, 0n);
+  let best: Leg | null = null;
+  const consider = (leg: Leg | null) => {
+    if (!leg) return;
+    const better = current === 0n || leg.amountOut * 10_000n > current * (10_000n + BRIDGE_IMPROVEMENT_BPS);
+    if (better && (!best || leg.amountOut > best.amountOut)) best = leg;
+  };
+  const connects = (pool: Pool, a: Address, b: Address) => validPool(pool) && eq(other(pool, a) ?? "", b);
+  const direct = (await namedStagePools(source, "v4-canonical-logs", tokenIn, tokenOut))
+    .filter((pool) => connects(pool, tokenIn, tokenOut))
+    .slice(0, 4);
+  for (const quoted of await Promise.all(direct.map((pool) =>
+    quoteLeg(source, [pool], [tokenIn, tokenOut], net).catch(() => null)))) consider(quoted);
+
+  const bridges = [BASE_WETH, BASE_USDC].filter((bridge) => !eq(bridge, tokenIn) && !eq(bridge, tokenOut));
+  await Promise.all(bridges.map(async (bridge) => {
+    const [left, right] = await Promise.all([
+      namedStagePools(source, "v4-canonical-logs", tokenIn, bridge),
+      namedStagePools(source, "factory-index", bridge, tokenOut),
+    ]);
+    const hopIns = left.filter((pool) => connects(pool, tokenIn, bridge)).slice(0, 3);
+    const hopOuts = right.filter((pool) => connects(pool, bridge, tokenOut)).slice(0, 3);
+    const combos: Array<[Pool, Pool]> = [];
+    for (const hopIn of hopIns) for (const hopOut of hopOuts) {
+      if (combos.length >= 4) break;
+      combos.push([hopIn, hopOut]);
+    }
+    const quoted = await Promise.all(combos.map(([hopIn, hopOut]) =>
+      quoteLeg(source, [hopIn, hopOut], [tokenIn, bridge, tokenOut], net).catch(() => null)));
+    for (const hop of quoted) consider(hop);
+  }));
+  return best;
 }
 
 /** Size impact versus a 0.1% probe on the same path. Null when it cannot be measured. */
@@ -472,12 +524,10 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
   let stageFailure: unknown = null;
   const stages = source.directStages?.(tokenIn, tokenOut);
   if (stages && stages.length > 0) {
-    // ORDERED, AND THE FIRST STAGE THAT QUOTES WINS. Getter-backed venues are a handful
-    // of eth_calls; the v4 Initialize search and the whole-history canonical sweep are
-    // hundreds of eth_getLogs on a range-capped provider. A pair that a factory getter
-    // can answer must never pay for either, which is the difference between a quote a
-    // user can wait for and one they cannot. The cost is route QUALITY, not route truth:
-    // a better-priced v4 pool is not compared against a getter pool that already quoted.
+    // ORDERED. Getter-backed venues are a handful of eth_calls; the v4 Initialize
+    // search is eth_getLogs. A pair a factory can price does not scan v4 up front.
+    // If that getter quote later shows >= 5% size impact, bestV4WhenThin compares
+    // the v4 book — that is how a thin RNBW/WETH pool loses to the liquid v4 USDC pool.
     for (const stage of stages) {
       let pools: readonly Pool[];
       let complete = false;
@@ -635,8 +685,22 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     if (!trace.multihop.note) trace.multihop.note = error.message;
   }
   if (!legs.length) throw attributeRouteFailure(trace);
+  let priceImpactBps = legs.length === 1 ? await pathPriceImpactBps(source, legs[0], net) : null;
+  if (priceImpactBps != null && priceImpactBps >= SUSPECT_IMPACT_BPS) {
+    try {
+      const rescued = await bestV4WhenThin(source, tokenIn, tokenOut, net, legs);
+      if (rescued) {
+        legs = [rescued];
+        trace.multihop.attempted = true;
+        trace.multihop.candidates = Math.max(trace.multihop.candidates, 1);
+        priceImpactBps = await pathPriceImpactBps(source, rescued, net);
+      }
+    } catch (error) {
+      if (!(error instanceof V2QuoteError)) throw error;
+      if (!trace.multihop.note) trace.multihop.note = error.message;
+    }
+  }
   const amountOut = legs.reduce((s, l) => s + l.amountOut, 0n);
-  const priceImpactBps = legs.length === 1 ? await pathPriceImpactBps(source, legs[0], net) : null;
   const result: V2Quote = { tokenIn, tokenOut, gross, feeBps: 25, feeRecipient: V2_FEE_RECIPIENT, fee, net, amountOut, legs, priceImpactBps };
   validateV2Quote(result); return result;
 }
