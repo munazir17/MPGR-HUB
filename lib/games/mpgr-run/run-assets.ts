@@ -19,9 +19,10 @@
 //
 // - The vast majority are proper RGBA cutouts with alpha=0 at the edges —
 //   used directly, no processing needed.
-// - Three legacy assets had a solid background: side run-2, chest and
-//   checkpoint. Lossless offline cutouts now preserve the old edge-fill
-//   result without synchronous browser pixel work. Originals are retained.
+// - Three legacy assets had a solid background. Lossless offline cutouts
+//   now preserve the old edge-fill result without synchronous browser
+//   pixel work. The uncut originals stay only where the prebake script
+//   still reads them.
 // - Two assets — the character "fly" pose and the "powerup-collection"
 //   effect — are baked onto a full non-uniform night-sky scene (not a
 //   flat color), so a safe automatic cutout isn't possible without
@@ -88,9 +89,9 @@ export const CHARACTER_SPRITES = {
   slide: asset(`${BASE}/character/mpgr-runner-slide.webp`),
   land: asset(`${BASE}/character/mpgr-runner-land.webp`),
   victory: asset(`${BASE}/character/mpgr-runner-victory.webp`),
-  // NOTE: mpgr-runner-fly.webp exists on disk but is baked onto a full sky
-  // scene with no alpha channel — see the audit note above. Not exported
-  // here on purpose; jetpack visually reuses `jump` instead.
+  // Jetpack reuses the transparent jump pose. The old fly pose and the
+  // powerup-collection plate were full scenes with no usable alpha, so
+  // they are not sprites and are not shipped.
 } as const;
 
 /**
@@ -151,36 +152,13 @@ export const POWERUP_SPRITES: Record<PowerupType, string> = {
 
 export const CHECKPOINT_SPRITE = asset(`${BASE}/checkpoints/mpgr-run-checkpoint-cutout.webp`);
 
-// --- HUD-only art (2026-09-20, asset/performance pass) ------------------
-// heart and powerupFrame are *never* drawn on the canvas. run-render.ts
-// (the only canvas consumer) imports CHARACTER/OBSTACLE/COLLECTIBLE/
-// POWERUP/EFFECT/CHECKPOINT/CITY art and nothing from UI_SPRITES; the two
-// entries below are rendered exclusively as DOM <img> elements in the
-// in-run HUD, at 16 CSS px (heart, one per HP pip) and 24 CSS px
-// (powerupFrame, inside the active-powerup chip).
-//
-// They used to point at the full 1536x1024 originals, which meant the
-// critical preload lane downloaded 995 KiB + 1.79 MiB (and the DOM had to
-// decode a 6 MB RGBA bitmap per asset) to paint two 16/24 px icons. They
-// now point at dedicated small variants that are aspect- and
-// alpha-preserving downscales of the exact same artwork:
-//   ui/mpgr-run-heart-icon.webp         96x64   (7.4 KiB)  from mpgr-run-heart.webp
-//   ui/mpgr-run-powerup-frame-icon.webp 144x96  (27.2 KiB) from mpgr-run-powerup-frame.webp
-// Both are lossless WebP and comfortably above the largest device-pixel
-// size they are drawn at (16/24 CSS px x DPR 3 = 48x32 / 72x48).
-//
-// The originals stay on disk, untouched, and are still the art to start
-// from if a future change needs a bigger HUD sprite. New filenames were
-// used deliberately: the versioned URL is a fresh cache key, so no
-// RUN_ASSET_VERSION bump (which would force every player to re-download
-// all 55 sprites) is needed, and no cached full-size copy can be served.
-// If an entry below is ever repointed, keep the rule: a DOM-only sprite
-// must be sized for its largest rendered size x 3, with aspect ratio and
-// alpha channel preserved (see lib/games/asset-loading-policy.test.ts,
-// which fails if these two grow back into multi-megabyte canvas art).
+// --- HUD-only art -------------------------------------------------------
+// heart and powerupFrame are never drawn on the canvas. They are DOM
+// <img> elements in the in-run HUD, at 16 CSS px and 24 CSS px.
+// The live files are the small variants (96x64 and 144x96). The full-size
+// plates they were downscaled from are not shipped.
 export const UI_SPRITES = {
   heart: asset(`${BASE}/ui/mpgr-run-heart-icon.webp`),
-  hudFrame: asset(`${BASE}/ui/mpgr-run-hud-frame.webp`),
   powerupFrame: asset(`${BASE}/ui/mpgr-run-powerup-frame-icon.webp`),
 } as const;
 
@@ -316,10 +294,13 @@ export const ALL_SPRITE_PATHS: string[] = [
 ];
 
 /**
- * First-paint / in-run hero art. Loaded immediately with bounded
- * concurrency — never gated on requestIdleCallback. Gameplay does NOT
- * wait for these; the canvas uses the existing procedural fallback until
- * each one is load+decode ready.
+ * First-paint hero art. Loaded immediately with bounded concurrency.
+ * Gameplay does not wait; the canvas uses the procedural fallback until
+ * each sprite has loaded and decoded.
+ *
+ * Legacy city street panoramas stay in ALL_SPRITE_PATHS (optional lane).
+ * run-render.ts still draws them only when the layered city skyline is
+ * not decode-ready. They are not first-paint downloads.
  */
 export const CRITICAL_SPRITE_PATHS: string[] = [
   CHARACTER_SPRITES.idle,
@@ -332,11 +313,8 @@ export const CRITICAL_SPRITE_PATHS: string[] = [
   // the rear jump/fall/slide poses ride the optional lane right behind it
   // (the renderer holds a ready rear run frame until they decode).
   ...REAR_RUN_CYCLE,
-  CITY_ENVIRONMENT.background,
-  CITY_ENVIRONMENT.midground,
-  CITY_ENVIRONMENT.foreground,
-  // World 1 is the city, so its environment set is first-paint hero art;
-  // ice/desert ride the optional lane (they appear minutes into a run).
+  // World 1 is the city, so its layered skyline is first-paint hero art.
+  // Ice and desert, and the legacy city panoramas, ride the optional lane.
   ENVIRONMENT_SETS.city.skyline,
   ENVIRONMENT_SETS.city.facade,
   ENVIRONMENT_SETS.city.prop,

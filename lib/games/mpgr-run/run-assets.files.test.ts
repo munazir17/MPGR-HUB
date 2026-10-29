@@ -180,15 +180,14 @@ describe("DOM-only HUD art stays small", () => {
     expect(Math.max(width, height)).toBeLessThanOrEqual(256);
   });
 
-  it("keeps the full-size originals on disk (nothing was deleted)", () => {
-    const originals: Array<[string, number, number]> = [
-      ["/games/mpgr-run/ui/mpgr-run-heart.webp", 1536, 1024],
-      ["/games/mpgr-run/ui/mpgr-run-powerup-frame.webp", 1536, 1024],
-      ["/games/mpgr-run/ui/mpgr-run-hud-frame.webp", 1672, 941],
-    ];
-    for (const [src, width, height] of originals) {
-      expect(fs.existsSync(publicFile(src)), src).toBe(true);
-      expect(imageDimensions(src)).toEqual({ width, height });
+  it("does not ship the retired full-size HUD plates", () => {
+    for (const src of [
+      "/games/mpgr-run/ui/mpgr-run-heart.webp",
+      "/games/mpgr-run/ui/mpgr-run-powerup-frame.webp",
+      "/games/mpgr-run/ui/mpgr-run-hud-frame.webp",
+    ]) {
+      expect(fs.existsSync(publicFile(src)), src).toBe(false);
+      expect(ALL_SPRITE_PATHS).not.toContain(src);
     }
   });
 
@@ -221,20 +220,21 @@ describe("DOM-only HUD art stays small", () => {
     expect(imageDimensions("/splash.png")).toEqual({ width: 1024, height: 1536 });
   });
 
-  it("retains the storage-only art that is intentionally not wired up", () => {
-    // Portal / screen / pad art is referenced by no code path, so it costs
-    // nothing at runtime; the audit explicitly forbids deleting assets just
-    // because they are large. This test records that the decision was to keep
-    // them, so a future cleanup cannot drop them silently.
-    const portal = [
+  it("does not ship storage-only portal, screen, or pad art", () => {
+    const retired = [
       "/games/mpgr-run/portal/mpgr-hub-portal-01.webp",
       "/games/mpgr-run/portal/mpgr-hub-portal-02.webp",
       "/games/mpgr-run/portal/mpgr-hub-portal-03.webp",
       "/games/mpgr-run/portal/mpgr-hub-portal-04.webp",
+      "/games/mpgr-run/screen/mpgr-run-game-over.webp",
+      "/games/mpgr-run/pads/mpgr-run-bounce-pad.webp",
+      "/games/mpgr-run/pads/mpgr-run-speed-boost-pad.webp",
     ];
-    for (const src of portal) {
-      expect(fs.existsSync(publicFile(src)), src).toBe(true);
-      expect(imageDimensions(src)).toEqual({ width: 1536, height: 1024 });
+    for (const src of retired) {
+      expect(fs.existsSync(publicFile(src)), src).toBe(false);
+      for (const catalog of [ALL_SPRITE_PATHS, CRITICAL_SPRITE_PATHS, OPTIONAL_SPRITE_PATHS]) {
+        expect(catalog.some((entry) => entry.split("?")[0] === src)).toBe(false);
+      }
     }
   });
 });
