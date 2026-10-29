@@ -16,6 +16,8 @@ Next.js App Router product on Base mainnet (`8453`): wallet session, token/staki
 
 See `docs/SECURITY_REMEDIATION.md` and `docs/FINAL_REMEDIATION_VERIFICATION.md`.
 
+Architecture audit (2026-10-29, docs only, no behavior change): [`docs/architecture/README.md`](docs/architecture/README.md).
+
 ## What is implemented
 
 - Wallet Connect / RainbowKit on Base mainnet
