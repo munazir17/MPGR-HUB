@@ -86,10 +86,10 @@ Accessibility evidence: 44px targets and focus ring in `globals.css`; sidebar is
 | `useXP.ts` | Local check-in then POST `/api/xp` | correct | refactor pending-state (P1) |
 | `useSwapExecution.ts`, `useSwapBalances.ts` | PaigerSwap only | correct | keep |
 | `useTrade*.ts`, `useTransfer*.ts`, `useX402*.ts` | Agent confirm/send | correct | keep |
-| `useStaking.ts`, `useTokenLock.ts` | 15s chain polls | correct for their pages | do not mount from navbar (P0) |
+| `useStaking.ts`, `useTokenLock.ts` | 15s chain polls when `poll` is not false | correct for their pages | navbar must keep passing `poll: false` |
 | `useRewardHub.ts`, `useRewardClaim.ts` | 15s | rewards pages | keep |
-| `useAgentChat.ts` | Orchestrator | home | drop nested staking/lock (P0) |
-| `useHolderTier.ts`, `holder-tier-engine.ts`, `premium-engine.ts` | Copies of `lib/` | **dead, zero importers** | deprecate/delete (P1) |
+| `useAgentChat.ts` | Orchestrator | home | still mounts its own staking/lock pollers plus `useHolderTier()` / `usePremium()`. Not deduped here: that is the agent surface |
+| `useHolderTier.ts`, `holder-tier-engine.ts`, `premium-engine.ts` | Copies of `lib/` | **deleted on this branch** | do not restore |
 
 `lib/useHolderTier.ts` is the live one (Navbar, profile, holder overview, agent chat).
 

@@ -1,5 +1,14 @@
 # Target architecture
 
+Status: this is still the target, not a move plan. Do not rename `lib/` to `modules/` in one PR.
+
+Already in the tree, and not a reason to build the rest of this page now:
+
+- `lib/chain/live-read-policy.ts` (`shouldPollLiveReads`). Default remains **poll**.
+- Navbar calls `useHolderTier({ poll: false })`. Staking and token-lock pages still call the hooks with no flag.
+- PR #145 asset budget is merged. `lib/games/shell/`, `lib/content/nav.ts`, and `DialogShell` are still **not** created.
+
+
 Modular monolith. One Vercel deploy. One Redis. One chain config. New features are folders and adapters, not new services.
 
 Microservices are out of scope until a measured bottleneck is isolated to one domain and the deploy/ops cost is justified. That condition is not met.
@@ -36,7 +45,7 @@ Feature folders, unchanged in spirit:
 1. `app/**/page.tsx` may import a feature root and the layout. It does not import `run-render`, `run-assets`, or `mcp-trade-service`.
 2. `features/swap` does not import `features/agent` or `components/ui` reward cards. Shared types come from `lib/trade/trade-types.ts`.
 3. `features/games/mpgr-run` is only imported by `app/games/mpgr-run/page.tsx` (or a dynamic wrapper in that file).
-4. Hooks that hit the chain on an interval are imported by the page that needs them, not by `Navbar`.
+4. Hooks that hit the chain on an interval are imported by the page that needs them, not by `Navbar`. The navbar may mount `useHolderTier({ poll: false })`. That loads the connected wallet once, skips pool-wide `getGlobalState`, and does not start the 15s timers. It is not permission to mount `useStaking()` from the header.
 5. No new `localStorage` writer for a value that Redis already stores, except as a cache written from a server response.
 
 ### Server vs client
@@ -123,3 +132,11 @@ The shell does not import `run-render.ts`.
 - AI budget already daily-capped.
 - Swap/quote rate limits stay per wallet and per IP.
 - Failures of DexScreener, an AI vendor, or the game verifier do not 500 the swap page. They already mostly don’t (separate routes). Keep it that way: no shared god layout data fetch.
+
+## Already present vs still proposed
+
+Present: the folders above that already exist under `lib/`, `components/`, and `app/`, plus `lib/chain/live-read-policy.ts` and `hooks/navbar-live-read.test.ts`.
+
+Proposed, not created: `lib/content/nav.ts`, `components/ui/DialogShell.tsx`, `lib/rewards/xp-actions.ts` (only if split from `xp-engine`), `lib/games/shell/`, a quote kernel. Do not add them until the roadmap item that needs them is the whole PR.
+
+Create a shared module only when a second caller is being migrated in that same PR.

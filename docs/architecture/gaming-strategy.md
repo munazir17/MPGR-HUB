@@ -2,9 +2,11 @@
 
 ## The 100 MB claim
 
-**Verified:** the repo ships ~100 MiB of `public/` and ~89 MiB of MPGR Run art.
+**Verified at `3fb5eb82`:** the repo shipped ~100 MiB of `public/` and ~89 MiB of MPGR Run art.
 
-**Not verified:** that every player transfers 100 MB on each open. The loader does not request the unused menu, portal, and pad art. A connected play session still requests **13.3 MiB before optional art**, then up to **43.3 MiB** of sprites, plus **2.5 MiB** of WAV if music mounts. First load on a phone is heavy. It is not “the whole public folder.”
+**Verified after merged PR #145:** `public/` is 65,275,951 bytes (62.25 MiB) and `public/games` is 54,482,009 bytes (51.96 MiB). Critical preload is 7,822,192 bytes (21 paths). The full sprite catalog is still 45,357,918 bytes. Unreferenced `screen/`, `portal/`, and `pads/` art is gone. Legacy city panoramas stay as optional fallbacks.
+
+**Not verified:** that every player transfers those bytes on each open. A connected play session requests the critical lane first, then optional sprites, plus **2.5 MiB** of WAV if music mounts. First load on a phone is still heavy. It is not “the whole public folder.” Production transfer size was not measured.
 
 Repeat visits are helped by immutable caching. A version bump redownloads everything that changed URL.
 
@@ -29,13 +31,13 @@ Reasons:
 
 ## B — what to change when approved
 
-P0, no reward-formula change.
+P0 items 1 and 2 landed in PR #145 (delete unreferenced art; panoramas are optional; byte-budget test). The test locks the measured bytes. It does not use the aspirational 2 MiB / 12 MiB / 20 MiB ceilings below. Items 4 and 5 are still open.
 
-1. Relocate or delete bytes that no loader requests: `screen/` (16.8 MiB), `portal/` (8.9 MiB), `pads/` (2.6 MiB), unused full-size HUD frames, `fly` / non-cutout originals, legacy skyline posters. Update `run-assets.files.test.ts`, which currently fails if portal art or side cutouts disappear.
-2. Move `CITY_ENVIRONMENT` background/mid/foreground (~5.8 MiB) from `CRITICAL_SPRITE_PATHS` to optional. The renderer already prefers the small facade/skyline/prop set and falls back if those are not decoded.
-3. Add a unit test: `CRITICAL` ≤ 2 MiB, `ALL_SPRITE_PATHS` ≤ 12 MiB, `public/games` ≤ 20 MiB after the deletion. Start looser if step 2 alone cannot hit 2 MiB, then tighten. Do not recompress visible pixels blindly.
-4. Transcode `neon-circuit.wav` (2.52 MiB) to a short AAC/Opus loop or leave music opt-in. Separate PR. Do not block the image deletion on audio.
-5. `next/dynamic` for `RunGame` so the disconnected game page does not parse the simulator. Small. Do it in the same PR only if the asset test is already green.
+1. Relocate or delete bytes that no loader requests: `screen/` (16.8 MiB), `portal/` (8.9 MiB), `pads/` (2.6 MiB), unused full-size HUD frames, `fly` / non-cutout originals, legacy skyline posters. Update `run-assets.files.test.ts`, which currently fails if portal art or side cutouts disappear. **Done in #145**, except side cutouts that the prebake script still reads were kept.
+2. Move `CITY_ENVIRONMENT` background/mid/foreground (~5.8 MiB) from `CRITICAL_SPRITE_PATHS` to optional. The renderer already prefers the small facade/skyline/prop set and falls back if those are not decoded. **Done in #145.** Files remain on disk.
+3. Add a unit test: `CRITICAL` ≤ 2 MiB, `ALL_SPRITE_PATHS` ≤ 12 MiB, `public/games` ≤ 20 MiB after the deletion. Start looser if step 2 alone cannot hit 2 MiB, then tighten. Do not recompress visible pixels blindly. **Partial:** a regression lock exists at the measured 7.46 MiB critical / 43.26 MiB catalog / 51.96 MiB `public/games`. The tighter ceilings are not met and were not forced.
+4. Transcode `neon-circuit.wav` (2.52 MiB) to a short AAC/Opus loop or leave music opt-in. Separate PR. Do not block the image deletion on audio. **Not done.**
+5. `next/dynamic` for `RunGame` so the disconnected game page does not parse the simulator. Small. Do it in the same PR only if the asset test is already green. **Not done.**
 
 Acceptance: cold play, connected, transfers the new critical budget; a completed run still calls session → checkpoint → reward; existing reward tests pass; `/` network log contains zero `/games/mpgr-run/` sprite URLs.
 

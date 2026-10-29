@@ -5,6 +5,7 @@ import { useAccount, useChainId, useSwitchChain } from "wagmi";
 import { base } from "wagmi/chains";
 import { formatUnits, parseEventLogs } from "viem";
 import type { Hash } from "viem";
+import { shouldPollLiveReads, type LiveReadOptions } from "@/lib/chain/live-read-policy";
 import { stakingClient } from "@/lib/staking/staking-client";
 import { stakingService } from "@/lib/staking/staking-service";
 import { STAKING_ABI } from "@/lib/staking/staking-abi";
@@ -29,7 +30,8 @@ interface StakeEvent {
   id: number;
 }
 
-export function useStaking() {
+export function useStaking(options?: LiveReadOptions) {
+  const poll = shouldPollLiveReads(options);
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { switchChainAsync, isPending: isSwitchingChain } = useSwitchChain();
@@ -93,11 +95,13 @@ export function useStaking() {
   }, [address, loadGlobalState, loadWalletState, refreshWalletBalance]);
 
   useEffect(() => {
+    // Pool-wide stats are for the staking screen. Snapshot readers skip them.
+    if (!poll) return;
     setHasLoaded(false);
     loadGlobalState().finally(() => {
       if (!address) setHasLoaded(true);
     });
-  }, [loadGlobalState, address]);
+  }, [loadGlobalState, address, poll]);
 
   useEffect(() => {
     if (!isConnected || !address) {
@@ -108,22 +112,23 @@ export function useStaking() {
   }, [address, isConnected, loadWalletState]);
 
   useEffect(() => {
-    if (!isConnected || !address) return;
+    if (!poll || !isConnected || !address) return;
     const id = setInterval(() => {
       loadGlobalState();
       loadWalletState(address);
     }, MPGR_STAKING_CONFIG.liveReadPollingIntervalMs);
     return () => clearInterval(id);
-  }, [address, isConnected, loadGlobalState, loadWalletState]);
+  }, [address, isConnected, loadGlobalState, loadWalletState, poll]);
 
   useEffect(() => {
     const unsubscribe = agentEventBus.on("staking_changed", (payload) => {
       if (payload.address !== address) return;
-      loadGlobalState();
+      // Snapshot readers refresh the wallet position only. Pool-wide stats stay on polling screens.
+      if (poll) loadGlobalState();
       loadWalletState(payload.address as `0x${string}`);
     });
     return unsubscribe;
-  }, [address, loadGlobalState, loadWalletState]);
+  }, [address, loadGlobalState, loadWalletState, poll]);
 
   const pushActivity = useCallback((entry: StakingLiveActivityEntry) => {
     setLiveActivity((prev) => [entry, ...prev].slice(0, 20));
@@ -269,12 +274,12 @@ export function useStaking() {
   const [nowSeconds, setNowSeconds] = useState<bigint>(() => BigInt(Math.floor(Date.now() / 1000)));
 
   useEffect(() => {
-    if (!isConnected || !address || !globalState || !walletState) return;
+    if (!poll || !isConnected || !address || !globalState || !walletState) return;
     const id = setInterval(() => {
       setNowSeconds(BigInt(Math.floor(Date.now() / 1000)));
     }, 1000);
     return () => clearInterval(id);
-  }, [isConnected, address, globalState, walletState]);
+  }, [poll, isConnected, address, globalState, walletState]);
 
   const liveEarnedRewardsRaw = useMemo(() => {
     if (!globalState || !walletState) return 0n;
@@ -315,7 +320,7 @@ export function useStaking() {
     isSwitchingChain,
     switchToBase: ensureBaseNetwork,
 
-    loading: isConnected ? !hasLoaded : !globalState,
+    loading: poll ? (isConnected ? !hasLoaded : !globalState) : isConnected && !hasLoaded,
     isRefreshing,
     readError,
 

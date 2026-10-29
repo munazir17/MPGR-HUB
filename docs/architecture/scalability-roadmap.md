@@ -2,13 +2,15 @@
 
 “100x” means roughly 100× active wallets, API calls, game sessions, and stored XP events versus today’s unmeasured baseline. We do not have production QPS. Treat every benefit below as conditional on the verification column. Do not rewrite the app to get there.
 
+I1 landed in merged PR #145. I2 and I3 land on this branch (navbar snapshot reads, dead `hooks/` copies deleted). They are not still “the next PR.”
+
 ## Immediate (this initiative, after audit approval)
 
 | ID | Change | Priority | Impact | Complexity | Depends on | Acceptance | Metric | Trigger to stop |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| I1 | Remove unreferenced game art; demote legacy panoramas; byte-budget test | P0 | Smaller git, deploy, and first play | S | Asset test update | Critical bytes ≤ target in the test; reward tests green | `public/games` MiB; critical MiB | If a sprite 404s in the play proof |
-| I2 | Navbar does not poll staking/lock | P0 | RPC per page view drops | S | None | Navbar render test; staking page still polls | eth_call count on `/` | If the tier badge becomes wrong and product rejects the fallback |
-| I3 | Delete unused `hooks/*` engine copies | P1 | Less drift | S | I2 if both touch holder tier; else independent | `tsc` clean | dead-file count = 0 | — |
+| I1 | Remove unreferenced game art; demote legacy panoramas; byte-budget test | P0 | Smaller git, deploy, and first play | S | Asset test update | **Landed in #145.** Critical 7,822,192 bytes; `public/games` 54,482,009. Panoramas remain optional. | `public/games` MiB; critical MiB | If a sprite 404s in the play proof |
+| I2 | Navbar does not poll staking/lock | P0 | RPC per page view drops | S | None | **This branch.** Navbar passes `poll: false`. Staking page still polls. | eth_call count on `/` was not re-measured in production | If the tier badge becomes wrong and product rejects the one-shot read |
+| I3 | Delete unused `hooks/*` engine copies | P1 | Less drift | S | I2 if both touch holder tier; else independent | **This branch.** The three copies are gone. `tsc` is still required. | dead-file count = 0 for those three paths | — |
 | I4 | Single nav config | P1 | New links added once | S | None | Sidebar render test | one exported array | — |
 | I5 | Game-over / check-in shows pending until server award | P1 | Stops false XP | S | None | Test: failed POST does not leave a permanent local total above server | support tickets about “missing XP” | — |
 

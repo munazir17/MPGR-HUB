@@ -1,6 +1,6 @@
 # Current state
 
-Audit date: 2026-10-29. Branch audited: `main`.
+Audit date: 2026-10-29. Branch audited for the narrative below: `main` @ `3fb5eb82`, then corrected where merged PR #145 and this navbar branch changed the tree. Production was not probed.
 
 Evidence labels: **V** verified working, **I** implemented not runtime-verified here, **P** partial, **L** planned only, **B** broken, **U** unknown.
 
@@ -10,14 +10,15 @@ Evidence labels: **V** verified working, **I** implemented not runtime-verified 
 | --- | --- | --- |
 | URL | https://github.com/munazir17/MPGR-HUB | V |
 | Default branch | `main` | V |
-| HEAD | `3fb5eb82f1e7293ec99926b0511d6196d145a03e` | V |
-| HEAD subject | Merge pull request #143 from `fix/paigerswap-v2-agent-routing` | V |
-| Working tree at audit start | Clean (shallow clone of that commit) | V |
+| HEAD at the original audit | `3fb5eb82f1e7293ec99926b0511d6196d145a03e` (merge of #143) | V |
+| HEAD subject at that audit | Merge pull request #143 from `fix/paigerswap-v2-agent-routing` | V |
+| `main` when this branch was integrated | `99a0fb3602b0150517ecc03550753fcbee692f13` (merge of #145, after #144) | V |
+| Working tree at audit start | Clean (shallow clone of `3fb5eb82`) | V |
 | License | MIT for `/contracts` and `/test`; All Rights Reserved elsewhere (`LICENSE`) | V |
 
-Recent merged PRs on `main` (closed, `merged_at` set): #143 agent↔PaigerSwap v2, #142 v4 scan rate-limit quotes, #141 fair quotes / brand, #140 Discord link, #139 smart-wallet confirmation, #138 builder code, #137 USD quotes and RPC rotation, #136 multi RPC/AI, #135 CSRF/SSRF/campaign points, #134 hub traded volume.
+Recent merged PRs on `main` before this branch: #145 MPGR Run asset budget, #144 architecture docs, #143 agent↔PaigerSwap v2, #142 v4 scan rate-limit quotes, #141 fair quotes / brand, #140 Discord link, #139 smart-wallet confirmation, #138 builder code, #137 USD quotes and RPC rotation, #136 multi RPC/AI, #135 CSRF/SSRF/campaign points, #134 hub traded volume.
 
-Open PRs at audit time are Dependabot only (#48–#52). They are **not** part of this initiative. Do not pile architecture work onto them.
+Open PRs at the original audit were Dependabot only (#48–#52). They are **not** part of this initiative. This branch is #146. Do not pile architecture work onto the Dependabot PRs.
 
 ## CI and deploy
 
@@ -131,11 +132,11 @@ Swap v2 activation is a sealed manifest in code (`lib/swap/v2/deployment.ts`), n
 
 ## Known doc drift (do not “fix” by editing behavior)
 
-- README Next version and game-art size.
+- README game-art size in older remediation docs. The root README now points at the #145 budget instead of treating 76.37 MiB as the current tree.
 - `docs/ARCHITECTURE.md` infrastructure layer.
 - `run-assets.ts` header still says only the city set is wired; code wires city, ice, and desert.
 - Sidebar comment still describes an older primary nav.
-- `docs/FINAL_REMEDIATION_VERIFICATION.md` repeats the 76.37 MiB figure.
+- `docs/FINAL_REMEDIATION_VERIFICATION.md` repeats the 76.37 MiB figure. That file is a historical verification record. It was not rewritten.
 
 ## What this audit did not do
 

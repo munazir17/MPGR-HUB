@@ -69,7 +69,7 @@ Already required by CI on pull_request: `npm run lint`, `typecheck`, `vitest`, `
 Add for the specific PR:
 
 - Asset: byte ceilings.
-- Navbar: a test that the navbar module graph does not import `useStaking` (import assertion or source test, same style as `asset-loading-policy.test.ts`).
+- Navbar: `hooks/navbar-live-read.test.ts` asserts `Navbar.tsx` calls `useHolderTier({ poll: false })` and does not itself name `useStaking` or `useTokenLock`. The tier hook still mounts those readers once. A full module-graph ban was not implemented, because the badge needs the one-shot stake and lock read.
 - Streak (only if approved): two concurrent awards, missed day, same day, month boundary, XP unchanged on all of them.
 - Fee (only if approved): vector file checked in, expected wei from **current** code.
 

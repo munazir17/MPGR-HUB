@@ -2,7 +2,21 @@
 
 Measured on the git tree at `3fb5eb82` unless a row says otherwise. Compressed transfer depends on CDN gzip/br and is **U** except where the file is already WebP or WAV (those bytes are what the browser downloads).
 
-## Game and static payload (measured)
+## After merged PR #145 and this branch
+
+These numbers replace the baseline tables below for the current tree. The tables stay so the delta is auditable.
+
+| Slice | Files | Bytes | MiB |
+| --- | ---: | ---: | ---: |
+| `public/` | 180 | 65,275,951 | 62.25 |
+| `public/games` and `public/games/mpgr-run` | 88 | 54,482,009 | 51.96 |
+| `ALL_SPRITE_PATHS` | 61 | 45,357,918 | 43.26 |
+| `CRITICAL_SPRITE_PATHS` | 21 | 7,822,192 | 7.46 |
+| Optional sprites | 40 | 37,535,726 | 35.80 |
+
+Legacy city panoramas are optional, not critical. `screen/`, `portal/`, `pads/`, and the unused full-size plates named in the baseline are gone. The navbar no longer runs the 15s staking/token-lock poll described in the RPC table. Staking, token-lock, and the home agent still do.
+
+## Game and static payload (measured at `3fb5eb82`)
 
 | Slice | Files | Bytes | MiB |
 | --- | --- | --- | --- |
@@ -61,9 +75,9 @@ Suggested budget (target, not a claim about today):
 | Initial JS for a docs or marketing route | ≤ 250 KB gzip, wallet stack not included |
 | Initial JS for the signed-in shell | Measure first. Do not set a fake number. |
 | Main app must not request `/games/mpgr-run/*` sprites | Already true for dashboard routes. Keep it true with a test. |
-| Critical game lane | ≤ 1.5 MiB compressed after the panorama demotion (today 13.30 MiB) |
-| Full preload list | ≤ 8 MiB (today 43.26 MiB) |
-| `public/games` on disk | ≤ 15 MiB once unused menus/portals are removed (today 89.02 MiB) |
+| Critical game lane | ≤ 1.5 MiB compressed was the aspiration. Baseline was 13.30 MiB. After #145 the file bytes are 7.46 MiB, still above 1.5 MiB. Do not claim the aspiration is met. |
+| Full preload list | ≤ 8 MiB was the aspiration. Catalog is still 43.26 MiB after #145. |
+| `public/games` on disk | ≤ 15 MiB was the aspiration. After #145 it is 51.96 MiB. Menus/portals/pads are already gone. |
 
 ## API and RPC (structural, not timed)
 
@@ -71,7 +85,7 @@ No latency histogram was collected (**U**). Known amplifiers:
 
 | Pattern | Where | Failure mode at 100x |
 | --- | --- | --- |
-| Navbar holder tier → `useStaking` + `useTokenLock` + 3× `useMPGRBalance`, 15s | `lib/useHolderTier.ts`, `Navbar.tsx` | Every open tab polls chain. Home doubles it via `useAgentChat.ts`. |
+| Navbar holder tier → `useStaking` + `useTokenLock` + `useMPGRBalance`, 15s | Was `Navbar.tsx` via `useHolderTier()` | **Changed on this branch.** Navbar passes `{ poll: false }`. Logged-out pages skip `getGlobalState`. Home still doubles staking/lock reads via `useAgentChat.ts`. |
 | Same 15s polls | rewards hub, reward claim, swap balances (swap page only) | Predictable RPC bill linear in open tabs |
 | 30s | premium, season pass, holder tier | same |
 | Tape | `useTape.ts` → `/api/market/tape` | Server fan-out to DexScreener / Chainlink. Cache TTL env `TAPE_CACHE_TTL_SECONDS` default 10s. |

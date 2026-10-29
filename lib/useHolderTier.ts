@@ -1,4 +1,4 @@
-// hooks/useHolderTier.ts
+// Live holder tier. Pass `{ poll: false }` for a one-shot badge read.
 
 "use client";
 
@@ -19,20 +19,22 @@ import {
   type HolderTierStatus,
   type HolderTierState,
 } from "@/lib/holder-tier-engine";
+import { shouldPollLiveReads, type LiveReadOptions } from "@/lib/chain/live-read-policy";
 import { useMPGRBalance } from "@/hooks/useMPGRBalance";
 import { useStaking } from "@/hooks/useStaking";
 import { useTokenLock } from "@/hooks/useTokenLock";
 import type { Achievement } from "@/lib/xp-engine";
 
-export function useHolderTier() {
+export function useHolderTier(options?: LiveReadOptions) {
+  const poll = shouldPollLiveReads(options);
   const { address, isConnected } = useAccount();
   const { raw: walletRaw, isLoading: walletLoading, error: walletError } = useMPGRBalance();
   const {
     stakedBalanceRaw,
     decimals: stakingDecimals,
     loading: stakingLoading,
-  } = useStaking();
-  const { totalLocked, loading: lockLoading } = useTokenLock();
+  } = useStaking({ poll });
+  const { totalLocked, loading: lockLoading } = useTokenLock({ poll });
   const [status, setStatus] = useState<HolderTierStatus | null>(null);
   const [state, setState] = useState<HolderTierState | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -69,10 +71,10 @@ export function useHolderTier() {
   }, [address, isConnected, refresh, liveReady]);
 
   useEffect(() => {
-    if (!isConnected || !address) return;
+    if (!poll || !isConnected || !address) return;
     const id = setInterval(refresh, 30_000);
     return () => clearInterval(id);
-  }, [address, isConnected, refresh]);
+  }, [address, isConnected, poll, refresh]);
 
   const achievements: Achievement[] = status && state ? getHolderAchievements(status, state) : [];
   const futurePerks = status ? getHolderFuturePerks(status) : null;

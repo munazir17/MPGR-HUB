@@ -18,8 +18,8 @@ Nothing below is a license to merge PaigerSwap into the agent UI, or to rewrite 
 | Rate limit | Redis Lua in `request-guard.ts` | `lib/trade/trade-rate-limit.ts` | One primitive, **different bucket names**. Do not merge swap and AI into one counter. |
 | Dialog shell | none | 10 hand-rolled overlays; `SwapDialog` is native `<dialog>` | New shell for hub modals. Swap dialog stays. |
 | Nav links | none | `PRIMARY_LINKS`, `SIDEBAR_GROUPS` | One `lib/content/nav.ts` |
-| Holder tier math | `lib/holder-tier-engine.ts` + `lib/useHolderTier.ts` | `hooks/useHolderTier.ts`, `hooks/holder-tier-engine.ts` (unimported) | Delete hook copies. |
-| Premium math | `lib/premium-engine.ts` | `hooks/premium-engine.ts` (unimported) | Delete hook copy. |
+| Holder tier math | `lib/holder-tier-engine.ts` + `lib/useHolderTier.ts` | `hooks/useHolderTier.ts`, `hooks/holder-tier-engine.ts` (unimported) | **Deleted on this branch.** |
+| Premium math | `lib/premium-engine.ts` | `hooks/premium-engine.ts` (unimported) | **Deleted on this branch.** |
 | Logger | `lib/observability/log.ts` | `lib/architecture/core/logger.ts` | P2, low value |
 | Token metadata | `lib/token/*` for MPGR the asset | `lib/trade` / swap catalogs for other Base tokens | Do not merge. Different jobs. |
 | Game score | `computeRunScore` + `authoritative-replay.ts` | Client `RunGameSimulation` must stay in lockstep (parity tests exist) | Keep parity tests. New games get a new verifier, not a fork of this one. |
@@ -41,11 +41,11 @@ Create a module only when the second caller is being migrated in the same PR.
 
 Each step is its own PR, rebased on `main`, with the tests named in the file-wise audit.
 
-1. **Docs** (this PR). No runtime change.
-2. **Asset budget.** Only `public/games`, `run-assets.ts`, the files test, and a byte ceiling test.
-3. **Navbar poll cut.** `Navbar` / `useHolderTier` stop calling `useStaking` and `useTokenLock`. Tier badge may use a cached balance or render on `/profile` only. Measure `eth_call` count before and after.
-4. **Delete dead `hooks/` copies.** Typecheck is the test.
-5. **Nav config.** Update `AppSidebar.render.test.ts` expectations in the same PR.
+1. **Docs** (PR #144). Merged. This branch only corrects status that #145 and the navbar change made stale.
+2. **Asset budget.** Merged in PR #145. `run-asset-budget.test.ts` locks the new ceilings.
+3. **Navbar poll cut.** This branch. Navbar calls `useHolderTier({ poll: false })`, which still mounts staking and token-lock once for a connected wallet. It does not interval, and it does not call `getGlobalState` while logged out or on `staking_changed` unless the caller is polling. An `eth_call` count was not measured in production.
+4. **Delete dead `hooks/` copies.** This branch. The three files are gone.
+5. **Nav config.** Still open. Update `AppSidebar.render.test.ts` expectations in the same PR.
 6. **Pending XP label.** `useXP` / game overlay must not present local +8 as final if the POST failed. No amount changes.
 7. **Dialog shell + move staking/reward files out of `components/ui`.** Visual regression on staking and rewards only.
 8. **Server streak fields.** Explicit product approval. Lua + concurrency test. XP `INCRBY` path unchanged.
