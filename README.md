@@ -16,6 +16,8 @@ Next.js App Router product on Base mainnet (`8453`): wallet session, token/staki
 
 See `docs/SECURITY_REMEDIATION.md` and `docs/FINAL_REMEDIATION_VERIFICATION.md`.
 
+Architecture audit (2026-10-29, `main` @ `3fb5eb82`): [`docs/architecture/README.md`](docs/architecture/README.md).
+
 ## What is implemented
 
 - Wallet Connect / RainbowKit on Base mainnet
@@ -28,7 +30,7 @@ See `docs/SECURITY_REMEDIATION.md` and `docs/FINAL_REMEDIATION_VERIFICATION.md`.
 
 ## Technology stack (actual)
 
-- Next.js 16.3.5 App Router, React 18, TypeScript strict, Tailwind CSS
+- Next.js 16.4.2 App Router, React 18, TypeScript strict, Tailwind CSS
 - Wagmi + RainbowKit + Viem
 - Base mainnet only
 - Upstash Redis / Vercel KV for sessions, XP, referrals, game allocation

@@ -8,6 +8,7 @@ import type { Address, Hash } from "viem";
 import { tokenLockClient, clearCachedWalletLock, setCachedWalletLock } from "@/lib/token-lock/token-lock-client";
 import { TOKEN_LOCK_ABI } from "@/lib/token-lock/token-lock-abi";
 import { MPGR_TOKEN_LOCK_CONFIG } from "@/lib/token-lock/token-lock-config";
+import { shouldPollLiveReads, type LiveReadOptions } from "@/lib/chain/live-read-policy";
 import { useMPGRBalance } from "@/hooks/useMPGRBalance";
 import {
   idleActionState,
@@ -93,7 +94,8 @@ function toView(position: TokenLockPosition, now: number): TokenLockPositionView
   };
 }
 
-export function useTokenLock() {
+export function useTokenLock(options?: LiveReadOptions) {
+  const poll = shouldPollLiveReads(options);
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { switchChainAsync } = useSwitchChain();
@@ -157,10 +159,10 @@ export function useTokenLock() {
   }, [address, isConnected, loadPositions]);
 
   useEffect(() => {
-    if (!isConnected || !address) return;
+    if (!poll || !isConnected || !address) return;
     const id = setInterval(() => loadPositions(address), MPGR_TOKEN_LOCK_CONFIG.liveReadPollingIntervalMs);
     return () => clearInterval(id);
-  }, [address, isConnected, loadPositions]);
+  }, [address, isConnected, loadPositions, poll]);
 
   const pushActivity = useCallback((entry: TokenLockLiveActivityEntry) => {
     setLiveActivity((prev) => [entry, ...prev].slice(0, 20));

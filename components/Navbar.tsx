@@ -31,7 +31,7 @@ const PRIMARY_LINKS = [
 
 export function Navbar() {
   const { isConnected } = useAccount();
-  const { status: holderTierStatus } = useHolderTier();
+  const { status: holderTierStatus } = useHolderTier({ poll: false });
   const [menuOpen, setMenuOpen] = useState(false);
   const pathname = usePathname();
 
