@@ -31,6 +31,10 @@ describe("navbar holder badge does not keep chain polls alive", () => {
     const tier = source("lib/useHolderTier.ts");
     expect(staking).toContain("shouldPollLiveReads(options)");
     expect(staking).toContain("if (!poll || !isConnected || !address) return;");
+    expect(staking).toContain("if (poll) loadGlobalState();");
+    expect(staking).toContain(
+      "loading: poll ? (isConnected ? !hasLoaded : !globalState) : isConnected && !hasLoaded"
+    );
     expect(staking).toContain("MPGR_STAKING_CONFIG.liveReadPollingIntervalMs");
     expect(lock).toContain("if (!poll || !isConnected || !address) return;");
     expect(lock).toContain("MPGR_TOKEN_LOCK_CONFIG.liveReadPollingIntervalMs");

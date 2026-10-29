@@ -2,9 +2,9 @@
 
 Decision: **keep the game (option A for the rules, option B for the loading).** Do not delete it. A later hub of small games (option D) can sit beside it. Option C (retire and replace) is not supported by usage data, because **usage data is unavailable**.
 
-This audit did not remove assets. [PR #145](https://github.com/munazir17/MPGR-HUB/pull/145) is the open asset-budget change. It is not merged and not in production.
+[PR #145](https://github.com/munazir17/MPGR-HUB/pull/145) is **merged**. It deleted unreferenced art and demoted the legacy panoramas. It is not a production-traffic measurement. The table below is the pre-#145 measurement. Current budgets are in [README.md](./README.md) and `run-asset-budget.test.ts`.
 
-## What was measured
+## What was measured at `3fb5eb82`
 
 File bytes, not HTTP transfer. Compression and decode time were **not** measured. No mobile device trace was taken.
 
@@ -19,7 +19,7 @@ File bytes, not HTTP transfer. Compression and decode time were **not** measured
 
 `RUN_ASSET_VERSION` is `2026-09-18a`. `next.config.mjs` marks `/games/mpgr-run/:path*` immutable for a year. A same-URL byte change without a version bump will stick in caches.
 
-`screen/` (~17.6 MB), `portal/` (~9.3 MB), and `pads/` (~2.8 MB) are on disk. They are not in `ALL_SPRITE_PATHS`. A visitor who never opens the game does not download them. They still cost the repo and any full-tree deploy.
+`screen/`, `portal/`, and `pads/` were on disk at the baseline and are **removed** by #145. They were not in `ALL_SPRITE_PATHS`. A visitor who never opens the game still does not download game sprites. The repo is lighter because those files are gone.
 
 ## Who downloads the game
 

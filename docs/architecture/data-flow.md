@@ -33,7 +33,7 @@ flowchart TD
   agent --> stakeLive2[Separate staking and lock instances]
 ```
 
-Before this branch, `tier` used the default poll, so every Navbar mount also started the 15s timers and, even logged out, one `getGlobalState`.
+Before this branch, `tier` used the default poll, so every Navbar mount also started the 15s timers and, even logged out, one `getGlobalState`. Snapshot mode still loads a connected wallet once. On `staking_changed` it reloads that wallet and does not call `getGlobalState` unless `poll` is true. PR #145's asset changes are not on this diagram.
 
 ## XP
 

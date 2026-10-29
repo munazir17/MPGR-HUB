@@ -1,6 +1,6 @@
 # Source inventory
 
-Baseline: `main` @ `3fb5eb82f1e7293ec99926b0511d6196d145a03e`, plus the navbar snapshot-read change on this branch (new `lib/chain/live-read-policy.ts`, deleted unimported `hooks/useHolderTier.ts`, `hooks/holder-tier-engine.ts`, `hooks/premium-engine.ts`).
+Baseline: `main` @ `3fb5eb82f1e7293ec99926b0511d6196d145a03e`, plus the navbar snapshot-read change on this branch (new `lib/chain/live-read-policy.ts`, deleted unimported `hooks/useHolderTier.ts`, `hooks/holder-tier-engine.ts`, `hooks/premium-engine.ts`). It does **not** recount files added by merged PR #145. The missing row is `lib/games/mpgr-run/run-asset-budget.test.ts`. Line counts below are the pre-#145 snapshot. Do not treat this list as a live `find`.
 
 This list is every tracked source-like file under the audit tree (TypeScript, JavaScript, Solidity, workflow YAML). `public/` binaries, docs markdown, and lockfiles are excluded here and measured separately.
 

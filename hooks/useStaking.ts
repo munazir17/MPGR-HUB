@@ -123,11 +123,12 @@ export function useStaking(options?: LiveReadOptions) {
   useEffect(() => {
     const unsubscribe = agentEventBus.on("staking_changed", (payload) => {
       if (payload.address !== address) return;
-      loadGlobalState();
+      // Snapshot readers refresh the wallet position only. Pool-wide stats stay on polling screens.
+      if (poll) loadGlobalState();
       loadWalletState(payload.address as `0x${string}`);
     });
     return unsubscribe;
-  }, [address, loadGlobalState, loadWalletState]);
+  }, [address, loadGlobalState, loadWalletState, poll]);
 
   const pushActivity = useCallback((entry: StakingLiveActivityEntry) => {
     setLiveActivity((prev) => [entry, ...prev].slice(0, 20));
@@ -319,7 +320,7 @@ export function useStaking(options?: LiveReadOptions) {
     isSwitchingChain,
     switchToBase: ensureBaseNetwork,
 
-    loading: isConnected ? !hasLoaded : !globalState,
+    loading: poll ? (isConnected ? !hasLoaded : !globalState) : isConnected && !hasLoaded,
     isRefreshing,
     readError,
 

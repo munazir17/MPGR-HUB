@@ -3,11 +3,11 @@
 ## Facts not verified outside the repo
 
 - Production values of `GAME_REWARDS_ENABLED`, `GAME_AUTHORITATIVE_VERIFICATION_ENABLED`, RPC URLs, and cron success.
-- That `mpgrhub.xyz` is serving `3fb5eb82`. Metadata points at that domain. The Vercel production deployment API was not queried.
+- That `mpgrhub.xyz` is serving any particular SHA. Metadata points at that domain. The Vercel production deployment API was not queried. Merging to `main` is the production path, and this branch has not been merged.
 - Player retention, session length, and what fraction of visits open MPGR Run.
 - Gzip/Brotli transfer size and image decode time. Numbers in the Run doc are uncompressed file bytes.
 - Upstash command rate, hot-key pressure, and memory.
-- Whether PR #145's `mergeable_state: blocked` is branch protection, a required review, or a failing check that the check-run API did not list. The listed checks were green or skipped. No review was returned.
+- PR #145's earlier `mergeable_state: blocked` is historical. The PR was merged. Its listed checks were green or skipped (e2e, reference). That was a preview, not proof of production.
 
 ## Files whose production role is weak or unused
 

@@ -43,12 +43,17 @@ describe("MPGR Run sprite catalogs", () => {
       CHARACTER_SPRITES.jump,
       CHARACTER_SPRITES.fall,
       CHARACTER_SPRITES.slide,
-      CITY_ENVIRONMENT.background,
-      CITY_ENVIRONMENT.midground,
-      CITY_ENVIRONMENT.foreground,
     ];
     for (const src of required) {
       expect(CRITICAL_SPRITE_PATHS).toContain(src);
+    }
+  });
+
+  it("loads legacy city panoramas on the optional lane, not the critical lane", () => {
+    for (const src of [CITY_ENVIRONMENT.background, CITY_ENVIRONMENT.midground, CITY_ENVIRONMENT.foreground]) {
+      expect(CRITICAL_SPRITE_PATHS).not.toContain(src);
+      expect(ALL_SPRITE_PATHS).toContain(src);
+      expect(OPTIONAL_SPRITE_PATHS).toContain(src);
     }
   });
 

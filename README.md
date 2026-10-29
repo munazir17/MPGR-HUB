@@ -16,7 +16,7 @@ Next.js App Router product on Base mainnet (`8453`): wallet session, token/staki
 
 See `docs/SECURITY_REMEDIATION.md` and `docs/FINAL_REMEDIATION_VERIFICATION.md`.
 
-Architecture audit (2026-10-29, `main` @ `3fb5eb82`): [`docs/architecture/README.md`](docs/architecture/README.md).
+Architecture (audit baseline 2026-10-29, updated after merged #144 and #145): [`docs/architecture/README.md`](docs/architecture/README.md). The navbar holder badge is a one-shot chain read.
 
 ## What is implemented
 
@@ -96,7 +96,7 @@ These are **not** done and must not be marked fixed:
 2. Full anti-cheat certification for MPGR Run — in-process deterministic authoritative replay is implemented (`lib/games/mpgr-run/authoritative-replay.ts`: server-issued seed + input trace replayed tick-for-tick, score recomputed, drift-tolerant timing checks), plus server sessions, heartbeats, timing/rate/idempotency gates; external verifier URL remains an additional operator gate, and no independent anti-cheat audit has been performed
 3. Referral sybil identity
 4. Vault-level settlement idempotency or a durable outbox
-5. Further game-art optimization — lossless PNG → WebP migration is done (55 files under `public/games/mpgr-run/`, 108.69 MiB → 76.37 MiB, −29.7%, total `public/` 82M), dimensions unchanged, pixel-exact verified; remaining work is responsive sizes / lazy-load / preloading, not format conversion
+5. Further game-art optimization — the 2026-09 lossless PNG → WebP pass (55 files, 108.69 MiB → 76.37 MiB) is history, not the current tree. Merged PR #145 removed unreferenced MPGR Run art and moved the legacy city panoramas off the critical preload (`lib/games/mpgr-run/run-asset-budget.test.ts`: critical 7,822,192 bytes, `public/games` 54,482,009 bytes). Remaining work is responsive sizes, a dynamic game import, and optional music — not another format conversion
 6. Split of `RunGame.tsx` (physics helpers were extracted; the component is still large)
 
 ## Licensing

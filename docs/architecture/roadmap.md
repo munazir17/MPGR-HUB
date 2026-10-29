@@ -26,15 +26,15 @@ Items already done on this branch are marked **landed**. Everything else is a re
 | Test | `navbar-live-read.test.ts` asserts the three paths are absent. |
 | Rollback | Restore the files from git. They had no callers. |
 
-### P0.3 MPGR Run critical bytes — open as PR #145, not this branch
+### P0.3 MPGR Run critical bytes — landed in merged PR #145
 
 | | |
 | --- | --- |
 | Benefit | Cuts the play-route critical preload. See [mpgr-run-decision.md](./mpgr-run-decision.md). |
-| Files | `public/games/mpgr-run/**`, `lib/games/mpgr-run/run-assets.ts`, asset tests. Not fee, XP, or Redis. |
-| Risk | One frame of procedural background if the layered skyline is slow. PR #145 says CI was green; this audit did not re-run that branch. |
-| Acceptance | Critical bytes lower; gameplay and reward route tests unchanged; not merged together with this branch. |
-| Rollback | Revert #145. |
+| Files | `public/games/mpgr-run/**`, `lib/games/mpgr-run/run-assets.ts`, `run-asset-budget.test.ts`. Not fee, XP, or Redis. |
+| Result | Critical 7,822,192 bytes (21 paths). `public/games` 54,482,009 bytes. Panoramas remain optional. |
+| Risk | One frame of procedural background if the layered skyline is slow. Production play was not re-tested for this note. |
+| Rollback | Revert the #145 merge. Do not delete more assets in this branch. |
 
 ## P1 — high-value, still small
 
@@ -91,4 +91,4 @@ Leaves primitives in `ui/` and feature widgets in `features/staking`. Import upd
 
 ## Next PR after this one
 
-Smallest safe scope that is not already in this diff: review PR #145 on its own, or, if that review is blocked, P1.2 (`next/dynamic` for `RunGame` only). Do not start P2.4 or the fee dedupe.
+Smallest safe scope that is not already on `main` or in this diff: P1.1 (one nav config) or P1.2 (`next/dynamic` for `RunGame` only). Do not start P2.4 or the fee dedupe. Do not treat a preview deployment as production.

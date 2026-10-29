@@ -1,94 +1,97 @@
-# Architecture audit — MPGR HUB
+# Architecture initiative — audit index
 
-Status: audit of `main`, plus one behavior-preserving read-path change on this branch. No fee math, reward amounts, contracts, Redis key layout, or MPGR Run assets change here.
+Status: the documentation audit from [PR #144](https://github.com/munazir17/MPGR-HUB/pull/144) is **merged**. The MPGR Run asset budget from [PR #145](https://github.com/munazir17/MPGR-HUB/pull/145) is **merged** on `main` @ `99a0fb3602b0150517ecc03550753fcbee692f13`. This branch adds the navbar snapshot read and deletes three unimported hook copies. It does not change fee math, reward amounts, contracts, Redis key layout, XP ledger semantics, or MPGR Run gameplay.
 
-| | |
-| --- | --- |
-| Repository | [munazir17/MPGR-HUB](https://github.com/munazir17/MPGR-HUB) |
-| Production domain | `mpgrhub.xyz` (named in app metadata; this audit did not probe live traffic) |
-| Branch audited | `main` |
-| Commit | `3fb5eb82f1e7293ec99926b0511d6196d145a03e` |
-| Commit message | Merge pull request #143 — connect MPGR Agent to PaigerSwap V2 |
-| Audit date | 2026-10-29 |
+Original audit baseline: `main` @ `3fb5eb82f1e7293ec99926b0511d6196d145a03e` (merge of [PR #143](https://github.com/munazir17/MPGR-HUB/pull/143)). Byte tables that name that commit are historical measurements, not the tree after #145.
 
-Evidence labels: **confirmed** (read in this tree or observed in GitHub check output), **estimate** (reasoned from code, not measured in production), **unknown** (no access).
+These notes sit beside the existing canon. They do not replace it:
 
-These notes do not replace [docs/ARCHITECTURE.md](../ARCHITECTURE.md), [docs/SECURITY.md](../SECURITY.md), or [AGENTS.md](../../AGENTS.md). `docs/ARCHITECTURE.md` is a product narrative. It still describes in-memory helpers and aspirational games. The route map below is the one that matches the tree.
+- [docs/ARCHITECTURE.md](../ARCHITECTURE.md) — older product narrative (parts are aspirational; see current-state).
+- [docs/SECURITY.md](../SECURITY.md), [docs/FUTURE_PROOFING.md](../FUTURE_PROOFING.md), [docs/ROADMAP.md](../ROADMAP.md).
+- [AGENTS.md](../../AGENTS.md) — agent safety rules still apply to any later implementation.
+
+Production behavior of `mpgrhub.xyz` was **not** verified. A green preview or a local build is not a production deploy.
 
 ## Read in this order
 
-| Doc | Question |
+| Doc | Question it answers |
 | --- | --- |
-| This file | What is true, what is unknown, what this branch changes. |
-| [source-inventory.md](./source-inventory.md) | Every source file, with a path heuristic. |
-| [feature-matrix.md](./feature-matrix.md) | Which feature owns which files. |
-| [duplication-register.md](./duplication-register.md) | Repeated rules and the owner to keep. |
-| [data-flow.md](./data-flow.md) | Request, XP, and chain flows. |
-| [target-architecture.md](./target-architecture.md) | Modular boundaries. Not a rewrite. |
-| [mpgr-run-decision.md](./mpgr-run-decision.md) | Keep, isolate, or retire the runner. |
-| [game-platform.md](./game-platform.md) | Future light games and the points rule. |
-| [quality-audit.md](./quality-audit.md) | Performance, security, tests, 10× / 100×. |
-| [roadmap.md](./roadmap.md) | Prioritized work, approvals, rollback. |
-| [uncertain.md](./uncertain.md) | Files and facts this pass could not close. |
+| [current-state.md](./current-state.md) | What is actually running, and how sure we are. |
+| [file-wise-audit.md](./file-wise-audit.md) | Who owns which module, who calls it, what to leave alone. |
+| [performance-baseline.md](./performance-baseline.md) | Measured bytes at the audit baseline, and the post-#145 budget. |
+| [gaming-strategy.md](./gaming-strategy.md) | The ~100 MB claim, keep/isolate/replace, points and streaks. |
+| [centralization-map.md](./centralization-map.md) | Duplicates, the canonical owner, and the migration order. |
+| [target-architecture.md](./target-architecture.md) | Modular monolith boundaries. Not microservices. |
+| [scalability-roadmap.md](./scalability-roadmap.md) | 100x plan with triggers, not a rewrite. |
+| [compatibility-and-risk-register.md](./compatibility-and-risk-register.md) | What must not break, and how to roll back. |
 
-## Confirmed facts
+Supplements from the navbar pass. They must not contradict the table above:
 
-- Stack from [package.json](../../package.json): Next.js **16.4.2** (exact), React 18.3, TypeScript, Tailwind 3.4, wagmi 2.19, viem 2.21, RainbowKit 2.2, `@upstash/redis` 1.35, `@tanstack/react-query` 5.59 (provider only), Framer Motion 11, Vitest 4.1. Node `20` in `.nvmrc`; engines `>=20.11.0`. README previously said Next 16.3.5; this branch corrects that line.
-- Persistence is Upstash Redis / Vercel KV via `lib/api/redis.ts`. No Postgres client, no Prisma, no Drizzle, no BullMQ, no worker process. Vercel crons in `vercel.json` hit two MPGR Run settlement routes.
-- Chain in the wagmi config is Base mainnet `8453` only.
-- Wallet writes stay in the user wallet or an explicitly gated operator broadcaster. This audit did not change signing, quotes, or fees.
-- CI on pull requests (`/.github/workflows/ci.yml`) runs `quality` (lint, typecheck, vitest, `audit:high`), `build`, `contracts`, `contracts-fork`, `secret-scan`, `slither`, `real-redis`.
-- There is no `next/dynamic` anywhere in the TypeScript sources. `RunGame` is imported only by `app/games/mpgr-run/page.tsx`.
-- Lifetime server XP only increases. `lib/rewards/xp-ledger.ts` awards with `INCRBY` / `ZINCRBY`. A missed day does not subtract. Streak is `localStorage` in `lib/xp-engine.ts`. There is no `bestStreak` field.
-- `public/` file bytes: **104,134,908** (99.31 MiB), 208 files. `public/games/mpgr-run`: **93,340,966** (89.02 MiB), 116 files. That is repository weight, not the download of `/` or `/swap`.
-- Sprite catalog at `RUN_ASSET_VERSION` `2026-09-18a`, summed from disk in this audit: critical **24 files / 13,941,098 bytes**, all sprites **61 / 45,357,918**, optional **37 / 31,416,820**. Music `neon-circuit.wav` is **2,646,044** bytes and is not in the sprite list.
-
-## PR #145 (not on this commit)
-
-[PR #145](https://github.com/munazir17/MPGR-HUB/pull/145) (`perf/mpgr-run-asset-budget` @ `5692383471c65fd33f4db3855a67d9d21c95f43f`) is **open, not merged**. `mergeable_state` was `blocked`. Reviews returned none.
-
-Checks observed on that head SHA, 2026-10-29:
-
-| Check | Result |
+| Doc | What it adds |
 | --- | --- |
-| quality, build, contracts, contracts-fork, secret-scan, slither, real-redis | success |
-| e2e, reference | skipped |
-| Vercel status | success, "Deployment has completed" (preview URL, not production) |
-| Vercel Preview Comments | success |
+| [data-flow.md](./data-flow.md) | Request, XP, and the navbar read path. |
+| [feature-matrix.md](./feature-matrix.md) | Feature ownership after the snapshot change. |
+| [duplication-register.md](./duplication-register.md) | Same rules as the centralization map, with this branch's status. |
+| [source-inventory.md](./source-inventory.md) | Path list from the pre-#145 tree plus the navbar files. Not a live recount. |
+| [mpgr-run-decision.md](./mpgr-run-decision.md) | Keep the runner. Asset deletion itself landed in #145. |
+| [quality-audit.md](./quality-audit.md) | Poll and test notes for this branch. |
+| [roadmap.md](./roadmap.md) | Landed vs still-open items. Prefer [scalability-roadmap.md](./scalability-roadmap.md) when they disagree. |
+| [uncertain.md](./uncertain.md) | Facts this pass could not close. |
+| [game-platform.md](./game-platform.md) | Future light games. Not a second gaming strategy. |
 
-`main` is still `3fb5eb82`. Do not treat the PR body or the preview as a production deploy. This branch does not include #145's asset deletions. [PR #144](https://github.com/munazir17/MPGR-HUB/pull/144) is an earlier docs-only audit on the same base and is also unmerged. This folder is an independent pass.
+## What has landed
 
-## Unknowns
+| Change | Where | Status |
+| --- | --- | --- |
+| Architecture documentation | This folder, PR #144 | Merged. Updated here so it no longer calls #145 open or the navbar poll current. |
+| Asset budget | PR #145 | Merged. Critical sprites **7,822,192** bytes (21 paths). All catalog sprites still **45,357,918** (61). `public/games` **54,482,009** (88 files, 51.96 MiB). `public/` **65,275,951** (180 files, 62.25 MiB). Legacy city panoramas stay on disk and in `OPTIONAL_SPRITE_PATHS`. Locked by `lib/games/mpgr-run/run-asset-budget.test.ts`. |
+| Navbar snapshot reads | `useHolderTier({ poll: false })` | This branch. One connected-wallet read of stake and locks. No 15s timer. Logged-out pages do not call staking `getGlobalState`. `staking_changed` still reloads the wallet position and does not load pool-wide state unless the caller is polling. |
+| Dead hook copies | `hooks/useHolderTier.ts`, `hooks/holder-tier-engine.ts`, `hooks/premium-engine.ts` | Deleted on this branch. Live code is `lib/`. |
 
-- Production env values (`GAME_REWARDS_ENABLED`, RPC URLs, Redis size, error rates).
-- Visitor counts, game retention, and RPC volume. No analytics warehouse was queried. `@vercel/analytics` is mounted; this audit did not read its dashboard.
-- Whether `mpgrhub.xyz` is currently serving `3fb5eb82`. Not verified against the Vercel production deployment API.
-- Bundle analyzer output and a mobile network waterfall. Byte figures below are file sizes and catalog membership, not Chrome transfer sizes (gzip/br will be smaller; decode cost is separate).
-- Full dead-code graph. Only the three deleted hook copies were proven unused and removed.
+Staking, token-lock, profile, leaderboard premium, and the home agent still use the default poll. Home still mounts a second staking and token-lock reader inside `useAgentChat` (and another through `useHolderTier()` and `usePremium()`). Those instances are not the navbar. Sharing them would mean changing the agent surface; in-flight dedupe inside the staking service remains the existing guard. Not changed here.
 
-## Ten findings
+## Executive summary
 
-1. **The ~100 MB figure is the `public/` tree, not a page download.** Almost all of it is MPGR Run art. Dashboard routes do not import `RunGame`.
-2. **The play route still preloads 13.94 MB of critical sprites before optional art**, including legacy city panoramas and side-view poses the steady-state renderer does not need. PR #145 proposes to cut that. It is not merged.
-3. **Navbar mounted a full staking and token-lock poll on every hub page** (15s, plus a staking `getGlobalState` even when logged out, plus a 1s local reward clock once both states existed). This branch stops that for the badge only. Staking, token-lock, profile, leaderboard, and the home agent keep their own readers.
-4. **Hooks do not share state.** Home's agent calls `useStaking` and `useTokenLock` itself and again through `useHolderTier` and `usePremium`. Cache TTLs (12s staking, 15s locks) collapse aligned bursts, but the timers still exist. Not changed here: that code is the agent surface.
-5. **Two XP worlds.** The server ledger is authoritative. `awardXP` / `performDailyCheckIn` still write `localStorage` first. A later `GET /api/xp` replaces the displayed total. Streak stays local and resets to 1 on the next check-in after a missed day. It does not deduct XP or tokens.
-6. **Fee math is copied.** Canonical helper is `computeExecutorFee` in `lib/executor/executor-fee.ts`. Agent, swap path, and several call sites reimplement `floor(gross * bps / 10_000)`. Do not unify without a dedicated review.
-7. **`components/ui` is not a design system.** Primitives exist (`GlassCard`, `EmptyState`, `Skeleton`, `StatCard`). No shared dialog, button, input, or toast. PaigerSwap uses none of them and should stay separate.
-8. **Navigation is two hand-maintained lists** (`PRIMARY_LINKS`, `SIDEBAR_GROUPS`) with different labels for the same hrefs. Not unified in this PR.
-9. **Three stale hook copies had zero importers** and diverged from `lib/` (the premium copy still read the old local lock engine). They are deleted on this branch. Other unused hooks remain and are listed in the roadmap.
-10. **100× is an RPC, Redis, and asset problem before it is a microservice problem.** One Vercel project, in-process caches, and per-page chain polling will not survive a large traffic jump. Splitting services now would duplicate the fee and XP rules.
+MPGR HUB is a Next.js 16.4.2 App Router app on Vercel, Base mainnet only (`8453`). Persistence is Upstash Redis / Vercel KV plus the chain. There is no Postgres and no worker fleet. Wallet writes stay in the user wallet (or an explicitly gated operator broadcaster).
 
-## What this branch changes
+### Ten findings
 
-| Change | Why |
-| --- | --- |
-| `useHolderTier({ poll: false })` in `components/Navbar.tsx` | The badge needs one read of wallet, stake, and locks. It does not need a 15s pool poll or a 1 Hz clock. |
-| `shouldPollLiveReads` in `lib/chain/live-read-policy.ts` | Default stays **poll**, so `useStaking()` and `useTokenLock()` on their own pages are unchanged. |
-| Delete `hooks/useHolderTier.ts`, `hooks/holder-tier-engine.ts`, `hooks/premium-engine.ts` | Unimported, and the engines were older than `lib/`. |
+1. **The ~100 MB figure was the pre-#145 `public/` tree (99.31 MiB), not a page download.** After #145, `public/` is 62.25 MiB and `public/games/mpgr-run` is 51.96 MiB. The play route still preloads **61 sprites / 43.26 MiB**, of which **21 / 7.46 MiB are critical**. Music is a separate 2.52 MiB WAV. Dashboard routes do not import `RunGame`.
+2. **Dashboard routes do not download the game.** `RunGame` is imported only by `app/games/mpgr-run/page.tsx`. There is no `next/dynamic`. The module still parses before the wallet connects on that route.
+3. **Lifetime XP does not decay.** Server totals only `INCRBY` (`lib/rewards/xp-ledger.ts`). A missed day resets the **local** streak to 1 on the next check-in. It does not subtract XP, season points, or tokens. There is **no best-streak field** and **no server streak**.
+4. **Two XP worlds.** Authoritative grants go through Redis (`/api/xp`, game reward route). `lib/xp-engine.ts` still writes `localStorage` first. A failed server call can show XP the ledger does not have until the next successful `GET /api/xp`.
+5. **Fee math is copied, not shared.** Canonical integer formula is `computeExecutorFee` in `lib/executor/executor-fee.ts`. The same `gross * bps / 10_000` floor is reimplemented in trade, swap path, and swap v2 discovery. Do not “clean this up” without a dedicated review and regression tests.
+6. **Five quote paths**, not one service: swap v1, swap v2, agent/trade, stocks (order execution disabled with 403), and MCP. Taker is taken from the session on the HTTP quote routes.
+7. **Wallet infra still loads on every page. The navbar no longer polls staking or token-lock.** `Providers` wraps the root layout. The badge calls `useHolderTier({ poll: false })`. Staking and token-lock screens, profile, and the home agent keep their own readers. Home can still poll twice because the agent does not share hook state with the badge.
+8. **`components/ui` is not a design system.** Primitives that exist: `GlassCard`, `EmptyState`, `Skeleton`, `StatCard`, `ProgressBar`, plus `.btn-*` in `globals.css`. Staking and reward widgets live in `ui/`. There is no shared dialog, input, or toast. PaigerSwap uses none of `components/ui` and should stay visually separate.
+9. **The three stale `hooks/` engine copies are deleted on this branch.** Live tier and premium math is under `lib/`. Local engines (`staking-engine.ts`, `token-lock-engine.ts`) are not the chain clients. Other unused hooks remain and are listed in [uncertain.md](./uncertain.md). They were not deleted here.
+10. **100x is an RPC, Redis, and asset problem before it is a microservice problem.** One Vercel deploy, in-process caches, and per-page chain polling on the screens that still need it will not survive 100x users. Splitting services now would duplicate the fee and XP rules.
 
-Snapshot mode still loads the connected wallet's stake and lock positions once, and still listens for `staking_changed`. It skips pool-wide `getGlobalState` and the repeat timers. Logged-out hub pages no longer pay for a staking global read from the navbar. The header badge can go stale until the next mount if the user locks tokens on a page whose own hook is a different instance. Staking and token-lock pages still poll for their own numbers.
+### Still open (do one at a time)
 
-## Single best next step
+None of these change fee recipients, calldata, XP amounts, or settlement flags.
 
-Review and merge this branch if the checks pass. Leave [PR #145](https://github.com/munazir17/MPGR-HUB/pull/145) as its own asset review. Do not combine them. Do not start a folder move, a fee-function merge, or a server streak in the same change.
+| # | Task | Priority | Why it is next |
+| --- | --- | --- | --- |
+| 4 | One navigation config for `Navbar` `PRIMARY_LINKS` and `AppSidebar` `SIDEBAR_GROUPS`. | P1 | Tasks 1–3 (assets, navbar poll, dead copies) are done. |
+| 5 | Server streak and best-streak fields that **never** decrement lifetime XP. Local streak remains a cache. | P1 | Needs an explicit product yes. Not started. |
+
+Also still open, and not “next” until approved: pending-XP label, `next/dynamic` for `RunGame`, dialog shell, fee-function dedupe.
+
+### Needs explicit approval before any code
+
+- Unifying fee math or quote routes.
+- Enabling `GAME_REWARDS_ENABLED` or changing weekly settlement.
+- Changing XP amounts, season boundaries, or referral caps.
+- Deleting MPGR Run or its reward API.
+- Moving streak authority to the server — design is in the gaming doc; implementation waits for a yes.
+- Any contract, manifest, or executor address change.
+
+### Evidence labels used in the audit docs
+
+1. Verified working — checked in source and, where noted, in CI or GitHub status for the named SHA.
+2. Implemented, not runtime-verified — code path exists; this audit did not execute it against production.
+3. Partially implemented.
+4. Planned, not implemented — docs or UI only.
+5. Broken or regressed — only if a test or contradiction shows it.
+6. Unknown — missing access (no production Redis, no bundle analyzer run, no mobile device trace).

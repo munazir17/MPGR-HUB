@@ -133,6 +133,9 @@ describe("in-game art is never lazily deferred", () => {
     const critical = assets.slice(assets.indexOf("export const CRITICAL_SPRITE_PATHS"));
     expect(critical).toContain("UI_SPRITES.heart");
     expect(critical).toContain("UI_SPRITES.powerupFrame");
+    expect(critical).not.toContain("CITY_ENVIRONMENT.background");
+    expect(critical).not.toContain("CITY_ENVIRONMENT.midground");
+    expect(critical).not.toContain("CITY_ENVIRONMENT.foreground");
   });
 });
 

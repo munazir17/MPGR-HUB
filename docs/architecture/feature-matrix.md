@@ -1,6 +1,6 @@
 # Feature to file matrix
 
-Baseline `3fb5eb82`, with the navbar poll flag noted where it changes ownership. "Calls" means a confirmed import, not every transitive file.
+Baseline `3fb5eb82`, updated for the navbar poll flag and for merged PR #145's asset files. "Calls" means a confirmed import, not every transitive file. Asset byte ownership is `lib/games/mpgr-run/run-assets.ts` plus `run-asset-budget.test.ts`, not this table.
 
 | Feature | Entry | Owns | Calls | Must stay isolated |
 | --- | --- | --- | --- | --- |

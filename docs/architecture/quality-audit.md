@@ -9,7 +9,7 @@ No production load test was run. Nothing below is a claim that the app supports 
 | Any hub page with Navbar | Wagmi + RainbowKit + React Query hydrate. Navbar holder read is now one-shot when connected, and no staking global read when logged out. | JS gzip of the main chunk |
 | `/` | Above, plus agent chat, which still mounts extra staking and token-lock pollers | — |
 | `/swap` | Swap graph, no Navbar, no Run | — |
-| `/games/mpgr-run` | Static `RunGame` import. Critical sprites 13,941,098 bytes before optional. WAV 2,646,044 on mount | Decode time, br transfer |
+| `/games/mpgr-run` | Static `RunGame` import. Critical sprites **7,822,192** bytes after merged #145 (was 13,941,098). Catalog sprites still 45,357,918. WAV 2,646,044 on mount | Decode time, br transfer |
 | `/games`, `/rewards` | Small banner/card images only | — |
 
 Client/server split is the App Router default. Game and swap UIs are client components because they touch wallet and canvas. API routes are server-only. `lib/api/redis.ts` is not marked `server-only` even though callers that hold secrets generally are. Worth a follow-up, not done here, because a wrong `server-only` add can break a client import that only needed types.
@@ -30,7 +30,7 @@ Client/server split is the App Router default. Game and swap UIs are client comp
 
 CI `quality` runs lint, `tsc --noEmit`, `vitest run`, and `audit:high`. This audit's new tests are `lib/chain/live-read-policy.test.ts` and `hooks/navbar-live-read.test.ts`. Results belong in the PR body after they are run, not here as a guess.
 
-Contracts: Forge, slither, ABI check. Real-Redis job covers autonomy scripts. e2e workflows exist and were **skipped** on PR #145.
+Contracts: Forge, slither, ABI check. Real-Redis job covers autonomy scripts. e2e and reference workflows were **skipped** on PR #145 and on the first push of this branch. Skipped is not a pass.
 
 Rollback of an app PR is revert + Vercel redeploy of `main`. Do not use the mainnet deploy workflows for a UI or docs change.
 
@@ -53,7 +53,7 @@ Rollback of an app PR is revert + Vercel redeploy of `main`. Do not use the main
 | --- | --- | --- |
 | RPC 429s on public Base | Finish snapshot reads (this PR is the navbar slice). Share one poll per tab for staking. | Dedicated RPC provider budget. Still one app. |
 | Redis latency or command cap | Confirm hot keys in the Upstash console. Collapse duplicate clients onto `getRedis()`. | Only then consider a second store. Postgres is not justified by the current access pattern. |
-| Game route LCP | Land #145 or an equivalent critical-byte cut. Dynamic-import `RunGame`. | CDN already immutable; the win is fewer bytes, not another origin. |
+| Game route LCP | #145 cut the critical lane to 7.46 MiB. Dynamic-import `RunGame` is still open. | CDN already immutable; the win is fewer bytes, not another origin. |
 | AI route cost | Existing budget keys | Per-wallet caps stay. No new provider in an architecture PR. |
 | No metrics | Add structured logs and a dashboard read | Do not quote a user capacity |
 
