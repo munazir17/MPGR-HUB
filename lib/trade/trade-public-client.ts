@@ -141,8 +141,18 @@ export function classifyBaseRpcFailure(error: unknown): BaseRpcFailureKind {
   if (code !== null && (DETERMINISTIC_INVALID_RPC_CODES.has(code) || USER_OR_AUTH_REJECT_RPC_CODES.has(code))) {
     return "invalid_request";
   }
-  if (status === 400 || status === 413 || status === 422) {
+  if (status === 413) {
     return "invalid_request";
+  }
+  // A bare HTTP 400/422 is one gateway refusing the call (quoter eth_call,
+  // a filtered method). It is not proof the request is invalid on every
+  // Base URL. Deterministic codes (-32600/-32602) and range caps already
+  // returned above and still stop the chain. An EVM revert stops too:
+  // the next URL would revert the same way, and the quote path must see
+  // the word "revert" instead of a wiped provider outage.
+  if (status === 400 || status === 422) {
+    if (/execution reverted|\brevert(?:ed)?\b/i.test(message)) return "invalid_request";
+    return "server_error";
   }
   if (status === 401 || status === 403) {
     return "forbidden";

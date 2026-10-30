@@ -6,9 +6,8 @@
 export const PUBLIC_BASE_RPC_URLS = [
   "https://mainnet.base.org",
   "https://base-rpc.publicnode.com",
-  "https://base.llamarpc.com",
   "https://base.drpc.org",
-  "https://1rpc.io/base",
+  "https://base.meowrpc.com",
 ] as const;
 
 export function parseEndpointList(raw: string | undefined): string[] {
