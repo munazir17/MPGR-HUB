@@ -114,6 +114,16 @@ describe("quote dispatch while ACTIVATED", () => {
     expect(mocks.v1Quote).toHaveBeenCalledTimes(1);
   });
 
+  it("after a V2 discovery outage, asks V1 and the public desk before giving up", async () => {
+    stubFetch(async (url) => url.includes("/status")
+      ? jsonResponse({ activated: true, chainId: 8453 })
+      : jsonResponse({ code: "DISCOVERY_UNAVAILABLE", error: "Venue quote RPC unavailable" }, 503));
+    mocks.v1Quote.mockRejectedValue(new Error("no direct route"));
+    await expect(requestSwapQuoteWithV2(input, TAKER, undefined, TOKENS)).rejects.toMatchObject({ code: "DISCOVERY_UNAVAILABLE" });
+    expect(mocks.v1Quote).toHaveBeenCalledTimes(1);
+    expect(calledUrls().some((url) => String(url).includes("/api/swap/desk"))).toBe(true);
+  });
+
   it("surfaces a V2 liquidity failure as an honest error, not as a V1 quote", async () => {
     // The V2 endpoint answered with an HTTP error, so this must not be retried on V1.
     stubFetch(async (url) => url.includes("/status")

@@ -11,6 +11,7 @@ import type { TradeProposal } from "@/lib/trade/trade-types";
 import { isExactApprove, receiptHasApproval, resolveSingleAccountCall } from "./swap-mined-call";
 import { swapPathExecutor } from "./swap-executor-config";
 import { swapV2Target } from "@/lib/swap/v2/v2-target";
+import { isAllowlistedPublicRouter } from "@/lib/swap/route-desk";
 
 export type ApprovalReceipt = Pick<TransactionReceipt, "status" | "from" | "to" | "transactionHash" | "blockNumber" | "blockHash"> & {
   logs?: TransactionReceipt["logs"];
@@ -27,9 +28,15 @@ export async function readSwapAllowance(p: Pick<TradeProposal, "chainId" | "take
     // would strand the swap before signing. V2 is tested first because its
     // calldata is undecodable by the other two ABIs; swapV2Target() is null while
     // the V2 gate is dormant, so the resolution below is unchanged today.
-    const v2Deployment = swapV2Target(p);
+    const hinted = p.transaction?.to;
+    const publicRouter = hinted && isAllowlistedPublicRouter(hinted) && (p.permit2Spender == null || p.permit2Spender.toLowerCase() === hinted.toLowerCase())
+      ? hinted
+      : null;
+    const v2Deployment = publicRouter ? null : swapV2Target(p);
     const swapDeployment = swapPathExecutor();
-    const spender = v2Deployment
+    const spender = publicRouter
+      ? publicRouter
+      : v2Deployment
       ? v2Deployment.executor
       : swapDeployment && p.transaction && p.transaction.to.toLowerCase() === swapDeployment.executor.toLowerCase()
       ? swapDeployment.executor

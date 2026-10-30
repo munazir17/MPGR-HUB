@@ -6,9 +6,11 @@
 export const PUBLIC_BASE_RPC_URLS = [
   "https://mainnet.base.org",
   "https://base-rpc.publicnode.com",
-  "https://base.llamarpc.com",
   "https://base.drpc.org",
-  "https://1rpc.io/base",
+  "https://base.meowrpc.com",
+  // Serves historical eth_getLogs up to 1000 blocks. The others either reject
+  // archive ranges, omit eth_getLogs, or rate-limit the MPGR deployment window.
+  "https://base.gateway.tenderly.co",
 ] as const;
 
 export function parseEndpointList(raw: string | undefined): string[] {

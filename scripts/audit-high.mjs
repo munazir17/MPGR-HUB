@@ -12,6 +12,10 @@ const ALLOWED_ADVISORIES = new Map([
     "https://github.com/advisories/GHSA-mrhx-c7xc-m3w5",
     "Zod memory exhaustion (CVE-2023-54404) is fixed in zod 4.6.6+. Zod 3 has no backport, and viem/wagmi/AgentKit require Zod 3. Nested Zod 4 copies are overridden to 4.6.7. Request bodies are platform-size-limited.",
   ],
+  [
+    "https://github.com/advisories/GHSA-qr28-fpjm-wq7f",
+    "decode-uri-component <=0.5.0 is a quadratic DoS. The patched release is 0.5.1, which is ESM-only, so it cannot replace the CJS 0.2.2 copy locked by WalletConnect/Reown via query-string. MPGR application code does not import decode-uri-component.",
+  ],
 ]);
 
 function advisoryUrls(vulnerabilities, name, seen = new Set()) {

@@ -226,6 +226,7 @@ function SwapPanel({ authenticated, signIn, onConnect, onReview, balanceRevision
     {fresh && proposal && <div className="space-y-2 px-1 text-xs"><div className="flex flex-wrap justify-between gap-2"><span className="text-zinc-300">{rate}</span>
       <span className="text-zinc-400">Impact: {proposal.priceImpactBps == null ? "unavailable" : `${(proposal.priceImpactBps / 100).toFixed(2)}%`}</span></div>
       {/[23]-hop/.test(proposal.providerLabel) && <p className="text-zinc-400">Routed through a liquid pool. The 0.25% fee is still taken in this swap.</p>}
+      {proposal.provider === "public-router" && <p className="text-zinc-300">{proposal.warnings.find((warning) => warning.startsWith("Route: ")) ?? "Public multi-hop"}. The 0.25% fee is not taken on this route.</p>}
       {proposal.needsPermit2Approval && <p className="text-zinc-400">Token approval may be required for this pay amount. Approval is not a swap.</p>}
       <p className="text-zinc-300">Minimum received: {readableTokenAmount(proposal.minToAmount, proposal.to.decimals, 6)} {proposal.to.symbol}</p>
       {proposal.risk.filter(r => r.severity !== "info" && !["executor-approval", "router-approval", "permit2-approval"].includes(r.id)).map(r => <p key={r.id} className="text-amber-200">{r.detail}</p>)}

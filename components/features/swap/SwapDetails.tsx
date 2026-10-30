@@ -12,7 +12,8 @@ export function SwapDetails({ proposal: p, feeState = "quoted", issue }: { propo
     <dl className="space-y-3 px-4 pb-4">{row("Paiger fee (0.25%)", "Quote required")}</dl>
     {issue && <p role="alert" className="break-words px-4 pb-4 text-red-200">{publicSwapMessage(issue)}</p>}
   </details>;
-  const valid = swapFeePolicyError(p) === null;
+  const valid = p.provider === "mpgr-executor" && swapFeePolicyError(p) === null;
+  const publicRoute = p.warnings.find((warning) => warning.startsWith("Route: "));
   const routing = valid ? swapRoutingEvidence(p) : undefined;
   const status = !valid ? "not applied" : feeState === "verified" ? "collection verified" : feeState === "reverted" ? "not collected" : feeState === "submitted" ? "submitted, unverified" : swapQuoteFresh(p) ? "included" : "quote expired";
   const route = !routing ? null : routing.route.kind === 2
@@ -25,6 +26,7 @@ export function SwapDetails({ proposal: p, feeState = "quoted", issue }: { propo
       {row("Slippage", `${p.slippageBps / 100}%`)}
       {row("Paiger fee (0.25%)", `${valid ? swapAmount(p.agentFee!.amountAtomic, p.from) : p.from.symbol} · ${status}`)}
       {route && row("Route", route)}
+      {!route && publicRoute && row("Route", publicRoute.slice("Route: ".length))}
     </dl>
     {issue && <p role="alert" className="break-words px-4 pb-4 text-red-200">{publicSwapMessage(issue)}</p>}
   </details>;

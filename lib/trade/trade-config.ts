@@ -111,11 +111,12 @@ export const ZERO_EX_QUOTE_PATH = "/swap/allowance-holder/quote";
 export const ZERO_EX_REQUEST_TIMEOUT_MS = 15_000;
 
 export function tradeProviderLabel(
-  provider: "cdp-trade-api" | "0x-swap-api" | "aerodrome-slipstream" | "mpgr-executor",
+  provider: "cdp-trade-api" | "0x-swap-api" | "aerodrome-slipstream" | "mpgr-executor" | "public-router",
 ): string {
   if (provider === "aerodrome-slipstream") return AERODROME_SLIPSTREAM_PROVIDER_LABEL;
   if (provider === "0x-swap-api") return ZERO_EX_PROVIDER_LABEL;
   if (provider === "mpgr-executor") return MPGR_EXECUTOR_PROVIDER_LABEL;
+  if (provider === "public-router") return "Public multi-hop";
   return CDP_TRADE_PROVIDER_LABEL;
 }
 

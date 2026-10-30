@@ -20,7 +20,8 @@ describe("rpc endpoint lists", () => {
   it("puts the public browser URL first and always keeps a public fallback", () => {
     const urls = browserRpcUrls("https://mainnet.base.org");
     expect(urls[0]).toBe("https://mainnet.base.org");
-    expect(urls).toContain("https://base.llamarpc.com");
+    expect(urls).toContain("https://base.meowrpc.com");
+    expect(urls).toContain("https://base.gateway.tenderly.co");
     expect(new Set(urls).size).toBe(urls.length);
   });
 });

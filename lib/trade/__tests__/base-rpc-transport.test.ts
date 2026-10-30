@@ -118,9 +118,9 @@ describe("Base RPC fallback transport", () => {
       "https://rpc-b.example.internal",
       "https://mainnet.base.org",
       "https://base-rpc.publicnode.com",
-      "https://base.llamarpc.com",
       "https://base.drpc.org",
-      "https://1rpc.io/base",
+      "https://base.meowrpc.com",
+      "https://base.gateway.tenderly.co",
     ]);
   });
 
@@ -616,6 +616,14 @@ describe("RPC failure classification and deterministic non-retryable handling", 
     expect(classifyBaseRpcFailure({ status: 401, message: "Unauthorized" })).toBe("forbidden");
     expect(classifyBaseRpcFailure({ status: 429, code: -32016, message: "Too Many Requests" })).toBe("rate_limited");
     expect(classifyBaseRpcFailure({ status: 503, message: "Service Unavailable" })).toBe("server_error");
+    expect(classifyBaseRpcFailure({ status: 400, message: "HTTP request failed." })).toBe("server_error");
+    expect(classifyBaseRpcFailure({ status: 422, message: "Bad gateway filter" })).toBe("server_error");
+    expect(classifyBaseRpcFailure({ status: 400, message: "execution reverted: STF" })).toBe("invalid_request");
+    expect(classifyBaseRpcFailure({
+      status: 400,
+      code: -32602,
+      message: "Missing or invalid parameters. The method eth_getLogs is not supported.",
+    })).toBe("server_error");
     expect(classifyBaseRpcFailure({ name: "TimeoutError", message: "The request took too long" })).toBe("timeout");
     expect(classifyBaseRpcFailure({ name: "HttpRequestError", message: "fetch failed: ECONNREFUSED" })).toBe(
       "network_error",

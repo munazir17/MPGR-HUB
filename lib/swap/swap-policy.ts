@@ -12,6 +12,7 @@ import { swapPathRoutingEvidence, swapPathRoutingEvidenceValid } from "./swap-pa
 import { inspectExecutorSwapTransaction, type ExecutorSwapIntent } from "@/lib/executor/executor-intent";
 import { verifyExecutorReceipt, type ReceiptLike } from "@/lib/executor/executor-verify";
 import { verifyAgentFeeInSwapTransaction } from "@/lib/trade/trade-agent-fee";
+import { publicRouterPolicyError } from "@/lib/swap/route-desk";
 import { isNativeEthSentinel, TRADE_MAX_SLIPPAGE_BPS, TRADE_MIN_SLIPPAGE_BPS } from "@/lib/trade/trade-config";
 import type { TradeProposal } from "@/lib/trade/trade-types";
 
@@ -31,6 +32,7 @@ export function safeMaximum(balance: bigint, native: boolean, gasEstimate: bigin
 }
 export function swapFeePolicyError(p: TradeProposal): string | null {
   try {
+    if (p.provider === "public-router") return publicRouterPolicyError(p);
     if (p.provider !== "mpgr-executor" || p.agentFee?.status !== "applied" || p.agentFee.bps !== 25) return SWAP_FEE_BLOCK;
     const fee = verifyAgentFeeInSwapTransaction(p);
     if (!fee.ok || !fee.fee) return fee.ok ? SWAP_FEE_BLOCK : fee.reason;
@@ -112,6 +114,11 @@ export function verifySwapSettlement(p: TradeProposal, receipt: ReceiptLike): Sw
   try {
     const invalid = swapFeePolicyError(p);
     if (invalid || !p.transaction) return unknown(invalid ?? "Missing transaction.");
+    if (p.provider === "public-router") {
+      if (receipt.status !== "success") return unknown("The routed swap reverted on Base.");
+      if (receipt.to?.toLowerCase() !== p.transaction.to.toLowerCase()) return unknown("The mined transaction does not match the reviewed router.");
+      return { verified: true, amountIn: p.fromAmount, amountOut: null, feeAmount: null, feeRecipient: null, reason: null };
+    }
     // V2 settlement: re-derive the intent from the reviewed calldata, then verify
     // the receipt's own events against it. Null while the V2 gate is dormant.
     const v2Intent = inspectSwapV2Proposal(p);

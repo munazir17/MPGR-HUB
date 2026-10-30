@@ -16,6 +16,7 @@ import { swapPathExecutor } from "./swap-executor-config";
 import { swapV2Target } from "@/lib/swap/v2/v2-target";
 import { SWAP_V2_ABI } from "@/lib/swap/v2/abi";
 import { SWAP_V2_POSTURE_ABI } from "@/lib/swap/v2/posture-abi";
+import { isAllowlistedPublicRouter } from "@/lib/swap/route-desk";
 
 // Both executor families share provider "mpgr-executor"; the transaction
 // TARGET identifies which deployed contract will pull funds and take the
@@ -30,6 +31,7 @@ function swapPathTarget(p: TradeProposal) {
  * will actually pull the funds. Estimating gas for an approval to the wrong
  * spender would understate or overstate the real approval cost. */
 function approvalSpender(p: TradeProposal): Address {
+  if (p.provider === "public-router" && p.permit2Spender && isAllowlistedPublicRouter(p.permit2Spender)) return p.permit2Spender;
   return swapV2Target(p)?.executor ?? swapPathTarget(p)?.executor ?? deployment.executor;
 }
 export async function readSwapBalance(account: Address, token: TradeTokenRef) {
@@ -77,6 +79,16 @@ export async function validateSwapWallet(p: TradeProposal, phase: "approval" | "
     if (phase === "swap" && allowance < BigInt(p.fromAmount)) return fail("APPROVAL_FAILED", "Actual allowance is insufficient. Retry approval; no swap was submitted.");
   }
   try {
+    if (p.provider === "public-router") {
+      const [balance, native, gas] = await Promise.all([
+        readSwapBalance(p.taker, p.from), getBalance(config, { address: p.taker, chainId: 8453 }), estimateSwapGas(p, phase),
+      ]);
+      if (balance.decimals !== p.from.decimals) return fail("QUOTE_CHANGED", "Token decimals changed. Request a fresh quote.");
+      if (balance.value < BigInt(p.fromAmount)) return fail("INSUFFICIENT_BALANCE", `Insufficient ${p.from.symbol} balance. Lower the pay amount.`);
+      const nativePay = isNativeEthSentinel(p.from.address) ? BigInt(p.fromAmount) : 0n;
+      if (native.value < nativePay + gas * 2n) return fail("INSUFFICIENT_BALANCE", "Insufficient ETH for the pay amount and a buffered Base network fee. Lower the amount or add ETH.");
+      return context() ?? (!swapQuoteFresh(p) ? fail("QUOTE_EXPIRED", "Quote expired during validation. Refresh before signing.") : null);
+    }
     // V2 first: its calldata and ABI are distinct from both other executors.
     // swapV2Target() is null while the V2 gate is dormant, so the V1/legacy
     // reads below are exactly as they were.

@@ -738,6 +738,24 @@ export async function discoverV2Quote(source: LiquiditySource, from: string, to:
     trace.multihop.attempted = true;
     trace.multihop.candidates = Math.max(trace.multihop.candidates, 1);
   }
+  // Factory getters cannot see a Uniswap v4 book. USDC → MPGR is that shape:
+  // USDC/WETH is a getter pool, MPGR/WETH is only an Initialize log. Neighbour
+  // enumeration is off when the whole-chain sweep is disabled, so without this
+  // the pair dies as DISCOVERY_UNAVAILABLE even though both hops are quotable.
+  // An incomplete v4 scan still cannot prove a negative; a positive hop can.
+  if (!legs.length && source.directStages) {
+    try {
+      const budgetMs = source.v4RescueBudgetMs && source.v4RescueBudgetMs > 0 ? source.v4RescueBudgetMs : V4_RESCUE_BUDGET_MS;
+      const rescued = await withBudget(bestV4WhenThin(source, tokenIn, tokenOut, net, []), budgetMs);
+      if (rescued) {
+        legs = [rescued];
+        trace.multihop.attempted = true;
+        trace.multihop.candidates = Math.max(trace.multihop.candidates, 1);
+      }
+    } catch (error) {
+      if (!trace.multihop.note) trace.multihop.note = error instanceof Error ? error.message : String(error);
+    }
+  }
   if (!legs.length) throw attributeRouteFailure(trace);
   // Same leg we already probed: do not quote it again. A replacement hop is probed once.
   let priceImpactBps = legs.length !== 1 ? null

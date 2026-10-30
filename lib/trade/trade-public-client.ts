@@ -134,6 +134,12 @@ export function classifyBaseRpcFailure(error: unknown): BaseRpcFailureKind {
   if (/archive request|historical state|pruned state|missing trie|state histories are not fully available/i.test(message)) {
     return "server_error";
   }
+  // One gateway can refuse a method the next Base URL still serves.
+  // meowrpc answers eth_call and rejects eth_getLogs; stopping the chain
+  // there is how a v4 pool scan dies before a capable node is asked.
+  if (/method [\s\S]{0,80}not supported|method not found|is not available/i.test(message)) {
+    return "server_error";
+  }
 
   if (DETERMINISTIC_RANGE_OR_SIZE_RE.test(message)) {
     return "invalid_request";
@@ -141,8 +147,18 @@ export function classifyBaseRpcFailure(error: unknown): BaseRpcFailureKind {
   if (code !== null && (DETERMINISTIC_INVALID_RPC_CODES.has(code) || USER_OR_AUTH_REJECT_RPC_CODES.has(code))) {
     return "invalid_request";
   }
-  if (status === 400 || status === 413 || status === 422) {
+  if (status === 413) {
     return "invalid_request";
+  }
+  // A bare HTTP 400/422 is one gateway refusing the call (quoter eth_call,
+  // a filtered method). It is not proof the request is invalid on every
+  // Base URL. Deterministic codes (-32600/-32602) and range caps already
+  // returned above and still stop the chain. An EVM revert stops too:
+  // the next URL would revert the same way, and the quote path must see
+  // the word "revert" instead of a wiped provider outage.
+  if (status === 400 || status === 422) {
+    if (/execution reverted|\brevert(?:ed)?\b/i.test(message)) return "invalid_request";
+    return "server_error";
   }
   if (status === 401 || status === 403) {
     return "forbidden";

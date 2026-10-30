@@ -6,6 +6,7 @@ import { directQuote } from "@/lib/swap/v2/__tests__/helpers";
 
 const discover = vi.hoisted(() => vi.fn());
 const prepare = vi.hoisted(() => vi.fn());
+const allowanceRead = vi.hoisted(() => vi.fn(async (): Promise<bigint> => { throw new Error("no allowance"); }));
 const BLOCK = `0x${"11".repeat(32)}` as const;
 
 vi.mock("@/lib/swap/v2/discovery", async (importOriginal) => {
@@ -21,7 +22,7 @@ vi.mock("@/lib/trade/trade-public-client", () => ({
     getChainId: async () => 8453,
     getBlock: async () => ({ number: 10n, hash: BLOCK, timestamp: 1_700_000_000n }),
     getCode: async () => "0x1234",
-    readContract: async () => { throw new Error("no allowance"); },
+    readContract: allowanceRead,
     call: async () => ({ data: "0x01" }),
   }),
 }));
@@ -37,6 +38,8 @@ beforeEach(() => {
   __setSwapV2ExecutorForTests(SWAP_V2_SEALED_MANIFEST);
   discover.mockReset();
   prepare.mockReset();
+  allowanceRead.mockReset();
+  allowanceRead.mockRejectedValue(new Error("no allowance"));
   discover.mockImplementation(async (_source: unknown, _sell: string, _buy: string, gross: bigint) => directQuote({ gross }));
   prepare.mockImplementation(async (_reader: unknown, deployment: { executor: string }, request: { quote: { fee: bigint; gross: bigint }; deadline: bigint; nativeIn: boolean }, block: { number: bigint; hash: string }) => ({
     executor: deployment.executor,
@@ -69,6 +72,17 @@ describe("PaigerSwap V2 runtime used by MPGR Agent", () => {
     expect(result.fee).toBe((gross * 25n) / 10_000n);
     expect(result.binding.transaction).toMatchObject({ to: SWAP_V2_SEALED_MANIFEST.executor, data: "0xabcdef", value: gross.toString() });
     expect(result.binding.executionSimulation).toBe("eth-call-succeeded-no-settlement-proof");
+  });
+
+  it("does not ask prepare to re-simulate a route that only cleared with an allowance override", async () => {
+    allowanceRead.mockResolvedValue(0n);
+    const result = await quoteOnPaigerSwapV2({
+      sellToken: WETH, buyToken: MPGR, gross: 1_000_000n, taker: TAKER, slippageBps: 100,
+      nativeIn: false, nativeOut: false, deadline: 10n,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.binding.executionSimulation).toBe("quoted-before-approval");
   });
 
   it("does not turn a simulation or RPC failure into a fall-through", async () => {
