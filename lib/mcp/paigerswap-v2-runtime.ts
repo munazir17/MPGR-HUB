@@ -136,6 +136,10 @@ export async function quoteOnPaigerSwapV2(input: PaigerSwapV2QuoteRequest): Prom
         return mapV2Error(again);
       }
     }
+    // An eth_call that only cleared because of an allowance override is not a
+    // funded simulation. Label it as such, or prepare re-simulates without the
+    // override and reports the missing approval as a stale quote.
+    if (needsApproval) swap = { ...swap, executionSimulation: "quoted-before-approval" as const };
     if (swap.fee !== quote.fee || swap.executor.toLowerCase() !== deployment.executor.toLowerCase()) {
       return { ok: false, code: "FEE_POLICY_INVALID", message: "The V2 execution fee does not match the quoted fee.", fallThrough: false };
     }
@@ -184,6 +188,10 @@ export async function confirmPaigerSwapV2(
     return { ok: true };
   } catch (error) {
     if (error instanceof V2PreflightError) return { ok: false, code: error.code, message: error.message };
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/execution reverted|\brevert(?:ed)?\b/i.test(detail)) {
+      return { ok: false, code: "SIMULATION_FAILED", message: "The quoted swap reverted in simulation. Nothing was sent." };
+    }
     return { ok: false, code: "QUOTE_STALE", message: "The quoted V2 transaction could not be re-checked. Request a fresh quote. Nothing was sent." };
   }
 }

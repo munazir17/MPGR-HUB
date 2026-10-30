@@ -250,6 +250,27 @@ describe("Uniswap v4 is searched only after the getter-backed venues cannot answ
     expect(c.calls.getLogs).toBe(0);
     expect(c.v4QuoterCalls).toHaveLength(0);
   });
+
+  it("quotes USDC to an exotic token through WETH when the exotic book is only Uniswap v4", async () => {
+    // The live MPGR shape: no direct USDC pool, sweep disabled, v4 pool is
+    // native ETH / exotic. The hub leg is a factory getter. Fee stays on gross once.
+    const c = chain({
+      indexPool: { venue: "uniswapV3", token0: USDC, token1: BASE_WETH, fee: 500 },
+      v4Pool: { block: DEPLOYED + 1n, key: mpgrKey },
+      tokenDeployedAt: DEPLOYED,
+      logRangeCap: 10n,
+    });
+    const quote = await discoverV2Quote(quoteSource(c), USDC, B, GROSS);
+    expect(quote.fee).toBe(GROSS * 25n / 10_000n);
+    expect(quote.legs).toHaveLength(1);
+    expect(quote.legs[0].pools).toHaveLength(2);
+    expect(quote.legs[0].pools.map((pool) => pool.kind)).toEqual([2, 7]);
+    expect(quote.legs[0].tokens.map((token) => token.toLowerCase())).toEqual([
+      USDC.toLowerCase(), BASE_WETH.toLowerCase(), B.toLowerCase(),
+    ]);
+    expect(quote.amountOut).toBeGreaterThan(0n);
+    validateV2Quote(quote);
+  });
 });
 
 describe("a bounded search never becomes a claim about liquidity", () => {
@@ -278,10 +299,10 @@ describe("a bounded search never becomes a claim about liquidity", () => {
     const source = quoteSource(c);
     const error = await catchQuote(discoverV2Quote(source, A, B, GROSS));
     expect(error!.code).toBe("DISCOVERY_UNAVAILABLE");
-    // The only log calls are the v4 probe ladder's handful of refused ranges. The
-    // whole-chain sweep, which would have bisected from block 0 up to its 2000-call
-    // budget, is disabled on this path and contributes nothing.
-    expect(c.calls.getLogs).toBeLessThan(20);
+    // The only log calls are the v4 probe ladder's refused ranges, plus one
+    // bounded WETH/USDC hop probe when the direct book is empty. The whole-chain
+    // sweep, which would bisect from block 0 up to a 2000-call budget, stays off.
+    expect(c.calls.getLogs).toBeLessThan(48);
     expect(source.diagnosticsFor(A, B).historyScan).toBe("unavailable");
     expect(source.negativeProvable(A, B)).toBe(false);
   });

@@ -51,9 +51,7 @@ const VERIFIED_CODE_FLOORS: Readonly<Record<string, bigint>> = {
 };
 const verifiedCodeFloor = (token: Address): bigint | undefined => VERIFIED_CODE_FLOORS[token.toLowerCase()];
 const historicalStateRefused = (error: unknown): boolean =>
-  /archive|historical state|pruned state|missing trie|state histories are not fully available/i.test(
-    error instanceof Error ? error.message : String(error),
-  );
+  /archive|historical state|pruned state|missing trie|state histories are not fully available/i.test(errorText(error));
 /** A v4 pool's native side is the zero address; the app normalizes native ETH to
  * canonical WETH, so both spellings of the same currency must be searched. */
 const normalize = (a: Address): Address => (a.toLowerCase() === zeroAddress ? (weth as Address) : (a.toLowerCase() as Address));
@@ -74,9 +72,37 @@ export function v4PoolKeyId(key: V4Key): Hex {
   );
 }
 
+/** viem hides the provider's real reason on `cause.data` ("Block range too
+ * large…") while `message` only says "invalid params". A shrink decision that
+ * reads `message` alone aborts the MPGR Initialize scan on the first window. */
+function errorText(error: unknown): string {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  let cursor: unknown = error;
+  for (let depth = 0; depth < 6 && cursor && typeof cursor === "object" && !seen.has(cursor); depth += 1) {
+    seen.add(cursor);
+    const rec = cursor as { message?: unknown; shortMessage?: unknown; details?: unknown; data?: unknown; cause?: unknown };
+    for (const value of [rec.message, rec.shortMessage, rec.details, rec.data]) {
+      if (typeof value === "string") parts.push(value);
+      else if (value && typeof value === "object" && typeof (value as { message?: unknown }).message === "string") {
+        parts.push((value as { message: string }).message);
+      }
+    }
+    cursor = rec.cause;
+  }
+  return parts.length > 0 ? parts.join(" | ") : String(error ?? "");
+}
+
 /** Only explicit range/size refusals justify shrinking a window and retrying.
- * Network, authorization and rate-limit failures must not fan out requests. */
-/** Which blocks each side actually covered, for a note that must not overstate reach. */
+ * Network, authorization and rate-limit failures must not fan out requests.
+ * An archive refusal is a range refusal in practice: public Base nodes reject
+ * a multi-million-block `eth_getLogs` ("Archive requests require a personal
+ * token") and still serve a short window at the token's deployment floor.
+ * Stopping on the wide call is how a real v4 pool is reported as unmeasured. */
+export function isLogRangeError(error: unknown): boolean {
+  const text = errorText(error);
+  return /range|too many|more than|response size|limit.*block|block.*limit|exceed|archive|historical state|pruned state|missing trie|state histories are not fully available/i.test(text);
+}
 function describeSides(
   sides: { forward: { edge: bigint | null }; backward: { edge: bigint | null } },
   floor: bigint, head: bigint,
@@ -86,17 +112,12 @@ function describeSides(
   return `${forward} and ${backward}`;
 }
 
-export function isLogRangeError(error: unknown): boolean {
-  const text = error instanceof Error ? error.message : String(error ?? "");
-  return /range|too many|more than|response size|limit.*block|block.*limit|exceed/i.test(text);
-}
-
 /** A provider that is out of budget, not a range it can shrink. Retrying the
  * same wide query makes the cap worse. One narrow window at the token's
  * deployment floor is the only extra call, because that is where a pool is
  * initialized. */
 export function isCapacityError(error: unknown): boolean {
-  const text = error instanceof Error ? error.message : String(error ?? "");
+  const text = errorText(error);
   return /request limit|rate limit|too many requests|\b429\b|monthly cap|compute units|over capacity|cu per second/i.test(text);
 }
 

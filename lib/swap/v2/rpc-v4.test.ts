@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, encodeAbiParameters, encodeFunctionData, parseAbi, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
 import { V4_MANAGER, discoverV2Quote, V2QuoteError, type V4Key } from "./discovery";
 import { RpcV2LiquiditySource } from "./rpc-source";
-import { probeLadder, V4DiscoveryCache, discoverV4Pools, findTokenDeploymentBlock, scanInitializeLogs, v4PoolKeyId, V4_SEARCH_LIMITS, isCapacityError } from "./rpc-v4";
+import { probeLadder, V4DiscoveryCache, discoverV4Pools, findTokenDeploymentBlock, scanInitializeLogs, v4PoolKeyId, V4_SEARCH_LIMITS, isCapacityError, isLogRangeError } from "./rpc-v4";
 import { buildV2Transaction } from "./transaction";
 import { SWAP_V2_ABI } from "./abi";
 import { NATIVE_ETH_SENTINEL } from "@/lib/trade/trade-config";
@@ -494,6 +494,32 @@ describe("v4 discovery: bounds and honest failure", () => {
     expect(result.note).toMatch(/socket hang up/);
     // Exactly one attempt: a network failure is not a licence to retry at scale.
     expect(result.logCalls).toBe(1);
+  });
+
+  it("shrinks an archive refusal until the deployment-floor window is served", async () => {
+    // publicnode rejects every historical eth_getLogs, wide or narrow, as
+    // "Archive requests require a personal token" wrapped in invalid params.
+    // That is not a dead search: a 1000-block window at the token floor is a
+    // different request, and it is where MPGR's pool was initialized.
+    expect(isLogRangeError(new Error(
+      "Invalid parameters were provided to the RPC method. Details: Archive requests require a personal token.",
+    ))).toBe(true);
+    expect(isLogRangeError(Object.assign(new Error("Invalid parameters were provided to the RPC method."), {
+      cause: { data: "Block range too large: maximum 1000 blocks without an access key." },
+    }))).toBe(true);
+    const c = mpgrChain();
+    const original = c.client.getLogs.bind(c.client);
+    (c.client as unknown as { getLogs: (q: { fromBlock: bigint; toBlock: bigint }) => Promise<unknown> }).getLogs = async (query) => {
+      if (query.toBlock - query.fromBlock + 1n > 1_000n) {
+        throw new Error("Invalid parameters were provided to the RPC method. Details: Archive requests require a personal token.");
+      }
+      return original(query);
+    };
+    const result = await discoverV4Pools(c.client, WETH, MPGR, HEAD, {}, budget);
+    expect(result.pools).toHaveLength(1);
+    expect(result.pools[0].v4Key).toEqual(nativeMpgrKey);
+    expect(result.state).toBe("capped");
+    expect(result.logCalls).toBeLessThanOrEqual(V4_SEARCH_LIMITS.maxLogCalls);
   });
 
   it("keeps a pool found at the deployment floor when a later window hits a rate limit", async () => {

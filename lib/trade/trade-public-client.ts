@@ -134,6 +134,12 @@ export function classifyBaseRpcFailure(error: unknown): BaseRpcFailureKind {
   if (/archive request|historical state|pruned state|missing trie|state histories are not fully available/i.test(message)) {
     return "server_error";
   }
+  // One gateway can refuse a method the next Base URL still serves.
+  // meowrpc answers eth_call and rejects eth_getLogs; stopping the chain
+  // there is how a v4 pool scan dies before a capable node is asked.
+  if (/method [\s\S]{0,80}not supported|method not found|is not available/i.test(message)) {
+    return "server_error";
+  }
 
   if (DETERMINISTIC_RANGE_OR_SIZE_RE.test(message)) {
     return "invalid_request";

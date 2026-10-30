@@ -120,6 +120,7 @@ describe("Base RPC fallback transport", () => {
       "https://base-rpc.publicnode.com",
       "https://base.drpc.org",
       "https://base.meowrpc.com",
+      "https://base.gateway.tenderly.co",
     ]);
   });
 
@@ -618,6 +619,11 @@ describe("RPC failure classification and deterministic non-retryable handling", 
     expect(classifyBaseRpcFailure({ status: 400, message: "HTTP request failed." })).toBe("server_error");
     expect(classifyBaseRpcFailure({ status: 422, message: "Bad gateway filter" })).toBe("server_error");
     expect(classifyBaseRpcFailure({ status: 400, message: "execution reverted: STF" })).toBe("invalid_request");
+    expect(classifyBaseRpcFailure({
+      status: 400,
+      code: -32602,
+      message: "Missing or invalid parameters. The method eth_getLogs is not supported.",
+    })).toBe("server_error");
     expect(classifyBaseRpcFailure({ name: "TimeoutError", message: "The request took too long" })).toBe("timeout");
     expect(classifyBaseRpcFailure({ name: "HttpRequestError", message: "fetch failed: ECONNREFUSED" })).toBe(
       "network_error",
