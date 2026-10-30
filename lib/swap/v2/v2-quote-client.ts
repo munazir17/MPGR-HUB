@@ -148,6 +148,40 @@ export async function requestSwapV2Quote(
   return proposal;
 }
 
+/** Public multi-hop (Kyber / LI.FI) after the executor could not price the pair.
+ * A failure here is silence: the caller still surfaces the executor error. */
+async function requestRouteDeskQuote(
+  input: ManualSwapInput,
+  account: Address,
+  signal?: AbortSignal,
+  tokens: readonly TradeTokenRef[] = MANUAL_SWAP_TOKENS,
+): Promise<TradeProposal | null> {
+  try {
+    const response = await fetch("/api/swap/desk", {
+      method: "POST", credentials: "include", cache: "no-store", signal,
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) return null;
+    const payload = (await response.json().catch(() => null)) as { proposal?: TradeProposal } | null;
+    const proposal = payload?.proposal;
+    if (!proposal || proposal.provider !== "public-router" || !proposal.transaction) return null;
+    const from = tokens.find((token) => token.address.toLowerCase() === input.fromToken.toLowerCase());
+    const to = tokens.find((token) => token.address.toLowerCase() === input.toToken.toLowerCase());
+    if (!from || !to) return null;
+    if (revalidateTradeProposal(proposal, account).state !== "VALIDATED") return null;
+    if (proposal.from.address.toLowerCase() !== input.fromToken.toLowerCase() ||
+        proposal.to.address.toLowerCase() !== input.toToken.toLowerCase() ||
+        parseHumanTokenAmount(input.amount, proposal.from.decimals)?.toString() !== proposal.fromAmount ||
+        proposal.slippageBps !== input.slippageBps || !manualQuoteFresh(proposal)) return null;
+    if (swapQuotePolicyError(proposal)) return null;
+    if (!swapQuoteFresh(proposal)) return null;
+    return proposal;
+  } catch {
+    return null;
+  }
+}
+
 /** The single quote entry point the swap UI should use.
  * V2 first when (and only when) the server says routing is activated; otherwise
  * V1, unchanged. A V2 "no route" result falls back to V1 so the user still gets
@@ -160,21 +194,35 @@ export async function requestSwapQuoteWithV2(
   options?: { fresh?: boolean },
 ): Promise<TradeProposal> {
   const status = await fetchSwapV2Status(signal);
+  let executorError: unknown = null;
   if (status.activated) {
     try {
       const v2 = await requestSwapV2Quote(input, account, signal, tokens);
       if (v2) return v2;
     } catch (error) {
-      // An auth/rate-limit/provider failure on V2 is not a reason to pretend V1
-      // has liquidity: surface it. Session expiry (401) must reach the caller so
-      // the UI can re-authenticate rather than silently re-quoting.
-      if (error instanceof ManualSwapQuoteError) throw error;
-      if (error instanceof Error && /No liquid V2 route|does not pass this client/i.test(error.message)) throw error;
-      // Anything else (e.g. an unexpected shape) still falls through to V1, which
-      // performs its own independent validation.
+      // Session expiry and a quote we already refused must not be replaced.
+      if (error instanceof ManualSwapQuoteError && (error.status === 401 || error.status === 429)) throw error;
+      if (error instanceof Error && /does not pass this client/i.test(error.message)) throw error;
+      executorError = error;
+      // A finished "no liquidity" verdict does not retry V1. A public multi-hop
+      // may still price the pair. An outage falls through to V1 first.
+      if (error instanceof ManualSwapQuoteError && error.code === "LIQUIDITY_UNAVAILABLE") {
+        const desk = await requestRouteDeskQuote(input, account, signal, tokens);
+        if (desk) return desk;
+        throw error;
+      }
+      if (error instanceof ManualSwapQuoteError && !["DISCOVERY_UNAVAILABLE", "PROVIDER_ERROR", "EXECUTION_UNAVAILABLE"].includes(error.code)) throw error;
     }
   }
-  return requestSwapQuote(input, account, signal, tokens, options);
+  try {
+    return await requestSwapQuote(input, account, signal, tokens, options);
+  } catch (error) {
+    if (error instanceof ManualSwapQuoteError && (error.status === 401 || error.status === 429)) throw error;
+    const desk = await requestRouteDeskQuote(input, account, signal, tokens);
+    if (desk) return desk;
+    if (executorError instanceof Error) throw executorError;
+    throw error;
+  }
 }
 
 /** Exposed for tests and diagnostics: the remaining lifetime of a V2 quote. */

@@ -118,6 +118,14 @@ export function buildSwapRiskFacts(input: {
             detail:
               "Your wallet must first approve the MPGR Executor for the gross sell amount so the swap can pull it (the executor takes its fee from that amount and swaps the rest). Approval is a separate Base transaction you will sign once; later swaps with a sufficient allowance go straight to the swap.",
           }
+      : input.provider === "public-router"
+        ? {
+            id: "router-approval",
+            severity: "warning",
+            title: "Router approval required",
+            detail:
+              "Your wallet must first approve the public router for the sell amount. Approval is a separate Base transaction. The 0.25% MPGR fee is not taken on this path.",
+          }
       : input.provider === "aerodrome-slipstream"
         ? {
             id: "router-approval",
@@ -171,6 +179,14 @@ export function buildSwapRiskFacts(input: {
           title: "Route via the MPGR Executor",
           detail:
             "This pair is executed by the MPGR Executor contract on Base: it takes its fee from the gross sell amount and swaps the remainder through an allowlisted router, all in one transaction. You sign unsigned executor calldata from your connected Base wallet — MPGR does not custody or broadcast.",
+        }
+    : input.provider === "public-router"
+      ? {
+          id: "provider",
+          severity: "info",
+          title: "Public multi-hop route",
+          detail:
+            "The MPGR executor could not price this pair, so the quote comes from Kyber or LI.FI and your wallet signs that router directly. The 0.25% MPGR fee is not collected, because the deployed executor cannot settle this calldata.",
         }
     : input.provider === "aerodrome-slipstream"
       ? {
