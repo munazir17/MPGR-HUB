@@ -214,11 +214,14 @@ export async function requestSwapQuoteWithV2(
       if (error instanceof ManualSwapQuoteError && !["DISCOVERY_UNAVAILABLE", "PROVIDER_ERROR", "EXECUTION_UNAVAILABLE"].includes(error.code)) throw error;
     }
   }
+  // Discovery already failed: price the public routers while V1 is still searching.
+  const deskPromise = executorError ? requestRouteDeskQuote(input, account, signal, tokens) : null;
   try {
-    return await requestSwapQuote(input, account, signal, tokens, options);
+    const v1 = await requestSwapQuote(input, account, signal, tokens, options);
+    return v1;
   } catch (error) {
     if (error instanceof ManualSwapQuoteError && (error.status === 401 || error.status === 429)) throw error;
-    const desk = await requestRouteDeskQuote(input, account, signal, tokens);
+    const desk = deskPromise ? await deskPromise : await requestRouteDeskQuote(input, account, signal, tokens);
     if (desk) return desk;
     if (executorError instanceof Error) throw executorError;
     throw error;
