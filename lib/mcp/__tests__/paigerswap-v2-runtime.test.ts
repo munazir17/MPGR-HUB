@@ -6,7 +6,7 @@ import { directQuote } from "@/lib/swap/v2/__tests__/helpers";
 
 const discover = vi.hoisted(() => vi.fn());
 const prepare = vi.hoisted(() => vi.fn());
-const allowanceRead = vi.hoisted(() => vi.fn(async () => { throw new Error("no allowance"); }));
+const allowanceRead = vi.hoisted(() => vi.fn(async (): Promise<bigint> => { throw new Error("no allowance"); }));
 const BLOCK = `0x${"11".repeat(32)}` as const;
 
 vi.mock("@/lib/swap/v2/discovery", async (importOriginal) => {
