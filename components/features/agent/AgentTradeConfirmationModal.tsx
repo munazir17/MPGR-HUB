@@ -187,7 +187,7 @@ export function AgentTradeConfirmationModal({
               ))}
               {proposal.agentFee?.status === "applied" && (
                 <div className="flex justify-between gap-3">
-                  <dt className="text-zinc-400">MPGR fee{proposal.agentFee.bps !== null ? ` (${proposal.agentFee.bps / 100}%)` : ""}</dt>
+                  <dt className="text-zinc-400">{proposal.agentFee.bps === 25 ? "0.25% Trading Fee" : `Trading fee${proposal.agentFee.bps !== null ? ` (${proposal.agentFee.bps / 100}%)` : ""}`}</dt>
                   <dd className="min-w-0 break-words text-right text-white">
                     {amount(proposal.agentFee.amountAtomic, proposal.from)}
                   </dd>

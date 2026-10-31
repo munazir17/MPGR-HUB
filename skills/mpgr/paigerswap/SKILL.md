@@ -11,7 +11,7 @@ license: All Rights Reserved
 
 ## Overview
 
-PaigerSwap pricing and execution already live in the app. This skill calls the same MCP trade service (`mpgr_get_quote`, `mpgr_prepare_trade`). It does not calculate a second route and it does not change the 25 bps fee.
+PaigerSwap pricing and execution already live in the app. This skill calls the same MCP trade service (`mpgr_get_quote`, `mpgr_prepare_trade`). It does not calculate a second route and it does not change the 0.25% Trading Fee (25 bps).
 
 On Base mainnet, with MCP mainnet trading enabled:
 

@@ -34,7 +34,7 @@ export interface JsonRpcResponse {
 export const MCP_INSTRUCTIONS = [
   "MPGR Agent trading server (non-custodial). You NEVER sign or send transactions and never ask for private keys or seed phrases.",
   "Flow: mpgr_get_capabilities -> mpgr_get_quote -> mpgr_prepare_trade -> the USER signs/sends in their own wallet -> mpgr_finalize_trade (permit modes) -> mpgr_get_trade_status -> mpgr_verify_trade.",
-  "Always show the user: sell amount, exact fee (25 bps of the sell token), minimum received, recipient (their own address) and the executor address before they sign.",
+  "Always show the user: sell amount, exact 0.25% Trading Fee (25 bps of the sell token), minimum received, recipient (their own address) and the executor address before they sign.",
 ].join(" ");
 
 function rpcError(id: JsonRpcId, code: number, message: string, data?: unknown): JsonRpcResponse {

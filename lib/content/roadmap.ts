@@ -321,4 +321,86 @@ export const ROADMAP_TRACKS: readonly RoadmapTrack[] = [
       { label: "Modular service platform with self-hostable components", status: "LONG-TERM VISION" },
     ],
   },
+  {
+    id: "mcp",
+    title: "MCP",
+    summary:
+      "A stateless MCP endpoint that quotes and prepares unsigned Base trades. External chat clients are not a verified live connector.",
+    items: [
+      { label: "MCP server at POST /api/mcp (Streamable HTTP JSON-RPC) with tool discovery", status: "LIVE" },
+      { label: "Unsigned tools: capabilities, token list, quote, prepare, finalize, trade status and verify — the wallet still signs", status: "LIVE" },
+      { label: "0.25% Trading Fee shown in capability, quote and /llm.txt responses (25 bps = 25/10000 of the sell token)", status: "LIVE" },
+      { label: "Mainnet MCP trading stays off unless MPGR_MCP_ENABLE_BASE_MAINNET is set by the operator", status: "LIVE" },
+      { label: "Secure connection notes for external MCP clients (no private keys; user confirms in the wallet)", status: "IN PROGRESS" },
+      { label: "ChatGPT connector — not a verified live integration", status: "PLANNED" },
+      { label: "Claude and other MCP clients — not a verified live integration", status: "PLANNED" },
+      { label: "Portfolio reads and richer market context through MCP", status: "PLANNED" },
+      { label: "Third-party MCP apps and an integration marketplace", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "voice-ai",
+    title: "Voice-driven AI trading",
+    summary:
+      "Speech can fill the Agent composer. It cannot sign, broadcast, or skip wallet review.",
+    items: [
+      { label: "Voice input never signs, never broadcasts, and never sees a private key or seed phrase", status: "LIVE" },
+      { label: "Speech-to-text transcript into the existing Agent composer (server ASR plus browser recognition). The site Permissions-Policy currently blocks the microphone, so this is not a finished voice product", status: "IN PROGRESS" },
+      { label: "Natural-language buy/sell wording is handled by the existing text composer, not by a separate voice trader", status: "IN PROGRESS" },
+      { label: "Text-to-speech replies", status: "PLANNED" },
+      { label: "Voice-guided transaction review that speaks the 0.25% Trading Fee, slippage and risks before the wallet prompt", status: "PLANNED" },
+      { label: "Spoken portfolio and market answers, still unable to authorize a transaction", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "portfolio-intelligence-2",
+    title: "AI Portfolio Intelligence 2.0",
+    summary:
+      "A later portfolio layer. Today's Agent already has live read-only wallet, staking and MPGR balance tools; this track does not replace those.",
+    items: [
+      { label: "Allocation and exposure views across Base tokens the wallet already holds", status: "PLANNED" },
+      { label: "Performance tracking against executed trade history", status: "PLANNED" },
+      { label: "Risk notes that cite the data they used and say when a price is unavailable", status: "PLANNED" },
+      { label: "Personalized market briefs that stay read-only until the user asks to prepare a trade", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "autonomous-agent-2",
+    title: "Autonomous agent and smart automation 2.0",
+    summary:
+      "Proposals with limits. Nothing here executes a swap without the wallet. Today every value-moving action still requires an explicit signature.",
+    items: [
+      { label: "User-defined strategy descriptions the Agent can restate but not run on its own", status: "PLANNED" },
+      { label: "Conditional monitoring and smart alerts", status: "PLANNED" },
+      { label: "Action proposals with a configurable spending limit shown before signing", status: "PLANNED" },
+      { label: "Explicit authorization for every prepared transaction — voice and MCP included", status: "PLANNED" },
+      { label: "Bounded unattended execution remains out of the current product", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "x402-marketplace-2",
+    title: "x402 agentic payments and AI marketplace 2.0",
+    summary:
+      "x402 pay-for-resource with wallet confirmation is already live on its own track. This track is the marketplace around it, and it is not live.",
+    items: [
+      { label: "Agent service discovery beyond the in-app tool registry", status: "PLANNED" },
+      { label: "AI provider marketplace listings with prices", status: "PLANNED" },
+      { label: "Third-party agent services paid over x402", status: "PLANNED" },
+      { label: "Payment and authorization workflows that still require the user to sign", status: "PLANNED" },
+      { label: "Open agent-service marketplace funded from the ecosystem treasury line", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "developer-ecosystem-2",
+    title: "MPGR developer and integration ecosystem 2.0",
+    summary:
+      "The public MCP endpoint and internal APIs exist. A partner SDK and app directory do not.",
+    items: [
+      { label: "Public MCP tools and /llm.txt integration notes", status: "LIVE" },
+      { label: "Developer documentation for quote, prepare and verify", status: "IN PROGRESS" },
+      { label: "Documented partner API keys", status: "PLANNED" },
+      { label: "Third-party integrations beyond the first-party app", status: "PLANNED" },
+      { label: "Partner ecosystem and shared integration marketplace", status: "LONG-TERM VISION" },
+    ],
+  },
 ] as const;

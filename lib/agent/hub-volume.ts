@@ -4,19 +4,20 @@ import { decodeEventLog, parseAbiItem, type Address, type Hex } from "viem";
 
 import { VERIFIED_HISTORICAL_AGENT_TRADES } from "@/lib/agent/agent-volume-history";
 import { PRICED_WETH_LEG_TRADES } from "@/lib/agent/hub-weth-legs";
-import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, BASE_MAINNET_USDC } from "@/lib/executor/executor-config";
+import { BASE_MAINNET_EXECUTOR_DEPLOYMENT } from "@/lib/executor/executor-config";
 import { SWAP_PATH_EXECUTOR_DEPLOYMENT } from "@/lib/swap/swap-executor-config";
 import { SWAP_V2_SEALED_MANIFEST } from "@/lib/swap/v2/sealed-manifest";
+import { classifyExecutedTrade, PENDING_LEG_CAP, type PendingLeg } from "@/lib/agent/executed-trade-value";
 import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 import { KNOWN_TRADE_TOKENS } from "@/lib/trade/trade-tokens";
+import delegatedMainnet from "../../deployments/base-mainnet/mpgr-executor-delegated.json";
 
-// Hub volume is the USD notional of every SwapExecuted on the agent executor
-// and both swap executors. A USD stable leg is the dollar amount. WETH with
-// no stable side is priced from Chainlink ETH/USD. Any other token is priced
-// from its own amount at a live Base USD price, using catalog decimals or
-// the token's decimals(). One side only — the two legs of one swap are not
-// added twice. A price that cannot be read stops the scan instead of
-// publishing a total that dropped that trade.
+// Hub volume is the USD notional of every successful SwapExecuted on the
+// agent executor, both swap executors, and the delegated mainnet executor.
+// BUY (stable in) counts grossAmountIn. SELL (stable out) counts amountOut.
+// One side only. A leg that cannot be priced is queued on the cursor and
+// retried; it does not block stable legs and it is not dropped. A log range
+// that cannot be read still stops the scan — a hole is not a total.
 
 // Public archive endpoints in 5,000-block waves (BlockPI's cap). A capped
 // Alchemy key cannot read this range.
@@ -33,19 +34,17 @@ const EVENT = parseAbiItem(
 );
 const PROVIDER_TIMEOUT_MS = [8_000, 12_000] as const;
 const WETH = "0x4200000000000000000000000000000000000006";
+const DELEGATED_EXECUTOR = delegatedMainnet.executor as Address;
+const DELEGATED_DEPLOY_BLOCK = BigInt(delegatedMainnet.deployedAtBlock);
 const ETH_USD_FEED = "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70";
 const LATEST_ROUND_DATA = "0xfeaf968c";
 const DECIMALS_SELECTOR = "0x313ce567";
 const DEX_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/";
-const USD_PEG_SYMBOLS = new Set(["usdc", "usdt", "dai", "usdbc", "usds"]);
 
 const KNOWN_DECIMALS = new Map<string, number>();
-const USD_PEG_DECIMALS = new Map<string, number>();
 for (const token of KNOWN_TRADE_TOKENS) {
   if (isNativeEthSentinel(token.address)) continue;
-  const address = token.address.toLowerCase();
-  KNOWN_DECIMALS.set(address, token.decimals);
-  if (USD_PEG_SYMBOLS.has(token.symbol.toLowerCase())) USD_PEG_DECIMALS.set(address, token.decimals);
+  KNOWN_DECIMALS.set(token.address.toLowerCase(), token.decimals);
 }
 
 /** Chainlink ETH/USD answer (8 decimals) from latestRoundData, or null. */
@@ -104,6 +103,11 @@ export interface VolumeAnchor {
   /** Lowercase hashes of WETH-leg swaps already included in totalUsdcAtomic.
    * Missing means those sealed legs have not been folded in yet. */
   wethLegTxHashes?: readonly string[];
+  /** Inclusive block through which the delegated executor was scanned.
+   * Missing means history at or before throughBlock has not been read yet. */
+  delegatedThroughBlock?: bigint;
+  /** Unpriced legs waiting for a USD price. Not included in the totals yet. */
+  pendingLegs?: readonly PendingLeg[];
 }
 
 export interface HubVolume {
@@ -116,7 +120,7 @@ export type SettleResult =
   | { done: false; anchor: VolumeAnchor };
 
 interface Chunk { address: Address; fromBlock: bigint; toBlock: bigint }
-interface RawLog { transactionHash?: Hex; data?: Hex; topics?: Hex[] }
+interface RawLog { transactionHash?: Hex; data?: Hex; topics?: Hex[]; logIndex?: Hex | number | bigint }
 
 export function hubVolumeSources(): HubVolumeSource[] {
   const swap = SWAP_PATH_EXECUTOR_DEPLOYMENT;
@@ -124,6 +128,7 @@ export function hubVolumeSources(): HubVolumeSource[] {
     { address: BASE_MAINNET_EXECUTOR_DEPLOYMENT.executor, fromBlock: BigInt(BASE_MAINNET_EXECUTOR_DEPLOYMENT.deployBlock) },
     ...(swap ? [{ address: swap.executor, fromBlock: BigInt(swap.deployBlock) }] : []),
     { address: SWAP_V2_SEALED_MANIFEST.executor, fromBlock: BigInt(SWAP_V2_SEALED_MANIFEST.deployBlock) },
+    { address: DELEGATED_EXECUTOR, fromBlock: DELEGATED_DEPLOY_BLOCK },
   ];
 }
 
@@ -155,31 +160,73 @@ export async function scanHubVolume(deadline: number, fetchImpl: typeof fetch = 
 }
 
 /**
- * Add SwapExecuted USDC notionals after `anchor`. `done: false` means a
+ * Add executed swap notionals after `anchor`. `done: false` means a
  * hole-free prefix was saved in `anchor` but head was not reached — do not
- * publish that prefix as the live total.
+ * publish that prefix as the live total. Unpriced legs stay on the anchor
+ * and are retried; they are not published as value and they do not erase
+ * stable BUY or SELL legs already read in a completed wave.
  */
 export async function settleHubVolume(deadline: number, fetchImpl: typeof fetch, anchor: VolumeAnchor): Promise<SettleResult | null> {
   const latest = await blockNumber(fetchImpl);
   if (latest === null || Date.now() > deadline) return null;
-  if (latest <= anchor.throughBlock) {
-    const finished = applyMissingSeeds(anchor, new Set());
+
+  const state: ScanState = {
+    total: anchor.totalUsdcAtomic,
+    count: anchor.tradeCount,
+    pending: [...(anchor.pendingLegs ?? [])],
+    seen: new Set<string>(),
+    pricedWeth: new Set((anchor.wethLegTxHashes ?? []).map((hash) => hash.toLowerCase())),
+    ethUsd: undefined,
+    dexPrice8: new Map(),
+    decimalsCache: new Map(),
+  };
+  let through = anchor.throughBlock;
+  let delegatedThrough = anchor.delegatedThroughBlock ?? (DELEGATED_DEPLOY_BLOCK - 1n);
+  let progressed = false;
+
+  const beforePending = state.pending.length;
+  await retryPending(fetchImpl, state);
+  if (state.pending.length !== beforePending) progressed = true;
+
+  const historyEnd = through < latest ? through : latest;
+  if (delegatedThrough < historyEnd && historyEnd >= DELEGATED_DEPLOY_BLOCK) {
+    let cursor = delegatedThrough < DELEGATED_DEPLOY_BLOCK - 1n ? DELEGATED_DEPLOY_BLOCK - 1n : delegatedThrough;
+    while (cursor < historyEnd) {
+      if (Date.now() > deadline) {
+        if (!progressed) return null;
+        return { done: false, anchor: snapshot(anchor, through, state, delegatedThrough) };
+      }
+      const to = cursor + HUB_LOG_SPAN < historyEnd ? cursor + HUB_LOG_SPAN : historyEnd;
+      const from = cursor + 1n < DELEGATED_DEPLOY_BLOCK ? DELEGATED_DEPLOY_BLOCK : cursor + 1n;
+      if (from > to) {
+        cursor = to;
+        delegatedThrough = to;
+        continue;
+      }
+      const logs = await readChunk(fetchImpl, { address: DELEGATED_EXECUTOR, fromBlock: from, toBlock: to }, deadline);
+      if (!logs) {
+        if (!progressed) return null;
+        return { done: false, anchor: snapshot(anchor, through, state, delegatedThrough) };
+      }
+      if (await absorbLogs(fetchImpl, state, logs) === "capped") {
+        if (!progressed) return null;
+        return { done: false, anchor: snapshot(anchor, through, state, delegatedThrough) };
+      }
+      cursor = to;
+      delegatedThrough = to;
+      progressed = true;
+    }
+  }
+
+  if (latest <= through) {
+    if (delegatedThrough < through) delegatedThrough = through;
+    const finished = applyMissingSeeds(snapshot(anchor, through, state, delegatedThrough), state.seen);
     const volume = toVolume(finished);
     return volume ? { done: true, volume, anchor: finished } : null;
   }
 
-  let through = anchor.throughBlock;
   const earliest = hubVolumeSources().reduce((min, source) => source.fromBlock < min ? source.fromBlock : min, through + 1n) - 1n;
   if (through < earliest) through = earliest;
-
-  let total = anchor.totalUsdcAtomic;
-  let count = anchor.tradeCount;
-  const seenLogs = new Set<string>();
-  const pricedWeth = new Set((anchor.wethLegTxHashes ?? []).map((hash) => hash.toLowerCase()));
-  let progressed = false;
-  let ethUsd: bigint | null | undefined;
-  const dexPrice8 = new Map<string, bigint>();
-  const decimalsCache = new Map<string, number>();
 
   while (through < latest) {
     if (Date.now() > deadline) break;
@@ -197,66 +244,129 @@ export async function settleHubVolume(deadline: number, fetchImpl: typeof fetch,
       ? []
       : await mapPool(slices, slices.length, (slice) => readChunk(fetchImpl, slice, deadline));
     if (!groups) break;
-    let addUsdc = 0n;
-    let addCount = 0;
-    const wethLegs: bigint[] = [];
-    const tokenLegs: { token: string; amount: bigint }[] = [];
-    const hashes: string[] = [];
-    for (const log of groups.flat()) {
-      const hash = log.transactionHash?.toLowerCase();
-      if (hash && pricedWeth.has(hash)) continue;
-      const leg = swapLeg(log);
-      if (!leg) continue;
-      if (leg.kind === "usd") addUsdc += leg.amount;
-      else if (leg.kind === "weth") wethLegs.push(leg.amount);
-      else tokenLegs.push({ token: leg.token, amount: leg.amount });
-      addCount += 1;
-      if (hash) hashes.push(hash);
-    }
-    let priced = true;
-    if (wethLegs.length > 0) {
-      if (ethUsd === undefined) ethUsd = await readEthUsd(fetchImpl);
-      if (ethUsd === null) priced = false;
-      else for (const wei of wethLegs) addUsdc += wethWeiToUsdcAtomic(wei, ethUsd);
-    }
-    if (priced) {
-      for (const leg of tokenLegs) {
-        const usd = await tokenLegToUsdcAtomic(fetchImpl, leg.token, leg.amount, dexPrice8, decimalsCache);
-        if (usd === null) {
-          priced = false;
-          break;
-        }
-        addUsdc += usd;
-      }
-    }
-    if (!priced) break;
-    for (const hash of hashes) seenLogs.add(hash);
-    total += addUsdc;
-    count += addCount;
+    if (await absorbLogs(fetchImpl, state, groups.flat()) === "capped") break;
     through = to;
+    if (through > delegatedThrough) delegatedThrough = through;
     progressed = true;
   }
 
   if (through < latest) {
     if (!progressed) return null;
-    return {
-      done: false,
-      anchor: { ...anchor, throughBlock: through, totalUsdcAtomic: total, tradeCount: count },
-    };
+    return { done: false, anchor: snapshot(anchor, through, state, delegatedThrough) };
   }
 
-  const finished = applyMissingSeeds(
-    {
-      throughBlock: latest,
-      totalUsdcAtomic: total,
-      tradeCount: count,
-      seedTxHashes: anchor.seedTxHashes,
-      ...(anchor.wethLegTxHashes ? { wethLegTxHashes: anchor.wethLegTxHashes } : {}),
-    },
-    seenLogs,
-  );
+  if (delegatedThrough < latest) delegatedThrough = latest;
+  const finished = applyMissingSeeds(snapshot(anchor, latest, state, delegatedThrough), state.seen);
   const volume = toVolume(finished);
   return volume ? { done: true, volume, anchor: finished } : null;
+}
+
+interface ScanState {
+  total: bigint;
+  count: number;
+  pending: PendingLeg[];
+  seen: Set<string>;
+  pricedWeth: Set<string>;
+  ethUsd: bigint | null | undefined;
+  dexPrice8: Map<string, bigint>;
+  decimalsCache: Map<string, number>;
+}
+
+function snapshot(anchor: VolumeAnchor, throughBlock: bigint, state: ScanState, delegatedThroughBlock: bigint): VolumeAnchor {
+  return {
+    ...anchor,
+    throughBlock,
+    totalUsdcAtomic: state.total,
+    tradeCount: state.count,
+    delegatedThroughBlock,
+    pendingLegs: state.pending,
+  };
+}
+
+async function retryPending(fetchImpl: typeof fetch, state: ScanState): Promise<void> {
+  if (state.pending.length === 0) return;
+  const kept: PendingLeg[] = [];
+  for (const leg of state.pending) {
+    let amount: bigint;
+    try {
+      amount = BigInt(leg.amount);
+    } catch {
+      continue;
+    }
+    const usd = leg.kind === "weth"
+      ? await priceWeth(fetchImpl, state, amount)
+      : await tokenLegToUsdcAtomic(fetchImpl, leg.token, amount, state.dexPrice8, state.decimalsCache);
+    if (usd === null) kept.push(leg);
+    else {
+      state.total += usd;
+      state.count += 1;
+    }
+  }
+  state.pending = kept;
+}
+
+/** Commit the wave only when every unpriced leg fits in the pending cap. */
+async function absorbLogs(fetchImpl: typeof fetch, state: ScanState, logs: RawLog[]): Promise<"ok" | "capped"> {
+  const draft = {
+    total: state.total,
+    count: state.count,
+    pending: [...state.pending],
+    seen: new Set(state.seen),
+  };
+  const ids = new Set(draft.pending.map((leg) => leg.id));
+  for (const log of logs) {
+    const hash = log.transactionHash?.toLowerCase();
+    const id = logId(log);
+    if (hash && state.pricedWeth.has(hash)) continue;
+    if (ids.has(id)) continue;
+    const leg = swapLeg(log);
+    if (!leg) continue;
+    if (leg.kind === "usd") {
+      draft.total += leg.amount;
+      draft.count += 1;
+      if (hash) draft.seen.add(hash);
+      ids.add(id);
+      continue;
+    }
+    const usd = leg.kind === "weth"
+      ? await priceWeth(fetchImpl, state, leg.amount)
+      : await tokenLegToUsdcAtomic(fetchImpl, leg.token, leg.amount, state.dexPrice8, state.decimalsCache);
+    if (usd === null) {
+      if (draft.pending.length >= PENDING_LEG_CAP) return "capped";
+      draft.pending.push({
+        id,
+        kind: leg.kind,
+        token: leg.kind === "weth" ? WETH : leg.token,
+        amount: leg.amount.toString(),
+      });
+      ids.add(id);
+      if (hash) draft.seen.add(hash);
+      continue;
+    }
+    draft.total += usd;
+    draft.count += 1;
+    if (hash) draft.seen.add(hash);
+    ids.add(id);
+  }
+  state.total = draft.total;
+  state.count = draft.count;
+  state.pending = draft.pending;
+  state.seen = draft.seen;
+  return "ok";
+}
+
+async function priceWeth(fetchImpl: typeof fetch, state: ScanState, wei: bigint): Promise<bigint | null> {
+  if (state.ethUsd === undefined) state.ethUsd = await readEthUsd(fetchImpl);
+  if (state.ethUsd === null) return null;
+  const usd = wethWeiToUsdcAtomic(wei, state.ethUsd);
+  return usd > 0n ? usd : null;
+}
+
+function logId(log: RawLog): string {
+  const hash = log.transactionHash?.toLowerCase() ?? "no-tx";
+  const index = log.logIndex;
+  const suffix = typeof index === "bigint" ? index.toString() : index === undefined ? "0" : String(index).toLowerCase();
+  return `${hash}:${suffix}`;
 }
 
 function applyMissingSeeds(anchor: VolumeAnchor, seenLogs: ReadonlySet<string>): VolumeAnchor {
@@ -303,31 +413,21 @@ async function readChunk(fetchImpl: typeof fetch, chunk: Chunk, deadline: number
   return null;
 }
 
-function swapLeg(log: RawLog): { kind: "usd"; amount: bigint } | { kind: "weth"; amount: bigint } | { kind: "token"; token: string; amount: bigint } | null {
+function swapLeg(log: RawLog): ReturnType<typeof classifyExecutedTrade> {
   if (!log.data || !log.topics || log.topics.length < 1) return null;
   try {
     const decoded = decodeEventLog({ abi: [EVENT], data: log.data, topics: log.topics as [Hex, ...Hex[]] });
     const args = decoded.args as { tokenIn?: Address; tokenOut?: Address; grossAmountIn?: bigint; amountOut?: bigint };
     if (!args.tokenIn || !args.tokenOut || args.grossAmountIn === undefined || args.amountOut === undefined) return null;
-    const tokenIn = args.tokenIn.toLowerCase();
-    const tokenOut = args.tokenOut.toLowerCase();
-    const pegIn = USD_PEG_DECIMALS.get(tokenIn);
-    if (pegIn !== undefined) return { kind: "usd", amount: toUsdAtomic6(args.grossAmountIn, pegIn) };
-    const pegOut = USD_PEG_DECIMALS.get(tokenOut);
-    if (pegOut !== undefined) return { kind: "usd", amount: toUsdAtomic6(args.amountOut, pegOut) };
-    if (tokenIn === WETH) return { kind: "weth", amount: args.grossAmountIn };
-    if (tokenOut === WETH) return { kind: "weth", amount: args.amountOut };
-    return { kind: "token", token: tokenIn, amount: args.grossAmountIn };
+    return classifyExecutedTrade({
+      tokenIn: args.tokenIn,
+      tokenOut: args.tokenOut,
+      grossAmountIn: args.grossAmountIn,
+      amountOut: args.amountOut,
+    });
   } catch {
     return null;
   }
-}
-
-function toUsdAtomic6(amount: bigint, decimals: number): bigint {
-  if (amount <= 0n) return 0n;
-  if (decimals === 6) return amount;
-  if (decimals > 6) return amount / 10n ** BigInt(decimals - 6);
-  return amount * 10n ** BigInt(6 - decimals);
 }
 
 async function tokenLegToUsdcAtomic(

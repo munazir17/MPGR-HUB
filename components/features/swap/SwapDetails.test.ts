@@ -8,7 +8,7 @@ import { buildGoalDraft, detectAutonomousTradeRequest } from "@/lib/autonomy/cha
 const prompt="Buy AAPLc whenever price falls below $200 worth 1 USDC";
 const quote=()=>simulatedExecutorQuote(chatDraftToForm(buildGoalDraft(detectAutonomousTradeRequest(prompt)!,prompt)));
 it("renders one exact fee amount/asset in the costs row, without repeating the approval fee explanation",()=>{
- const html=renderToStaticMarkup(createElement(SwapDetails,{proposal:quote()}));expect(html.match(/Paiger fee/g)).toHaveLength(1);expect(html.match(/mpgr-fee-row/g)).toHaveLength(1);expect(html).toContain("0.0025 USDC");expect(html).toContain("included");expect(html).not.toContain("the executor takes its fee");
+ const html=renderToStaticMarkup(createElement(SwapDetails,{proposal:quote()}));expect(html.match(/0\.25% Trading Fee/g)).toHaveLength(1);expect(html.match(/mpgr-fee-row/g)).toHaveLength(1);expect(html).toContain("0.0025 USDC");expect(html).toContain("included");expect(html).not.toContain("the executor takes its fee");
 });
 it("expired quoted amounts do not claim an executable included/collected fee",()=>{
  const p=quote();p.expiresAt=new Date(Date.now()-1).toISOString();const html=renderToStaticMarkup(createElement(SwapDetails,{proposal:p}));expect(html).toContain("quote expired");expect(html).not.toContain(">included<");
@@ -34,6 +34,6 @@ it("dynamic search explains comparison bounds, partial evidence, gas scope and e
  p.swapRouting={version:1,hops:1,route,pool:"0x7777777777777777777777777777777777777777",blockNumber:"100",blockHash:`0x${"ab".repeat(32)}`,calldataHash:keccak256(p.transaction!.data),selection:"highest-quoted-output",comparisonComplete:false,
  outcomes:routes.map(r=>({key:swapRouteKey(r),state:r.kind===1?"quoted":"unavailable",reason:"OFFLINE_TEST_ONLY",output:r.kind===1?p.toAmount:null})),quoterGasUnits:"10000",executionSimulation:"not-run-wallet-preflight-required"};
  const html=renderToStaticMarkup(createElement(SwapDetails,{proposal:p}));
- expect(html).toContain("Minimum received");expect(html).toContain("Paiger fee");expect(html.match(/mpgr-fee-row/g)).toHaveLength(1);
+ expect(html).toContain("Minimum received");expect(html).toContain("0.25% Trading Fee");expect(html.match(/mpgr-fee-row/g)).toHaveLength(1);
  expect(html).not.toContain("owner-mutable");expect(html).not.toContain("Multi-hop and V4 are unsupported");
 });

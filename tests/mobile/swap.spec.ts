@@ -180,7 +180,7 @@ test("Swap correction: pay first, MAX belongs only to pay, one contextual fee ac
  await expect(page.getByTestId("mpgr-fee-row")).toHaveCount(1); await page.locator("summary").filter({hasText:"Costs & execution details"}).tap(); await expect(page.getByTestId("mpgr-fee-row")).toContainText("0.0025 USDC"); await expect(page.getByTestId("mpgr-fee-row")).toContainText("included in executable route; collection not verified");
  await page.screenshot({path:info.outputPath("pay-first.png"),fullPage:true});
  await page.getByRole("button",{name:"Confirm Swap",exact:true}).tap(); await expect(page.getByTestId("mpgr-fee-row")).toHaveCount(1); await expect(page.getByRole("dialog").getByTestId("mpgr-fee-row")).toHaveCount(1);
- expect((await page.locator("body").textContent())!.match(/Paiger fee/g)).toHaveLength(1); await evidence(page,info,state.trace);
+ expect((await page.locator("body").textContent())!.match(/0\.25% Trading Fee/g)).toHaveLength(1); await evidence(page,info,state.trace);
 });
 test("Swap correction: receive selection never changes pay or silently reverses the pair",async({page},info)=>{
  const state=await setup(page);await quoted(page);

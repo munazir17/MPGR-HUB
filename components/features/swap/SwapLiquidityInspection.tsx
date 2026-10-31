@@ -38,7 +38,7 @@ export function SwapLiquidityInspection({ from, to, authorize }: { from: TradeTo
         {result.observations.filter(o => o.pool && o.status === "active-liquidity").map((o, i) => <div key={`${o.pool}:${i}`} className="rounded-xl bg-black/20 p-2"><p>{o.venue} · {typeof o.key === "boolean" ? o.key ? "stable" : "volatile" : o.venue === "slipstream" ? `spacing ${o.key}` : o.venue === "uniswap-v3" ? `fee tier ${o.key}` : "constant product"}</p><p className="break-all font-mono text-[10px] text-zinc-400">{o.tokenA} ↔ {o.tokenB}</p><a href={`https://basescan.org/address/${o.pool}`} target="_blank" rel="noreferrer" className="block min-h-11 break-all py-2 font-mono text-[10px] text-emerald-300 underline">Pool: {o.pool}</a></div>)}
         <p className="break-words text-zinc-400">{result.scope}</p><p className="text-zinc-400">Base block {result.snapshot.blockNumber}. Refreshable 30-second snapshot.</p>
       </>}
-      <p className="text-amber-200">Discovery only. No amount-specific quote or gas estimate. Trading requires supported methods, permissions, fresh simulation and an atomically verified 25bps fee to the fixed recipient. The current deployed Executor has mutable fee terms; this inspection cannot authorize a new route.</p>
+      <p className="text-amber-200">Discovery only. No amount-specific quote or gas estimate. Trading requires supported methods, permissions, fresh simulation and an atomically verified 0.25% Trading Fee to the fixed recipient. The current deployed Executor has mutable fee terms; this inspection cannot authorize a new route.</p>
     </div>}
   </section>;
 }

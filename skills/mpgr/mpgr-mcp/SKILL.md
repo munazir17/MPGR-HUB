@@ -32,7 +32,7 @@ Call `tools/list`, then only these names:
 
 | Tool | Effect |
 | --- | --- |
-| `mpgr_get_capabilities` | Chains, executor, 25 bps fee, auth modes |
+| `mpgr_get_capabilities` | Chains, executor, 0.25% Trading Fee (25 bps), auth modes |
 | `mpgr_list_tokens` | Allowlisted tokens on `chainId` 8453 or 84532 |
 | `mpgr_get_quote` | Quote only. Returns `quoteId` (about 120s). Legacy allowlisted pairs use the MPGR Executor. Other Base pairs use PaigerSwap V2 when that gate is on. No transaction is sent |
 | `mpgr_prepare_trade` | Unsigned steps for the user's wallet. V2 quotes require `APPROVAL` and return the V2 executor transaction |

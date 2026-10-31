@@ -71,6 +71,18 @@ function usdcSwapLog(hash: string, grossUsdcAtomic: bigint) {
   };
 }
 
+function usdcSellLog(hash: string, amountOut: bigint, logIndex = 1) {
+  return {
+    transactionHash: hash,
+    logIndex,
+    args: {
+      tokenIn: "0x0000000000000000000000000000000000000001",
+      tokenOut: BASE_MAINNET_USDC,
+      grossAmountIn: 50n,
+      amountOut,
+    },
+  };
+}
 function usdcSwapHash(n: number): string {
   return "0x" + n.toString(16).padStart(2, "0").repeat(32);
 }
@@ -140,6 +152,32 @@ describe("GET /api/agent/stats", () => {
     const again = await (await GET()).json();
     expect(again.available).toBe(true);
     expect(h.client.getLogs.mock.calls.length).toBe(callsBefore);
+  });
+
+  it("counts BUY-only, SELL-only and mixed executed USDC, once per log", async () => {
+    const buy = usdcSwapLog(usdcSwapHash(1), 2_000_000n);
+    const sell = usdcSellLog(usdcSwapHash(2), 750_000n);
+    const zeroSell = usdcSellLog(usdcSwapHash(3), 0n, 2);
+    h.client.getLogs.mockResolvedValueOnce([buy, sell, sell, zeroSell]);
+
+    const mixed = await (await GET()).json();
+    expect(mixed.available).toBe(true);
+    expect(mixed.tradeCount).toBe(2 + HISTORICAL_COUNT);
+    expect(mixed.totalValueTradedUsd).toBeCloseTo(Number(2_000_000n + 750_000n + HISTORICAL_USD) / 1_000_000, 6);
+
+    redis.reset();
+    GET = await freshRoute();
+    h.client.getLogs.mockResolvedValueOnce([sell]);
+    const sellOnly = await (await GET()).json();
+    expect(sellOnly.tradeCount).toBe(1 + HISTORICAL_COUNT);
+    expect(sellOnly.totalValueTradedUsd).toBeCloseTo(Number(750_000n + HISTORICAL_USD) / 1_000_000, 6);
+
+    redis.reset();
+    GET = await freshRoute();
+    h.client.getLogs.mockResolvedValueOnce([buy]);
+    const buyOnly = await (await GET()).json();
+    expect(buyOnly.tradeCount).toBe(1 + HISTORICAL_COUNT);
+    expect(buyOnly.totalValueTradedUsd).toBeCloseTo(Number(2_000_000n + HISTORICAL_USD) / 1_000_000, 6);
   });
 
   it("positive cache expires after 60 s and the next request rescans", async () => {

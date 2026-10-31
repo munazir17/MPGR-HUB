@@ -74,6 +74,7 @@ export function buildLlmTxt(registry: Record<ExecutorChainId, ExecutorDeployment
     "7. mpgr_get_trade_status {txHash}, then mpgr_verify_trade {quoteId, txHash}",
     "",
     "## Fee",
+    "- User-facing name: 0.25% Trading Fee. 0.25% = 25 basis points = 25 / 10,000 of the SELL token.",
     `- ${EXECUTOR_DEFAULT_FEE_BPS} bps of the SELL token: fee = floor(sellAmount * ${EXECUTOR_DEFAULT_FEE_BPS} / 10000).`,
     `- Collected in the same transaction as the swap; never a separate transfer. Owner-configurable, hard cap ${EXECUTOR_MAX_FEE_BPS} bps on-chain.`,
     "- If the fee would round to zero the trade is refused (never silently skipped).",

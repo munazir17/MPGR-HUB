@@ -12,6 +12,11 @@ import type { VolumeAnchor } from "@/lib/agent/hub-volume";
  * ETH/USD (see hub-weth-legs.ts). 24 on-chain USDC swaps + that seed +
  * 7 WETH legs = 32 trades. Live reads start at throughBlock + 1 and price
  * any newer WETH leg at scan time.
+ *
+ * The delegated mainnet executor is not part of this sealed total. A cursor
+ * without delegatedThroughBlock backfills that contract from its deploy
+ * block through throughBlock, then continues forward. Do not add those
+ * logs to this constant without a fresh archive read.
  */
 export const HUB_VOLUME_CHECKPOINT = {
   throughBlock: 52_991_695n,
