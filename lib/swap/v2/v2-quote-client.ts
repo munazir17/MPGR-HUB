@@ -148,44 +148,11 @@ export async function requestSwapV2Quote(
   return proposal;
 }
 
-/** Public multi-hop (Kyber / LI.FI) after the executor could not price the pair.
- * A failure here is silence: the caller still surfaces the executor error. */
-async function requestRouteDeskQuote(
-  input: ManualSwapInput,
-  account: Address,
-  signal?: AbortSignal,
-  tokens: readonly TradeTokenRef[] = MANUAL_SWAP_TOKENS,
-): Promise<TradeProposal | null> {
-  try {
-    const response = await fetch("/api/swap/desk", {
-      method: "POST", credentials: "include", cache: "no-store", signal,
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(input),
-    });
-    if (!response.ok) return null;
-    const payload = (await response.json().catch(() => null)) as { proposal?: TradeProposal } | null;
-    const proposal = payload?.proposal;
-    if (!proposal || proposal.provider !== "public-router" || !proposal.transaction) return null;
-    const from = tokens.find((token) => token.address.toLowerCase() === input.fromToken.toLowerCase());
-    const to = tokens.find((token) => token.address.toLowerCase() === input.toToken.toLowerCase());
-    if (!from || !to) return null;
-    if (revalidateTradeProposal(proposal, account).state !== "VALIDATED") return null;
-    if (proposal.from.address.toLowerCase() !== input.fromToken.toLowerCase() ||
-        proposal.to.address.toLowerCase() !== input.toToken.toLowerCase() ||
-        parseHumanTokenAmount(input.amount, proposal.from.decimals)?.toString() !== proposal.fromAmount ||
-        proposal.slippageBps !== input.slippageBps || !manualQuoteFresh(proposal)) return null;
-    if (swapQuotePolicyError(proposal)) return null;
-    if (!swapQuoteFresh(proposal)) return null;
-    return proposal;
-  } catch {
-    return null;
-  }
-}
-
 /** The single quote entry point the swap UI should use.
  * V2 first when (and only when) the server says routing is activated; otherwise
  * V1, unchanged. A V2 "no route" result falls back to V1 so the user still gets
- * a quote from whichever engine can actually serve the pair. */
+ * a quote from whichever fee-enforcing engine can actually serve the pair.
+ * Kyber and LI.FI are not a fallback: they cannot collect the 0.25% fee. */
 export async function requestSwapQuoteWithV2(
   input: ManualSwapInput,
   account: Address,
@@ -204,25 +171,15 @@ export async function requestSwapQuoteWithV2(
       if (error instanceof ManualSwapQuoteError && (error.status === 401 || error.status === 429)) throw error;
       if (error instanceof Error && /does not pass this client/i.test(error.message)) throw error;
       executorError = error;
-      // A finished "no liquidity" verdict does not retry V1. A public multi-hop
-      // may still price the pair. An outage falls through to V1 first.
-      if (error instanceof ManualSwapQuoteError && error.code === "LIQUIDITY_UNAVAILABLE") {
-        const desk = await requestRouteDeskQuote(input, account, signal, tokens);
-        if (desk) return desk;
-        throw error;
-      }
+      // A finished "no liquidity" verdict does not retry V1 or an unfee'd router.
+      if (error instanceof ManualSwapQuoteError && error.code === "LIQUIDITY_UNAVAILABLE") throw error;
       if (error instanceof ManualSwapQuoteError && !["DISCOVERY_UNAVAILABLE", "PROVIDER_ERROR", "EXECUTION_UNAVAILABLE"].includes(error.code)) throw error;
     }
   }
-  // Discovery already failed: price the public routers while V1 is still searching.
-  const deskPromise = executorError ? requestRouteDeskQuote(input, account, signal, tokens) : null;
   try {
-    const v1 = await requestSwapQuote(input, account, signal, tokens, options);
-    return v1;
+    return await requestSwapQuote(input, account, signal, tokens, options);
   } catch (error) {
     if (error instanceof ManualSwapQuoteError && (error.status === 401 || error.status === 429)) throw error;
-    const desk = deskPromise ? await deskPromise : await requestRouteDeskQuote(input, account, signal, tokens);
-    if (desk) return desk;
     if (executorError instanceof Error) throw executorError;
     throw error;
   }

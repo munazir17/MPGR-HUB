@@ -124,7 +124,7 @@ export function buildSwapRiskFacts(input: {
             severity: "warning",
             title: "Router approval required",
             detail:
-              "Your wallet must first approve the public router for the sell amount. Approval is a separate Base transaction. The 0.25% MPGR fee is not taken on this path.",
+              "This public route cannot collect the 0.25% fee in the token you're selling, so it is not available. Nothing will be signed.",
           }
       : input.provider === "aerodrome-slipstream"
         ? {
@@ -186,7 +186,7 @@ export function buildSwapRiskFacts(input: {
           severity: "info",
           title: "Public multi-hop route",
           detail:
-            "The MPGR executor could not price this pair, so the quote comes from Kyber or LI.FI and your wallet signs that router directly. The 0.25% MPGR fee is not collected, because the deployed executor cannot settle this calldata.",
+            "Kyber and LI.FI cannot be proven to collect the 0.25% fee in the sell token, so this route is not prepared and nothing is signed.",
         }
     : input.provider === "aerodrome-slipstream"
       ? {

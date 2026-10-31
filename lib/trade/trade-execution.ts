@@ -44,6 +44,13 @@ import { erc20Abi } from "@/lib/erc20-abi";
 import { config } from "@/lib/wagmi";
 import { withBuilderSuffix } from "@/lib/chain/builder-attribution";
 import { approvalReceiptIdentifies } from "@/lib/swap/swap-mined-call";
+import {
+  APPROVAL_STILL_INSUFFICIENT,
+  APPROVAL_VERIFICATION_DELAYED,
+  APPROVAL_VERIFYING_LABEL,
+  classifyPostApprovalAllowance,
+} from "@/lib/swap/approval-verification";
+import { PUBLIC_ROUTER_FEE_BLOCK } from "@/lib/swap/route-desk";
 import { inspectExecutorSwapTransaction } from "@/lib/executor/executor-intent";
 import { swapPathExecutor } from "@/lib/swap/swap-executor-config";
 import { inspectSwapExecutorTransaction } from "@/lib/swap/swap-executor-intent";
@@ -444,6 +451,13 @@ export async function executeTrade(
       onChange(snapshot);
       return snapshot;
     }
+    // Kyber / LI.FI calldata is not a fee-enforcing executor. Refuse before
+    // any balance read or wallet prompt so the fallback cannot be signed.
+    if (proposal.provider === "public-router") {
+      const snapshot = fail("EXECUTION_UNAVAILABLE", PUBLIC_ROUTER_FEE_BLOCK);
+      onChange(snapshot);
+      return snapshot;
+    }
 
     // Blocked BEFORE the first signature: no approval gas, no swap gas,
     // nothing broadcast for a swap this wallet cannot fund.
@@ -591,13 +605,27 @@ export async function executeTrade(
             return { ...snapshot, approvalHash };
           }
           if (input.safety) {
+            onChange({
+              state: "APPROVING",
+              approvalHash,
+              swapHash: null,
+              error: null,
+              stepLabel: APPROVAL_VERIFYING_LABEL,
+            });
             const allowance = input.safety.readAllowance ? await input.safety.readAllowance(proposal, receipt)
               : await readLiveAllowance(account, proposal.from.address, proposal.permit2Spender);
-            if (allowance === null || allowance < BigInt(proposal.fromAmount)) {
-              const snapshot = { ...fail(allowance === null ? "PROVIDER_ERROR" : "APPROVAL_FAILED", allowance === null
-                ? "Approval confirmed, but allowance could not be verified. Retry the allowance check; do not repeat approval blindly."
-                : "Approval confirmed, but the actual allowance is still insufficient. Check the token approval and retry."), approvalHash };
-              onChange(snapshot); return snapshot;
+            const verdict = classifyPostApprovalAllowance(allowance, BigInt(proposal.fromAmount));
+            if (verdict !== "verified") {
+              const delayed = verdict === "delayed";
+              const snapshot = {
+                ...fail(
+                  delayed ? "PROVIDER_ERROR" : "APPROVAL_FAILED",
+                  delayed ? APPROVAL_VERIFICATION_DELAYED : APPROVAL_STILL_INSUFFICIENT,
+                ),
+                approvalHash,
+              };
+              onChange(snapshot);
+              return snapshot;
             }
           }
         } catch (err) {

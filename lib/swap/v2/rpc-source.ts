@@ -2,7 +2,7 @@ import "server-only";
 import { directRpcHints } from "./rpc-hints";
 import { fetchPairDepthHint } from "./depth-hint";
 import { factoryIndexPools, PARTIAL_INDEX_VENUE_KINDS, type FactoryIndexResult } from "./rpc-index";
-import { discoverV4Pools, V4_INITIALIZE_EVENT, V4DiscoveryCache, type V4DiscoveryOptions, type V4SearchResult } from "./rpc-v4";
+import { discoverV4Pools, isCapacityError, isLogRangeError, V4_INITIALIZE_EVENT, V4DiscoveryCache, type V4DiscoveryOptions, type V4SearchResult } from "./rpc-v4";
 import { decodeFunctionResult, encodeFunctionData, parseAbi, parseAbiItem, zeroAddress, type Address, type PublicClient } from "viem";
 import { SWAP_PATH_VENUES } from "../swap-executor-config";
 import { asset, V4_MANAGER, V2QuoteError, type CandidateOutcome, type DiscoveryStage, type LiquiditySource, type Pool } from "./discovery";
@@ -438,10 +438,12 @@ export class RpcV2LiquiditySource implements LiquiditySource {
               }
             } catch (error) {
               if (error instanceof V2QuoteError) throw error;
-              // Only explicit range/size errors warrant subdivision. Network,
-              // authorization and rate-limit failures must not fan out requests.
-              const text = error instanceof Error ? error.message : "";
-              if (toBlock - fromBlock < 1n || !/range|too many|more than|response size|limit.*block/i.test(text)) throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "Canonical pool log query unavailable");
+              // Range refusals are nested on viem's cause ("invalid params" on
+              // the surface, "10 block range" underneath). Shrinking is only
+              // valid for that case. A rate limit must not fan out.
+              if (isCapacityError(error) || toBlock - fromBlock < 1n || !isLogRangeError(error)) {
+                throw new V2QuoteError("DISCOVERY_UNAVAILABLE", "Canonical pool log query unavailable");
+              }
               const mid = (fromBlock + toBlock) / 2n; await scan(fromBlock, mid); await scan(mid + 1n, toBlock);
             }
           };

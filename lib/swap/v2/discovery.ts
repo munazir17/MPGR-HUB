@@ -345,7 +345,7 @@ const BRIDGE_IMPROVEMENT_BPS = 500n;
 const SUSPECT_IMPACT_BPS = 500;
 /** The v4 rescue is allowed to improve a thin quote. It is not allowed to
  * hold the response open: a stuck log scan keeps the getter/factory route. */
-const V4_RESCUE_BUDGET_MS = 5_000;
+const V4_RESCUE_BUDGET_MS = 12_000;
 
 function withBudget<T>(work: Promise<T>, ms: number): Promise<T | null> {
   return new Promise((resolve, reject) => {

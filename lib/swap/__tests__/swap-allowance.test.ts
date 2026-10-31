@@ -49,7 +49,23 @@ it.each(["spender", "amount", "token", "wallet", "value"])("wrong mined approval
 });
 it("reorged receipt is unknown", async () => { m.block.mockResolvedValue({ number: 101n, hash: `0x${"cd".repeat(32)}` }); expect(await readSwapAllowance(p, receipt)).toBeNull(); });
 it("head changes during read is unknown", async () => { m.block.mockResolvedValueOnce({ number: 100n, hash }).mockResolvedValueOnce({ number: 101n, hash }).mockResolvedValueOnce({ number: 101n, hash: `0x${"cd".repeat(32)}` }); expect(await readSwapAllowance(p, receipt)).toBeNull(); });
-it("failed/invalid RPC allowance is unknown", async () => { m.read.mockRejectedValue(new Error("RPC failure")); expect(await readSwapAllowance(p, receipt)).toBeNull(); });
+it("failed/invalid RPC allowance is unknown after bounded retries, never insufficient", async () => {
+  vi.useFakeTimers();
+  m.read.mockRejectedValue(new Error("RPC failure"));
+  const result = readSwapAllowance(p, receipt);
+  await vi.runAllTimersAsync();
+  expect(await result).toBeNull();
+});
+it("retries a temporary allowance read instead of treating the confirmed approval as failed", async () => {
+  vi.useFakeTimers();
+  m.read
+    .mockRejectedValueOnce(new Error("timeout"))
+    .mockRejectedValueOnce(new Error("timeout"))
+    .mockImplementation(async (_c, r) => r.blockNumber == null ? 0n : 1000000n);
+  const result = readSwapAllowance(p, receipt);
+  await vi.runAllTimersAsync();
+  expect(await result).toBe(1000000n);
+});
 it("already-approved proposals without a spender hint still read the actual Executor allowance", async () => { expect(await readSwapAllowance({ ...p, permit2Spender: null })).toBe(1000000n); });
 
 // Swap-path proposals (deployed fixed-fee Swap executor): the spender is

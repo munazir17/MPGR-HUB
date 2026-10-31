@@ -56,6 +56,26 @@ describe("Swap-only stricter safety on the existing execution controller", () =>
   });
   it("sufficient actual allowance skips an obsolete approval flag", async () => { allowance = BigInt(proposal.fromAmount); m.send.mockReset().mockResolvedValue(h2); expect((await run()).state).toBe("SUCCESS"); expect(m.send).toHaveBeenCalledTimes(1); });
   it("receipt success with still-insufficient allowance stops before swap", async () => { m.wait.mockResolvedValue({ status: "success", transactionHash: h1, from: proposal.taker, to: proposal.from.address }); const result = await run(); expect(result.error?.message).toMatch(/allowance.*insufficient/); expect(m.send).toHaveBeenCalledTimes(1); });
+  it("a confirmed approval whose allowance read is delayed is not an approval failure and does not send again", async () => {
+    const result = await executeTrade({
+      proposal, currentAccount: proposal.taker, currentChainId: 8453, confirmationState: "READY_FOR_CONFIRMATION",
+      safety: { ...safety, readAllowance: async () => null },
+    }, () => {});
+    expect(result.approvalHash).toBe(h1);
+    expect(result.swapHash).toBeNull();
+    expect(result.error?.code).toBe("PROVIDER_ERROR");
+    expect(result.error?.code).not.toBe("APPROVAL_FAILED");
+    expect(result.error?.message).toMatch(/approval transaction is confirmed/i);
+    expect(result.error?.message).not.toMatch(/could not be verified|do not repeat approval/i);
+    expect(m.send).toHaveBeenCalledTimes(1);
+  });
+  it("refuses Kyber or LI.FI calldata before any wallet request", async () => {
+    proposal.provider = "public-router";
+    const result = await run();
+    expect(result.error?.message).toMatch(/0\.25%/);
+    expect(result.swapHash).toBeNull();
+    expect(m.send).not.toHaveBeenCalled();
+  });
   it("approval rejection is cancelled, not on-chain failure; retry can execute", async () => { m.send.mockReset().mockRejectedValueOnce(new Error("User rejected request")); expect((await run()).error?.message).toMatch(/Approval cancelled/); m.send.mockResolvedValueOnce(h1).mockResolvedValueOnce(h2); expect((await run()).state).toBe("SUCCESS"); });
   it("approval revert stops; keeps approval hash distinct, no swap hash", async () => { m.wait.mockResolvedValue({ status: "reverted", transactionHash: h1, from: proposal.taker, to: proposal.from.address }); const r = await run(); expect(r).toMatchObject({ state: "ERROR", approvalHash: h1, swapHash: null }); expect(m.send).toHaveBeenCalledTimes(1); });
   it("swap rejection retains successful allowance and retry never approves again", async () => {
