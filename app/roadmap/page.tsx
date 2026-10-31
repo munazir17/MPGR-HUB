@@ -28,7 +28,7 @@ import {
 export const metadata: Metadata = {
   title: "Roadmap — MPGR HUB",
   description:
-    "The MPGR HUB roadmap: AI agent, onchain execution, x402, gaming, rewards, staking, token lock, Base expansion, security and developer ecosystem — labelled LIVE, IN PROGRESS, PLANNED or LONG-TERM VISION.",
+    "The MPGR HUB roadmap: AI agent, MCP, voice, onchain execution, x402, gaming, rewards, staking, token lock, Base expansion, security and developer ecosystem — labelled LIVE, IN PROGRESS, PLANNED or LONG-TERM VISION.",
 };
 
 const STATUS_MEANING: Record<RoadmapStatus, string> = {

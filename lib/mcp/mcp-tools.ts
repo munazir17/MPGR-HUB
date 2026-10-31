@@ -46,7 +46,7 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
     name: "mpgr_get_capabilities",
     title: "Discover MPGR trading capabilities",
     description:
-      "Returns supported chains, the deployed MPGR Executor, fee policy (25 bps of the sell token, collected in the same tx), authorization modes, providers and the required trade flow. Call first.",
+      "Returns supported chains, the deployed MPGR Executor, fee policy (0.25% Trading Fee = 25 bps = 25/10000 of the sell token, collected in the same tx), authorization modes, providers and the required trade flow. Call first.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     handler: (deps) => getCapabilities(deps),
@@ -63,7 +63,7 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
     name: "mpgr_get_quote",
     title: "Quote a swap (exact fee included)",
     description:
-      "Quotes selling an exact amount. Returns expected/min output, the exact MPGR fee (floor(sellAmount*feeBps/10000) of the sell token), route, and a signed quoteId valid for 120s. Does not sign or send anything.",
+      "Quotes selling an exact amount. Returns expected/min output, the exact 0.25% Trading Fee (floor(sellAmount*feeBps/10000) of the sell token; 25 bps), route, and a signed quoteId valid for 120s. Does not sign or send anything.",
     inputSchema: {
       type: "object",
       properties: {

@@ -80,3 +80,23 @@ A change is done when:
 ## Archive note
 
 The supplied source archive did not contain `package-lock.json`, so this remediation cannot honestly claim a locked-install result from the supplied baseline. Before merging, run `npm install` once to generate and review the lockfile, then change CI back to `npm ci` and require the lockfile in reviews.
+
+## Base guidance
+
+Official source: [https://base.org/AGENTS.md](https://base.org/AGENTS.md) (index of first-party Base routes, generated for the Base website) and [https://docs.base.org/AGENTS.md](https://docs.base.org/AGENTS.md) (docs index). This project does not copy those files. MPGR HUB is not Base-certified, partnered, or endorsed.
+
+Adopted, where it matches this repository:
+
+- Base mainnet is chain id `8453`. Public RPC `https://mainnet.base.org`. Explorer `https://basescan.org`.
+- Prefer first-party docs at `https://docs.base.org` (markdown and `llms.txt`) over third-party chain writeups.
+- Wallet signing stays in the user wallet. Do not embed keys. Simulate, show the exact effect, then wait for confirmation.
+- Use integer amounts for token math. Verify receipts. Do not treat a quote as an execution.
+- Keep tests around fee, slippage, and authorization. Do not weaken them to go green.
+
+Conflicts with this repository (project rules win):
+
+- Base's site index also documents Sepolia (`84532`). MPGR HUB product paths are mainnet-only. Do not add a testnet product chain from that index.
+- Do not redesign PaigerSwap, the executor, or the fee. The fee stays `floor(sellAmount * 25 / 10000)` of the sell token, recipient unchanged. User-facing copy calls this the **0.25% Trading Fee** (25 bps = 25/10,000).
+- Voice and MCP may prepare a trade. They must not sign or broadcast.
+- Do not claim a ChatGPT or Claude connector is live unless this repo contains a verified integration. It does not.
+

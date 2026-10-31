@@ -499,7 +499,9 @@ export default function WhitepaperPage() {
           Before signing, the confirmation surface shows deterministic risk facts:
           unverified token, no liquidity, incomplete simulation, insufficient
           balance, irreversibility and network. These are computed from the quote
-          and the catalog — never guessed.
+          and the catalog — never guessed. Executor and PaigerSwap swaps disclose
+          a <Strong>0.25% Trading Fee</Strong> (0.25% = 25 basis points = 25 /
+          10,000 of the sell token), collected once inside the swap.
         </P>
         <P>
           See <TLink href="/docs#trading">Docs → trading</TLink> and{" "}
@@ -915,6 +917,8 @@ export default function WhitepaperPage() {
             { href: "/roadmap#ai-agent", label: "AI Agent", note: "What the Agent can do today and what comes next." },
             { href: "/roadmap#mpgr-run", label: "MPGR Run", note: "Verification, XP and the financial-reward gates." },
             { href: "/roadmap#x402", label: "x402 & payments", note: "Agentic payment scope and future metering." },
+            { href: "/roadmap#mcp", label: "MCP", note: "Unsigned quote and prepare. External clients are not a live connector." },
+            { href: "/roadmap#voice-ai", label: "Voice", note: "Transcript only. Voice never signs." },
             { href: "/roadmap#security-audit", label: "Security & auditing", note: "What is enforced, and what is still open." },
           ]}
         />

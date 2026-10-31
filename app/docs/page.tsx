@@ -51,6 +51,8 @@ const TOC: readonly TocItem[] = [
   { id: "protocols", label: "Protocols & actions" },
   { id: "research", label: "Research & portfolio" },
   { id: "trading", label: "Trading & swaps" },
+  { id: "mcp", label: "MCP" },
+  { id: "voice", label: "Voice" },
   { id: "tokenized-stocks", label: "Tokenized stocks (B20)" },
   { id: "x402", label: "x402 payments" },
   { id: "mpgr-run", label: "MPGR Run" },
@@ -724,6 +726,30 @@ export default function DocsPage() {
       </InfoSection>
 
       {/* ---------------------------------------------------------------- */}
+      <InfoSection id="mcp" title="MCP">
+        <P>
+          <Code>POST /api/mcp</Code> is a stateless MCP server. It can list
+          tokens, quote a swap, and prepare an unsigned transaction. It does
+          not sign and it does not hold a wallet. Mainnet MCP trading stays
+          disabled unless the operator sets{" "}
+          <Code>MPGR_MCP_ENABLE_BASE_MAINNET</Code>. ChatGPT, Claude, and other
+          external MCP clients are <Strong>not</Strong> a verified live
+          connector. See <TLink href="/roadmap#mcp">Roadmap → MCP</TLink>. The
+          fee on these quotes is the <Strong>0.25% Trading Fee</Strong> (25
+          basis points = 25 / 10,000 of the sell token), taken inside the swap.
+        </P>
+      </InfoSection>
+
+      <InfoSection id="voice" title="Voice">
+        <P>
+          Speech-to-text can place a transcript in the Agent composer. That path
+          is in progress: the microphone is still blocked by the site
+          Permissions-Policy, and there is no text-to-speech review. Voice
+          cannot sign, broadcast, or skip the wallet prompt. See{" "}
+          <TLink href="/roadmap#voice-ai">Roadmap → Voice-driven AI trading</TLink>.
+        </P>
+      </InfoSection>
+
       <InfoSection id="tokenized-stocks" title="Tokenized stocks (B20)">
         <P>
           Coinbase B20 tokenized stocks are supported as{" "}

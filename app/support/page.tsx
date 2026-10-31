@@ -222,8 +222,15 @@ export default function SupportPage() {
             Slipstream USDC pools, not CDP or 0x, and there is no retail mint path.
           </LI>
           <LI>
+            <Strong>0.25% Trading Fee.</Strong> PaigerSwap and the MPGR Executor
+            collect 0.25% of the sell token inside the swap (25 basis points,
+            25 / 10,000). You do not send a second fee transaction. If a route
+            cannot collect that fee, it is not offered as a fee-free swap.
+          </LI>
+          <LI>
             <Strong>Reverted swap.</Strong> Usually slippage moved against you
-            between quote and execution. Retry with a fresh quote.
+            between quote and execution. Retry with a fresh quote. A reverted
+            transaction is not counted as traded volume.
           </LI>
         </UL>
         <P>

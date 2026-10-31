@@ -164,7 +164,7 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
     {addressSearch && !exact && <p role="alert" className="text-xs text-amber-300">Invalid address. Paste 0x and 40 hexadecimal characters.</p>}
     {!addressSearch && !results.length && <p className="py-5 text-sm text-zinc-400">No results. Paste an exact Base contract to validate a token.</p>}
     {addressSearch && exact && !imported && <div className="flex items-center gap-3 rounded-2xl border border-amber-300/15 bg-amber-300/5 p-3">
-      <p className="min-w-0 flex-1 text-xs text-amber-100">This contract can be bought or sold when a route has liquidity. The 0.25% fee still applies.</p>
+      <p className="min-w-0 flex-1 text-xs text-amber-100">This contract can be bought or sold when a route has liquidity. The 0.25% Trading Fee still applies.</p>
       <button type="button" disabled={busy} onClick={() => void validate()} className="min-h-11 shrink-0 rounded-xl bg-white/10 px-3 text-sm font-medium">{busy ? <span className="flex items-center gap-2"><Loader2 size={16} className="animate-spin" />Validating…</span> : sessionExpired ? "Sign in and retry" : "Validate Base token"}</button>
     </div>}
     {!addressSearch && search.trim().length >= 2 && <button type="button" disabled={busy} onClick={() => void discover()} className="min-h-11 w-full rounded-xl bg-white/10 px-3 text-sm">{busy ? "Checking token list…" : sessionExpired ? "Sign in and search Base tokens" : "Search more Base tokens"}</button>}
@@ -187,6 +187,6 @@ export function TokenSelector({ tokens, selected, onSelect, onClose, authorize, 
       if (left !== right) return right - left;
       return tokens.findIndex((token) => token.address.toLowerCase() === a.address.toLowerCase()) - tokens.findIndex((token) => token.address.toLowerCase() === b.address.toLowerCase());
     }).map(option)}{imported && tab === "all" && !results.some(t => t.address.toLowerCase() === imported.address.toLowerCase()) && option(imported)}</div>
-    {(imported || results.some(t => !t.verified)) && <p className="rounded-xl bg-amber-300/5 p-3 text-xs text-amber-200">Import is not endorsement. A live quote still has to find liquidity, and every executed swap collects the 0.25% Paiger fee.</p>}
+    {(imported || results.some(t => !t.verified)) && <p className="rounded-xl bg-amber-300/5 p-3 text-xs text-amber-200">Import is not endorsement. A live quote still has to find liquidity, and every executed swap collects the 0.25% Trading Fee.</p>}
   </SwapDialog>;
 }

@@ -39,7 +39,11 @@ function json(body: unknown, status = 200) {
 }
 
 function anchorAt(throughBlock: bigint, totalUsdcAtomic = 5_000_000n, tradeCount = 4): VolumeAnchor {
-  return { throughBlock, totalUsdcAtomic, tradeCount, seedTxHashes: SEEDS };
+  return { throughBlock, totalUsdcAtomic, tradeCount, seedTxHashes: SEEDS, delegatedThroughBlock: throughBlock, pendingLegs: [] };
+}
+
+function tipBlock(sources = hubVolumeSources()): bigint {
+  return sources.reduce((max, source) => source.fromBlock > max ? source.fromBlock : max, 0n);
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -55,6 +59,7 @@ describe("scanHubVolume", () => {
       "0xd982726e28275661f8ab64054e6b17a70a63505a",
       "0xbc4de809b4b72bce8f61c87dac6be12e3f7c6b3e",
       "0x4be1154440b26145d76608d41d403a33e76b9d0a",
+      "0x39b1c6ea88a01e70cbf4899bf3cefb2c43cd32bb",
     ]);
     const head = sources.reduce((max, source) => source.fromBlock > max ? source.fromBlock : max, 0n) + 10n;
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
@@ -92,7 +97,7 @@ describe("scanHubVolume", () => {
 describe("settleHubVolume", () => {
   it("adds only blocks after the anchor and does not count historical seeds twice", async () => {
     const sources = hubVolumeSources();
-    const through = sources[sources.length - 1].fromBlock;
+    const through = tipBlock(sources);
     const head = through + 10n;
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { method: string; params: [{ address?: string; fromBlock?: string }] };
@@ -117,7 +122,7 @@ describe("settleHubVolume", () => {
 
   it("uses the second archive when the first is rate limited", async () => {
     const sources = hubVolumeSources();
-    const through = sources[sources.length - 1].fromBlock;
+    const through = tipBlock(sources);
     const head = through + 4n;
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { method: string; params: [{ address?: string }] };
@@ -138,21 +143,22 @@ describe("settleHubVolume", () => {
 
   it("keeps a hole-free prefix but does not call it done when a later wave fails", async () => {
     const sources = hubVolumeSources();
-    const through = sources[sources.length - 1].fromBlock;
+    const through = tipBlock(sources);
     const head = through + 5_010n;
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { method: string; params: [{ fromBlock?: string }] };
       if (body.method === "eth_blockNumber") return json({ result: toHex(head) });
       const fromBlock = BigInt(body.params[0].fromBlock ?? "0x0");
       if (fromBlock > through + 5_000n) return json({ error: { message: "rate limit" } }, 429);
-      return json({ result: [log("0x" + "77".repeat(32), BASE_MAINNET_USDC, OTHER, 100_000n, 1n)] });
+      const address = (body.params[0] as { address?: string }).address?.toLowerCase() ?? "00";
+      return json({ result: [log("0x" + address.slice(2, 4).padEnd(64, "7"), BASE_MAINNET_USDC, OTHER, 100_000n, 1n)] });
     });
     const settled = await settleHubVolume(Date.now() + 5_000, fetchImpl as typeof fetch, anchorAt(through, 0n, 0));
     expect(settled?.done).toBe(false);
     if (!settled || settled.done) return;
     expect(settled.anchor.throughBlock).toBe(through + 5_000n);
-    expect(settled.anchor.totalUsdcAtomic).toBe(300_000n);
-    expect(settled.anchor.tradeCount).toBe(3);
+    expect(settled.anchor.totalUsdcAtomic).toBe(400_000n);
+    expect(settled.anchor.tradeCount).toBe(4);
   });
 
   it("ignores a cursor behind the checkpoint or with a smaller total", () => {
@@ -198,7 +204,7 @@ describe("WETH-leg pricing", () => {
 
   it("adds a new WETH leg at the Chainlink price and skips a sealed hash", async () => {
     const sources = hubVolumeSources();
-    const through = sources[sources.length - 1].fromBlock;
+    const through = tipBlock(sources);
     const head = through + 4n;
     const hash = "0x" + "99".repeat(32);
     const price = (2_000n * 10n ** 8n).toString(16).padStart(64, "0");
@@ -241,7 +247,7 @@ describe("any-token pricing", () => {
 
   it("prices an unlisted token from decimals() and does not advance when the price is missing", async () => {
     const sources = hubVolumeSources();
-    const through = sources[sources.length - 1].fromBlock;
+    const through = tipBlock(sources);
     const head = through + 4n;
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       if (String(url).includes("dexscreener.com")) return dex(OTHER, "2.5");
@@ -263,6 +269,63 @@ describe("any-token pricing", () => {
       if (String(url).includes("dexscreener.com")) return json({ pairs: [] }, 200);
       return fetchImpl(url, init);
     });
-    expect(await settleHubVolume(Date.now() + 5_000, blocked as typeof fetch, anchorAt(through, 1_000_000n, 1))).toBeNull();
+    const held = await settleHubVolume(Date.now() + 5_000, blocked as typeof fetch, anchorAt(through, 1_000_000n, 1));
+    expect(held?.done).toBe(true);
+    if (!held?.done) return;
+    expect(held.volume.tradeCount).toBe(1);
+    expect(held.volume.totalValueTradedUsd).toBeCloseTo(1, 6);
+    expect(held.anchor.pendingLegs).toHaveLength(1);
+    expect(held.anchor.pendingLegs?.[0]?.kind).toBe("token");
+  });
+
+  it("counts BUY-only, SELL-only and mixed executed values, and keeps an unpriced SELL pending", async () => {
+    const sources = hubVolumeSources();
+    const through = tipBlock(sources);
+    const head = through + 4n;
+    const delegated = sources.find((source) => source.address.toLowerCase() === "0x39b1c6ea88a01e70cbf4899bf3cefb2c43cd32bb");
+    expect(delegated).toBeTruthy();
+    const buy = log("0x" + "b1".repeat(32), BASE_MAINNET_USDC, OTHER, 2_000_000n, 1n);
+    const sell = log("0x" + "c2".repeat(32), OTHER, BASE_MAINNET_USDC, 9n, 750_000n);
+    const zeroSell = log("0x" + "d3".repeat(32), OTHER, BASE_MAINNET_USDC, 9n, 0n);
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; params: [{ address?: string }] };
+      if (body.method === "eth_blockNumber") return json({ result: toHex(head) });
+      const address = body.params[0].address?.toLowerCase();
+      if (address === sources[0].address.toLowerCase()) return json({ result: [buy] });
+      if (address === sources[1].address.toLowerCase()) return json({ result: [sell, zeroSell] });
+      return json({ result: [] });
+    });
+    const mixed = await settleHubVolume(Date.now() + 5_000, fetchImpl as typeof fetch, anchorAt(through, 0n, 0));
+    expect(mixed?.done).toBe(true);
+    if (!mixed?.done) return;
+    expect(mixed.volume.tradeCount).toBe(2);
+    expect(mixed.volume.totalValueTradedUsd).toBeCloseTo(2.75, 6);
+
+    const sellOnly = await settleHubVolume(Date.now() + 5_000, vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; params: [{ address?: string }] };
+      if (body.method === "eth_blockNumber") return json({ result: toHex(head) });
+      if (body.params[0].address?.toLowerCase() === sources[1].address.toLowerCase()) return json({ result: [sell] });
+      return json({ result: [] });
+    }) as typeof fetch, anchorAt(through, 0n, 0));
+    expect(sellOnly?.done).toBe(true);
+    if (!sellOnly?.done) return;
+    expect(sellOnly.volume.tradeCount).toBe(1);
+    expect(sellOnly.volume.totalValueTradedUsd).toBeCloseTo(0.75, 6);
+
+    const backfillAnchor: VolumeAnchor = { throughBlock: through, totalUsdcAtomic: 0n, tradeCount: 0, seedTxHashes: SEEDS };
+    const historicalSell = log("0x" + "e4".repeat(32), OTHER, USDT, 4n, 400_000n);
+    const backfill = await settleHubVolume(Date.now() + 5_000, vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; params: [{ address?: string; fromBlock?: string; toBlock?: string }] };
+      if (body.method === "eth_blockNumber") return json({ result: toHex(head) });
+      const address = body.params[0].address?.toLowerCase();
+      const fromBlock = BigInt(body.params[0].fromBlock ?? "0x0");
+      if (address === delegated!.address.toLowerCase() && fromBlock === delegated!.fromBlock) return json({ result: [historicalSell] });
+      return json({ result: [] });
+    }) as typeof fetch, backfillAnchor);
+    expect(backfill?.done).toBe(true);
+    if (!backfill?.done) return;
+    expect(backfill.volume.tradeCount).toBe(1);
+    expect(backfill.volume.totalValueTradedUsd).toBeCloseTo(0.4, 6);
+    expect(backfill.anchor.delegatedThroughBlock).toBe(head);
   });
 });

@@ -92,7 +92,7 @@ beforeEach(() => vi.stubEnv("MPGR_AGENT_FEE_RECIPIENT", FEE_WALLET));
 afterEach(() => vi.unstubAllEnvs());
 
 describe("consumer swap confirmation (presentation only; no wallet calls)", () => {
-  it("shows the executor fee as a plain 'MPGR fee (0.25%)  0.005 USDC' row", () => {
+  it("shows the executor fee as a plain '0.25% Trading Fee  0.005 USDC' row", () => {
     const html = render({ proposal: executorProposal() });
     expect(html).toContain("Confirm swap");
     expect(html).toContain("2 USDC");
@@ -101,7 +101,7 @@ describe("consumer swap confirmation (presentation only; no wallet calls)", () =
     expect(html).toContain("0.000792 WETH");
     expect(html).toContain("Base");
     expect(html).toContain("1%");
-    expect(html).toContain("MPGR fee (0.25%)");
+    expect(html).toContain("0.25% Trading Fee");
     expect(html).toContain("0.005 USDC");
     expect(html).toContain("0xE0e0…486e");
     expect(html).toContain("Your wallet signs and sends this transaction. MPGR never has access to your private key.");
@@ -117,7 +117,7 @@ describe("consumer swap confirmation (presentation only; no wallet calls)", () =
     expect(html).not.toContain("separate fee");
     expect(html).not.toContain("after the swap");
     // The fee itself is still disclosed, exactly once, next to its amount.
-    expect(html.match(/MPGR fee/g)).toHaveLength(1);
+    expect(html.match(/0\.25% Trading Fee/g)).toHaveLength(1);
   });
 
   it("shows a non-executor route without inventing an MPGR fee", () => {

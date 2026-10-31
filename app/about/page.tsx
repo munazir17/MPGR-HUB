@@ -162,6 +162,10 @@ export default function AboutPage() {
         <P>
           Full detail: <TLink href="/docs#agent">Docs → MPGR Agent</TLink> ·{" "}
           <TLink href="/whitepaper#mpgr-agent">Whitepaper → the MPGR Agent</TLink>
+          . Executed swaps that use the MPGR Executor or PaigerSwap show a{" "}
+          <Strong>0.25% Trading Fee</Strong>. MCP quote/prepare and voice input
+          are described on the <TLink href="/roadmap#mcp">roadmap</TLink> — voice
+          never signs, and external MCP chat clients are not a live connector.
         </P>
       </InfoSection>
 

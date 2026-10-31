@@ -5,10 +5,12 @@ import { NextResponse } from "next/server";
 import { parseAbiItem } from "viem";
 import { getTradePublicClient } from "@/lib/trade/trade-public-client";
 import { getRedis } from "@/lib/api/redis";
-import { BASE_MAINNET_EXECUTOR_DEPLOYMENT, BASE_MAINNET_USDC } from "@/lib/executor/executor-config";
+import { BASE_MAINNET_EXECUTOR_DEPLOYMENT } from "@/lib/executor/executor-config";
 import { VERIFIED_HISTORICAL_AGENT_TRADES } from "@/lib/agent/agent-volume-history";
 import { checkpointAnchor } from "@/lib/agent/hub-volume-checkpoint";
+import { classifyExecutedTrade } from "@/lib/agent/executed-trade-value";
 import { anchorFromCursor, foldPricedWethLegs, settleHubVolume, type VolumeAnchor } from "@/lib/agent/hub-volume";
+import type { PendingLeg } from "@/lib/agent/executed-trade-value";
 
 // Public "total value traded" analytics for the Agent panel.
 //
@@ -62,7 +64,7 @@ export const maxDuration = 60;
 const CACHE_KEY = "mpgr:agent:stats:v2";
 const NEGATIVE_KEY = "mpgr:agent:stats:unavailable:v1";
 const LOCK_KEY = "mpgr:agent:stats:lock:v1";
-const HUB_CURSOR_KEY = "mpgr:hub:volume:v1";
+const HUB_CURSOR_KEY = "mpgr:hub:volume:v2";
 const HUB_CURSOR_TTL_SECONDS = 30 * 24 * 60 * 60;
 const HUB_STALE_MS = 6 * 60 * 60 * 1000;
 const CACHE_TTL_SECONDS = 60;
@@ -404,13 +406,15 @@ async function scanRange(
       for (const log of logs) {
         const { tokenIn, tokenOut, grossAmountIn, amountOut } = log.args;
         if (!tokenIn || !tokenOut || grossAmountIn === undefined || amountOut === undefined) continue;
-
-        const inputIsUsdc = tokenIn.toLowerCase() === BASE_MAINNET_USDC.toLowerCase();
-        const outputIsUsdc = tokenOut.toLowerCase() === BASE_MAINNET_USDC.toLowerCase();
-        if (!inputIsUsdc && !outputIsUsdc) continue;
-
-        totalUsdcAtomic += inputIsUsdc ? grossAmountIn : amountOut;
+        const leg = classifyExecutedTrade({ tokenIn, tokenOut, grossAmountIn, amountOut });
+        // This test/client path has no USD oracle. Stable BUY and SELL count
+        // here; WETH and other token legs are priced by settleHubVolume.
+        if (!leg || leg.kind !== "usd") continue;
+        const id = `${(log.transactionHash ?? "").toLowerCase()}:${log.logIndex ?? "0"}`;
+        if (txHashes.has(id)) continue;
+        totalUsdcAtomic += leg.amount;
         tradeCount += 1;
+        txHashes.add(id);
         if (log.transactionHash) txHashes.add(log.transactionHash.toLowerCase());
       }
     } catch (error) {
@@ -521,6 +525,8 @@ interface StoredHubCursor {
   tradeCount: number;
   seedTxHashes?: string[];
   wethLegTxHashes?: string[];
+  delegatedThroughBlock?: number;
+  pendingLegs?: PendingLeg[];
   updatedAt?: number;
 }
 
@@ -531,6 +537,22 @@ function statsFromAnchor(anchor: VolumeAnchor): Stats | null {
     totalValueTradedUsd: Number(anchor.totalUsdcAtomic) / 1_000_000,
     tradeCount: anchor.tradeCount,
   };
+}
+
+function parsePendingLegs(value: unknown): PendingLeg[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const legs: PendingLeg[] = [];
+  for (const row of value) {
+    if (!row || typeof row !== "object") continue;
+    const leg = row as PendingLeg;
+    if (leg.kind !== "weth" && leg.kind !== "token") continue;
+    if (typeof leg.id !== "string" || leg.id.length < 3 || leg.id.length > 90) continue;
+    if (typeof leg.token !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(leg.token)) continue;
+    if (typeof leg.amount !== "string" || !/^\d+$/.test(leg.amount) || leg.amount === "0") continue;
+    legs.push({ id: leg.id, kind: leg.kind, token: leg.token.toLowerCase(), amount: leg.amount });
+    if (legs.length >= 48) break;
+  }
+  return legs;
 }
 
 async function readHubCursor(): Promise<{ anchor: VolumeAnchor; updatedAt: number } | null> {
@@ -547,6 +569,11 @@ async function readHubCursor(): Promise<{ anchor: VolumeAnchor; updatedAt: numbe
     const wethLegTxHashes = recordedWeth && Array.isArray(raw.wethLegTxHashes)
       ? raw.wethLegTxHashes.filter((hash) => typeof hash === "string" && /^0x[0-9a-f]{64}$/i.test(hash))
       : undefined;
+    const recordedDelegated = Object.prototype.hasOwnProperty.call(raw, "delegatedThroughBlock");
+    const delegatedThroughBlock = recordedDelegated && Number.isSafeInteger(raw.delegatedThroughBlock) && (raw.delegatedThroughBlock ?? 0) >= 0
+      ? BigInt(raw.delegatedThroughBlock as number)
+      : undefined;
+    const pendingLegs = parsePendingLegs(raw.pendingLegs);
     return {
       anchor: {
         throughBlock: BigInt(raw.throughBlock),
@@ -554,6 +581,8 @@ async function readHubCursor(): Promise<{ anchor: VolumeAnchor; updatedAt: numbe
         tradeCount: raw.tradeCount,
         seedTxHashes: seeds,
         ...(recordedWeth ? { wethLegTxHashes: wethLegTxHashes ?? [] } : {}),
+        ...(delegatedThroughBlock !== undefined ? { delegatedThroughBlock } : {}),
+        ...(pendingLegs ? { pendingLegs } : {}),
       },
       updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : 0,
     };
@@ -570,6 +599,8 @@ async function writeHubCursor(anchor: VolumeAnchor): Promise<void> {
       tradeCount: anchor.tradeCount,
       seedTxHashes: [...anchor.seedTxHashes],
       wethLegTxHashes: [...(anchor.wethLegTxHashes ?? [])],
+      ...(anchor.delegatedThroughBlock !== undefined ? { delegatedThroughBlock: Number(anchor.delegatedThroughBlock) } : {}),
+      pendingLegs: [...(anchor.pendingLegs ?? [])],
       updatedAt: Date.now(),
     };
     await getRedis().set(HUB_CURSOR_KEY, body, { ex: HUB_CURSOR_TTL_SECONDS });
