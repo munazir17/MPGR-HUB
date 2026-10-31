@@ -121,7 +121,7 @@ export function inspectPaigerSwapV2Binding(
   if (!inspected.ok) return { ok: false, reason: inspected.reason };
   const intent = inspected.value;
   if (intent.grossAmountIn !== input.gross) return { ok: false, reason: "Calldata gross does not match the sell amount." };
-  if (intent.expectedFeeAmount !== input.fee) return { ok: false, reason: "Calldata fee is not the single 25 bps gross fee." };
+  if (intent.expectedFeeAmount !== input.fee) return { ok: false, reason: "Calldata fee is not the single 0.25% trading fee on gross." };
   if (intent.amountOutMinimum !== input.minBuyAmount) return { ok: false, reason: "Calldata minimum does not match the quoted slippage." };
   if (intent.intentId.toLowerCase() !== binding.intentId.toLowerCase()) return { ok: false, reason: "Calldata intent id does not match the quote." };
   if (intent.deadline.toString() !== binding.deadline) return { ok: false, reason: "Calldata deadline does not match the quote." };

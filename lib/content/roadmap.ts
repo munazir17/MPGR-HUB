@@ -41,6 +41,19 @@ export const ROADMAP_STATUS_ORDER: readonly RoadmapStatus[] = [
 
 export const ROADMAP_TRACKS: readonly RoadmapTrack[] = [
   {
+    id: "core-platform",
+    title: "Core platform",
+    summary:
+      "The MPGR HUB app on Base. Wallet, discovery and PaigerSwap are live; a route is executable only when this repository can actually quote and prepare it.",
+    items: [
+      { label: "MPGR HUB web app — Home, profile and the public product pages", status: "LIVE" },
+      { label: "Base mainnet wallet connection and wrong-network handling", status: "LIVE" },
+      { label: "Token discovery and management for supported Base assets", status: "LIVE" },
+      { label: "PaigerSwap for pairs the sealed executor can quote and simulate", status: "LIVE" },
+      { label: "Tokenized-stock catalog and secondary-market preparation for the shipped Coinbase B20 list", status: "LIVE" },
+    ],
+  },
+  {
     id: "ai-agent",
     title: "AI Agent",
     summary:
@@ -95,6 +108,9 @@ export const ROADMAP_TRACKS: readonly RoadmapTrack[] = [
       { label: "B20 tokenized-stock orders through Aerodrome Slipstream USDC pools", status: "LIVE" },
       { label: "Slippage bounds, quote freshness, risk facts and receipt verification", status: "LIVE" },
       { label: "Quotes bound to the authenticated session wallet", status: "LIVE" },
+      { label: "PaigerSwap V2 for Base pairs the legacy executor does not already route, only when discovery and simulation succeed", status: "LIVE" },
+      { label: "0.25% trading fee on the gross sell amount for both buys and sells, collected inside the same swap (0.25% = 25 / 10,000)", status: "LIVE" },
+      { label: "Routes that cannot collect that fee are refused — there is no fee-less fallback", status: "LIVE" },
       { label: "Limit orders, recurring buys and scheduled execution — all confirm-gated", status: "PLANNED" },
       { label: "Price alerts and execution analytics", status: "PLANNED" },
       { label: "Strategy layer where the Agent proposes rule-based execution you approve", status: "LONG-TERM VISION" },
@@ -303,9 +319,96 @@ export const ROADMAP_TRACKS: readonly RoadmapTrack[] = [
     items: [
       { label: "Internal API surface for market, trade, transfer, x402, XP, referral, leaderboard, campaigns and games", status: "LIVE" },
       { label: "Public GitHub repository with architecture, security and runbook documentation", status: "LIVE" },
+      { label: "Prepare-only MCP server at /api/mcp for discovery, quotes, unsigned trades, status and receipt checks", status: "LIVE" },
       { label: "Public API keys and documented endpoints for partners", status: "PLANNED" },
       { label: "SDK and an embeddable agent surface", status: "PLANNED" },
       { label: "Partner ecosystem building on MPGR HUB modules", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "mcp-ecosystem",
+    title: "MCP ecosystem",
+    summary:
+      "A prepare-only MCP server so compatible agents can discover tools, quote, and hand an unsigned transaction to the user's wallet. External chat clients are not claimed as live connectors.",
+    items: [
+      { label: "MCP server at /api/mcp — stateless JSON-RPC, tool list, and prepare-only handlers", status: "LIVE" },
+      { label: "Structured tool discovery (capabilities, tokens, quote, prepare, finalize, status, verify)", status: "LIVE" },
+      { label: "Wallet-aware quotes bound to the taker address the user will sign with", status: "LIVE" },
+      { label: "Allowlisted token discovery and quote preparation, including the 0.25% trading fee", status: "LIVE" },
+      { label: "Unsigned transaction preparation. The server never signs, never holds keys, and never broadcasts", status: "LIVE" },
+      { label: "Receipt status and verification against the quoted fee, tokens and minimum output", status: "LIVE" },
+      { label: "Portfolio and broader market tools on the MCP server itself", status: "IN PROGRESS" },
+      { label: "Verified ChatGPT, Claude and other external MCP client connectors", status: "PLANNED" },
+      { label: "Partner credentials, a public integration guide beyond the in-app docs, and third-party MCP apps", status: "PLANNED" },
+      { label: "An open MCP ecosystem where outside agents build on MPGR HUB tools", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "voice-ai",
+    title: "Voice-powered AI trading",
+    summary:
+      "Speak to the MPGR Agent the way you type to it. Speech becomes text for the existing composer. Voice never signs a transaction and never replaces wallet confirmation.",
+    items: [
+      { label: "Microphone on the Agent composer. A transcript is sent through the same chat path as typed text", status: "LIVE" },
+      { label: "Speech-to-text via the server NVIDIA model when configured, with browser speech as the fallback", status: "LIVE" },
+      { label: "Spoken buy, sell, quote and portfolio questions use the existing Agent — not a second execution engine", status: "LIVE" },
+      { label: "Explicit wallet confirmation before any swap, approval or payment. A spoken yes is not a signature", status: "LIVE" },
+      { label: "Voice recognition never authorizes or signs. Private keys and seed phrases are never sent to the model", status: "LIVE" },
+      { label: "More reliable recognition across browsers, accents and noisy input", status: "IN PROGRESS" },
+      { label: "Spoken trade preview: the Agent explains output, the 0.25% trading fee and slippage before you confirm", status: "PLANNED" },
+      { label: "Text-to-speech replies and a voice-guided review of the unsigned transaction", status: "PLANNED" },
+      { label: "A full conversational voice session for research, discovery and trading", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "portfolio-intelligence",
+    title: "AI portfolio intelligence 2.0",
+    summary:
+      "The Agent can already read wallet and staking facts. The next portfolio layer is analytics, risk and written insight — not a second source of prices.",
+    items: [
+      { label: "Read-only wallet, token and staking facts through the existing Agent tools", status: "LIVE" },
+      { label: "Smart portfolio analytics, exposure, risk monitoring and performance tracking", status: "PLANNED" },
+      { label: "AI-written portfolio insights that cite the same facts the tools returned", status: "PLANNED" },
+      { label: "Saved theses, scenarios and alerts tied to a portfolio", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "smart-automation",
+    title: "Autonomous agent & smart automation",
+    summary:
+      "Policy and goal code exists in the repository and stays fail-closed. Nothing here moves value unless a person has authorized that specific action.",
+    items: [
+      { label: "Every value-moving action still requires explicit authorization. The Agent does not hold keys", status: "LIVE" },
+      { label: "Conditional goal drafts, spend caps and cooldowns in the autonomy engine — not a released autopilot", status: "IN PROGRESS" },
+      { label: "User-defined strategies with configurable spend limits and an audit trail", status: "PLANNED" },
+      { label: "Automated alerts and smart execution proposals that still stop for confirmation", status: "PLANNED" },
+      { label: "Delegated execution inside onchain-enforceable budgets a person can revoke", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "agentic-marketplace",
+    title: "x402 agentic payments & AI marketplace",
+    summary:
+      "You can already pay an x402 resource from the Agent after you confirm. A marketplace of third-party agents is not a released product.",
+    items: [
+      { label: "x402 discovery, confirmation, EIP-3009 signature and bound submission on Base", status: "LIVE" },
+      { label: "No silent payment — automatic payment actions are denied server-side", status: "LIVE" },
+      { label: "AI service discovery, an x402 provider marketplace and third-party agent services", status: "PLANNED" },
+      { label: "Receipt history and payment tracking for agentic services", status: "PLANNED" },
+      { label: "Agents that discover, quote and pay each other inside budgets a human set", status: "LONG-TERM VISION" },
+    ],
+  },
+  {
+    id: "integration-ecosystem",
+    title: "Developer & integration ecosystem",
+    summary:
+      "The modules are internal and the MCP endpoint is prepare-only. A partner SDK and third-party app program are still ahead.",
+    items: [
+      { label: "In-repo MCP skill and the public prepare-only /api/mcp endpoint", status: "LIVE" },
+      { label: "Product docs for MCP, voice and the 0.25% trading fee on the Docs and Roadmap pages", status: "LIVE" },
+      { label: "Public developer APIs, issued credentials and an SDK", status: "PLANNED" },
+      { label: "Third-party application integrations", status: "PLANNED" },
+      { label: "A partner ecosystem building on MPGR HUB", status: "LONG-TERM VISION" },
     ],
   },
   {

@@ -273,7 +273,13 @@ export default function AboutPage() {
           <LI>
             <Strong>Deepening the Agent.</Strong> Broader tool coverage and richer
             multi-step research answers, without loosening the confirmation
-            boundary.
+            boundary. MCP tools are prepare-only. External AI clients are not
+            connected yet.
+          </LI>
+          <LI>
+            <Strong>Voice, carefully.</Strong> The microphone already turns speech
+            into an Agent message. It does not sign. Spoken replies are still
+            ahead.
           </LI>
           <LI>
             <Strong>Hardening game integrity.</Strong> Anti-cheat beyond
@@ -316,7 +322,9 @@ export default function AboutPage() {
           </LI>
           <LI>
             <strong>Open ecosystem.</strong> Public APIs, an SDK and partner
-            integrations built on the modules that already exist.
+            integrations built on the modules that already exist. The MCP
+            endpoint is the first public prepare-only surface, not a partner
+            program.
           </LI>
           <LI>
             <strong>Agent economy.</strong> Agents that discover, quote and pay

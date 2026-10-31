@@ -37,7 +37,7 @@ import { SOCIALS } from "@/lib/site";
 export const metadata: Metadata = {
   title: "Docs — MPGR HUB",
   description:
-    "MPGR HUB product documentation: the MPGR Agent, wallet and confirmation model, security, trading, tokenized stocks, x402, MPGR Run, rewards, staking, token lock and Base integration.",
+    "MPGR HUB product documentation: the MPGR Agent, MCP, voice, wallet confirmations, the 0.25% trading fee, tokenized stocks, x402, MPGR Run, rewards, staking and Base.",
 };
 
 const TOC: readonly TocItem[] = [
@@ -51,6 +51,9 @@ const TOC: readonly TocItem[] = [
   { id: "protocols", label: "Protocols & actions" },
   { id: "research", label: "Research & portfolio" },
   { id: "trading", label: "Trading & swaps" },
+  { id: "fees", label: "Trading fee" },
+  { id: "mcp", label: "MCP" },
+  { id: "voice", label: "Voice" },
   { id: "tokenized-stocks", label: "Tokenized stocks (B20)" },
   { id: "x402", label: "x402 payments" },
   { id: "mpgr-run", label: "MPGR Run" },
@@ -692,8 +695,16 @@ export default function DocsPage() {
             ERC-20 tokens by contract address.
           </LI>
           <LI>
-            <Strong>Routing</Strong> — Coinbase CDP Trade API first; 0x Swap API
-            is used when CDP will not route the pair.
+            <Strong>Routing</Strong> — supported swaps go through PaigerSwap.
+            Registered USDC pairs use the legacy MPGR Executor. Other Base pairs
+            use PaigerSwap V2 when that route can be simulated. Coinbase CDP and
+            0x remain fallbacks only where an existing path already uses them.
+            A provider is not live for a pair just because it is named here.
+          </LI>
+          <LI>
+            <Strong>Trading fee</Strong> — 0.25% of the gross sell amount on both
+            buys and sells, taken inside the same transaction. See{" "}
+            <TLink href="/docs#fees">Trading fee</TLink>.
           </LI>
           <LI>
             <Strong>Slippage</Strong> — 1% default, 1–500 bps accepted.
@@ -714,13 +725,120 @@ export default function DocsPage() {
           </LI>
         </UL>
         <P>
-          Coinbase B20 tokenized stocks do <Strong>not</Strong> use this path —
-          see <TLink href="/docs#tokenized-stocks">Tokenized stocks</TLink>.
+          Coinbase B20 tokenized stocks do <Strong>not</Strong> use CDP or 0x.
+          They use the executor Aerodrome Slipstream USDC pool. See{" "}
+          <TLink href="/docs#tokenized-stocks">Tokenized stocks</TLink>.
         </P>
         <P>
           Troubleshooting:{" "}
           <TLink href="/support#trading">Support → Trading &amp; swaps</TLink>
         </P>
+      </InfoSection>
+
+      <InfoSection id="fees" title="Trading fee">
+        <P>
+          Supported PaigerSwap and MPGR Executor swaps charge a{" "}
+          <Strong>0.25% trading fee</Strong> on the gross amount of the token you
+          sell. The same rule applies when you buy and when you sell. The fee is
+          not a second transfer.
+        </P>
+        <UL>
+          <LI>
+            <Strong>Rate.</Strong> 0.25%, which is 25 / 10,000 of the sell amount.
+            The contract and the server both use{" "}
+            <Code>floor(sellAmount × 25 / 10000)</Code>. The fee is never rounded
+            up.
+          </LI>
+          <LI>
+            <Strong>Collection.</Strong> The fee is taken inside the swap
+            transaction and sent to the configured fee recipient. Buy and sell
+            both pay it from the sell token.
+          </LI>
+          <LI>
+            <Strong>What you see.</Strong> PaigerSwap, the Agent confirmation and
+            MCP quotes show 0.25% plus the fee amount in the sell token. If a
+            quoted route does not collect it, the screen says the fee was not
+            applied. The app does not invent a fee, and it does not offer a
+            fee-less fallback for a route that was supposed to collect one.
+          </LI>
+          <LI>
+            <Strong>Dust.</Strong> If the fee would round to zero, the swap is
+            refused.
+          </LI>
+        </UL>
+        <Callout tone="warn" title="Display is not a different fee">
+          <P>
+            Showing 0.25% does not change the on-chain charge. The integer
+            formula, the recipient and the single in-swap collection stay as they
+            are.
+          </P>
+        </Callout>
+      </InfoSection>
+
+      <InfoSection id="mcp" title="MCP">
+        <P>
+          MPGR HUB exposes a prepare-only{" "}
+          <Strong>Model Context Protocol</Strong> server at <Code>/api/mcp</Code>.
+          A client can list tools, quote a swap and receive unsigned steps. It
+          cannot sign, and it is not given a private key.
+        </P>
+        <UL>
+          <LI>
+            <Strong>Live tools.</Strong> Capabilities, token list, quote, prepare,
+            permit finalize on the legacy executor, transaction status and receipt
+            verification.
+          </LI>
+          <LI>
+            <Strong>Fee.</Strong> Quotes include the 0.25% trading fee on the sell
+            token. Verification checks that the settled fee matches the quote.
+          </LI>
+          <LI>
+            <Strong>Authorization.</Strong> The user wallet approves and sends.
+            PaigerSwap V2 prepare uses an approval. Permit modes stay on the
+            legacy executor only.
+          </LI>
+          <LI>
+            <Strong>External clients.</Strong> ChatGPT, Claude and other MCP
+            clients are <Strong>not</Strong> shipped connectors. Pointing a
+            compatible client at the HTTPS endpoint is future work and is listed
+            as planned on the roadmap until that client has been tested.
+          </LI>
+          <LI>
+            <Strong>Not on MCP yet.</Strong> Portfolio reads and a general market
+            tool live on the in-app Agent, not as MCP tools.
+          </LI>
+        </UL>
+        <P>
+          Status: <TLink href="/roadmap#mcp-ecosystem">Roadmap → MCP ecosystem</TLink>
+          .
+        </P>
+      </InfoSection>
+
+      <InfoSection id="voice" title="Voice">
+        <P>
+          The Agent composer has a microphone. Speech is transcribed and then
+          handled as a normal message. There is no second trading engine for
+          voice.
+        </P>
+        <UL>
+          <LI>
+            <Strong>What works.</Strong> Tap the mic, speak a buy, sell or
+            question, and the transcript follows the same quote and confirmation
+            path as typed text. Server transcription uses NVIDIA speech when that
+            key is configured. Otherwise the browser speech engine is the
+            fallback.
+          </LI>
+          <LI>
+            <Strong>What voice cannot do.</Strong> It cannot approve, sign or
+            broadcast. Saying yes is not a wallet signature. The model never
+            receives a private key or a seed phrase.
+          </LI>
+          <LI>
+            <Strong>Not shipped.</Strong> Spoken replies, a voice walkthrough of
+            the fee and slippage, and a full voice session are planned. See{" "}
+            <TLink href="/roadmap#voice-ai">Roadmap → voice</TLink>.
+          </LI>
+        </UL>
       </InfoSection>
 
       {/* ---------------------------------------------------------------- */}
@@ -1408,6 +1526,18 @@ export default function DocsPage() {
           XP and season progression are live. Competitive{" "}
           <Strong>financial</Strong> game payouts are disabled by default behind
           two operator gates and are not enabled in production today.
+        </P>
+        <InfoSub>What is the trading fee?</InfoSub>
+        <P>
+          0.25% of the token you sell, on both buys and sells, collected inside
+          the swap. That is 25 / 10,000, floored. See{" "}
+          <TLink href="/docs#fees">Trading fee</TLink>.
+        </P>
+        <InfoSub>Can I trade by voice?</InfoSub>
+        <P>
+          You can speak a command into the Agent. The wallet still has to
+          confirm. Voice cannot sign. Details are in{" "}
+          <TLink href="/docs#voice">Voice</TLink>.
         </P>
         <InfoSub>Is there a mobile app?</InfoSub>
         <P>

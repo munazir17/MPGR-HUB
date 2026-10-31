@@ -1,213 +1,22 @@
 # MPGR HUB Roadmap
 
-Version: 1.0
+This file is not a second roadmap.
 
----
+The public page is `/roadmap`. The only feature list is [`lib/content/roadmap.ts`](../lib/content/roadmap.ts). Each item is **LIVE**, **IN PROGRESS**, **PLANNED** or **LONG-TERM VISION**. Nothing is marked live unless a route, engine or deployed contract in this repository implements it.
 
-# Vision
+The older phase list that lived here (Lucky Spin, Memory Challenge, a future AI Agent, staking still "in development") does not match the product. It has been retired so it cannot contradict the page.
 
-Build the leading AI-powered Web3 ecosystem on Base.
+## What the page now tracks
 
-MPGR HUB combines staking, rewards, gaming, AI, portfolio management, governance, and community incentives into one unified platform.
+- Core platform, wallet, PaigerSwap and tokenized stocks
+- MPGR Agent, autonomy boundaries, research and trading
+- MCP ecosystem (prepare-only server is live; ChatGPT and Claude connectors are not)
+- Voice (speech into the existing Agent; voice never signs)
+- Portfolio intelligence 2.0, smart automation, the x402 marketplace and the developer ecosystem — planned or in progress, not released products
+- Gaming, MPGR Run, rewards, staking, token lock, quests, referrals, Base, security and infrastructure
 
----
+## Trading fee
 
-# Phase 1 — Foundation ✅
+User-facing copy says **0.25% trading fee**.
 
-Status: Completed
-
-Completed Features
-
-- Project Setup
-- Next.js Foundation
-- TypeScript
-- Tailwind CSS
-- Wallet Connection
-- RainbowKit
-- Wagmi
-- Base Integration
-- Responsive UI
-- Landing Page
-
----
-
-# Phase 2A — Gamification ✅
-
-Status: Completed
-
-Completed Features
-
-- Daily Check-In
-- Lucky Spin
-- Memory Challenge
-- Tap Challenge
-- XP System
-- Levels
-- Achievements
-- Leaderboards
-- Season Points
-
----
-
-# Phase 2B — Dashboard & Utility ✅
-
-Status: Completed
-
-Completed Features
-
-- Premium Dashboard
-- Reward Center
-- Weekly Rewards
-- Reward History
-- Reward Analytics
-- Staking UI
-- Token Lock UI
-- Premium Foundation
-- Wallet Dashboard
-
----
-
-# Phase 3A — AI Foundation ✅
-
-Status: Completed
-
-Completed Features
-
-- AI Architecture
-- Event Bus
-- Service Layer
-- Logger
-- Performance Monitor
-- Task Queue
-- Refresh Manager
-- Background Scheduler
-- Memory Provider
-- Production Architecture
-
----
-
-# Phase 3E — Production Blockchain Integration
-
-## Part 1 — B20 Foundation ✅
-
-Completed
-
-- MPGR Token Integration
-- Viem Integration
-- Wagmi Integration
-- Contract Client
-- Token Metadata
-- Balance Reads
-- Transaction Utilities
-
----
-
-## Part 2 — Portfolio Engine ✅
-
-Completed
-
-- Live Portfolio
-- Wallet Balances
-- Holdings
-- Portfolio Sync
-- Event Listeners
-- Background Refresh
-- Mock Removal
-
----
-
-## Part 3 — Live Staking & Rewards ⏳
-
-Current Development
-
-Planned Features
-
-- Live Staking
-- Live Rewards
-- Reward Claims
-- Reward History
-- APR/APY
-- Treasury Integration
-- Transaction Monitoring
-
----
-
-## Part 4 — Premium & Holder System
-
-Planned
-
-- Premium Membership
-- Holder Score
-- Premium Benefits
-- Premium Rewards
-- Holder Analytics
-
----
-
-## Part 5 — On-Chain Intelligence
-
-Planned
-
-- Transaction History
-- Activity Feed
-- Wallet Analytics
-- Portfolio Analytics
-- Event Indexing
-- Performance Improvements
-
----
-
-## Part 6 — Production Release
-
-Planned
-
-- Security Audit
-- Performance Audit
-- Testing
-- Final Optimization
-- Production Launch
-
----
-
-# Phase 4 — Governance
-
-Future
-
-- DAO
-- Proposal System
-- Community Voting
-- Treasury Governance
-- Reward Governance
-
----
-
-# Phase 5 — AI Ecosystem
-
-Future
-
-- MPGR AI Agent
-- AI Portfolio Assistant
-- AI Automation
-- AI Insights
-- AI Notifications
-- AI Analytics
-- AI Marketplace
-
----
-
-# Phase 6 — Ecosystem Expansion
-
-Future
-
-- Mobile Application
-- SDK
-- Public API
-- Partner Integrations
-- Cross-Chain Support
-- Enterprise Tools
-
----
-
-# Long-Term Vision
-
-MPGR HUB aims to become the complete AI-powered crypto operating system on Base, providing users with a unified platform for rewards, staking, gaming, portfolio management, governance, and intelligent automation.
+The charge is still `floor(sellAmount × 25 / 10000)` of the sell token, on both buys and sells, collected once inside the swap. Display text does not change that arithmetic, the recipient, or the collection path.

@@ -403,7 +403,7 @@ describe("Base mainnet MPGR Executor path (flag on, real registry)", () => {
     ]);
     expect(d.nativeEth).toMatchObject({ symbol: "ETH", via: MAINNET_WETH });
     // The old "B20 is never executor-routed" note must not come back.
-    expect(String(d.note)).toMatch(/25 bps fee inside the swap transaction/);
+    expect(String(d.note)).toMatch(/0\.25% trading fee inside the swap transaction/);
     expect(String(d.note)).not.toContain("never routed through the executor");
   });
 

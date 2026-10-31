@@ -11,12 +11,12 @@ license: All Rights Reserved
 
 ## Overview
 
-PaigerSwap pricing and execution already live in the app. This skill calls the same MCP trade service (`mpgr_get_quote`, `mpgr_prepare_trade`). It does not calculate a second route and it does not change the 25 bps fee.
+PaigerSwap pricing and execution already live in the app. This skill calls the same MCP trade service (`mpgr_get_quote`, `mpgr_prepare_trade`). It does not calculate a second route and it does not change the 0.25% trading fee.
 
 On Base mainnet, with MCP mainnet trading enabled:
 
 - USDC paired with WETH or an allowlisted B20 stock stays on the legacy MPGR Executor.
-- MPGR and every other pair are quoted through the sealed PaigerSwap V2 executor (`0x4be1154440b26145d76608D41d403a33e76b9d0A`) using that executor's discovery, calldata, single 25 bps gross fee, and simulation.
+- MPGR and every other pair are quoted through the sealed PaigerSwap V2 executor (`0x4be1154440b26145d76608D41d403a33e76b9d0A`) using that executor's discovery, calldata, single 0.25% trading fee on gross, and simulation.
 - V2 prepare uses `authorization: "APPROVAL"` only. Do not call `mpgr_finalize_trade` for a V2 quote.
 - If V2 returns an error, say so. Do not invent a route. A no-liquidity result may come back as the existing 0x provider; a simulation or RPC failure must not.
 
@@ -50,7 +50,7 @@ Prepare (does not broadcast):
 ## Rules
 
 - `taker` must be the connected wallet. Do not substitute another address.
-- Show sell amount, exact fee (`floor(sellAmount * 25 / 10000)` of the sell token), minimum received, and executor before the user signs.
+- Show sell amount, the 0.25% trading fee (`floor(sellAmount * 25 / 10000)` of the sell token), minimum received, and executor before the user signs.
 - If the tool returns `isError`, say so. Do not invent calldata or a price.
 - A thin pool (high price impact) is a warning, not a failed app. Leave that warning visible.
 - Unsupported pairs stay unsupported. Do not mark them executable.

@@ -65,7 +65,7 @@ export async function qualifySwapRouteCandidate(client: SwapRouteReadClient, fro
     ]);
     if (sellAllowed !== true || buyAllowed !== true || kind !== route.kind) return reject("EXECUTOR_PERMISSION_MISMATCH", "This route no longer matches the Executor's token/router permissions. No approval or swap was requested.");
     if (!eq(recipient, deployment.feeRecipient)) return reject("FEE_RECIPIENT_CHANGED", "The Executor fee recipient changed. Owner verification is required; no swap was prepared.");
-    if (bps !== 25 && bps !== 25n) return reject("FEE_POLICY_INVALID", "The Executor must currently collect exactly 25bps. No swap was prepared.");
+    if (bps !== 25 && bps !== 25n) return reject("FEE_POLICY_INVALID", "The Executor must currently collect the 0.25% trading fee. No swap was prepared.");
     if (!eq(owner, deployment.owner) || paused !== false) return reject("EXECUTOR_POSTURE_CHANGED", "The Executor owner or pause state changed. Operator verification is required.");
     for (const [address, decimals] of [[a, da], [b, db]] as const) {
       if (deployment.tokens.find(t => eq(t.address, address))?.decimals !== decimals) return reject("TOKEN_METADATA_UNAVAILABLE", "Live decimals do not match the approved registration.");

@@ -115,12 +115,12 @@ export function verifyV2Settlement(
   if (!eq(event.feeRecipient, intent.feeRecipient) || !eq(event.feeRecipient, deployment.feeRecipient)) {
     return unknown("The fee was not delivered to the pinned treasury. Settlement rejected.");
   }
-  if (event.feeBps !== intent.feeBps || event.feeBps !== 25) return unknown(`The settled fee was ${event.feeBps} bps, not the required 25 bps.`);
+  if (event.feeBps !== intent.feeBps || event.feeBps !== 25) return unknown("The settled fee was not the required 0.25% trading fee.");
   if (event.grossAmountIn !== intent.grossAmountIn) return unknown("The settled gross input differs from the committed gross sell amount.");
 
   const expectedFee = v2FeeFloor(intent.grossAmountIn, event.feeBps);
   if (event.feeAmount !== expectedFee) return unknown("The settled fee is not floor(gross*feeBps/10000). There is no fee-less V2 swap.");
-  if (event.feeAmount <= 0n) return unknown("A zero fee was settled; the mandatory 25 bps fee was skipped.");
+  if (event.feeAmount <= 0n) return unknown("A zero fee was settled; the mandatory 0.25% trading fee was skipped.");
   if (event.swapAmountIn !== intent.grossAmountIn - event.feeAmount) return unknown("The swapped amount is not gross minus fee.");
   if (options.feeRecipientDelta !== undefined && options.feeRecipientDelta !== null && options.feeRecipientDelta !== event.feeAmount) {
     return unknown("The treasury's measured balance delta does not equal the settled fee.");

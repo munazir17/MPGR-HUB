@@ -68,7 +68,7 @@ export async function verifySwapPathFeeTerms(reader: SwapRouteReadClient, deploy
     throw new SwapRouteQualificationError("EXECUTOR_PAUSED", "The Swap executor is paused on-chain. No swap was prepared.", 503);
   }
   if (Number(bps) !== SWAP_FEE_BPS || String(recipient).toLowerCase() !== SWAP_FEE_RECIPIENT.toLowerCase()) {
-    throw new SwapRouteQualificationError("FEE_RECIPIENT_CHANGED", "The Swap executor's live fee terms differ from the required 25 bps recipient. No swap was prepared.", 422);
+    throw new SwapRouteQualificationError("FEE_RECIPIENT_CHANGED", "The Swap executor's live fee terms differ from the required 0.25% trading fee and recipient. No swap was prepared.", 422);
   }
 }
 

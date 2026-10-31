@@ -125,9 +125,11 @@ Bug reports and feature requests can be submitted through the project's GitHub r
 
 # Roadmap
 
-Development is progressing through phased releases.
+The public roadmap is the running product page at `/roadmap`.
 
-The latest roadmap is available in ROADMAP.md.
+Its only source is `lib/content/roadmap.ts`. Status is LIVE, IN PROGRESS, PLANNED or LONG-TERM VISION. This file does not keep a second feature list.
+
+The supported trading fee shown to users is **0.25%**. The integer charge is unchanged: `floor(sellAmount × 25 / 10000)`.
 
 ---
 

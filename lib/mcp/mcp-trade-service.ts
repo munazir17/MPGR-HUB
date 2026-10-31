@@ -285,6 +285,7 @@ export function getCapabilities(deps: McpDeps): ToolOutcome {
       ],
       custody: "Non-custodial. This server never holds keys, never signs, never broadcasts.",
       fee: {
+        label: "0.25% trading fee",
         bps: EXECUTOR_DEFAULT_FEE_BPS,
         maxBps: EXECUTOR_MAX_FEE_BPS,
         token: "sell token (native ETH when selling ETH)",
@@ -299,11 +300,11 @@ export function getCapabilities(deps: McpDeps): ToolOutcome {
       },
       baseMainnetDispatch: deps.paigerSwapV2?.activated
         ? "Registered executor pairs stay on the legacy MPGR Executor: USDC<->WETH (Uniswap V3, fee 3000) and USDC<->each B20 tokenized stock (Aerodrome Slipstream, tickSpacing 10). Other Base pairs, including MPGR, are quoted through the sealed PaigerSwap V2 executor when it can simulate a route. A completed V2 search with no pool may use the 0x native-fee path. A V2 simulation, RPC, or fee failure is an error and is not replaced with another route."
-        : "Registered executor pairs route through the MPGR Executor: USDC<->WETH (Uniswap V3, fee 3000) and USDC<->each B20 tokenized stock (Aerodrome Slipstream, tickSpacing 10), all incl. native ETH where applicable and all with the 25 bps fee taken inside the swap transaction. Any other pair (arbitrary ERC-20, WETH<->B20, B20<->B20) falls back to the 0x native-fee path.",
+        : "Registered executor pairs route through the MPGR Executor: USDC<->WETH (Uniswap V3, fee 3000) and USDC<->each B20 tokenized stock (Aerodrome Slipstream, tickSpacing 10), all incl. native ETH where applicable and all with the 0.25% trading fee taken inside the swap transaction. Any other pair (arbitrary ERC-20, WETH<->B20, B20<->B20) falls back to the 0x native-fee path.",
       providers: {
         "mpgr-executor": "Custom MPGR executor (NOT externally audited yet): typed Aerodrome Slipstream + Uniswap V3 adapters, allowlisted routers/tokens, exact fee, atomic. Deployed on Base mainnet and Base Sepolia.",
         "0x-native-fee": "0x Swap API (AllowanceHolder) with swapFeeToken=sellToken; quote rejected unless the integrator fee is exactly floor(sellAmount*25/10000) of the sell token. Base mainnet only, for pairs V2 could not route and that have no proven legacy executor route; disabled by default.",
-        "paigerswap-v2": "Sealed PaigerSwap V2 executor on Base. Used by mpgr_get_quote for pairs the legacy executor does not already route, only while V2 routing is activated and Base mainnet MCP trading is enabled. Reuses V2 discovery, calldata, the single 25 bps gross fee, and eth_call simulation. The wallet still confirms the unsigned transaction.",
+        "paigerswap-v2": "Sealed PaigerSwap V2 executor on Base. Used by mpgr_get_quote for pairs the legacy executor does not already route, only while V2 routing is activated and Base mainnet MCP trading is enabled. Reuses V2 discovery, calldata, the single 0.25% trading fee on gross, and eth_call simulation. The wallet still confirms the unsigned transaction.",
         "uniswap-v3":
           "Venue used by mpgr-executor on Base mainnet (USDC<->WETH, fee 3000 — the official Base Uniswap V3 0.30% pool) and on Base Sepolia (tUSD/tSTOCK and WETH/tUSD, fee 3000). Swaps go through Uniswap V3 SwapRouter02 exactInputSingle; the pool is verified by CREATE2 against the official factory.",
         "aerodrome-slipstream":
@@ -352,8 +353,8 @@ export function listTokens(deps: McpDeps, input: unknown): ToolOutcome {
       ...(chainId === BASE_MAINNET_CHAIN_ID
         ? {
             note: deps.paigerSwapV2?.activated
-              ? "Every pair listed here is routable through the legacy MPGR Executor, which takes the 25 bps fee inside the swap transaction. Other Base pairs, including MPGR, are quoted through PaigerSwap V2 when mainnet MCP trading is enabled."
-              : "Every pair listed here is routable through the MPGR Executor, which takes the 25 bps fee inside the swap transaction (approve when needed + swap, never a separate fee transaction). Other ERC-20 pairs on Base mainnet use the 0x native-fee path when the operator has enabled mainnet trading.",
+              ? "Every pair listed here is routable through the legacy MPGR Executor, which takes the 0.25% trading fee inside the swap transaction. Other Base pairs, including MPGR, are quoted through PaigerSwap V2 when mainnet MCP trading is enabled."
+              : "Every pair listed here is routable through the MPGR Executor, which takes the 0.25% trading fee inside the swap transaction (approve when needed + swap, never a separate fee transaction). Other ERC-20 pairs on Base mainnet use the 0x native-fee path when the operator has enabled mainnet trading.",
           }
         : {}),
     },
@@ -519,7 +520,7 @@ async function quotePaigerSwapV2(
   if (typeof amount === "string") return { ok: false, fallThrough: false, outcome: fail("INVALID_AMOUNT", amount) };
   const fee = (amount * 25n) / 10_000n;
   if (fee <= 0n || fee >= amount) {
-    return { ok: false, fallThrough: false, outcome: fail("FEE_ROUNDS_TO_ZERO", "Sell amount is too small to collect the 25 bps fee exactly once.") };
+    return { ok: false, fallThrough: false, outcome: fail("FEE_ROUNDS_TO_ZERO", "Sell amount is too small to collect the 0.25% trading fee exactly once.") };
   }
   const now = deps.nowSeconds();
   const deadline = BigInt(now + V2_QUOTE_DEADLINE_SECONDS);
@@ -829,7 +830,7 @@ async function preparePaigerSwapV2(
   }
   if (p.chainId !== BASE_MAINNET_CHAIN_ID) return fail("UNSUPPORTED_CHAIN", "PaigerSwap V2 is Base mainnet only.");
   if (p.feeBps !== 25 || p.feeRecipient.toLowerCase() !== V2_FEE_RECIPIENT.toLowerCase()) {
-    return fail("FEE_POLICY_INVALID", "Quote fee does not match the pinned 25 bps treasury.");
+    return fail("FEE_POLICY_INVALID", "Quote fee does not match the pinned 0.25% trading fee.");
   }
   const binding = parsePaigerSwapV2Binding(p.v2);
   if (!binding) return fail("QUOTE_ID_INVALID", "Quote is missing its PaigerSwap V2 transaction binding.");
@@ -1380,9 +1381,9 @@ export async function delegateSwap(deps: McpDeps, input: unknown, onStage?: (sta
   }
   const grossAmountIn = amount;
   const fee = (grossAmountIn * BigInt(DELEGATED_EXECUTOR_FEE_BPS)) / 10_000n;
-  if (fee === 0n) return fail("FEE_ROUNDS_TO_ZERO", "Amount too small for the canonical 25 bps fee.");
+  if (fee === 0n) return fail("FEE_ROUNDS_TO_ZERO", "Amount too small for the 0.25% trading fee.");
   const expectedFeeAmount = typeof args.expectedFeeAmount === "string" && /^\d{1,78}$/.test(args.expectedFeeAmount) ? BigInt(args.expectedFeeAmount) : null;
-  if (expectedFeeAmount !== fee) return fail("FEE_MISMATCH", "Committed fee does not equal floor(gross * 25bps) — refusing (fail-closed).");
+  if (expectedFeeAmount !== fee) return fail("FEE_MISMATCH", "Committed fee does not equal the 0.25% trading fee floor(gross * 25 / 10000) — refusing (fail-closed).");
   // VENUE (router + pool key) is derived from the chain's OWN delegated
   // registry when one is configured, so the caller cannot steer execution to
   // an arbitrary router. Base mainnet B20 pairs are Aerodrome Slipstream

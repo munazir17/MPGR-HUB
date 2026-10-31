@@ -28,7 +28,7 @@ import {
 export const metadata: Metadata = {
   title: "Roadmap — MPGR HUB",
   description:
-    "The MPGR HUB roadmap: AI agent, onchain execution, x402, gaming, rewards, staking, token lock, Base expansion, security and developer ecosystem — labelled LIVE, IN PROGRESS, PLANNED or LONG-TERM VISION.",
+    "The MPGR HUB roadmap: platform, Agent, MCP, voice, trading, x402, gaming, rewards, staking, token lock, Base and the developer ecosystem — labelled LIVE, IN PROGRESS, PLANNED or LONG-TERM VISION.",
 };
 
 const STATUS_MEANING: Record<RoadmapStatus, string> = {
@@ -86,7 +86,7 @@ export default function RoadmapPage() {
   return (
     <InfoPageShell
       title="Roadmap"
-      subtitle="Where MPGR HUB is today and where it is heading — across the Agent, onchain execution, payments, gaming, rewards, security and the developer ecosystem."
+      subtitle="Where MPGR HUB is today and where it is heading — the app, the Agent, MCP, voice, trading, payments, gaming, rewards and the developer ecosystem."
       meta={`${total} tracked items across ${ROADMAP_TRACKS.length} areas · status is measured against the running product, not a marketing plan`}
       toc={TOC}
     >
@@ -140,6 +140,11 @@ export default function RoadmapPage() {
           this page honest.
         </P>
         <UL>
+          <LI>
+            <Strong>Voice-signed transactions.</Strong> Speech can fill the Agent
+            composer. It cannot approve, sign or broadcast. Wallet confirmation
+            stays mandatory.
+          </LI>
           <LI>
             <Strong>Cross-chain execution.</Strong> Base is the home chain and the
             only configured runtime. Cross-chain support is not committed.

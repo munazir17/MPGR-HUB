@@ -480,6 +480,12 @@ export default function WhitepaperPage() {
             its receipt confirmed before the swap transaction is sent. Permit2
             signatures are appended for the CDP flow.
           </LI>
+          <LI>
+            Supported PaigerSwap and MPGR Executor swaps charge a 0.25% trading
+            fee on the gross sell amount, on both buys and sells. The fee is{" "}
+            <Code>floor(sellAmount × 25 / 10000)</Code> and is collected inside
+            that same transaction. A route that cannot collect it is not offered.
+          </LI>
         </UL>
         <InfoSub>Tokenized stocks (B20)</InfoSub>
         <UL>
@@ -893,6 +899,16 @@ export default function WhitepaperPage() {
             <strong>Verifiable fun.</strong> Competitive play where the score, the
             ranking and the payout are all provably server-verified.
           </LI>
+          <LI>
+            <strong>MCP ecosystem.</strong> The prepare-only server at{" "}
+            <Code>/api/mcp</Code> is live. Verified connectors for external AI
+            clients, and third-party apps built on those tools, are not.
+          </LI>
+          <LI>
+            <strong>Voice.</strong> Speech can already reach the Agent composer.
+            Spoken replies and a voice-guided review are directional, and voice
+            will never be a signature.
+          </LI>
         </UL>
         <P>
           This section is directional. It is not a commitment, a timeline or an
@@ -913,6 +929,8 @@ export default function WhitepaperPage() {
         <LinkGrid
           items={[
             { href: "/roadmap#ai-agent", label: "AI Agent", note: "What the Agent can do today and what comes next." },
+            { href: "/roadmap#mcp-ecosystem", label: "MCP", note: "Prepare-only tools. External clients are not live connectors." },
+            { href: "/roadmap#voice-ai", label: "Voice", note: "Speech into the Agent. The wallet still signs." },
             { href: "/roadmap#mpgr-run", label: "MPGR Run", note: "Verification, XP and the financial-reward gates." },
             { href: "/roadmap#x402", label: "x402 & payments", note: "Agentic payment scope and future metering." },
             { href: "/roadmap#security-audit", label: "Security & auditing", note: "What is enforced, and what is still open." },

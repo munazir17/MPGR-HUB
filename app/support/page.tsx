@@ -185,6 +185,11 @@ export default function SupportPage() {
             intent detector works on a closed intent list, so precise phrasing
             helps.
           </LI>
+          <LI>
+            <Strong>Voice.</Strong> The microphone transcribes into the same
+            composer. It does not approve or sign. If it mishears you, nothing
+            has been sent — correct the text or cancel the confirmation.
+          </LI>
         </UL>
         <InfoSub>“The Agent asked me to confirm something I didn’t ask for”</InfoSub>
         <P>
@@ -201,6 +206,12 @@ export default function SupportPage() {
       {/* ---------------------------------------------------------------- */}
       <InfoSection id="trading" title="Trading & swaps">
         <UL>
+          <LI>
+            <Strong>Trading fee.</Strong> Supported swaps charge a 0.25% trading
+            fee on the token you sell, whether you are buying or selling. It is
+            taken inside the swap, not as a second payment. If a route cannot
+            collect it, that route is not offered.
+          </LI>
           <LI>
             <Strong>“Quote expired”.</Strong> Quotes stay valid for 2 minutes and
             are refreshed automatically; a worse minimum-output aborts the
