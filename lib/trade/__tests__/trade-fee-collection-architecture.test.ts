@@ -91,7 +91,8 @@ describe("MPGR fee collection architecture (static guards)", () => {
     );
     expect(source).not.toMatch(/Paid separately|Pay fee|separate fee payment/);
     expect(source).not.toMatch(/feeHash|feeError/);
-    // The fee row is the label plus the exact amount, nothing else.
-    expect(source).toMatch(/MPGR fee/);
+    // The fee row is still disclosed. User-facing copy is "0.25% Trading Fee"
+    // (0.25% = 25 bps). It is the label plus the exact amount, not a payment step.
+    expect(source).toMatch(/0\.25% Trading Fee/);
   });
 });
