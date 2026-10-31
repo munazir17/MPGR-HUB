@@ -17,8 +17,6 @@ export type ApprovalReceipt = Pick<TransactionReceipt, "status" | "from" | "to" 
   logs?: TransactionReceipt["logs"];
 };
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const isArchiveReadRefusal = (error: unknown) =>
-  /archive|historical state|invalid parameters were provided/i.test(error instanceof Error ? error.message : String(error));
 export async function readSwapAllowance(p: Pick<TradeProposal, "chainId" | "taker" | "from" | "fromAmount" | "permit2Spender" | "transaction">, receipt?: ApprovalReceipt): Promise<bigint | null> {
   try {
     // The spender is the executor the swap transaction actually targets: the
@@ -68,7 +66,7 @@ export async function readSwapAllowance(p: Pick<TradeProposal, "chainId" | "take
       const mined = await getBlock(config, { chainId: 8453, blockNumber: receipt.blockNumber });
       if (mined.hash !== receipt.blockHash) return null;
     }
-    for (const delay of [0, 500, 1000, 2000]) {
+    for (const delay of [0, 200, 450]) {
       if (delay) await pause(delay);
       const head = await getBlock(config, { chainId: 8453, blockTag: "latest" });
       if (head.number == null || !head.hash) return null;
@@ -79,16 +77,16 @@ export async function readSwapAllowance(p: Pick<TradeProposal, "chainId" | "take
         const after = await getBlock(config, { chainId: 8453, blockNumber: head.number });
         if (after.hash !== head.hash) return null;
         return typeof value === "bigint" && value >= 0n ? value : null;
-      } catch (error) {
-        // publicnode treats an explicit block number as an archive request, even
-        // for the head that just mined the approval. `latest` is the state that
-        // node will actually serve; a short retry covers the index lag.
-        if (!isArchiveReadRefusal(error)) return null;
+      } catch {
+        // A pinned read can fail because the node treats that head as archive
+        // state, or because the RPC blipped after the approval mined. Neither
+        // is an insufficient allowance. Try latest, then the next backoff.
+        // A stale zero is not accepted while the receipt is in hand.
         try {
           const latest = await readContract(config, { chainId: 8453, address: p.from.address, abi: erc20Abi,
             functionName: "allowance", args: [p.taker, spender], blockTag: "latest" });
           if (typeof latest === "bigint" && latest >= 0n && (!receipt || latest >= BigInt(p.fromAmount))) return latest;
-        } catch { /* try the next head */ }
+        } catch { /* the next head */ }
       }
     }
     return null; // RPC has not caught up. This is unknown, NOT insufficient.

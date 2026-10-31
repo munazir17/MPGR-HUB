@@ -544,8 +544,16 @@ describe("B20 on-chain verification batching (multicall)", () => {
 
 describe("executor chain reader (server RPC selection)", () => {
   it("with BASE_RPC_URL configured: a failing configured provider does NOT silently fall back", async () => {
-    const configured = await startRpcServer((_body, res) => rateLimited(res));
-    const healthy = await startRpcServer((body, res) => healthyJsonRpc(res, body));
+    let configuredRpc = 0;
+    let healthyRpc = 0;
+    const configured = await startRpcServer((body, res) => {
+      if (body.method) configuredRpc += 1;
+      rateLimited(res);
+    });
+    const healthy = await startRpcServer((body, res) => {
+      if (body.method) healthyRpc += 1;
+      healthyJsonRpc(res, body);
+    });
     vi.stubEnv("BASE_RPC_URL", configured.url);
     vi.stubEnv("BASE_RPC_URLS", "");
     const realFetch = globalThis.fetch;
@@ -556,9 +564,11 @@ describe("executor chain reader (server RPC selection)", () => {
       await expect(
         reader.readContract({ address: TOKEN, abi: erc20Abi, functionName: "decimals" } as never),
       ).rejects.toThrow();
-      // Every request went to the CONFIGURED URL — never to the healthy one.
-      expect(configured.requestCount()).toBeGreaterThanOrEqual(1);
-      expect(healthy.requestCount()).toBe(0);
+      // Every JSON-RPC call went to the CONFIGURED URL — never to the healthy one.
+      // Empty non-RPC probes (no method) are ignored so a local port scan cannot
+      // look like a fallback.
+      expect(configuredRpc).toBeGreaterThanOrEqual(1);
+      expect(healthyRpc).toBe(0);
     } finally {
       await configured.close();
       await healthy.close();

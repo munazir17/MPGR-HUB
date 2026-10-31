@@ -1,9 +1,7 @@
-// Public multi-hop quotes for pairs the MPGR executor could not price.
-//
-// Kyber and LI.FI return a route and wallet calldata. The deployed executor
-// cannot settle that calldata or take the 0.25% fee inside it, so this path
-// never claims a fee. The transaction target must be one of the two routers
-// below; anything else is refused before a wallet prompt.
+// Public multi-hop quotes. Kyber and LI.FI can price a pair, but their
+// calldata cannot be proven to take the 0.25% MPGR fee in the sell token.
+// quotePublicRoute remains for diagnostics. publicRouterPolicyError refuses
+// every executable public-router proposal so a wallet is never asked to sign it.
 import { getAddress, isAddress, type Address, type Hex } from "viem";
 import { isNativeEthSentinel } from "@/lib/trade/trade-config";
 
@@ -138,28 +136,23 @@ export async function quotePublicRoute(
     .sort((a, b) => (a.amountOut === b.amountOut ? a.hops.length - b.hops.length : a.amountOut > b.amountOut ? -1 : 1))[0] ?? null;
 }
 
-/** Fee-less public route. Returns a reason when the transaction is not one of the two routers. */
+export const PUBLIC_ROUTER_FEE_BLOCK =
+  "This route cannot collect the 0.25% fee in the token you're selling, so it wasn't prepared.";
+
+/** Kyber and LI.FI calldata cannot be proven to take exactly 25 bps of the sell
+ * token for the MPGR fee recipient. Allowlisting their routers is not fee
+ * collection, so the route is refused instead of signed. */
 export function publicRouterPolicyError(p: {
   provider: string;
-  chainId: number;
+  chainId?: number;
   agentFee?: { status?: string } | null;
-  transaction: { to: string; data: string; value: string } | null;
-  permit2: unknown;
-  from: { address: string };
-  fromAmount: string;
-  needsPermit2Approval: boolean;
-  permit2Spender: string | null;
+  transaction?: { to: string; data: string; value: string } | null;
+  permit2?: unknown;
+  from?: { address: string };
+  fromAmount?: string;
+  needsPermit2Approval?: boolean;
+  permit2Spender?: string | null;
 }): string | null {
   if (p.provider !== "public-router") return "Not a public multi-hop route.";
-  if (p.agentFee?.status === "applied") return "A public multi-hop route cannot claim the MPGR fee. Nothing was prepared.";
-  if (p.chainId !== 8453 || p.permit2 || !p.transaction) return "Invalid public route.";
-  if (!isAllowlistedPublicRouter(p.transaction.to) || !asHex(p.transaction.data)) return "The public route targets an unknown router. Nothing was prepared.";
-  let value: bigint;
-  let gross: bigint;
-  try { value = BigInt(p.transaction.value); gross = BigInt(p.fromAmount); } catch { return "Invalid public route amounts."; }
-  const native = isNativeEthSentinel(p.from.address);
-  if (native ? value !== gross || p.needsPermit2Approval : value !== 0n) return "The public route value does not match the sell amount.";
-  if (p.needsPermit2Approval && p.permit2Spender?.toLowerCase() !== p.transaction.to.toLowerCase()) return "Approval spender is not the router that will pull the token.";
-  if (gross <= 0n) return "Invalid public route amounts.";
-  return null;
+  return PUBLIC_ROUTER_FEE_BLOCK;
 }

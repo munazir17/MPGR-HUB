@@ -6,6 +6,7 @@ import type { useSwapExecution } from "@/hooks/useSwapExecution";
 import { SwapDialog } from "./SwapDialog";
 import { SwapDetails, swapAmount } from "./SwapDetails";
 import { publicSwapMessage } from "@/lib/swap/public-message";
+import { APPROVAL_VERIFICATION_DELAYED } from "@/lib/swap/approval-verification";
 export function SwapExecutionDialog({ trade }: { trade: ReturnType<typeof useSwapExecution> }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(timer); }, []);
@@ -17,6 +18,7 @@ export function SwapExecutionDialog({ trade }: { trade: ReturnType<typeof useSwa
   const reverted = submitted && s.error?.code === "SEND_FAILED";
   const approvalStatus = trade.activities.find(a => a.approvalHash === s.approvalHash)?.approvalStatus;
   const approvalUnknown = !!s.approvalHash && (approvalStatus === "pending" || approvalStatus === "unknown");
+  const verificationDelayed = s.error?.message === APPROVAL_VERIFICATION_DELAYED;
   if (success) return <SwapDialog title="Transaction overview" onClose={trade.close}>
     <div role="status" data-testid="swap-status" className="flex items-center gap-2 text-emerald-200"><CheckCircle2 size={20} />Swap confirmed · output verified</div>
     <dl className="space-y-4 rounded-2xl border border-white/10 p-4">
@@ -44,14 +46,16 @@ export function SwapExecutionDialog({ trade }: { trade: ReturnType<typeof useSwa
     {trade.quoteUpdated && !trade.isBusy && <p role="status" className="text-xs text-emerald-200">Quote updated — review new output.</p>}
     {trade.isBusy && <p role="status" className="flex items-center gap-2 text-sm text-zinc-300"><Loader2 size={17} className="shrink-0 animate-spin" />{s.stepLabel ?? "Refreshing quote…"}</p>}
     {!swapQuoteFresh(p, now) && !submitted && !trade.isBusy && <p role="status" className="text-xs text-amber-200">Quote needs updating.</p>}
-    {s.error && <p role="alert" className="break-words rounded-xl border border-red-300/10 bg-red-300/5 p-3 text-xs leading-relaxed text-red-200">{publicSwapMessage(s.error.message)}</p>}
+    {s.error && !verificationDelayed && <p role="alert" className="break-words rounded-xl border border-red-300/10 bg-red-300/5 p-3 text-xs leading-relaxed text-red-200">{publicSwapMessage(s.error.message)}</p>}
+    {verificationDelayed && <p role="status" className="break-words rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs leading-relaxed text-zinc-200">{s.error?.message}</p>}
     {s.approvalHash && <div className="flex items-start justify-between gap-3 text-xs"><p className="text-zinc-400">Approval transaction<br /><span className="text-zinc-500">Not a swap or fee payment</span></p><a className="inline-flex min-h-11 items-center gap-1 text-emerald-300 underline" href={`https://basescan.org/tx/${s.approvalHash}`} target="_blank" rel="noopener noreferrer">View approval<ExternalLink size={12} /></a></div>}
     {s.swapHash && <a className="inline-flex min-h-11 items-center gap-1 text-xs text-emerald-300 underline" href={`https://basescan.org/tx/${s.swapHash}`} target="_blank" rel="noopener noreferrer">View swap on BaseScan<ExternalLink size={12} /></a>}
     {success && <p role="status" data-testid="swap-status" className="flex items-center gap-2 text-sm text-emerald-200"><CheckCircle2 size={18} />Swap confirmed · output verified</p>}
-    {!success && !submitted && !approvalUnknown && <>
+    {!success && !submitted && !approvalUnknown && !verificationDelayed && <>
       {s.state === "ERROR" || !swapQuoteFresh(p, now) ? <button type="button" disabled={trade.isBusy} onClick={() => void trade.retryQuote()} className="min-h-12 w-full rounded-2xl bg-emerald-300 px-3 font-semibold text-[#071710] disabled:opacity-40">{trade.sessionExpired ? "Sign in & refresh quote" : "Refresh quote & retry"}</button>
         : <button type="button" disabled={trade.isBusy} onClick={() => void trade.confirm()} className="min-h-12 w-full rounded-2xl bg-emerald-300 px-3 font-semibold text-[#071710] disabled:opacity-40">{trade.isBusy ? "Waiting for confirmation…" : "Confirm & Swap"}</button>}
     </>}
+    {verificationDelayed && !submitted && <button type="button" disabled={trade.isBusy || trade.checking} onClick={() => void trade.retryAllowanceCheck()} className="min-h-12 w-full rounded-2xl bg-emerald-300 px-3 font-semibold text-[#071710] disabled:opacity-40">{trade.isBusy || trade.checking ? "Checking allowance…" : "Retry status check"}</button>}
     {approvalUnknown && !submitted && !trade.isBusy && <button type="button" disabled={trade.checking} onClick={() => void trade.checkHistory()} className="min-h-12 w-full rounded-xl bg-white/10 text-sm">{trade.checking ? "Checking approval…" : "Check approval status"}</button>}
     {!success && submitted && !trade.isBusy && <button type="button" disabled={trade.checking} onClick={() => void trade.checkHistory()} className="min-h-12 w-full rounded-xl bg-white/10 text-sm">{trade.checking ? "Checking receipt…" : "Check submitted swap status"}</button>}
   </SwapDialog>;

@@ -18,6 +18,7 @@ import type { Hash, TransactionReceipt } from "viem";
 import { swapTransactionIdentityMatches, swapTransactionMatches } from "@/lib/swap/swap-transaction";
 import { receiptHasApproval } from "@/lib/swap/swap-mined-call";
 import { readSwapAllowance } from "@/lib/swap/swap-allowance";
+import { APPROVAL_STILL_INSUFFICIENT, APPROVAL_VERIFICATION_DELAYED, APPROVAL_VERIFYING_LABEL } from "@/lib/swap/approval-verification";
 export interface SwapActivity {
   id: string; proposal: TradeProposal; startedAt: number;
   approvalHash: Hash | null; swapHash: Hash | null;
@@ -181,6 +182,30 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
       active.current = false; refreshBalancesRef.current();
     }
   }, [proposal, snapshot.swapHash, snapshot.approvalHash, activities, refreshQuote, retryQuote]);
+  const retryAllowanceCheck = useCallback(async () => {
+    if (!proposal || active.current || snapshot.swapHash || !snapshot.approvalHash) return;
+    if (snapshot.error?.message !== APPROVAL_VERIFICATION_DELAYED) return;
+    const run = session.current;
+    active.current = true;
+    setSnapshot((s) => ({ ...s, state: "APPROVING", error: null, stepLabel: APPROVAL_VERIFYING_LABEL }));
+    try {
+      const value = await readSwapAllowance(proposal, approvalReceipt.current);
+      if (!mounted.current || session.current !== run) return;
+      let required = 0n;
+      try { required = BigInt(proposal.fromAmount); } catch { required = 0n; }
+      if (value !== null && required > 0n && value >= required) {
+        setSnapshot((s) => ({ ...s, state: "IDLE", error: null, stepLabel: null }));
+      } else if (value !== null) {
+        setSnapshot((s) => ({ ...s, state: "ERROR", stepLabel: null, error: { code: "APPROVAL_FAILED", message: APPROVAL_STILL_INSUFFICIENT } }));
+      } else {
+        setSnapshot((s) => ({ ...s, state: "ERROR", stepLabel: null, error: { code: "PROVIDER_ERROR", message: APPROVAL_VERIFICATION_DELAYED } }));
+      }
+    } catch {
+      if (mounted.current && session.current === run) {
+        setSnapshot((s) => ({ ...s, state: "ERROR", stepLabel: null, error: { code: "PROVIDER_ERROR", message: APPROVAL_VERIFICATION_DELAYED } }));
+      }
+    } finally { active.current = false; }
+  }, [proposal, snapshot.swapHash, snapshot.approvalHash, snapshot.error?.message]);
   const checkHistory = useCallback(async () => {
     if (checking || active.current) return;
     const wallet = accountRef.current;
@@ -233,6 +258,6 @@ export function useSwapExecution(onBalanceChange: () => void, signIn: (options?:
     const interval = setInterval(() => { void checkHistory(); }, 2_000);
     return () => { clearTimeout(kick); clearInterval(interval); };
   }, [activities, checkHistory]);
-  return { proposal, snapshot, proof, isBusy, open, close, confirm, retryQuote, checking, sessionExpired, quoteUpdated, historyError, checkHistory,
+  return { proposal, snapshot, proof, isBusy, open, close, confirm, retryQuote, retryAllowanceCheck, checking, sessionExpired, quoteUpdated, historyError, checkHistory,
     activities: account.isConnected && account.chainId === 8453 ? activities.filter(a => a.proposal.taker.toLowerCase() === account.address?.toLowerCase()) : [] };
 }

@@ -62,7 +62,7 @@
     "ws": "8.21.3",
     "postcss": "$postcss",
     "rpc-websockets": "10.0.1",
-    "follow-redirects": "1.16.1",
+    "follow-redirects": "1.16.2",
     "clanker-sdk": {
       "zod": "4.6.7"
     },

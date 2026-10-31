@@ -15,12 +15,12 @@ const base = {
 };
 
 describe("public router policy", () => {
-  it("accepts an allowlisted router and rejects a fee claim or a stranger target", () => {
+  it("refuses every public-router execution because the 0.25% fee cannot be proven", () => {
     expect(isAllowlistedPublicRouter(router)).toBe(true);
     expect(isAllowlistedPublicRouter("0x1111111111111111111111111111111111111111")).toBe(false);
-    expect(publicRouterPolicyError(base)).toBeNull();
-    expect(publicRouterPolicyError({ ...base, agentFee: { status: "applied" } })).toMatch(/cannot claim/i);
-    expect(publicRouterPolicyError({ ...base, transaction: { ...base.transaction, to: "0x1111111111111111111111111111111111111111" } })).toMatch(/unknown router/i);
-    expect(publicRouterPolicyError({ ...base, permit2Spender: "0x2222222222222222222222222222222222222222" })).toMatch(/spender/i);
+    expect(publicRouterPolicyError(base)).toMatch(/0\.25%/);
+    expect(publicRouterPolicyError({ ...base, agentFee: { status: "applied" } })).toMatch(/0\.25%/);
+    expect(publicRouterPolicyError({ ...base, transaction: { ...base.transaction, to: "0x1111111111111111111111111111111111111111" } })).toMatch(/0\.25%/);
+    expect(publicRouterPolicyError({ provider: "mpgr-executor" })).toMatch(/not a public/i);
   });
 });
