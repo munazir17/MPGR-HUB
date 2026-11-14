@@ -41,7 +41,7 @@ export const STOCKS_AGENT_SIGN_LINE = "Agent prepares the transaction. You sign.
 export { BASE_STOCKS_DISCLAIMER as STOCKS_AGENT_DISCLAIMER };
 
 export const STOCKS_AGENT_EMPTY_STATE =
-  "Ask for a pair, premium, or prepare a USDC → stock swap.";
+  "Ask for a pair, premium, a theme portfolio, or prepare a USDC → stock swap.";
 
 export interface StocksAgentChip {
   id: string;
@@ -106,5 +106,11 @@ export const STOCKS_AGENT_CHIPS: readonly StocksAgentChip[] = [
     label: "Quote 10 USDC → NFLXc",
     prompt: "Quote 10 USDC to NFLXc and prepare the swap.",
     icon: Landmark,
+  },
+  {
+    id: "research-portfolio",
+    label: "AI / tech theme portfolio",
+    prompt: "Build me a research portfolio of tokenized stocks for the AI and tech theme on Base. Propose an allocation I can review.",
+    icon: LineChart,
   },
 ] as const;
