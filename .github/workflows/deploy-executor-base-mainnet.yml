@@ -166,7 +166,7 @@ jobs:
           rm -rf deployments/base-mainnet/mpgr-executor.json broadcast/DeployMPGRExecutorBaseMainnet.s.sol
 
       - name: Gate - Slither (fail on high)
-        uses: crytic/slither-action@v0.4.1
+        uses: crytic/slither-action@v0.4.2
         with:
           target: "."
           solc-version: "0.8.24"
