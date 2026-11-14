@@ -141,6 +141,24 @@ export const INTENT_PATTERNS: Record<AgentIntent, string[]> = {
     "autonomous mode",
     "autonomy mode",
   ],
+  research_portfolio: [
+    "research portfolio",
+    "build me a portfolio",
+    "theme portfolio",
+    "ai portfolio",
+    "tech portfolio",
+    "robotics portfolio",
+    "propose allocation",
+    "propose a portfolio",
+    "rebalance my",
+    "rebalance portfolio",
+    "stock basket",
+    "tokenized stock portfolio",
+    "portfolio of stocks",
+    "allocation of stocks",
+    "by theme",
+    "theme basket",
+  ],
 };
 
 export const INTENT_PRIORITY: AgentIntent[] = [
@@ -151,6 +169,7 @@ export const INTENT_PRIORITY: AgentIntent[] = [
   "open_premium",
   "open_leaderboard",
   "autonomous_status",
+  "research_portfolio",
   "suggest_next_action",
   "portfolio_summary",
   "holder_tier",
