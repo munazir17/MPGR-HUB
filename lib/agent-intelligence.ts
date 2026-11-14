@@ -115,6 +115,7 @@ import {
   INTENT_HANDLERS,
   buildGreetingReply,
   buildRecallNote,
+  replyResearchPortfolio,
 } from "./agent-intelligence/reply-generators";
 
 export function generateIntelligentReply(
@@ -125,7 +126,7 @@ export function generateIntelligentReply(
 ): AgentIntelligenceResult {
   const { intent, greeting } = detectIntent(prompt, previousIntent, memoryContext);
 
-  if (!context.isConnected && intent !== "research_query" && intent !== "market_overview" && intent !== "general_help") {
+  if (!context.isConnected && intent !== "research_query" && intent !== "market_overview" && intent !== "general_help" && intent !== "research_portfolio") {
     return { intent: "general_help", reply: NOT_CONNECTED_REPLY, actions: [], highlights: [], followUps: [] };
   }
 
@@ -165,7 +166,12 @@ export function generateIntelligentReply(
     return { intent, reply, actions: [], highlights: [], followUps: getFollowUpPrompts(intent) };
   }
 
-  const baseReply = INTENT_HANDLERS[intent](context);
+  let baseReply: string;
+  if (intent === "research_portfolio") {
+    baseReply = replyResearchPortfolio(prompt);
+  } else {
+    baseReply = INTENT_HANDLERS[intent](context);
+  }
   const recallNote = buildRecallNote(intent, memoryContext);
   const reply = recallNote ? baseReply + " " + recallNote : baseReply;
 
