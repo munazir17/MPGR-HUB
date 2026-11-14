@@ -2,6 +2,7 @@ import { formatCompactNumber } from "@/lib/format";
 import type { AgentContext } from "@/lib/agent-context";
 import type { ConversationMemoryContext } from "@/lib/architecture/memory/memory-context";
 import type { AgentIntent } from "./types";
+import { buildResearchPortfolioProposal, formatResearchPortfolioReply } from "@/lib/agent/research-portfolio";
 
 export function formatUpcomingDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -63,6 +64,11 @@ export function replyMarketOverview(): string {
   return (
     "For live prices I only report feeds that are actually wired. $MPGR market data can be read from the Hub market ticker / market tool when available. ETH and BTC do not have a first-class news feed in this app — I will not invent a price or headline. Ask for a Base swap quote or trade_get_price for ETH/USDC/MPGR if you want a live quote path."
   );
+}
+
+export function replyResearchPortfolio(prompt?: string): string {
+  const proposal = buildResearchPortfolioProposal(prompt || "tech portfolio");
+  return formatResearchPortfolioReply(proposal);
 }
 
 export function replyXPStatus(ctx: AgentContext): string {
@@ -383,6 +389,7 @@ export const INTENT_HANDLERS: Record<AgentIntent, (ctx: AgentContext) => string>
   research_query: replyResearchQuery,
   market_overview: replyMarketOverview,
   autonomous_status: replyAutonomousStatus,
+  research_portfolio: () => replyResearchPortfolio(),
 };
 
 export const INTENT_LABELS: Record<AgentIntent, string> = {
@@ -406,6 +413,7 @@ export const INTENT_LABELS: Record<AgentIntent, string> = {
   research_query: "MPGR HUB research",
   market_overview: "markets",
   autonomous_status: "your autonomous status",
+  research_portfolio: "a researched tokenized-stock portfolio proposal",
 };
 
 export function buildGreetingReply(memoryContext?: ConversationMemoryContext): string {
