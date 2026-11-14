@@ -137,7 +137,7 @@ jobs:
           fi
       - name: Export canary evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mainnet-canary-evidence
           path: |
