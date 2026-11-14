@@ -24,7 +24,7 @@ const embed = {
       name: "MPGR HUB",
       url: "https://mpgrhub.xyz",
       splashImageUrl: "https://mpgrhub.xyz/splash.png",
-      splashBackgroundColor: "#eeccff",
+      splashBackgroundColor: "#010102",
     },
   },
 };
