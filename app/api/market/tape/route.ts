@@ -19,7 +19,9 @@ export const dynamic = "force-dynamic";
 
 // Read-only market data, but still an upstream-fetch amplifier — keep a
 // per-IP budget like the other trade research routes.
-const RATE_LIMIT = 60;
+// Raised from 60 to 300/min so normal client polling (15s) + multiple tabs
+// + occasional retries do not stall the live tape under ordinary traffic.
+const RATE_LIMIT = 300;
 const RATE_WINDOW_MS = 60_000;
 
 export async function GET(request: Request) {
