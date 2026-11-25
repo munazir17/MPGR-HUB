@@ -54,7 +54,9 @@ export async function POST(request: Request) {
   if (originError) return withRequestId(originError, requestId);
   const auth = await authenticateRequest(request);
   if (!auth) return respond({ error: "Authentication required" }, { status: 401 });
-  const rateError = await enforceRateLimit(request, "ai", 20, 60);
+  // Raised from 20 to 60/min so interactive agent use (quotes, transfers, research)
+  // does not hit the rate limit under normal multi-tab or rapid follow-up usage.
+  const rateError = await enforceRateLimit(request, "ai", 60, 60);
   if (rateError) return withRequestId(rateError, requestId);
   const budgetError = await enforceAiDailyBudget(request);
   if (budgetError) return withRequestId(budgetError, requestId);

@@ -17,30 +17,34 @@ import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limi
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Read-only market data, but still an upstream-fetch amplifier — keep a
-// per-IP budget like the other trade research routes.
-// Raised from 60 to 300/min so normal client polling (15s) + multiple tabs
-// + occasional retries do not stall the live tape under ordinary traffic.
-const RATE_LIMIT = 300;
+// Read-only market data with server-side cache. High limit so ordinary
+// client polling + multiple tabs never stalls the tape. Redis failures
+// fail open for this public endpoint (see check below).
+const RATE_LIMIT = 2000;
 const RATE_WINDOW_MS = 60_000;
 
 export async function GET(request: Request) {
   const ttl = tapeCacheTtlSeconds();
   const cacheHeader = `public, max-age=${ttl}, stale-while-revalidate=${ttl * 3}`;
 
-  const rate = await checkRateLimit(
-    `${clientIpFromRequest(request)}:market-tape`,
-    RATE_LIMIT,
-    RATE_WINDOW_MS,
-  );
-  if (!rate.allowed) {
-    return NextResponse.json(
-      { error: "Too many requests. Please slow down.", code: "RATE_LIMITED" },
-      {
-        status: 429,
-        headers: { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) },
-      },
+  try {
+    const rate = await checkRateLimit(
+      `${clientIpFromRequest(request)}:market-tape`,
+      RATE_LIMIT,
+      RATE_WINDOW_MS,
     );
+    if (!rate.allowed) {
+      return NextResponse.json(
+        { error: "Too many requests. Please slow down.", code: "RATE_LIMITED" },
+        {
+          status: 429,
+          headers: { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) },
+        },
+      );
+    }
+  } catch {
+    // Fail open for this public cached endpoint if the rate limiter itself errors.
+    // The snapshot is already heavily cached and has no secrets.
   }
 
   try {
