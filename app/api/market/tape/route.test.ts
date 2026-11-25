@@ -1,7 +1,9 @@
 // app/api/market/tape/route.test.ts
 //
 // The tape route must: serve the aggregated snapshot with a short cache
-// header, rate-limit per IP, and never leak upstream/provider errors.
+// header and never leak upstream/provider errors.
+// Rate limiting was intentionally removed for this public, heavily-cached
+// read endpoint (Redis fail-closed was stalling the live tape).
 // The aggregator itself is unit-tested in lib/markets/__tests__/tape.test.ts;
 // here it is mocked so the route test never touches the network.
 
@@ -12,12 +14,6 @@ const tapeCacheTtlSeconds = vi.fn(() => 10);
 vi.mock("@/lib/markets/tape", () => ({
   getTapeSnapshot,
   tapeCacheTtlSeconds,
-}));
-
-const checkRateLimit = vi.fn();
-vi.mock("@/lib/trade/trade-rate-limit", () => ({
-  checkRateLimit,
-  clientIpFromRequest: () => "203.0.113.9",
 }));
 
 const SNAPSHOT = {
@@ -35,7 +31,6 @@ const SNAPSHOT = {
 describe("GET /api/market/tape", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    checkRateLimit.mockResolvedValue({ allowed: true, remaining: 10, retryAfterSeconds: 0 });
   });
 
   it("returns the aggregated snapshot with a short shared cache header", async () => {
@@ -52,16 +47,6 @@ describe("GET /api/market/tape", () => {
     expect(body.stocks[0].premiumBps).toBe(50);
     // No secrets / internals in the response.
     expect(JSON.stringify(body)).not.toMatch(/PRIVATE_KEY|SECRET|API_KEY|apiKey|Bearer/i);
-  });
-
-  it("rate-limits per IP with a Retry-After", async () => {
-    checkRateLimit.mockResolvedValue({ allowed: false, remaining: 0, retryAfterSeconds: 42 });
-    const { GET } = await import("./route");
-    const response = await GET(new Request("https://mpgrhub.xyz/api/market/tape"));
-
-    expect(response.status).toBe(429);
-    expect(response.headers.get("Retry-After")).toBe("42");
-    expect(getTapeSnapshot).not.toHaveBeenCalled();
   });
 
   it("fails with a generic 502 when the aggregator throws — no stack details", async () => {
