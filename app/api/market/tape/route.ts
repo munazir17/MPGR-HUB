@@ -8,44 +8,23 @@
 //
 // This is the free endpoint. The x402-gated snapshot lives at
 // GET /api/x402/tape and returns this exact body plus { paid: true }.
+//
+// Rate limiting is intentionally omitted. This is a public, heavily
+// cached read with no side effects. Previous Redis-backed limits were
+// failing closed on transient Redis errors and stalling the live tape
+// for ordinary users. The in-memory snapshot cache already protects
+// DexScreener and Chainlink.
 
 import { NextResponse } from "next/server";
 
 import { getTapeSnapshot, tapeCacheTtlSeconds } from "@/lib/markets/tape";
-import { checkRateLimit, clientIpFromRequest } from "@/lib/trade/trade-rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Read-only market data with server-side cache. High limit so ordinary
-// client polling + multiple tabs never stalls the tape. Redis failures
-// fail open for this public endpoint (see check below).
-const RATE_LIMIT = 2000;
-const RATE_WINDOW_MS = 60_000;
-
-export async function GET(request: Request) {
+export async function GET(_request: Request) {
   const ttl = tapeCacheTtlSeconds();
   const cacheHeader = `public, max-age=${ttl}, stale-while-revalidate=${ttl * 3}`;
-
-  try {
-    const rate = await checkRateLimit(
-      `${clientIpFromRequest(request)}:market-tape`,
-      RATE_LIMIT,
-      RATE_WINDOW_MS,
-    );
-    if (!rate.allowed) {
-      return NextResponse.json(
-        { error: "Too many requests. Please slow down.", code: "RATE_LIMITED" },
-        {
-          status: 429,
-          headers: { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) },
-        },
-      );
-    }
-  } catch {
-    // Fail open for this public cached endpoint if the rate limiter itself errors.
-    // The snapshot is already heavily cached and has no secrets.
-  }
 
   try {
     const snapshot = await getTapeSnapshot();
