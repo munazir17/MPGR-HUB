@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { TapeSnapshot } from "@/lib/markets/tape-types";
 
-const TAPE_POLL_INTERVAL_MS = 15_000;
+const TAPE_POLL_INTERVAL_MS = 20_000;
 
 export interface UseTapeResult {
   snapshot: TapeSnapshot | null;
