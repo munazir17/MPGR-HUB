@@ -25,7 +25,7 @@ import { buildTradeProposal } from "./trade-proposal";
 import { estimateSwapPriceImpactBps } from "./trade-price-impact";
 import { createRoutedSwapQuote } from "./trade-swap-router";
 import { findTokenizedStock } from "./tokenized-stocks";
-import { readTokenizedStockOnchain } from "./tokenized-stocks-onchain";
+import { readB20Decimals, readTokenizedStockOnchain } from "./tokenized-stocks-onchain";
 import { findKnownTradeToken, resolveTradeToken } from "./trade-tokens";
 import type { TradeError, TradeProposal } from "./trade-types";
 
@@ -37,6 +37,22 @@ function parsePositiveDecimal(raw: string): number | null {
   const amount = Number(raw.trim().replace(/^\$/, "").replace(/,/g, ""));
   if (!Number.isFinite(amount) || amount <= 0) return null;
   return amount;
+}
+
+async function readOnchainWithRetry(catalog: Parameters<typeof readTokenizedStockOnchain>[0]) {
+  let onchain = await readTokenizedStockOnchain(catalog);
+  if (onchain.decimals === null) {
+    // One retry absorbs a transient RPC blip before we fall back to the
+    // dedicated decimals reader.
+    onchain = await readTokenizedStockOnchain(catalog);
+  }
+  if (onchain.decimals === null) {
+    const decimals = await readB20Decimals(catalog.address as `0x${string}`);
+    if (decimals !== null) {
+      onchain = { ...onchain, decimals };
+    }
+  }
+  return onchain;
 }
 
 export async function prepareTokenizedStockSwap(input: {
@@ -143,7 +159,7 @@ export async function prepareTokenizedStockSwap(input: {
   // catalog default of 18 against an actual value of 8 is a 10^10x
   // amount error), so this always runs for both BUY and SELL, not
   // just when the token-amount math needs it.
-  const onchain = await readTokenizedStockOnchain(catalog);
+  const onchain = await readOnchainWithRetry(catalog);
   if (onchain.decimals === null) {
     return {
       ok: false,
