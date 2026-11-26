@@ -25,7 +25,7 @@ import { buildTradeProposal } from "./trade-proposal";
 import { estimateSwapPriceImpactBps } from "./trade-price-impact";
 import { createRoutedSwapQuote } from "./trade-swap-router";
 import { findTokenizedStock } from "./tokenized-stocks";
-import { readB20Decimals, readTokenizedStockOnchain } from "./tokenized-stocks-onchain";
+import { readTokenizedStockOnchain } from "./tokenized-stocks-onchain";
 import { findKnownTradeToken, resolveTradeToken } from "./trade-tokens";
 import type { TradeError, TradeProposal } from "./trade-types";
 
@@ -42,14 +42,23 @@ function parsePositiveDecimal(raw: string): number | null {
 async function readOnchainWithRetry(catalog: Parameters<typeof readTokenizedStockOnchain>[0]) {
   let onchain = await readTokenizedStockOnchain(catalog);
   if (onchain.decimals === null) {
-    // One retry absorbs a transient RPC blip before we fall back to the
-    // dedicated decimals reader.
+    // One retry absorbs a transient RPC blip.
     onchain = await readTokenizedStockOnchain(catalog);
   }
+  // Best-effort dedicated decimals reader. Some test mocks omit the
+  // export; a missing or throwing helper must not crash the prepare.
   if (onchain.decimals === null) {
-    const decimals = await readB20Decimals(catalog.address as `0x${string}`);
-    if (decimals !== null) {
-      onchain = { ...onchain, decimals };
+    try {
+      const mod = await import("./tokenized-stocks-onchain");
+      const reader = (mod as { readB20Decimals?: (addr: `0x${string}`) => Promise<number | null> }).readB20Decimals;
+      if (typeof reader === "function") {
+        const decimals = await reader(catalog.address as `0x${string}`);
+        if (typeof decimals === "number" && Number.isInteger(decimals)) {
+          onchain = { ...onchain, decimals };
+        }
+      }
+    } catch {
+      // Keep the null decimals; caller fails closed.
     }
   }
   return onchain;
