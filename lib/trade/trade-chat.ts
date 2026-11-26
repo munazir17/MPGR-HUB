@@ -32,6 +32,7 @@ export function publicTradeError(error: { code?: unknown; message?: unknown } | 
       : "This swap input is not supported. Nothing was signed or submitted.";
     case "INVALID_INPUT": return "Check the tokens and amount, then request a fresh quote.";
     case "CREDENTIALS_MISSING": return "Swaps are temporarily unavailable. Please try again later.";
+    case "PROVIDER_ERROR": return "On-chain verification failed. Try again in a moment.";
     default: return "Could not fetch or prepare this swap right now. Please try again.";
   }
 }

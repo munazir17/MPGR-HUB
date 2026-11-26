@@ -39,6 +39,31 @@ function parsePositiveDecimal(raw: string): number | null {
   return amount;
 }
 
+async function readOnchainWithRetry(catalog: Parameters<typeof readTokenizedStockOnchain>[0]) {
+  let onchain = await readTokenizedStockOnchain(catalog);
+  if (onchain.decimals === null) {
+    // One retry absorbs a transient RPC blip.
+    onchain = await readTokenizedStockOnchain(catalog);
+  }
+  // Best-effort dedicated decimals reader. Some test mocks omit the
+  // export; a missing or throwing helper must not crash the prepare.
+  if (onchain.decimals === null) {
+    try {
+      const mod = await import("./tokenized-stocks-onchain");
+      const reader = (mod as { readB20Decimals?: (addr: `0x${string}`) => Promise<number | null> }).readB20Decimals;
+      if (typeof reader === "function") {
+        const decimals = await reader(catalog.address as `0x${string}`);
+        if (typeof decimals === "number" && Number.isInteger(decimals)) {
+          onchain = { ...onchain, decimals };
+        }
+      }
+    } catch {
+      // Keep the null decimals; caller fails closed.
+    }
+  }
+  return onchain;
+}
+
 export async function prepareTokenizedStockSwap(input: {
   symbol: string;
   side: "BUY" | "SELL";
@@ -143,7 +168,7 @@ export async function prepareTokenizedStockSwap(input: {
   // catalog default of 18 against an actual value of 8 is a 10^10x
   // amount error), so this always runs for both BUY and SELL, not
   // just when the token-amount math needs it.
-  const onchain = await readTokenizedStockOnchain(catalog);
+  const onchain = await readOnchainWithRetry(catalog);
   if (onchain.decimals === null) {
     return {
       ok: false,
