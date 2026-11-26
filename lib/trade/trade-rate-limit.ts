@@ -89,10 +89,9 @@ function inMemoryFallback(key: string, limit: number, windowMs: number): RateLim
  * @param limit Max requests allowed per window.
  * @param windowMs Window size in milliseconds.
  *
- * Now async and Redis-backed (Lua atomic). Returns synchronously-compatible shape but as a Promise.
- * When Redis is unavailable (local dev/tests), falls back to the bounded in-memory map and allows.
- * When Redis is available but the Lua call fails, fails closed (returns not allowed) so the caller
- * can surface a 503/429 and the client degrades gracefully rather than bypassing the limiter.
+ * Redis-backed (Lua atomic) when available. On Redis error or when Redis is
+ * not configured, falls back to the bounded in-memory map so a KV limit or
+ * network blip does not turn every protected route into a permanent 429.
  */
 export async function checkRateLimit(key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
   const redis = tryRedis();
@@ -114,9 +113,11 @@ export async function checkRateLimit(key: string, limit: number, windowMs: numbe
     }
     return { allowed: true, remaining: Math.max(0, limit - count), retryAfterSeconds: 0 };
   } catch {
-    // Fail closed when Redis/Lua is reachable but errored — don't let a transient Redis error
-    // become a bypass. Callers will turn this into a 503/429 generic error.
-    return { allowed: false, remaining: 0, retryAfterSeconds: windowSeconds };
+    // Redis errored (limit hit, network, Lua failure). Fall back to the
+    // bounded in-memory limiter instead of failing closed. This keeps the
+    // site usable when KV is degraded; the in-memory map still caps per
+    // instance so a single isolate cannot be flooded.
+    return inMemoryFallback(key, limit, windowMs);
   }
 }
 
