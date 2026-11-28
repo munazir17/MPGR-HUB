@@ -6,7 +6,9 @@ import { AI_PROMPT_LIMITS } from "@/lib/architecture/ai/server-policy";
 function tryRedis() {
   try {
     return getRedis();
-  } catch {
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : "unknown";
+    console.error(`[redis] client init failed reason=${raw.slice(0, 240)}`);
     return null;
   }
 }
@@ -288,8 +290,12 @@ export async function enforceRateLimit(request: Request, bucket: string, limit: 
         return rateLimitExceededResponse(windowSeconds);
       }
     }
-  } catch {
+  } catch (error) {
     // Fail closed when Redis/Lua is unavailable — callers fall back to deterministic engine.
+    // UpstashError appends the raw command after ", command was:". Keep only the reason.
+    const raw = error instanceof Error ? error.message : "unknown";
+    const reason = raw.split(", command was:")[0].slice(0, 240);
+    console.error(`[rate-limit] redis command failed bucket=${bucket} reason=${reason}`);
     return serviceUnavailableResponse();
   }
 
