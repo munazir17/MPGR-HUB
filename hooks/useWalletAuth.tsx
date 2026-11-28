@@ -21,6 +21,16 @@ interface WalletAuthState {
 // pair for the whole app, so every consumer sees the same state.
 const WalletAuthContext = createContext<WalletAuthState | null>(null);
 
+/** True when the user explicitly rejected the signature (do not retry). */
+function isUserRejection(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const rec = error as { code?: unknown; name?: unknown; message?: unknown };
+  if (rec.code === 4001 || rec.code === "ACTION_REJECTED") return true;
+  const name = typeof rec.name === "string" ? rec.name : "";
+  const message = typeof rec.message === "string" ? rec.message : "";
+  return /user rejected|user denied|rejected the request|denied message signature/i.test(`${name} ${message}`);
+}
+
 export function WalletAuthProvider({ children }: { children: React.ReactNode }) {
   const { address, isConnected } = useAccount();
   const { signMessageAsync } = useSignMessage();
@@ -59,7 +69,25 @@ export function WalletAuthProvider({ children }: { children: React.ReactNode }) 
         `Issued At: ${nonce.issuedAt}`,
         `Expiration Time: ${nonce.expirationTime}`,
       ].join("\n");
-      const signature = await signMessageAsync({ message });
+
+      // Give the connector a moment to finish settling after connect.
+      // Many injected / mobile wallets drop a signMessage that fires in the
+      // same tick as the connection change (no user gesture + connector not
+      // fully ready). A short delay makes the prompt appear reliably.
+      await new Promise((resolve) => setTimeout(resolve, 350));
+
+      let signature: `0x${string}`;
+      try {
+        signature = await signMessageAsync({ message });
+      } catch (firstError) {
+        // User explicitly rejected — do not retry.
+        if (isUserRejection(firstError)) return false;
+        // Transient (connector not ready, popup blocked on first try).
+        // One retry after a short pause. Still the same SIWE message.
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        signature = await signMessageAsync({ message });
+      }
+
       // The server remains the sole authority: this call re-verifies the
       // nonce, the SIWE message, and the signature, and only then mints a
       // session cookie. Nothing here marks the wallet authenticated on the
