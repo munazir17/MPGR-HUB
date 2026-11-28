@@ -36,6 +36,7 @@ export function WalletAuthProvider({ children }: { children: React.ReactNode }) 
   const { signMessageAsync } = useSignMessage();
   const [authenticatedWallet, setAuthenticatedWallet] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [storeDown, setStoreDown] = useState(false);
 
   // Multiple consumers can call authenticate() around the same time (the
   // mount-time session check below, and a page's own "start" action). This
@@ -47,8 +48,21 @@ export function WalletAuthProvider({ children }: { children: React.ReactNode }) 
     if (!address || !isConnected) return false;
     setLoading(true);
     try {
-      const nonceResponse = await fetch("/api/auth/nonce", { cache: "no-store", credentials: "include" });
-      if (!nonceResponse.ok) return false;
+      // Nonce is issued before any wallet prompt. A 503 here means Upstash
+      // rejected the command (quota, bad REST url/token, or paused DB) — retry
+      // briefly in case the database is waking, then surface it. Do not ask
+      // the wallet to sign a nonce the server never stored.
+      let nonceResponse: Response | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+        nonceResponse = await fetch("/api/auth/nonce", { cache: "no-store", credentials: "include" });
+        if (nonceResponse.ok || (nonceResponse.status !== 503 && nonceResponse.status !== 429)) break;
+      }
+      if (!nonceResponse?.ok) {
+        setStoreDown(true);
+        return false;
+      }
+      setStoreDown(false);
       const nonce = (await nonceResponse.json()) as {
         nonce: string;
         issuedAt: string;
@@ -192,7 +206,16 @@ export function WalletAuthProvider({ children }: { children: React.ReactNode }) 
     [authenticatedWallet, address, loading, authenticate]
   );
 
-  return <WalletAuthContext.Provider value={value}>{children}</WalletAuthContext.Provider>;
+  return (
+    <WalletAuthContext.Provider value={value}>
+      {storeDown && (
+        <div role="alert" className="fixed inset-x-0 top-0 z-[80] bg-red-950/95 px-4 py-3 text-center text-sm text-red-100">
+          Wallet connected, but the sign-in prompt did not start. The auth store (Upstash Redis) rejected the nonce request. Nothing was signed.
+        </div>
+      )}
+      {children}
+    </WalletAuthContext.Provider>
+  );
 }
 
 export function useWalletAuth(): WalletAuthState {
